@@ -2,11 +2,14 @@
   "name": "vscode-hive",
   "displayName": "Hive",
   "description": "Context-Driven Development UI",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "publisher": "tctinh",
+  "license": "CC-BY-NC-4.0",
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Other"],
   "activationEvents": ["workspaceContains:.hive"],
   "main": "./dist/extension.js",
+  
   "contributes": {
     "viewsContainers": {
       "activitybar": [{
@@ -22,12 +25,27 @@
       }]
     },
     "commands": [
-      { "command": "hive.newFeature", "title": "Hive: New Feature" },
-      { "command": "hive.refresh", "title": "Hive: Refresh" },
-      { "command": "hive.openInOpenCode", "title": "Open in OpenCode" },
-      { "command": "hive.openInClaude", "title": "Open in Claude Code" },
-      { "command": "hive.viewReport", "title": "View Report" }
-    ]
+      { "command": "hive.newFeature", "title": "Hive: New Feature", "icon": "$(add)" },
+      { "command": "hive.refresh", "title": "Hive: Refresh", "icon": "$(refresh)" },
+      { "command": "hive.openInOpenCode", "title": "Open in OpenCode", "icon": "$(terminal)" },
+      { "command": "hive.createSession", "title": "Create Session", "icon": "$(add)" },
+      { "command": "hive.viewReport", "title": "View Report", "icon": "$(book)" },
+      { "command": "hive.openFile", "title": "Open File" },
+      { "command": "hive.viewFeatureDetails", "title": "View Details", "icon": "$(info)" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "hive.newFeature", "when": "view == hive.features", "group": "navigation" },
+        { "command": "hive.refresh", "when": "view == hive.features", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "hive.viewFeatureDetails", "when": "viewItem == feature", "group": "inline" },
+        { "command": "hive.openInOpenCode", "when": "viewItem == step", "group": "inline" },
+        { "command": "hive.createSession", "when": "viewItem == stepNoSession", "group": "inline" },
+        { "command": "hive.viewReport", "when": "viewItem == feature" },
+        { "command": "hive.openFile", "when": "viewItem == file" }
+      ]
+    }
   },
   "scripts": {
     "build": "tsc",

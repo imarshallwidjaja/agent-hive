@@ -1,15 +1,31 @@
 import * as vscode from 'vscode'
+import * as fs from 'fs'
+import * as path from 'path'
 import { HiveService, HiveWatcher, Launcher } from './services'
 import { HiveSidebarProvider, HivePanelProvider } from './providers'
 
+function findHiveRoot(startPath: string): string | null {
+  let current = startPath
+  while (current !== path.dirname(current)) {
+    if (fs.existsSync(path.join(current, '.hive'))) {
+      return current
+    }
+    current = path.dirname(current)
+  }
+  return null
+}
+
 export function activate(context: vscode.ExtensionContext): void {
-  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  if (!workspaceFolder) return
+
+  const workspaceRoot = findHiveRoot(workspaceFolder)
   if (!workspaceRoot) return
 
   const hiveService = new HiveService(workspaceRoot)
   if (!hiveService.exists()) return
 
-  const launcher = new Launcher()
+  const launcher = new Launcher(workspaceRoot)
 
   const sidebarProvider = new HiveSidebarProvider(hiveService)
   vscode.window.registerTreeDataProvider('hive.features', sidebarProvider)
@@ -39,18 +55,19 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand('hive.openInOpenCode', (feature: string, step?: string) => {
-      const steps = hiveService.getSteps(feature)
-      const stepData = steps.find(s => `${s.order}-${s.name}` === step)
-      const sessionId = stepData?.sessions.opencode?.sessionId
-      launcher.open('opencode', feature, step, sessionId)
+    vscode.commands.registerCommand('hive.openStepInOpenCode', (featureName: string, stepName: string, sessionId?: string) => {
+      launcher.openStep('opencode', featureName, stepName, sessionId)
     }),
 
-    vscode.commands.registerCommand('hive.openInClaude', (feature: string, step?: string) => {
-      const steps = hiveService.getSteps(feature)
-      const stepData = steps.find(s => `${s.order}-${s.name}` === step)
-      const sessionId = stepData?.sessions.claude?.sessionId
-      launcher.open('claude', feature, step, sessionId)
+    vscode.commands.registerCommand('hive.createSession', async (item: { featureName?: string; stepFolder?: string }) => {
+      if (item?.featureName && item?.stepFolder) {
+        await launcher.createSession(item.featureName, item.stepFolder)
+        sidebarProvider.refresh()
+      }
+    }),
+
+    vscode.commands.registerCommand('hive.openFeatureInOpenCode', (featureName: string) => {
+      launcher.openFeature('opencode', featureName)
     }),
 
     vscode.commands.registerCommand('hive.viewReport', (feature: string) => {
@@ -63,13 +80,27 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand('hive.openFolder', (feature: string, folder: string) => {
-      const folderPath = vscode.Uri.file(`${workspaceRoot}/.hive/features/${feature}/${folder}`)
-      vscode.commands.executeCommand('revealInExplorer', folderPath)
-    }),
-
     vscode.commands.registerCommand('hive.showFeature', (featureName: string) => {
       panelProvider.showFeature(featureName)
+    }),
+
+    vscode.commands.registerCommand('hive.openInOpenCode', (item: { featureName?: string; stepFolder?: string; sessionId?: string }) => {
+      if (item?.featureName && item?.stepFolder) {
+        launcher.openStep('opencode', item.featureName, item.stepFolder, item.sessionId)
+      }
+    }),
+
+    vscode.commands.registerCommand('hive.openFile', (filePath: string) => {
+      if (filePath) {
+        vscode.workspace.openTextDocument(filePath)
+          .then(doc => vscode.window.showTextDocument(doc))
+      }
+    }),
+
+    vscode.commands.registerCommand('hive.viewFeatureDetails', (item: { featureName?: string }) => {
+      if (item?.featureName) {
+        panelProvider.showFeature(item.featureName)
+      }
     })
   )
 }

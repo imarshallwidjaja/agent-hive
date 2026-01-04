@@ -7,22 +7,21 @@ export interface Feature {
 export interface Step {
   name: string
   order: number
-  spec: string
-  status: 'pending' | 'wip' | 'done' | 'bug'
-  startedAt: string | null
-  completedAt: string | null
-  summary: string | null
-  sessions: SessionMap
+  status: 'pending' | 'in_progress' | 'done' | 'blocked'
+  folderPath: string
+  specFiles: string[]
+  sessionId?: string
+  summary?: string
 }
 
-export interface SessionMap {
-  opencode?: SessionInfo
-  claude?: SessionInfo
-}
-
-export interface SessionInfo {
-  sessionId: string
-  lastActive: string
+export interface StepStatus {
+  name: string
+  order: number
+  status: 'pending' | 'in_progress' | 'done' | 'blocked'
+  sessionId?: string
+  startedAt?: string
+  completedAt?: string
+  summary?: string
 }
 
 export interface ProblemDocs {
