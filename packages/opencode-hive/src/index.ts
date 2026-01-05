@@ -12,6 +12,7 @@ import { createExecStartTool, createExecCompleteTool, createExecAbortTool, creat
 import { createStatusTool } from "./tools/queryTools.js";
 import { PlanService } from "./services/planService.js";
 import { createPlanGenerateTool } from "./tools/planTools.js";
+import { createPlanReadTool, createPlanUpdateTool, createPlanApproveTool, createPlanLockTool } from "./tools/planManagementTools.js";
 
 const HIVE_SYSTEM_PROMPT = `
 ## Hive - Feature Development & Execution System
@@ -128,6 +129,10 @@ const plugin: Plugin = async (ctx) => {
       hive_status: createStatusTool(featureService, stepService, decisionService),
 
       hive_plan_generate: createPlanGenerateTool(planService, featureService, stepService, decisionService),
+      hive_plan_read: createPlanReadTool(planService, featureService),
+      hive_plan_update: createPlanUpdateTool(planService, featureService),
+      hive_plan_approve: createPlanApproveTool(planService, featureService),
+      hive_plan_lock: createPlanLockTool(planService, featureService),
     },
 
     command: {

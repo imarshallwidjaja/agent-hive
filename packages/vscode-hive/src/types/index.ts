@@ -1,14 +1,3 @@
-export type PlanStatusType = 'draft' | 'approved' | 'locked'
-
-export interface PlanMetadata {
-  version: number
-  status: PlanStatusType
-  generatedAt: string
-  lastUpdatedAt: string
-  approvedAt: string | null
-  approvedBy: 'user' | null
-}
-
 export interface Feature {
   name: string
   progress: number
@@ -18,7 +7,6 @@ export interface Feature {
   status: 'active' | 'completed' | 'archived'
   createdAt?: string
   completedAt?: string
-  plan?: PlanMetadata
 }
 
 export interface Decision {
