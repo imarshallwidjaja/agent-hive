@@ -6,51 +6,118 @@
 
 ---
 
-## The Problem with Vibe Coding
+## The Problem
 
-AI coding assistants are powerful, but "vibe coding" leads to:
-- 🌀 Context loss across sessions
-- 🔄 Repeated explanations of the same decisions  
-- 📝 No audit trail of what was built and why
-- 🎯 Scope creep without structured planning
+AI coding assistants are powerful, but without structure you get:
+- 🌀 Lost context between sessions
+- 🔄 No record of decisions made
+- 📝 Zero audit trail
+- 🎯 Scope creep and forgotten requirements
 
-## The Hive Solution
+**Traditional solutions** like Spec Kit require you to write detailed specifications upfront. That works for some teams, but most developers just want to code — not write documentation before they start.
 
-**Agent Hive** transforms chaotic AI-assisted development into **structured, reviewable, executable plans**.
+---
 
-```
-Vibe: "Just make it work somehow"
-Hive: Plan → Review → Approve → Execute → Ship
-```
+## The Hive Difference
 
-### Inspired by Antigravity's Workflow Philosophy
+| Spec Kit Approach | Hive Approach |
+|-------------------|---------------|
+| Write all specs before coding | Specs emerge as you go |
+| Heavy documentation upfront | Passive documentation along the way |
+| Separate planning phase | Planning happens in conversation |
+| Manual process tracking | Automatic audit of all actions |
+| Requires discipline to maintain | Works with how you already code |
 
-Built on the principles that made [Antigravity](https://antigravity.dev) effective:
-- **Plan before you code** — AI writes the plan, you review it
-- **Human-in-the-loop** — Every plan requires your approval before execution
-- **Traceable decisions** — Know why every choice was made
-- **Parallel execution** — Multiple tasks, isolated worktrees, clean merges
+**Hive doesn't change how you work. It just makes what you do traceable.**
 
 ---
 
 ## How It Works
 
 ```
+You: "Let's add dark mode to the app"
+Agent: Plans the feature, Hive automatically captures it
+You: Review, chat, refine
+Agent: Executes tasks, Hive tracks every step
+You: Ship with full audit trail
+```
+
+### The Magic: Automatic Capture
+
+When you work with your AI agent, Hive automatically:
+- 📋 **Captures plans** as they're discussed
+- 💬 **Records decisions** from your conversation
+- 🔄 **Tracks execution** of each task
+- 📊 **Builds documentation** as a side effect
+
+**You don't write specs. Specs write themselves.**
+
+---
+
+## Two Ways to Use Hive
+
+### 1. Automatic Mode (Recommended)
+Just work normally. Hive kicks in when it detects planning.
+
+```
+You: "I need to refactor the auth system"
+Agent: [Plans automatically captured by Hive]
+       Here's my plan:
+       1. Extract auth logic to service
+       2. Add token refresh
+       3. Update API routes
+You: "Looks good, let's do it"
+Agent: [Executes with full tracking]
+```
+
+### 2. Explicit Mode
+When you want more control:
+
+```
+hive_feature_create("auth-refactor")    # Start a feature
+hive_plan_write(plan)                    # Write the plan
+hive_plan_approve()                      # Approve it
+hive_exec_start("01-extract-service")   # Execute task
+hive_exec_complete(task, summary)        # Complete with summary
+```
+
+---
+
+## Why Hive?
+
+### 🎯 Easy Orchestrate
+Break work into isolated tasks. Each runs in its own git worktree. No conflicts.
+
+### 📊 Easy Audit
+Every decision, every change, every conversation — automatically captured.
+
+### 🚀 Easy Ship
+When you're done, you have:
+- Clean git history
+- Full documentation
+- Traceable decisions
+
+---
+
+## The Workflow
+
+```
 ┌─────────────────────────────────────────────────────────────┐
-│  1. CREATE FEATURE                                          │
-│     hive_feature_create("dark-mode")                        │
+│  PLAN                                                       │
+│  Chat with your agent about what to build                   │
+│  Hive captures the plan automatically                       │
 ├─────────────────────────────────────────────────────────────┤
-│  2. AI WRITES PLAN                                          │
-│     Agent generates structured plan.md                      │
+│  REVIEW                                                     │
+│  See the plan in VS Code                                    │
+│  Add comments, refine, approve                              │
 ├─────────────────────────────────────────────────────────────┤
-│  3. YOU REVIEW IN VSCODE                                    │
-│     Add comments, request changes, discuss                  │
+│  EXECUTE                                                    │
+│  Agent works on tasks in isolated worktrees                 │
+│  Every action tracked and auditable                         │
 ├─────────────────────────────────────────────────────────────┤
-│  4. APPROVE & EXECUTE                                       │
-│     Tasks run in isolated git worktrees                     │
-├─────────────────────────────────────────────────────────────┤
-│  5. MERGE & SHIP                                            │
-│     Clean commits, full audit trail                         │
+│  SHIP                                                       │
+│  Clean merges, full history                                 │
+│  Documentation generated as side effect                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -60,82 +127,61 @@ Built on the principles that made [Antigravity](https://antigravity.dev) effecti
 
 | Package | Platform | Description |
 |---------|----------|-------------|
-| **[opencode-hive](https://www.npmjs.com/package/opencode-hive)** | npm | OpenCode plugin — tools, planning, execution |
-| **[vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)** | VS Code | Extension — review plans, add comments, approve |
+| **[opencode-hive](https://www.npmjs.com/package/opencode-hive)** | npm | OpenCode plugin — planning, execution, tracking |
+| **[vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)** | VS Code | Review plans, add comments, approve |
 
 ---
 
 ## Quick Start
 
-### 1. Install OpenCode Plugin
+### 1. Install
 
 ```bash
+# OpenCode plugin
 npm install opencode-hive
-```
 
-### 2. Install VS Code Extension
-
-Search "Hive" in VS Code Extensions, or:
-```bash
+# VS Code extension
 code --install-extension tctinh.vscode-hive
 ```
 
-### 3. Start Building
+### 2. Just Start Coding
 
-```bash
-# In OpenCode
-hive_feature_create("my-feature")
-hive_plan_write("# My Feature\n\n## Tasks\n\n### 1. First Task\n...")
-
-# Review in VS Code, add comments
-# Then approve and execute
-hive_plan_approve()
-hive_tasks_sync()
-hive_exec_start("01-first-task")
-# ... work ...
-hive_exec_complete("01-first-task", "Implemented X, Y, Z")
+```
+You: "Let's build a user dashboard"
+Agent: [Hive automatically activates]
+       I'll create a plan for the user dashboard...
 ```
 
----
+Or be explicit:
 
-## Why Hive?
-
-| Vibe Coding | Hive Coding |
-|-------------|-------------|
-| "Just figure it out" | Structured plans with clear tasks |
-| Context forgotten between sessions | Persistent feature context |
-| No review before execution | Human approval required |
-| Changes mixed in working tree | Isolated worktrees per task |
-| "What did we decide?" | Decisions logged and searchable |
-| Hope it works | Verify before merge |
+```
+You: "Hive a plan for user dashboard"
+You: "Hive execute dashboard-feature"
+```
 
 ---
 
 ## Built for the OpenCode Ecosystem
 
-Agent Hive is designed to work seamlessly with:
-- **[OpenCode](https://opencode.ai)** — The AI coding assistant
-- **VS Code** — Your familiar editor for reviews
-- **Git** — Worktrees for isolation, clean merges
+Designed to work seamlessly with:
+- **[OpenCode](https://opencode.ai)** — The AI coding CLI
+- **VS Code** — Your editor for reviews
+- **Git** — Worktrees for isolation
+
+Inspired by the workflow principles of **[Antigravity](https://antigravity.dev)**.
 
 ---
 
-## Features
+## Comparison
 
-### 🎯 Plan-First Development
-AI writes the plan, you review and approve before any code is written.
-
-### 💬 Inline Plan Review  
-Add comments directly in VS Code. Discuss, iterate, refine.
-
-### 🌳 Isolated Execution
-Each task runs in its own git worktree. No conflicts, clean history.
-
-### 📊 Progress Tracking
-See what's done, what's in progress, what's next.
-
-### 🔍 Full Audit Trail
-Every decision, every change, fully traceable.
+| Feature | Vibe Coding | Spec Kit | Agent Hive |
+|---------|-------------|----------|------------|
+| Setup required | None | Heavy | Minimal |
+| Documentation | None | Upfront | Automatic |
+| Planning | Ad-hoc | Required first | Conversational |
+| Tracking | None | Manual | Automatic |
+| Audit trail | None | If maintained | Built-in |
+| Learning curve | None | Steep | Low |
 
 ---
 
@@ -147,4 +193,6 @@ MIT with Commons Clause — Free for personal and non-commercial use. See [LICEN
 
 <p align="center">
   <strong>Stop vibing. Start hiving.</strong> 🐝
+  <br><br>
+  <em>Specs along the way. Not in the way.</em>
 </p>
