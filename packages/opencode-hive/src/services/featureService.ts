@@ -6,7 +6,12 @@ import {
   getFeaturePath,
   getActiveFeaturePath,
   getExecutionPath,
+  getTasksPath,
   getContextPath,
+  getDecisionsPath,
+  getReferencesPath,
+  getArtifactsPath,
+  getProblemPath,
   getRequirementsPath,
 } from "../utils/paths.js";
 import { ensureDir, readFile, writeJson, readJson, fileExists } from "../utils/json.js";
@@ -35,14 +40,12 @@ export class FeatureService {
       throw new Error(`Feature "${name}" already exists`);
     }
 
-    await ensureDir(getExecutionPath(featurePath));
-    await ensureDir(getContextPath(featurePath));
-    await ensureDir(getRequirementsPath(featurePath));
+    await ensureDir(getTasksPath(featurePath));
+    await ensureDir(getDecisionsPath(featurePath));
+    await ensureDir(getReferencesPath(featurePath));
+    await ensureDir(getArtifactsPath(featurePath));
 
-    await fs.writeFile(
-      path.join(getRequirementsPath(featurePath), "ticket.md"),
-      ticket
-    );
+    await fs.writeFile(getProblemPath(featurePath), ticket);
 
     const feature: FeatureStatus = {
       name,
@@ -59,6 +62,17 @@ export class FeatureService {
   async get(name: string): Promise<FeatureStatus | null> {
     const featurePath = getFeaturePath(this.directory, name);
     return readJson<FeatureStatus>(path.join(featurePath, "feature.json"));
+  }
+
+  async needsMigration(name: string): Promise<boolean> {
+    const featurePath = getFeaturePath(this.directory, name);
+    const legacyExecutionPath = getExecutionPath(featurePath);
+    const newTasksPath = getTasksPath(featurePath);
+
+    const hasLegacyExecution = await fileExists(legacyExecutionPath);
+    const hasNewTasks = await fileExists(newTasksPath);
+
+    return hasLegacyExecution && !hasNewTasks;
   }
 
   async list(): Promise<FeatureStatus[]> {
@@ -90,6 +104,22 @@ export class FeatureService {
     return { feature };
   }
 
+  private async getTicketContent(featurePath: string): Promise<string> {
+    const problemPath = getProblemPath(featurePath);
+    const problemContent = await readFile(problemPath);
+    if (problemContent) {
+      return problemContent;
+    }
+
+    const legacyTicketPath = path.join(getRequirementsPath(featurePath), "ticket.md");
+    const legacyContent = await readFile(legacyTicketPath);
+    if (legacyContent) {
+      return legacyContent;
+    }
+
+    return "(no ticket)";
+  }
+
   private async generateCompletionReport(name: string): Promise<string> {
     const featurePath = getFeaturePath(this.directory, name);
     const reportPath = path.join(featurePath, "report.md");
@@ -109,12 +139,7 @@ export class FeatureService {
       decisions = await this.decisionService.list(name);
     }
 
-    let problem = "(no ticket)";
-    try {
-      problem =
-        (await readFile(path.join(featurePath, "requirements", "ticket.md"))) ||
-        "(no ticket)";
-    } catch {}
+    const problem = await this.getTicketContent(featurePath);
 
     const reportLines: string[] = [
       `# Feature: ${name}`,
