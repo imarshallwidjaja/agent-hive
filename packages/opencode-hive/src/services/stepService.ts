@@ -4,6 +4,8 @@ import type { StepStatus, StepWithFolder, BatchInfo, FeatureStatus } from "../ty
 import {
   getFeaturePath,
   getExecutionPath,
+  getTasksPath,
+  getTaskPath,
   getStepPath,
 } from "../utils/paths.js";
 import { ensureDir, readFile, writeJson, readJson, fileExists } from "../utils/json.js";
@@ -22,6 +24,38 @@ export class StepService {
     }
     const featurePath = getFeaturePath(this.directory, featureName);
     return readJson<FeatureStatus>(path.join(featurePath, "feature.json"));
+  }
+
+  private async getStepsBasePath(featureName: string): Promise<string> {
+    const featurePath = getFeaturePath(this.directory, featureName);
+    const tasksPath = getTasksPath(featurePath);
+
+    if (await fileExists(tasksPath)) {
+      return tasksPath;
+    }
+
+    const executionPath = getExecutionPath(featurePath);
+    if (await fileExists(executionPath)) {
+      return executionPath;
+    }
+
+    return tasksPath;
+  }
+
+  private async getStepFullPath(featureName: string, stepFolder: string): Promise<string> {
+    const featurePath = getFeaturePath(this.directory, featureName);
+
+    const taskPath = getTaskPath(featurePath, stepFolder);
+    if (await fileExists(taskPath)) {
+      return taskPath;
+    }
+
+    const stepPath = getStepPath(featurePath, stepFolder);
+    if (await fileExists(stepPath)) {
+      return stepPath;
+    }
+
+    return taskPath;
   }
 
   async create(featureName: string, name: string, order: number, spec: string): Promise<{ folder: string }> {
@@ -44,7 +78,7 @@ export class StepService {
 
     const featurePath = getFeaturePath(this.directory, featureName);
     const stepFolder = `${String(order).padStart(2, "0")}-${name}`;
-    const stepPath = getStepPath(featurePath, stepFolder);
+    const stepPath = getTaskPath(featurePath, stepFolder);
 
     const exists = await fileExists(stepPath);
     if (exists) {
@@ -66,7 +100,7 @@ export class StepService {
   }
 
   async read(featureName: string, stepFolder: string): Promise<StepWithFolder | null> {
-    const stepPath = getStepPath(getFeaturePath(this.directory, featureName), stepFolder);
+    const stepPath = await this.getStepFullPath(featureName, stepFolder);
 
     const status = await readJson<StepStatus>(path.join(stepPath, "status.json"));
     if (!status) {
@@ -82,17 +116,17 @@ export class StepService {
   }
 
   async list(featureName: string): Promise<StepWithFolder[]> {
-    const executionPath = getExecutionPath(getFeaturePath(this.directory, featureName));
+    const basePath = await this.getStepsBasePath(featureName);
     const steps: StepWithFolder[] = [];
 
     try {
-      const entries = await fs.readdir(executionPath, { withFileTypes: true });
+      const entries = await fs.readdir(basePath, { withFileTypes: true });
       for (const entry of entries.filter((e) => e.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
-        const status = await readJson<StepStatus>(path.join(executionPath, entry.name, "status.json"));
+        const status = await readJson<StepStatus>(path.join(basePath, entry.name, "status.json"));
         if (status) {
           let spec: string | undefined;
           try {
-            spec = await fs.readFile(path.join(executionPath, entry.name, "spec.md"), "utf-8");
+            spec = await fs.readFile(path.join(basePath, entry.name, "spec.md"), "utf-8");
           } catch {}
           steps.push({ ...status, folder: entry.name, spec });
         }
@@ -126,7 +160,7 @@ export class StepService {
 
     await assertFeatureMutable(feature, featureName);
 
-    const stepPath = getStepPath(getFeaturePath(this.directory, featureName), stepFolder);
+    const stepPath = await this.getStepFullPath(featureName, stepFolder);
     const statusPath = path.join(stepPath, "status.json");
 
     const status = await readJson<StepStatus>(statusPath);
@@ -179,7 +213,8 @@ export class StepService {
       newFolder = `${newOrderStr}-${stepName}`;
 
       if (newFolder !== stepFolder) {
-        const newPath = getStepPath(getFeaturePath(this.directory, featureName), newFolder);
+        const basePath = await this.getStepsBasePath(featureName);
+        const newPath = path.join(basePath, newFolder);
         await fs.rename(stepPath, newPath);
         return { updated: true, newFolder };
       }
@@ -201,7 +236,7 @@ export class StepService {
 
     await assertFeatureMutable(feature, featureName);
 
-    const stepPath = getStepPath(getFeaturePath(this.directory, featureName), stepFolder);
+    const stepPath = await this.getStepFullPath(featureName, stepFolder);
 
     const exists = await fileExists(stepPath);
     if (!exists) {
