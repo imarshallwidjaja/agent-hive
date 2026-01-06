@@ -15,19 +15,21 @@ export function createPlanReadTool(
     async execute({ featureName, includeComments }) {
       const name = featureName || await featureService.assertActive();
 
-      const plan = await planService.getPlan(name);
-      if (!plan) {
+      const planJson = await planService.getPlanJson(name);
+      if (!planJson) {
         return JSON.stringify({
           error: "no-plan",
           message: `No plan exists for feature "${name}". Use hive_plan_generate first.`,
         });
       }
 
+      const markdown = planService.planJsonToMarkdown(planJson);
+
       const result: Record<string, unknown> = {
-        plan: plan.content,
-        version: plan.version,
-        status: plan.status,
-        lastUpdatedAt: plan.lastUpdatedAt,
+        plan: markdown,
+        version: planJson.version,
+        status: planJson.status,
+        lastUpdatedAt: planJson.updatedAt,
       };
 
       if (includeComments) {
