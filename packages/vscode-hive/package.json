@@ -2,7 +2,7 @@
   "name": "vscode-hive",
   "displayName": "Agent Hive",
   "description": "From Vibe Coding to Hive Coding - Review and approve AI-generated plans",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "publisher": "tctinh",
   "license": "MIT WITH Commons-Clause",
   "icon": "icon.png",
@@ -123,6 +123,26 @@
       {
         "command": "hive.comment.delete",
         "title": "Delete Comment"
+      },
+      {
+        "command": "hive.approvePlan",
+        "title": "Approve Plan",
+        "icon": "$(check)"
+      },
+      {
+        "command": "hive.syncTasks",
+        "title": "Generate Tasks",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "hive.startTask",
+        "title": "Start Task",
+        "icon": "$(play)"
+      },
+      {
+        "command": "hive.openSession",
+        "title": "Open Session",
+        "icon": "$(link-external)"
       }
     ],
     "menus": {
@@ -175,6 +195,26 @@
         {
           "command": "hive.executeBatch",
           "when": "viewItem == batchPending",
+          "group": "inline"
+        },
+        {
+          "command": "hive.approvePlan",
+          "when": "viewItem == plan-draft",
+          "group": "inline"
+        },
+        {
+          "command": "hive.syncTasks",
+          "when": "viewItem =~ /^feature-(approved|executing)$/",
+          "group": "inline"
+        },
+        {
+          "command": "hive.startTask",
+          "when": "viewItem == task-pending",
+          "group": "inline"
+        },
+        {
+          "command": "hive.openSession",
+          "when": "viewItem == session",
           "group": "inline"
         }
       ],

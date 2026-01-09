@@ -1,6 +1,6 @@
 {
   "name": "opencode-hive",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "type": "module",
   "description": "OpenCode plugin for Agent Hive - from vibe coding to hive coding",
   "license": "MIT WITH Commons-Clause",

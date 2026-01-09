@@ -130,7 +130,7 @@ export class WorktreeService {
     if (!base) {
       try {
         const status = JSON.parse(await fs.readFile(statusPath, "utf-8"));
-        base = status.execution?.baseCommit;
+        base = status.baseCommit;  // Read baseCommit directly from task status
       } catch {}
     }
     
@@ -192,11 +192,16 @@ export class WorktreeService {
       return { success: true, filesAffected: [] };
     }
 
+    const patchPath = path.join(this.config.hiveDir, ".worktrees", feature, `${step}.patch`);
+    
     try {
+      await fs.writeFile(patchPath, diffContent);
       const git = this.getGit();
-      await git.applyPatch(diffContent);
+      await git.applyPatch(patchPath);
+      await fs.unlink(patchPath).catch(() => {});
       return { success: true, filesAffected: filesChanged };
     } catch (error: unknown) {
+      await fs.unlink(patchPath).catch(() => {});
       const err = error as { message?: string };
       return {
         success: false,
@@ -213,11 +218,16 @@ export class WorktreeService {
       return { success: true, filesAffected: [] };
     }
 
+    const patchPath = path.join(this.config.hiveDir, ".worktrees", feature, `${step}.patch`);
+
     try {
+      await fs.writeFile(patchPath, diffContent);
       const git = this.getGit();
-      await git.applyPatch(diffContent, ["-R"]);
+      await git.applyPatch(patchPath, ["-R"]);
+      await fs.unlink(patchPath).catch(() => {});
       return { success: true, filesAffected: filesChanged };
     } catch (error: unknown) {
+      await fs.unlink(patchPath).catch(() => {});
       const err = error as { message?: string };
       return {
         success: false,
@@ -324,16 +334,30 @@ export class WorktreeService {
       /* intentional */
     }
 
-    const worktrees = await this.list(feature);
+    const worktreesDir = this.getWorktreesDir();
+    const features = feature ? [feature] : await fs.readdir(worktreesDir).catch(() => []);
 
-    for (const wt of worktrees) {
-      try {
-        await fs.access(wt.path);
-        const worktreeGit = this.getGit(wt.path);
-        await worktreeGit.revparse(["HEAD"]);
-      } catch {
-        await this.remove(wt.feature, wt.step, false);
-        removed.push(wt.path);
+    for (const feat of features) {
+      const featurePath = path.join(worktreesDir, feat);
+      const stat = await fs.stat(featurePath).catch(() => null);
+
+      if (!stat?.isDirectory()) continue;
+
+      const steps = await fs.readdir(featurePath).catch(() => []);
+
+      for (const step of steps) {
+        const worktreePath = path.join(featurePath, step);
+        const stepStat = await fs.stat(worktreePath).catch(() => null);
+
+        if (!stepStat?.isDirectory()) continue;
+
+        try {
+          const worktreeGit = this.getGit(worktreePath);
+          await worktreeGit.revparse(["HEAD"]);
+        } catch {
+          await this.remove(feat, step, false);
+          removed.push(worktreePath);
+        }
       }
     }
 
@@ -347,11 +371,16 @@ export class WorktreeService {
       return [];
     }
 
+    const patchPath = path.join(this.config.hiveDir, ".worktrees", feature, `${step}-check.patch`);
+
     try {
+      await fs.writeFile(patchPath, diffContent);
       const git = this.getGit();
-      await git.applyPatch(diffContent, ["--check"]);
+      await git.applyPatch(patchPath, ["--check"]);
+      await fs.unlink(patchPath).catch(() => {});
       return [];
     } catch (error: unknown) {
+      await fs.unlink(patchPath).catch(() => {});
       const err = error as { message?: string };
       const stderr = err.message || "";
 
@@ -369,15 +398,16 @@ export class WorktreeService {
   }
 
   async checkConflictsFromSavedDiff(diffPath: string, reverse = false): Promise<string[]> {
-    const diffContent = await fs.readFile(diffPath, "utf-8");
-    if (!diffContent.trim()) {
+    try {
+      await fs.access(diffPath);
+    } catch {
       return [];
     }
 
     try {
       const git = this.getGit();
       const options = reverse ? ["--check", "-R"] : ["--check"];
-      await git.applyPatch(diffContent, options);
+      await git.applyPatch(diffPath, options);
       return [];
     } catch (error: unknown) {
       const err = error as { message?: string };

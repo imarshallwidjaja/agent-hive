@@ -4,6 +4,7 @@ import {
   getTaskPath,
   getTaskStatusPath,
   getTaskReportPath,
+  getTaskSpecPath,
   getPlanPath,
   ensureDir,
   readJson,
@@ -13,6 +14,13 @@ import {
   fileExists,
 } from '../utils/paths.js';
 import { TaskStatus, TaskStatusType, TaskOrigin, TasksSyncResult, TaskInfo } from '../types.js';
+
+interface ParsedTask {
+  folder: string;
+  order: number;
+  name: string;
+  description: string;
+}
 
 export class TaskService {
   constructor(private projectRoot: string) {}
@@ -65,7 +73,7 @@ export class TaskService {
 
     for (const planTask of planTasks) {
       if (!existingByName.has(planTask.folder)) {
-        this.createFromPlan(featureName, planTask.folder, planTask.order);
+        this.createFromPlan(featureName, planTask, planTasks);
         result.created.push(planTask.folder);
       }
     }
@@ -92,18 +100,64 @@ export class TaskService {
     return folder;
   }
 
-  private createFromPlan(featureName: string, folder: string, order: number): void {
-    const taskPath = getTaskPath(this.projectRoot, featureName, folder);
+  private createFromPlan(featureName: string, task: ParsedTask, allTasks: ParsedTask[]): void {
+    const taskPath = getTaskPath(this.projectRoot, featureName, task.folder);
     ensureDir(taskPath);
 
     const status: TaskStatus = {
       status: 'pending',
       origin: 'plan',
     };
-    writeJson(getTaskStatusPath(this.projectRoot, featureName, folder), status);
+    writeJson(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
+
+    // Write enhanced spec.md with full context
+    const specLines: string[] = [
+      `# Task ${task.order}: ${task.name}`,
+      '',
+      `**Feature:** ${featureName}`,
+      `**Folder:** ${task.folder}`,
+      `**Status:** pending`,
+      '',
+      '---',
+      '',
+      '## Description',
+      '',
+      task.description || '_No description provided in plan_',
+      '',
+    ];
+
+    // Add prior tasks section if not first task
+    if (task.order > 1) {
+      const priorTasks = allTasks.filter(t => t.order < task.order);
+      if (priorTasks.length > 0) {
+        specLines.push('---', '', '## Prior Tasks', '');
+        for (const prior of priorTasks) {
+          specLines.push(`- **${prior.order}. ${prior.name}** (${prior.folder})`);
+        }
+        specLines.push('');
+      }
+    }
+
+    // Add next tasks section if not last task
+    const nextTasks = allTasks.filter(t => t.order > task.order);
+    if (nextTasks.length > 0) {
+      specLines.push('---', '', '## Upcoming Tasks', '');
+      for (const next of nextTasks) {
+        specLines.push(`- **${next.order}. ${next.name}** (${next.folder})`);
+      }
+      specLines.push('');
+    }
+
+    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), specLines.join('\n'));
   }
 
-  update(featureName: string, taskFolder: string, updates: Partial<Pick<TaskStatus, 'status' | 'summary'>>): TaskStatus {
+  writeSpec(featureName: string, taskFolder: string, content: string): string {
+    const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
+    writeText(specPath, content);
+    return specPath;
+  }
+
+  update(featureName: string, taskFolder: string, updates: Partial<Pick<TaskStatus, 'status' | 'summary' | 'baseCommit'>>): TaskStatus {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
     const current = readJson<TaskStatus>(statusPath);
     
@@ -182,16 +236,53 @@ export class TaskService {
     return Math.max(...orders, 0) + 1;
   }
 
-  private parseTasksFromPlan(content: string): Array<{ folder: string; order: number }> {
-    const tasks: Array<{ folder: string; order: number }> = [];
-    const taskPattern = /^###\s+(\d+)\.\s+(.+)$/gm;
+  private parseTasksFromPlan(content: string): ParsedTask[] {
+    const tasks: ParsedTask[] = [];
+    const lines = content.split('\n');
     
-    let match;
-    while ((match = taskPattern.exec(content)) !== null) {
-      const order = parseInt(match[1], 10);
-      const name = match[2].trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-      const folder = `${String(order).padStart(2, '0')}-${name}`;
-      tasks.push({ folder, order });
+    let currentTask: ParsedTask | null = null;
+    let descriptionLines: string[] = [];
+    
+    for (const line of lines) {
+      // Check for task header: ### N. Task Name
+      const taskMatch = line.match(/^###\s+(\d+)\.\s+(.+)$/);
+      
+      if (taskMatch) {
+        // Save previous task if exists
+        if (currentTask) {
+          currentTask.description = descriptionLines.join('\n').trim();
+          tasks.push(currentTask);
+        }
+        
+        const order = parseInt(taskMatch[1], 10);
+        const rawName = taskMatch[2].trim();
+        const folderName = rawName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        const folder = `${String(order).padStart(2, '0')}-${folderName}`;
+        
+        currentTask = {
+          folder,
+          order,
+          name: rawName,
+          description: '',
+        };
+        descriptionLines = [];
+      } else if (currentTask) {
+        // Check for end of task section (next ## header or ### without number)
+        if (line.match(/^##\s+/) || line.match(/^###\s+[^0-9]/)) {
+          currentTask.description = descriptionLines.join('\n').trim();
+          tasks.push(currentTask);
+          currentTask = null;
+          descriptionLines = [];
+        } else {
+          descriptionLines.push(line);
+        }
+      }
+    }
+    
+    // Don't forget the last task
+    if (currentTask) {
+      currentTask.description = descriptionLines.join('\n').trim();
+      tasks.push(currentTask);
     }
 
     return tasks;

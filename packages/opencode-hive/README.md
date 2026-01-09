@@ -36,9 +36,7 @@ npm install opencode-hive
 |------|-------------|
 | `hive_feature_create` | Create a new feature |
 | `hive_feature_list` | List all features |
-| `hive_feature_switch` | Switch to a feature |
 | `hive_feature_complete` | Mark feature as complete |
-| `hive_status` | Get feature overview |
 
 ### Planning
 | Tool | Description |

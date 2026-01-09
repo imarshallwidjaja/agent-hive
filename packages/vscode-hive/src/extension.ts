@@ -79,6 +79,22 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
+    vscode.commands.registerCommand('hive.startTask', async (item: { featureName?: string; folder?: string }) => {
+      if (item?.featureName && item?.folder) {
+        const terminal = vscode.window.createTerminal('OpenCode - Hive')
+        terminal.sendText(`opencode --command "hive_exec_start task=${item.folder}"`)
+        terminal.show()
+      }
+    }),
+
+    vscode.commands.registerCommand('hive.openSession', async (item: { session?: { sessionId: string } }) => {
+      if (item?.session?.sessionId) {
+        const terminal = vscode.window.createTerminal('OpenCode - Hive')
+        terminal.sendText(`opencode --session "${item.session.sessionId}"`)
+        terminal.show()
+      }
+    }),
+
     vscode.commands.registerCommand('hive.plan.doneReview', async () => {
       const editor = vscode.window.activeTextEditor
       if (!editor) return

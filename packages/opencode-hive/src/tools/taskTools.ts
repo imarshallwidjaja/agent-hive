@@ -1,17 +1,23 @@
 import { z } from 'zod';
 import { TaskService } from '../services/taskService.js';
 import { FeatureService } from '../services/featureService.js';
+import { detectContext } from '../utils/detection.js';
 
 export function createTaskTools(projectRoot: string) {
   const taskService = new TaskService(projectRoot);
   const featureService = new FeatureService(projectRoot);
+  
+  const getActiveFeature = (): string | null => {
+    const ctx = detectContext(projectRoot);
+    return ctx?.feature || null;
+  };
 
   return {
     hive_tasks_sync: {
       description: 'Generate tasks from approved plan',
       parameters: z.object({}),
       execute: async () => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }
@@ -45,7 +51,7 @@ export function createTaskTools(projectRoot: string) {
         order: z.number().optional().describe('Task order number (defaults to next available)'),
       }),
       execute: async ({ name, order }: { name: string; order?: number }) => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }
@@ -67,7 +73,7 @@ export function createTaskTools(projectRoot: string) {
         summary: z.string().optional().describe('Summary of work done'),
       }),
       execute: async ({ task, status, summary }: { task: string; status?: 'pending' | 'in_progress' | 'done' | 'cancelled'; summary?: string }) => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }
@@ -81,7 +87,7 @@ export function createTaskTools(projectRoot: string) {
       description: 'List all tasks for the active feature.',
       parameters: z.object({}),
       execute: async () => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }

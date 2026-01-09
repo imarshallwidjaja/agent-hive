@@ -15,7 +15,19 @@ interface TaskStatus {
   summary?: string
 }
 
-type SidebarItem = FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem
+interface SessionInfo {
+  sessionId: string
+  taskFolder?: string
+  startedAt: string
+  lastActiveAt: string
+}
+
+interface SessionsJson {
+  master?: string
+  sessions: SessionInfo[]
+}
+
+type SidebarItem = StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem | TaskFileItem | SessionsGroupItem | SessionItem
 
 const STATUS_ICONS: Record<string, string> = {
   pending: 'circle-outline',
@@ -26,6 +38,28 @@ const STATUS_ICONS: Record<string, string> = {
   approved: 'check',
   executing: 'run-all',
   completed: 'pass-filled',
+}
+
+// Status group for organizing features
+class StatusGroupItem extends vscode.TreeItem {
+  constructor(
+    public readonly groupName: string,
+    public readonly groupStatus: 'in_progress' | 'pending' | 'completed',
+    public readonly features: FeatureItem[],
+    collapsed: boolean = false
+  ) {
+    super(groupName, collapsed ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded)
+    
+    this.description = `${features.length}`
+    this.contextValue = `status-group-${groupStatus}`
+    
+    const icons: Record<string, string> = {
+      in_progress: 'sync~spin',
+      pending: 'circle-outline',
+      completed: 'pass-filled',
+    }
+    this.iconPath = new vscode.ThemeIcon(icons[groupStatus] || 'folder')
+  }
 }
 
 class FeatureItem extends vscode.TreeItem {
@@ -40,7 +74,7 @@ class FeatureItem extends vscode.TreeItem {
     const statusLabel = feature.status.charAt(0).toUpperCase() + feature.status.slice(1)
     this.description = isActive 
       ? `${statusLabel} · ${taskStats.done}/${taskStats.total}` 
-      : statusLabel
+      : `${taskStats.done}/${taskStats.total}`
     
     this.contextValue = `feature-${feature.status}`
     this.iconPath = new vscode.ThemeIcon(STATUS_ICONS[feature.status] || 'package')
@@ -121,10 +155,12 @@ class TaskItem extends vscode.TreeItem {
     public readonly featureName: string,
     public readonly folder: string,
     public readonly status: TaskStatus,
+    public readonly specPath: string | null,
     public readonly reportPath: string | null
   ) {
     const name = folder.replace(/^\d+-/, '')
-    super(name, vscode.TreeItemCollapsibleState.None)
+    const hasFiles = specPath !== null || reportPath !== null
+    super(name, hasFiles ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
     
     this.description = status.summary || ''
     this.contextValue = `task-${status.status}${status.origin === 'manual' ? '-manual' : ''}`
@@ -139,14 +175,61 @@ class TaskItem extends vscode.TreeItem {
     if (status.summary) {
       this.tooltip.appendMarkdown(`Summary: ${status.summary}`)
     }
+  }
+}
 
-    if (reportPath) {
-      this.command = {
-        command: 'vscode.open',
-        title: 'View Report',
-        arguments: [vscode.Uri.file(reportPath)]
-      }
+class TaskFileItem extends vscode.TreeItem {
+  constructor(
+    public readonly filename: string,
+    public readonly filePath: string
+  ) {
+    super(filename, vscode.TreeItemCollapsibleState.None)
+    
+    this.contextValue = 'task-file'
+    this.iconPath = new vscode.ThemeIcon('markdown')
+    this.command = {
+      command: 'vscode.open',
+      title: 'Open File',
+      arguments: [vscode.Uri.file(filePath)]
     }
+  }
+}
+
+class SessionsGroupItem extends vscode.TreeItem {
+  constructor(
+    public readonly featureName: string,
+    public readonly sessions: SessionInfo[],
+    public readonly master?: string
+  ) {
+    super('Sessions', sessions.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
+    
+    this.description = sessions.length > 0 ? `${sessions.length} active` : ''
+    this.contextValue = 'sessions-group'
+    this.iconPath = new vscode.ThemeIcon('broadcast')
+  }
+}
+
+class SessionItem extends vscode.TreeItem {
+  constructor(
+    public readonly featureName: string,
+    public readonly session: SessionInfo,
+    public readonly isMaster: boolean
+  ) {
+    const label = session.taskFolder || (isMaster ? 'Master' : `Session ${session.sessionId.slice(4, 12)}`)
+    super(label, vscode.TreeItemCollapsibleState.None)
+    
+    const shortId = session.sessionId.slice(0, 8)
+    this.description = isMaster ? `★ ${shortId}` : shortId
+    this.contextValue = 'session'
+    this.iconPath = new vscode.ThemeIcon(isMaster ? 'star-full' : 'terminal')
+    
+    this.tooltip = new vscode.MarkdownString()
+    this.tooltip.appendMarkdown(`**Session**: ${session.sessionId}\n\n`)
+    if (session.taskFolder) {
+      this.tooltip.appendMarkdown(`**Task**: ${session.taskFolder}\n\n`)
+    }
+    this.tooltip.appendMarkdown(`**Started**: ${session.startedAt}\n\n`)
+    this.tooltip.appendMarkdown(`**Last Active**: ${session.lastActiveAt}`)
   }
 }
 
@@ -166,7 +249,11 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
   async getChildren(element?: SidebarItem): Promise<SidebarItem[]> {
     if (!element) {
-      return this.getFeatures()
+      return this.getStatusGroups()
+    }
+
+    if (element instanceof StatusGroupItem) {
+      return element.features
     }
 
     if (element instanceof FeatureItem) {
@@ -181,10 +268,51 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       return this.getTasks(element.featureName, element.tasks)
     }
 
+    if (element instanceof TaskItem) {
+      return this.getTaskFiles(element)
+    }
+
+    if (element instanceof SessionsGroupItem) {
+      return this.getSessions(element.featureName, element.sessions, element.master)
+    }
+
     return []
   }
 
-  private getFeatures(): FeatureItem[] {
+  private getStatusGroups(): StatusGroupItem[] {
+    const features = this.getAllFeatures()
+    
+    // Group features by status category
+    const inProgress: FeatureItem[] = []
+    const pending: FeatureItem[] = []
+    const completed: FeatureItem[] = []
+    
+    for (const feature of features) {
+      if (feature.feature.status === 'executing') {
+        inProgress.push(feature)
+      } else if (feature.feature.status === 'planning' || feature.feature.status === 'approved') {
+        pending.push(feature)
+      } else if (feature.feature.status === 'completed') {
+        completed.push(feature)
+      }
+    }
+    
+    const groups: StatusGroupItem[] = []
+    
+    if (inProgress.length > 0) {
+      groups.push(new StatusGroupItem('In Progress', 'in_progress', inProgress, false))
+    }
+    if (pending.length > 0) {
+      groups.push(new StatusGroupItem('Pending', 'pending', pending, false))
+    }
+    if (completed.length > 0) {
+      groups.push(new StatusGroupItem('Completed', 'completed', completed, true))
+    }
+    
+    return groups
+  }
+
+  private getAllFeatures(): FeatureItem[] {
     const featuresPath = path.join(this.workspaceRoot, '.hive', 'features')
     if (!fs.existsSync(featuresPath)) return []
 
@@ -206,11 +334,11 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       features.push(new FeatureItem(name, feature, taskStats, isActive))
     }
 
+    // Sort by active first, then by creation date
     features.sort((a, b) => {
       if (a.isActive) return -1
       if (b.isActive) return 1
-      const statusOrder = { executing: 0, approved: 1, planning: 2, completed: 3 }
-      return (statusOrder[a.feature.status] || 99) - (statusOrder[b.feature.status] || 99)
+      return 0
     })
 
     return features
@@ -238,6 +366,9 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     const tasks = this.getTaskList(featureName)
     items.push(new TasksGroupItem(featureName, tasks))
 
+    const sessionsData = this.getSessionsData(featureName)
+    items.push(new SessionsGroupItem(featureName, sessionsData.sessions, sessionsData.master))
+
     return items
   }
 
@@ -253,10 +384,24 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     const featurePath = path.join(this.workspaceRoot, '.hive', 'features', featureName)
     
     return tasks.map(t => {
-      const reportPath = path.join(featurePath, 'tasks', t.folder, 'report.md')
+      const taskDir = path.join(featurePath, 'tasks', t.folder)
+      const specPath = path.join(taskDir, 'spec.md')
+      const reportPath = path.join(taskDir, 'report.md')
+      const hasSpec = fs.existsSync(specPath)
       const hasReport = fs.existsSync(reportPath)
-      return new TaskItem(featureName, t.folder, t.status, hasReport ? reportPath : null)
+      return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null)
     })
+  }
+
+  private getTaskFiles(taskItem: TaskItem): TaskFileItem[] {
+    const files: TaskFileItem[] = []
+    if (taskItem.specPath) {
+      files.push(new TaskFileItem('spec.md', taskItem.specPath))
+    }
+    if (taskItem.reportPath) {
+      files.push(new TaskFileItem('report.md', taskItem.reportPath))
+    }
+    return files
   }
 
   private getTaskList(featureName: string): Array<{ folder: string; status: TaskStatus }> {
@@ -301,5 +446,20 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     } catch {
       return 0
     }
+  }
+
+  private getSessionsData(featureName: string): SessionsJson {
+    const sessionsPath = path.join(this.workspaceRoot, '.hive', 'features', featureName, 'sessions.json')
+    if (!fs.existsSync(sessionsPath)) return { sessions: [] }
+    
+    try {
+      return JSON.parse(fs.readFileSync(sessionsPath, 'utf-8'))
+    } catch {
+      return { sessions: [] }
+    }
+  }
+
+  private getSessions(featureName: string, sessions: SessionInfo[], master?: string): SessionItem[] {
+    return sessions.map(s => new SessionItem(featureName, s, s.sessionId === master))
   }
 }

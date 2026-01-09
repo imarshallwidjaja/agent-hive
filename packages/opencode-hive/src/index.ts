@@ -4,20 +4,25 @@ import { WorktreeService } from "./services/worktreeService.js";
 import { FeatureService } from "./services/featureService.js";
 import { PlanService } from "./services/planService.js";
 import { TaskService } from "./services/taskService.js";
+import { ContextService } from "./services/contextService.js";
+import { SessionService } from "./services/sessionService.js";
+import { detectContext, listFeatures } from "./utils/detection.js";
 
 const HIVE_SYSTEM_PROMPT = `
 ## Hive - Feature Development System
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Tools (13 total)
+### Tools (16 total)
 
 | Domain | Tools |
 |--------|-------|
-| Feature | hive_feature_create, hive_feature_list, hive_feature_switch, hive_feature_complete |
+| Feature | hive_feature_create, hive_feature_list, hive_feature_complete |
 | Plan | hive_plan_write, hive_plan_read, hive_plan_approve |
 | Task | hive_tasks_sync, hive_task_create, hive_task_update |
 | Exec | hive_exec_start, hive_exec_complete, hive_exec_abort |
+| Context | hive_context_write, hive_context_read, hive_context_list |
+| Session | hive_session_open, hive_session_list |
 
 ### Workflow
 
@@ -45,6 +50,19 @@ Description of what to do.
 Description.
 \`\`\`
 
+### Planning Phase - Context Management REQUIRED
+
+As you research and plan, CONTINUOUSLY save findings using \`hive_context_write\`:
+- Research findings (API patterns, library docs, codebase structure)
+- User preferences ("we use Zustand, not Redux")
+- Rejected alternatives ("tried X, too complex")
+- Architecture decisions ("auth lives in /lib/auth")
+
+**Update existing context files** when new info emerges - dont create duplicates.
+Workers depend on context for background. Without it, they work blind.
+
+Save context BEFORE writing the plan, and UPDATE it as planning iterates.
+
 \`hive_tasks_sync\` parses \`### N. Task Name\` headers.
 `;
 
@@ -61,20 +79,31 @@ const plugin: Plugin = async (ctx) => {
   const featureService = new FeatureService(directory);
   const planService = new PlanService(directory);
   const taskService = new TaskService(directory);
+  const contextService = new ContextService(directory);
+  const sessionService = new SessionService(directory);
   const worktreeService = new WorktreeService({
     baseDir: directory,
     hiveDir: path.join(directory, '.hive'),
   });
 
-  const captureSession = (toolContext: unknown) => {
-    const activeFeature = featureService.getActive();
-    if (!activeFeature) return;
+  const resolveFeature = (explicit?: string): string | null => {
+    if (explicit) return explicit;
     
+    const context = detectContext(directory);
+    if (context.feature) return context.feature;
+    
+    const features = listFeatures(directory);
+    if (features.length === 1) return features[0];
+    
+    return null;
+  };
+
+  const captureSession = (feature: string, toolContext: unknown) => {
     const ctx = toolContext as ToolContext;
     if (ctx?.sessionID) {
-      const currentSession = featureService.getSession(activeFeature);
+      const currentSession = featureService.getSession(feature);
       if (currentSession !== ctx.sessionID) {
-        featureService.setSession(activeFeature, ctx.sessionID);
+        featureService.setSession(feature, ctx.sessionID);
       }
     }
   };
@@ -83,7 +112,7 @@ const plugin: Plugin = async (ctx) => {
     "experimental.chat.system.transform": async (_input: unknown, output: { system: string[] }) => {
       output.system.push(HIVE_SYSTEM_PROMPT);
 
-      const activeFeature = featureService.getActive();
+      const activeFeature = resolveFeature();
       if (activeFeature) {
         const info = featureService.getInfo(activeFeature);
         if (info) {
@@ -118,7 +147,7 @@ const plugin: Plugin = async (ctx) => {
         args: {},
         async execute() {
           const features = featureService.list();
-          const active = featureService.getActive();
+          const active = resolveFeature();
           if (features.length === 0) return "No features found.";
           const list = features.map(f => {
             const info = featureService.getInfo(f);
@@ -128,21 +157,12 @@ const plugin: Plugin = async (ctx) => {
         },
       }),
 
-      hive_feature_switch: tool({
-        description: 'Switch to a different feature',
-        args: { name: tool.schema.string().describe('Feature name') },
-        async execute({ name }) {
-          featureService.setActive(name);
-          return `Switched to feature "${name}"`;
-        },
-      }),
-
       hive_feature_complete: tool({
         description: 'Mark feature as completed (irreversible)',
         args: { name: tool.schema.string().optional().describe('Feature name (defaults to active)') },
         async execute({ name }) {
-          const feature = name || featureService.getActive();
-          if (!feature) return "Error: No active feature";
+          const feature = resolveFeature(name);
+          if (!feature) return "Error: No feature specified. Create a feature or provide name.";
           featureService.complete(feature);
           return `Feature "${feature}" marked as completed`;
         },
@@ -150,11 +170,14 @@ const plugin: Plugin = async (ctx) => {
 
       hive_plan_write: tool({
         description: 'Write plan.md (clears existing comments)',
-        args: { content: tool.schema.string().describe('Plan markdown content') },
-        async execute({ content }, toolContext) {
-          captureSession(toolContext);
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        args: { 
+          content: tool.schema.string().describe('Plan markdown content'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+        },
+        async execute({ content, feature: explicitFeature }, toolContext) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+          captureSession(feature, toolContext);
           const planPath = planService.write(feature, content);
           return `Plan written to ${planPath}. Comments cleared for fresh review.`;
         },
@@ -162,11 +185,13 @@ const plugin: Plugin = async (ctx) => {
 
       hive_plan_read: tool({
         description: 'Read plan.md and user comments',
-        args: {},
-        async execute(_args, toolContext) {
-          captureSession(toolContext);
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        args: { 
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+        },
+        async execute({ feature: explicitFeature }, toolContext) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+          captureSession(feature, toolContext);
           const result = planService.read(feature);
           if (!result) return "Error: No plan.md found";
           return JSON.stringify(result, null, 2);
@@ -175,11 +200,13 @@ const plugin: Plugin = async (ctx) => {
 
       hive_plan_approve: tool({
         description: 'Approve plan for execution',
-        args: {},
-        async execute(_args, toolContext) {
-          captureSession(toolContext);
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        args: { 
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+        },
+        async execute({ feature: explicitFeature }, toolContext) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+          captureSession(feature, toolContext);
           const comments = planService.getComments(feature);
           if (comments.length > 0) {
             return `Error: Cannot approve - ${comments.length} unresolved comment(s). Address them first.`;
@@ -191,10 +218,12 @@ const plugin: Plugin = async (ctx) => {
 
       hive_tasks_sync: tool({
         description: 'Generate tasks from approved plan',
-        args: {},
-        async execute() {
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        args: { 
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+        },
+        async execute({ feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
           const featureData = featureService.get(feature);
           if (!featureData || featureData.status === 'planning') {
             return "Error: Plan must be approved first";
@@ -212,10 +241,11 @@ const plugin: Plugin = async (ctx) => {
         args: {
           name: tool.schema.string().describe('Task name'),
           order: tool.schema.number().optional().describe('Task order'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
         },
-        async execute({ name, order }) {
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        async execute({ name, order, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
           const folder = taskService.create(feature, name, order);
           return `Manual task created: ${folder}`;
         },
@@ -227,10 +257,11 @@ const plugin: Plugin = async (ctx) => {
           task: tool.schema.string().describe('Task folder name'),
           status: tool.schema.string().optional().describe('New status: pending, in_progress, done, cancelled'),
           summary: tool.schema.string().optional().describe('Summary of work'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
         },
-        async execute({ task, status, summary }) {
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        async execute({ task, status, summary, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
           const updated = taskService.update(feature, task, {
             status: status as any,
             summary,
@@ -241,19 +272,53 @@ const plugin: Plugin = async (ctx) => {
 
       hive_exec_start: tool({
         description: 'Create worktree and begin work on task',
-        args: { task: tool.schema.string().describe('Task folder name') },
-        async execute({ task }) {
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        args: { 
+          task: tool.schema.string().describe('Task folder name'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+        },
+        async execute({ task, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
           const taskInfo = taskService.get(feature, task);
           if (!taskInfo) return `Error: Task "${task}" not found`;
           if (taskInfo.status === 'done') return "Error: Task already completed";
 
           const worktree = await worktreeService.create(feature, task);
-          taskService.update(feature, task, { status: 'in_progress' });
+          taskService.update(feature, task, { 
+            status: 'in_progress',
+            baseCommit: worktree.commit,
+          });
 
-          return `Worktree created at ${worktree.path}\nBranch: ${worktree.branch}`;
+          // Generate spec.md with context for task
+          const planResult = planService.read(feature);
+          const contextCompiled = contextService.compile(feature);
+          const allTasks = taskService.list(feature);
+          const priorTasks = allTasks
+            .filter(t => t.status === 'done')
+            .map(t => `- ${t.folder}: ${t.summary || 'No summary'}`);
+
+          let specContent = `# Task: ${task}\n\n`;
+          specContent += `## Feature: ${feature}\n\n`;
+          
+          if (planResult) {
+            const taskMatch = planResult.content.match(new RegExp(`###\\s*\\d+\\.\\s*${taskInfo.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?(?=###|$)`, 'i'));
+            if (taskMatch) {
+              specContent += `## Plan Section\n\n${taskMatch[0].trim()}\n\n`;
+            }
+          }
+
+          if (contextCompiled) {
+            specContent += `## Context\n\n${contextCompiled}\n\n`;
+          }
+
+          if (priorTasks.length > 0) {
+            specContent += `## Completed Tasks\n\n${priorTasks.join('\n')}\n\n`;
+          }
+
+          taskService.writeSpec(feature, task, specContent);
+
+          return `Worktree created at ${worktree.path}\nBranch: ${worktree.branch}\nBase commit: ${worktree.commit}\nSpec: ${task}/spec.md generated`;
         },
       }),
 
@@ -262,41 +327,217 @@ const plugin: Plugin = async (ctx) => {
         args: {
           task: tool.schema.string().describe('Task folder name'),
           summary: tool.schema.string().describe('Summary of what was done'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
         },
-        async execute({ task, summary }) {
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        async execute({ task, summary, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
           const taskInfo = taskService.get(feature, task);
           if (!taskInfo) return `Error: Task "${task}" not found`;
           if (taskInfo.status !== 'in_progress') return "Error: Task not in progress";
 
           const diff = await worktreeService.getDiff(feature, task);
+          let changesApplied = false;
+          let applyError = "";
+          
           if (diff?.hasDiff) {
-            await worktreeService.applyDiff(feature, task);
+            const result = await worktreeService.applyDiff(feature, task);
+            changesApplied = result.success;
+            if (!result.success) {
+              applyError = result.error || "Unknown apply error";
+            }
           }
 
-          const report = `# ${task}\n\n## Summary\n\n${summary}\n`;
-          taskService.writeReport(feature, task, report);
+          const reportLines: string[] = [
+            `# Task Report: ${task}`,
+            '',
+            `**Feature:** ${feature}`,
+            `**Completed:** ${new Date().toISOString()}`,
+            `**Status:** ${applyError ? 'completed with errors' : 'success'}`,
+            '',
+            '---',
+            '',
+            '## Summary',
+            '',
+            summary,
+            '',
+          ];
+
+          if (diff?.hasDiff) {
+            reportLines.push(
+              '---',
+              '',
+              '## Changes',
+              '',
+              `- **Files changed:** ${diff.filesChanged.length}`,
+              `- **Insertions:** +${diff.insertions}`,
+              `- **Deletions:** -${diff.deletions}`,
+              '',
+            );
+            
+            if (diff.filesChanged.length > 0) {
+              reportLines.push('### Files Modified', '');
+              for (const file of diff.filesChanged) {
+                reportLines.push(`- \`${file}\``);
+              }
+              reportLines.push('');
+            }
+          } else {
+            reportLines.push('---', '', '## Changes', '', '_No file changes detected_', '');
+          }
+
+          taskService.writeReport(feature, task, reportLines.join('\n'));
           taskService.update(feature, task, { status: 'done', summary });
 
           await worktreeService.remove(feature, task);
 
-          return `Task "${task}" completed. Changes applied.`;
+          if (applyError) {
+            return `Task "${task}" completed but changes failed to apply: ${applyError}`;
+          }
+          return `Task "${task}" completed.${changesApplied ? " Changes applied." : ""}`;
         },
       }),
 
       hive_exec_abort: tool({
         description: 'Abort task: discard changes, reset status',
-        args: { task: tool.schema.string().describe('Task folder name') },
-        async execute({ task }) {
-          const feature = featureService.getActive();
-          if (!feature) return "Error: No active feature";
+        args: { 
+          task: tool.schema.string().describe('Task folder name'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+        },
+        async execute({ task, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
           await worktreeService.remove(feature, task);
           taskService.update(feature, task, { status: 'pending' });
 
           return `Task "${task}" aborted. Status reset to pending.`;
+        },
+      }),
+
+      // Context Tools
+      hive_context_write: tool({
+        description: 'Write a context file for the feature. Context files store persistent notes, decisions, and reference material.',
+        args: {
+          name: tool.schema.string().describe('Context file name (e.g., "decisions", "architecture", "notes")'),
+          content: tool.schema.string().describe('Markdown content to write'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
+        },
+        async execute({ name, content, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+
+          const filePath = contextService.write(feature, name, content);
+          return `Context file written: ${filePath}`;
+        },
+      }),
+
+      hive_context_read: tool({
+        description: 'Read a specific context file or all context for the feature',
+        args: {
+          name: tool.schema.string().optional().describe('Context file name. If omitted, returns all context compiled.'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
+        },
+        async execute({ name, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+
+          if (name) {
+            const content = contextService.read(feature, name);
+            if (!content) return `Error: Context file '${name}' not found`;
+            return content;
+          }
+
+          const compiled = contextService.compile(feature);
+          if (!compiled) return "No context files found";
+          return compiled;
+        },
+      }),
+
+      hive_context_list: tool({
+        description: 'List all context files for the feature',
+        args: {
+          feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
+        },
+        async execute({ feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+
+          const files = contextService.list(feature);
+          if (files.length === 0) return "No context files";
+
+          return files.map(f => `${f.name} (${f.content.length} chars, updated ${f.updatedAt})`).join('\n');
+        },
+      }),
+
+      // Session Tools
+      hive_session_open: tool({
+        description: 'Open session, return full context for a feature',
+        args: {
+          feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
+          task: tool.schema.string().optional().describe('Task folder to focus on'),
+        },
+        async execute({ feature: explicitFeature, task }, toolContext) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+
+          const featureData = featureService.get(feature);
+          if (!featureData) return `Error: Feature '${feature}' not found`;
+
+          // Track session
+          const ctx = toolContext as { sessionID?: string };
+          if (ctx?.sessionID) {
+            sessionService.track(feature, ctx.sessionID, task);
+          }
+
+          const planResult = planService.read(feature);
+          const tasks = taskService.list(feature);
+          const contextCompiled = contextService.compile(feature);
+          const sessions = sessionService.list(feature);
+
+          let output = `## Feature: ${feature} [${featureData.status}]\n\n`;
+          
+          if (planResult) {
+            output += `### Plan\n${planResult.content.substring(0, 500)}...\n\n`;
+          }
+
+          output += `### Tasks (${tasks.length})\n`;
+          tasks.forEach(t => {
+            output += `- ${t.folder}: ${t.name} [${t.status}]\n`;
+          });
+
+          if (contextCompiled) {
+            output += `\n### Context\n${contextCompiled.substring(0, 500)}...\n`;
+          }
+
+          output += `\n### Sessions (${sessions.length})\n`;
+          sessions.forEach(s => {
+            output += `- ${s.sessionId} (${s.taskFolder || 'no task'})\n`;
+          });
+
+          return output;
+        },
+      }),
+
+      hive_session_list: tool({
+        description: 'List all sessions for the feature',
+        args: {
+          feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
+        },
+        async execute({ feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+
+          const sessions = sessionService.list(feature);
+          const master = sessionService.getMaster(feature);
+
+          if (sessions.length === 0) return "No sessions";
+
+          return sessions.map(s => {
+            const masterMark = s.sessionId === master ? ' (master)' : '';
+            return `${s.sessionId}${masterMark} - ${s.taskFolder || 'no task'} - ${s.lastActiveAt}`;
+          }).join('\n');
         },
       }),
     },

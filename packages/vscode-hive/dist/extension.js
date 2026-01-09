@@ -112,6 +112,22 @@ var STATUS_ICONS = {
   executing: "run-all",
   completed: "pass-filled"
 };
+var StatusGroupItem = class extends vscode3.TreeItem {
+  constructor(groupName, groupStatus, features, collapsed = false) {
+    super(groupName, collapsed ? vscode3.TreeItemCollapsibleState.Collapsed : vscode3.TreeItemCollapsibleState.Expanded);
+    this.groupName = groupName;
+    this.groupStatus = groupStatus;
+    this.features = features;
+    this.description = `${features.length}`;
+    this.contextValue = `status-group-${groupStatus}`;
+    const icons = {
+      in_progress: "sync~spin",
+      pending: "circle-outline",
+      completed: "pass-filled"
+    };
+    this.iconPath = new vscode3.ThemeIcon(icons[groupStatus] || "folder");
+  }
+};
 var FeatureItem = class extends vscode3.TreeItem {
   constructor(name, feature, taskStats, isActive) {
     super(name, vscode3.TreeItemCollapsibleState.Expanded);
@@ -120,7 +136,7 @@ var FeatureItem = class extends vscode3.TreeItem {
     this.taskStats = taskStats;
     this.isActive = isActive;
     const statusLabel = feature.status.charAt(0).toUpperCase() + feature.status.slice(1);
-    this.description = isActive ? `${statusLabel} \xB7 ${taskStats.done}/${taskStats.total}` : statusLabel;
+    this.description = isActive ? `${statusLabel} \xB7 ${taskStats.done}/${taskStats.total}` : `${taskStats.done}/${taskStats.total}`;
     this.contextValue = `feature-${feature.status}`;
     this.iconPath = new vscode3.ThemeIcon(STATUS_ICONS[feature.status] || "package");
     if (isActive) {
@@ -182,12 +198,14 @@ var TasksGroupItem = class extends vscode3.TreeItem {
   }
 };
 var TaskItem = class extends vscode3.TreeItem {
-  constructor(featureName, folder, status, reportPath) {
+  constructor(featureName, folder, status, specPath, reportPath) {
     const name = folder.replace(/^\d+-/, "");
-    super(name, vscode3.TreeItemCollapsibleState.None);
+    const hasFiles = specPath !== null || reportPath !== null;
+    super(name, hasFiles ? vscode3.TreeItemCollapsibleState.Collapsed : vscode3.TreeItemCollapsibleState.None);
     this.featureName = featureName;
     this.folder = folder;
     this.status = status;
+    this.specPath = specPath;
     this.reportPath = reportPath;
     this.description = status.summary || "";
     this.contextValue = `task-${status.status}${status.origin === "manual" ? "-manual" : ""}`;
@@ -206,13 +224,57 @@ var TaskItem = class extends vscode3.TreeItem {
     if (status.summary) {
       this.tooltip.appendMarkdown(`Summary: ${status.summary}`);
     }
-    if (reportPath) {
-      this.command = {
-        command: "vscode.open",
-        title: "View Report",
-        arguments: [vscode3.Uri.file(reportPath)]
-      };
+  }
+};
+var TaskFileItem = class extends vscode3.TreeItem {
+  constructor(filename, filePath) {
+    super(filename, vscode3.TreeItemCollapsibleState.None);
+    this.filename = filename;
+    this.filePath = filePath;
+    this.contextValue = "task-file";
+    this.iconPath = new vscode3.ThemeIcon("markdown");
+    this.command = {
+      command: "vscode.open",
+      title: "Open File",
+      arguments: [vscode3.Uri.file(filePath)]
+    };
+  }
+};
+var SessionsGroupItem = class extends vscode3.TreeItem {
+  constructor(featureName, sessions, master) {
+    super("Sessions", sessions.length > 0 ? vscode3.TreeItemCollapsibleState.Collapsed : vscode3.TreeItemCollapsibleState.None);
+    this.featureName = featureName;
+    this.sessions = sessions;
+    this.master = master;
+    this.description = sessions.length > 0 ? `${sessions.length} active` : "";
+    this.contextValue = "sessions-group";
+    this.iconPath = new vscode3.ThemeIcon("broadcast");
+  }
+};
+var SessionItem = class extends vscode3.TreeItem {
+  constructor(featureName, session, isMaster) {
+    const label = session.taskFolder || (isMaster ? "Master" : `Session ${session.sessionId.slice(4, 12)}`);
+    super(label, vscode3.TreeItemCollapsibleState.None);
+    this.featureName = featureName;
+    this.session = session;
+    this.isMaster = isMaster;
+    const shortId = session.sessionId.slice(0, 8);
+    this.description = isMaster ? `\u2605 ${shortId}` : shortId;
+    this.contextValue = "session";
+    this.iconPath = new vscode3.ThemeIcon(isMaster ? "star-full" : "terminal");
+    this.tooltip = new vscode3.MarkdownString();
+    this.tooltip.appendMarkdown(`**Session**: ${session.sessionId}
+
+`);
+    if (session.taskFolder) {
+      this.tooltip.appendMarkdown(`**Task**: ${session.taskFolder}
+
+`);
     }
+    this.tooltip.appendMarkdown(`**Started**: ${session.startedAt}
+
+`);
+    this.tooltip.appendMarkdown(`**Last Active**: ${session.lastActiveAt}`);
   }
 };
 var HiveSidebarProvider = class {
@@ -229,7 +291,10 @@ var HiveSidebarProvider = class {
   }
   async getChildren(element) {
     if (!element) {
-      return this.getFeatures();
+      return this.getStatusGroups();
+    }
+    if (element instanceof StatusGroupItem) {
+      return element.features;
     }
     if (element instanceof FeatureItem) {
       return this.getFeatureChildren(element.name);
@@ -240,9 +305,41 @@ var HiveSidebarProvider = class {
     if (element instanceof TasksGroupItem) {
       return this.getTasks(element.featureName, element.tasks);
     }
+    if (element instanceof TaskItem) {
+      return this.getTaskFiles(element);
+    }
+    if (element instanceof SessionsGroupItem) {
+      return this.getSessions(element.featureName, element.sessions, element.master);
+    }
     return [];
   }
-  getFeatures() {
+  getStatusGroups() {
+    const features = this.getAllFeatures();
+    const inProgress = [];
+    const pending = [];
+    const completed = [];
+    for (const feature of features) {
+      if (feature.feature.status === "executing") {
+        inProgress.push(feature);
+      } else if (feature.feature.status === "planning" || feature.feature.status === "approved") {
+        pending.push(feature);
+      } else if (feature.feature.status === "completed") {
+        completed.push(feature);
+      }
+    }
+    const groups = [];
+    if (inProgress.length > 0) {
+      groups.push(new StatusGroupItem("In Progress", "in_progress", inProgress, false));
+    }
+    if (pending.length > 0) {
+      groups.push(new StatusGroupItem("Pending", "pending", pending, false));
+    }
+    if (completed.length > 0) {
+      groups.push(new StatusGroupItem("Completed", "completed", completed, true));
+    }
+    return groups;
+  }
+  getAllFeatures() {
     const featuresPath = path.join(this.workspaceRoot, ".hive", "features");
     if (!fs.existsSync(featuresPath)) return [];
     const activeFeature = this.getActiveFeature();
@@ -259,8 +356,7 @@ var HiveSidebarProvider = class {
     features.sort((a, b) => {
       if (a.isActive) return -1;
       if (b.isActive) return 1;
-      const statusOrder = { executing: 0, approved: 1, planning: 2, completed: 3 };
-      return (statusOrder[a.feature.status] || 99) - (statusOrder[b.feature.status] || 99);
+      return 0;
     });
     return features;
   }
@@ -279,6 +375,8 @@ var HiveSidebarProvider = class {
     items.push(new ContextFolderItem(featureName, contextPath, contextFiles.length));
     const tasks = this.getTaskList(featureName);
     items.push(new TasksGroupItem(featureName, tasks));
+    const sessionsData = this.getSessionsData(featureName);
+    items.push(new SessionsGroupItem(featureName, sessionsData.sessions, sessionsData.master));
     return items;
   }
   getContextFiles(featureName, contextPath) {
@@ -288,10 +386,23 @@ var HiveSidebarProvider = class {
   getTasks(featureName, tasks) {
     const featurePath = path.join(this.workspaceRoot, ".hive", "features", featureName);
     return tasks.map((t) => {
-      const reportPath = path.join(featurePath, "tasks", t.folder, "report.md");
+      const taskDir = path.join(featurePath, "tasks", t.folder);
+      const specPath = path.join(taskDir, "spec.md");
+      const reportPath = path.join(taskDir, "report.md");
+      const hasSpec = fs.existsSync(specPath);
       const hasReport = fs.existsSync(reportPath);
-      return new TaskItem(featureName, t.folder, t.status, hasReport ? reportPath : null);
+      return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null);
     });
+  }
+  getTaskFiles(taskItem) {
+    const files = [];
+    if (taskItem.specPath) {
+      files.push(new TaskFileItem("spec.md", taskItem.specPath));
+    }
+    if (taskItem.reportPath) {
+      files.push(new TaskFileItem("report.md", taskItem.reportPath));
+    }
+    return files;
   }
   getTaskList(featureName) {
     const tasksPath = path.join(this.workspaceRoot, ".hive", "features", featureName, "tasks");
@@ -324,6 +435,18 @@ var HiveSidebarProvider = class {
     } catch {
       return 0;
     }
+  }
+  getSessionsData(featureName) {
+    const sessionsPath = path.join(this.workspaceRoot, ".hive", "features", featureName, "sessions.json");
+    if (!fs.existsSync(sessionsPath)) return { sessions: [] };
+    try {
+      return JSON.parse(fs.readFileSync(sessionsPath, "utf-8"));
+    } catch {
+      return { sessions: [] };
+    }
+  }
+  getSessions(featureName, sessions, master) {
+    return sessions.map((s) => new SessionItem(featureName, s, s.sessionId === master));
   }
 };
 
@@ -563,6 +686,20 @@ function activate(context) {
       if (item?.featureName) {
         const terminal = vscode5.window.createTerminal("OpenCode - Hive");
         terminal.sendText(`opencode --command "hive_tasks_sync"`);
+        terminal.show();
+      }
+    }),
+    vscode5.commands.registerCommand("hive.startTask", async (item) => {
+      if (item?.featureName && item?.folder) {
+        const terminal = vscode5.window.createTerminal("OpenCode - Hive");
+        terminal.sendText(`opencode --command "hive_exec_start task=${item.folder}"`);
+        terminal.show();
+      }
+    }),
+    vscode5.commands.registerCommand("hive.openSession", async (item) => {
+      if (item?.session?.sessionId) {
+        const terminal = vscode5.window.createTerminal("OpenCode - Hive");
+        terminal.sendText(`opencode --session "${item.session.sessionId}"`);
         terminal.show();
       }
     }),

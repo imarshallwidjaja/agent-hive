@@ -5,7 +5,6 @@ import {
   getFeatureJsonPath,
   getContextPath,
   getTasksPath,
-  getActiveFeaturePath,
   getPlanPath,
   getCommentsPath,
   ensureDir,
@@ -39,7 +38,6 @@ export class FeatureService {
     };
 
     writeJson(getFeatureJsonPath(this.projectRoot, name), feature);
-    this.setActive(name);
 
     return feature;
   }
@@ -55,16 +53,6 @@ export class FeatureService {
     return fs.readdirSync(featuresPath, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .map(d => d.name);
-  }
-
-  getActive(): string | null {
-    return readText(getActiveFeaturePath(this.projectRoot))?.trim() || null;
-  }
-
-  setActive(name: string): void {
-    const feature = this.get(name);
-    if (!feature) throw new Error(`Feature '${name}' not found`);
-    writeText(getActiveFeaturePath(this.projectRoot), name);
   }
 
   updateStatus(name: string, status: FeatureStatusType): FeatureJson {

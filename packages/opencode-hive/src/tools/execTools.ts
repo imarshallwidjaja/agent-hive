@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TaskService } from '../services/taskService.js';
 import { FeatureService } from '../services/featureService.js';
 import { WorktreeService } from '../services/worktreeService';
+import { detectContext } from '../utils/detection.js';
 
 export function createExecTools(projectRoot: string) {
   const taskService = new TaskService(projectRoot);
@@ -11,6 +12,11 @@ export function createExecTools(projectRoot: string) {
     baseDir: projectRoot,
     hiveDir: path.join(projectRoot, '.hive'),
   });
+  
+  const getActiveFeature = (): string | null => {
+    const ctx = detectContext(projectRoot);
+    return ctx?.feature || null;
+  };
 
   return {
     hive_exec_start: {
@@ -19,7 +25,7 @@ export function createExecTools(projectRoot: string) {
         task: z.string().describe('Task folder name (e.g., "01-auth-service")'),
       }),
       execute: async ({ task }: { task: string }) => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }
@@ -68,7 +74,7 @@ export function createExecTools(projectRoot: string) {
         report: z.string().optional().describe('Detailed report (markdown). If not provided, summary is used.'),
       }),
       execute: async ({ task, summary, report }: { task: string; summary: string; report?: string }) => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }
@@ -113,7 +119,7 @@ export function createExecTools(projectRoot: string) {
         task: z.string().describe('Task folder name'),
       }),
       execute: async ({ task }: { task: string }) => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }

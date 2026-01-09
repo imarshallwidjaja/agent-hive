@@ -19,6 +19,7 @@ export interface TaskStatus {
   summary?: string;
   startedAt?: string;
   completedAt?: string;
+  baseCommit?: string;  // Base commit when worktree was created
 }
 
 export interface PlanComment {
@@ -60,4 +61,40 @@ export interface FeatureInfo {
   tasks: TaskInfo[];
   hasPlan: boolean;
   commentCount: number;
+}
+
+export interface ContextFile {
+  name: string;
+  content: string;
+  updatedAt: string;
+}
+
+export interface SessionInfo {
+  sessionId: string;
+  taskFolder?: string;
+  startedAt: string;
+  lastActiveAt: string;
+  messageCount?: number;
+}
+
+export interface SessionsJson {
+  master?: string;
+  sessions: SessionInfo[];
+}
+
+export interface TaskSpec {
+  taskFolder: string;
+  featureName: string;
+  planSection: string;
+  context: string;
+  priorTasks: Array<{ folder: string; summary?: string }>;
+}
+
+export interface HiveConfig {
+  enableToolsFor: string[];
+  agents: {
+    worker: {
+      visible: boolean;
+    };
+  };
 }

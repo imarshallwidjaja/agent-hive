@@ -1,9 +1,15 @@
 import { z } from 'zod';
 import { FeatureService } from '../services/featureService.js';
+import { detectContext } from '../utils/detection.js';
 import type { TaskInfo } from '../types.js';
 
 export function createFeatureTools(projectRoot: string) {
   const featureService = new FeatureService(projectRoot);
+  
+  const getActiveFeature = (): string | null => {
+    const ctx = detectContext(projectRoot);
+    return ctx?.feature || null;
+  };
 
   return {
     hive_feature_create: {
@@ -28,7 +34,7 @@ export function createFeatureTools(projectRoot: string) {
       parameters: z.object({}),
       execute: async () => {
         const features = featureService.list();
-        const active = featureService.getActive();
+        const active = getActiveFeature();
         
         const details = features.map(name => {
           const info = featureService.getInfo(name);
@@ -44,23 +50,6 @@ export function createFeatureTools(projectRoot: string) {
       },
     },
 
-    hive_feature_switch: {
-      description: 'Switch to a different feature.',
-      parameters: z.object({
-        name: z.string().describe('Feature name to switch to'),
-      }),
-      execute: async ({ name }: { name: string }) => {
-        featureService.setActive(name);
-        const info = featureService.getInfo(name);
-        return {
-          switched: true,
-          name,
-          status: info?.status,
-          message: `Switched to feature '${name}'`,
-        };
-      },
-    },
-
     hive_feature_complete: {
       description: 'Mark feature as completed (irreversible)',
       parameters: z.object({
@@ -68,7 +57,7 @@ export function createFeatureTools(projectRoot: string) {
         name: z.string().optional(),
       }),
       execute: async ({ name }: { name?: string }) => {
-        const feature = name || featureService.getActive();
+        const feature = name || getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }

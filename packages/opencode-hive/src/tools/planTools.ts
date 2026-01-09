@@ -1,10 +1,16 @@
 import { z } from 'zod';
 import { PlanService } from '../services/planService.js';
 import { FeatureService } from '../services/featureService.js';
+import { detectContext } from '../utils/detection.js';
 
 export function createPlanTools(projectRoot: string) {
   const planService = new PlanService(projectRoot);
   const featureService = new FeatureService(projectRoot);
+  
+  const getActiveFeature = (): string | null => {
+    const ctx = detectContext(projectRoot);
+    return ctx?.feature || null;
+  };
 
   return {
     hive_plan_write: {
@@ -13,7 +19,7 @@ export function createPlanTools(projectRoot: string) {
         content: z.string().describe('The markdown content for the plan'),
       }),
       execute: async ({ content }: { content: string }) => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature. Create one with hive_feature_create first.' };
         }
@@ -27,7 +33,7 @@ export function createPlanTools(projectRoot: string) {
       description: 'Read plan.md and user comments',
       parameters: z.object({}),
       execute: async () => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }
@@ -45,7 +51,7 @@ export function createPlanTools(projectRoot: string) {
       description: 'Approve plan for execution',
       parameters: z.object({}),
       execute: async () => {
-        const feature = featureService.getActive();
+        const feature = getActiveFeature();
         if (!feature) {
           return { error: 'No active feature.' };
         }

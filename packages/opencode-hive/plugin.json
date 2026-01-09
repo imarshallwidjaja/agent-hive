@@ -4,29 +4,25 @@
   "description": "Context-Driven Development",
   "dataPath": "../../.hive",
   "commands": [
-    {"name": "/hive new", "description": "Create feature"},
-    {"name": "/hive list", "description": "List features"},
-    {"name": "/hive status", "description": "Show progress"},
-    {"name": "/plan", "description": "Generate steps"},
-    {"name": "/decision", "description": "Log decision"}
+    {"name": "/hive", "description": "Create feature"}
   ],
-  "skills": ["plan", "decision"],
   "tools": [
     "hive_feature_create",
     "hive_feature_list",
-    "hive_feature_switch",
     "hive_feature_complete",
-    "hive_status",
-    "hive_step_create",
-    "hive_step_read",
-    "hive_step_update",
-    "hive_step_delete",
-    "hive_step_list",
-    "hive_decision_log",
-    "hive_decision_list",
+    "hive_plan_write",
+    "hive_plan_read",
+    "hive_plan_approve",
+    "hive_tasks_sync",
+    "hive_task_create",
+    "hive_task_update",
     "hive_exec_start",
     "hive_exec_complete",
     "hive_exec_abort",
-    "hive_exec_revert"
+    "hive_context_write",
+    "hive_context_read",
+    "hive_context_list",
+    "hive_session_open",
+    "hive_session_list"
   ]
 }

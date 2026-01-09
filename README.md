@@ -1,6 +1,6 @@
 # Agent Hive 🐝
 
-**From Vibe Coding to Hive Coding** — Organize the chaos into structured execution.
+**From Vibe Coding to Hive Coding** — Plan first. Execute with trust. Context persists.
 
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](LICENSE)
 
@@ -10,30 +10,19 @@
 
 https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
+---
+
 ## The Problem
 
-AI coding assistants are powerful, but without structure you get:
-- 🌀 Lost context between sessions
-- 🔄 No record of decisions made
-- 📝 Zero audit trail
-- 🎯 Scope creep and forgotten requirements
+Vibe coding is powerful but chaotic. Without structure:
 
-### The Subagent Problem
-
-When you use multiple AI agents (subagents) to parallelize work:
-- 🤖 **Agents do their own thing** — No coordination, duplicated work
-- 🔍 **Hard to trace** — What did each agent actually do?
-- 📊 **Impossible to audit** — Which agent made which decision?
-- 🎭 **Context fragmentation** — Each agent has partial picture
-
-**You can technically trace subagent work, but it's painful.** Logs scattered everywhere, no unified view, manual correlation required.
-
-### The Spec Kit Problem
-
-Traditional solutions like Spec Kit require detailed specifications upfront. That works for some teams, but:
-- Most developers just want to code — not write docs first
-- Specs become outdated the moment you start coding
-- Heavy process that doesn't fit agile workflows
+| Pain Point | What Happens |
+|------------|--------------|
+| **Lost context** | New session = start from scratch. "We discussed this yesterday" means nothing. |
+| **Subagents go wild** | Parallel agents do their own thing. No coordination, duplicated work. |
+| **Scope creep** | "Add dark mode" becomes "rewrite the entire theme system." |
+| **Messes to clean up** | Agent changes 47 files. Half are broken. Good luck reverting. |
+| **No audit trail** | "What happened?" Nobody knows. Logs scattered everywhere. |
 
 ---
 
@@ -41,11 +30,11 @@ Traditional solutions like Spec Kit require detailed specifications upfront. Tha
 
 | Problem | Hive Solution |
 |---------|---------------|
-| Agents do their own thing | **Structured plans** — agents follow the approved plan |
-| Hard to trace | **Automatic tracking** — every action logged to .hive/ |
-| Impossible to audit | **Full audit trail** — who did what, when, why |
-| Context fragmentation | **Shared context** — plan.md is the single source of truth |
-| Upfront documentation | **Passive docs** — specs emerge as you work |
+| Lost context | **Context persists** — Feature-scoped knowledge survives sessions |
+| Subagents go wild | **Batched parallelism** — Coordinated execution with context flow |
+| Scope creep | **Plan approval gate** — Human shapes, agent builds |
+| Messes to clean up | **Worktree isolation** — Each task isolated, easy discard |
+| No audit trail | **Automatic tracking** — Every task logged to `.hive/` |
 
 **Hive doesn't change how you work. It makes what happens traceable and auditable.**
 
@@ -53,36 +42,12 @@ Traditional solutions like Spec Kit require detailed specifications upfront. Tha
 
 ## How It Works
 
-```
-You: "Let's add dark mode to the app"
-Agent: Plans the feature, Hive automatically captures it
-You: Review in VS Code, add comments, approve
-Agent: Executes tasks in isolated worktrees
-You: Ship with full audit trail
-```
-
-### The Magic: Automatic Capture
-
-When you work with your AI agent, Hive automatically:
-- 📋 **Captures plans** as they're discussed
-- 💬 **Records decisions** from your conversation
-- 🔄 **Tracks execution** of each task
-- 📊 **Builds documentation** as a side effect
-
-**You don't write specs. Specs write themselves.**
-
----
-
-## Subagent Orchestration Made Easy 🤖
-
-This is where Hive really shines. **Multi-agent workflows become manageable.**
-
 ### The Old Way (Chaos)
 
 ```
 Main Agent: "Build auth system"
     │
-    ├── Subagent 1: Does... something? 
+    ├── Subagent 1: Does... something?
     ├── Subagent 2: Also does... something?
     └── Subagent 3: Conflicts with Subagent 1?
     │
@@ -92,172 +57,95 @@ You: "What just happened?" 🤷
 ### The Hive Way (Orchestrated)
 
 ```
-Main Agent: Creates plan, Hive tracks it
+Main Agent: Creates plan, you approve it
     │
-    ├── Subagent 1: task-01 (own worktree, tracked)
-    ├── Subagent 2: task-02 (own worktree, tracked)
-    └── Subagent 3: task-03 (own worktree, tracked)
+    ├── Batch 1 (parallel):
+    │   ├── Task A (own worktree, tracked)
+    │   ├── Task B (own worktree, tracked)
+    │   └── Task C (own worktree, tracked)
+    │           ↓
+    │      Context flows forward
+    │           ↓
+    ├── Batch 2 (parallel):
+    │   ├── Task D (uses A+B+C results)
+    │   └── Task E (uses A+B+C results)
     │
 Hive: Full audit of what each agent did
-Main Agent: Merges all completed tasks
 You: Clear visibility into everything ✅
 ```
 
-### What Each Subagent Gets
-
-- 🌳 **Isolated git worktree** — No conflicts with other agents
-- 📋 **Clear task description** — From the approved plan
-- 📊 **Own status.json** — Track progress independently
-- 📝 **Summary on completion** — What was actually done
-
-### What You Get
-
-```
-.hive/features/auth-system/tasks/
-├── 01-extract-auth-logic/
-│   ├── status.json    # started: 10:00, completed: 10:15
-│   └── report.md      # "Extracted auth to AuthService class"
-├── 02-add-token-refresh/
-│   ├── status.json    # started: 10:05, completed: 10:20
-│   └── report.md      # "Added refresh token rotation"
-└── 03-update-api-routes/
-    ├── status.json    # started: 10:10, completed: 10:25
-    └── report.md      # "Updated 12 routes to use AuthService"
-```
-
-**Full visibility. Easy audit. No more "what did that agent do?"**
-
 ---
 
-## Real Example: Building a React Todo App with Login
-
-Let's walk through hiving a real feature. You want to build a todo app with authentication.
+## Real Example: Building Auth with Hive
 
 ### Step 1: Start the Conversation
 
 ```
-You: "Hive a plan for a React todo app with login"
+You: "Let's add authentication to the app"
 ```
 
-That's it. The agent creates a structured plan:
+The agent creates a structured plan:
 
 ```markdown
-# React Todo App with Login
+# User Authentication
 
 ## Overview
-Build a todo application with user authentication, 
-persistent storage, and a clean UI.
+Add JWT-based authentication with login, signup, and protected routes.
 
 ## Tasks
 
-### 1. Setup project and dependencies
-Create React app with TypeScript, install auth and state libraries.
+### 1. Extract auth logic to service
+Move scattered auth code to dedicated AuthService class.
 
-### 2. Build authentication flow
-Login/signup pages, JWT handling, protected routes.
+### 2. Add token refresh mechanism
+Implement refresh token rotation for security.
 
-### 3. Create todo components
-TodoList, TodoItem, AddTodo with proper state management.
-
-### 4. Add API integration
-Connect to backend, handle CRUD operations, sync state.
-
-### 5. Polish UI and error handling
-Loading states, error messages, responsive design.
+### 3. Update API routes
+Convert all routes to use the new AuthService.
 ```
 
 ### Step 2: Review in VS Code
 
 Open VS Code. The Hive sidebar shows your plan. You can:
+
 - Read through each task
-- Add comments ("Let's use Zustand instead of Redux")
+- Add comments ("Use httpOnly cookies for tokens")
 - Approve when ready
 
 ### Step 3: Execute
 
 ```
-You: "Hive execute todo-app"
+You: "Execute"
 ```
 
-The agent works through each task. If you have subagents, they each get their own isolated worktree — no conflicts, full tracking.
+Each task runs in its own worktree. Parallel agents don't conflict. Everything is tracked.
 
 ### Step 4: Ship
 
 When done, you have:
-- **Working code** — The todo app with login
+
+- **Working code** — Auth system implemented
 - **Clean git history** — Each task merged cleanly
 - **Full audit trail** — What was done, when, by which agent
 
 ```
-.hive/features/todo-app/
+.hive/features/user-auth/
 ├── plan.md              # Your approved plan
+├── context/             # Decisions and calibration
+│   └── architecture.md
 └── tasks/
-    ├── 01-setup-project/
-    │   └── report.md    # "Created React app, installed zustand, react-router"
-    ├── 02-build-auth/
-    │   └── report.md    # "Built login/signup with JWT, added ProtectedRoute"
-    └── ...
+    ├── 01-extract-auth-logic/
+    │   ├── spec.md      # Task context, prior/upcoming tasks
+    │   └── report.md    # Summary, files changed, diff stats
+    ├── 02-add-token-refresh/
+    │   ├── spec.md
+    │   └── report.md
+    └── 03-update-api-routes/
+        ├── spec.md
+        └── report.md
 ```
 
-**That's hiving.** Natural conversation → structured execution → documented result.
-
----
-
-## How to Hive
-
-Just use the `hive` keyword in your conversation:
-
-```
-"Hive a plan for user authentication"
-"Hive execute auth-feature"
-"Hive status"
-```
-
-The agent handles everything. You review and approve in VS Code.
-
----
-
-## VS Code Extension: Not Just CLI
-
-**Hive isn't CLI-only.** The VS Code extension makes management visual:
-
-- 📋 **Sidebar** — See all features and their progress at a glance
-- 💬 **Inline Comments** — Add review comments directly on plan.md
-- ✅ **Approve Button** — One-click plan approval
-- 🔄 **Real-time Updates** — Watches .hive/ folder for changes
-- 🚀 **Launch Tasks** — Open tasks in OpenCode from VS Code
-
-```
-┌─────────────────────────────────────┐
-│ HIVE                           [+]  │
-├─────────────────────────────────────┤
-│ ▼ release-preparation    [15/15] ✅ │
-│   ├─ 01-prepare-icon-asset     ✅   │
-│   ├─ 02-update-packagejson     ✅   │
-│   ├─ 03-update-packagejson     ✅   │
-│   └─ ...                            │
-│ ▶ auth-refactor          [0/5]  📋  │
-│ ▶ dark-mode              [2/3]  🔄  │
-└─────────────────────────────────────┘
-```
-
-**Review plans, add comments, approve — all without leaving VS Code.**
-
----
-
-## Why Hive?
-
-### 🎯 Easy Orchestrate
-Break work into isolated tasks. Subagents work in parallel without conflicts. Plan is the contract.
-
-### 📊 Easy Audit
-Every decision, every change, every agent action — automatically captured in .hive/
-
-### 🚀 Easy Ship
-When you're done, you have:
-- Clean git history (worktree merges)
-- Full documentation (generated automatically)
-- Traceable decisions (who did what, when)
+**That's hiving.** Natural conversation → structured plan → approved execution → documented result.
 
 ---
 
@@ -265,33 +153,85 @@ When you're done, you have:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  PLAN                                                       │
+│  1. PLAN                                                    │
 │  Chat with your agent about what to build                   │
-│  Hive captures the plan automatically                       │
+│  Agent creates structured plan in .hive/                    │
 ├─────────────────────────────────────────────────────────────┤
-│  REVIEW (in VS Code)                                        │
+│  2. REVIEW (in VS Code)                                     │
 │  See the plan in sidebar                                    │
 │  Add inline comments, refine, approve                       │
 ├─────────────────────────────────────────────────────────────┤
-│  EXECUTE (parallel-friendly)                                │
-│  Main agent or subagents work on tasks                      │
-│  Each task in isolated worktree                             │
-│  Every action tracked and auditable                         │
+│  3. EXECUTE (parallel-friendly)                             │
+│  Tasks run in isolated worktrees                            │
+│  Batched parallelism with context flow                      │
 ├─────────────────────────────────────────────────────────────┤
-│  SHIP                                                       │
+│  4. SHIP                                                    │
 │  Clean merges, full history                                 │
-│  Documentation generated as side effect                     │
+│  Context persists for next time                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Packages
+## VS Code Extension
 
-| Package | Platform | Description |
-|---------|----------|-------------|
-| **[opencode-hive](https://www.npmjs.com/package/opencode-hive)** | npm | OpenCode plugin — planning, execution, tracking |
-| **[vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)** | VS Code | Visual management — review, comment, approve |
+Visual management without leaving your editor:
+
+- **Sidebar** — See all features and progress at a glance
+- **Inline Comments** — Add review comments directly on plan.md
+- **Approve Button** — One-click plan approval
+- **Real-time Updates** — Watches `.hive/` for changes
+- **Launch Tasks** — Open tasks in OpenCode from VS Code
+- **Expandable Tasks** — Click to view spec.md and report.md for each task
+
+```
+┌─────────────────────────────────────┐
+│ HIVE                           [+]  │
+├─────────────────────────────────────┤
+│ ▼ user-auth              [3/3]  ✅  │
+│   ├─ 01-extract-auth-logic     ✅   │
+│   │   ├─ spec.md                    │
+│   │   └─ report.md                  │
+│   ├─ 02-add-token-refresh      ✅   │
+│   └─ 03-update-api-routes      ✅   │
+│ ▶ dark-mode              [0/3]  📋  │
+│ ▶ api-refactor           [2/5]  🔄  │
+└─────────────────────────────────────┘
+```
+
+**Review plans, add comments, approve — all without leaving VS Code.**
+
+### Extension Features
+
+| Feature | Description |
+|---------|-------------|
+| **Feature Tree** | Hierarchical view of all features, tasks, and their status |
+| **Plan Review** | Open plan.md with syntax highlighting and inline commenting |
+| **Task Details** | Expand any task to see spec.md (context) and report.md (results) |
+| **Status Icons** | Visual indicators: ✅ done, 🔄 in-progress, ⏳ pending, ❌ failed |
+| **Context Files** | Browse and edit context files stored per-feature |
+| **Session History** | View past sessions and their outcomes |
+
+### Extension Requirements
+
+> **Important:** The VS Code extension is a companion tool for [OpenCode](https://opencode.ai). It provides visualization and review capabilities but does not execute tasks on its own.
+
+**You need:**
+1. **OpenCode CLI** — The AI coding assistant that runs the Hive workflow
+2. **opencode-hive plugin** — Installed in your OpenCode configuration
+3. **vscode-hive extension** — For visual management in VS Code
+
+The extension watches your `.hive/` directory and displays the current state. All planning and execution happens through OpenCode.
+
+### Using the Extension
+
+1. **Open your project** in VS Code (must have `.hive/` directory)
+2. **Click the Hive icon** in the Activity Bar (left sidebar)
+3. **Browse features** — Expand to see tasks, context, sessions
+4. **Review plans** — Click on plan.md to open with inline commenting
+5. **Add comments** — Use VS Code's comment feature on plan.md lines
+6. **Approve plans** — Click the approve button when ready
+7. **Monitor progress** — Watch task status update in real-time as OpenCode executes
 
 ---
 
@@ -304,9 +244,7 @@ Add `opencode-hive` to your `opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "opencode-hive"
-  ]
+  "plugin": ["opencode-hive"]
 }
 ```
 
@@ -323,37 +261,78 @@ Or search "Hive" in VS Code Extensions.
 ### 3. Start Hiving
 
 ```
-You: "Hive a plan for user dashboard"
+You: "Create a feature for user dashboard"
 ```
 
 That's it. You're hiving.
 
 ---
 
-## Built for the OpenCode Ecosystem
+## Packages
 
-Designed to work seamlessly with:
-- **[OpenCode](https://opencode.ai)** — The AI coding CLI
-- **VS Code** — Your editor for reviews
-- **Git** — Worktrees for isolation
+| Package | Platform | Description |
+|---------|----------|-------------|
+| **[opencode-hive](https://www.npmjs.com/package/opencode-hive)** | npm | OpenCode plugin — planning, execution, tracking |
+| **[vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)** | VS Code | Visual management — review, comment, approve |
 
-Inspired by the workflow principles of **[Antigravity](https://antigravity.dev)**.
+---
+
+## Why Hive?
+
+### 🎯 Plan First
+
+Human shapes the what and why. Agent handles the how. The approval gate is where trust is earned.
+
+### 🤖 Easy Orchestrate
+
+Break work into isolated tasks. Subagents work in parallel without conflicts. Batches coordinate context flow.
+
+### 📊 Easy Audit
+
+Every decision, every change, every agent action — automatically captured in `.hive/`
+
+### 🚀 Easy Ship
+
+Clean git history (worktree merges), full documentation (generated as you work), traceable decisions (who did what, when).
 
 ---
 
 ## Comparison
 
-| Feature | Vibe Coding | Spec Kit | Agent Hive |
-|---------|-------------|----------|------------|
+| Feature | Vibe Coding | Spec-First Tools | Agent Hive |
+|---------|-------------|------------------|------------|
 | Setup required | None | Heavy | Minimal |
-| Documentation | None | Upfront | Automatic |
+| Documentation | None | Upfront | Emerges from work |
 | Planning | Ad-hoc | Required first | Conversational |
 | Tracking | None | Manual | Automatic |
 | Audit trail | None | If maintained | Built-in |
-| Learning curve | None | Steep | Low |
-| Multi-agent ready | ❌ Chaos | ❌ | ✅ Native |
-| Subagent tracing | 😰 Painful | ❌ | ✅ Automatic |
+| Multi-agent ready | Chaos | ❌ | ✅ Native |
+| Subagent tracing | Painful | ❌ | ✅ Automatic |
 | VS Code UI | ❌ | ❌ | ✅ Full support |
+
+---
+
+## Philosophy
+
+Hive is built on 5 core principles:
+
+1. **Context Persists** — Calibration survives sessions. The "3 months later" problem solved.
+2. **Plan → Approve → Execute** — Dialogue until approved, then trust. Two phases with a clear gate.
+3. **Human Shapes, Agent Builds** — Human owns the why. Agent owns the how.
+4. **Good Enough Wins** — Capture what works for this context. Reject over-engineering.
+5. **Batched Parallelism** — Parallel tasks in batches. Sequential batches share context.
+
+See [PHILOSOPHY.md](PHILOSOPHY.md) for the full framework.
+
+---
+
+## Built for the OpenCode Ecosystem
+
+Designed to work seamlessly with:
+
+- **[OpenCode](https://opencode.ai)** — The AI coding CLI
+- **VS Code** — Your editor for reviews
+- **Git** — Worktrees for isolation
 
 ---
 
@@ -365,8 +344,6 @@ MIT with Commons Clause — Free for personal and non-commercial use. See [LICEN
 
 <p align="center">
   <strong>Stop vibing. Start hiving.</strong> 🐝
-  <br><br>
-  <em>Specs along the way. Not in the way.</em>
   <br>
-  <em>Subagents under control. Finally.</em>
+  <em>Plan first. Execute with trust. Context persists.</em>
 </p>
