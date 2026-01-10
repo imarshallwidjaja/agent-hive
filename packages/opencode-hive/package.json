@@ -27,7 +27,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "npm run clean && tsc",
+    "build": "npm run clean && bunx tsc",
     "dev": "opencode plugin dev",
     "test": "bun test"
   },
