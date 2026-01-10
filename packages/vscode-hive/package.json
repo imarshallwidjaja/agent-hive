@@ -414,9 +414,37 @@
           },
           "required": ["feature"]
         }
+      },
+      {
+        "name": "hive_session_open",
+        "displayName": "Open Hive Session",
+        "modelDescription": "Open a session and get full feature context. Returns plan, tasks, context files, and session history. Use at the start of work to understand current state.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveSessionOpen",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": { "type": "string", "description": "Feature name" },
+            "task": { "type": "string", "description": "Optional task to focus on" }
+          },
+          "required": ["feature"]
+        }
+      },
+      {
+        "name": "hive_session_list",
+        "displayName": "List Sessions",
+        "modelDescription": "List all sessions for a feature. Shows active and past sessions to understand who else is working.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveSessionList",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": { "type": "string", "description": "Feature name" }
+          },
+          "required": ["feature"]
+        }
       }
     ],
-
 
     "viewsContainers": {
       "activitybar": [
