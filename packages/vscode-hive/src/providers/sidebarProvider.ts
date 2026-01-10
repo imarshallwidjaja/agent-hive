@@ -80,7 +80,7 @@ class FeatureItem extends vscode.TreeItem {
     public readonly taskStats: { total: number; done: number },
     public readonly isActive: boolean
   ) {
-    super(name, vscode.TreeItemCollapsibleState.Expanded)
+    super(name, vscode.TreeItemCollapsibleState.Collapsed)
     
     const statusLabel = feature.status.charAt(0).toUpperCase() + feature.status.slice(1)
     this.description = isActive 
@@ -152,7 +152,7 @@ class TasksGroupItem extends vscode.TreeItem {
     public readonly featureName: string,
     public readonly tasks: Array<{ folder: string; status: TaskStatus }>
   ) {
-    super('Tasks', tasks.length > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None)
+    super('Tasks', tasks.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
     
     const done = tasks.filter(t => t.status.status === 'done').length
     this.description = `${done}/${tasks.length}`
@@ -167,16 +167,15 @@ class TaskItem extends vscode.TreeItem {
     public readonly folder: string,
     public readonly status: TaskStatus,
     public readonly specPath: string | null,
-    public readonly reportPath: string | null
+    public readonly reportPath: string | null,
+    public readonly subtaskCount: number = 0,
+    public readonly subtasksDone: number = 0
   ) {
     const name = folder.replace(/^\d+-/, '')
     const hasFiles = specPath !== null || reportPath !== null
-    const hasSubtasks = (status.subtasks?.length || 0) > 0
+    const hasSubtasks = subtaskCount > 0
     const hasChildren = hasFiles || hasSubtasks
     super(name, hasChildren ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
-    
-    const subtaskCount = status.subtasks?.length || 0
-    const subtasksDone = status.subtasks?.filter(s => s.status === 'done').length || 0
     const subtaskInfo = subtaskCount > 0 ? ` (${subtasksDone}/${subtaskCount})` : ''
     this.description = (status.summary || '') + subtaskInfo
     this.contextValue = `task-${status.status}${status.origin === 'manual' ? '-manual' : ''}`
@@ -455,7 +454,12 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       const reportPath = path.join(taskDir, 'report.md')
       const hasSpec = fs.existsSync(specPath)
       const hasReport = fs.existsSync(reportPath)
-      return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null)
+      
+      const subtasks = this.getSubtasksFromFolders(featureName, t.folder)
+      const subtaskCount = subtasks.length
+      const subtasksDone = subtasks.filter(s => s.status === 'done').length
+      
+      return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null, subtaskCount, subtasksDone)
     })
   }
 
