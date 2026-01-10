@@ -293,6 +293,52 @@
           },
           "required": ["feature", "task", "subtask", "content"]
         }
+      },
+      {
+        "name": "hive_exec_start",
+        "displayName": "Start Task Execution",
+        "modelDescription": "Create a git worktree and begin work on a task. Isolates changes in a separate directory. Use when ready to implement a task.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveExecStart",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": { "type": "string", "description": "Feature name" },
+            "task": { "type": "string", "description": "Task folder name" }
+          },
+          "required": ["feature", "task"]
+        }
+      },
+      {
+        "name": "hive_exec_complete",
+        "displayName": "Complete Task Execution",
+        "modelDescription": "Commit changes in worktree and mark task done. Does NOT merge - use hive_merge for that. Use when task implementation is finished.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveExecComplete",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": { "type": "string", "description": "Feature name" },
+            "task": { "type": "string", "description": "Task folder name" },
+            "summary": { "type": "string", "description": "Summary of what was done" }
+          },
+          "required": ["feature", "task", "summary"]
+        }
+      },
+      {
+        "name": "hive_exec_abort",
+        "displayName": "Abort Task Execution",
+        "modelDescription": "Discard all changes and remove worktree. Use when task approach is wrong and needs restart. This is destructive and irreversible.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveExecAbort",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": { "type": "string", "description": "Feature name" },
+            "task": { "type": "string", "description": "Task folder name" }
+          },
+          "required": ["feature", "task"]
+        }
       }
     ],
     "viewsContainers": {
