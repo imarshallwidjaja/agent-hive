@@ -138,6 +138,78 @@
           },
           "required": ["feature"]
         }
+      },
+      {
+        "name": "hive_tasks_sync",
+        "displayName": "Sync Hive Tasks",
+        "modelDescription": "Generate tasks from an approved plan. Parses ### numbered headers and creates task folders. Use after hive_plan_approve to create executable tasks.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveTasksSync",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": {
+              "type": "string",
+              "description": "Feature name"
+            }
+          },
+          "required": ["feature"]
+        }
+      },
+      {
+        "name": "hive_task_create",
+        "displayName": "Create Manual Task",
+        "modelDescription": "Create a task manually, not from the plan. Use for ad-hoc work or tasks discovered during execution.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveTaskCreate",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": {
+              "type": "string",
+              "description": "Feature name"
+            },
+            "name": {
+              "type": "string",
+              "description": "Task name"
+            },
+            "order": {
+              "type": "number",
+              "description": "Optional order number for the task"
+            }
+          },
+          "required": ["feature", "name"]
+        }
+      },
+      {
+        "name": "hive_task_update",
+        "displayName": "Update Hive Task",
+        "modelDescription": "Update a task status or summary. Use to track progress or add notes about completed work.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveTaskUpdate",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": {
+              "type": "string",
+              "description": "Feature name"
+            },
+            "task": {
+              "type": "string",
+              "description": "Task folder name"
+            },
+            "status": {
+              "type": "string",
+              "enum": ["pending", "in_progress", "done", "cancelled"],
+              "description": "New status"
+            },
+            "summary": {
+              "type": "string",
+              "description": "Summary of what was done"
+            }
+          },
+          "required": ["feature", "task"]
+        }
       }
     ],
     "viewsContainers": {
