@@ -10,8 +10,6 @@ import {
   ensureDir,
   readJson,
   writeJson,
-  readText,
-  writeText,
   fileExists,
 } from '../utils/paths.js';
 import { FeatureJson, FeatureStatusType, TaskInfo, FeatureInfo, CommentsJson, TaskStatus } from '../types.js';

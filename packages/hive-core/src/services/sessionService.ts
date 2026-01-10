@@ -1,19 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getFeaturePath, ensureDir, readJson, writeJson } from '../utils/paths.js';
-
-export interface SessionInfo {
-  sessionId: string;
-  taskFolder?: string;
-  startedAt: string;
-  lastActiveAt: string;
-  messageCount?: number;
-}
-
-export interface SessionsJson {
-  master?: string;
-  sessions: SessionInfo[];
-}
+import { SessionInfo, SessionsJson } from '../types.js';
 
 export class SessionService {
   constructor(private projectRoot: string) {}
@@ -94,9 +82,6 @@ export class SessionService {
     return true;
   }
 
-  /**
-   * Find which feature a session belongs to by searching all features
-   */
   findFeatureBySession(sessionId: string): string | null {
     const featuresPath = path.join(this.projectRoot, '.hive', 'features');
     if (!fs.existsSync(featuresPath)) return null;
