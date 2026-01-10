@@ -16,22 +16,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '20'
-          cache: 'npm'
+          bun-version: latest
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install
+
+      - name: Build hive-core
+        working-directory: packages/hive-core
+        run: bun run build
+
+      - name: Reinstall to link workspace packages
+        run: bun install
 
       - name: Build opencode-hive
-        run: npm run build
         working-directory: packages/opencode-hive
+        run: bun run build
 
       - name: Build vscode-hive
-        run: npm run build
         working-directory: packages/vscode-hive
+        run: bun run build
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
@@ -54,21 +60,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          bun-version: latest
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install
+
+      - name: Build hive-core
+        working-directory: packages/hive-core
+        run: bun run build
+
+      - name: Reinstall to link workspace packages
+        run: bun install
 
       - name: Build opencode-hive
-        run: npm run build
         working-directory: packages/opencode-hive
+        run: bun run build
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: bun publish --access public --provenance
         working-directory: packages/opencode-hive
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
