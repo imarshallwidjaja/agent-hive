@@ -76,7 +76,7 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full breakdown of what we learned fro
 
 3. In Copilot Chat, invoke your agent:
    ```
-   @Hive I want to add user authentication
+   I want to hive plan add user authentication
    ```
 
 The extension provides all 24 Hive tools. The agent file teaches Copilot how to use them.
@@ -385,7 +385,7 @@ Hive complements these excellent projects:
 
 Designed to work seamlessly with:
 
-- **[GitHub Copilot](https://github.com/features/copilot)** — Use `@Hive` in Copilot Chat
+- **[GitHub Copilot](https://github.com/features/copilot)** — Use keyword `hive` in Copilot Chat
 - **[OpenCode](https://opencode.ai)** — The AI coding CLI
 - **VS Code** — Your editor for reviews
 - **Git** — Worktrees for isolation
