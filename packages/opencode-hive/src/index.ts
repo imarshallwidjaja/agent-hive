@@ -13,14 +13,14 @@ const HIVE_SYSTEM_PROMPT = `
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Tools (20 total)
+### Tools (24 total)
 
 | Domain | Tools |
 |--------|-------|
 | Feature | hive_feature_create, hive_feature_list, hive_feature_complete |
 | Plan | hive_plan_write, hive_plan_read, hive_plan_approve |
 | Task | hive_tasks_sync, hive_task_create, hive_task_update |
-| Subtask | hive_subtask_create, hive_subtask_update, hive_subtask_list |
+| Subtask | hive_subtask_create, hive_subtask_update, hive_subtask_list, hive_subtask_spec_write, hive_subtask_report_write |
 | Exec | hive_exec_start, hive_exec_complete, hive_exec_abort |
 | Merge | hive_merge, hive_worktree_list |
 | Context | hive_context_write, hive_context_read, hive_context_list |
@@ -661,6 +661,48 @@ const plugin: Plugin = async (ctx) => {
               const statusIcon = s.status === 'done' ? '✓' : s.status === 'in_progress' ? '→' : '○';
               return `${statusIcon} ${s.id}: ${s.name}${typeTag}`;
             }).join('\n');
+          } catch (e: any) {
+            return `Error: ${e.message}`;
+          }
+        },
+      }),
+
+      hive_subtask_spec_write: tool({
+        description: 'Write spec.md for a subtask (detailed instructions)',
+        args: {
+          task: tool.schema.string().describe('Task folder name'),
+          subtask: tool.schema.string().describe('Subtask ID (e.g., "1.1")'),
+          content: tool.schema.string().describe('Spec content (markdown)'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
+        },
+        async execute({ task, subtask, content, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+
+          try {
+            const specPath = taskService.writeSubtaskSpec(feature, task, subtask, content);
+            return `Subtask spec written: ${specPath}`;
+          } catch (e: any) {
+            return `Error: ${e.message}`;
+          }
+        },
+      }),
+
+      hive_subtask_report_write: tool({
+        description: 'Write report.md for a subtask (what was done)',
+        args: {
+          task: tool.schema.string().describe('Task folder name'),
+          subtask: tool.schema.string().describe('Subtask ID (e.g., "1.1")'),
+          content: tool.schema.string().describe('Report content (markdown)'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
+        },
+        async execute({ task, subtask, content, feature: explicitFeature }) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+
+          try {
+            const reportPath = taskService.writeSubtaskReport(feature, task, subtask, content);
+            return `Subtask report written: ${reportPath}`;
           } catch (e: any) {
             return `Error: ${e.message}`;
           }
