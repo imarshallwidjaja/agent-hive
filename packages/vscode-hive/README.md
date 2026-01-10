@@ -46,10 +46,10 @@ Launch tasks directly in OpenCode from the sidebar.
 ### With GitHub Copilot
 
 1. Install [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) and [Copilot Chat](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat)
-2. Copy the [Hive agent file](docs/Hive.agent.md) to `.github/agents/Hive.agent.md` in your repository
-3. Open Copilot Chat (`Cmd/Ctrl+Shift+L`) and type:
+2. Copy the [Hive agent file](https://github.com/tctinh/agent-hive/blob/main/docs/Hive.agent.md) to `.github/agents/Hive.agent.md` in your repository
+3. Open Copilot Chat (`Cmd/Ctrl+Shift+L`) choose Hive agent and type:
    ```
-   @Hive I want to add user authentication
+   I want hive to add user authentication
    ```
 4. Copilot will:
    - Create a feature with a detailed plan
@@ -94,14 +94,10 @@ Launch tasks directly in OpenCode from the sidebar.
 ### Installation Steps
 
 1. Install the [Hive extension](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive) from VS Code Marketplace
-2. Copy the [Hive agent file](docs/Hive.agent.md) to your repository:
-   ```bash
-   mkdir -p .github/agents
-   cp docs/Hive.agent.md .github/agents/Hive.agent.md
+2. Copy the [Hive agent file](https://github.com/tctinh/agent-hive/blob/main/docs/Hive.agent.md) to your repository
+3. Open Copilot Chat (`Cmd/Ctrl+Shift+L`) choose the Hive agent    and start building:
    ```
-3. Open Copilot Chat (`Cmd/Ctrl+Shift+L`) and start building:
-   ```
-   @Hive I want to add user authentication
+   I want to hive plan add user authentication
    ```
 
 ### Agent File
