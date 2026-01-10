@@ -59,7 +59,6 @@ export function getTaskSpecPath(projectRoot: string, featureName: string, taskFo
   return path.join(getTaskPath(projectRoot, featureName, taskFolder), 'spec.md');
 }
 
-// Subtask paths
 const SUBTASKS_DIR = 'subtasks';
 const SPEC_FILE = 'spec.md';
 

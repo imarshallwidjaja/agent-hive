@@ -1,12 +1,16 @@
 import * as path from 'path';
 import { tool, type Plugin } from "@opencode-ai/plugin";
-import { WorktreeService } from "./services/worktreeService.js";
-import { FeatureService } from "./services/featureService.js";
-import { PlanService } from "./services/planService.js";
-import { TaskService } from "./services/taskService.js";
-import { ContextService } from "./services/contextService.js";
-import { SessionService } from "./services/sessionService.js";
-import { detectContext, listFeatures } from "./utils/detection.js";
+import {
+  WorktreeService,
+  FeatureService,
+  PlanService,
+  TaskService,
+  SubtaskService,
+  ContextService,
+  SessionService,
+  detectContext,
+  listFeatures,
+} from "hive-core";
 
 const HIVE_SYSTEM_PROMPT = `
 ## Hive - Feature Development System
@@ -100,6 +104,7 @@ const plugin: Plugin = async (ctx) => {
   const featureService = new FeatureService(directory);
   const planService = new PlanService(directory);
   const taskService = new TaskService(directory);
+  const subtaskService = new SubtaskService(directory);
   const contextService = new ContextService(directory);
   const sessionService = new SessionService(directory);
   const worktreeService = new WorktreeService({
@@ -613,7 +618,7 @@ const plugin: Plugin = async (ctx) => {
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
           try {
-            const subtask = taskService.createSubtask(feature, task, name, type as any);
+            const subtask = subtaskService.create(feature, task, name, type as any);
             return `Subtask created: ${subtask.id} - ${subtask.name} [${subtask.type || 'custom'}]`;
           } catch (e: any) {
             return `Error: ${e.message}`;
@@ -634,7 +639,7 @@ const plugin: Plugin = async (ctx) => {
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
           try {
-            const updated = taskService.updateSubtask(feature, task, subtask, status as any);
+            const updated = subtaskService.update(feature, task, subtask, status as any);
             return `Subtask ${updated.id} updated: ${updated.status}`;
           } catch (e: any) {
             return `Error: ${e.message}`;
@@ -653,7 +658,7 @@ const plugin: Plugin = async (ctx) => {
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
           try {
-            const subtasks = taskService.listSubtasks(feature, task);
+            const subtasks = subtaskService.list(feature, task);
             if (subtasks.length === 0) return "No subtasks for this task.";
 
             return subtasks.map(s => {
@@ -680,7 +685,7 @@ const plugin: Plugin = async (ctx) => {
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
           try {
-            const specPath = taskService.writeSubtaskSpec(feature, task, subtask, content);
+            const specPath = subtaskService.writeSpec(feature, task, subtask, content);
             return `Subtask spec written: ${specPath}`;
           } catch (e: any) {
             return `Error: ${e.message}`;
@@ -701,7 +706,7 @@ const plugin: Plugin = async (ctx) => {
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
           try {
-            const reportPath = taskService.writeSubtaskReport(feature, task, subtask, content);
+            const reportPath = subtaskService.writeReport(feature, task, subtask, content);
             return `Subtask report written: ${reportPath}`;
           } catch (e: any) {
             return `Error: ${e.message}`;

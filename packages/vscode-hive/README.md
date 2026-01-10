@@ -43,11 +43,34 @@ Launch tasks directly in OpenCode from the sidebar.
 
 ## Usage
 
+### With GitHub Copilot
+
+1. Install [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) and [Copilot Chat](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat)
+2. Copy the [Hive agent file](https://github.com/tctinh/agent-hive/blob/main/docs/Hive.agent.md) to `.github/agents/Hive.agent.md` in your repository
+3. Open Copilot Chat (`Cmd/Ctrl+Shift+L`) choose Hive agent and type:
+   ```
+   I want hive to add user authentication
+   ```
+4. Copilot will:
+   - Create a feature with a detailed plan
+   - Wait for your review and approval
+   - Execute tasks in isolated git worktrees
+   - Generate commits and merge when ready
+
+**Key Features:**
+- **Plan-first approach**: AI writes plans, you review before execution
+- **24 integrated tools**: From feature creation to merging
+- **Parallel execution**: Run multiple tasks at once with sub-agents
+- **Persistent context**: Research findings saved across sessions
+- **TDD support**: Built-in subtasks for test-driven development
+
+### Standalone Mode (without Copilot)
+
 1. Hive activates when `.hive/` folder exists in your workspace
 2. Click the Hive icon in the Activity Bar
 3. View features, tasks, and execution progress
 4. Open plan.md to add review comments
-5. Click "Done Review" when ready for AI to continue
+5. Click "Done Review" when ready to continue
 
 ## Commands
 
@@ -58,6 +81,69 @@ Launch tasks directly in OpenCode from the sidebar.
 | View Details | Show feature details |
 | View Report | Open feature report |
 | Open in OpenCode | Open step in OpenCode |
+
+## GitHub Copilot Setup
+
+### Prerequisites
+
+1. **VS Code 1.100.0 or higher** - Required for LanguageModelTools API
+2. **GitHub Copilot** - Install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot)
+3. **GitHub Copilot Chat** - Install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat)
+4. **Hive Extension** - This extension (tctinh.vscode-hive)
+
+### Installation Steps
+
+1. Install the [Hive extension](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive) from VS Code Marketplace
+2. Copy the [Hive agent file](https://github.com/tctinh/agent-hive/blob/main/docs/Hive.agent.md) to your repository
+3. Open Copilot Chat (`Cmd/Ctrl+Shift+L`) choose the Hive agent    and start building:
+   ```
+   I want to hive plan add user authentication
+   ```
+
+### Agent File
+
+The `.github/agents/Hive.agent.md` file defines how GitHub Copilot should use Hive tools. It includes:
+
+```yaml
+---
+description: 'Plan-first feature development with isolated worktrees...'
+tools: ['vscode', 'execute', 'read', 'edit', 'tctinh.vscode-hive/hiveFeatureCreate', ...]
+---
+# Your custom instructions here
+```
+
+You can customize this file to add your own workflows and preferences.
+
+### Available Tools
+
+| Domain | Tools |
+|---------|--------|
+| **Feature** | `hiveFeatureCreate`, `hiveFeatureList`, `hiveFeatureComplete` |
+| **Plan** | `hivePlanWrite`, `hivePlanRead`, `hivePlanApprove` |
+| **Task** | `hiveTasksSync`, `hiveTaskCreate`, `hiveTaskUpdate` |
+| **Subtask** | `hiveSubtaskCreate`, `hiveSubtaskUpdate`, `hiveSubtaskList`, `hiveSubtaskSpecWrite`, `hiveSubtaskReportWrite` |
+| **Exec** | `hiveExecStart`, `hiveExecComplete`, `hiveExecAbort` |
+| **Merge** | `hiveMerge`, `hiveWorktreeList` |
+| **Context** | `hiveContextWrite`, `hiveContextRead`, `hiveContextList` |
+
+### Usage Tips
+
+- **Task names**: Use kebab-case or snake_case. Spaces in task names may cause git worktree errors.
+- **Context management**: Copilot saves research findings automatically. Check `.hive/features/<name>/context/` for reference.
+- **Parallel execution**: Use `runSubagent` for independent tasks. Each sub-agent gets full tool access.
+- **Plan review**: Open `plan.md` in VS Code to add comments, then click "Done Review" in the Hive sidebar.
+- **Merging**: `hiveExecComplete` commits changes, but you must call `hiveMerge` to integrate.
+
+### Troubleshooting
+
+**Issue**: Copilot doesn't recognize Hive tools
+- **Solution**: Verify `.github/agents/Hive.agent.md` exists and has valid YAML frontmatter with correct tool names.
+
+**Issue**: "Invalid reference" error when starting task
+- **Solution**: Task names with spaces may cause git worktree errors. Use kebab-case (e.g., `user-auth` instead of `User Authentication`).
+
+**Issue**: Tools not available in Copilot Chat
+- **Solution**: Ensure both GitHub Copilot and Copilot Chat extensions are installed and activated. Restart VS Code if needed.
 
 ## Pair with OpenCode
 
