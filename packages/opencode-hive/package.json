@@ -27,7 +27,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "npm run clean && bunx tsc",
+    "build": "npm run clean && bun build src/index.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
     "dev": "opencode plugin dev",
     "test": "bun test"
   },
