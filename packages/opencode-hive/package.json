@@ -35,7 +35,7 @@
     "@opencode-ai/plugin": ">=0.13.7"
   },
   "dependencies": {
-    "simple-git": "^3.27.0"
+    "hive-core": "workspace:*"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.0.143",
