@@ -8,7 +8,7 @@ export function getSubtaskTools(workspaceRoot: string): ToolRegistration[] {
     {
       name: 'hive_subtask_create',
       displayName: 'Create Subtask',
-      modelDescription: 'Create a subtask within a task. Use for TDD workflows: create test subtask, then implement subtask, then verify subtask. Types: test, implement, review, verify, research, debug, custom.',
+      modelDescription: 'Create a subtask within a task for TDD workflows. Generates subtask ID and status. Returns confirmation with subtask ID. Types: test, implement, review, verify, research, debug, custom.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -23,16 +23,16 @@ export function getSubtaskTools(workspaceRoot: string): ToolRegistration[] {
         },
         required: ['feature', 'task', 'name'],
       },
-      invoke: async (input) => {
+      invoke: async (input, _token) => {
         const { feature, task, name, type } = input as { feature: string; task: string; name: string; type?: string };
         const subtask = subtaskService.create(feature, task, name, type as any);
-        return JSON.stringify({ success: true, subtask });
+        return `Created subtask "${subtask.id}" in task "${task}"`;
       },
     },
     {
       name: 'hive_subtask_update',
       displayName: 'Update Subtask',
-      modelDescription: 'Update subtask status. Use to track progress through TDD cycle: pending -> in_progress -> done.',
+      modelDescription: 'Update a subtask status (pending/in_progress/done/cancelled). Returns plain text confirmation with new status. Use to track TDD cycle progress.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -47,16 +47,16 @@ export function getSubtaskTools(workspaceRoot: string): ToolRegistration[] {
         },
         required: ['feature', 'task', 'subtask', 'status'],
       },
-      invoke: async (input) => {
+      invoke: async (input, _token) => {
         const { feature, task, subtask, status } = input as { feature: string; task: string; subtask: string; status: string };
         const updated = subtaskService.update(feature, task, subtask, status as any);
-        return JSON.stringify({ success: true, subtask: updated });
+        return `Subtask "${subtask}" in task "${task}" updated to ${updated.status}`;
       },
     },
     {
       name: 'hive_subtask_list',
       displayName: 'List Subtasks',
-      modelDescription: 'List all subtasks for a task. Use to check TDD progress or see what work remains.',
+      modelDescription: 'List all subtasks for a task. Returns formatted list with status and names. Use to check TDD progress or see what work remains.',
       readOnly: true,
       inputSchema: {
         type: 'object',
@@ -66,10 +66,10 @@ export function getSubtaskTools(workspaceRoot: string): ToolRegistration[] {
         },
         required: ['feature', 'task'],
       },
-      invoke: async (input) => {
+      invoke: async (input, _token) => {
         const { feature, task } = input as { feature: string; task: string };
         const subtasks = subtaskService.list(feature, task);
-        return JSON.stringify({ subtasks });
+        return subtasks.map(st => `- [${st.status}] ${st.id}: ${st.name}`).join('\n');
       },
     },
     {
@@ -86,16 +86,16 @@ export function getSubtaskTools(workspaceRoot: string): ToolRegistration[] {
         },
         required: ['feature', 'task', 'subtask', 'content'],
       },
-      invoke: async (input) => {
+      invoke: async (input, _token) => {
         const { feature, task, subtask, content } = input as { feature: string; task: string; subtask: string; content: string };
         const path = subtaskService.writeSpec(feature, task, subtask, content);
-        return JSON.stringify({ success: true, path });
+        return `Spec written to ${path}`;
       },
     },
     {
       name: 'hive_subtask_report_write',
       displayName: 'Write Subtask Report',
-      modelDescription: 'Write completion report for a subtask in report.md. Use to document what was done and any findings.',
+      modelDescription: 'Write completion report for a subtask in report.md. Returns file path. Use to document what was accomplished and any findings/issues discovered.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -106,10 +106,10 @@ export function getSubtaskTools(workspaceRoot: string): ToolRegistration[] {
         },
         required: ['feature', 'task', 'subtask', 'content'],
       },
-      invoke: async (input) => {
+      invoke: async (input, _token) => {
         const { feature, task, subtask, content } = input as { feature: string; task: string; subtask: string; content: string };
         const path = subtaskService.writeReport(feature, task, subtask, content);
-        return JSON.stringify({ success: true, path });
+        return `Report written to ${path}`;
       },
     },
   ];

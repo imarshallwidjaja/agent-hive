@@ -5,6 +5,85 @@
 
 ---
 
+## Why "Hive"? The Inspiration
+
+### Nature's Most Efficient System
+Bees aren't just insects — they're the world's most efficient distributed workforce. A single hive coordinates thousands of workers without central micromanagement, produces consistent output, and leaves behind a perfect record of their work.
+**The honeycomb is nature's most efficient structure.** Mathematicians proved it: hexagonal cells use the least material to create the most storage space. No wasted effort. No wasted space. Maximum output from minimum input.
+This is exactly what we want from AI agents:
+| Bee Colony | Agent Hive |
+|------------|------------|
+| Queen coordinates, doesn't micromanage | Planner orchestrates, workers execute autonomously |
+| Each worker knows their role | Each task agent has clear spec.md instructions |
+| Honeycomb stores everything efficiently | `.hive/` structure organizes all artifacts |
+| Waggle dance communicates plans | Plan → Review → Approve workflow |
+| Royal jelly nourishes development | Context files ground agents in reality |
+| Honey is the valuable output | Documentation emerges naturally from work |
+| Propolis seals and protects | TDD verification ensures quality |
+### The Parallel is Intentional
+A beehive solves the exact problems we face with AI agents:
+- **Coordination without chaos** — Thousands of bees, zero conflicts
+- **Distributed execution** — Workers operate independently but toward shared goals
+- **Persistent memory** — The hive structure itself encodes knowledge
+- **Quality assurance** — Bees inspect cells before sealing
+- **Traceability** — Every cell, every drop of honey, accounted for
+When we designed Agent Hive, we asked: *"What if AI agents could work like a bee colony?"*
+The answer became this platform.
+---
+## 🐝 Hive Terminology
+| Term | Role | Description |
+|------|------|-------------|
+| **Beekeeper** | 🧑‍🌾 You | The human operator. Observes, steers, approves. Doesn't do the work — manages the hive. |
+| **Hive** | 🏠 Platform | The Agent Hive platform itself. The structured workspace where agents operate. |
+| **Hive Queen** | 👑 Orchestrator | The planning agent (e.g., OmO Prometheus). Commands workers, designs the plan, coordinates execution. |
+| **Workers** | 🐝 Executors | Task-executing agents (e.g., Sisyphus). Do the actual coding, isolated in their cells. |
+| **Nest** | 🪹 Feature | A feature. Self-contained with its own plan, context, and tasks. (`.hive/features/<name>/`) |
+| **Comb** | 🍯 Task Structure | The organized grid of cells (tasks) within a nest. The work breakdown structure. |
+| **Cells** | ⬡ Tasks | Individual tasks within a comb. Each cell is isolated (worktree) and produces one unit of work. |
+| **Royal Jelly** | 👑🍯 Context | Context files that nourish workers — research, decisions, references. Without it, workers hallucinate. |
+| **Honey** | 🍯 Artifacts | The output — `plan.md`, `spec.md`, `report.md`, code. Persistent documentation that emerges from work. |
+| **Propolis** | 🔒 Verification | TDD subtasks that seal work as complete. Tests prove the cell is solid. |
+| **Waggle Dance** | 💃 Planning | The planning phase. Queen communicates, Beekeeper reviews, alignment before action. |
+| **Swarming** | 🐝🐝🐝 Parallelism | Batched parallel execution. Multiple workers dispatched simultaneously to their cells. |
+| **Hiving** | 🐝 Working | The act of using the Hive platform. *"Stop vibing. Start hiving."* |
+---
+## The Hive Mental Model
+```
+    🧑‍🌾 BEEKEEPER (You)
+         │
+         ├── Observes the hive
+         ├── Reviews the waggle dance (plan)
+         ├── Approves when ready  
+         └── Harvests the honey (ships)
+         │
+    ─────┴─────
+         │
+    👑 HIVE QUEEN (Planner Agent)
+         │
+         ├── Creates the nest (feature)
+         ├── Produces royal jelly (context)
+         ├── Designs the comb (task breakdown)
+         └── Commands the swarm (parallel execution)
+         │
+    ─────┼─────────────────┬─────────────────┐
+         │                 │                 │
+    🐝 WORKER          🐝 WORKER         🐝 WORKER
+         │                 │                 │
+    ⬡ Cell (worktree)  ⬡ Cell (worktree) ⬡ Cell (worktree)
+         │                 │                 │
+    🍯 Honey           🍯 Honey          🍯 Honey
+    (spec + report)    (spec + report)   (spec + report)
+         │                 │                 │
+    🔒 Propolis        🔒 Propolis       🔒 Propolis
+    (TDD verified)     (TDD verified)    (TDD verified)
+```
+### The Efficiency Promise
+Just as a beehive achieves remarkable output through structure, not chaos:
+> **Every worker, every cell, every drop of honey — tracked.**
+The Hive platform doesn't slow agents down. It channels their energy into **hexagonal efficiency**: maximum output, minimum waste, perfect traceability.
+
+---
+
 ## Built on Battle-Tested Principles
 
 Hive's design is grounded in proven practices from the AI coding community, particularly [Boris Cherny's 13 Pro Tips for Claude Code](https://www.anthropic.com/research/claude-code-best-practices).

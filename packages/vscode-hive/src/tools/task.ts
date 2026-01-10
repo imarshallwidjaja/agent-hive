@@ -1,5 +1,6 @@
-import { TaskService } from 'hive-core';
+import { TaskService, TaskStatusType } from 'hive-core';
 import type { ToolRegistration } from './base';
+import { createToolResult } from './base';
 
 export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
   const taskService = new TaskService(workspaceRoot);
@@ -8,7 +9,7 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
     {
       name: 'hive_tasks_sync',
       displayName: 'Sync Hive Tasks',
-      modelDescription: 'Generate tasks from an approved plan. Parses ### numbered headers and creates task folders. Use after hive_plan_approve to create executable tasks.',
+      modelDescription: 'Generate tasks from approved plan.md by parsing ### numbered headers. Creates task folders with status.json. Returns summary of created/removed/kept tasks. Use after hive_plan_approve.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -19,17 +20,10 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
         },
         required: ['feature'],
       },
-      invoke: async (input) => {
+      invoke: async (input, _token) => {
         const { feature } = input as { feature: string };
         const result = taskService.sync(feature);
-        return JSON.stringify({
-          success: true,
-          created: result.created,
-          removed: result.removed,
-          kept: result.kept,
-          manual: result.manual,
-          message: `${result.created.length} tasks created. Use hive_exec_start to begin work on a task.`,
-        });
+        return `${result.created.length} tasks created, ${result.removed.length} removed, ${result.kept.length} kept, ${result.manual.length} manual`;
       },
     },
     {
@@ -54,21 +48,16 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
         },
         required: ['feature', 'name'],
       },
-      invoke: async (input) => {
+      invoke: async (input, _token) => {
         const { feature, name, order } = input as { feature: string; name: string; order?: number };
-        const task = taskService.create(feature, name, order);
-        return JSON.stringify({
-          success: true,
-          task: task.folder,
-          name: task.name,
-          status: task.status,
-        });
+        const folder = taskService.create(feature, name, order);
+        return `Created task "${folder}" with status: pending`;
       },
     },
     {
       name: 'hive_task_update',
       displayName: 'Update Hive Task',
-      modelDescription: 'Update a task status or summary. Use to track progress or add notes about completed work.',
+      modelDescription: 'Update a task status (pending/in_progress/done/cancelled) or add a work summary. Returns plain text confirmation. Does NOT merge - use hive_merge for integration.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -92,20 +81,19 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
         },
         required: ['feature', 'task'],
       },
-      invoke: async (input) => {
+      invoke: async (input, _token) => {
         const { feature, task, status, summary } = input as {
           feature: string;
           task: string;
-          status?: string;
+          status?: TaskStatusType;
           summary?: string;
         };
-        const updated = taskService.update(feature, task, status as any, summary);
-        return JSON.stringify({
-          success: true,
-          task: updated.folder,
-          status: updated.status,
-          summary: updated.summary,
-        });
+        const updates: { status?: TaskStatusType; summary?: string } = {};
+        if (status) updates.status = status;
+        if (summary) updates.summary = summary;
+        const updated = taskService.update(feature, task, updates);
+        const statusMsg = summary ? `. Summary: ${summary}` : '';
+        return `Task "${task}" updated to ${updated.status}${statusMsg}`;
       },
     },
   ];

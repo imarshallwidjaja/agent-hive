@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { WorktreeService } from 'hive-core';
+import { WorktreeService, TaskService } from 'hive-core';
 import type { ToolRegistration } from './base';
 
 export function getExecTools(workspaceRoot: string): ToolRegistration[] {
@@ -7,6 +7,7 @@ export function getExecTools(workspaceRoot: string): ToolRegistration[] {
     baseDir: workspaceRoot,
     hiveDir: path.join(workspaceRoot, '.hive'),
   });
+  const taskService = new TaskService(workspaceRoot);
 
   return [
     {
@@ -47,12 +48,24 @@ export function getExecTools(workspaceRoot: string): ToolRegistration[] {
       },
       invoke: async (input) => {
         const { feature, task, summary } = input as { feature: string; task: string; summary: string };
-        const result = await worktreeService.commit(feature, task, summary);
+        const result = await worktreeService.commitChanges(feature, task, summary);
+        
+        // Mark task as done and create report if commit succeeded
+        if (result.committed) {
+          taskService.update(feature, task, { status: 'done', summary });
+          
+          // Generate report
+          const reportContent = `# Task Completion Report\n\n**Task:** ${task}\n**Status:** Done\n**Completed:** ${new Date().toISOString()}\n**Commit:** ${result.sha}\n\n## Summary\n\n${summary}\n`;
+          taskService.writeReport(feature, task, reportContent);
+        }
+        
         return JSON.stringify({
           success: true,
-          commitHash: result.hash,
-          branch: result.branch,
-          message: `Changes committed. Use hive_merge to integrate into main branch.`,
+          commitHash: result.sha,
+          committed: result.committed,
+          message: result.committed 
+            ? `Changes committed. Use hive_merge to integrate into main branch.`
+            : result.message || 'No changes to commit',
         });
       },
     },
@@ -72,6 +85,8 @@ export function getExecTools(workspaceRoot: string): ToolRegistration[] {
       invoke: async (input) => {
         const { feature, task } = input as { feature: string; task: string };
         await worktreeService.remove(feature, task);
+        // Reset task status to pending
+        taskService.update(feature, task, { status: 'pending', summary: '' });
         return JSON.stringify({
           success: true,
           message: `Worktree removed. Task status reset to pending. Can restart with hive_exec_start.`,

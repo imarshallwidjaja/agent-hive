@@ -65,7 +65,25 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full breakdown of what we learned fro
 
 ## Quick Start
 
-### 1. Add to OpenCode
+### Option A: GitHub Copilot
+
+1. Install the **Agent Hive** extension:
+   ```bash
+   code --install-extension tctinh.vscode-hive
+   ```
+
+2. Create `.github/agents/Hive.agent.md` in your repository (copy from this repo or see the [GitHub Copilot Guide](docs/GITHUB-COPILOT-GUIDE.md))
+
+3. In Copilot Chat, invoke your agent:
+   ```
+   @Hive I want to add user authentication
+   ```
+
+The extension provides all 24 Hive tools. The agent file teaches Copilot how to use them.
+
+See the full [GitHub Copilot Guide](docs/GITHUB-COPILOT-GUIDE.md) for creating and customizing your agent.
+
+### Option B: OpenCode
 
 Add `opencode-hive` to your `opencode.json`:
 
@@ -78,15 +96,7 @@ Add `opencode-hive` to your `opencode.json`:
 
 OpenCode handles the rest — no manual npm install needed.
 
-### 2. Install VS Code Extension
-
-```bash
-code --install-extension tctinh.vscode-hive
-```
-
-Or search "Hive" in VS Code Extensions.
-
-### 3. Start Hiving
+### Start Hiving
 
 ```
 You: "Create a feature for user dashboard"
@@ -365,10 +375,17 @@ Hive complements these excellent projects:
 
 ---
 
-## Built for the OpenCode Ecosystem
+## Platform Support
+
+| Platform | Setup | Status |
+|----------|-------|--------|
+| **GitHub Copilot** | Install extension + create agent file | Full support |
+| **OpenCode** | Add `opencode-hive` plugin | Full support |
+| **VS Code** | Extension for visual management | Full support |
 
 Designed to work seamlessly with:
 
+- **[GitHub Copilot](https://github.com/features/copilot)** — Use `@Hive` in Copilot Chat
 - **[OpenCode](https://opencode.ai)** — The AI coding CLI
 - **VS Code** — Your editor for reviews
 - **Git** — Worktrees for isolation
