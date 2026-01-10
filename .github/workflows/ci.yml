@@ -10,34 +10,29 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [20.x, 22.x]
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          bun-version: latest
 
       - name: Install dependencies
-        run: npm install
+        run: bun install
 
       - name: Build opencode-hive
-        run: npm run build
+        run: bun run build
         working-directory: packages/opencode-hive
 
       - name: Build vscode-hive
-        run: npm run build
+        run: bun run build
         working-directory: packages/vscode-hive
 
       - name: Type check opencode-hive
-        run: npx tsc --noEmit
+        run: bunx tsc --noEmit
         working-directory: packages/opencode-hive
 
-      - name: Type check vscode-hive  
-        run: npx tsc --noEmit
+      - name: Type check vscode-hive
+        run: bunx tsc --noEmit
         working-directory: packages/vscode-hive
