@@ -76,6 +76,27 @@ Description of what to do.
 Description.
 ```
 
+## Agent Variants
+
+Configure model variants per Hive agent in `~/.config/opencode/agent_hive.json`:
+
+```json
+{
+  "agents": {
+    "hive": {
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "variant": "reasoning"
+    },
+    "forager": {
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "variant": "fast"
+    }
+  }
+}
+```
+
+Variants are applied as `provider/model:variant`. See https://opencode.ai/docs/models/#variants for supported values.
+
 ## Pair with VS Code
 
 For the full experience, install [vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive) to review plans inline with comments.
