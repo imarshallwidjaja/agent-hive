@@ -113,6 +113,8 @@ export interface TaskSpec {
 export interface AgentModelConfig {
   /** Model to use - format: "provider/model-id" (e.g., 'anthropic/claude-sonnet-4-20250514') */
   model?: string;
+  /** Optional model variant to append (e.g., "reasoning") */
+  variant?: string;
   /** Temperature for generation (0-2) */
   temperature?: number;
   /** Skills to enable for this agent */

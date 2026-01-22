@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { HiveConfig, DEFAULT_HIVE_CONFIG } from '../types.js';
+import { AgentModelConfig, HiveConfig, DEFAULT_HIVE_CONFIG } from '../types.js';
 
 /**
  * ConfigService manages user config at ~/.config/opencode/agent_hive.json
@@ -128,8 +128,16 @@ export class ConfigService {
   /**
    * Get agent-specific model config (hive or forager)
    */
-  getAgentConfig(agent: 'hive' | 'forager'): { model?: string; temperature?: number; skills?: string[] } {
+  getAgentConfig(agent: 'hive' | 'forager'): AgentModelConfig {
     const config = this.get();
-    return config.agents?.[agent] ?? {};
+    const agentConfig = config.agents?.[agent] ?? {};
+    const trimmedVariant = typeof agentConfig.variant === 'string'
+      ? agentConfig.variant.trim()
+      : undefined;
+
+    return {
+      ...agentConfig,
+      variant: trimmedVariant && trimmedVariant.length > 0 ? trimmedVariant : undefined,
+    };
   }
 }
