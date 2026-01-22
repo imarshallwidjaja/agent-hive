@@ -1200,9 +1200,22 @@ Make the requested changes, then call hive_request_review again.`;
       const hiveUserConfig = configService.getAgentConfig('hive');
       const foragerUserConfig = configService.getAgentConfig('forager');
 
+      const applyAgentVariant = (model?: string, variant?: string) => {
+        if (!model || !variant) {
+          return model;
+        }
+
+        const trimmedVariant = variant.trim();
+        if (!trimmedVariant || model.includes(':')) {
+          return model;
+        }
+
+        return `${model}:${trimmedVariant}`;
+      };
+
       // Define hive agent config
       const hiveAgentConfig = {
-        model: hiveUserConfig.model,  // From ~/.config/opencode/agent_hive.json
+        model: applyAgentVariant(hiveUserConfig.model, hiveUserConfig.variant),  // From ~/.config/opencode/agent_hive.json
         temperature: hiveUserConfig.temperature ?? 0.7,
         description: 'Hive Master - plan-first development with structured workflow and worker delegation',
         prompt: buildHiveAgentPrompt(undefined, false),
@@ -1218,7 +1231,7 @@ Make the requested changes, then call hive_request_review again.`;
 
       // Define forager agent config (worker for task execution)
       const foragerAgentConfig = {
-        model: foragerUserConfig.model,  // From ~/.config/opencode/agent_hive.json
+        model: applyAgentVariant(foragerUserConfig.model, foragerUserConfig.variant),  // From ~/.config/opencode/agent_hive.json
         temperature: foragerUserConfig.temperature ?? 0.3,  // Low temperature for focused implementation
         description: 'Forager - Task executor (worker). Spawned by Hive Master for isolated task execution.',
         prompt: foragerAgent.prompt,
