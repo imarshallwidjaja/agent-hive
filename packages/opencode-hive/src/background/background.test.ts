@@ -1385,6 +1385,173 @@ describe('Misconfiguration Messaging', () => {
 });
 
 // ============================================================================
+// Variant Threading in Background Tasks
+// ============================================================================
+
+describe('Variant Threading in Background Tasks', () => {
+  it('passes variant into session.prompt body when provided in spawn options', async () => {
+    const store = new BackgroundTaskStore();
+
+    const promptCalls: Array<{ id: string; body: Record<string, unknown> }> = [];
+
+    const client: OpencodeClient = {
+      session: {
+        create: async () => ({ data: { id: 'session-variant-test' } }),
+        prompt: async ({ path, body }) => {
+          promptCalls.push({ id: path.id, body: body as Record<string, unknown> });
+          return { data: {} };
+        },
+        get: async () => ({ data: { id: 'session-variant-test', status: 'idle' } }),
+        messages: async () => ({ data: [] }),
+        abort: async () => {},
+        status: async () => ({ data: { 'session-variant-test': { type: 'idle' } } }),
+      },
+      app: {
+        agents: async () => ({ data: [{ name: 'forager-worker', mode: 'subagent' }] }),
+        log: async () => {},
+      },
+      config: {
+        get: async () => ({ data: {} }),
+      },
+    };
+
+    const manager = new BackgroundManager({
+      client,
+      projectRoot: '/tmp',
+      store,
+      concurrency: { defaultLimit: 1, minDelayBetweenStartsMs: 0 },
+    });
+
+    const spawn = await manager.spawn({
+      agent: 'forager-worker',
+      prompt: 'test prompt',
+      description: 'test with variant',
+      variant: 'high',
+    });
+
+    expect(spawn.error).toBeUndefined();
+    
+    // Wait a tick for the async prompt call
+    await new Promise(r => setTimeout(r, 50));
+
+    // Find the prompt call for the worker session
+    const workerPrompt = promptCalls.find(c => c.id === 'session-variant-test');
+    expect(workerPrompt).toBeDefined();
+    expect(workerPrompt?.body.variant).toBe('high');
+
+    manager.shutdown();
+  });
+
+  it('does not include variant in prompt body when not provided', async () => {
+    const store = new BackgroundTaskStore();
+
+    const promptCalls: Array<{ id: string; body: Record<string, unknown> }> = [];
+
+    const client: OpencodeClient = {
+      session: {
+        create: async () => ({ data: { id: 'session-no-variant' } }),
+        prompt: async ({ path, body }) => {
+          promptCalls.push({ id: path.id, body: body as Record<string, unknown> });
+          return { data: {} };
+        },
+        get: async () => ({ data: { id: 'session-no-variant', status: 'idle' } }),
+        messages: async () => ({ data: [] }),
+        abort: async () => {},
+        status: async () => ({ data: { 'session-no-variant': { type: 'idle' } } }),
+      },
+      app: {
+        agents: async () => ({ data: [{ name: 'forager-worker', mode: 'subagent' }] }),
+        log: async () => {},
+      },
+      config: {
+        get: async () => ({ data: {} }),
+      },
+    };
+
+    const manager = new BackgroundManager({
+      client,
+      projectRoot: '/tmp',
+      store,
+      concurrency: { defaultLimit: 1, minDelayBetweenStartsMs: 0 },
+    });
+
+    const spawn = await manager.spawn({
+      agent: 'forager-worker',
+      prompt: 'test prompt',
+      description: 'test without variant',
+      // No variant provided
+    });
+
+    expect(spawn.error).toBeUndefined();
+    
+    // Wait a tick for the async prompt call
+    await new Promise(r => setTimeout(r, 50));
+
+    // Find the prompt call for the worker session
+    const workerPrompt = promptCalls.find(c => c.id === 'session-no-variant');
+    expect(workerPrompt).toBeDefined();
+    expect(workerPrompt?.body.variant).toBeUndefined();
+
+    manager.shutdown();
+  });
+
+  it('passes empty string variant when explicitly set to empty', async () => {
+    const store = new BackgroundTaskStore();
+
+    const promptCalls: Array<{ id: string; body: Record<string, unknown> }> = [];
+
+    const client: OpencodeClient = {
+      session: {
+        create: async () => ({ data: { id: 'session-empty-variant' } }),
+        prompt: async ({ path, body }) => {
+          promptCalls.push({ id: path.id, body: body as Record<string, unknown> });
+          return { data: {} };
+        },
+        get: async () => ({ data: { id: 'session-empty-variant', status: 'idle' } }),
+        messages: async () => ({ data: [] }),
+        abort: async () => {},
+        status: async () => ({ data: { 'session-empty-variant': { type: 'idle' } } }),
+      },
+      app: {
+        agents: async () => ({ data: [{ name: 'forager-worker', mode: 'subagent' }] }),
+        log: async () => {},
+      },
+      config: {
+        get: async () => ({ data: {} }),
+      },
+    };
+
+    const manager = new BackgroundManager({
+      client,
+      projectRoot: '/tmp',
+      store,
+      concurrency: { defaultLimit: 1, minDelayBetweenStartsMs: 0 },
+    });
+
+    // Empty string should be treated as "no variant" and not passed
+    const spawn = await manager.spawn({
+      agent: 'forager-worker',
+      prompt: 'test prompt',
+      description: 'test with empty variant',
+      variant: '',
+    });
+
+    expect(spawn.error).toBeUndefined();
+    
+    // Wait a tick for the async prompt call
+    await new Promise(r => setTimeout(r, 50));
+
+    // Find the prompt call for the worker session
+    const workerPrompt = promptCalls.find(c => c.id === 'session-empty-variant');
+    expect(workerPrompt).toBeDefined();
+    // Empty string should not be passed (treated as undefined)
+    expect(workerPrompt?.body.variant).toBeUndefined();
+
+    manager.shutdown();
+  });
+});
+
+// ============================================================================
 // Regression Coverage: Hive Task Ordering with Background Tasks
 // ============================================================================
 

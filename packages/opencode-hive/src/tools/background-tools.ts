@@ -11,12 +11,14 @@
  */
 
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { type ConfigService } from 'hive-core';
 import {
   BackgroundManager,
   BackgroundTaskRecord,
   isTerminalStatus,
   type OpencodeClient,
 } from '../background/index.js';
+import { isHiveAgent, normalizeVariant } from '../hooks/variant-hook.js';
 
 /**
  * Output format for background_task tool.
@@ -43,14 +45,28 @@ interface ToolContext {
 }
 
 /**
+ * Options for creating background tools.
+ */
+export interface BackgroundToolsOptions {
+  /** The BackgroundManager instance for task lifecycle */
+  manager: BackgroundManager;
+  /** OpenCode client for session operations */
+  client: OpencodeClient;
+  /** Optional ConfigService for resolving per-agent variants */
+  configService?: ConfigService;
+}
+
+/**
  * Create background task tools.
  * 
  * @param manager - The BackgroundManager instance for task lifecycle
  * @param client - OpenCode client for session operations
+ * @param configService - Optional ConfigService for resolving per-agent variants
  */
 export function createBackgroundTools(
   manager: BackgroundManager,
-  client: OpencodeClient
+  client: OpencodeClient,
+  configService?: ConfigService
 ): {
   background_task: ToolDefinition;
   background_output: ToolDefinition;
@@ -119,6 +135,13 @@ export function createBackgroundTools(
       ): Promise<string> {
         const ctx = toolContext as ToolContext;
 
+        // Resolve configured variant for Hive agents
+        let variant: string | undefined;
+        if (configService && isHiveAgent(agent)) {
+          const agentConfig = configService.getAgentConfig(agent);
+          variant = normalizeVariant(agentConfig.variant);
+        }
+
         // Spawn the task
         const result = await manager.spawn({
           agent,
@@ -134,6 +157,7 @@ export function createBackgroundTools(
           hiveTaskFolder: hiveTask,
           sync,
           attempt,
+          variant,
         });
 
         // Handle spawn errors

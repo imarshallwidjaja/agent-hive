@@ -183,10 +183,11 @@ const plugin: Plugin = async (ctx) => {
     projectRoot: directory,
   });
 
-  // Create background tools
+  // Create background tools with ConfigService for per-agent variant resolution
   const backgroundTools = createBackgroundTools(
     backgroundManager,
-    client as unknown as OpencodeClient
+    client as unknown as OpencodeClient,
+    configService
   );
 
   /**

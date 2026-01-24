@@ -217,6 +217,9 @@ export class BackgroundManager {
     // Start the poller if not already running
     this.poller.start();
 
+    // Normalize variant: empty string or whitespace-only should be treated as undefined
+    const normalizedVariant = options.variant?.trim() || undefined;
+
     // Fire prompt asynchronously (don't await)
     this.client.session
       .prompt({
@@ -229,6 +232,8 @@ export class BackgroundManager {
             background_task: false,
             delegate: false,
           },
+          // Pass variant to OpenCode for model options merging
+          ...(normalizedVariant !== undefined && { variant: normalizedVariant }),
         },
       })
       .catch((error: Error) => {

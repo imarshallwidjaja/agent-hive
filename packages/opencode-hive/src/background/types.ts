@@ -127,6 +127,13 @@ export interface SpawnOptions {
    * Used only for Hive-linked tasks to persist workerSession.attempt correctly.
    */
   attempt?: number;
+
+  /**
+   * Model variant key to apply to the background task prompt.
+   * This is passed to OpenCode's session.prompt body and merged with
+   * model.variants[variantKey] into provider options.
+   */
+  variant?: string;
 }
 
 /**
@@ -188,6 +195,7 @@ export interface OpencodeClient {
         agent?: string;
         parts: Array<{ type: string; text: string }>;
         tools?: Record<string, boolean>;
+        variant?: string;
       };
     }): Promise<{ data?: unknown }>;
     
