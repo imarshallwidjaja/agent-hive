@@ -146,19 +146,3 @@ export function writeWorkerPromptFile(
 
   return promptPath;
 }
-
-/**
- * Get the expected worker prompt file path for a task.
- * 
- * @param feature - Feature name
- * @param task - Task folder name
- * @param hiveDir - The .hive directory path
- * @returns The path where the worker prompt file should be located
- */
-export function getWorkerPromptFilePath(
-  feature: string,
-  task: string,
-  hiveDir: string
-): string {
-  return path.join(hiveDir, 'features', feature, 'tasks', task, 'worker-prompt.md');
-}
