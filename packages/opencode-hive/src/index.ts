@@ -86,6 +86,7 @@ import {
 } from "hive-core";
 import { buildWorkerPrompt, type ContextFile, type CompletedTask } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
+import { applyTaskBudget, applyContextBudget, DEFAULT_BUDGET, type TruncationEvent } from "./utils/prompt-budgeting";
 import { createBackgroundManager, type OpencodeClient } from "./background/index.js";
 import { createBackgroundTools } from "./tools/background-tools.js";
 import { HIVE_AGENT_NAMES, isHiveAgent, normalizeVariant } from "./hooks/variant-hook.js";
@@ -592,20 +593,46 @@ Add this section to your plan content and try again.`;
           
           // Use contextService.list() instead of manual fs reads (Task 03 deduplication)
           // This replaces: fs.existsSync/readdirSync/readFileSync pattern
-          const contextFiles: ContextFile[] = contextService.list(feature).map(f => ({
+          const rawContextFiles = contextService.list(feature).map(f => ({
             name: f.name,
             content: f.content,
           }));
           
           // Collect previous tasks ONCE and derive both formats from it
-          const previousTasks: CompletedTask[] = allTasks
+          const rawPreviousTasks = allTasks
             .filter(t => t.status === 'done' && t.summary)
             .map(t => ({ name: t.folder, summary: t.summary! }));
           
-          // Format previous tasks for spec (derived from previousTasks, not a separate collection)
+          // Apply deterministic budgeting to bound prompt growth (Task 04)
+          // - Limits to last N tasks with truncated summaries
+          // - Truncates context files exceeding budget
+          // - Emits truncation events for warnings
+          const taskBudgetResult = applyTaskBudget(rawPreviousTasks, { ...DEFAULT_BUDGET, feature });
+          const contextBudgetResult = applyContextBudget(rawContextFiles, { ...DEFAULT_BUDGET, feature });
+          
+          // Use budgeted versions for prompt construction
+          const contextFiles: ContextFile[] = contextBudgetResult.files.map(f => ({
+            name: f.name,
+            content: f.content,
+          }));
+          const previousTasks: CompletedTask[] = taskBudgetResult.tasks.map(t => ({
+            name: t.name,
+            summary: t.summary,
+          }));
+          
+          // Collect all truncation events for warnings
+          const truncationEvents: TruncationEvent[] = [
+            ...taskBudgetResult.truncationEvents,
+            ...contextBudgetResult.truncationEvents,
+          ];
+          
+          // Format previous tasks for spec (derived from budgeted previousTasks)
           const priorTasksFormatted = previousTasks
             .map(t => `- ${t.name}: ${t.summary}`)
             .join('\n');
+          
+          // Add hint about dropped tasks if any were omitted
+          const droppedTasksHint = taskBudgetResult.droppedTasksHint;
 
           let specContent = `# Task: ${task}\n\n`;
           specContent += `## Feature: ${feature}\n\n`;
@@ -767,14 +794,35 @@ If background_task rejects workdir/idempotencyKey/feature/task/attempt parameter
           });
 
           // Check for warnings about threshold exceedance
-          const warnings = checkWarnings(promptMeta, payloadMeta);
+          const sizeWarnings = checkWarnings(promptMeta, payloadMeta);
+          
+          // Convert truncation events to warnings format for unified output
+          const budgetWarnings = truncationEvents.map(event => ({
+            type: event.type as string,
+            severity: 'info' as const,
+            message: event.message,
+            affected: event.affected,
+            count: event.count,
+          }));
+          
+          // Combine all warnings
+          const allWarnings = [...sizeWarnings, ...budgetWarnings];
 
           // Return delegation instructions with observability data
           return JSON.stringify({
             ...responseBase,
             promptMeta,
             payloadMeta,
-            warnings: warnings.length > 0 ? warnings : undefined,
+            budgetApplied: {
+              maxTasks: DEFAULT_BUDGET.maxTasks,
+              maxSummaryChars: DEFAULT_BUDGET.maxSummaryChars,
+              maxContextChars: DEFAULT_BUDGET.maxContextChars,
+              maxTotalContextChars: DEFAULT_BUDGET.maxTotalContextChars,
+              tasksIncluded: previousTasks.length,
+              tasksDropped: rawPreviousTasks.length - previousTasks.length,
+              droppedTasksHint,
+            },
+            warnings: allWarnings.length > 0 ? allWarnings : undefined,
           }, null, 2);
         },
       }),

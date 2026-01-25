@@ -2014,3 +2014,151 @@ background_task({
     });
   });
 });
+
+// ============================================================================
+// Task 04: Deterministic Prompt Budgeting Tests
+// ============================================================================
+
+import { 
+  applyTaskBudget, 
+  applyContextBudget, 
+  DEFAULT_BUDGET,
+  type TaskInput,
+  type ContextInput,
+} from '../utils/prompt-budgeting.js';
+
+describe('Deterministic Prompt Budgeting - Integration', () => {
+  describe('bounds prompt growth with many prior tasks', () => {
+    it('keeps total previous tasks content under threshold with 50 tasks', () => {
+      // Simulate a feature with many completed tasks (50 tasks, ~500 chars each)
+      const tasks: TaskInput[] = Array.from({ length: 50 }, (_, i) => ({
+        name: `${String(i + 1).padStart(2, '0')}-task-${i}`,
+        summary: `This is task ${i + 1} summary with enough content to be meaningful. `.repeat(8),
+      }));
+
+      const result = applyTaskBudget(tasks, DEFAULT_BUDGET);
+
+      // Should only include last N tasks (DEFAULT_BUDGET.maxTasks = 10)
+      expect(result.tasks.length).toBeLessThanOrEqual(DEFAULT_BUDGET.maxTasks);
+      
+      // Calculate total chars in result
+      const totalChars = result.tasks.reduce((sum, t) => sum + t.summary.length, 0);
+
+      // Should be bounded by maxTasks * maxSummaryChars (with some buffer for markers)
+      const maxExpected = DEFAULT_BUDGET.maxTasks * (DEFAULT_BUDGET.maxSummaryChars + 50);
+      expect(totalChars).toBeLessThanOrEqual(maxExpected);
+    });
+
+    it('emits truncation events when tasks are dropped', () => {
+      const tasks: TaskInput[] = Array.from({ length: 20 }, (_, i) => ({
+        name: `${String(i + 1).padStart(2, '0')}-task`,
+        summary: `Task ${i + 1} summary`,
+      }));
+
+      const result = applyTaskBudget(tasks, { ...DEFAULT_BUDGET, maxTasks: 5 });
+
+      // Should have dropped 15 tasks
+      expect(result.tasks.length).toBe(5);
+      expect(result.truncationEvents.some(e => e.type === 'tasks_dropped')).toBe(true);
+      
+      const dropEvent = result.truncationEvents.find(e => e.type === 'tasks_dropped');
+      expect(dropEvent?.count).toBe(15);
+    });
+
+    it('provides file path hints for dropped tasks', () => {
+      const tasks: TaskInput[] = Array.from({ length: 5 }, (_, i) => ({
+        name: `0${i + 1}-task`,
+        summary: `Summary ${i + 1}`,
+      }));
+
+      const result = applyTaskBudget(tasks, { ...DEFAULT_BUDGET, maxTasks: 2, feature: 'my-feature' });
+
+      expect(result.droppedTasksHint).toBeDefined();
+      expect(result.droppedTasksHint).toContain('.hive/features/my-feature/tasks');
+      expect(result.droppedTasksHint).toContain('01-task');
+    });
+  });
+
+  describe('bounds prompt growth with large context files', () => {
+    it('keeps total context content under threshold', () => {
+      // Simulate large context files (10 files, ~20KB each)
+      const files: ContextInput[] = Array.from({ length: 10 }, (_, i) => ({
+        name: `context-${i}`,
+        content: `Context file ${i} content. `.repeat(1000),
+      }));
+
+      const result = applyContextBudget(files, DEFAULT_BUDGET);
+
+      // Calculate total chars in result
+      const totalChars = result.files.reduce((sum, f) => sum + f.content.length, 0);
+
+      // Should be bounded by maxTotalContextChars (with some buffer)
+      expect(totalChars).toBeLessThanOrEqual(DEFAULT_BUDGET.maxTotalContextChars + 500);
+    });
+
+    it('truncates individual large context files', () => {
+      const files: ContextInput[] = [
+        { name: 'huge-file', content: 'X'.repeat(10000) },
+      ];
+
+      const result = applyContextBudget(files, { ...DEFAULT_BUDGET, maxContextChars: 500 });
+
+      expect(result.files[0].truncated).toBe(true);
+      expect(result.files[0].content.length).toBeLessThanOrEqual(550);
+      expect(result.files[0].content).toContain('...[truncated]');
+    });
+
+    it('provides file path hints for truncated context', () => {
+      const files: ContextInput[] = [
+        { name: 'decisions', content: 'Y'.repeat(10000) },
+      ];
+
+      const result = applyContextBudget(files, { ...DEFAULT_BUDGET, maxContextChars: 500, feature: 'test-feature' });
+
+      expect(result.files[0].pathHint).toContain('.hive/features/test-feature/context/decisions.md');
+    });
+  });
+
+  describe('never removes access to full info', () => {
+    it('always provides path hints when truncation occurs', () => {
+      const tasks: TaskInput[] = [
+        { name: '01-task', summary: 'A'.repeat(1000) },
+      ];
+
+      const result = applyTaskBudget(tasks, { ...DEFAULT_BUDGET, maxSummaryChars: 100, feature: 'my-feat' });
+
+      // Even though summary is truncated, we should have events documenting it
+      expect(result.truncationEvents.length).toBeGreaterThan(0);
+      expect(result.truncationEvents[0].message).toContain('01-task');
+    });
+
+    it('context files include path hints when truncated', () => {
+      const files: ContextInput[] = [
+        { name: 'research', content: 'B'.repeat(10000) },
+      ];
+
+      const result = applyContextBudget(files, { ...DEFAULT_BUDGET, maxContextChars: 500, feature: 'feat' });
+
+      expect(result.files[0].pathHint).toBeDefined();
+      expect(result.files[0].pathHint).toContain('research.md');
+    });
+  });
+
+  describe('DEFAULT_BUDGET values are reasonable', () => {
+    it('allows meaningful task history (10 tasks)', () => {
+      expect(DEFAULT_BUDGET.maxTasks).toBe(10);
+    });
+
+    it('allows useful summaries (500 chars ~125 words)', () => {
+      expect(DEFAULT_BUDGET.maxSummaryChars).toBe(500);
+    });
+
+    it('bounds total context to 20KB', () => {
+      expect(DEFAULT_BUDGET.maxTotalContextChars).toBe(20000);
+    });
+
+    it('bounds individual context files to 5KB', () => {
+      expect(DEFAULT_BUDGET.maxContextChars).toBe(5000);
+    });
+  });
+});
