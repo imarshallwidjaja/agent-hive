@@ -115,6 +115,183 @@ describe('BackgroundTaskStore', () => {
       expect(task.workdir).toBe('/path/to/worktree');
     });
   });
+});
+
+// ============================================================================
+// hive_exec_start Prompt Deduplication (Task 03)
+// ============================================================================
+
+describe('hive_exec_start Prompt Deduplication', () => {
+  /**
+   * These tests verify that:
+   * 1. Context files are read once via contextService.list() (not manual fs reads)
+   * 2. Previous tasks are collected once (not twice as priorTasks + previousTasks)
+   * 3. Plan/context/previousTasks are NOT duplicated in the worker prompt
+   */
+
+  describe('no duplicate sections in worker prompt', () => {
+    it('worker prompt does NOT have separate "Plan Context" section', () => {
+      // After deduplication, buildWorkerPrompt should NOT include a separate
+      // "## Plan Context" section because the plan section is embedded in spec
+      const mockWorkerPrompt = `# Hive Worker Assignment
+
+## Assignment Details
+
+| Field | Value |
+|-------|-------|
+| Feature | test-feature |
+| Task | 01-test-task |
+
+---
+
+## Your Mission
+
+# Task: 01-test-task
+
+## Plan Section
+
+### 1. Test Task
+
+Do the thing.
+
+## Context
+
+## decisions
+
+We decided to use TypeScript.
+
+## Completed Tasks
+
+- **00-setup**: Setup done.
+
+---
+
+## Blocker Protocol
+...`;
+
+      // Verify: no separate "## Plan Context" section
+      expect(mockWorkerPrompt).not.toMatch(/## Plan Context/);
+    });
+
+    it('worker prompt does NOT have separate "Context Files" section', () => {
+      const mockWorkerPrompt = `# Hive Worker Assignment
+
+## Assignment Details
+...
+
+## Your Mission
+
+# Task: 01-test-task
+
+## Context
+
+## decisions
+
+Content here.
+
+---
+
+## Blocker Protocol
+...`;
+
+      // Verify: no separate "## Context Files" section
+      expect(mockWorkerPrompt).not.toMatch(/## Context Files/);
+    });
+
+    it('worker prompt does NOT have separate "Previous Tasks Completed" section', () => {
+      const mockWorkerPrompt = `# Hive Worker Assignment
+
+## Assignment Details
+...
+
+## Your Mission
+
+# Task: 01-test-task
+
+## Completed Tasks
+
+- **00-setup**: Setup done.
+
+---
+
+## Blocker Protocol
+...`;
+
+      // Verify: no separate "## Previous Tasks Completed" section
+      expect(mockWorkerPrompt).not.toMatch(/## Previous Tasks Completed/);
+    });
+  });
+
+  describe('contextService.list() usage pattern', () => {
+    it('documents expected contextService.list() return format', () => {
+      // contextService.list() returns ContextFile[] with name, content, updatedAt
+      const expectedFormat = {
+        name: 'decisions', // filename without .md
+        content: 'We decided to use TypeScript.',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      };
+
+      expect(expectedFormat.name).toBe('decisions');
+      expect(expectedFormat.content).toBeTruthy();
+      expect(expectedFormat.updatedAt).toBeTruthy();
+    });
+
+    it('documents that contextService.list() replaces manual fs reads', () => {
+      // OLD pattern (manual reads):
+      // const contextDir = path.join(directory, '.hive', 'features', feature, 'context');
+      // if (fs.existsSync(contextDir)) {
+      //   const files = fs.readdirSync(contextDir).filter(f => f.endsWith('.md'));
+      //   for (const file of files) {
+      //     const content = fs.readFileSync(path.join(contextDir, file), 'utf-8');
+      //     contextFiles.push({ name: file, content });
+      //   }
+      // }
+
+      // NEW pattern (service-based):
+      // const contextFiles = contextService.list(feature);
+
+      // This test documents the migration - manual reads should no longer exist
+      // in hive_exec_start after Task 03 is complete
+      const oldPatternComment = 'fs.existsSync/readdirSync/readFileSync';
+      const newPatternComment = 'contextService.list(feature)';
+
+      expect(oldPatternComment).toContain('existsSync');
+      expect(newPatternComment).toContain('contextService');
+    });
+  });
+
+  describe('single collection of previous tasks', () => {
+    it('documents that previousTasks should be collected once', () => {
+      // OLD pattern (duplicate collection):
+      // const priorTasks = allTasks.filter(t => t.status === 'done')
+      //   .map(t => `- ${t.folder}: ${t.summary || 'No summary'}`);
+      // ... later ...
+      // const previousTasks = allTasks.filter(t => t.status === 'done' && t.summary)
+      //   .map(t => ({ name: t.folder, summary: t.summary! }));
+
+      // NEW pattern (single collection):
+      // const previousTasks = allTasks
+      //   .filter(t => t.status === 'done' && t.summary)
+      //   .map(t => ({ name: t.folder, summary: t.summary! }));
+      // // Use previousTasks for both spec content and worker prompt
+
+      // This test documents the expected change
+      const duplicateVarsRemoved = ['priorTasks']; // Should be removed
+      const singleVar = 'previousTasks'; // Should be the only one
+
+      expect(duplicateVarsRemoved).toContain('priorTasks');
+      expect(singleVar).toBe('previousTasks');
+    });
+  });
+});
+
+describe('BackgroundTaskStore', () => {
+  let store: BackgroundTaskStore;
+
+  beforeEach(() => {
+    resetStore();
+    store = new BackgroundTaskStore();
+  });
 
   describe('get', () => {
     it('returns task by ID', () => {

@@ -586,12 +586,26 @@ Add this section to your plan content and try again.`;
           });
 
           // Generate spec.md with context for task
+          // NOTE: Use services once and derive all needed formats from the result (no duplicate reads)
           const planResult = planService.read(feature);
-          const contextCompiled = contextService.compile(feature);
           const allTasks = taskService.list(feature);
-          const priorTasks = allTasks
-            .filter(t => t.status === 'done')
-            .map(t => `- ${t.folder}: ${t.summary || 'No summary'}`);
+          
+          // Use contextService.list() instead of manual fs reads (Task 03 deduplication)
+          // This replaces: fs.existsSync/readdirSync/readFileSync pattern
+          const contextFiles: ContextFile[] = contextService.list(feature).map(f => ({
+            name: f.name,
+            content: f.content,
+          }));
+          
+          // Collect previous tasks ONCE and derive both formats from it
+          const previousTasks: CompletedTask[] = allTasks
+            .filter(t => t.status === 'done' && t.summary)
+            .map(t => ({ name: t.folder, summary: t.summary! }));
+          
+          // Format previous tasks for spec (derived from previousTasks, not a separate collection)
+          const priorTasksFormatted = previousTasks
+            .map(t => `- ${t.name}: ${t.summary}`)
+            .join('\n');
 
           let specContent = `# Task: ${task}\n\n`;
           specContent += `## Feature: ${feature}\n\n`;
@@ -617,33 +631,21 @@ Add this section to your plan content and try again.`;
             }
           }
 
-          if (contextCompiled) {
+          // Build context section from contextFiles (already loaded via contextService.list)
+          if (contextFiles.length > 0) {
+            const contextCompiled = contextFiles.map(f => `## ${f.name}\n\n${f.content}`).join('\n\n---\n\n');
             specContent += `## Context\n\n${contextCompiled}\n\n`;
           }
 
-          if (priorTasks.length > 0) {
-            specContent += `## Completed Tasks\n\n${priorTasks.join('\n')}\n\n`;
+          if (priorTasksFormatted) {
+            specContent += `## Completed Tasks\n\n${priorTasksFormatted}\n\n`;
           }
           
           taskService.writeSpec(feature, task, specContent);
 
           // Delegated execution is always available via Hive-owned background_task tools.
           // OMO-Slim is optional and should not gate delegation.
-
-          // Prepare context for worker prompt
-          const contextFiles: ContextFile[] = [];
-          const contextDir = path.join(directory, '.hive', 'features', feature, 'context');
-          if (fs.existsSync(contextDir)) {
-            const files = fs.readdirSync(contextDir).filter(f => f.endsWith('.md'));
-            for (const file of files) {
-              const content = fs.readFileSync(path.join(contextDir, file), 'utf-8');
-              contextFiles.push({ name: file, content });
-            }
-          }
-
-          const previousTasks: CompletedTask[] = allTasks
-            .filter(t => t.status === 'done' && t.summary)
-            .map(t => ({ name: t.folder, summary: t.summary! }));
+          // NOTE: contextFiles and previousTasks are already collected above (no duplicate reads)
 
           // Build worker prompt
           const workerPrompt = buildWorkerPrompt({
