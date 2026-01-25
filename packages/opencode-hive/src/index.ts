@@ -85,6 +85,7 @@ import {
   listFeatures,
 } from "hive-core";
 import { buildWorkerPrompt, type ContextFile, type CompletedTask } from "./utils/worker-prompt";
+import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
 import { createBackgroundManager, type OpencodeClient } from "./background/index.js";
 import { createBackgroundTools } from "./tools/background-tools.js";
 import { HIVE_AGENT_NAMES, isHiveAgent, normalizeVariant } from "./hooks/variant-hook.js";
@@ -677,9 +678,19 @@ Add this section to your plan content and try again.`;
           // populated by background_task with the REAL OpenCode session_id/task_id.
           taskService.patchBackgroundFields(feature, task, { idempotencyKey });
 
-          // Return delegation instructions for the agent.
-          // Agent will call background_task tool itself.
-          return JSON.stringify({
+          // Calculate observability metadata for prompt/payload sizes
+          const contextContent = contextFiles.map(f => f.content).join('\n\n');
+          const previousTasksContent = previousTasks.map(t => `- **${t.name}**: ${t.summary}`).join('\n');
+          const promptMeta = calculatePromptMeta({
+            plan: planResult?.content || '',
+            context: contextContent,
+            previousTasks: previousTasksContent,
+            spec: specContent,
+            workerPrompt,
+          });
+
+          // Build the response object (without workerPrompt for payload size calculation)
+          const responseBase = {
             worktreePath: worktree.path,
             branch: worktree.branch,
             mode: 'delegate',
@@ -732,6 +743,24 @@ If background_task rejects workdir/idempotencyKey/feature/task/attempt parameter
 2. Confirm tool outputs include \`provider: "hive"\`
 3. Re-run hive_exec_start and then background_task`,
             workerPrompt,
+          };
+
+          // Calculate payload meta (JSON size with inlined prompt)
+          const jsonPayload = JSON.stringify(responseBase, null, 2);
+          const payloadMeta = calculatePayloadMeta({
+            jsonPayload,
+            promptInlined: true,
+          });
+
+          // Check for warnings about threshold exceedance
+          const warnings = checkWarnings(promptMeta, payloadMeta);
+
+          // Return delegation instructions with observability data
+          return JSON.stringify({
+            ...responseBase,
+            promptMeta,
+            payloadMeta,
+            warnings: warnings.length > 0 ? warnings : undefined,
           }, null, 2);
         },
       }),
