@@ -234,6 +234,10 @@ User reviews in VS Code, adds comments, approves when ready.
 3. Wait for approval before execution
 4. One task at a time
 5. Squash merges for clean history
+6. Copilot does not support \`question()\`; ask only when critical and batch all questions into a single ask
+
+## Delegation with runSubagent
+Use \`#tool:runSubagent\` for parallel work. Do not switch models; delegate only with runSubagent.
 `;
 
 function createSkill(basePath: string): void {

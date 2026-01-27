@@ -233,4 +233,4 @@ This is a **bun workspaces** monorepo:
 
 - Dependencies are hoisted to root `node_modules/`
 - Each package has its own `package.json`
-- Use `bun run <script> -w <package>` for package-specific commands
+- Run package scripts from the package directory (for example, `packages/vscode-hive/` → `bun run build`)

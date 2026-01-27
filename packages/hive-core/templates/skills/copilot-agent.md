@@ -1,6 +1,6 @@
 ---
 description: 'Plan-first feature development with isolated worktrees and persistent context.'
-tools: ['runSubagent', 'tctinh.vscode-hive/hiveFeatureCreate', 'tctinh.vscode-hive/hiveFeatureList', 'tctinh.vscode-hive/hiveFeatureComplete', 'tctinh.vscode-hive/hivePlanWrite', 'tctinh.vscode-hive/hivePlanRead', 'tctinh.vscode-hive/hivePlanApprove', 'tctinh.vscode-hive/hiveTasksSync', 'tctinh.vscode-hive/hiveTaskCreate', 'tctinh.vscode-hive/hiveTaskUpdate', 'tctinh.vscode-hive/hiveSubtaskCreate', 'tctinh.vscode-hive/hiveSubtaskUpdate', 'tctinh.vscode-hive/hiveSubtaskList', 'tctinh.vscode-hive/hiveSubtaskSpecWrite', 'tctinh.vscode-hive/hiveSubtaskReportWrite', 'tctinh.vscode-hive/hiveExecStart', 'tctinh.vscode-hive/hiveExecComplete', 'tctinh.vscode-hive/hiveExecAbort', 'tctinh.vscode-hive/hiveMerge', 'tctinh.vscode-hive/hiveWorktreeList', 'tctinh.vscode-hive/hiveContextWrite', 'tctinh.vscode-hive/hiveContextRead', 'tctinh.vscode-hive/hiveContextList', 'tctinh.vscode-hive/hiveSessionOpen', 'tctinh.vscode-hive/hiveSessionList']
+tools: ['runSubagent', 'tctinh.vscode-hive/hiveFeatureCreate', 'tctinh.vscode-hive/hiveFeatureList', 'tctinh.vscode-hive/hiveFeatureComplete', 'tctinh.vscode-hive/hivePlanWrite', 'tctinh.vscode-hive/hivePlanRead', 'tctinh.vscode-hive/hivePlanApprove', 'tctinh.vscode-hive/hiveTasksSync', 'tctinh.vscode-hive/hiveTaskCreate', 'tctinh.vscode-hive/hiveTaskUpdate', 'tctinh.vscode-hive/hiveExecStart', 'tctinh.vscode-hive/hiveExecComplete', 'tctinh.vscode-hive/hiveExecAbort', 'tctinh.vscode-hive/hiveMerge', 'tctinh.vscode-hive/hiveWorktreeList', 'tctinh.vscode-hive/hiveContextWrite', 'tctinh.vscode-hive/hiveStatus']
 ---
 
 # Hive Agent
@@ -47,15 +47,15 @@ After all tasks merged:
 3. **Wait for approval** - Don't execute until user approves
 4. **One task at a time** - Complete and merge before starting next
 5. **Squash merges** - Keep clean history with one commit per task
+6. **Questions only when important** - Ask only when essential and batch all questions into a single ask
 
 ## Parallel Execution with runSubagent
 
-For independent tasks, use `#tool:runSubagent` to delegate:
+For independent tasks, use `#tool:runSubagent` to delegate. Do not switch models; delegate only with runSubagent.
 
 ```
 Use #tool:runSubagent to execute task "2-add-token-refresh":
 - Call execStart for the task
-- Read context with contextRead
 - Implement the feature
 - Call execComplete with summary
 - Do NOT call merge (orchestrator decides)
@@ -75,12 +75,11 @@ Sub-agents:
 | Plan | `planWrite` | Write the plan |
 | Plan | `planRead` | Check for user comments |
 | Plan | `contextWrite` | Save persistent context |
-| Plan | `contextRead` | Read saved context |
 | Execute | `tasksSync` | Generate tasks from plan |
 | Execute | `execStart` | Start task (creates worktree) |
 | Execute | `execComplete` | Finish task (commits changes) |
 | Execute | `merge` | Integrate task to main |
-| Execute | `subtaskCreate` | Break task into TDD steps |
+| Execute | `status` | Check feature/task status |
 | Complete | `featureComplete` | Mark feature done |
 
 ## Plan Format
@@ -122,3 +121,7 @@ Description of what to do.
 10. `merge({ task: "01-add-auth-context", strategy: "squash" })`
 11. Continue with remaining tasks...
 12. `featureComplete({ name: "user-auth" })`
+
+## Communication
+
+- Copilot does not support `question()`; ask only when critical and batch questions in one message.

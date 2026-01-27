@@ -112,6 +112,8 @@ tools: ['vscode', 'execute', 'read', 'edit', 'tctinh.vscode-hive/hiveFeatureCrea
 # Your custom instructions here
 ```
 
+Tool names in frontmatter must match the Hive tool IDs exactly (for example, `tctinh.vscode-hive/hiveStatus`). Copilot does not support `question()`; ask only when critical and batch questions.
+
 You can customize this file to add your own workflows and preferences.
 
 ### Available Tools
@@ -125,6 +127,7 @@ You can customize this file to add your own workflows and preferences.
 | **Exec** | `hiveExecStart`, `hiveExecComplete`, `hiveExecAbort` |
 | **Merge** | `hiveMerge`, `hiveWorktreeList` |
 | **Context** | `hiveContextWrite`, `hiveContextRead`, `hiveContextList` |
+| **Status** | `hiveStatus` |
 
 ### Usage Tips
 
