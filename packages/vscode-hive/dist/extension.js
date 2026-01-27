@@ -38,7 +38,7 @@ var vscode7 = __toESM(require("vscode"));
 var fs10 = __toESM(require("fs"));
 var path10 = __toESM(require("path"));
 
-// ../../../../../../packages/hive-core/dist/index.js
+// ../hive-core/dist/index.js
 var import_node_module = require("node:module");
 var path = __toESM(require("path"), 1);
 var fs = __toESM(require("fs"), 1);
@@ -7374,81 +7374,90 @@ function getStatusTools(workspaceRoot) {
   const taskService = new TaskService(workspaceRoot);
   const planService = new PlanService(workspaceRoot);
   const contextService = new ContextService(workspaceRoot);
+  const invokeStatus = async (input) => {
+    const { feature: explicitFeature } = input;
+    const feature = explicitFeature || featureService.getActive()?.name;
+    if (!feature) {
+      return JSON.stringify({
+        error: "No feature specified and no active feature found",
+        hint: "Use hive_feature_create to create a new feature"
+      });
+    }
+    const featureData = featureService.get(feature);
+    if (!featureData) {
+      return JSON.stringify({
+        error: `Feature '${feature}' not found`,
+        availableFeatures: featureService.list()
+      });
+    }
+    const plan = planService.read(feature);
+    const tasks = taskService.list(feature);
+    const contextFiles = contextService.list(feature);
+    const tasksSummary = tasks.map((t) => ({
+      folder: t.folder,
+      name: t.folder.replace(/^\d+-/, ""),
+      status: t.status,
+      summary: t.summary || null,
+      origin: t.origin
+    }));
+    const contextSummary = contextFiles.map((c) => ({
+      name: c.name,
+      chars: c.content.length,
+      updatedAt: c.updatedAt
+    }));
+    const pendingTasks = tasksSummary.filter((t) => t.status === "pending");
+    const inProgressTasks = tasksSummary.filter((t) => t.status === "in_progress");
+    const doneTasks = tasksSummary.filter((t) => t.status === "done");
+    const planStatus = featureData.status === "planning" ? "draft" : featureData.status === "approved" ? "approved" : featureData.status === "executing" ? "locked" : "none";
+    return JSON.stringify({
+      feature: {
+        name: feature,
+        status: featureData.status,
+        ticket: featureData.ticket || null,
+        createdAt: featureData.createdAt
+      },
+      plan: {
+        exists: !!plan,
+        status: planStatus,
+        approved: planStatus === "approved" || planStatus === "locked"
+      },
+      tasks: {
+        total: tasks.length,
+        pending: pendingTasks.length,
+        inProgress: inProgressTasks.length,
+        done: doneTasks.length,
+        list: tasksSummary
+      },
+      context: {
+        fileCount: contextFiles.length,
+        files: contextSummary
+      },
+      nextAction: getNextAction(planStatus, tasksSummary)
+    });
+  };
+  const baseStatusTool = {
+    displayName: "Get Hive Status",
+    modelDescription: "Get comprehensive status of a feature including plan, tasks, and context. Returns JSON with all relevant state for resuming work.",
+    readOnly: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        feature: {
+          type: "string",
+          description: "Feature name (optional, uses active feature if omitted)"
+        }
+      }
+    },
+    invoke: invokeStatus
+  };
   return [
     {
       name: "hive_status",
-      displayName: "Get Hive Status",
-      modelDescription: "Get comprehensive status of a feature including plan, tasks, and context. Returns JSON with all relevant state for resuming work.",
-      readOnly: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          feature: {
-            type: "string",
-            description: "Feature name (optional, uses active feature if omitted)"
-          }
-        }
-      },
-      invoke: async (input) => {
-        const { feature: explicitFeature } = input;
-        const feature = explicitFeature || featureService.getActive()?.name;
-        if (!feature) {
-          return JSON.stringify({
-            error: "No feature specified and no active feature found",
-            hint: "Use hive_feature_create to create a new feature"
-          });
-        }
-        const info = featureService.getInfo(feature);
-        if (!info) {
-          return JSON.stringify({
-            error: `Feature '${feature}' not found`,
-            availableFeatures: featureService.list()
-          });
-        }
-        const plan = planService.read(feature);
-        const tasks = taskService.list(feature);
-        const contextFiles = contextService.list(feature);
-        const tasksSummary = tasks.map((t) => ({
-          folder: t.folder,
-          name: t.folder.replace(/^\d+-/, ""),
-          status: t.status.status,
-          summary: t.status.summary || null,
-          origin: t.status.origin
-        }));
-        const contextSummary = contextFiles.map((c) => ({
-          name: c.name,
-          chars: c.content.length,
-          updatedAt: c.updatedAt
-        }));
-        const pendingTasks = tasksSummary.filter((t) => t.status === "pending");
-        const inProgressTasks = tasksSummary.filter((t) => t.status === "in_progress");
-        const doneTasks = tasksSummary.filter((t) => t.status === "done");
-        return JSON.stringify({
-          feature: {
-            name: feature,
-            status: info.status,
-            ticket: info.ticket || null,
-            createdAt: info.createdAt
-          },
-          plan: {
-            exists: !!plan,
-            status: info.planStatus || "none",
-            approved: info.planStatus === "approved" || info.planStatus === "locked"
-          },
-          tasks: {
-            total: tasks.length,
-            pending: pendingTasks.length,
-            inProgress: inProgressTasks.length,
-            done: doneTasks.length,
-            list: tasksSummary
-          },
-          context: {
-            fileCount: contextFiles.length,
-            files: contextSummary
-          },
-          nextAction: getNextAction(info.planStatus, tasksSummary)
-        });
-      }
+      ...baseStatusTool
+    },
+    {
+      name: "hiveStatus",
+      ...baseStatusTool
     }
   ];
 }
