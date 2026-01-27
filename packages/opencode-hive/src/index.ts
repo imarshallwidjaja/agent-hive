@@ -1535,6 +1535,9 @@ Make the requested changes, then call hive_request_review again.`;
       
       if (agentMode === 'unified') {
         allAgents['hive-master'] = hiveConfig;
+        allAgents['scout-researcher'] = scoutConfig;
+        allAgents['forager-worker'] = foragerConfig;
+        allAgents['hygienic-reviewer'] = hygienicConfig;
       } else {
         allAgents['architect-planner'] = architectConfig;
         allAgents['swarm-orchestrator'] = swarmConfig;

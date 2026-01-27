@@ -63,7 +63,7 @@ describe('Agent permissions for background task delegation', () => {
     mock.restore();
   });
 
-  it('registers only hive-master in unified mode', async () => {
+  it('registers hive-master, scout, forager, and hygienic in unified mode', async () => {
     // Mock ConfigService to return unified mode
     spyOn(ConfigService.prototype, 'get').mockReturnValue({
       agentMode: 'unified',
@@ -94,6 +94,9 @@ describe('Agent permissions for background task delegation', () => {
     expect(opencodeConfig.agent?.['hive-master']).toBeTruthy();
     expect(opencodeConfig.agent?.['swarm-orchestrator']).toBeUndefined();
     expect(opencodeConfig.agent?.['architect-planner']).toBeUndefined();
+    expect(opencodeConfig.agent?.['scout-researcher']).toBeTruthy();
+    expect(opencodeConfig.agent?.['forager-worker']).toBeTruthy();
+    expect(opencodeConfig.agent?.['hygienic-reviewer']).toBeTruthy();
     expect(opencodeConfig.default_agent).toBe('hive-master');
 
     const hivePerm = opencodeConfig.agent?.['hive-master']?.permission;
@@ -135,6 +138,9 @@ describe('Agent permissions for background task delegation', () => {
     expect(opencodeConfig.agent?.['hive-master']).toBeUndefined();
     expect(opencodeConfig.agent?.['swarm-orchestrator']).toBeTruthy();
     expect(opencodeConfig.agent?.['architect-planner']).toBeTruthy();
+    expect(opencodeConfig.agent?.['scout-researcher']).toBeTruthy();
+    expect(opencodeConfig.agent?.['forager-worker']).toBeTruthy();
+    expect(opencodeConfig.agent?.['hygienic-reviewer']).toBeTruthy();
     expect(opencodeConfig.default_agent).toBe('architect-planner');
 
     const swarmPerm = opencodeConfig.agent?.['swarm-orchestrator']?.permission;
