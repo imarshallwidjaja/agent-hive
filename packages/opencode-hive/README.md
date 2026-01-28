@@ -178,7 +178,7 @@ Hive uses a config file at `~/.config/opencode/agent_hive.json`. You can customi
 
 ### Per-Agent Skills
 
-Each agent can have specific skills enabled. If configured, only those skills are available:
+Each agent can have specific skills enabled. If configured, only those skills appear in `hive_skill()`:
 
 ```json
 {
@@ -205,7 +205,7 @@ Note: Wildcards like `["*"]` are **not supported** - use explicit skill names or
 
 ### Auto-load Skills
 
-Use `autoLoadSkills` to automatically inject skills into an agent's system prompt (in addition to any skills selected by the agent).
+Use `autoLoadSkills` to automatically inject skills into an agent's system prompt at session start.
 
 ```json
 {
@@ -220,6 +220,14 @@ Use `autoLoadSkills` to automatically inject skills into an agent's system promp
   }
 }
 ```
+
+**How `skills` and `autoLoadSkills` interact:**
+
+- `skills` controls what appears in `hive_skill()` — the agent can manually load these on demand
+- `autoLoadSkills` injects skills unconditionally at session start — no manual loading needed
+- These are **independent**: a skill can be auto-loaded but not appear in `hive_skill()`, or vice versa
+- Both only support Hive's built-in skills (not OpenCode base skills from the `skill()` tool)
+- User `autoLoadSkills` are **merged** with defaults (use global `disableSkills` to remove defaults)
 
 **Default auto-load skills by agent:**
 

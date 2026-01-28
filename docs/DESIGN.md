@@ -15,21 +15,23 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 .hive/                    <- Shared data (all clients)
 ├── features/             <- Feature-scoped work
 │   └── {feature}/
+│       ├── feature.json  <- Feature metadata and state
 │       ├── plan.md       <- Approved execution plan
-│       ├── status.json   <- Feature state (planning/approved/executing/done)
-│       ├── context/      <- Persistent knowledge files
+│       ├── tasks.json    <- Task list with status
+│       ├── contexts/     <- Persistent knowledge files
 │       └── tasks/        <- Individual task folders
 │           └── {task}/
-│               ├── status.json  <- Task state
-│               ├── spec.md      <- Task context and requirements
+│               ├── status.json      <- Task state
+│               ├── spec.md          <- Task context and requirements
 │               ├── worker-prompt.md <- Full worker prompt
-│               └── report.md    <- Execution summary and results
+│               └── report.md        <- Execution summary and results
 └── .worktrees/           <- Isolated git worktrees per task
     └── {feature}/{task}/ <- Full repo copy for safe execution
 
 packages/
+├── hive-core/            <- Shared logic (services, types, utils)
 ├── opencode-hive/        <- OpenCode plugin (planning, execution, tracking)
-└── vscode-hive/          <- VSCode extension (visualization, review, approval)
+└── vscode-hive/          <- VS Code extension (visualization, review, approval)
 ```
 
 ## Data Flow
@@ -169,16 +171,17 @@ Reorder plugins so agent-hive appears last. Restart OpenCode after changing.
 Hive uses file-based state with clear ownership boundaries:
 
 | File | Owner | Other Access |
-|------|-------|--------------|
-| `status.json` (feature) | Hive Master | VSCode (read-only) |
+|------|-------|--------------| 
+| `feature.json` | Hive Master | VS Code (read-only) |
+| `tasks.json` | Hive Master | VS Code (read-only) |
 | `status.json` (task) | Worker | Hive Master (read), Poller (read-only) |
-| `plan.md` | Hive Master | VSCode (read + comment) |
-| `comments.json` | VSCode | Hive Master (read-only) |
+| `plan.md` | Hive Master | VS Code (read + comment) |
+| `comments.json` | VS Code | Hive Master (read-only) |
 | `spec.md` | `hive_exec_start` | Worker (read-only) |
 | `report.md` | Worker | All (read-only) |
 | `BLOCKED` | Beekeeper | All (read-only, blocks operations) |
-| `PENDING_REVIEW` | Worker | VSCode (delete to respond) |
-| `REVIEW_RESULT` | VSCode | Worker (read-only) |
+| `PENDING_REVIEW` | Worker | VS Code (delete to respond) |
+| `REVIEW_RESULT` | VS Code | Worker (read-only) |
 
 ### Poller Constraints
 

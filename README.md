@@ -79,7 +79,7 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full breakdown of what we learned fro
    I want to hive plan add user authentication
    ```
 
-The extension provides all 18 Hive tools. The agent file teaches Copilot how to use them.
+The extension provides Hive tools for plan-first development. The agent file teaches Copilot how to use them.
 
 See the full [GitHub Copilot Guide](docs/GITHUB-COPILOT-GUIDE.md) for creating and customizing your agent.
 
@@ -96,22 +96,125 @@ Add `opencode-hive` to your `opencode.json`:
 
 OpenCode handles the rest — no manual npm install needed.
 
-### Agent Hive Config
+### Configuration
 
-Run Agent Hive once to auto-generate a default configuration at `~/.config/opencode/agent_hive.json`. The default configuration is a good starting point, but you should review it to ensure it matches your local setup.
+Run Agent Hive once to auto-generate a default configuration at `~/.config/opencode/agent_hive.json`. Review it to ensure it matches your local setup.
 
-**Key Configuration Options:**
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "agentMode": "unified",
+  "delegateMode": "task",
+  "disableSkills": [],
+  "disableMcps": [],
+  "agents": {
+    "hive-master": {
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "temperature": 0.5
+    }
+  }
+}
+```
 
-- **`agentMode`**: 
-  - `unified`: (Default) Combines Planning (Architect) and Orchestration (Swarm) into a single primary agent (`hive-master`). Specialized agents (Scout, Forager, Hygienic) are still available.
-  - `dedicated`: Tools and roles are distributed across separate specialized agents (Architect, Swarm, Scout, Forager, etc.).
-- **`delegateMode`**: 
-  - `task`: (Default) Use OpenCode's built-in `task()` tool for background execution.
-  - `hive`: Use Hive's specialized background task tools (`hive_background_task`).
-- **`agents`**: This section maps agent roles to specific models. **You should always update these to use models available on your system** (e.g., `openai/gpt-5.2-codex`, `google/gemini-3-pro-preview`, `github-copilot/claude-opus-4.5` or local models).
-- **`skills`**: A list of enabled skills. To remove extra agent features or reduce context usage, simply remove the unwanted skills from this list.
+#### Core Options
 
-**MCP Research Tools** are auto-enabled: `grep_app_searchGitHub`, `context7_query-docs`, `websearch_web_search_exa`, and `ast_grep_search`.
+| Option | Values | Description |
+|--------|--------|-------------|
+| `agentMode` | `unified` (default), `dedicated` | `unified`: Single `hive-master` agent handles planning + orchestration. `dedicated`: Separate `architect-planner` and `swarm-orchestrator` agents. |
+| `delegateMode` | `task` (default), `hive` | `task`: Use OpenCode's built-in `task()` tool. `hive`: Use Hive's `hive_background_task` tools. |
+| `disableSkills` | `string[]` | Globally disable specific skills (won't appear in `hive_skill` tool). |
+| `disableMcps` | `string[]` | Globally disable MCP servers. Options: `websearch`, `context7`, `grep_app`, `ast_grep`. |
+
+#### Agent Models
+
+Configure models for each agent role. **Update these to models available on your system:**
+
+```json
+{
+  "agents": {
+    "hive-master": { "model": "anthropic/claude-sonnet-4-20250514", "temperature": 0.5 },
+    "scout-researcher": { "model": "anthropic/claude-sonnet-4-20250514", "temperature": 0.5 },
+    "forager-worker": { "model": "anthropic/claude-sonnet-4-20250514", "temperature": 0.3 },
+    "hygienic-reviewer": { "model": "anthropic/claude-sonnet-4-20250514", "temperature": 0.3 }
+  }
+}
+```
+
+All agents: `hive-master`, `architect-planner`, `swarm-orchestrator`, `scout-researcher`, `forager-worker`, `hygienic-reviewer`.
+
+#### Skills
+
+Skills provide specialized workflows that agents can load on-demand via `hive_skill`.
+
+| Skill | Description |
+|-------|-------------|
+| `brainstorming` | Explores user intent, requirements, and design before implementation |
+| `writing-plans` | Creates detailed implementation plans with bite-sized tasks |
+| `executing-plans` | Executes tasks in batches with review checkpoints |
+| `dispatching-parallel-agents` | Dispatches multiple agents for concurrent independent work |
+| `test-driven-development` | Enforces write-test-first, red-green-refactor cycle |
+| `systematic-debugging` | Requires root cause investigation before proposing fixes |
+| `verification-before-completion` | Requires running verification commands before claiming success |
+| `parallel-exploration` | Fan-out research across multiple Scout agents |
+
+**Per-agent skills:** Restrict which skills appear in `hive_skill()` tool:
+
+```json
+{
+  "agents": {
+    "forager-worker": {
+      "skills": ["test-driven-development", "verification-before-completion"]
+    }
+  }
+}
+```
+
+**Auto-load skills:** Automatically inject skills into an agent's system prompt at session start:
+
+```json
+{
+  "agents": {
+    "hive-master": { "autoLoadSkills": ["parallel-exploration"] },
+    "forager-worker": { "autoLoadSkills": ["test-driven-development", "verification-before-completion"] }
+  }
+}
+```
+
+**How these interact:**
+- `skills` controls what's available in `hive_skill()` — the agent can manually load these
+- `autoLoadSkills` injects skills unconditionally at session start — no manual loading needed
+- These are **independent**: a skill can be auto-loaded but not appear in `hive_skill()`, or vice versa
+- Both only support Hive's built-in skills (not OpenCode base skills)
+- Default `autoLoadSkills` are merged with user config (use `disableSkills` to remove defaults)
+```
+
+#### MCP Research Tools
+
+Auto-enabled by default. Disable with `disableMcps`:
+
+| MCP | Tool | Description | Requirements |
+|-----|------|-------------|--------------|
+| `websearch` | `websearch_web_search_exa` | Web search via Exa AI | `EXA_API_KEY` env var |
+| `context7` | `context7_query-docs` | Library documentation lookup | None |
+| `grep_app` | `grep_app_searchGitHub` | GitHub code search via grep.app | None |
+| `ast_grep` | `ast_grep_search` | AST-aware code search/replace | None (runs via npx) |
+
+#### Model Variants
+
+Set reasoning/effort levels per agent:
+
+```json
+{
+  "agents": {
+    "hive-master": { "model": "anthropic/claude-sonnet-4-20250514", "variant": "high" },
+    "forager-worker": { "variant": "medium" }
+  }
+}
+```
+
+Variants must match keys in your OpenCode config at `provider.<provider>.models.<model>.variants`.
+
+See [packages/opencode-hive/README.md](packages/opencode-hive/README.md) for advanced configuration options.
 
 ### Start Hiving
 
@@ -223,17 +326,22 @@ When done, you have:
 
 ```
 .hive/features/user-auth/
+├── feature.json         # Feature metadata
 ├── plan.md              # Your approved plan
-├── context/             # Decisions and calibration
+├── tasks.json           # Task list with status
+├── contexts/            # Decisions and calibration
 │   └── architecture.md
 └── tasks/
     ├── 01-extract-auth-logic/
+    │   ├── status.json  # Task state
     │   ├── spec.md      # Task context, prior/upcoming tasks
     │   └── report.md    # Summary, files changed, diff stats
     ├── 02-add-token-refresh/
+    │   ├── status.json
     │   ├── spec.md
     │   └── report.md
     └── 03-update-api-routes/
+        ├── status.json
         ├── spec.md
         └── report.md
 ```
