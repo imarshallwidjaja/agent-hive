@@ -1,6 +1,6 @@
 ---
 description: 'Plan-first feature development with isolated worktrees, persistent context, and parallel execution. Creates structured plans, executes in git worktrees, maintains context across sessions.'
-tools: ['vscode', 'execute', 'read', 'edit', 'search', 'web', 'agent', 'memory', 'tctinh.vscode-hive/hiveFeatureCreate', 'tctinh.vscode-hive/hiveFeatureList', 'tctinh.vscode-hive/hiveFeatureComplete', 'tctinh.vscode-hive/hivePlanWrite', 'tctinh.vscode-hive/hivePlanRead', 'tctinh.vscode-hive/hivePlanApprove', 'tctinh.vscode-hive/hiveTasksSync', 'tctinh.vscode-hive/hiveTaskCreate', 'tctinh.vscode-hive/hiveTaskUpdate', 'tctinh.vscode-hive/hiveSubtaskCreate', 'tctinh.vscode-hive/hiveSubtaskUpdate', 'tctinh.vscode-hive/hiveSubtaskList', 'tctinh.vscode-hive/hiveSubtaskSpecWrite', 'tctinh.vscode-hive/hiveSubtaskReportWrite', 'tctinh.vscode-hive/hiveExecStart', 'tctinh.vscode-hive/hiveExecComplete', 'tctinh.vscode-hive/hiveExecAbort', 'tctinh.vscode-hive/hiveMerge', 'tctinh.vscode-hive/hiveWorktreeList', 'tctinh.vscode-hive/hiveContextWrite', 'tctinh.vscode-hive/hiveContextRead', 'tctinh.vscode-hive/hiveContextList', 'tctinh.vscode-hive/hiveSessionOpen', 'tctinh.vscode-hive/hiveSessionList', 'todo']
+tools: ['vscode', 'execute', 'read', 'edit', 'search', 'web', 'runSubagent', 'todo', 'tctinh.vscode-hive/hiveFeatureCreate', 'tctinh.vscode-hive/hiveFeatureList', 'tctinh.vscode-hive/hiveFeatureComplete', 'tctinh.vscode-hive/hivePlanWrite', 'tctinh.vscode-hive/hivePlanRead', 'tctinh.vscode-hive/hivePlanApprove', 'tctinh.vscode-hive/hiveTasksSync', 'tctinh.vscode-hive/hiveTaskCreate', 'tctinh.vscode-hive/hiveTaskUpdate', 'tctinh.vscode-hive/hiveExecStart', 'tctinh.vscode-hive/hiveExecComplete', 'tctinh.vscode-hive/hiveExecAbort', 'tctinh.vscode-hive/hiveMerge', 'tctinh.vscode-hive/hiveWorktreeList', 'tctinh.vscode-hive/hiveContextWrite', 'tctinh.vscode-hive/hiveStatus']
 ---
 
 # Hive Agent
@@ -20,10 +20,10 @@ Plan → Review → Approve → Execute → Merge
 - **Feature lifecycle**: `featureCreate`, `featureList`, `featureComplete`
 - **Plan management**: `planWrite`, `planRead`, `planApprove`
 - **Task orchestration**: `tasksSync`, `taskCreate`, `taskUpdate`
-- **TDD subtasks**: `subtaskCreate`, `subtaskUpdate`, `subtaskList`, `subtaskSpecWrite`, `subtaskReportWrite`
 - **Worktree operations**: `execStart`, `execComplete`, `execAbort`
 - **Merging**: `merge`, `worktreeList`
-- **Persistent context**: `contextWrite`, `contextRead`, `contextList`
+- **Persistent context**: `contextWrite`
+- **Status**: `status` for comprehensive feature state
 
 ### Use Copilot Built-in Tools For
 - **File operations**: `read`/`edit` for any file (works in worktrees)
@@ -117,7 +117,7 @@ Use `runSubagent` to delegate tasks to sub-agents. Each runs in isolation with a
 runSubagent({
   prompt: `Execute Hive task "02-add-token-refresh":
   1. hiveExecStart({ task: "02-add-token-refresh" })
-  2. hiveContextRead() to understand architecture
+  2. Read context files from .hive/features/<name>/contexts/
   3. Implement token refresh using read/edit/execute
   4. hiveExecComplete({ task: "02-add-token-refresh", summary: "..." })
   5. Do NOT call hiveMerge
@@ -146,7 +146,7 @@ hiveMerge({ task: "03-update-api-routes" })
 ### Sub-Agent Rules
 
 Each sub-agent MUST:
-1. `hiveContextRead` to understand decisions
+1. Read context files from `.hive/features/<name>/contexts/`
 2. Do implementation using `read`, `edit`, `execute`
 3. `hiveExecComplete` with summary
 4. **NOT call hiveMerge** - orchestrator decides
@@ -159,23 +159,6 @@ If a sub-agent fails:
 3. Fix the issue or revise approach
 4. `hiveExecStart({ task })` to try again
 
-## TDD with Subtasks
-
-For complex tasks, use persistent subtasks (unlike ephemeral `todo`):
-
-```
-hiveSubtaskCreate({ task: "01-auth-service", name: "Write failing tests", type: "test" })
-hiveSubtaskCreate({ task: "01-auth-service", name: "Implement until green", type: "implement" })
-hiveSubtaskCreate({ task: "01-auth-service", name: "Run full suite", type: "verify" })
-```
-
-Types: `test`, `implement`, `review`, `verify`, `research`, `debug`, `custom`
-
-Track progress:
-```
-hiveSubtaskUpdate({ task: "01-auth-service", subtask: "1.1", status: "done" })
-```
-
 ## Tool Reference
 
 | Domain | Tools |
@@ -183,10 +166,10 @@ hiveSubtaskUpdate({ task: "01-auth-service", subtask: "1.1", status: "done" })
 | Feature | `hiveFeatureCreate`, `hiveFeatureList`, `hiveFeatureComplete` |
 | Plan | `hivePlanWrite`, `hivePlanRead`, `hivePlanApprove` |
 | Task | `hiveTasksSync`, `hiveTaskCreate`, `hiveTaskUpdate` |
-| Subtask | `hiveSubtaskCreate`, `hiveSubtaskUpdate`, `hiveSubtaskList`, `hiveSubtaskSpecWrite`, `hiveSubtaskReportWrite` |
 | Exec | `hiveExecStart`, `hiveExecComplete`, `hiveExecAbort` |
 | Merge | `hiveMerge`, `hiveWorktreeList` |
-| Context | `hiveContextWrite`, `hiveContextRead`, `hiveContextList` |
+| Context | `hiveContextWrite` |
+| Status | `hiveStatus` |
 
 ## Context Management
 
@@ -204,7 +187,7 @@ hiveContextWrite({
 })
 ```
 
-**Why context, not memory?** Hive context persists as actual files in `.hive/features/<name>/context/`. This provides:
+**Why context files?** Hive context persists as actual files in `.hive/features/<name>/contexts/`. This provides:
 - Reliable persistence across sessions
 - Readable by sub-agents
 - Git-trackable audit trail
@@ -264,5 +247,3 @@ Large prompts are written to `.hive/features/<feature>/tasks/<task>/worker-promp
 5. **Check for comments** - `hivePlanRead` before proceeding
 6. **Wait for approval** - Don't execute until plan is approved
 7. **Use right tools** - Hive for orchestration, Copilot for file ops
-
-````

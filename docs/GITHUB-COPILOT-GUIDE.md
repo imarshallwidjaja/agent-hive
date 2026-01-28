@@ -19,7 +19,7 @@ Create `.github/agents/Hive.agent.md` in your repository:
 ```markdown
 ---
 description: 'Plan-first feature development with isolated worktrees and persistent context.'
-tools: ['runSubagent', 'tctinh.vscode-hive/hiveFeatureCreate', 'tctinh.vscode-hive/hiveFeatureList', 'tctinh.vscode-hive/hiveFeatureComplete', 'tctinh.vscode-hive/hivePlanWrite', 'tctinh.vscode-hive/hivePlanRead', 'tctinh.vscode-hive/hivePlanApprove', 'tctinh.vscode-hive/hiveTasksSync', 'tctinh.vscode-hive/hiveTaskCreate', 'tctinh.vscode-hive/hiveTaskUpdate', 'tctinh.vscode-hive/hiveSubtaskCreate', 'tctinh.vscode-hive/hiveSubtaskUpdate', 'tctinh.vscode-hive/hiveSubtaskList', 'tctinh.vscode-hive/hiveSubtaskSpecWrite', 'tctinh.vscode-hive/hiveSubtaskReportWrite', 'tctinh.vscode-hive/hiveExecStart', 'tctinh.vscode-hive/hiveExecComplete', 'tctinh.vscode-hive/hiveExecAbort', 'tctinh.vscode-hive/hiveMerge', 'tctinh.vscode-hive/hiveWorktreeList', 'tctinh.vscode-hive/hiveContextWrite', 'tctinh.vscode-hive/hiveContextRead', 'tctinh.vscode-hive/hiveContextList', 'tctinh.vscode-hive/hiveSessionOpen', 'tctinh.vscode-hive/hiveSessionList']
+tools: ['runSubagent', 'tctinh.vscode-hive/hiveFeatureCreate', 'tctinh.vscode-hive/hiveFeatureList', 'tctinh.vscode-hive/hiveFeatureComplete', 'tctinh.vscode-hive/hivePlanWrite', 'tctinh.vscode-hive/hivePlanRead', 'tctinh.vscode-hive/hivePlanApprove', 'tctinh.vscode-hive/hiveTasksSync', 'tctinh.vscode-hive/hiveTaskCreate', 'tctinh.vscode-hive/hiveTaskUpdate', 'tctinh.vscode-hive/hiveExecStart', 'tctinh.vscode-hive/hiveExecComplete', 'tctinh.vscode-hive/hiveExecAbort', 'tctinh.vscode-hive/hiveMerge', 'tctinh.vscode-hive/hiveWorktreeList', 'tctinh.vscode-hive/hiveContextWrite', 'tctinh.vscode-hive/hiveStatus']
 ---
 
 # Hive Agent
@@ -69,16 +69,17 @@ Call featureCreate({ name: "my-feature" })
 
 ## Available Tools
 
+The VS Code extension provides these tools for GitHub Copilot:
+
 | Domain | Tools | Description |
 |--------|-------|-------------|
 | **Feature** | `featureCreate`, `featureList`, `featureComplete` | Create and manage features |
 | **Plan** | `planWrite`, `planRead`, `planApprove` | Write and review plans |
 | **Task** | `tasksSync`, `taskCreate`, `taskUpdate` | Generate and manage tasks |
-| **Subtask** | `subtaskCreate`, `subtaskUpdate`, `subtaskList`, `subtaskSpecWrite`, `subtaskReportWrite` | TDD workflow |
 | **Exec** | `execStart`, `execComplete`, `execAbort` | Work in isolated worktrees |
 | **Merge** | `merge`, `worktreeList` | Integrate completed work |
-| **Context** | `contextWrite`, `contextRead`, `contextList` | Persistent knowledge |
-| **Session** | `sessionOpen`, `sessionList` | Session management |
+| **Context** | `contextWrite` | Persistent knowledge |
+| **Status** | `status` | Get comprehensive feature status |
 
 ## Parallel Execution with runSubagent
 
@@ -103,7 +104,7 @@ Use #tool:runSubagent to delegate tasks:
 
 Use #tool:runSubagent to execute task "2-add-token-refresh":
 - Call execStart for the task
-- Read context with contextRead
+- Read context files from .hive/features/<name>/contexts/
 - Implement the feature
 - Call execComplete with summary
 - Do NOT call merge
@@ -119,7 +120,7 @@ Execute in parallel using #tool:runSubagent for each:
 
 Each sub-agent:
 - execStart for their task
-- contextRead for decisions
+- Read context files from .hive/
 - Do implementation
 - execComplete with summary
 - NOT merge (orchestrator decides)
