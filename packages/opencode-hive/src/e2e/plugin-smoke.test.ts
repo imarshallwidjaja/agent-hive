@@ -427,6 +427,359 @@ Use this for browser automation tasks.
     }
   });
 
+  it("autoLoadSkills loads OpenCode skill from project .opencode/skill directory", async () => {
+    // Create an OpenCode project skill (agent-browser is NOT a Hive builtin skill)
+    const projectSkillDir = path.join(testRoot, ".opencode", "skill", "agent-browser");
+    fs.mkdirSync(projectSkillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectSkillDir, "SKILL.md"),
+      `---
+name: agent-browser
+description: Project-level browser automation skill
+---
+
+# Project Agent Browser Skill
+
+This is the PROJECT-LEVEL agent-browser skill template.
+DISTINCTIVE_PROJECT_SKILL_MARKER_12345.
+`
+    );
+
+    // Configure autoLoadSkills to include agent-browser
+    const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        delegateMode: "hive",
+        agents: {
+          "hive-master": {
+            autoLoadSkills: ["agent-browser"],
+          },
+        },
+      }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, output);
+
+    const joined = output.system.join("\n");
+
+    // Verify OpenCode skill from project directory is injected
+    expect(joined).toContain("# Project Agent Browser Skill");
+    expect(joined).toContain("DISTINCTIVE_PROJECT_SKILL_MARKER_12345");
+  });
+
+  it("autoLoadSkills prefers project skill over user skill for same id", async () => {
+    // Create OpenCode skill in BOTH project and user directories
+    const projectSkillDir = path.join(testRoot, ".opencode", "skill", "test-skill");
+    fs.mkdirSync(projectSkillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectSkillDir, "SKILL.md"),
+      `---
+name: test-skill
+description: Project version of test skill
+---
+
+PROJECT_SKILL_WINS_MARKER_99999
+`
+    );
+
+    const userSkillDir = path.join(testRoot, ".config", "opencode", "skill", "test-skill");
+    fs.mkdirSync(userSkillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userSkillDir, "SKILL.md"),
+      `---
+name: test-skill
+description: User version of test skill
+---
+
+USER_SKILL_SHOULD_NOT_APPEAR_88888
+`
+    );
+
+    // Configure autoLoadSkills
+    const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        delegateMode: "hive",
+        agents: {
+          "hive-master": {
+            autoLoadSkills: ["test-skill"],
+          },
+        },
+      }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, output);
+
+    const joined = output.system.join("\n");
+
+    // Project skill should win
+    expect(joined).toContain("PROJECT_SKILL_WINS_MARKER_99999");
+    // User skill should NOT be present
+    expect(joined).not.toContain("USER_SKILL_SHOULD_NOT_APPEAR_88888");
+  });
+
+  it("autoLoadSkills: Hive builtin wins over OpenCode skill for same id", async () => {
+    // Create an OpenCode skill with same name as a Hive builtin (brainstorming)
+    const projectSkillDir = path.join(testRoot, ".opencode", "skill", "brainstorming");
+    fs.mkdirSync(projectSkillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectSkillDir, "SKILL.md"),
+      `---
+name: brainstorming
+description: OpenCode version should NOT win
+---
+
+OPENCODE_BRAINSTORMING_SHOULD_NOT_APPEAR_77777
+`
+    );
+
+    // Configure autoLoadSkills to include brainstorming (which is a Hive builtin)
+    const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        delegateMode: "hive",
+        agents: {
+          "hive-master": {
+            autoLoadSkills: ["brainstorming"],
+          },
+        },
+      }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, output);
+
+    const joined = output.system.join("\n");
+
+    // Hive builtin brainstorming should be present (check first 50 chars of template)
+    const brainstormingSkill = BUILTIN_SKILLS.find((skill) => skill.name === "brainstorming");
+    expect(brainstormingSkill).toBeDefined();
+    expect(joined).toContain(brainstormingSkill!.template.slice(0, 50));
+
+    // OpenCode version should NOT be present
+    expect(joined).not.toContain("OPENCODE_BRAINSTORMING_SHOULD_NOT_APPEAR_77777");
+  });
+
+  it("disableSkills prevents injecting OpenCode file-based skills", async () => {
+    // Create an OpenCode skill
+    const projectSkillDir = path.join(testRoot, ".opencode", "skill", "custom-opencode-skill");
+    fs.mkdirSync(projectSkillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectSkillDir, "SKILL.md"),
+      `---
+name: custom-opencode-skill
+description: Custom skill that should be disabled
+---
+
+DISABLED_SKILL_SHOULD_NOT_APPEAR_66666
+`
+    );
+
+    // Configure autoLoadSkills AND disableSkills
+    const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        delegateMode: "hive",
+        disableSkills: ["custom-opencode-skill"],
+        agents: {
+          "hive-master": {
+            autoLoadSkills: ["custom-opencode-skill"],
+          },
+        },
+      }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, output);
+
+    const joined = output.system.join("\n");
+
+    // The disabled skill should NOT be present
+    expect(joined).not.toContain("DISABLED_SKILL_SHOULD_NOT_APPEAR_66666");
+  });
+
+  it("autoLoadSkills skips path traversal skill ids without throwing", async () => {
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      // Configure autoLoadSkills with a path traversal attempt
+      const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          delegateMode: "hive",
+          agents: {
+            "hive-master": {
+              autoLoadSkills: ["../../../etc/passwd", "foo/bar", "normal-skill"],
+            },
+          },
+        }),
+      );
+
+      // Create the normal-skill so we can verify other skills still load
+      const projectSkillDir = path.join(testRoot, ".opencode", "skill", "normal-skill");
+      fs.mkdirSync(projectSkillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectSkillDir, "SKILL.md"),
+        `---
+name: normal-skill
+description: A normal skill
+---
+
+NORMAL_SKILL_LOADED_55555
+`
+      );
+
+      const ctx: PluginInput = {
+        directory: testRoot,
+        worktree: testRoot,
+        serverUrl: new URL("http://localhost:1"),
+        project: createProject(testRoot),
+        client: OPENCODE_CLIENT,
+        $: createStubShell(),
+      };
+
+      // Should not throw
+      const hooks = await plugin(ctx);
+
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, output);
+
+      const joined = output.system.join("\n");
+
+      // Normal skill should still be loaded
+      expect(joined).toContain("NORMAL_SKILL_LOADED_55555");
+
+      // Path traversal attempts should be warned about
+      const pathTraversalWarnings = warnings.filter(
+        (w) => String(w[0]).includes("Invalid skill id") || String(w[0]).includes("path traversal")
+      );
+      expect(pathTraversalWarnings.length).toBeGreaterThan(0);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("autoLoadSkills skips skill with frontmatter name mismatch and warns", async () => {
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      // Create a skill with mismatched name in frontmatter
+      const projectSkillDir = path.join(testRoot, ".opencode", "skill", "mismatch-skill");
+      fs.mkdirSync(projectSkillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projectSkillDir, "SKILL.md"),
+        `---
+name: different-name
+description: Skill with wrong name in frontmatter
+---
+
+MISMATCHED_SKILL_SHOULD_NOT_APPEAR_44444
+`
+      );
+
+      // Configure autoLoadSkills
+      const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          delegateMode: "hive",
+          agents: {
+            "hive-master": {
+              autoLoadSkills: ["mismatch-skill"],
+            },
+          },
+        }),
+      );
+
+      const ctx: PluginInput = {
+        directory: testRoot,
+        worktree: testRoot,
+        serverUrl: new URL("http://localhost:1"),
+        project: createProject(testRoot),
+        client: OPENCODE_CLIENT,
+        $: createStubShell(),
+      };
+
+      const hooks = await plugin(ctx);
+
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, output);
+
+      const joined = output.system.join("\n");
+
+      // Mismatched skill should NOT be injected
+      expect(joined).not.toContain("MISMATCHED_SKILL_SHOULD_NOT_APPEAR_44444");
+
+      // Should have warned about name mismatch
+      const mismatchWarnings = warnings.filter(
+        (w) => String(w[0]).includes("name mismatch") || 
+               (String(w[0]).includes("mismatch-skill") && String(w[0]).includes("different-name"))
+      );
+      expect(mismatchWarnings.length).toBeGreaterThan(0);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   it("auto-loads parallel exploration for planner agents by default", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
