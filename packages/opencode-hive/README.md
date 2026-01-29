@@ -212,7 +212,7 @@ Use `autoLoadSkills` to automatically inject skills into an agent's system promp
   "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "agents": {
     "hive-master": {
-      "autoLoadSkills": ["parallel-exploration"]
+      "autoLoadSkills": ["parallel-exploration", "agent-browser", "web-design-guidelines"]
     },
     "forager-worker": {
       "autoLoadSkills": ["test-driven-development", "verification-before-completion"]
@@ -221,12 +221,25 @@ Use `autoLoadSkills` to automatically inject skills into an agent's system promp
 }
 ```
 
+**Skill sources:**
+
+`autoLoadSkills` supports both Hive builtin skills and OpenCode skill files:
+
+| Source | Location | Examples |
+|--------|----------|----------|
+| Hive builtin | `packages/opencode-hive/skills/` | `brainstorming`, `test-driven-development` |
+| OpenCode project | `.opencode/skill/<name>/SKILL.md` | Custom project-specific skills |
+| OpenCode user | `~/.config/opencode/skill/<name>/SKILL.md` | `agent-browser`, `web-design-guidelines` |
+
+**Search order:** Hive builtin → Project `.opencode/skill` → User `~/.config/opencode/skill`
+
+**Collision policy:** Hive builtin wins. If a skill ID exists in both Hive and OpenCode locations, the Hive builtin is used.
+
 **How `skills` and `autoLoadSkills` interact:**
 
 - `skills` controls what appears in `hive_skill()` — the agent can manually load these on demand
 - `autoLoadSkills` injects skills unconditionally at session start — no manual loading needed
 - These are **independent**: a skill can be auto-loaded but not appear in `hive_skill()`, or vice versa
-- Both only support Hive's built-in skills (not OpenCode base skills from the `skill()` tool)
 - User `autoLoadSkills` are **merged** with defaults (use global `disableSkills` to remove defaults)
 
 **Default auto-load skills by agent:**

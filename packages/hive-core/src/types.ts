@@ -145,7 +145,12 @@ export interface AgentModelConfig {
   temperature?: number;
   /** Skills to enable for this agent */
   skills?: string[];
-  /** Skills to auto-load for this agent */
+  /**
+   * Skills to auto-load for this agent.
+   * Supports Hive builtin skills and OpenCode skill files.
+   * Search order: Hive builtin → `.opencode/skill/<name>` → `~/.config/opencode/skill/<name>`
+   * Hive builtin wins on collision.
+   */
   autoLoadSkills?: string[];
   /** Variant key for model reasoning/effort level (e.g., 'low', 'medium', 'high', 'max') */
   variant?: string;
