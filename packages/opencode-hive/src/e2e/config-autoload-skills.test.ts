@@ -273,4 +273,69 @@ describe("config hook autoLoadSkills injection", () => {
     expect(parallelExplorationSkill).toBeDefined();
     expect(hiveMasterPrompt).toContain(parallelExplorationSkill!.template);
   });
+
+  it("system.transform does NOT inject skills (legacy path removed)", async () => {
+    // This test verifies that the legacy autoLoadSkills injection in system.transform
+    // has been completely removed. Skills should ONLY be injected via config hook.
+    const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        agentMode: "unified",
+        agents: {
+          "hive-master": {
+            autoLoadSkills: ["brainstorming", "parallel-exploration"],
+          },
+        },
+      }),
+    );
+
+    const ctx: any = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+    };
+
+    const hooks = await plugin(ctx);
+
+    // Get skill templates to check
+    const brainstormingSkill = BUILTIN_SKILLS.find(s => s.name === "brainstorming");
+    const parallelExplorationSkill = BUILTIN_SKILLS.find(s => s.name === "parallel-exploration");
+    expect(brainstormingSkill).toBeDefined();
+    expect(parallelExplorationSkill).toBeDefined();
+
+    // Call system.transform WITH agent specified
+    const outputWithAgent = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, outputWithAgent);
+    const joinedWithAgent = outputWithAgent.system.join("\n");
+
+    // Skills should NOT be in system.transform output (legacy path removed)
+    expect(joinedWithAgent).not.toContain(brainstormingSkill!.template);
+    expect(joinedWithAgent).not.toContain(parallelExplorationSkill!.template);
+
+    // HIVE_SYSTEM_PROMPT should still be there
+    expect(joinedWithAgent).toContain("## Hive - Feature Development System");
+
+    // Call system.transform WITHOUT agent (simulates runtime scenario)
+    const outputWithoutAgent = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({}, outputWithoutAgent);
+    const joinedWithoutAgent = outputWithoutAgent.system.join("\n");
+
+    // Skills should also NOT be in system.transform output when agent is missing
+    expect(joinedWithoutAgent).not.toContain(brainstormingSkill!.template);
+    expect(joinedWithoutAgent).not.toContain(parallelExplorationSkill!.template);
+
+    // HIVE_SYSTEM_PROMPT should still be there
+    expect(joinedWithoutAgent).toContain("## Hive - Feature Development System");
+
+    // Verify skills ARE in the config hook prompt (the correct path)
+    const opencodeConfig: any = { agent: {} };
+    await hooks.config!(opencodeConfig);
+    const hiveMasterPrompt = opencodeConfig.agent["hive-master"]?.prompt as string;
+    expect(hiveMasterPrompt).toContain(brainstormingSkill!.template);
+    expect(hiveMasterPrompt).toContain(parallelExplorationSkill!.template);
+  });
 });
