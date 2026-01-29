@@ -13,3 +13,4 @@ export {
   getBuiltinSkillsXml,
   type BuiltinSkillName 
 } from './builtin.js';
+export { loadOpencodeSkill, type LoadOpencodeSkillOptions } from './opencode.js';
