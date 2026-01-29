@@ -322,6 +322,111 @@ Do it
     expect(agentPromptIndex).toBeGreaterThan(statusHintIndex);
   });
 
+  it("autoLoadSkills falls back to OpenCode skill files when not in BUILTIN_SKILLS", async () => {
+    // Create an OpenCode user skill (agent-browser is NOT a Hive builtin skill)
+    const userSkillDir = path.join(testRoot, ".config", "opencode", "skill", "agent-browser");
+    fs.mkdirSync(userSkillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userSkillDir, "SKILL.md"),
+      `---
+name: agent-browser
+description: Browser automation skill
+---
+
+# Agent Browser Skill
+
+This is the agent-browser skill template from OpenCode.
+Use this for browser automation tasks.
+`
+    );
+
+    // Configure autoLoadSkills to include both a Hive builtin (brainstorming) 
+    // and an OpenCode skill (agent-browser)
+    const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        agents: {
+          "hive-master": {
+            autoLoadSkills: ["brainstorming", "agent-browser"],
+          },
+        },
+      }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, output);
+
+    const joined = output.system.join("\n");
+
+    // Verify Hive builtin skill (brainstorming) is injected
+    const brainstormingSkill = BUILTIN_SKILLS.find((skill) => skill.name === "brainstorming");
+    expect(brainstormingSkill).toBeDefined();
+    expect(joined).toContain(brainstormingSkill!.template.slice(0, 50));
+
+    // Verify OpenCode skill (agent-browser) is also injected via fallback
+    expect(joined).toContain("# Agent Browser Skill");
+    expect(joined).toContain("This is the agent-browser skill template from OpenCode.");
+
+    // Verify brainstorming comes from Hive builtin (not from OpenCode path)
+    // The Hive builtin should win collisions
+  });
+
+  it("autoLoadSkills warns for unknown skill ids that don't exist in either location", async () => {
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          agents: {
+            "hive-master": {
+              autoLoadSkills: ["nonexistent-skill-xyz"],
+            },
+          },
+        }),
+      );
+
+      const ctx: PluginInput = {
+        directory: testRoot,
+        worktree: testRoot,
+        serverUrl: new URL("http://localhost:1"),
+        project: createProject(testRoot),
+        client: OPENCODE_CLIENT,
+        $: createStubShell(),
+      };
+
+      const hooks = await plugin(ctx);
+
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]?.({ agent: "hive-master" }, output);
+
+      // Should have warned about unknown skill id
+      const unknownSkillWarning = warnings.find(
+        (w) => w[0] === "Unknown skill id" && w[1] === "nonexistent-skill-xyz"
+      );
+      expect(unknownSkillWarning).toBeDefined();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   it("auto-loads parallel exploration for planner agents by default", async () => {
     const ctx: PluginInput = {
       directory: testRoot,

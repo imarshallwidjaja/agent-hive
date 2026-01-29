@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { tool, type Plugin, type ToolDefinition } from "@opencode-ai/plugin";
 import { getFilteredSkills, loadBuiltinSkill } from './skills/builtin.js';
+import { loadOpencodeSkill } from './skills/opencode.js';
 import { BUILTIN_SKILLS } from './skills/registry.generated.js';
 import type { SkillDefinition } from './skills/types.js';
 // Bee agents (lean, focused)
@@ -292,12 +293,22 @@ To unblock: Remove .hive/features/${feature}/BLOCKED`;
 
         if (autoLoadSkills.length > 0) {
           for (const skillId of autoLoadSkills) {
-            const skill = BUILTIN_SKILLS.find((entry) => entry.name === skillId);
-            if (!skill) {
-              console.warn("Unknown skill id", skillId);
+            // 1. Try Hive builtin first (Hive wins collisions)
+            const builtinSkill = BUILTIN_SKILLS.find((entry) => entry.name === skillId);
+            if (builtinSkill) {
+              output.system.push(builtinSkill.template);
               continue;
             }
-            output.system.push(skill.template);
+
+            // 2. Fallback to OpenCode skill file loader
+            const opencodeResult = loadOpencodeSkill(skillId, { projectRoot: directory });
+            if (opencodeResult.found) {
+              output.system.push(opencodeResult.skill.template);
+              continue;
+            }
+
+            // 3. Not found in either location - warn and continue
+            console.warn("Unknown skill id", skillId);
           }
         }
       }
