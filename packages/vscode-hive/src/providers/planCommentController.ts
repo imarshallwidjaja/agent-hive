@@ -20,7 +20,7 @@ export class PlanCommentController {
   private normalizedWorkspaceRoot: string
 
   constructor(private workspaceRoot: string) {
-    this.normalizedWorkspaceRoot = workspaceRoot.replace(/\\/g, '/')
+    this.normalizedWorkspaceRoot = this.normalizePath(workspaceRoot)
     this.controller = vscode.comments.createCommentController(
       'hive-plan-review',
       'Plan Review'
@@ -102,10 +102,19 @@ export class PlanCommentController {
   }
 
   private getFeatureMatch(filePath: string): string | null {
-    const normalized = filePath.replace(/\\/g, '/')
+    const normalized = this.normalizePath(filePath)
     if (!normalized.startsWith(this.normalizedWorkspaceRoot + '/')) return null
     const match = normalized.match(/\.hive\/features\/([^/]+)\/(?:plan\.md|comments\.json)$/)
     return match ? match[1] : null
+  }
+
+  private normalizePath(filePath: string): string {
+    const normalized = filePath.replace(/\\/g, '/')
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+  }
+
+  private isSamePath(left: string, right: string): boolean {
+    return this.normalizePath(left) === this.normalizePath(right)
   }
 
   private createComment(reply: vscode.CommentReply): void {
@@ -154,7 +163,7 @@ export class PlanCommentController {
       const data: CommentsFile = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'))
       
       this.threads.forEach((thread, id) => {
-        if (thread.uri.fsPath.replace(/\\/g, '/') === uri.fsPath.replace(/\\/g, '/')) {
+        if (this.isSamePath(thread.uri.fsPath, uri.fsPath)) {
           thread.dispose()
           this.threads.delete(id)
         }
@@ -196,7 +205,7 @@ export class PlanCommentController {
     const threads: StoredThread[] = []
     
     this.threads.forEach((thread, id) => {
-      if (thread.uri.fsPath.replace(/\\/g, '/') !== uri.fsPath.replace(/\\/g, '/')) return
+      if (!this.isSamePath(thread.uri.fsPath, uri.fsPath)) return
       if (thread.comments.length === 0) return
 
       const [first, ...rest] = thread.comments
