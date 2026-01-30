@@ -17,8 +17,10 @@ export class PlanCommentController {
   private controller: vscode.CommentController
   private threads = new Map<string, vscode.CommentThread>()
   private commentsWatcher: vscode.FileSystemWatcher | undefined
+  private normalizedWorkspaceRoot: string
 
   constructor(private workspaceRoot: string) {
+    this.normalizedWorkspaceRoot = this.normalizePath(workspaceRoot)
     this.controller = vscode.comments.createCommentController(
       'hive-plan-review',
       'Plan Review'
@@ -26,7 +28,7 @@ export class PlanCommentController {
 
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: (document: vscode.TextDocument) => {
-        if (!document.fileName.endsWith('plan.md')) return []
+        if (path.basename(document.fileName) !== 'plan.md') return []
         return [new vscode.Range(0, 0, document.lineCount - 1, 0)]
       }
     }
@@ -41,10 +43,10 @@ export class PlanCommentController {
   }
 
   private onCommentsFileChanged(commentsUri: vscode.Uri): void {
-    const featureDir = path.dirname(commentsUri.fsPath)
-    const planPath = path.join(featureDir, 'plan.md')
-    const planUri = vscode.Uri.file(planPath)
-    this.loadComments(planUri)
+    const featureMatch = this.getFeatureMatch(commentsUri.fsPath)
+    if (!featureMatch) return
+    const planPath = path.join(this.workspaceRoot, '.hive', 'features', featureMatch, 'plan.md')
+    this.loadComments(vscode.Uri.file(planPath))
   }
 
   registerCommands(context: vscode.ExtensionContext): void {
@@ -80,23 +82,47 @@ export class PlanCommentController {
       }),
 
       vscode.workspace.onDidOpenTextDocument(doc => {
-        if (doc.fileName.endsWith('plan.md')) {
+        if (path.basename(doc.fileName) === 'plan.md') {
           this.loadComments(doc.uri)
         }
       }),
 
       vscode.workspace.onDidSaveTextDocument(doc => {
-        if (doc.fileName.endsWith('plan.md')) {
+        if (path.basename(doc.fileName) === 'plan.md') {
           this.saveComments(doc.uri)
         }
       })
     )
 
     vscode.workspace.textDocuments.forEach(doc => {
-      if (doc.fileName.endsWith('plan.md')) {
+      if (path.basename(doc.fileName) === 'plan.md') {
         this.loadComments(doc.uri)
       }
     })
+  }
+
+  private getFeatureMatch(filePath: string): string | null {
+    const normalized = this.normalizePath(filePath)
+    const normalizedWorkspace = this.normalizedWorkspaceRoot.replace(/\/+$/, '')
+    const compareNormalized = process.platform === 'win32' ? normalized.toLowerCase() : normalized
+    const compareWorkspace = process.platform === 'win32' ? normalizedWorkspace.toLowerCase() : normalizedWorkspace
+    if (!compareNormalized.startsWith(`${compareWorkspace}/`)) return null
+    const match = filePath.replace(/\\/g, '/')
+      .match(/\.hive\/features\/([^/]+)\/(?:plan\.md|comments\.json)$/)
+    return match ? match[1] : null
+  }
+
+  private normalizePath(filePath: string): string {
+    return filePath.replace(/\\/g, '/')
+  }
+
+  private isSamePath(left: string, right: string): boolean {
+    const normalizedLeft = this.normalizePath(left)
+    const normalizedRight = this.normalizePath(right)
+    if (process.platform === 'win32') {
+      return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    }
+    return normalizedLeft === normalizedRight
   }
 
   private createComment(reply: vscode.CommentReply): void {
@@ -132,9 +158,9 @@ export class PlanCommentController {
   }
 
   private getCommentsPath(uri: vscode.Uri): string | null {
-    const match = uri.fsPath.match(/\.hive\/features\/([^/]+)\/plan\.md$/)
-    if (!match) return null
-    return path.join(this.workspaceRoot, '.hive', 'features', match[1], 'comments.json')
+    const featureMatch = this.getFeatureMatch(uri.fsPath)
+    if (!featureMatch) return null
+    return path.join(this.workspaceRoot, '.hive', 'features', featureMatch, 'comments.json')
   }
 
   private loadComments(uri: vscode.Uri): void {
@@ -145,7 +171,7 @@ export class PlanCommentController {
       const data: CommentsFile = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'))
       
       this.threads.forEach((thread, id) => {
-        if (thread.uri.fsPath === uri.fsPath) {
+        if (this.isSamePath(thread.uri.fsPath, uri.fsPath)) {
           thread.dispose()
           this.threads.delete(id)
         }
@@ -187,7 +213,7 @@ export class PlanCommentController {
     const threads: StoredThread[] = []
     
     this.threads.forEach((thread, id) => {
-      if (thread.uri.fsPath !== uri.fsPath) return
+      if (!this.isSamePath(thread.uri.fsPath, uri.fsPath)) return
       if (thread.comments.length === 0) return
 
       const [first, ...rest] = thread.comments

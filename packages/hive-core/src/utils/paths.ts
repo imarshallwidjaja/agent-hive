@@ -13,6 +13,10 @@ const REPORT_FILE = 'report.md';
 const APPROVED_FILE = 'APPROVED';
 const JOURNAL_FILE = 'journal.md';
 
+export function normalizePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/');
+}
+
 export function getHivePath(projectRoot: string): string {
   return path.join(projectRoot, HIVE_DIR);
 }

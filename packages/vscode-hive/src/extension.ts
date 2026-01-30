@@ -255,7 +255,8 @@ class HiveExtension {
         }
 
         const filePath = editor.document.uri.fsPath
-        const featureMatch = filePath.match(/\.hive\/features\/([^/]+)\/plan\.md$/)
+        const normalized = filePath.replace(/\\/g, "/");
+        const featureMatch = normalized.match(/\.hive\/features\/([^/]+)\/plan\.md$/)
         if (!featureMatch) {
           vscode.window.showErrorMessage('Not a plan.md file')
           return

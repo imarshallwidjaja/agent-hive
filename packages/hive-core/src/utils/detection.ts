@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { getHivePath, getFeaturesPath, getFeaturePath, readJson } from './paths.js';
+import { getHivePath, getFeaturesPath, getFeaturePath, readJson, normalizePath } from './paths.js';
 import { FeatureJson } from '../types.js';
 
 export interface DetectionResult {
@@ -20,7 +20,8 @@ export function detectContext(cwd: string): DetectionResult {
     mainProjectRoot: null,
   };
 
-  const worktreeMatch = cwd.match(/(.+)\/\.hive\/\.worktrees\/([^/]+)\/([^/]+)/);
+  const normalizedCwd = normalizePath(cwd);
+  const worktreeMatch = normalizedCwd.match(/(.+)\/\.hive\/\.worktrees\/([^/]+)\/([^/]+)/);
   if (worktreeMatch) {
     result.mainProjectRoot = worktreeMatch[1];
     result.feature = worktreeMatch[2];
@@ -38,10 +39,11 @@ export function detectContext(cwd: string): DetectionResult {
       const gitdirMatch = gitContent.match(/gitdir:\s*(.+)/);
       if (gitdirMatch) {
         const gitdir = gitdirMatch[1];
-        const worktreePathMatch = gitdir.match(/(.+)\/\.git\/worktrees\/(.+)/);
+        const normalizedGitdir = normalizePath(gitdir);
+        const worktreePathMatch = normalizedGitdir.match(/(.+)\/\.git\/worktrees\/(.+)/);
         if (worktreePathMatch) {
           const mainRepo = worktreePathMatch[1];
-          const cwdWorktreeMatch = cwd.match(/\.hive\/\.worktrees\/([^/]+)\/([^/]+)/);
+          const cwdWorktreeMatch = normalizedCwd.match(/\.hive\/\.worktrees\/([^/]+)\/([^/]+)/);
           if (cwdWorktreeMatch) {
             result.mainProjectRoot = mainRepo;
             result.feature = cwdWorktreeMatch[1];

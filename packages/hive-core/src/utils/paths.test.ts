@@ -13,6 +13,7 @@ import {
   deepMerge,
   getLockPath,
   readJson,
+  normalizePath,
 } from "./paths";
 
 const TEST_DIR = "/tmp/hive-core-test-" + process.pid;
@@ -379,6 +380,16 @@ describe("Atomic + Locked JSON Utilities", () => {
       });
 
       expect(result).toEqual({ x: 1, y: 2 });
+    });
+  });
+
+  describe("normalizePath", () => {
+    it("converts Windows backslashes to forward slashes", () => {
+      expect(normalizePath("C:\\Users\\test\\project")).toBe("C:/Users/test/project");
+    });
+
+    it("leaves Unix paths unchanged", () => {
+      expect(normalizePath("/home/user/project")).toBe("/home/user/project");
     });
   });
 });
