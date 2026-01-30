@@ -180,13 +180,21 @@ Skills provide specialized workflows that agents can load on-demand via `hive_sk
 }
 ```
 
+**Supported skill sources for `autoLoadSkills`:**
+
+1. **Hive builtin** — Skills bundled with opencode-hive (always win if ID matches)
+2. **Project OpenCode** — `<project>/.opencode/skills/<id>/SKILL.md`
+3. **Global OpenCode** — `~/.config/opencode/skills/<id>/SKILL.md`
+4. **Project Claude** — `<project>/.claude/skills/<id>/SKILL.md`
+5. **Global Claude** — `~/.claude/skills/<id>/SKILL.md`
+
+Missing or invalid skills emit a warning and are skipped—startup continues without failure.
+
 **How these interact:**
 - `skills` controls what's available in `hive_skill()` — the agent can manually load these
 - `autoLoadSkills` injects skills unconditionally at session start — no manual loading needed
 - These are **independent**: a skill can be auto-loaded but not appear in `hive_skill()`, or vice versa
-- Both only support Hive's built-in skills (not OpenCode base skills)
 - Default `autoLoadSkills` are merged with user config (use `disableSkills` to remove defaults)
-```
 
 #### MCP Research Tools
 

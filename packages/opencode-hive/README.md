@@ -222,12 +222,23 @@ Use `autoLoadSkills` to automatically inject skills into an agent's system promp
 }
 ```
 
+**Supported skill sources:**
+
+`autoLoadSkills` accepts both Hive builtin skill IDs and file-based skill IDs. Resolution order:
+
+1. **Hive builtin** — Skills bundled with opencode-hive (always win if ID matches)
+2. **Project OpenCode** — `<project>/.opencode/skills/<id>/SKILL.md`
+3. **Global OpenCode** — `~/.config/opencode/skills/<id>/SKILL.md`
+4. **Project Claude** — `<project>/.claude/skills/<id>/SKILL.md`
+5. **Global Claude** — `~/.claude/skills/<id>/SKILL.md`
+
+Skill IDs must be safe directory names (no `/`, `\`, `..`, or `.`). Missing or invalid skills emit a warning and are skipped—startup continues without failure.
+
 **How `skills` and `autoLoadSkills` interact:**
 
 - `skills` controls what appears in `hive_skill()` — the agent can manually load these on demand
 - `autoLoadSkills` injects skills unconditionally at session start — no manual loading needed
 - These are **independent**: a skill can be auto-loaded but not appear in `hive_skill()`, or vice versa
-- Both only support Hive's built-in skills (not OpenCode base skills from the `skill()` tool)
 - User `autoLoadSkills` are **merged** with defaults (use global `disableSkills` to remove defaults)
 
 **Default auto-load skills by agent:**
