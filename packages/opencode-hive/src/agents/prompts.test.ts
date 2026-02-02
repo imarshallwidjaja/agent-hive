@@ -30,6 +30,12 @@ describe('Hive (Hybrid) prompt', () => {
     it('includes internal codebase exploration in Research intent', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Internal codebase exploration');
     });
+
+    it('includes task vs hive mode research fan-out guidance', () => {
+      expect(QUEEN_BEE_PROMPT).toContain(
+        'In task mode, use task() for research fan-out; in hive mode, use hive_background_task.'
+      );
+    });
   });
 });
 
@@ -73,6 +79,12 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('contains sync: false guidance for fan-out', () => {
       expect(SWARM_BEE_PROMPT).toContain('sync: false');
+    });
+
+    it('includes task vs hive mode research fan-out guidance', () => {
+      expect(SWARM_BEE_PROMPT).toContain(
+        'In task mode, use task() for research fan-out; in hive mode, use hive_background_task.'
+      );
     });
   });
 });
