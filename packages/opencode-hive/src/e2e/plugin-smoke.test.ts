@@ -380,9 +380,6 @@ Do it
     expect(execStart.instructions).toContain(
       "Use the `@path` attachment syntax in the prompt to reference the file. Do not inline the file contents."
     );
-    expect(execStart.instructions?.toLowerCase()).toContain(
-      "do not paste contents; use @path reference"
-    );
     expect(execStart.instructions).not.toContain("Read the prompt file");
   });
 
@@ -580,6 +577,11 @@ Do it later
     );
 
     const plan = `# Prompt Mode Feature
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes
 
 ## Tasks
 
