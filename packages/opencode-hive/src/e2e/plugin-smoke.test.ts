@@ -293,9 +293,10 @@ Do it
   });
 
   it("returns task tool call using @file prompt when delegateMode=task", async () => {
-    const configDir = path.join(testRoot, ".config", "opencode");
+    const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(
-      path.join(configDir, "agent_hive.json"),
+      configPath,
       JSON.stringify({ delegateMode: "task" })
     );
 
@@ -332,7 +333,6 @@ Test
 ### 1. First Task
 Do it
 `;
-
     await hooks.tool!.hive_plan_write.execute(
       { content: plan, feature: "task-mode-feature" },
       toolContext
@@ -356,18 +356,32 @@ Do it
         subagent_type?: string;
         description?: string;
         prompt?: string;
-        promptFile?: string;
       };
     };
 
-    expect(execStart.taskToolCall).toBeTruthy();
-    expect(execStart.taskToolCall?.prompt).toBe(
-      "Follow instructions in @.hive/features/task-mode-feature/tasks/01-first-task/worker-prompt.md"
+    const expectedPromptPath = path.posix.join(
+      ".hive",
+      "features",
+      "task-mode-feature",
+      "tasks",
+      "01-first-task",
+      "worker-prompt.md"
     );
-    expect(execStart.taskToolCall?.promptFile).toBeUndefined();
+
+    expect(execStart.backgroundTaskCall).toBeUndefined();
+    expect(execStart.taskToolCall).toBeDefined();
+    expect(execStart.taskToolCall?.subagent_type).toBeDefined();
+    expect(execStart.taskToolCall?.description).toBe("Hive: 01-first-task");
+    expect(execStart.taskToolCall?.prompt).toContain(`@${expectedPromptPath}`);
     expect(execStart.instructions).toContain("task({");
     expect(execStart.instructions).toContain(
       "prompt: \"Follow instructions in @.hive/features/task-mode-feature/tasks/01-first-task/worker-prompt.md\""
+    );
+    expect(execStart.instructions).toContain(
+      "Use the `@path` attachment syntax in the prompt to reference the file. Do not inline the file contents."
+    );
+    expect(execStart.instructions?.toLowerCase()).toContain(
+      "do not paste contents; use @path reference"
     );
     expect(execStart.instructions).not.toContain("Read the prompt file");
   });
