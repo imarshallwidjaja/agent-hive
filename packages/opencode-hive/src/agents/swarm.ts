@@ -28,6 +28,8 @@ Use \`hive_status()\` to see **runnable** tasks (dependencies satisfied) and **b
 - When 2+ tasks are runnable: ask operator via \`question()\` before parallelizing
 - Record execution decisions with \`hive_context_write({ name: "execution-decisions", ... })\`
 
+If tasks are missing **Depends on** metadata, ask the planner to revise the plan before executing.
+
 ### Standard Checks
 
 1. Is there a specialized agent that matches?
