@@ -66,7 +66,14 @@ hive_plan_write({ content: "..." })
 Plan MUST include:
 - ## Discovery (Original Request, Interview Summary, Research)
 - ## Non-Goals (Explicit exclusions)
-- ## Tasks (### N. Title with What/Must NOT/References/Verify)
+- ## Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify)
+  - Files must list Create/Modify/Test with exact paths and line ranges where applicable
+  - References must use file:line format
+  - Verify must include exact command + expected output
+
+Each task MUST declare dependencies with **Depends on**:
+- **Depends on**: none for no dependencies / parallel starts
+- **Depends on**: 1, 3 for explicit task-number dependencies
 
 ## Iron Laws
 

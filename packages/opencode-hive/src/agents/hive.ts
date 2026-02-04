@@ -109,13 +109,22 @@ hive_feature_create({ name: "feature-name" })
 hive_plan_write({ content: "..." })
 \`\`\`
 
-Plan includes: Discovery, Non-Goals, Tasks (with What/Must NOT/Verify)
+Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify)
+- Files must list Create/Modify/Test with exact paths and line ranges where applicable
+- References must use file:line format
+- Verify must include exact command + expected output
+
+Each task MUST declare dependencies with **Depends on**:
+- **Depends on**: none for no dependencies / parallel starts
+- **Depends on**: 1, 3 for explicit task-number dependencies
 
 ### After Plan Written
 
-Ask user: "Plan complete. Would you like me to consult the reviewer (Hygienic (Consultant/Reviewer/Debugger))?"
+Ask user via \`question()\`: "Plan complete. Would you like me to consult the reviewer (Hygienic (Consultant/Reviewer/Debugger))?"
 
 If yes → \`task({ subagent_type: "hygienic", prompt: "Review plan..." })\`
+
+After review decision, offer execution choice (subagent-driven vs parallel session) consistent with writing-plans.
 
 ### Planning Iron Laws
 

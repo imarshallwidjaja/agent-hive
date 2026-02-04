@@ -13,9 +13,9 @@ Assume they are a skilled developer, but know almost nothing about our toolset o
 
 **Announce at start:** "I'm using the writing-plans skill to create the implementation plan."
 
-**Context:** This should be run in a dedicated worktree (created by brainstorming skill).
+**Context:** Planning is read-only. Use `hive_feature_create` + `hive_plan_write` and avoid worktrees during planning.
 
-**Save plans to:** `docs/plans/YYYY-MM-DD-<feature-name>.md`
+**Save plans to:** `hive_plan_write` (writes to `.hive/features/<feature>/plan.md`)
 
 ## Bite-Sized Task Granularity
 
@@ -26,66 +26,92 @@ Assume they are a skilled developer, but know almost nothing about our toolset o
 - "Run the tests and make sure they pass" - step
 - "Commit" - step
 
-## Plan Document Header
+## Plan Structure
 
-**Every plan MUST start with this header:**
+**Every plan MUST follow this structure:**
 
-```markdown
-# [Feature Name] Implementation Plan
+````markdown
+# [Feature Name]
 
-> **For Claude:** REQUIRED SUB-SKILL: Use hive_skill:executing-plans to implement this plan task-by-task.
+## Discovery
 
-**Goal:** [One sentence describing what this builds]
+### Original Request
+- "{User's exact words}"
 
-**Architecture:** [2-3 sentences about approach]
+### Interview Summary
+- {Point}: {Decision}
 
-**Tech Stack:** [Key technologies/libraries]
+### Research Findings
+- `{file:lines}`: {Finding}
 
 ---
-```
+
+## Non-Goals (What we're NOT building)
+- {Explicit exclusion}
+
+---
+
+## Tasks
+
+### 1. Task Name
+
+Use the Task Structure template below for every task.
+````
+
 
 ## Task Structure
 
-```markdown
-### Task N: [Component Name]
+The **Depends on** annotation declares task execution order:
+- **Depends on**: none — No dependencies; can run immediately or in parallel
+- **Depends on**: 1 — Depends on task 1
+- **Depends on**: 1, 3 — Depends on tasks 1 and 3
+
+Always include **Depends on** for each task. Use `none` to enable parallel starts.
+
+````markdown
+### N. Task Name
+
+**Depends on**: none
 
 **Files:**
 - Create: `exact/path/to/file.py`
 - Modify: `exact/path/to/existing.py:123-145`
 - Test: `tests/exact/path/to/test.py`
 
-**Step 1: Write the failing test**
+**What to do**:
+- Step 1: Write the failing test
+  ```python
+  def test_specific_behavior():
+      result = function(input)
+      assert result == expected
+  ```
+- Step 2: Run test to verify it fails
+  - Run: `pytest tests/path/test.py::test_name -v`
+  - Expected: FAIL with "function not defined"
+- Step 3: Write minimal implementation
+  ```python
+  def function(input):
+      return expected
+  ```
+- Step 4: Run test to verify it passes
+  - Run: `pytest tests/path/test.py::test_name -v`
+  - Expected: PASS
+- Step 5: Commit
+  ```bash
+  git add tests/path/test.py src/path/file.py
+  git commit -m "feat: add specific feature"
+  ```
 
-```python
-def test_specific_behavior():
-    result = function(input)
-    assert result == expected
-```
+**Must NOT do**:
+- {Task guardrail}
 
-**Step 2: Run test to verify it fails**
+**References**:
+- `{file:lines}` — {Why this reference matters}
 
-Run: `pytest tests/path/test.py::test_name -v`
-Expected: FAIL with "function not defined"
-
-**Step 3: Write minimal implementation**
-
-```python
-def function(input):
-    return expected
-```
-
-**Step 4: Run test to verify it passes**
-
-Run: `pytest tests/path/test.py::test_name -v`
-Expected: PASS
-
-**Step 5: Commit**
-
-```bash
-git add tests/path/test.py src/path/file.py
-git commit -m "feat: add specific feature"
-```
-```
+**Verify**:
+- [ ] Run: `{command}` → {expected}
+- [ ] {Additional acceptance criteria}
+````
 
 ## Remember
 - Exact file paths always
@@ -96,18 +122,17 @@ git commit -m "feat: add specific feature"
 
 ## Execution Handoff
 
-After saving the plan, offer execution choice:
+After saving the plan, ask whether to consult Hygienic (Consultant/Reviewer/Debugger) before offering execution choice.
 
-**"Plan complete and saved to `docs/plans/<filename>.md`. Two execution options:**
+Plan complete and saved to `.hive/features/<feature>/plan.md`.
 
-**1. Subagent-Driven (this session)** - I dispatch fresh subagent per task, review between tasks, fast iteration
+Two execution options:
+1. Subagent-Driven (this session) - I dispatch fresh subagent per task, review between tasks, fast iteration
+2. Parallel Session (separate) - Open new session with executing-plans, batch execution with checkpoints
 
-**2. Parallel Session (separate)** - Open new session with executing-plans, batch execution with checkpoints
-
-**Which approach?"**
+Which approach?
 
 **If Subagent-Driven chosen:**
-- **REQUIRED SUB-SKILL:** Use hive_skill:subagent-driven-development
 - Stay in this session
 - Fresh subagent per task + code review
 
