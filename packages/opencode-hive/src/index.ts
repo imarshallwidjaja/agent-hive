@@ -871,6 +871,8 @@ Call the hive_background_task tool to spawn a Forager (Worker/Coder) worker.
 
 Troubleshooting: if you see "Unknown parameter: workdir", your hive_background_task tool is not Hive's provider. Ensure agent-hive loads after other background_* tool providers, then re-run hive_exec_start.`;
 
+          const taskToolPrompt = `Follow instructions in @${relativePromptPath}`;
+
           const taskToolInstructions = `## Delegation Required
 
 Use OpenCode's built-in \`task\` tool to spawn a Forager (Worker/Coder) worker.
@@ -879,11 +881,11 @@ Use OpenCode's built-in \`task\` tool to spawn a Forager (Worker/Coder) worker.
 task({
   subagent_type: "${agent}",
   description: "Hive: ${task}",
-  prompt: <read the file at ${relativePromptPath}>
+  prompt: "${taskToolPrompt}"
 })
 \`\`\`
 
-Read the prompt file at \`${relativePromptPath}\` and pass its content to the task tool.
+Use the \`@path\` attachment syntax in the prompt to reference the file. Do not inline the file contents.
 
 Note: delegateMode is set to 'task' in agent_hive.json. To use Hive's background tools instead, set delegateMode to 'hive'.`;
 
@@ -902,6 +904,9 @@ Note: delegateMode is set to 'task' in agent_hive.json. To use Hive's background
             delegationRequired: true,
             workerPromptPath: relativePromptPath, // File reference (canonical)
             workerPromptPreview, // Truncated preview for display
+            ...(!useHiveBackground && {
+              taskPromptMode: 'opencode-at-file',
+            }),
             ...(useHiveBackground && {
               backgroundTaskCall: {
                 // NOTE: Uses promptFile instead of prompt to prevent truncation
@@ -918,7 +923,7 @@ Note: delegateMode is set to 'task' in agent_hive.json. To use Hive's background
               taskToolCall: {
                 subagent_type: agent,
                 description: `Hive: ${task}`,
-                promptFile: relativePromptPath, // Relative path for reading
+                prompt: taskToolPrompt,
               },
             }),
             instructions: delegationInstructions,

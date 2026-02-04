@@ -96,6 +96,15 @@ hive_background_task({
 })
 ```
 
+When `delegateMode` is set to `task`, Hive uses OpenCode's `task()` and references the prompt by file using `@path` syntax:
+```typescript
+task({
+  subagent_type: "forager-worker",
+  description: "Hive: 01-task",
+  prompt: "Follow instructions in @.hive/features/my-feature/tasks/01-task/worker-prompt.md"
+})
+```
+
 ## Prompt Budgeting & Observability
 
 Hive automatically bounds worker prompt sizes to prevent context overflow and tool output truncation.
@@ -123,6 +132,7 @@ When limits are exceeded, content is truncated with `...[truncated]` markers and
 ### Prompt Files
 
 Large prompts are written to `.hive/features/<feature>/tasks/<task>/worker-prompt.md` and passed by file reference (`workerPromptPath`) rather than inlined in tool output. This prevents truncation of large prompts.
+When using `delegateMode: "task"`, the file is referenced via `@<workerPromptPath>` in the `task()` prompt string.
 
 ## Plan Format
 

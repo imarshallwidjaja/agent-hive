@@ -36,7 +36,9 @@
 - `workerPromptPreview`: short preview of the prompt
 - `promptMeta`, `payloadMeta`, `budgetApplied`, `warnings`: size and budget observability
 
-Delegation uses `hive_background_task` with `promptFile` pointing at `workerPromptPath` to avoid inlining large prompts.
+Delegation uses pass-by-reference to avoid inlining large prompts:
+- `delegateMode: "task"` uses OpenCode's `task()` with `prompt` referencing `@<workerPromptPath>`
+- `delegateMode: "hive"` uses `background_task` with `promptFile: workerPromptPath`
 
 ### Merge (2 tools)
 | Tool | Purpose |
