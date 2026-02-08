@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { HiveConfig, DEFAULT_HIVE_CONFIG } from '../types.js';
+import type { SandboxConfig } from './dockerSandboxService.js';
 
 /**
  * ConfigService manages user config at ~/.config/opencode/agent_hive.json
@@ -175,6 +176,19 @@ export class ConfigService {
   getDisabledMcps(): string[] {
     const config = this.get();
     return config.disableMcps ?? [];
+  }
+
+  /**
+   * Get sandbox configuration for worker isolation.
+   * Returns { mode: 'none' | 'docker', image?: string, persistent?: boolean }
+   */
+  getSandboxConfig(): SandboxConfig {
+    const config = this.get();
+    const mode = config.sandbox ?? 'none';
+    const image = config.dockerImage;
+    const persistent = config.persistentContainers ?? (mode === 'docker');
+
+    return { mode, ...(image && { image }), persistent };
   }
 
 }

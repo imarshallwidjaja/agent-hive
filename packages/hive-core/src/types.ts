@@ -185,6 +185,12 @@ export interface HiveConfig {
     /** Hygienic Reviewer */
     'hygienic-reviewer'?: AgentModelConfig;
   };
+  /** Sandbox mode for worker isolation */
+  sandbox?: 'none' | 'docker';
+  /** Docker image to use when sandbox is 'docker' (optional explicit override) */
+  dockerImage?: string;
+  /** Reuse Docker containers per worktree (default: true when sandbox is 'docker') */
+  persistentContainers?: boolean;
 }
 
 /** Default models for Hive agents */
@@ -203,6 +209,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   disableSkills: [],
   disableMcps: [],
   agentMode: 'unified',
+  sandbox: 'none',
   agents: {
     'hive-master': {
       model: DEFAULT_AGENT_MODELS['hive-master'],

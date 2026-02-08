@@ -67,11 +67,13 @@ hive_worktree_create({ task: "01-task-name" })
 - Call \`hive_status()\` immediately after to check new state and find next runnable tasks
 - For parallel fan-out, issue multiple \`task()\` calls in the same message
 
-## After Delegation - ALWAYS VERIFY
+## After Delegation - VERIFY
 
+After every delegation, check:
 - Does it work as expected?
-- Followed existing codebase pattern?
-- Followed MUST DO and MUST NOT DO?
+- Followed existing codebase patterns?
+- Met MUST DO and MUST NOT DO requirements?
+- No unintended side effects?
 
 ## Blocker Handling
 
@@ -85,8 +87,7 @@ When worker reports blocked:
 1. STOP all further edits
 2. REVERT to last known working state
 3. DOCUMENT what was attempted
-4. Consult: \`task({ subagent_type: "oracle", prompt: "Analyze..." })\`
-5. If Oracle cannot resolve → ASK USER
+4. ASK USER via question() — present options and context
 
 ## Merge Strategy
 
@@ -96,12 +97,38 @@ hive_merge({ task: "01-task-name", strategy: "merge" })
 
 Merge only after verification passes.
 
-## Post-Batch Review (Hygienic)
+### Post-Batch Review (Hygienic)
 
 After completing and merging a batch:
 1. Ask the user via \`question()\` if they want a Hygienic code review for the batch.
 2. If yes, run \`task({ subagent_type: "hygienic", prompt: "Review implementation changes from the latest batch." })\`.
 3. Apply feedback before starting the next batch.
+
+### AGENTS.md Maintenance
+
+After completing and merging a batch:
+1. Sync context findings to AGENTS.md: \`hive_agents_md({ action: "sync", feature: "feature-name" })\`
+2. Review the proposed diff with the user
+3. Apply approved changes to keep AGENTS.md current
+
+For quality review of AGENTS.md content, load \`hive_skill("agents-md-mastery")\`.
+
+For projects without AGENTS.md:
+- Bootstrap with \`hive_agents_md({ action: "init" })\`
+- Generates initial documentation from codebase analysis
+
+## Turn Termination
+
+Valid endings:
+- Worker delegation (hive_worktree_create)
+- Status check (hive_status)
+- User question (question())
+- Merge (hive_merge)
+
+NEVER end with:
+- "Let me know when you're ready"
+- Summary without next action
+- Waiting for something unspecified
 
 ## Iron Laws
 

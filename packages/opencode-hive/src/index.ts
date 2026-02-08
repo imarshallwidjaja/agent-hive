@@ -135,6 +135,8 @@ import {
   TaskService,
   ContextService,
   ConfigService,
+  AgentsMdService,
+  DockerSandboxService,
   buildEffectiveDependencies,
   computeRunnableAndBlocked,
   detectContext,
@@ -243,6 +245,7 @@ const plugin: Plugin = async (ctx) => {
   const planService = new PlanService(directory);
   const taskService = new TaskService(directory);
   const contextService = new ContextService(directory);
+  const agentsMdService = new AgentsMdService(directory, contextService);
   const configService = new ConfigService(); // User config at ~/.config/opencode/agent_hive.json
   const disabledMcps = configService.getDisabledMcps();
   const disabledSkills = configService.getDisabledSkills();
@@ -426,6 +429,36 @@ To unblock: Remove .hive/features/${feature}/BLOCKED`;
       }
     }) as any,
 
+    "tool.execute.before": async (input, output) => {
+      if (input.tool !== "bash") return;
+      
+      const sandboxConfig = configService.getSandboxConfig();
+      if (sandboxConfig.mode === 'none') return;
+      
+      const command = output.args?.command?.trim();
+      if (!command) return;
+      
+      // Escape hatch: HOST: prefix (case-insensitive)
+      if (/^HOST:\s*/i.test(command)) {
+        const strippedCommand = command.replace(/^HOST:\s*/i, '');
+        console.warn(`[hive:sandbox] HOST bypass: ${strippedCommand.slice(0, 80)}${strippedCommand.length > 80 ? '...' : ''}`);
+        output.args.command = strippedCommand;
+        return;
+      }
+      
+      // Only wrap commands with explicit workdir inside hive worktrees
+      const workdir = output.args?.workdir;
+      if (!workdir) return;
+      
+      const hiveWorktreeBase = path.join(directory, '.hive', '.worktrees');
+      if (!workdir.startsWith(hiveWorktreeBase)) return;
+      
+      // Wrap command using static method (with persistent config)
+      const wrapped = DockerSandboxService.wrapCommand(workdir, command, sandboxConfig);
+      output.args.command = wrapped;
+      output.args.workdir = undefined; // docker command runs on host
+    },
+
     mcp: builtinMcps,
 
     tool: {
@@ -497,9 +530,9 @@ NEXT: Ask your first clarifying question about this feature.`;
           const feature = resolveFeature(explicitFeature);
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
-          // GATE: Check for discovery section
-          const hasDiscovery = content.toLowerCase().includes('## discovery');
-          if (!hasDiscovery) {
+          // GATE: Check for discovery section with substantive content
+          const discoveryMatch = content.match(/^##\s+Discovery\s*$/im);
+          if (!discoveryMatch) {
             return `BLOCKED: Discovery section required before planning.
 
 Your plan must include a \`## Discovery\` section documenting:
@@ -508,6 +541,24 @@ Your plan must include a \`## Discovery\` section documenting:
 - Key decisions made
 
 Add this section to your plan content and try again.`;
+          }
+          
+          // Extract content between ## Discovery and next ## heading (or end)
+          const afterDiscovery = content.slice(discoveryMatch.index! + discoveryMatch[0].length);
+          const nextHeading = afterDiscovery.search(/^##\s+/m);
+          const discoveryContent = nextHeading > -1
+            ? afterDiscovery.slice(0, nextHeading).trim()
+            : afterDiscovery.trim();
+          
+          if (discoveryContent.length < 100) {
+            return `BLOCKED: Discovery section is too thin (${discoveryContent.length} chars, minimum 100).
+
+A substantive Discovery section should include:
+- Original request quoted
+- Interview summary (key decisions)
+- Research findings with file:line references
+
+Expand your Discovery section and try again.`;
           }
 
           captureSession(feature, toolContext);
@@ -1176,6 +1227,44 @@ Re-run with updated summary showing verification results.`;
             },
             nextAction: getNextAction(planStatus, tasksSummary, runnable),
           });
+        },
+      }),
+
+      // AGENTS.md Tool
+      hive_agents_md: tool({
+        description: 'Initialize or sync AGENTS.md. init: scan codebase and generate (preview only). sync: propose updates from feature contexts. apply: write approved content to disk.',
+        args: {
+          action: tool.schema.enum(['init', 'sync', 'apply']).describe('Action to perform'),
+          feature: tool.schema.string().optional().describe('Feature name for sync action'),
+          content: tool.schema.string().optional().describe('Content to write (required for apply action)'),
+        },
+        async execute({ action, feature, content }) {
+          if (action === 'init') {
+            const result = await agentsMdService.init();
+            if (result.existed) {
+              return `AGENTS.md already exists (${result.content.length} chars). Use 'sync' to propose updates.`;
+            }
+            // P2 gate: Return content for review — ask user via question() before writing
+            return `Generated AGENTS.md from codebase scan (${result.content.length} chars):\n\n${result.content}\n\n⚠️ This has NOT been written to disk. Ask the user via question() whether to write it to AGENTS.md.`;
+          }
+
+          if (action === 'sync') {
+            if (!feature) return 'Error: feature name required for sync action';
+            const result = await agentsMdService.sync(feature);
+            if (result.proposals.length === 0) {
+              return 'No new findings to sync to AGENTS.md.';
+            }
+            // P2 gate: Return diff for review — never auto-apply
+            return `Proposed AGENTS.md updates from feature "${feature}":\n\n${result.diff}\n\n⚠️ These changes have NOT been applied. Ask the user via question() whether to apply them.`;
+          }
+
+          if (action === 'apply') {
+            if (!content) return 'Error: content required for apply action. Use init or sync first to get content, then apply with the approved content.';
+            const result = agentsMdService.apply(content);
+            return `AGENTS.md ${result.isNew ? 'created' : 'updated'} (${result.chars} chars) at ${result.path}`;
+          }
+
+          return 'Error: unknown action';
         },
       }),
 
