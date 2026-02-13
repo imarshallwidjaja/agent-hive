@@ -435,6 +435,13 @@ export class TaskService {
     lockOptions?: LockOptions
   ): TaskStatus {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
+
+    // Guard before lock acquisition to avoid creating missing task folders
+    // via lock-file parent directory creation on error paths.
+    if (!fileExists(statusPath)) {
+      throw new Error(`Task '${taskFolder}' not found`);
+    }
+
     const release = acquireLockSync(statusPath, lockOptions);
 
     try {

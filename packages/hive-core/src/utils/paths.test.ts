@@ -259,8 +259,8 @@ describe("Atomic + Locked JSON Utilities", () => {
       const openSpy = spyOn(fs, "openSync").mockImplementation(((targetPath: fs.PathLike, flags: number, mode?: fs.Mode) => {
         if (String(targetPath) === lockPath && firstAttempt) {
           firstAttempt = false;
-          const err = new Error('Transient ENOENT') as NodeJS.ErrnoException;
-          err.code = 'ENOENT';
+          const err = new Error("Transient ENOENT") as NodeJS.ErrnoException;
+          err.code = "ENOENT";
           throw err;
         }
         return originalOpenSync(targetPath, flags, mode);
