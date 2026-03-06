@@ -48,9 +48,9 @@ async function buildAutoLoadedSkillsContent(
   agentName: string,
   configService: ConfigService,
   projectRoot: string,
+  autoLoadSkillsOverride?: string[],
 ): Promise<string> {
-  const agentConfig = configService.getAgentConfig(agentName);
-  const autoLoadSkills = agentConfig.autoLoadSkills ?? [];
+  const autoLoadSkills = autoLoadSkillsOverride ?? (configService.getAgentConfig(agentName).autoLoadSkills ?? []);
 
   if (autoLoadSkills.length === 0) {
     return '';
@@ -1475,10 +1475,19 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
       const customAutoLoadedSkills = Object.fromEntries(
         await Promise.all(
-          Object.keys(customAgentConfigs).map(async (customAgentName) => [
-            customAgentName,
-            await buildAutoLoadedSkillsContent(customAgentName, configService, directory),
-          ]),
+          Object.entries(customAgentConfigs).map(async ([customAgentName, customAgentConfig]) => {
+            const inheritedBaseSkills = customAgentConfig.baseAgent === 'forager-worker'
+              ? (foragerUserConfig.autoLoadSkills ?? [])
+              : (hygienicUserConfig.autoLoadSkills ?? []);
+            const deltaAutoLoadSkills = (customAgentConfig.autoLoadSkills ?? []).filter(
+              (skill) => !inheritedBaseSkills.includes(skill),
+            );
+
+            return [
+              customAgentName,
+              await buildAutoLoadedSkillsContent(customAgentName, configService, directory, deltaAutoLoadSkills),
+            ];
+          }),
         ),
       );
 

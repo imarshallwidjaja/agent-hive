@@ -25,6 +25,13 @@ ${body}`;
 }
 
 
+function countOccurrences(haystack: string, needle: string): number {
+  if (needle.length === 0) {
+    return 0;
+  }
+  return haystack.split(needle).length - 1;
+}
+
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" });
 
 const TEST_ROOT_BASE = "/tmp/hive-config-autoload-skills-test";
@@ -149,6 +156,12 @@ describe("config hook autoLoadSkills injection", () => {
     expect(hivePrompt).toContain("## Configured Custom Subagents");
     expect(hivePrompt).toContain("forager-ui");
     expect(hivePrompt).toContain("reviewer-security");
+
+    const foragerUiPrompt = opencodeConfig.agent["forager-ui"]?.prompt as string;
+    expect(foragerUiPrompt).toBeDefined();
+    const tddSkill = BUILTIN_SKILLS.find((skill) => skill.name === "test-driven-development");
+    expect(tddSkill).toBeDefined();
+    expect(countOccurrences(foragerUiPrompt, tddSkill!.template)).toBe(1);
 
   });
 
