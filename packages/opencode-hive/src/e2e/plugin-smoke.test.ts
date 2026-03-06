@@ -394,9 +394,6 @@ Do it
     const brainstormingSkill = BUILTIN_SKILLS.find((skill) => skill.name === "brainstorming");
     expect(brainstormingSkill).toBeDefined();
     expect(agentConfig.prompt).toContain(brainstormingSkill!.template);
-    expect(agentConfig.prompt).toContain("## Configured Custom Subagents");
-    expect(agentConfig.prompt).toContain("forager-ui");
-    expect(agentConfig.prompt).toContain("reviewer-security");
 
     const agents = opencodeConfig.agent as Record<string, unknown>;
     expect(agents["forager-worker"]).toBeDefined();

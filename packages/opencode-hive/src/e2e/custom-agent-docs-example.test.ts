@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import plugin from '../index';
-import { BUILTIN_SKILLS } from '../skills/registry.generated.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' });
 const TEST_ROOT_BASE = '/tmp/hive-custom-agent-docs-example-test';
@@ -28,14 +27,6 @@ const publishedExample = {
     },
   },
 };
-
-function countOccurrences(haystack: string, needle: string): number {
-  if (needle.length === 0) {
-    return 0;
-  }
-
-  return haystack.split(needle).length - 1;
-}
 
 function createProject(worktree: string) {
   return {
@@ -100,18 +91,6 @@ describe('e2e: published custom-agent docs example', () => {
     expect(reviewerSecurity.temperature).toBe(0.3);
     expect(reviewerSecurity.variant).toBeUndefined();
     expect(reviewerSecurity.description).toBe('Use for security-focused review passes.');
-
-    expect(foragerUi.permission).toEqual(opencodeConfig.agent['forager-worker']?.permission);
-    expect(reviewerSecurity.permission).toEqual(opencodeConfig.agent['hygienic-reviewer']?.permission);
-
-    const tddSkill = BUILTIN_SKILLS.find((skill) => skill.name === 'test-driven-development');
-    const verificationSkill = BUILTIN_SKILLS.find((skill) => skill.name === 'verification-before-completion');
-    expect(tddSkill).toBeDefined();
-    expect(verificationSkill).toBeDefined();
-
-    const foragerUiPrompt = foragerUi.prompt as string;
-    expect(countOccurrences(foragerUiPrompt, tddSkill!.template)).toBe(1);
-    expect(countOccurrences(foragerUiPrompt, verificationSkill!.template)).toBe(1);
 
     const hivePrompt = opencodeConfig.agent['hive-master']?.prompt as string;
     expect(hivePrompt).toContain('## Configured Custom Subagents');

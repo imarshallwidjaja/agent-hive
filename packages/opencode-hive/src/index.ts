@@ -86,19 +86,6 @@ async function buildAutoLoadedSkillsContent(
   return '\n\n' + skillTemplates.join('\n\n');
 }
 
-function buildCustomSubagentAppendix(customAgents: Record<string, ResolvedCustomAgentConfig>): string {
-  const entries = Object.entries(customAgents);
-  if (entries.length === 0) {
-    return '';
-  }
-
-  const lines = entries
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, config]) => `- \`${name}\` — derived from \`${config.baseAgent}\`; ${config.description}`);
-
-  return `\n\n## Configured Custom Subagents\n${lines.join('\n')}`;
-}
-
 function createHiveSkillTool(filteredSkills: SkillDefinition[]): ToolDefinition {
   const base = `Load a Hive skill to get detailed instructions for a specific workflow.
 
@@ -157,7 +144,6 @@ import {
   listFeatures,
   normalizePath,
   type WorktreeInfo,
-  type ResolvedCustomAgentConfig,
 } from "hive-core";
 import { buildWorkerPrompt, type ContextFile, type CompletedTask } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
@@ -1317,7 +1303,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       const agentMode = hiveConfigData.agentMode ?? 'unified';
 
       const customAgentConfigs = configService.getCustomAgentConfigs();
-      const customSubagentAppendix = buildCustomSubagentAppendix(customAgentConfigs);
+      const customSubagentAppendix = Object.keys(customAgentConfigs).length === 0
+        ? ''
+        : `\n\n## Configured Custom Subagents\n${Object.entries(customAgentConfigs)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([name, config]) => `- \`${name}\` — derived from \`${config.baseAgent}\`; ${config.description}`)
+          .join('\n')}`;
 
       // Build auto-loaded skill content for each agent
       const hiveUserConfig = configService.getAgentConfig('hive-master');
