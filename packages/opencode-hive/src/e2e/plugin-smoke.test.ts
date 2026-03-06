@@ -345,6 +345,18 @@ Do it
             autoLoadSkills: ["brainstorming"],
           },
         },
+        customAgents: {
+          "forager-ui": {
+            baseAgent: "forager-worker",
+            description: "Use for UI-heavy implementation tasks.",
+            autoLoadSkills: [],
+          },
+          "reviewer-security": {
+            baseAgent: "hygienic-reviewer",
+            description: "Use for security-focused review passes.",
+            autoLoadSkills: [],
+          },
+        },
       }),
     );
     const ctx: PluginInput = {
@@ -382,6 +394,15 @@ Do it
     const brainstormingSkill = BUILTIN_SKILLS.find((skill) => skill.name === "brainstorming");
     expect(brainstormingSkill).toBeDefined();
     expect(agentConfig.prompt).toContain(brainstormingSkill!.template);
+    expect(agentConfig.prompt).toContain("## Configured Custom Subagents");
+    expect(agentConfig.prompt).toContain("forager-ui");
+    expect(agentConfig.prompt).toContain("reviewer-security");
+
+    const agents = opencodeConfig.agent as Record<string, unknown>;
+    expect(agents["forager-worker"]).toBeDefined();
+    expect(agents["hygienic-reviewer"]).toBeDefined();
+    expect(agents["forager-ui"]).toBeDefined();
+    expect(agents["reviewer-security"]).toBeDefined();
     
     // Verify status hint is in system.transform (this is still there)
     expect(joined).toContain("### Current Hive Status");

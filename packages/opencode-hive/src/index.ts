@@ -86,6 +86,19 @@ async function buildAutoLoadedSkillsContent(
   return '\n\n' + skillTemplates.join('\n\n');
 }
 
+function buildCustomSubagentAppendix(customAgents: Record<string, ResolvedCustomAgentConfig>): string {
+  const entries = Object.entries(customAgents);
+  if (entries.length === 0) {
+    return '';
+  }
+
+  const lines = entries
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, config]) => `- \`${name}\` — derived from \`${config.baseAgent}\`; ${config.description}`);
+
+  return `\n\n## Configured Custom Subagents\n${lines.join('\n')}`;
+}
+
 function createHiveSkillTool(filteredSkills: SkillDefinition[]): ToolDefinition {
   const base = `Load a Hive skill to get detailed instructions for a specific workflow.
 
@@ -144,6 +157,7 @@ import {
   listFeatures,
   normalizePath,
   type WorktreeInfo,
+  type ResolvedCustomAgentConfig,
 } from "hive-core";
 import { buildWorkerPrompt, type ContextFile, type CompletedTask } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
@@ -1331,6 +1345,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
       // Auto-generate config file with defaults if it doesn't exist
       configService.init();
+      const hiveConfigData = configService.get();
+      const agentMode = hiveConfigData.agentMode ?? 'unified';
+
+      const customAgentConfigs = configService.getCustomAgentConfigs();
+      const customSubagentAppendix = buildCustomSubagentAppendix(customAgentConfigs);
 
       // Build auto-loaded skill content for each agent
       const hiveUserConfig = configService.getAgentConfig('hive-master');
@@ -1340,7 +1359,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         variant: hiveUserConfig.variant,
         temperature: hiveUserConfig.temperature ?? 0.5,
         description: 'Hive (Hybrid) - Plans + orchestrates. Detects phase, loads skills on-demand.',
-        prompt: QUEEN_BEE_PROMPT + hiveAutoLoadedSkills,
+        prompt: QUEEN_BEE_PROMPT + hiveAutoLoadedSkills + (agentMode === 'unified' ? customSubagentAppendix : ''),
         permission: {
           question: "allow",
           skill: "allow",
@@ -1356,7 +1375,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         variant: architectUserConfig.variant,
         temperature: architectUserConfig.temperature ?? 0.7,
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
-        prompt: ARCHITECT_BEE_PROMPT + architectAutoLoadedSkills,
+        prompt: ARCHITECT_BEE_PROMPT + architectAutoLoadedSkills + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
         tools: agentTools(['hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status', 'hive_skill']),
         permission: {
           edit: "deny",  // Planners don't edit code
@@ -1376,7 +1395,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         variant: swarmUserConfig.variant,
         temperature: swarmUserConfig.temperature ?? 0.5,
         description: 'Swarm (Orchestrator) - Orchestrates execution. Delegates, spawns workers, verifies, merges.',
-        prompt: SWARM_BEE_PROMPT + swarmAutoLoadedSkills,
+        prompt: SWARM_BEE_PROMPT + swarmAutoLoadedSkills + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
         tools: agentTools([
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
@@ -1454,7 +1473,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         'hygienic-reviewer': hygienicConfig,
       };
 
-      const customAgentConfigs = configService.getCustomAgentConfigs();
       const customAutoLoadedSkills = Object.fromEntries(
         await Promise.all(
           Object.keys(customAgentConfigs).map(async (customAgentName) => [
@@ -1474,9 +1492,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       });
 
       // Build agents map based on agentMode
-      const hiveConfigData = configService.get();
-      const agentMode = hiveConfigData.agentMode ?? 'unified';
-      
       const allAgents: Record<string, unknown> = {};
       
       if (agentMode === 'unified') {
