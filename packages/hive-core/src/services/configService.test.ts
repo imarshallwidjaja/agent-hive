@@ -48,6 +48,43 @@ describe("ConfigService defaults", () => {
     expect(config.agents?.["swarm-orchestrator"]?.model).toBe(
       "github-copilot/claude-opus-4.5",
     );
+    expect(config.customAgents).toEqual({});
+  });
+
+  it("loads customAgents from config", () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          customAgents: {
+            "forager-ui": {
+              baseAgent: "forager-worker",
+              description: "Use for UI-heavy implementation tasks.",
+              model: "anthropic/claude-sonnet-4-20250514",
+              temperature: 0.2,
+              variant: "high",
+              autoLoadSkills: ["ui-focus"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const config = service.get();
+    expect(config.customAgents?.["forager-ui"]).toEqual({
+      baseAgent: "forager-worker",
+      description: "Use for UI-heavy implementation tasks.",
+      model: "anthropic/claude-sonnet-4-20250514",
+      temperature: 0.2,
+      variant: "high",
+      autoLoadSkills: ["ui-focus"],
+    });
   });
 
   it("returns 'unified' as default agentMode", () => {

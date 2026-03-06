@@ -157,6 +157,17 @@ export interface AgentModelConfig {
   variant?: string;
 }
 
+export type CustomAgentBase = 'forager-worker' | 'hygienic-reviewer';
+
+export interface CustomAgentConfig {
+  baseAgent: CustomAgentBase;
+  description: string;
+  model?: string;
+  temperature?: number;
+  variant?: string;
+  autoLoadSkills?: string[];
+}
+
 export interface HiveConfig {
   /** Schema reference for config file */
   $schema?: string;
@@ -185,6 +196,7 @@ export interface HiveConfig {
     /** Hygienic Reviewer */
     'hygienic-reviewer'?: AgentModelConfig;
   };
+  customAgents?: Record<string, CustomAgentConfig>;
   /** Sandbox mode for worker isolation */
   sandbox?: 'none' | 'docker';
   /** Docker image to use when sandbox is 'docker' (optional explicit override) */
@@ -212,6 +224,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   disableMcps: [],
   agentMode: 'unified',
   sandbox: 'none',
+  customAgents: {},
   agents: {
     'hive-master': {
       model: DEFAULT_AGENT_MODELS['hive-master'],
