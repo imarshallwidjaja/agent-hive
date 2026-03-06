@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -231,6 +231,124 @@ describe("ConfigService defaults", () => {
     const scoutConfig = service.getAgentConfig("scout-researcher");
 
     expect(scoutConfig.autoLoadSkills).not.toContain("parallel-exploration");
+  });
+
+  it("normalizes custom agents with base inheritance and overrides", () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          agents: {
+            "forager-worker": {
+              variant: "high",
+              autoLoadSkills: ["verification-before-completion", "onboarding", "ui-focus"],
+            },
+          },
+          customAgents: {
+            "forager-lite": {
+              baseAgent: "forager-worker",
+              description: "General forager with inherited defaults.",
+            },
+            "forager-ui": {
+              baseAgent: "forager-worker",
+              description: "Forager focused on frontend tasks.",
+              autoLoadSkills: ["ui-focus"],
+            },
+            "reviewer-security": {
+              baseAgent: "hygienic-reviewer",
+              description: "Security-focused reviewer.",
+              model: "anthropic/claude-sonnet-4-20250514",
+              temperature: 0.1,
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const custom = service.getCustomAgentConfigs();
+
+    expect(custom["forager-lite"]).toMatchObject({
+      baseAgent: "forager-worker",
+      model: "github-copilot/gpt-5.2-codex",
+      temperature: 0.3,
+    });
+
+    expect(custom["forager-ui"]?.variant).toBe("high");
+    expect(custom["forager-ui"]?.autoLoadSkills).toEqual([
+      "test-driven-development",
+      "verification-before-completion",
+      "ui-focus",
+    ]);
+
+    expect(custom["reviewer-security"]?.temperature).toBe(0.1);
+    expect(custom["reviewer-security"]?.model).toBe(
+      "anthropic/claude-sonnet-4-20250514",
+    );
+  });
+
+  it("skips reserved/invalid custom agent names for runtime lookups", () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          customAgents: {
+            "forager-worker": {
+              baseAgent: "forager-worker",
+              description: "Reserved built-in ID.",
+            },
+            build: {
+              baseAgent: "forager-worker",
+              description: "Reserved plugin alias.",
+            },
+            "unsupported-base": {
+              baseAgent: "hive-master",
+              description: "Should be skipped at runtime.",
+            },
+            "forager-ui": {
+              baseAgent: "forager-worker",
+              description: "Valid custom agent.",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const custom = service.getCustomAgentConfigs();
+    expect(custom).not.toHaveProperty("forager-worker");
+    expect(custom).not.toHaveProperty("build");
+    expect(custom).not.toHaveProperty("unsupported-base");
+    expect(custom).toHaveProperty("forager-ui");
+
+    const warnedLines = warnSpy.mock.calls.map((call) => call.join(" "));
+    const expectWarnedAboutReservedName = (name: string) => {
+      expect(
+        warnedLines.some(
+          (line) => line.includes("reserved") && line.includes(`\"${name}\"`),
+        ),
+      ).toBe(true);
+    };
+
+    expectWarnedAboutReservedName("build");
+    expect(service.hasConfiguredAgent("forager-worker")).toBe(true);
+    expect(service.hasConfiguredAgent("forager-ui")).toBe(true);
+    expect(service.hasConfiguredAgent("build")).toBe(false);
+    expect(service.hasConfiguredAgent("unsupported-base")).toBe(false);
+    expect(service.hasConfiguredAgent("missing-agent")).toBe(false);
+
+    warnSpy.mockRestore();
   });
 });
 

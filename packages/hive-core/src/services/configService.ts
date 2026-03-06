@@ -1,6 +1,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { HiveConfig, DEFAULT_HIVE_CONFIG } from '../types.js';
+import {
+  BUILT_IN_AGENT_NAMES,
+  CUSTOM_AGENT_BASES,
+  CUSTOM_AGENT_RESERVED_NAMES,
+  DEFAULT_HIVE_CONFIG,
+} from '../types.js';
+import type {
+  AgentModelConfig,
+  BuiltInAgentName,
+  CustomAgentBase,
+  HiveConfig,
+  ResolvedCustomAgentConfig,
+} from '../types.js';
 import type { SandboxConfig } from './dockerSandboxService.js';
 
 /**
@@ -43,6 +55,17 @@ export class ConfigService {
       const raw = fs.readFileSync(this.configPath, 'utf-8');
       const stored = JSON.parse(raw) as Partial<HiveConfig>;
 
+      const mergedBuiltInAgents = BUILT_IN_AGENT_NAMES.reduce<NonNullable<HiveConfig['agents']>>(
+        (acc, agentName) => {
+          acc[agentName] = {
+            ...DEFAULT_HIVE_CONFIG.agents?.[agentName],
+            ...stored.agents?.[agentName],
+          };
+          return acc;
+        },
+        {},
+      );
+
       // Deep merge with defaults
       const merged: HiveConfig = {
         ...DEFAULT_HIVE_CONFIG,
@@ -50,36 +73,11 @@ export class ConfigService {
         agents: {
           ...DEFAULT_HIVE_CONFIG.agents,
           ...stored.agents,
-          // Deep merge hive-master agent config
-          'hive-master': {
-            ...DEFAULT_HIVE_CONFIG.agents?.['hive-master'],
-            ...stored.agents?.['hive-master'],
-          },
-          // Deep merge architect-planner agent config
-          'architect-planner': {
-            ...DEFAULT_HIVE_CONFIG.agents?.['architect-planner'],
-            ...stored.agents?.['architect-planner'],
-          },
-          // Deep merge swarm-orchestrator agent config
-          'swarm-orchestrator': {
-            ...DEFAULT_HIVE_CONFIG.agents?.['swarm-orchestrator'],
-            ...stored.agents?.['swarm-orchestrator'],
-          },
-          // Deep merge scout-researcher agent config
-          'scout-researcher': {
-            ...DEFAULT_HIVE_CONFIG.agents?.['scout-researcher'],
-            ...stored.agents?.['scout-researcher'],
-          },
-          // Deep merge forager-worker agent config
-          'forager-worker': {
-            ...DEFAULT_HIVE_CONFIG.agents?.['forager-worker'],
-            ...stored.agents?.['forager-worker'],
-          },
-          // Deep merge hygienic-reviewer agent config
-          'hygienic-reviewer': {
-            ...DEFAULT_HIVE_CONFIG.agents?.['hygienic-reviewer'],
-            ...stored.agents?.['hygienic-reviewer'],
-          },
+          ...mergedBuiltInAgents,
+        },
+        customAgents: {
+          ...DEFAULT_HIVE_CONFIG.customAgents,
+          ...stored.customAgents,
         },
       };
       this.cachedConfig = merged;
@@ -104,6 +102,12 @@ export class ConfigService {
         ...current.agents,
         ...updates.agents,
       } : current.agents,
+      customAgents: updates.customAgents
+        ? {
+            ...current.customAgents,
+            ...updates.customAgents,
+          }
+        : current.customAgents,
     };
 
     // Ensure config directory exists
@@ -137,31 +141,103 @@ export class ConfigService {
   /**
    * Get agent-specific model config
    */
-  getAgentConfig(
-    agent: 'hive-master' | 'architect-planner' | 'swarm-orchestrator' | 'scout-researcher' | 'forager-worker' | 'hygienic-reviewer',
-  ): { model?: string; temperature?: number; skills?: string[]; autoLoadSkills?: string[]; variant?: string } {
+  getAgentConfig(agent: string): AgentModelConfig | ResolvedCustomAgentConfig {
     const config = this.get();
-    const agentConfig = config.agents?.[agent] ?? {};
-    const defaultAutoLoadSkills = DEFAULT_HIVE_CONFIG.agents?.[agent]?.autoLoadSkills ?? [];
-    const userAutoLoadSkills = agentConfig.autoLoadSkills ?? [];
-    const isPlannerAgent = agent === 'hive-master' || agent === 'architect-planner';
-    const effectiveUserAutoLoadSkills = isPlannerAgent
-      ? userAutoLoadSkills
-      : userAutoLoadSkills.filter((skill) => skill !== 'onboarding');
-    const effectiveDefaultAutoLoadSkills = isPlannerAgent
-      ? defaultAutoLoadSkills
-      : defaultAutoLoadSkills.filter((skill) => skill !== 'onboarding');
-    const combinedAutoLoadSkills = [...effectiveDefaultAutoLoadSkills, ...effectiveUserAutoLoadSkills];
-    const uniqueAutoLoadSkills = Array.from(new Set(combinedAutoLoadSkills));
-    const disabledSkills = config.disableSkills ?? [];
-    const effectiveAutoLoadSkills = uniqueAutoLoadSkills.filter(
-      (skill) => !disabledSkills.includes(skill),
-    );
 
-    return {
-      ...agentConfig,
-      autoLoadSkills: effectiveAutoLoadSkills,
-    };
+    if (this.isBuiltInAgent(agent)) {
+      const agentConfig = config.agents?.[agent] ?? {};
+      const defaultAutoLoadSkills = DEFAULT_HIVE_CONFIG.agents?.[agent]?.autoLoadSkills ?? [];
+      const effectiveAutoLoadSkills = this.resolveAutoLoadSkills(
+        defaultAutoLoadSkills,
+        agentConfig.autoLoadSkills ?? [],
+        this.isPlannerAgent(agent),
+      );
+
+      return {
+        ...agentConfig,
+        autoLoadSkills: effectiveAutoLoadSkills,
+      };
+    }
+
+    const customAgents = this.getCustomAgentConfigs();
+    return customAgents[agent] ?? {};
+  }
+
+  getCustomAgentConfigs(): Record<string, ResolvedCustomAgentConfig> {
+    const config = this.get();
+    const customAgents = config.customAgents ?? {};
+    const resolved: Record<string, ResolvedCustomAgentConfig> = {};
+
+    for (const [agentName, declaration] of Object.entries(customAgents)) {
+      if (this.isReservedCustomAgentName(agentName)) {
+        console.warn(`[hive:config] Skipping custom agent \"${agentName}\": reserved name`);
+        continue;
+      }
+
+      if (!this.isSupportedCustomAgentBase(declaration.baseAgent)) {
+        console.warn(
+          `[hive:config] Skipping custom agent \"${agentName}\": unsupported baseAgent \"${declaration.baseAgent}\"`,
+        );
+        continue;
+      }
+
+      const baseAgentConfig = this.getAgentConfig(declaration.baseAgent) as AgentModelConfig;
+      const effectiveAutoLoadSkills = this.resolveAutoLoadSkills(
+        baseAgentConfig.autoLoadSkills ?? [],
+        declaration.autoLoadSkills ?? [],
+        this.isPlannerAgent(declaration.baseAgent),
+      );
+
+      resolved[agentName] = {
+        baseAgent: declaration.baseAgent,
+        description: declaration.description,
+        model: declaration.model ?? baseAgentConfig.model,
+        temperature: declaration.temperature ?? baseAgentConfig.temperature,
+        variant: declaration.variant ?? baseAgentConfig.variant,
+        autoLoadSkills: effectiveAutoLoadSkills,
+      };
+    }
+
+    return resolved;
+  }
+
+  hasConfiguredAgent(agent: string): boolean {
+    if (this.isBuiltInAgent(agent)) {
+      return true;
+    }
+
+    const customAgents = this.getCustomAgentConfigs();
+    return customAgents[agent] !== undefined;
+  }
+
+  private isBuiltInAgent(agent: string): agent is BuiltInAgentName {
+    return (BUILT_IN_AGENT_NAMES as readonly string[]).includes(agent);
+  }
+
+  private isReservedCustomAgentName(agent: string): boolean {
+    return (CUSTOM_AGENT_RESERVED_NAMES as readonly string[]).includes(agent);
+  }
+
+  private isSupportedCustomAgentBase(baseAgent: string): baseAgent is CustomAgentBase {
+    return (CUSTOM_AGENT_BASES as readonly string[]).includes(baseAgent);
+  }
+
+  private isPlannerAgent(agent: BuiltInAgentName | CustomAgentBase): boolean {
+    return agent === 'hive-master' || agent === 'architect-planner';
+  }
+
+  private resolveAutoLoadSkills(
+    baseAutoLoadSkills: string[],
+    additionalAutoLoadSkills: string[],
+    isPlannerAgent: boolean,
+  ): string[] {
+    const effectiveAdditionalSkills = isPlannerAgent
+      ? additionalAutoLoadSkills
+      : additionalAutoLoadSkills.filter((skill) => skill !== 'onboarding');
+    const combinedAutoLoadSkills = [...baseAutoLoadSkills, ...effectiveAdditionalSkills];
+    const uniqueAutoLoadSkills = Array.from(new Set(combinedAutoLoadSkills));
+    const disabledSkills = this.getDisabledSkills();
+    return uniqueAutoLoadSkills.filter((skill) => !disabledSkills.includes(skill));
   }
 
   /**

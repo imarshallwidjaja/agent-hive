@@ -157,7 +157,34 @@ export interface AgentModelConfig {
   variant?: string;
 }
 
-export type CustomAgentBase = 'forager-worker' | 'hygienic-reviewer';
+export const BUILT_IN_AGENT_NAMES = [
+  'hive-master',
+  'architect-planner',
+  'swarm-orchestrator',
+  'scout-researcher',
+  'forager-worker',
+  'hygienic-reviewer',
+] as const;
+
+export type BuiltInAgentName = (typeof BUILT_IN_AGENT_NAMES)[number];
+
+export const CUSTOM_AGENT_BASES = ['forager-worker', 'hygienic-reviewer'] as const;
+
+export type CustomAgentBase = (typeof CUSTOM_AGENT_BASES)[number];
+
+export const CUSTOM_AGENT_RESERVED_NAMES = [
+  ...BUILT_IN_AGENT_NAMES,
+  'hive',
+  'architect',
+  'swarm',
+  'scout',
+  'forager',
+  'hygienic',
+  'receiver',
+  'build',
+  'plan',
+  'code',
+] as const;
 
 export interface CustomAgentConfig {
   baseAgent: CustomAgentBase;
@@ -166,6 +193,11 @@ export interface CustomAgentConfig {
   temperature?: number;
   variant?: string;
   autoLoadSkills?: string[];
+}
+
+export interface ResolvedCustomAgentConfig extends AgentModelConfig {
+  baseAgent: CustomAgentBase;
+  description: string;
 }
 
 export interface HiveConfig {
