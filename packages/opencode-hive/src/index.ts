@@ -719,10 +719,24 @@ Expand your Discovery section and try again.`;
             } : undefined,
           });
 
-          // Always use Forager (forager-worker) for task execution
-          // Forager knows Hive protocols (hive_worktree_commit, blocker protocol, Iron Laws)
-          // Forager can research via MCP tools (grep_app, context7, etc.)
-          const agent = 'forager-worker';
+          const customAgentConfigs = configService.getCustomAgentConfigs();
+          const defaultAgent = 'forager-worker';
+          const eligibleAgents = [
+            {
+              name: defaultAgent,
+              baseAgent: defaultAgent,
+              description: 'Default implementation worker',
+            },
+            ...Object.entries(customAgentConfigs)
+              .filter(([, config]) => config.baseAgent === 'forager-worker')
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([name, config]) => ({
+                name,
+                baseAgent: config.baseAgent,
+                description: config.description,
+              })),
+          ];
+          const agent = defaultAgent;
 
           // Generate stable idempotency key for safe retries
           // Format: hive-<feature>-<task>-<attempt>
@@ -765,11 +779,16 @@ Expand your Discovery section and try again.`;
 
           const taskToolInstructions = `## Delegation Required
 
-Use OpenCode's built-in \`task\` tool to spawn a Forager (Worker/Coder) worker.
+Choose one of the eligible forager-derived agents below.
+Default to \`${defaultAgent}\` if no specialist is a better match.
+
+${eligibleAgents.map((candidate) => `- \`${candidate.name}\` — ${candidate.description}`).join('\n')}
+
+Use OpenCode's built-in \`task\` tool with the chosen \`subagent_type\` and the provided \`taskToolCall.prompt\` value.
 
 \`\`\`
 task({
-  subagent_type: "${agent}",
+  subagent_type: "<chosen-agent>",
   description: "Hive: ${task}",
   prompt: "${taskToolPrompt}"
 })
@@ -788,6 +807,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             branch: worktree.branch,
             mode: 'delegate',
             agent, // Canonical: top-level only
+            defaultAgent,
+            eligibleAgents,
             delegationRequired: true,
             workerPromptPath: relativePromptPath, // File reference (canonical)
             workerPromptPreview, // Truncated preview for display
