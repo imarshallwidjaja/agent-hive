@@ -785,6 +785,7 @@ Default to \`${defaultAgent}\` if no specialist is a better match.
 ${eligibleAgents.map((candidate) => `- \`${candidate.name}\` — ${candidate.description}`).join('\n')}
 
 Use OpenCode's built-in \`task\` tool with the chosen \`subagent_type\` and the provided \`taskToolCall.prompt\` value.
+\`taskToolCall.subagent_type\` is prefilled with the default for convenience; override it when a specialist in \`eligibleAgents\` is a better match.
 
 \`\`\`
 task({

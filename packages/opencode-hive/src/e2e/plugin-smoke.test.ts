@@ -448,6 +448,7 @@ Do it
     expect(execStart.eligibleAgents?.find((agent) => agent.name === "reviewer-security")).toBeUndefined();
     expect(execStart.instructions).toContain("Choose one of the eligible forager-derived agents below.");
     expect(execStart.instructions).toContain("Default to `forager-worker` if no specialist is a better match.");
+    expect(execStart.instructions).toContain("`taskToolCall.subagent_type` is prefilled with the default for convenience");
     expect(execStart.instructions).toContain("`forager-ui` — Use for UI-heavy implementation tasks.");
     expect(execStart.taskToolCall?.subagent_type).toBe("forager-worker");
   });
