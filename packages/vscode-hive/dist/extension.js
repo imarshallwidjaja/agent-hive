@@ -58,15 +58,29 @@ var __getProtoOf2 = Object.getPrototypeOf;
 var __defProp2 = Object.defineProperty;
 var __getOwnPropNames2 = Object.getOwnPropertyNames;
 var __hasOwnProp2 = Object.prototype.hasOwnProperty;
+function __accessProp(key) {
+  return this[key];
+}
+var __toESMCache_node;
+var __toESMCache_esm;
 var __toESM2 = (mod, isNodeMode, target) => {
+  var canCache = mod != null && typeof mod === "object";
+  if (canCache) {
+    var cache2 = isNodeMode ? __toESMCache_node ??= /* @__PURE__ */ new WeakMap() : __toESMCache_esm ??= /* @__PURE__ */ new WeakMap();
+    var cached = cache2.get(mod);
+    if (cached)
+      return cached;
+  }
   target = mod != null ? __create2(__getProtoOf2(mod)) : {};
   const to = isNodeMode || !mod || !mod.__esModule ? __defProp2(target, "default", { value: mod, enumerable: true }) : target;
   for (let key of __getOwnPropNames2(mod))
     if (!__hasOwnProp2.call(to, key))
       __defProp2(to, key, {
-        get: () => mod[key],
+        get: __accessProp.bind(mod, key),
         enumerable: true
       });
+  if (canCache)
+    cache2.set(mod, to);
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
