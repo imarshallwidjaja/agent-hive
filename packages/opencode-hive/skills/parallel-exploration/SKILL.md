@@ -13,7 +13,7 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 **Safe in Planning mode:** This is read-only exploration. It is OK to use during exploratory research even when there is no feature, no plan, and no approved tasks.
 
-**This skill is for read-only research.** For parallel implementation work, use `hive_skill("dispatching-parallel-agents")` with `hive_worktree_create`.
+**This skill is for read-only research.** For parallel implementation work, use `hive_skill("dispatching-parallel-agents")` with `hive_worktree_start`.
 
 ## When to Use
 
@@ -24,7 +24,7 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 - Questions are independent (answer to A doesn't affect B)
 - User asks **3+ independent questions** (often as a numbered list or separate bullets)
 - No edits needed (read-only exploration)
-- User asks for an explorationthat likely spans multiple files/packages
+- User asks for an exploration that likely spans multiple files/packages
 - The work is read-only and the questions can be investigated independently
 
 **Only skip this skill when:**
