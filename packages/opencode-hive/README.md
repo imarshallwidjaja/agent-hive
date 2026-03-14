@@ -155,7 +155,26 @@ Description.
 
 ## Configuration
 
-Hive uses a config file at `~/.config/opencode/agent_hive.json`. You can customize agent models, variants, disable skills, and disable MCP servers.
+Hive reads config from these locations, in order:
+
+1. `<project>/.opencode/agent_hive.json` (preferred)
+2. `~/.config/opencode/agent_hive.json` (fallback)
+
+If project config exists but is invalid JSON or invalid shape, Hive falls back to global config and surfaces a runtime warning.
+
+You can customize agent models, variants, disable skills, and disable MCP servers.
+
+### Project-local config example
+
+Create `.opencode/agent_hive.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "agentMode": "unified",
+  "disableSkills": []
+}
+```
 
 ### Disable Skills or MCPs
 

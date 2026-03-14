@@ -104,7 +104,23 @@ For local plugin testing:
 
 ### Configuration
 
-Run Agent Hive once to auto-generate a default configuration at `~/.config/opencode/agent_hive.json`. Review it to ensure it matches your local setup.
+Agent Hive reads configuration from the following locations (in order):
+
+1. `<project>/.opencode/agent_hive.json` (preferred)
+2. `~/.config/opencode/agent_hive.json` (fallback)
+
+If the project config exists but is invalid JSON or invalid shape, Agent Hive falls back to the global config and surfaces a runtime warning.
+
+Create a project-local config at `.opencode/agent_hive.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "agentMode": "unified"
+}
+```
+
+Run Agent Hive once to auto-generate a default global configuration at `~/.config/opencode/agent_hive.json`. Review it to ensure it matches your local setup.
 
 ```json
 {
