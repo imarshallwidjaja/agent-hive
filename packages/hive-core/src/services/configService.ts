@@ -16,12 +16,11 @@ import type {
 import type { SandboxConfig } from './dockerSandboxService.js';
 
 /**
- * ConfigService manages user config at ~/.config/opencode/agent_hive.json
- * 
- * This is USER config (not project-scoped):
- * - VSCode extension reads/writes this
- * - OpenCode plugin reads this to enable features
- * - Agent does NOT have tools to access this
+ * ConfigService manages Agent Hive config with read precedence:
+ * 1. <project>/.opencode/agent_hive.json (preferred when present and valid)
+ * 2. ~/.config/opencode/agent_hive.json (fallback)
+ *
+ * Writes remain global-only at ~/.config/opencode/agent_hive.json.
  */
 export class ConfigService {
   private configPath: string;
