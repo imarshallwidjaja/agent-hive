@@ -204,9 +204,7 @@ const plugin: Plugin = async (ctx) => {
   const configService = new ConfigServiceCtor(directory);
   const disabledMcps = configService.getDisabledMcps();
   const disabledSkills = configService.getDisabledSkills();
-  const configFallbackWarning = (
-    configService as ConfigService & { getLastFallbackWarningMessage?: () => string | null }
-  ).getLastFallbackWarningMessage?.() ?? null;
+  const configFallbackWarning = configService.getLastFallbackWarning()?.message ?? null;
   if (configFallbackWarning) {
     emitConfigWarning(configFallbackWarning);
   }

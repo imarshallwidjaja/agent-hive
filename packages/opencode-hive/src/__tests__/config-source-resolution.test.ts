@@ -60,12 +60,15 @@ describe('plugin config source resolution', () => {
   });
 
   it('warns once and exposes fallback warning in hive_status when project config is invalid', async () => {
-    const warningMessage = `Project config is invalid at ${path.join(testRoot, '.opencode', 'agent_hive.json')}. Falling back to global config at ${path.join(testRoot, '.config', 'opencode', 'agent_hive.json')}.`;
-    const prototypeWithWarning = ConfigService.prototype as ConfigService & {
-      getLastFallbackWarningMessage?: () => string | null;
-    };
-    const originalWarningGetter = prototypeWithWarning.getLastFallbackWarningMessage;
-    prototypeWithWarning.getLastFallbackWarningMessage = () => warningMessage;
+    const projectConfigPath = path.join(testRoot, '.opencode', 'agent_hive.json');
+    const globalConfigPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    const warningMessage = `Failed to read project config at ${projectConfigPath}; using global config at ${globalConfigPath}`;
+
+    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+    fs.writeFileSync(projectConfigPath, JSON.stringify(['invalid-config-shape']));
+
+    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+    fs.writeFileSync(globalConfigPath, JSON.stringify({ sandbox: 'none' }));
 
     const notifications: Array<{ message: string }> = [];
 
@@ -82,8 +85,7 @@ describe('plugin config source resolution', () => {
       },
     };
 
-    try {
-      const hooks = await plugin(ctx);
+    const hooks = await plugin(ctx);
 
       const toolContext = createToolContext('sess_config_resolution');
       await hooks.tool!.hive_feature_create.execute({ name: 'warning-feature' }, toolContext);
@@ -98,8 +100,5 @@ describe('plugin config source resolution', () => {
       expect(notifications[0].message).toContain('[hive:config]');
       expect(hiveStatus.warning).toBe(warningMessage);
       expect(hiveStatusAgain.warning).toBe(hiveStatus.warning);
-    } finally {
-      prototypeWithWarning.getLastFallbackWarningMessage = originalWarningGetter;
-    }
   });
 });
