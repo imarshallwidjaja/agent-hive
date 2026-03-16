@@ -49,17 +49,17 @@ describe("ConfigService defaults", () => {
       "github-copilot/claude-opus-4.5",
     );
     expect(config.customAgents).toEqual({
-      'forager-example': {
+      'forager-example-template': {
         baseAgent: 'forager-worker',
-        description: 'Example template: rename this key and adjust the model/settings for UI-heavy or implementation-focused work.',
+        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
         model: 'anthropic/claude-sonnet-4-20250514',
         temperature: 0.2,
         variant: 'high',
         autoLoadSkills: ['test-driven-development'],
       },
-      'hygienic-example': {
+      'hygienic-example-template': {
         baseAgent: 'hygienic-reviewer',
-        description: 'Example template: rename this key and adjust the model/settings for review-focused work.',
+        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
         autoLoadSkills: ['code-reviewer'],
       },
     });
@@ -126,17 +126,17 @@ describe("ConfigService defaults", () => {
     const config = service.get();
     expect(config.agentMode).toBe("dedicated");
     expect(config.customAgents).toEqual({
-      'forager-example': {
+      'forager-example-template': {
         baseAgent: 'forager-worker',
-        description: 'Example template: rename this key and adjust the model/settings for UI-heavy or implementation-focused work.',
+        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
         model: 'anthropic/claude-sonnet-4-20250514',
         temperature: 0.2,
         variant: 'high',
         autoLoadSkills: ['test-driven-development'],
       },
-      'hygienic-example': {
+      'hygienic-example-template': {
         baseAgent: 'hygienic-reviewer',
-        description: 'Example template: rename this key and adjust the model/settings for review-focused work.',
+        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
         autoLoadSkills: ['code-reviewer'],
       },
     });
