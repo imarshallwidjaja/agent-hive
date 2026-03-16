@@ -280,7 +280,7 @@ The `variant` value must match a key in your OpenCode config at `provider.<provi
 
 ### Custom Derived Subagents
 
-Define plugin-only custom subagents with `customAgents`. Each custom agent must declare:
+Define plugin-only custom subagents with `customAgents`. Freshly initialized `agent_hive.json` files already include starter template entries under `customAgents`; rename those keys to the IDs you want to use, or delete them if you do not need custom agents. Each custom agent must declare:
 
 - `baseAgent`: one of `forager-worker` or `hygienic-reviewer`
 - `description`: delegation guidance injected into primary planner/orchestrator prompts

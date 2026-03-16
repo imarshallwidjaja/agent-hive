@@ -48,7 +48,21 @@ describe("ConfigService defaults", () => {
     expect(config.agents?.["swarm-orchestrator"]?.model).toBe(
       "github-copilot/claude-opus-4.5",
     );
-    expect(config.customAgents).toEqual({});
+    expect(config.customAgents).toEqual({
+      'forager-example': {
+        baseAgent: 'forager-worker',
+        description: 'Example template: rename this key and adjust the model/settings for UI-heavy or implementation-focused work.',
+        model: 'anthropic/claude-sonnet-4-20250514',
+        temperature: 0.2,
+        variant: 'high',
+        autoLoadSkills: ['test-driven-development'],
+      },
+      'hygienic-example': {
+        baseAgent: 'hygienic-reviewer',
+        description: 'Example template: rename this key and adjust the model/settings for review-focused work.',
+        autoLoadSkills: ['code-reviewer'],
+      },
+    });
   });
 
   it("loads customAgents from config", () => {
@@ -111,7 +125,21 @@ describe("ConfigService defaults", () => {
 
     const config = service.get();
     expect(config.agentMode).toBe("dedicated");
-    expect(config.customAgents).toEqual({});
+    expect(config.customAgents).toEqual({
+      'forager-example': {
+        baseAgent: 'forager-worker',
+        description: 'Example template: rename this key and adjust the model/settings for UI-heavy or implementation-focused work.',
+        model: 'anthropic/claude-sonnet-4-20250514',
+        temperature: 0.2,
+        variant: 'high',
+        autoLoadSkills: ['test-driven-development'],
+      },
+      'hygienic-example': {
+        baseAgent: 'hygienic-reviewer',
+        description: 'Example template: rename this key and adjust the model/settings for review-focused work.',
+        autoLoadSkills: ['code-reviewer'],
+      },
+    });
     expect(config.agents?.["forager-worker"]?.variant).toBe("high");
   });
 

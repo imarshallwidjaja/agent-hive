@@ -256,7 +256,21 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   disableMcps: [],
   agentMode: 'unified',
   sandbox: 'none',
-  customAgents: {},
+  customAgents: {
+    'forager-example': {
+      baseAgent: 'forager-worker',
+      description: 'Example template: rename this key and adjust the model/settings for UI-heavy or implementation-focused work.',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      temperature: 0.2,
+      variant: 'high',
+      autoLoadSkills: ['test-driven-development'],
+    },
+    'hygienic-example': {
+      baseAgent: 'hygienic-reviewer',
+      description: 'Example template: rename this key and adjust the model/settings for review-focused work.',
+      autoLoadSkills: ['code-reviewer'],
+    },
+  },
   agents: {
     'hive-master': {
       model: DEFAULT_AGENT_MODELS['hive-master'],
