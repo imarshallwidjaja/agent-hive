@@ -399,11 +399,11 @@
         }
       },
       {
-        "name": "hive_worktree_create",
-        "displayName": "Create Task Worktree",
-        "modelDescription": "Create a git worktree for a task. Isolates changes in a separate directory. Use when ready to implement a task.",
+        "name": "hive_worktree_start",
+        "displayName": "Start Task Worktree",
+        "modelDescription": "Create a git worktree for a pending/in-progress task. Use for normal task starts.",
         "canBeReferencedInPrompt": true,
-        "toolReferenceName": "hiveWorktreeCreate",
+        "toolReferenceName": "hiveWorktreeStart",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -419,6 +419,42 @@
           "required": [
             "feature",
             "task"
+          ]
+        }
+      },
+      {
+        "name": "hive_worktree_create",
+        "displayName": "Resume Blocked Task Worktree",
+        "modelDescription": "Resume a blocked task in its existing worktree. Requires continueFrom: \"blocked\" and a decision.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "hiveWorktreeCreate",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "feature": {
+              "type": "string",
+              "description": "Feature name"
+            },
+            "task": {
+              "type": "string",
+              "description": "Task folder name"
+            },
+            "continueFrom": {
+              "type": "string",
+              "enum": [
+                "blocked"
+              ],
+              "description": "Resume a blocked task"
+            },
+            "decision": {
+              "type": "string",
+              "description": "Answer to blocker question when continuing"
+            }
+          },
+          "required": [
+            "feature",
+            "task",
+            "continueFrom"
           ]
         }
       },

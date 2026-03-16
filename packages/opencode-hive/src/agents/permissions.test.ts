@@ -275,6 +275,7 @@ describe('Per-agent tool filtering', () => {
     expect(foragerTools!['hive_merge']).toBe(false);
     expect(foragerTools!['hive_tasks_sync']).toBe(false);
     expect(foragerTools!['hive_worktree_create']).toBe(false);
+    expect(foragerTools!['hive_worktree_start']).toBe(false);
   });
 
   it('forager tool list is exactly [hive_plan_read, hive_worktree_commit, hive_context_write, hive_skill] and excludes hive_status', async () => {
@@ -311,6 +312,7 @@ describe('Per-agent tool filtering', () => {
     expect(architectTools).toBeTruthy();
     expect(architectTools!['hive_plan_write']).toBeUndefined();
     expect(architectTools!['hive_worktree_create']).toBe(false);
+    expect(architectTools!['hive_worktree_start']).toBe(false);
     expect(architectTools!['hive_worktree_commit']).toBe(false);
     expect(architectTools!['hive_merge']).toBe(false);
   });
@@ -320,6 +322,7 @@ describe('Per-agent tool filtering', () => {
     const swarmTools = agents['swarm-orchestrator']?.tools;
     expect(swarmTools).toBeTruthy();
     expect(swarmTools!['hive_worktree_create']).toBeUndefined();
+    expect(swarmTools!['hive_worktree_start']).toBeUndefined();
     expect(swarmTools!['hive_plan_write']).toBe(false);
     expect(swarmTools!['hive_worktree_commit']).toBe(false);
     expect(swarmTools!['hive_plan_approve']).toBeUndefined();
