@@ -59,6 +59,12 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('only for normal starts (`pending` / `in_progress`)');
       expect(QUEEN_BEE_PROMPT).toContain('hive_worktree_start({ feature, task })');
     });
+
+    it('documents hygienic reviewer routing fallback and custom reviewer selection', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `hygienic-reviewer`');
+      expect(QUEEN_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
+      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
+    });
   });
 
   describe('turn termination and hard blocks', () => {
@@ -175,6 +181,12 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('includes task() guidance for research fan-out', () => {
       expect(SWARM_BEE_PROMPT).toContain('task() for research fan-out');
+    });
+
+    it('documents hygienic reviewer routing fallback and custom reviewer selection', () => {
+      expect(SWARM_BEE_PROMPT).toContain('default to built-in `hygienic-reviewer`');
+      expect(SWARM_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
+      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
   });
 

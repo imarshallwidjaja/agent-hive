@@ -157,6 +157,49 @@ export interface AgentModelConfig {
   variant?: string;
 }
 
+export const BUILT_IN_AGENT_NAMES = [
+  'hive-master',
+  'architect-planner',
+  'swarm-orchestrator',
+  'scout-researcher',
+  'forager-worker',
+  'hygienic-reviewer',
+] as const;
+
+export type BuiltInAgentName = (typeof BUILT_IN_AGENT_NAMES)[number];
+
+export const CUSTOM_AGENT_BASES = ['forager-worker', 'hygienic-reviewer'] as const;
+
+export type CustomAgentBase = (typeof CUSTOM_AGENT_BASES)[number];
+
+export const CUSTOM_AGENT_RESERVED_NAMES = [
+  ...BUILT_IN_AGENT_NAMES,
+  'hive',
+  'architect',
+  'swarm',
+  'scout',
+  'forager',
+  'hygienic',
+  'receiver',
+  'build',
+  'plan',
+  'code',
+] as const;
+
+export interface CustomAgentConfig {
+  baseAgent: CustomAgentBase;
+  description: string;
+  model?: string;
+  temperature?: number;
+  variant?: string;
+  autoLoadSkills?: string[];
+}
+
+export interface ResolvedCustomAgentConfig extends AgentModelConfig {
+  baseAgent: CustomAgentBase;
+  description: string;
+}
+
 export interface HiveConfig {
   /** Schema reference for config file */
   $schema?: string;
@@ -185,6 +228,7 @@ export interface HiveConfig {
     /** Hygienic Reviewer */
     'hygienic-reviewer'?: AgentModelConfig;
   };
+  customAgents?: Record<string, CustomAgentConfig>;
   /** Sandbox mode for worker isolation */
   sandbox?: 'none' | 'docker';
   /** Docker image to use when sandbox is 'docker' (optional explicit override) */
@@ -212,6 +256,21 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   disableMcps: [],
   agentMode: 'unified',
   sandbox: 'none',
+  customAgents: {
+    'forager-example-template': {
+      baseAgent: 'forager-worker',
+      description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      temperature: 0.2,
+      variant: 'high',
+      autoLoadSkills: ['test-driven-development'],
+    },
+    'hygienic-example-template': {
+      baseAgent: 'hygienic-reviewer',
+      description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
+      autoLoadSkills: ['code-reviewer'],
+    },
+  },
   agents: {
     'hive-master': {
       model: DEFAULT_AGENT_MODELS['hive-master'],

@@ -58,29 +58,15 @@ var __getProtoOf2 = Object.getPrototypeOf;
 var __defProp2 = Object.defineProperty;
 var __getOwnPropNames2 = Object.getOwnPropertyNames;
 var __hasOwnProp2 = Object.prototype.hasOwnProperty;
-function __accessProp(key) {
-  return this[key];
-}
-var __toESMCache_node;
-var __toESMCache_esm;
 var __toESM2 = (mod, isNodeMode, target) => {
-  var canCache = mod != null && typeof mod === "object";
-  if (canCache) {
-    var cache2 = isNodeMode ? __toESMCache_node ??= /* @__PURE__ */ new WeakMap() : __toESMCache_esm ??= /* @__PURE__ */ new WeakMap();
-    var cached = cache2.get(mod);
-    if (cached)
-      return cached;
-  }
   target = mod != null ? __create2(__getProtoOf2(mod)) : {};
   const to = isNodeMode || !mod || !mod.__esModule ? __defProp2(target, "default", { value: mod, enumerable: true }) : target;
   for (let key of __getOwnPropNames2(mod))
     if (!__hasOwnProp2.call(to, key))
       __defProp2(to, key, {
-        get: __accessProp.bind(mod, key),
+        get: () => mod[key],
         enumerable: true
       });
-  if (canCache)
-    cache2.set(mod, to);
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
@@ -896,6 +882,27 @@ var require_dist2 = __commonJS((exports2) => {
   exports2.createDeferred = deferred;
   exports2.default = deferred;
 });
+var BUILT_IN_AGENT_NAMES = [
+  "hive-master",
+  "architect-planner",
+  "swarm-orchestrator",
+  "scout-researcher",
+  "forager-worker",
+  "hygienic-reviewer"
+];
+var CUSTOM_AGENT_RESERVED_NAMES = [
+  ...BUILT_IN_AGENT_NAMES,
+  "hive",
+  "architect",
+  "swarm",
+  "scout",
+  "forager",
+  "hygienic",
+  "receiver",
+  "build",
+  "plan",
+  "code"
+];
 var DEFAULT_AGENT_MODELS = {
   "hive-master": "github-copilot/claude-opus-4.5",
   "architect-planner": "github-copilot/gpt-5.2-codex",
@@ -911,6 +918,21 @@ var DEFAULT_HIVE_CONFIG = {
   disableMcps: [],
   agentMode: "unified",
   sandbox: "none",
+  customAgents: {
+    "forager-example-template": {
+      baseAgent: "forager-worker",
+      description: "Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.",
+      model: "anthropic/claude-sonnet-4-20250514",
+      temperature: 0.2,
+      variant: "high",
+      autoLoadSkills: ["test-driven-development"]
+    },
+    "hygienic-example-template": {
+      baseAgent: "hygienic-reviewer",
+      description: "Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.",
+      autoLoadSkills: ["code-reviewer"]
+    }
+  },
   agents: {
     "hive-master": {
       model: DEFAULT_AGENT_MODELS["hive-master"],

@@ -304,6 +304,12 @@ Do it
       toolContext
     );
     const execStart = JSON.parse(execStartOutput as string) as {
+      defaultAgent?: string;
+      eligibleAgents?: Array<{
+        name: string;
+        baseAgent: string;
+        description: string;
+      }>;
       instructions?: string;
       taskToolCall?: {
         subagent_type?: string;
@@ -322,6 +328,19 @@ Do it
     );
 
     expect(execStart.taskToolCall).toBeDefined();
+    expect(execStart.defaultAgent).toBe("forager-worker");
+    expect(execStart.eligibleAgents).toEqual([
+      {
+        name: "forager-worker",
+        baseAgent: "forager-worker",
+        description: "Default implementation worker",
+      },
+      {
+        name: "forager-example-template",
+        baseAgent: "forager-worker",
+        description: "Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.",
+      },
+    ]);
     expect(execStart.taskToolCall?.subagent_type).toBeDefined();
     expect(execStart.taskToolCall?.description).toBe("Hive: 01-first-task");
     expect(execStart.taskToolCall?.prompt).toContain(`@${expectedPromptPath}`);
@@ -333,6 +352,116 @@ Do it
       "Use the `@path` attachment syntax in the prompt to reference the file. Do not inline the file contents."
     );
     expect(execStart.instructions).not.toContain("Read the prompt file");
+  });
+
+  it("returns forager-derived eligible agents for worktree execution delegation", async () => {
+    const configPath = path.join(process.env.HOME || "", ".config", "opencode", "agent_hive.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        customAgents: {
+          "forager-ui": {
+            baseAgent: "forager-worker",
+            description: "Use for UI-heavy implementation tasks.",
+            autoLoadSkills: [],
+          },
+          "reviewer-security": {
+            baseAgent: "hygienic-reviewer",
+            description: "Use for security-focused review passes.",
+            autoLoadSkills: [],
+          },
+        },
+      }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_task_mode_custom_agents");
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "task-mode-custom-agents-feature" },
+      toolContext
+    );
+
+    const plan = `# Task Mode Custom Agents Feature
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes, this is an integration test to validate eligible forager-derived worker options and default fallback behavior in hive_worktree_start.
+
+## Overview
+
+Test
+
+## Tasks
+
+### 1. First Task
+Do it
+`;
+    await hooks.tool!.hive_plan_write.execute(
+      { content: plan, feature: "task-mode-custom-agents-feature" },
+      toolContext
+    );
+    await hooks.tool!.hive_plan_approve.execute(
+      { feature: "task-mode-custom-agents-feature" },
+      toolContext
+    );
+    await hooks.tool!.hive_tasks_sync.execute(
+      { feature: "task-mode-custom-agents-feature" },
+      toolContext
+    );
+
+    const execStartOutput = await hooks.tool!.hive_worktree_start.execute(
+      { feature: "task-mode-custom-agents-feature", task: "01-first-task" },
+      toolContext
+    );
+    const execStart = JSON.parse(execStartOutput as string) as {
+      defaultAgent?: string;
+      eligibleAgents?: Array<{
+        name: string;
+        baseAgent: string;
+        description: string;
+      }>;
+      instructions?: string;
+      taskToolCall?: {
+        subagent_type?: string;
+      };
+    };
+
+    expect(execStart.defaultAgent).toBe("forager-worker");
+    expect(execStart.eligibleAgents).toEqual([
+      {
+        name: "forager-worker",
+        baseAgent: "forager-worker",
+        description: "Default implementation worker",
+      },
+      {
+        name: "forager-example-template",
+        baseAgent: "forager-worker",
+        description: "Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.",
+      },
+      {
+        name: "forager-ui",
+        baseAgent: "forager-worker",
+        description: "Use for UI-heavy implementation tasks.",
+      },
+    ]);
+    expect(execStart.eligibleAgents?.find((agent) => agent.name === "reviewer-security")).toBeUndefined();
+    expect(execStart.instructions).toContain("Choose one of the eligible forager-derived agents below.");
+    expect(execStart.instructions).toContain("Default to `forager-worker` if no specialist is a better match.");
+    expect(execStart.instructions).toContain("`taskToolCall.subagent_type` is prefilled with the default for convenience");
+    expect(execStart.instructions).toContain("`forager-ui` — Use for UI-heavy implementation tasks.");
+    expect(execStart.taskToolCall?.subagent_type).toBe("forager-worker");
   });
 
   it("returns structured JSON when hive_worktree_create is called without a feature", async () => {
@@ -664,6 +793,18 @@ Do it
             autoLoadSkills: ["brainstorming"],
           },
         },
+        customAgents: {
+          "forager-ui": {
+            baseAgent: "forager-worker",
+            description: "Use for UI-heavy implementation tasks.",
+            autoLoadSkills: [],
+          },
+          "reviewer-security": {
+            baseAgent: "hygienic-reviewer",
+            description: "Use for security-focused review passes.",
+            autoLoadSkills: [],
+          },
+        },
       }),
     );
     const ctx: PluginInput = {
@@ -701,6 +842,17 @@ Do it
     const brainstormingSkill = BUILTIN_SKILLS.find((skill) => skill.name === "brainstorming");
     expect(brainstormingSkill).toBeDefined();
     expect(agentConfig.prompt).toContain(brainstormingSkill!.template);
+    expect(agentConfig.prompt).toContain("Configured Custom Subagents");
+    expect(agentConfig.prompt).toContain("`reviewer-security`");
+    expect(agentConfig.prompt).toContain("default to built-in `hygienic-reviewer`");
+    expect(agentConfig.prompt).toContain("Configured Custom Subagents` is a better match");
+    expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-reviewer>\"");
+
+    const agents = opencodeConfig.agent as Record<string, unknown>;
+    expect(agents["forager-worker"]).toBeDefined();
+    expect(agents["hygienic-reviewer"]).toBeDefined();
+    expect(agents["forager-ui"]).toBeDefined();
+    expect(agents["reviewer-security"]).toBeDefined();
     
     // Verify status hint is in system.transform (this is still there)
     expect(joined).toContain("### Current Hive Status");
