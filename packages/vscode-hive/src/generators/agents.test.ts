@@ -38,10 +38,11 @@ describe('generateAllAgents', () => {
     expect(hive).not.toContain('question()');
     expect(hive).not.toContain('task({ subagent_type: "scout-researcher" })');
     expect(hive).not.toContain('hive_skill(');
-    expect(hive).not.toContain('Bash');
-    expect(hive).not.toContain('Read');
-    expect(hive).not.toContain('Edit');
-    expect(hive).not.toContain('Grep');
+    // Check OpenCode-specific tool names as tool references (backticked), not as English prose
+    expect(hive).not.toContain('`Bash`');
+    expect(hive).not.toContain('`Read`');
+    expect(hive).not.toContain('`Edit`');
+    expect(hive).not.toContain('`Grep`');
     expect(hive).not.toContain('Docker sandbox');
     expect(hive).not.toContain('SDK');
     expect(hive).not.toContain('variant');

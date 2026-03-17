@@ -26,6 +26,16 @@ function writeFile(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content);
 }
 
+export interface InitNestDeps {
+  vscodeApi?: {
+    ProgressLocation: { Notification: number };
+    window: {
+      withProgress: <T>(options: unknown, task: (progress: { report: (value: unknown) => void }) => Promise<T> | T) => Promise<T>;
+      showInformationMessage: (message: string) => Promise<unknown>;
+    };
+  };
+}
+
 async function loadVscode(): Promise<typeof import('vscode')> {
   return await import('vscode');
 }
@@ -48,8 +58,8 @@ export function generatePlugin(): ReturnType<typeof generatePluginManifest> {
   return generatePluginManifest();
 }
 
-export async function initNest(projectRoot: string): Promise<void> {
-  const vscode = await loadVscode();
+export async function initNest(projectRoot: string, deps?: InitNestDeps): Promise<void> {
+  const vscode = deps?.vscodeApi ?? await loadVscode();
 
   await vscode.window.withProgress(
     {

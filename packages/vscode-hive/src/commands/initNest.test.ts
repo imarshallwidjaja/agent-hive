@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { initNest } from './initNest.ts';
-import { infoMessages, progressCalls, resetVscodeTestState } from '../test/vscode.ts';
 
 const tempDirs = new Set<string>();
 
@@ -19,9 +18,45 @@ function readFile(projectRoot: string, relativePath: string): string {
   return fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
 }
 
-afterEach(() => {
-  resetVscodeTestState();
+function createMockVscode(): {
+  progressCalls: Array<{ options: unknown; reports: unknown[] }>;
+  infoMessages: string[];
+  vscodeApi: {
+    ProgressLocation: { Notification: number };
+    window: {
+      withProgress: <T>(options: unknown, task: (progress: { report: (value: unknown) => void }) => Promise<T> | T) => Promise<T>;
+      showInformationMessage: (message: string) => Promise<string>;
+    };
+  };
+} {
+  const progressCalls: Array<{ options: unknown; reports: unknown[] }> = [];
+  const infoMessages: string[] = [];
 
+  return {
+    progressCalls,
+    infoMessages,
+    vscodeApi: {
+      ProgressLocation: { Notification: 15 },
+      window: {
+        async withProgress<T>(options: unknown, task: (progress: { report: (value: unknown) => void }) => Promise<T> | T): Promise<T> {
+          const reports: unknown[] = [];
+          progressCalls.push({ options, reports });
+          return await task({
+            report(value: unknown): void {
+              reports.push(value);
+            },
+          });
+        },
+        async showInformationMessage(message: string): Promise<string> {
+          infoMessages.push(message);
+          return message;
+        },
+      },
+    },
+  };
+}
+
+afterEach(() => {
   for (const tempDir of tempDirs) {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -32,11 +67,12 @@ afterEach(() => {
 describe('initNest', () => {
   it('creates the full Copilot scaffolding and backward-compatible hive skills', async () => {
     const projectRoot = createTempProject();
+    const mock = createMockVscode();
 
-    await initNest(projectRoot);
+    await initNest(projectRoot, { vscodeApi: mock.vscodeApi });
 
-    assert.equal(progressCalls.length, 1);
-    assert.equal(infoMessages[0], 'Hive Nest initialized! Created 4 agents, 11 skills, 2 hooks, 2 instructions.');
+    assert.equal(mock.progressCalls.length, 1);
+    assert.equal(mock.infoMessages[0], 'Hive Nest initialized! Created 4 agents, 11 skills, 2 hooks, 2 instructions.');
 
     assert.ok(fs.existsSync(path.join(projectRoot, '.hive', 'features')));
     assert.ok(fs.existsSync(path.join(projectRoot, '.hive', 'skills')));
