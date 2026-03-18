@@ -101,4 +101,97 @@ describe('plugin config source resolution', () => {
     expect(hiveStatus.warning).toBe(warningMessage);
     expect(hiveStatusAgain.warning).toBe(hiveStatus.warning);
   });
+
+  it('surfaces an accurate defaults warning when both project and global configs are invalid', async () => {
+    const projectConfigPath = path.join(testRoot, '.opencode', 'agent_hive.json');
+    const globalConfigPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    const warningMessage = `Failed to read project config at ${projectConfigPath}; global config at ${globalConfigPath} is also invalid; using defaults`;
+
+    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+    fs.writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        agents: {
+          'forager-worker': {
+            autoLoadSkills: 'bad-skill-shape',
+          },
+        },
+      }),
+    );
+
+    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+    fs.writeFileSync(globalConfigPath, JSON.stringify({ sandbox: 123 }));
+
+    const notifications: Array<{ message: string }> = [];
+
+    const ctx: any = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: createProject(testRoot),
+      client: {
+        notify(payload: { message: string }) {
+          notifications.push({ message: payload.message });
+          return true;
+        },
+      },
+    };
+
+    const hooks = await plugin(ctx);
+
+    const toolContext = createToolContext('sess_config_resolution_defaults');
+    await hooks.tool!.hive_feature_create.execute({ name: 'warning-defaults-feature' }, toolContext);
+
+    const statusRaw = await hooks.tool!.hive_status.execute({ feature: 'warning-defaults-feature' }, toolContext);
+    const hiveStatus = JSON.parse(statusRaw as string) as { warning?: string };
+
+    expect(notifications.length).toBe(1);
+    expect(notifications[0].message).toContain('[hive:config]');
+    expect(hiveStatus.warning).toBe(warningMessage);
+  });
+
+  it('surfaces an accurate defaults warning when project config is invalid and global config is missing', async () => {
+    const projectConfigPath = path.join(testRoot, '.opencode', 'agent_hive.json');
+    const globalConfigPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    const warningMessage = `Failed to read project config at ${projectConfigPath}; global config at ${globalConfigPath} is missing; using defaults`;
+
+    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+    fs.writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        agents: {
+          'forager-worker': {
+            autoLoadSkills: 'bad-skill-shape',
+          },
+        },
+      }),
+    );
+
+    const notifications: Array<{ message: string }> = [];
+
+    const ctx: any = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: createProject(testRoot),
+      client: {
+        notify(payload: { message: string }) {
+          notifications.push({ message: payload.message });
+          return true;
+        },
+      },
+    };
+
+    const hooks = await plugin(ctx);
+
+    const toolContext = createToolContext('sess_config_resolution_missing_global');
+    await hooks.tool!.hive_feature_create.execute({ name: 'warning-missing-global-feature' }, toolContext);
+
+    const statusRaw = await hooks.tool!.hive_status.execute({ feature: 'warning-missing-global-feature' }, toolContext);
+    const hiveStatus = JSON.parse(statusRaw as string) as { warning?: string };
+
+    expect(notifications.length).toBe(1);
+    expect(notifications[0].message).toContain('[hive:config]');
+    expect(hiveStatus.warning).toBe(warningMessage);
+  });
 });

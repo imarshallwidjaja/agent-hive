@@ -31,10 +31,10 @@ export class ConfigService {
   private activeReadPath: string;
   private lastFallbackWarning: {
     message: string;
-    sourceType: 'project';
+    sourceType: 'project' | 'global';
     sourcePath: string;
-    fallbackType: 'global';
-    fallbackPath: string;
+    fallbackType: 'global' | 'defaults';
+    fallbackPath?: string;
     reason: 'parse_error' | 'validation_error' | 'read_error';
   } | null = null;
 
@@ -74,55 +74,68 @@ export class ConfigService {
       }
 
       const fallbackReason = 'reason' in projectStored ? projectStored.reason : 'read_error';
-      this.lastFallbackWarning = {
-        message: `Failed to read project config at ${this.projectConfigPath}; using global config at ${this.configPath}`,
-        sourceType: 'project',
-        sourcePath: this.projectConfigPath,
-        fallbackType: 'global',
-        fallbackPath: this.configPath,
-        reason: fallbackReason,
-      };
+      this.lastFallbackWarning = this.createProjectFallbackWarning(
+        this.projectConfigPath,
+        fallbackReason,
+      );
     } else {
       this.lastFallbackWarning = null;
     }
 
-    try {
-      if (!fs.existsSync(this.configPath)) {
-        this.activeReadSourceType = 'global';
-        this.activeReadPath = this.configPath;
-        this.cachedConfig = { ...DEFAULT_HIVE_CONFIG };
-        this.cachedCustomAgentConfigs = null;
-        return this.cachedConfig;
-      }
-      const raw = fs.readFileSync(this.configPath, 'utf-8');
-      const stored = JSON.parse(raw) as Partial<HiveConfig>;
-      const storedCustomAgents = this.isObjectRecord(stored.customAgents)
-        ? stored.customAgents
-        : {};
-
-      const mergedBuiltInAgents = BUILT_IN_AGENT_NAMES.reduce<NonNullable<HiveConfig['agents']>>(
-        (acc, agentName) => {
-          acc[agentName] = {
-            ...DEFAULT_HIVE_CONFIG.agents?.[agentName],
-            ...stored.agents?.[agentName],
-          };
-          return acc;
-        },
-        {},
-      );
-      this.activeReadSourceType = 'global';
-      this.activeReadPath = this.configPath;
-      const merged = this.mergeWithDefaults(stored);
-      this.cachedConfig = merged;
-      this.cachedCustomAgentConfigs = null;
-      return this.cachedConfig;
-    } catch {
+    if (!fs.existsSync(this.configPath)) {
       this.activeReadSourceType = 'global';
       this.activeReadPath = this.configPath;
       this.cachedConfig = { ...DEFAULT_HIVE_CONFIG };
       this.cachedCustomAgentConfigs = null;
+
+      if (this.projectConfigPath && fs.existsSync(this.projectConfigPath) && this.lastFallbackWarning) {
+        this.lastFallbackWarning = {
+          message: `Failed to read project config at ${this.projectConfigPath}; global config at ${this.configPath} is missing; using defaults`,
+          sourceType: 'project',
+          sourcePath: this.projectConfigPath,
+          fallbackType: 'defaults',
+          reason: this.lastFallbackWarning.reason,
+        };
+      }
+
       return this.cachedConfig;
     }
+
+    const globalStored = this.readStoredConfig(this.configPath);
+    if (globalStored.ok) {
+      this.activeReadSourceType = 'global';
+      this.activeReadPath = this.configPath;
+      this.cachedConfig = this.mergeWithDefaults(globalStored.value);
+      this.cachedCustomAgentConfigs = null;
+      return this.cachedConfig;
+    }
+
+    const fallbackReason = 'reason' in globalStored ? globalStored.reason : 'read_error';
+    this.activeReadSourceType = 'global';
+    this.activeReadPath = this.configPath;
+    this.cachedConfig = { ...DEFAULT_HIVE_CONFIG };
+    this.cachedCustomAgentConfigs = null;
+
+    if (this.projectConfigPath && fs.existsSync(this.projectConfigPath) && this.lastFallbackWarning) {
+      this.lastFallbackWarning = {
+        message: `Failed to read project config at ${this.projectConfigPath}; global config at ${this.configPath} is also invalid; using defaults`,
+        sourceType: 'project',
+        sourcePath: this.projectConfigPath,
+        fallbackType: 'defaults',
+        reason: this.lastFallbackWarning.reason,
+      };
+      return this.cachedConfig;
+    }
+
+    this.lastFallbackWarning = {
+      message: `Failed to read global config at ${this.configPath}; using defaults`,
+      sourceType: 'global',
+      sourcePath: this.configPath,
+      fallbackType: 'defaults',
+      reason: fallbackReason,
+    };
+
+    return this.cachedConfig;
   }
 
   getActiveReadSourceType(): 'project' | 'global' {
@@ -135,10 +148,10 @@ export class ConfigService {
 
   getLastFallbackWarning(): {
     message: string;
-    sourceType: 'project';
+    sourceType: 'project' | 'global';
     sourcePath: string;
-    fallbackType: 'global';
-    fallbackPath: string;
+    fallbackType: 'global' | 'defaults';
+    fallbackPath?: string;
     reason: 'parse_error' | 'validation_error' | 'read_error';
   } | null {
     return this.lastFallbackWarning;
@@ -470,6 +483,20 @@ export class ConfigService {
     };
   }
 
+  private createProjectFallbackWarning(
+    projectConfigPath: string,
+    reason: 'parse_error' | 'validation_error' | 'read_error',
+  ) {
+    return {
+      message: `Failed to read project config at ${projectConfigPath}; using global config at ${this.configPath}`,
+      sourceType: 'project' as const,
+      sourcePath: projectConfigPath,
+      fallbackType: 'global' as const,
+      fallbackPath: this.configPath,
+      reason,
+    };
+  }
+
   private isValidStoredConfig(value: unknown): value is Partial<HiveConfig> {
     if (!this.isObjectRecord(value)) {
       return false;
@@ -509,8 +536,12 @@ export class ConfigService {
       return false;
     }
 
-    if (config.customAgents !== undefined && !this.isObjectRecord(config.customAgents)) {
-      return false;
+    if (this.isObjectRecord(config.agents)) {
+      for (const declaration of Object.values(config.agents)) {
+        if (!this.isValidAgentConfigDeclaration(declaration)) {
+          return false;
+        }
+      }
     }
 
     if (config.sandbox !== undefined && config.sandbox !== 'none' && config.sandbox !== 'docker') {
@@ -537,6 +568,36 @@ export class ConfigService {
 
   private isStringArray(value: unknown): value is string[] {
     return Array.isArray(value) && value.every((item) => typeof item === 'string');
+  }
+
+  private isValidAgentConfigDeclaration(value: unknown): boolean {
+    if (!this.isObjectRecord(value)) {
+      return false;
+    }
+
+    const declaration = value as Record<string, unknown>;
+
+    if (declaration.model !== undefined && typeof declaration.model !== 'string') {
+      return false;
+    }
+
+    if (declaration.temperature !== undefined && typeof declaration.temperature !== 'number') {
+      return false;
+    }
+
+    if (declaration.skills !== undefined && !this.isStringArray(declaration.skills)) {
+      return false;
+    }
+
+    if (declaration.autoLoadSkills !== undefined && !this.isStringArray(declaration.autoLoadSkills)) {
+      return false;
+    }
+
+    if (declaration.variant !== undefined && typeof declaration.variant !== 'string') {
+      return false;
+    }
+
+    return true;
   }
 
   private isHookCadenceRecord(value: unknown): value is Record<string, number> {
