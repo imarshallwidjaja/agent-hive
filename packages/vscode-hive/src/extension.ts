@@ -211,11 +211,17 @@ class HiveExtension {
 
       vscode.commands.registerCommand('hive.approvePlan', async (item: { featureName?: string }) => {
         if (item?.featureName && this.workspaceRoot) {
+          const featureService = new FeatureService(this.workspaceRoot)
           const planService = new PlanService(this.workspaceRoot)
-          const comments = planService.getComments(item.featureName)
+          const reviewCounts = featureService.getInfo(item.featureName)?.reviewCounts ?? { plan: 0, overview: 0 }
+          const unresolvedTotal = reviewCounts.plan + reviewCounts.overview
           
-          if (comments.length > 0) {
-            vscode.window.showWarningMessage(`Hive: Cannot approve - ${comments.length} unresolved comment(s). Address them first.`)
+          if (unresolvedTotal > 0) {
+            const documents = [
+              reviewCounts.plan > 0 ? `plan (${reviewCounts.plan})` : null,
+              reviewCounts.overview > 0 ? `overview (${reviewCounts.overview})` : null,
+            ].filter(Boolean).join(', ')
+            vscode.window.showWarningMessage(`Hive: Cannot approve - ${unresolvedTotal} unresolved review comment(s) remain across ${documents}. Address them first.`)
             return
           }
           

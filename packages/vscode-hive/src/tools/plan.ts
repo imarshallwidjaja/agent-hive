@@ -1,7 +1,8 @@
-import { PlanService, ContextService } from 'hive-core';
+import { FeatureService, PlanService, ContextService } from 'hive-core';
 import type { ToolRegistration } from './base';
 
 export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
+  const featureService = new FeatureService(workspaceRoot);
   const planService = new PlanService(workspaceRoot);
   const contextService = new ContextService(workspaceRoot);
 
@@ -9,7 +10,7 @@ export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
     {
       name: 'hive_plan_write',
       displayName: 'Write Hive Plan',
-      modelDescription: 'Write or update the plan.md for a feature. The plan defines execution truth and tasks to execute. After significant plan changes, also refresh context/overview.md via hive_context_write({ name: "overview", content }) as the primary human-facing review surface. Use markdown with ### numbered headers for tasks. Clears existing comments when plan is rewritten.',
+      modelDescription: 'Write or update the plan.md for a feature. The plan defines execution truth and tasks to execute. After significant plan changes, also refresh context/overview.md via hive_context_write({ name: "overview", content }) as the primary human-facing review surface. Use markdown with ### numbered headers for tasks. Clears existing plan review comments when plan is rewritten.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -52,7 +53,7 @@ export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
     {
       name: 'hive_plan_read',
       displayName: 'Read Hive Plan',
-      modelDescription: 'Read the plan.md and any user comments for a feature. Use to check plan content, status, and user feedback before making changes.',
+      modelDescription: 'Read the plan.md and related review comments for a feature. Use to check plan content, status, and user feedback before making changes.',
       readOnly: true,
       inputSchema: {
         type: 'object',
@@ -94,10 +95,11 @@ export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
       },
       invoke: async (input) => {
         const { feature } = input as { feature: string };
+        let contexts: Array<{ name: string }> = [];
         
         let contextWarning = '';
         try {
-          const contexts = contextService.list(feature);
+          contexts = contextService.list(feature);
           const hasOverview = contexts.some(context => context.name === 'overview');
           if (!hasOverview) {
             contextWarning += '\n\n⚠️ Note: No overview found. Create or refresh it with hive_context_write({ name: "overview", content }) using ## At a Glance, ## Workstreams, and ## Revision History.';
@@ -109,7 +111,28 @@ export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
           }
         } catch { /* continue without warning */ }
         
-        planService.approve(feature);
+        try {
+          planService.approve(feature);
+        } catch (error) {
+          if (error instanceof Error && /unresolved review comments/i.test(error.message)) {
+            const hasOverview = contexts.some(context => context.name === 'overview');
+            const reviewCounts = featureService.getInfo(feature)?.reviewCounts ?? { plan: 0, overview: 0 };
+            const planComments = reviewCounts.plan;
+            const overviewComments = hasOverview ? reviewCounts.overview : 0;
+            const unresolvedTotal = planComments + overviewComments;
+            const documents = [
+              planComments > 0 ? `plan (${planComments})` : null,
+              overviewComments > 0 ? `overview (${overviewComments})` : null,
+            ].filter(Boolean).join(', ');
+
+            return JSON.stringify({
+              success: false,
+              message: `Cannot approve - ${unresolvedTotal} unresolved review comment(s) remain across ${documents}. Address them first.`,
+            });
+          }
+
+          throw error;
+        }
         return JSON.stringify({
           success: true,
           message: `Plan approved. Use hive_tasks_sync to generate tasks from the plan, and keep context/overview.md current as the primary human-facing summary.${contextWarning}`,

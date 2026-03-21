@@ -983,6 +983,70 @@ Do it
     expect(status.nextAction).toContain('Revision History');
   });
 
+  it("blocks plan approval when overview review comments remain", async () => {
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_overview_approval_blocked");
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "overview-approval-blocked-feature" },
+      toolContext
+    );
+
+    const plan = `# Overview Approval Blocked Feature
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes, this regression test proves approval must report unresolved overview review comments before execution can proceed.
+
+## Tasks
+
+### 1. First Task
+Do it
+`;
+
+    await hooks.tool!.hive_plan_write.execute(
+      { content: plan, feature: "overview-approval-blocked-feature" },
+      toolContext
+    );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: "overview-approval-blocked-feature",
+        name: "overview",
+        content: "# Overview\n",
+      },
+      toolContext
+    );
+
+    fs.mkdirSync(
+      path.join(testRoot, ".hive", "features", "overview-approval-blocked-feature", "comments"),
+      { recursive: true }
+    );
+    fs.writeFileSync(
+      path.join(testRoot, ".hive", "features", "overview-approval-blocked-feature", "comments", "overview.json"),
+      JSON.stringify({
+        threads: [{ id: "overview-thread", line: 1, body: "Need clearer overview", replies: [] }],
+      }, null, 2)
+    );
+
+    const approveOutput = await hooks.tool!.hive_plan_approve.execute(
+      { feature: "overview-approval-blocked-feature" },
+      toolContext
+    );
+
+    expect(approveOutput).toContain("Cannot approve");
+    expect(approveOutput).toContain("overview");
+  });
+
   it("returns explicit success and non-terminal contract fields on worktree start", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
