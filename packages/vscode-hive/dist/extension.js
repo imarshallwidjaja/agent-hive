@@ -38,7 +38,7 @@ var vscode7 = __toESM(require("vscode"));
 var fs12 = __toESM(require("fs"));
 var path11 = __toESM(require("path"));
 
-// ../hive-core/dist/index.js
+// ../../../../../../packages/hive-core/dist/index.js
 var import_node_module = require("node:module");
 var path = __toESM(require("path"), 1);
 var fs = __toESM(require("fs"), 1);
@@ -7378,13 +7378,14 @@ function getFeatureTools(workspaceRoot) {
 
 // src/tools/plan.ts
 function getPlanTools(workspaceRoot) {
+  const featureService = new FeatureService(workspaceRoot);
   const planService = new PlanService(workspaceRoot);
   const contextService = new ContextService(workspaceRoot);
   return [
     {
       name: "hive_plan_write",
       displayName: "Write Hive Plan",
-      modelDescription: 'Write or update the plan.md for a feature. The plan defines execution truth and tasks to execute. After significant plan changes, also refresh context/overview.md via hive_context_write({ name: "overview", content }) as the primary human-facing review surface. Use markdown with ### numbered headers for tasks. Clears existing comments when plan is rewritten.',
+      modelDescription: 'Write or update the plan.md for a feature. The plan defines execution truth and tasks to execute. After significant plan changes, also refresh context/overview.md via hive_context_write({ name: "overview", content }) as the primary human-facing review surface. Use markdown with ### numbered headers for tasks. Clears existing plan review comments when plan is rewritten.',
       inputSchema: {
         type: "object",
         properties: {
@@ -7425,7 +7426,7 @@ function getPlanTools(workspaceRoot) {
     {
       name: "hive_plan_read",
       displayName: "Read Hive Plan",
-      modelDescription: "Read the plan.md and any user comments for a feature. Use to check plan content, status, and user feedback before making changes.",
+      modelDescription: "Read the plan.md and related review comments for a feature. Use to check plan content, status, and user feedback before making changes.",
       readOnly: true,
       inputSchema: {
         type: "object",
@@ -7467,9 +7468,10 @@ function getPlanTools(workspaceRoot) {
       },
       invoke: async (input) => {
         const { feature } = input;
+        let contexts = [];
         let contextWarning = "";
         try {
-          const contexts = contextService.list(feature);
+          contexts = contextService.list(feature);
           const hasOverview = contexts.some((context) => context.name === "overview");
           if (!hasOverview) {
             contextWarning += '\n\n\u26A0\uFE0F Note: No overview found. Create or refresh it with hive_context_write({ name: "overview", content }) using ## At a Glance, ## Workstreams, and ## Revision History.';
@@ -7481,7 +7483,26 @@ function getPlanTools(workspaceRoot) {
           }
         } catch {
         }
-        planService.approve(feature);
+        try {
+          planService.approve(feature);
+        } catch (error) {
+          if (error instanceof Error && /unresolved review comments/i.test(error.message)) {
+            const hasOverview = contexts.some((context) => context.name === "overview");
+            const reviewCounts = featureService.getInfo(feature)?.reviewCounts ?? { plan: 0, overview: 0 };
+            const planComments = reviewCounts.plan;
+            const overviewComments = hasOverview ? reviewCounts.overview : 0;
+            const unresolvedTotal = planComments + overviewComments;
+            const documents = [
+              planComments > 0 ? `plan (${planComments})` : null,
+              overviewComments > 0 ? `overview (${overviewComments})` : null
+            ].filter(Boolean).join(", ");
+            return JSON.stringify({
+              success: false,
+              message: `Cannot approve - ${unresolvedTotal} unresolved review comment(s) remain across ${documents}. Address them first.`
+            });
+          }
+          throw error;
+        }
         return JSON.stringify({
           success: true,
           message: `Plan approved. Use hive_tasks_sync to generate tasks from the plan, and keep context/overview.md current as the primary human-facing summary.${contextWarning}`
@@ -8586,10 +8607,16 @@ var HiveExtension = class {
       }),
       vscode7.commands.registerCommand("hive.approvePlan", async (item) => {
         if (item?.featureName && this.workspaceRoot) {
+          const featureService = new FeatureService(this.workspaceRoot);
           const planService = new PlanService(this.workspaceRoot);
-          const comments2 = planService.getComments(item.featureName);
-          if (comments2.length > 0) {
-            vscode7.window.showWarningMessage(`Hive: Cannot approve - ${comments2.length} unresolved comment(s). Address them first.`);
+          const reviewCounts = featureService.getInfo(item.featureName)?.reviewCounts ?? { plan: 0, overview: 0 };
+          const unresolvedTotal = reviewCounts.plan + reviewCounts.overview;
+          if (unresolvedTotal > 0) {
+            const documents = [
+              reviewCounts.plan > 0 ? `plan (${reviewCounts.plan})` : null,
+              reviewCounts.overview > 0 ? `overview (${reviewCounts.overview})` : null
+            ].filter(Boolean).join(", ");
+            vscode7.window.showWarningMessage(`Hive: Cannot approve - ${unresolvedTotal} unresolved review comment(s) remain across ${documents}. Address them first.`);
             return;
           }
           try {

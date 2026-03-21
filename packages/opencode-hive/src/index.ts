@@ -954,7 +954,7 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
       hive_plan_write: tool({
-        description: 'Write plan.md (clears existing comments)',
+        description: 'Write plan.md (clears plan review comments)',
         args: {
           content: tool.schema.string().describe('Plan markdown content'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
@@ -1001,7 +1001,7 @@ Expand your Discovery section and try again.`;
       }),
 
       hive_plan_read: tool({
-        description: 'Read plan.md and user comments',
+        description: 'Read plan.md and related review comments',
         args: {
           feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
         },
@@ -1024,9 +1024,16 @@ Expand your Discovery section and try again.`;
           const feature = resolveFeature(explicitFeature);
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
           captureSession(feature, toolContext);
-          const comments = planService.getComments(feature);
-          if (comments.length > 0) {
-            return `Error: Cannot approve - ${comments.length} unresolved comment(s). Address them first.`;
+          const info = featureService.getInfo(feature);
+          const planComments = info?.reviewCounts.plan ?? 0;
+          const overviewComments = info?.reviewCounts.overview ?? 0;
+          const unresolvedTotal = planComments + overviewComments;
+          if (unresolvedTotal > 0) {
+            const documents = [
+              planComments > 0 ? `plan (${planComments})` : null,
+              overviewComments > 0 ? `overview (${overviewComments})` : null,
+            ].filter(Boolean).join(', ');
+            return `Error: Cannot approve - ${unresolvedTotal} unresolved review comment(s) remain across ${documents}. Address them first.`;
           }
           planService.approve(feature);
           return 'Plan approved. Run hive_tasks_sync to generate tasks. Refresh the overview if approval changed the plan narrative, workstreams, or milestones; context/overview.md is the primary human-facing surface and plan.md remains execution truth.';
