@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ContextService, FeatureService, PlanService } from 'hive-core';
+import { ContextService, FeatureService, PlanService, getFeaturePath } from 'hive-core';
 import { getPlanTools } from './plan';
 
 const TEST_ROOT_BASE = `/tmp/vscode-hive-plan-test-${process.pid}`;
@@ -29,9 +29,11 @@ describe('getPlanTools', () => {
     planService.write(featureName, '# Plan\n');
     contextService.write(featureName, 'overview', '# Overview\n');
 
-    fs.mkdirSync(path.join(testRoot, '.hive', 'features', featureName, 'comments'), { recursive: true });
+    const featurePath = getFeaturePath(testRoot, featureName);
+
+    fs.mkdirSync(path.join(featurePath, 'comments'), { recursive: true });
     fs.writeFileSync(
-      path.join(testRoot, '.hive', 'features', featureName, 'comments', 'overview.json'),
+      path.join(featurePath, 'comments', 'overview.json'),
       JSON.stringify({
         threads: [
           { id: 'overview-thread', line: 1, body: 'Need clearer overview', replies: [] },

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { FeatureService, TaskService, PlanService, ContextService, buildEffectiveDependencies, computeRunnableAndBlocked } from 'hive-core';
+import { FeatureService, TaskService, PlanService, ContextService, buildEffectiveDependencies, computeRunnableAndBlocked, getFeaturePath } from 'hive-core';
 import type { TaskWithDeps } from 'hive-core';
 import type { ToolRegistration } from './base';
 
@@ -192,7 +192,7 @@ function getNextAction(
 }
 
 function readReviewCounts(workspaceRoot: string, feature: string): { plan: number; overview: number } {
-  const featurePath = path.join(workspaceRoot, '.hive', 'features', feature);
+  const featurePath = getFeaturePath(workspaceRoot, feature);
   const reviewDir = path.join(featurePath, 'comments');
   const planThreads = readThreads(path.join(reviewDir, 'plan.json')) ?? readThreads(path.join(featurePath, 'comments.json'));
   const overviewThreads = readThreads(path.join(reviewDir, 'overview.json'));
