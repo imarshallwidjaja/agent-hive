@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ContextService, FeatureService, PlanService } from 'hive-core';
+import { ContextService, FeatureService, PlanService, getFeaturePath } from 'hive-core';
 import { getStatusTools } from './status';
 
 const TEST_ROOT_BASE = `/tmp/vscode-hive-status-test-${process.pid}`;
@@ -28,9 +28,11 @@ describe('getStatusTools', () => {
     featureService.create(featureName);
     planService.write(featureName, '# Plan\n');
     contextService.write(featureName, 'overview', '# Overview\n');
-    fs.mkdirSync(path.join(testRoot, '.hive', 'features', featureName, 'comments'), { recursive: true });
+    const featurePath = getFeaturePath(testRoot, featureName);
+
+    fs.mkdirSync(path.join(featurePath, 'comments'), { recursive: true });
     fs.writeFileSync(
-      path.join(testRoot, '.hive', 'features', featureName, 'comments', 'plan.json'),
+      path.join(featurePath, 'comments', 'plan.json'),
       JSON.stringify({
         threads: [
           { id: 'plan-thread', line: 1, body: 'Plan review', replies: [] },
@@ -38,7 +40,7 @@ describe('getStatusTools', () => {
       }, null, 2)
     );
     fs.writeFileSync(
-      path.join(testRoot, '.hive', 'features', featureName, 'comments', 'overview.json'),
+      path.join(featurePath, 'comments', 'overview.json'),
       JSON.stringify({
         threads: [
           { id: 'overview-thread', line: 2, body: 'Overview review', replies: [] },
