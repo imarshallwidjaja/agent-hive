@@ -305,6 +305,14 @@ export class ConfigService {
   }
 
   /**
+   * Check if deterministic worker-prompt minification is enabled via user config.
+   */
+  isWorkerPromptMinificationEnabled(): boolean {
+    const config = this.get();
+    return config.workerPromptMinificationEnabled === true;
+  }
+
+  /**
    * Get list of globally disabled skills.
    */
   getDisabledSkills(): string[] {

@@ -227,6 +227,8 @@ export interface HiveConfig {
   disableMcps?: string[];
   /** Enable OMO-Slim delegation (optional integration) */
   omoSlimEnabled?: boolean;
+  /** Gate deterministic worker-prompt minification */
+  workerPromptMinificationEnabled?: boolean;
   /** Choose between unified or dedicated agent modes */
   agentMode?: 'unified' | 'dedicated';
   /** Agent configuration */
@@ -270,6 +272,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   enableToolsFor: [],
   disableSkills: [],
   disableMcps: [],
+  workerPromptMinificationEnabled: false,
   agentMode: 'unified',
   sandbox: 'none',
   customAgents: {

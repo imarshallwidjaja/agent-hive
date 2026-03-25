@@ -12,6 +12,12 @@ const expectReservedNameToFail = (name: string): void => {
 };
 
 describe('agent_hive schema customAgents contract', () => {
+  it('declares workerPromptMinificationEnabled in the root schema', () => {
+    expect(schema.properties.workerPromptMinificationEnabled).toEqual(
+      expect.objectContaining({ type: 'boolean', default: false }),
+    );
+  });
+
   it('defines customAgents map and custom agent schema', () => {
     expect(schema.properties.customAgents).toBeDefined();
     expect(schema.properties.customAgents.additionalProperties).toEqual({

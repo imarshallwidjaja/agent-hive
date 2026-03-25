@@ -148,6 +148,12 @@ describe("ConfigService defaults", () => {
     expect(service.get().agentMode).toBe('unified');
   });
 
+  it('defaults workerPromptMinificationEnabled to false', () => {
+    const service = new ConfigService();
+    expect(service.get().workerPromptMinificationEnabled).toBe(false);
+    expect(service.isWorkerPromptMinificationEnabled()).toBe(false);
+  });
+
   it("deep-merges agent overrides with defaults", () => {
     const service = new ConfigService();
     const configPath = service.getPath();

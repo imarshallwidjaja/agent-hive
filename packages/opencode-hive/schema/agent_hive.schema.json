@@ -46,6 +46,11 @@
       },
       "description": "Globally disable specific MCP servers (e.g., ['websearch', 'ast_grep']). Available: websearch, context7, grep_app, ast_grep"
     },
+    "workerPromptMinificationEnabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Gate deterministic worker-prompt minification. When false, worker prompts are emitted without minification."
+    },
     "agentMode": {
       "type": "string",
       "enum": [
