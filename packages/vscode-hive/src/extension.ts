@@ -21,6 +21,8 @@ import { regenerateAgents } from './commands/regenerateAgents'
 
 type ReviewDocument = 'plan' | 'overview'
 
+const extensionVersion = '1.3.4'
+
 function getReviewTarget(workspaceRoot: string, filePath: string): { featureName: string; document: ReviewDocument } | null {
   const normalizedWorkspace = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '')
   const normalizedPath = filePath.replace(/\\/g, '/')
@@ -133,12 +135,12 @@ class HiveExtension {
 
     const onHiveCreated = () => {
       const newRoot = findHiveRoot(this.workspaceFolder)
-      if (newRoot && !this.initialized) {
-        this.workspaceRoot = newRoot
-        this.initializeWithHive(newRoot)
-        vscode.window.showInformationMessage('Hive: .hive directory detected, extension activated')
+        if (newRoot && !this.initialized) {
+          this.workspaceRoot = newRoot
+          this.initializeWithHive(newRoot)
+          vscode.window.showInformationMessage(`Hive ${extensionVersion}: .hive directory detected, extension activated`)
+        }
       }
-    }
 
     this.creationWatcher.onDidCreate(onHiveCreated)
     this.context.subscriptions.push(this.creationWatcher)
