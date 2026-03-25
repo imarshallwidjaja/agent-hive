@@ -50,6 +50,24 @@ describe('release 1.3.4 correction artifacts', () => {
     }
   });
 
+  it('regenerates npm and bun lockfiles for the 1.3.4 patch line', () => {
+    const packageLock = readJson('package-lock.json');
+    const bunLock = readText('bun.lock');
+
+    assert.equal(packageLock.packages[''].version, '1.3.4');
+    assert.equal(packageLock.packages['packages/hive-core'].version, '1.3.4');
+    assert.equal(packageLock.packages['packages/opencode-hive'].version, '1.3.4');
+    assert.equal(packageLock.packages['packages/vscode-hive'].version, '1.3.4');
+    assert.match(bunLock, /"version": "1\.3\.4"/);
+  });
+
+  it('rebuilds the tracked vscode release bundle with 1.3.4 metadata', () => {
+    const distPath = path.join(workspaceRoot, 'packages/vscode-hive/dist/extension.js');
+
+    assert.equal(fs.existsSync(distPath), true, 'packages/vscode-hive/dist/extension.js should exist');
+    assert.match(readText('packages/vscode-hive/dist/extension.js'), /1\.3\.4/);
+  });
+
   it('keeps release-history docs aligned with the 1.3.4 correction', () => {
     const oldNotes = readText('docs/releases/v1.3.2.md');
     const newNotesPath = path.join(workspaceRoot, 'docs/releases/v1.3.4.md');
