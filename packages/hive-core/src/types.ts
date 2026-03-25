@@ -138,9 +138,16 @@ export interface ContextFile {
   updatedAt: string;
 }
 
+export type SessionKind = 'primary' | 'subagent' | 'task-worker' | 'unknown';
+
 export interface SessionInfo {
   sessionId: string;
+  featureName?: string;
   taskFolder?: string;
+  agent?: string;
+  baseAgent?: string;
+  sessionKind?: SessionKind;
+  workerPromptPath?: string;
   startedAt: string;
   lastActiveAt: string;
   messageCount?: number;
