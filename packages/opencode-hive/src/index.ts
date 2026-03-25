@@ -194,6 +194,7 @@ import {
   type WorktreeInfo,
 } from "hive-core";
 import { buildWorkerPrompt, type ContextFile, type CompletedTask } from "./utils/worker-prompt";
+import { minifyWorkerPromptDeterministic } from './utils/prompt-minification';
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
 import { applyTaskBudget, applyContextBudget, DEFAULT_BUDGET, type TruncationEvent } from "./utils/prompt-budgeting";
 import { writeWorkerPromptFile } from "./utils/prompt-file";
@@ -430,7 +431,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
     taskService.writeSpec(feature, task, specContent);
 
-    const workerPrompt = buildWorkerPrompt({
+    const rawWorkerPrompt = buildWorkerPrompt({
       feature,
       task,
       taskOrder,
@@ -446,6 +447,10 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         decision: decision || 'No decision provided',
       } : undefined,
     });
+
+    const workerPrompt = configService.isWorkerPromptMinificationEnabled()
+      ? minifyWorkerPromptDeterministic(rawWorkerPrompt)
+      : rawWorkerPrompt;
 
     const customAgentConfigs = getCustomAgentConfigsCompat(configService);
     const defaultAgent = 'forager-worker';

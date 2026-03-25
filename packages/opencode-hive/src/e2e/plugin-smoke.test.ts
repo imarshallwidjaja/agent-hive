@@ -481,6 +481,187 @@ Do it
     expect(execStart.instructions).not.toContain("Read the prompt file");
   });
 
+  it("uses the raw prompt when workerPromptMinificationEnabled is false", async () => {
+    const configPath = path.join(process.env.HOME || "", ".config", "opencode", "agent_hive.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ workerPromptMinificationEnabled: false }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_prompt_minification_disabled");
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "prompt-minification-disabled-feature" },
+      toolContext,
+    );
+
+    const plan = createSingleTaskPlan(
+      "Prompt Minification Disabled Feature",
+      "Yes, this integration test validates that worker prompts remain in raw form when minification is disabled.",
+    );
+
+    await hooks.tool!.hive_plan_write.execute(
+      { content: plan, feature: "prompt-minification-disabled-feature" },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute(
+      { feature: "prompt-minification-disabled-feature" },
+      toolContext,
+    );
+    await hooks.tool!.hive_tasks_sync.execute(
+      { feature: "prompt-minification-disabled-feature" },
+      toolContext,
+    );
+
+    const execStartOutput = await hooks.tool!.hive_worktree_start.execute(
+      { feature: "prompt-minification-disabled-feature", task: FIRST_TASK },
+      toolContext,
+    );
+
+    const execStart = JSON.parse(execStartOutput as string) as {
+      workerPromptPath?: string;
+      workerPromptPreview?: string;
+      taskToolCall?: {
+        prompt?: string;
+      };
+    };
+
+    const expectedPromptPath = path.posix.join(
+      ".hive",
+      "features",
+      "01_prompt-minification-disabled-feature",
+      "tasks",
+      FIRST_TASK,
+      "worker-prompt.md",
+    );
+
+    expect(execStart.taskToolCall?.prompt).toContain(`@${expectedPromptPath}`);
+    expect(execStart.workerPromptPath).toBe(expectedPromptPath);
+    expect(execStart.workerPromptPreview).toContain("| Field | Value |");
+
+    const workerPromptContent = fs.readFileSync(
+      path.join(testRoot, expectedPromptPath),
+      "utf-8",
+    );
+
+    expect(workerPromptContent).toContain("| Field | Value |");
+    expect(workerPromptContent).toContain("| Feature | prompt-minification-disabled-feature |");
+  });
+
+  it("uses the deterministic minified prompt when workerPromptMinificationEnabled is true", async () => {
+    const configPath = path.join(process.env.HOME || "", ".config", "opencode", "agent_hive.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ workerPromptMinificationEnabled: true }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_prompt_minification_enabled");
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "prompt-minification-enabled-feature" },
+      toolContext,
+    );
+
+    const plan = `# Prompt Minification Enabled Feature
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes, this integration test validates deterministic worker prompt minification while preserving mission/spec table content.
+
+## Tasks
+
+### 1. First Task
+Do it
+
+| Field | Value |
+|-------|-------|
+| Preserve | this table |
+`;
+
+    await hooks.tool!.hive_plan_write.execute(
+      { content: plan, feature: "prompt-minification-enabled-feature" },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute(
+      { feature: "prompt-minification-enabled-feature" },
+      toolContext,
+    );
+    await hooks.tool!.hive_tasks_sync.execute(
+      { feature: "prompt-minification-enabled-feature" },
+      toolContext,
+    );
+
+    const execStartOutput = await hooks.tool!.hive_worktree_start.execute(
+      { feature: "prompt-minification-enabled-feature", task: FIRST_TASK },
+      toolContext,
+    );
+
+    const execStart = JSON.parse(execStartOutput as string) as {
+      workerPromptPath?: string;
+      workerPromptPreview?: string;
+      promptMeta?: {
+        workerPromptChars?: number;
+      };
+      taskToolCall?: {
+        prompt?: string;
+      };
+    };
+
+    const expectedPromptPath = path.posix.join(
+      ".hive",
+      "features",
+      "01_prompt-minification-enabled-feature",
+      "tasks",
+      FIRST_TASK,
+      "worker-prompt.md",
+    );
+
+    expect(execStart.taskToolCall?.prompt).toContain(`@${expectedPromptPath}`);
+    expect(execStart.workerPromptPath).toBe(expectedPromptPath);
+
+    const workerPromptContent = fs.readFileSync(
+      path.join(testRoot, expectedPromptPath),
+      "utf-8",
+    );
+
+    expect(workerPromptContent).toContain("feature:prompt-minification-enabled-feature");
+    expect(workerPromptContent).toContain(`task:${FIRST_TASK}`);
+    expect(workerPromptContent).not.toContain("| Feature | prompt-minification-enabled-feature |");
+    expect(workerPromptContent).toContain("| Field | Value |");
+    expect(workerPromptContent).toContain("| Preserve | this table |");
+    expect(execStart.promptMeta?.workerPromptChars).toBe(workerPromptContent.length);
+
+    const PREVIEW_MAX_LENGTH = 200;
+    const expectedPreview = workerPromptContent.length > PREVIEW_MAX_LENGTH
+      ? workerPromptContent.slice(0, PREVIEW_MAX_LENGTH) + "..."
+      : workerPromptContent;
+
+    expect(execStart.workerPromptPreview).toBe(expectedPreview);
+  });
+
   it("excludes reserved overview context from worker prompt payloads", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
@@ -1209,13 +1390,32 @@ Do it
       success?: boolean;
       terminal?: boolean;
       worktreePath?: string;
+      workerPromptPath?: string;
+      workerPromptPreview?: string;
+      promptMeta?: {
+        workerPromptChars?: number;
+      };
       taskToolCall?: { prompt?: string };
     };
 
     expect(result.success).toBe(true);
     expect(result.terminal).toBe(false);
     expect(result.worktreePath).toBeDefined();
+    expect(result.workerPromptPath).toBeDefined();
+    expect(result.workerPromptPreview).toBeDefined();
     expect(result.taskToolCall?.prompt).toContain("worker-prompt.md");
+
+    const workerPromptContent = fs.readFileSync(
+      path.join(testRoot, result.workerPromptPath as string),
+      "utf-8",
+    );
+    expect(result.promptMeta?.workerPromptChars).toBe(workerPromptContent.length);
+
+    const PREVIEW_MAX_LENGTH = 200;
+    const expectedPreview = workerPromptContent.length > PREVIEW_MAX_LENGTH
+      ? workerPromptContent.slice(0, PREVIEW_MAX_LENGTH) + "..."
+      : workerPromptContent;
+    expect(result.workerPromptPreview).toBe(expectedPreview);
   });
 
   it("system prompt hook injects Hive instructions", async () => {
