@@ -35,6 +35,44 @@ describe('minifyWorkerPromptDeterministic', () => {
     expect(minifyWorkerPromptDeterministic(before)).toContain('| Field | Value |');
   });
 
+  it('preserves user-authored Assignment Details section inside mission content', () => {
+    const before = [
+      '# Hive Worker Assignment',
+      '',
+      '## Assignment Details',
+      '',
+      '| Field | Value |',
+      '|-------|-------|',
+      '| Feature | template-owned |',
+      '',
+      '## Your Mission',
+      '',
+      '## Assignment Details',
+      '',
+      '| Field | Value |',
+      '|-------|-------|',
+      '| Preserve | this mission section |',
+    ].join('\n');
+
+    const after = minifyWorkerPromptDeterministic(before);
+    expect(after).toContain('feature:template-owned');
+    expect(after).toContain('## Your Mission\n\n## Assignment Details');
+    expect(after).toContain('| Preserve | this mission section |');
+  });
+
+  it('does not restore protected placeholders from user-authored lookalike tokens', () => {
+    const before = [
+      'Literal token: __HIVE_PROMPT_MINIFY_PROTECTED_0__',
+      '```ts',
+      'const keep = "**value**";',
+      '```',
+    ].join('\n');
+
+    const after = minifyWorkerPromptDeterministic(before);
+    expect(after).toContain('Literal token: __HIVE_PROMPT_MINIFY_PROTECTED_0__');
+    expect(after).toContain('```ts\nconst keep = "**value**";\n```');
+  });
+
   it('preserves fenced code blocks byte-for-byte', () => {
     const before = '```ts\nconst x = "**keep**";\n```';
     expect(minifyWorkerPromptDeterministic(before)).toContain(before);

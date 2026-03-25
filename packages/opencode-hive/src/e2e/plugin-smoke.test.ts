@@ -596,6 +596,8 @@ A: Yes, this integration test validates deterministic worker prompt minification
 ### 1. First Task
 Do it
 
+## Assignment Details
+
 | Field | Value |
 |-------|-------|
 | Preserve | this table |
@@ -650,6 +652,7 @@ Do it
     expect(workerPromptContent).toContain("feature:prompt-minification-enabled-feature");
     expect(workerPromptContent).toContain(`task:${FIRST_TASK}`);
     expect(workerPromptContent).not.toContain("| Feature | prompt-minification-enabled-feature |");
+    expect(workerPromptContent).toContain("## Assignment Details");
     expect(workerPromptContent).toContain("| Field | Value |");
     expect(workerPromptContent).toContain("| Preserve | this table |");
     expect(execStart.promptMeta?.workerPromptChars).toBe(workerPromptContent.length);

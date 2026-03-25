@@ -1,16 +1,22 @@
 function protectSpans(input: string): { text: string; restore: (text: string) => string } {
   const protectedValues: string[] = [];
+  let tokenPrefix = '__HIVE_PROMPT_MINIFY_PROTECTED__';
+
+  while (input.includes(tokenPrefix)) {
+    tokenPrefix += '_X';
+  }
 
   const stash = (value: string): string => {
     const index = protectedValues.push(value) - 1;
-    return `__HIVE_PROMPT_MINIFY_PROTECTED_${index}__`;
+    return `${tokenPrefix}${index}__`;
   };
 
   let text = input.replace(/```[\s\S]*?```/g, stash);
   text = text.replace(/`[^`\n]+`/g, stash);
 
   const restore = (nextText: string): string => {
-    return nextText.replace(/__HIVE_PROMPT_MINIFY_PROTECTED_(\d+)__/g, (_, index) => {
+    const tokenPattern = new RegExp(`${tokenPrefix}(\\d+)__`, 'g');
+    return nextText.replace(tokenPattern, (_, index) => {
       const value = protectedValues[Number(index)];
       return value ?? '';
     });
@@ -82,7 +88,16 @@ function normalizeUnprotectedText(text: string): string {
 
 export function minifyWorkerPromptDeterministic(prompt: string): string {
   const protectedSpans = protectSpans(prompt);
-  const rewrittenLines = normalizeAssignmentDetailsTable(protectedSpans.text.split('\n'));
+  const lines = protectedSpans.text.split('\n');
+  const missionStart = lines.findIndex((line) => /^##\s+Your Mission\s*$/.test(line));
+
+  const rewrittenLines = missionStart === -1
+    ? normalizeAssignmentDetailsTable(lines)
+    : [
+      ...normalizeAssignmentDetailsTable(lines.slice(0, missionStart)),
+      ...lines.slice(missionStart),
+    ];
+
   const normalizedText = normalizeUnprotectedText(rewrittenLines.join('\n'));
   return protectedSpans.restore(normalizedText);
 }
