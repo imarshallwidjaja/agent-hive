@@ -1,7 +1,7 @@
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { describe, it } from 'node:test';
 
 const workspaceRoot = path.resolve(import.meta.dirname);
 
@@ -13,57 +13,56 @@ function readText(relativePath) {
   return fs.readFileSync(path.join(workspaceRoot, relativePath), 'utf8');
 }
 
-describe('release 1.3.3 recovery artifacts', () => {
-  it('bumps root and workspace manifests to 1.3.3', () => {
+describe('release 1.3.5 contract on main', () => {
+  it('bumps root and workspace manifests to 1.3.5', () => {
     for (const file of [
       'package.json',
       'packages/hive-core/package.json',
       'packages/opencode-hive/package.json',
       'packages/vscode-hive/package.json',
     ]) {
-      assert.equal(readJson(file).version, '1.3.3', `${file} should be 1.3.3`);
+      assert.equal(readJson(file).version, '1.3.5', `${file} should be 1.3.5`);
     }
   });
 
-  it('keeps the lockfile versions aligned and repairs the once entry', () => {
-    const lock = readJson('package-lock.json');
-
-    assert.equal(lock.version, '1.3.3');
-    assert.equal(lock.packages[''].version, '1.3.3');
-    assert.equal(lock.packages['packages/opencode-hive'].version, '1.3.3');
-    assert.equal(lock.packages['packages/vscode-hive'].version, '1.3.3');
-
-    assert.deepEqual(
-      {
-        version: lock.packages['node_modules/once']?.version,
-        resolved: lock.packages['node_modules/once']?.resolved,
-      },
-      {
-        version: '1.4.0',
-        resolved: 'https://registry.npmjs.org/once/-/once-1.4.0.tgz',
-      }
+  it('publishes both v1.3.4 and v1.3.5 release notes', () => {
+    assert.equal(
+      fs.existsSync(path.join(workspaceRoot, 'docs/releases/v1.3.4.md')),
+      true,
+      'docs/releases/v1.3.4.md should exist'
+    );
+    assert.equal(
+      fs.existsSync(path.join(workspaceRoot, 'docs/releases/v1.3.5.md')),
+      true,
+      'docs/releases/v1.3.5.md should exist'
     );
   });
 
-  it('keeps 1.3.2 notes historically accurate and adds 1.3.3 recovery notes', () => {
-    const changelog = readText('CHANGELOG.md');
-    const oldNotes = readText('docs/releases/v1.3.2.md');
-    const newNotesPath = path.join(workspaceRoot, 'docs/releases/v1.3.3.md');
+  it('documents PR #64 compaction recovery in v1.3.5 release notes', () => {
+    const notes = readText('docs/releases/v1.3.5.md');
 
-    assert.ok(fs.existsSync(newNotesPath), 'docs/releases/v1.3.3.md should exist');
-    const newNotes = fs.readFileSync(newNotesPath, 'utf8');
-
-    assert.match(changelog, /## \[1\.3\.3\] - 2026-03-24/);
-    assert.match(changelog, /## \[1\.3\.2\] - 2026-03-21/);
-    assert.doesNotMatch(oldNotes, /PR #57|Copilot rewrite/i);
-    assert.doesNotMatch(oldNotes, /intentionally not run yet/i);
-    assert.match(oldNotes, /6a2d870|status manifest test/i);
-    assert.match(newNotes, /PR #57|Copilot rewrite/i);
-    assert.match(newNotes, /lockfile|once/i);
-    assert.match(newNotes, /v1\.3\.2\.\.\.v1\.3\.3/);
+    assert.match(notes, /PR\s*#64/i);
+    assert.match(notes, /compaction recovery|recovery after OpenCode compaction/i);
   });
 
-  it('does not restore the stale 1.4.0 release draft', () => {
-    assert.equal(fs.existsSync(path.join(workspaceRoot, 'docs/releases/v1.4.0.md')), false);
+  it('records both 1.3.4 and 1.3.5 changelog entries in descending order', () => {
+    const changelog = readText('CHANGELOG.md');
+    const changelog135Header = '## [1.3.5]';
+    const changelog134Header = '## [1.3.4]';
+
+    assert.notEqual(
+      changelog.indexOf(changelog135Header),
+      -1,
+      'CHANGELOG.md should include a 1.3.5 entry'
+    );
+    assert.notEqual(
+      changelog.indexOf(changelog134Header),
+      -1,
+      'CHANGELOG.md should include a 1.3.4 entry'
+    );
+    assert.ok(
+      changelog.indexOf(changelog135Header) < changelog.indexOf(changelog134Header),
+      'CHANGELOG.md should list 1.3.5 before 1.3.4'
+    );
   });
 });
