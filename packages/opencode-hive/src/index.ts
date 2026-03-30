@@ -357,6 +357,23 @@ const plugin: Plugin = async (ctx) => {
     return session?.sessionKind === 'primary' || session?.sessionKind === 'subagent';
   };
 
+  const shouldUseWorkerReplay = (session: { sessionKind?: string; featureName?: string; taskFolder?: string } | undefined): boolean => {
+    return session?.sessionKind === 'task-worker' && !!session.featureName && !!session.taskFolder;
+  };
+
+  const buildWorkerReplayText = (session: { agent?: string; baseAgent?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string }): string | null => {
+    if (!session.featureName || !session.taskFolder) return null;
+    const role = 'Forager';
+    const promptPath = session.workerPromptPath
+      ?? `.hive/features/${session.featureName}/tasks/${session.taskFolder}/worker-prompt.md`;
+    return [
+      `Post-compaction recovery: You are still the ${role} worker for task ${session.taskFolder}.`,
+      `Resume only this task. Do not merge, do not start the next task, and do not replace this assignment with a new goal.`,
+      `Do not call orchestration tools unless the worker prompt explicitly says so.`,
+      `Re-read @${promptPath} and continue from the existing worktree state.`,
+    ].join('\n');
+  };
+
   /**
    * Check if a feature is blocked by the Beekeeper.
    * Returns the block message if blocked, null otherwise.
@@ -900,11 +917,14 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
       const sessionID = input.event.properties.sessionID;
       const existing = sessionService.getGlobal(sessionID);
-      if (!existing?.directivePrompt || !shouldUseDirectiveReplay(existing)) {
+      if (existing?.directivePrompt && shouldUseDirectiveReplay(existing)) {
+        sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
         return;
       }
-
-      sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
+      if (shouldUseWorkerReplay(existing)) {
+        sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
+        return;
+      }
     },
 
     "experimental.chat.system.transform": async (
@@ -1009,10 +1029,43 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       const refreshed = sessionService.getGlobal(sessionID);
-      if (!refreshed?.replayDirectivePending || !shouldUseDirectiveReplay(refreshed)) {
-        if (refreshed?.replayDirectivePending && !shouldUseDirectiveReplay(refreshed)) {
+      if (!refreshed?.replayDirectivePending) {
+        return;
+      }
+
+      if (shouldUseWorkerReplay(refreshed)) {
+        const workerText = buildWorkerReplayText(refreshed);
+        if (!workerText) {
           sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
+          return;
         }
+
+        const now = Date.now();
+        output.messages.push({
+          info: {
+            id: `msg_replay_${sessionID}`,
+            sessionID,
+            role: 'user',
+            time: { created: now },
+          },
+          parts: [
+            {
+              id: `prt_replay_${sessionID}`,
+              sessionID,
+              messageID: `msg_replay_${sessionID}`,
+              type: 'text',
+              text: workerText,
+              synthetic: true,
+            },
+          ],
+        });
+
+        sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
+        return;
+      }
+
+      if (!shouldUseDirectiveReplay(refreshed)) {
+        sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
         return;
       }
 
