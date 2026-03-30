@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-03-30
+
+### Added
+- **Durable compaction recovery (PR #64)**: Main now persists global Hive session identity in `.hive/sessions.json`, classifies sessions as `primary`, `subagent`, `task-worker`, or `unknown`, and re-anchors compacted sessions so recovery can resume with the correct role and constraints instead of rediscovering state from scratch
+- **Task-worker recovery from `worker-prompt.md`**: Compacted task workers now recover from durable worktree assignment metadata and the original `worker-prompt.md` launch contract so they resume the right task instead of drifting into generic planner behavior
+
+### Changed
+- **Directive replay after compaction**: Primary and subagent sessions now persist their original directive and replay it once on the first resumed turn so compaction recovery restores both role metadata and the user/task assignment together
+- **Release history on main completed**: Main now carries forward the previously missing `v1.3.4` changelog and release-note record before documenting the new PR #64 work, so the `1.3.x` story distinguishes the shipped `v1.3.4` history repair from the new `v1.3.5` recovery changes
+
+### Fixed
+- **Session recovery after OpenCode compaction**: Hive now restores primary, subagent, and task-worker sessions from durable state without depending on prompt preservation, reducing the chance of lost role boundaries or missing assignment context after compaction
+
+## [1.3.4] - 2026-03-25
+
+### Added
+- **PR #62 history-alignment release note**: Added a dedicated `v1.3.4` release record for PR #62 / `488aa29` so the `1.3.x` line now documents the reserved `context/overview.md` workflow, document-aware review handling, overview-first status/sidebar surfacing, indexed feature storage, and planner/orchestrator guidance under the corrective patch where this history alignment is explained honestly
+
+### Changed
+- **Release history alignment for PR #62**: Rewrote the `v1.3.2` changelog and release note so they no longer claim PR #62 literally shipped in `v1.3.2`; those records now explain that the release branch did not yet include the formal PR #62 history and that the explicit alignment arrives in `v1.3.4`
+- **Version Bump**: Bumped root and package versions to `1.3.4` (`agent-hive`, `hive-core`, `opencode-hive`, `vscode-hive`)
+
+### Fixed
+- **Technically honest patch narrative**: Clarified that `v1.3.4` is a history-correction patch on top of `v1.3.3`, not new conflict resolution, because the shipped `1.3.x` tree already matched the PR #62 behavior being documented
+
 ## [1.3.3] - 2026-03-24
 
 ### Added
