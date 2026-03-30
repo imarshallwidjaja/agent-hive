@@ -295,12 +295,155 @@ describe('experimental.session.compacting hook — session-aware re-anchoring', 
     expect(session?.directivePrompt).toBeUndefined();
   });
 
-  test('messages.transform does not replay stored directive for task-worker sessions', async () => {
+  test('session.compacted marks replay pending for task-worker sessions with bounded recovery metadata', async () => {
     const sessionService = new SessionService(testRoot);
-    sessionService.trackGlobal('sess-worker-replay', {
+    sessionService.trackGlobal('sess-tw-replay', {
       agent: 'forager-worker',
       sessionKind: 'task-worker',
-      directivePrompt: 'Old worker directive',
+      featureName: 'my-feature',
+      taskFolder: '01-task',
+      workerPromptPath: '.hive/features/my-feature/tasks/01-task/worker-prompt.md',
+      replayDirectivePending: false,
+    } as any);
+
+    await hooks.event?.({
+      event: {
+        type: 'session.compacted',
+        properties: { sessionID: 'sess-tw-replay' },
+      } as any,
+    });
+
+    const marked = sessionService.getGlobal('sess-tw-replay');
+    expect(marked?.replayDirectivePending).toBe(true);
+  });
+
+  test('messages.transform appends bounded worker replay after generic continue for task-worker sessions', async () => {
+    const sessionService = new SessionService(testRoot);
+    sessionService.trackGlobal('sess-tw-bounded', {
+      agent: 'forager-worker',
+      sessionKind: 'task-worker',
+      featureName: 'my-feature',
+      taskFolder: '05-implement-dashboard',
+      workerPromptPath: '.hive/features/my-feature/tasks/05-implement-dashboard/worker-prompt.md',
+      replayDirectivePending: true,
+    } as any);
+
+    const output = {
+      messages: [
+        {
+          info: {
+            id: 'msg-summary',
+            sessionID: 'sess-tw-bounded',
+            role: 'assistant',
+            time: { created: Date.now() },
+            system: [],
+            modelID: 'm',
+            providerID: 'p',
+            mode: 'compaction',
+            path: { cwd: testRoot, root: testRoot },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            summary: true,
+          } as Message,
+          parts: [{ id: 'prt-summary', sessionID: 'sess-tw-bounded', messageID: 'msg-summary', type: 'text', text: 'Summary text' } as Part],
+        },
+        {
+          info: {
+            id: 'msg-continue',
+            sessionID: 'sess-tw-bounded',
+            role: 'user',
+            time: { created: Date.now() },
+          } as Message,
+          parts: [{ id: 'prt-continue', sessionID: 'sess-tw-bounded', messageID: 'msg-continue', type: 'text', text: 'Continue if you have next steps.', synthetic: true } as Part],
+        },
+      ],
+    };
+
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+
+    expect(output.messages).toHaveLength(3);
+    const replay = output.messages[2];
+    expect(replay.info.role).toBe('user');
+    const replayText = (replay.parts[0] as any).text;
+    expect(replayText).toContain('Forager');
+    expect(replayText).toContain('my-feature');
+    expect(replayText).toContain('05-implement-dashboard');
+    expect(replayText).toContain('.hive/features/my-feature/tasks/05-implement-dashboard/worker-prompt.md');
+    expect(replayText).toMatch(/Resume only this task|Finish only the current task assignment/);
+    expect(replayText).toMatch(/[Dd]o not merge/);
+    expect(replayText).toMatch(/[Dd]o not start the next task|[Dd]o not start task/i);
+    expect(replayText).toMatch(/[Dd]o not call orchestration tools unless the worker prompt explicitly says so/);
+
+    const cleared = sessionService.getGlobal('sess-tw-bounded');
+    expect(cleared?.replayDirectivePending).toBe(false);
+  });
+
+  test('messages.transform replays bounded assignment for custom forager derivatives after compaction', async () => {
+    const sessionService = new SessionService(testRoot);
+    sessionService.trackGlobal('sess-custom-forager', {
+      agent: 'my-custom-worker',
+      baseAgent: 'forager-worker',
+      sessionKind: 'task-worker',
+      featureName: 'feature-b',
+      taskFolder: '02-second-task',
+      workerPromptPath: '.hive/features/feature-b/tasks/02-second-task/worker-prompt.md',
+      replayDirectivePending: true,
+    } as any);
+
+    const output = {
+      messages: [
+        {
+          info: {
+            id: 'msg-summary',
+            sessionID: 'sess-custom-forager',
+            role: 'assistant',
+            time: { created: Date.now() },
+            system: [],
+            modelID: 'm',
+            providerID: 'p',
+            mode: 'compaction',
+            path: { cwd: testRoot, root: testRoot },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            summary: true,
+          } as Message,
+          parts: [{ id: 'prt-summary', sessionID: 'sess-custom-forager', messageID: 'msg-summary', type: 'text', text: 'Summary text' } as Part],
+        },
+        {
+          info: {
+            id: 'msg-continue',
+            sessionID: 'sess-custom-forager',
+            role: 'user',
+            time: { created: Date.now() },
+          } as Message,
+          parts: [{ id: 'prt-continue', sessionID: 'sess-custom-forager', messageID: 'msg-continue', type: 'text', text: 'Continue if you have next steps.', synthetic: true } as Part],
+        },
+      ],
+    };
+
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+
+    expect(output.messages).toHaveLength(3);
+    const replay = output.messages[2];
+    expect(replay.info.role).toBe('user');
+    const replayText = (replay.parts[0] as any).text;
+    expect(replayText).toContain('Forager');
+    expect(replayText).toContain('feature-b');
+    expect(replayText).toContain('02-second-task');
+    expect(replayText).toContain('.hive/features/feature-b/tasks/02-second-task/worker-prompt.md');
+    expect(replayText).toMatch(/Resume only this task|Finish only the current task assignment/);
+    expect(replayText).toMatch(/[Dd]o not merge/);
+    expect(replayText).toMatch(/[Dd]o not call orchestration tools unless the worker prompt explicitly says so/);
+
+    const cleared = sessionService.getGlobal('sess-custom-forager');
+    expect(cleared?.replayDirectivePending).toBe(false);
+  });
+
+  test('messages.transform clears replay pending without injection when task-worker metadata is incomplete', async () => {
+    const sessionService = new SessionService(testRoot);
+    sessionService.trackGlobal('sess-tw-incomplete', {
+      agent: 'forager-worker',
+      sessionKind: 'task-worker',
       replayDirectivePending: true,
     } as any);
 
@@ -309,7 +452,7 @@ describe('experimental.session.compacting hook — session-aware re-anchoring', 
         {
           info: {
             id: 'msg-worker',
-            sessionID: 'sess-worker-replay',
+            sessionID: 'sess-tw-incomplete',
             role: 'assistant',
             time: { created: Date.now() },
             system: [],
@@ -329,7 +472,7 @@ describe('experimental.session.compacting hook — session-aware re-anchoring', 
     await hooks['experimental.chat.messages.transform']?.({}, output as any);
 
     expect(output.messages).toHaveLength(1);
-    const session = sessionService.getGlobal('sess-worker-replay');
+    const session = sessionService.getGlobal('sess-tw-incomplete');
     expect(session?.replayDirectivePending).toBe(false);
   });
 
