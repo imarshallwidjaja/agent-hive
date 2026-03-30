@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -11,6 +12,14 @@ function readJson(relativePath) {
 
 function readText(relativePath) {
   return fs.readFileSync(path.join(workspaceRoot, relativePath), 'utf8');
+}
+
+function run(command, args, cwd = workspaceRoot) {
+  return execFileSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 }
 
 describe('release 1.3.5 contract on main', () => {
@@ -109,5 +118,16 @@ describe('release 1.3.5 contract on main', () => {
     assert.match(releasing, /bun run release:check/);
     assert.match(releasing, /workflow_dispatch/i);
     assert.match(releasing, /tags? matching `v\*`|tagged releases only/i);
+  });
+
+  it('keeps the tracked VS Code bundle stable across rebuilds', () => {
+    const bundlePath = path.join(workspaceRoot, 'packages', 'vscode-hive', 'dist', 'extension.js');
+    const before = fs.readFileSync(bundlePath, 'utf8');
+
+    run('bun', ['run', 'build'], path.join(workspaceRoot, 'packages', 'vscode-hive'));
+
+    const after = fs.readFileSync(bundlePath, 'utf8');
+
+    assert.equal(after, before, 'packages/vscode-hive/dist/extension.js should not change after rebuild');
   });
 });
