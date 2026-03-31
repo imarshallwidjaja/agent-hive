@@ -2089,6 +2089,100 @@ Do it
     expect(workerSession.workerPromptPath).toContain("worker-prompt.md");
   });
 
+  it("preserves manual-task structured spec at worktree launch instead of overwriting", async () => {
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_manual_spec_preservation");
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "manual-spec-feature" },
+      toolContext
+    );
+
+    const plan = `# Manual Spec Feature
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes, this regression test validates that manual tasks with structured metadata preserve their spec.md at worktree launch instead of being overwritten with a plan-section fallback.
+
+## Tasks
+
+### 1. First Task
+
+**Depends on**: none
+
+Do the first thing.
+`;
+
+    await hooks.tool!.hive_plan_write.execute(
+      { content: plan, feature: "manual-spec-feature" },
+      toolContext
+    );
+    await hooks.tool!.hive_plan_approve.execute(
+      { feature: "manual-spec-feature" },
+      toolContext
+    );
+    await hooks.tool!.hive_tasks_sync.execute(
+      { feature: "manual-spec-feature" },
+      toolContext
+    );
+
+    await hooks.tool!.hive_task_create.execute(
+      {
+        name: "review-fix",
+        feature: "manual-spec-feature",
+        description: "Fix routing issue found in review",
+        goal: "Correct agent routing for swarm dispatch",
+        acceptanceCriteria: ["swarm dispatches to correct agent", "existing tests pass"],
+        references: ["packages/opencode-hive/src/agents/swarm.ts:107-111"],
+        files: ["packages/opencode-hive/src/agents/swarm.ts"],
+        reason: "Required by Hygienic review",
+        source: "review",
+      },
+      toolContext
+    );
+
+    const specPathBefore = path.join(
+      testRoot,
+      ".hive",
+      "features",
+      "01_manual-spec-feature",
+      "tasks",
+      "02-review-fix",
+      "spec.md"
+    );
+    const specBefore = fs.readFileSync(specPathBefore, "utf-8");
+    expect(specBefore).toContain("Correct agent routing for swarm dispatch");
+    expect(specBefore).toContain("Fix routing issue found in review");
+
+    const raw = await hooks.tool!.hive_worktree_start.execute(
+      { feature: "manual-spec-feature", task: "02-review-fix" },
+      toolContext
+    );
+
+    const result = JSON.parse(raw as string) as {
+      success?: boolean;
+      worktreePath?: string;
+    };
+    expect(result.success).toBe(true);
+    expect(result.worktreePath).toBeDefined();
+
+    const specAfter = fs.readFileSync(specPathBefore, "utf-8");
+    expect(specAfter).toContain("Correct agent routing for swarm dispatch");
+    expect(specAfter).toContain("Fix routing issue found in review");
+    expect(specAfter).toContain("swarm dispatches to correct agent");
+    expect(specAfter).not.toContain("_No plan section available._");
+  });
+
   it("worker chat.message in task worktree binds featureName, taskFolder, and workerPromptPath before commit", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
