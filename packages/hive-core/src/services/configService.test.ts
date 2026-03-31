@@ -148,6 +148,35 @@ describe("ConfigService defaults", () => {
     expect(service.get().agentMode).toBe('unified');
   });
 
+  it("does not fall back to legacy project config when the new project config is invalid", () => {
+    const service = new ConfigService('/tmp/project-local-config-test');
+    const newProjectConfigPath = path.join('/tmp/project-local-config-test', '.hive', 'agent-hive.json');
+    const legacyProjectConfigPath = path.join('/tmp/project-local-config-test', '.opencode', 'agent_hive.json');
+
+    fs.mkdirSync(path.dirname(newProjectConfigPath), { recursive: true });
+    fs.writeFileSync(newProjectConfigPath, JSON.stringify(['invalid-config-shape']));
+
+    fs.mkdirSync(path.dirname(legacyProjectConfigPath), { recursive: true });
+    fs.writeFileSync(
+      legacyProjectConfigPath,
+      JSON.stringify({
+        agentMode: 'dedicated',
+      }),
+    );
+
+    const config = service.get();
+
+    expect(config).toEqual(DEFAULT_HIVE_CONFIG);
+    expect(service.getActiveReadSourceType()).toBe('global');
+    expect(service.getLastFallbackWarning()).toEqual({
+      message: `Failed to read project config at ${newProjectConfigPath}; global config at ${service.getPath()} is missing; using defaults`,
+      sourceType: 'project',
+      sourcePath: newProjectConfigPath,
+      fallbackType: 'defaults',
+      reason: 'validation_error',
+    });
+  });
+
   it("deep-merges agent overrides with defaults", () => {
     const service = new ConfigService();
     const configPath = service.getPath();

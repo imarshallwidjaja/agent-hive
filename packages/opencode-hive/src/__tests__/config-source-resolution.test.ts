@@ -60,7 +60,7 @@ describe('plugin config source resolution', () => {
   });
 
   it('warns once and exposes fallback warning in hive_status when project config is invalid', async () => {
-    const projectConfigPath = path.join(testRoot, '.opencode', 'agent_hive.json');
+    const projectConfigPath = path.join(testRoot, '.hive', 'agent-hive.json');
     const globalConfigPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
     const warningMessage = `Failed to read project config at ${projectConfigPath}; using global config at ${globalConfigPath}`;
 
