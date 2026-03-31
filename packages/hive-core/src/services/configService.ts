@@ -66,26 +66,30 @@ export class ConfigService {
       return this.cachedConfig;
     }
 
-    const projectConfigCandidates = [this.projectConfigPath, this.legacyProjectConfigPath].filter(
-      (candidate): candidate is string => !!candidate,
-    );
-
-    for (const projectConfigPath of projectConfigCandidates) {
-      if (!fs.existsSync(projectConfigPath)) {
-        continue;
-      }
-
-      const projectStored = this.readStoredConfig(projectConfigPath);
+    if (this.projectConfigPath && fs.existsSync(this.projectConfigPath)) {
+      const projectStored = this.readStoredConfig(this.projectConfigPath);
       if (projectStored.ok) {
         this.activeReadSourceType = 'project';
-        this.activeReadPath = projectConfigPath;
+        this.activeReadPath = this.projectConfigPath;
         this.lastFallbackWarning = null;
         this.cachedConfig = this.mergeWithDefaults(projectStored.value);
         return this.cachedConfig;
       }
 
       const fallbackReason = 'reason' in projectStored ? projectStored.reason : 'read_error';
-      this.lastFallbackWarning = this.createProjectFallbackWarning(projectConfigPath, fallbackReason);
+      this.lastFallbackWarning = this.createProjectFallbackWarning(this.projectConfigPath, fallbackReason);
+    } else if (this.legacyProjectConfigPath && fs.existsSync(this.legacyProjectConfigPath)) {
+      const projectStored = this.readStoredConfig(this.legacyProjectConfigPath);
+      if (projectStored.ok) {
+        this.activeReadSourceType = 'project';
+        this.activeReadPath = this.legacyProjectConfigPath;
+        this.lastFallbackWarning = null;
+        this.cachedConfig = this.mergeWithDefaults(projectStored.value);
+        return this.cachedConfig;
+      }
+
+      const fallbackReason = 'reason' in projectStored ? projectStored.reason : 'read_error';
+      this.lastFallbackWarning = this.createProjectFallbackWarning(this.legacyProjectConfigPath, fallbackReason);
     }
 
     if (!this.projectConfigPath && !this.legacyProjectConfigPath) {
