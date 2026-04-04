@@ -158,4 +158,44 @@ describe('computeRunnableAndBlocked', () => {
     expect(result.runnable).toEqual([]);
     expect(result.blocked).toEqual({});
   });
+
+  it('manual task with explicit dependsOn: [] is immediately runnable', () => {
+    const tasks: TaskWithDeps[] = [
+      { folder: '01-task-a', status: 'pending', dependsOn: undefined },
+      { folder: '02-task-b', status: 'pending', dependsOn: undefined },
+      { folder: '03-manual-fix', status: 'pending', dependsOn: [] },
+    ];
+
+    const result = computeRunnableAndBlocked(tasks);
+
+    expect(result.runnable).toContain('01-task-a');
+    expect(result.runnable).toContain('03-manual-fix');
+    expect(result.runnable).not.toContain('02-task-b');
+  });
+
+  it('manual task with explicit dependsOn blocks until deps are done', () => {
+    const tasks: TaskWithDeps[] = [
+      { folder: '01-task-a', status: 'pending', dependsOn: [] },
+      { folder: '05-manual-fix', status: 'pending', dependsOn: ['01-task-a'] },
+    ];
+
+    const result = computeRunnableAndBlocked(tasks);
+
+    expect(result.runnable).toEqual(['01-task-a']);
+    expect(result.blocked).toEqual({
+      '05-manual-fix': ['01-task-a'],
+    });
+  });
+
+  it('manual task with explicit dependsOn becomes runnable when deps done', () => {
+    const tasks: TaskWithDeps[] = [
+      { folder: '01-task-a', status: 'done', dependsOn: [] },
+      { folder: '05-manual-fix', status: 'pending', dependsOn: ['01-task-a'] },
+    ];
+
+    const result = computeRunnableAndBlocked(tasks);
+
+    expect(result.runnable).toEqual(['05-manual-fix']);
+    expect(result.blocked).toEqual({});
+  });
 });

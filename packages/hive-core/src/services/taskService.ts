@@ -23,7 +23,7 @@ import {
   fileExists,
   LockOptions,
 } from '../utils/paths.js';
-import { TaskStatus, TaskStatusType, TaskOrigin, TasksSyncResult, TaskInfo, Subtask, SubtaskType, SubtaskStatus, WorkerSession } from '../types.js';
+import { TaskStatus, TaskStatusType, TaskOrigin, TasksSyncResult, TaskInfo, Subtask, SubtaskType, SubtaskStatus, WorkerSession, ManualTaskMetadata } from '../types.js';
 
 /** Current schema version for TaskStatus */
 export const TASK_STATUS_SCHEMA_VERSION = 1;
@@ -50,10 +50,18 @@ interface ParsedTask {
   dependsOnNumbers: number[] | null;
 }
 
+export interface SyncOptions {
+  refreshPending?: boolean;
+}
+
+const EXECUTION_HISTORY_STATUSES: Set<TaskStatusType> = new Set([
+  'in_progress', 'done', 'blocked', 'failed', 'partial',
+]);
+
 export class TaskService {
   constructor(private projectRoot: string) {}
 
-  sync(featureName: string): TasksSyncResult {
+  sync(featureName: string, options?: SyncOptions): TasksSyncResult {
     const planPath = getPlanPath(this.projectRoot, featureName);
     const planContent = readText(planPath);
     
@@ -63,7 +71,6 @@ export class TaskService {
 
     const planTasks = this.parseTasksFromPlan(planContent);
     
-    // Validate dependency graph before proceeding
     this.validateDependencyGraph(planTasks, featureName);
     
     const existingTasks = this.list(featureName);
@@ -76,6 +83,7 @@ export class TaskService {
     };
 
     const existingByName = new Map(existingTasks.map(t => [t.folder, t]));
+    const refreshPending = options?.refreshPending === true;
 
     for (const existing of existingTasks) {
       if (existing.origin === 'manual') {
@@ -83,7 +91,7 @@ export class TaskService {
         continue;
       }
 
-      if (existing.status === 'done' || existing.status === 'in_progress') {
+      if (EXECUTION_HISTORY_STATUSES.has(existing.status)) {
         result.kept.push(existing.folder);
         continue;
       }
@@ -98,6 +106,12 @@ export class TaskService {
       if (!stillInPlan) {
         this.deleteTask(featureName, existing.folder);
         result.removed.push(existing.folder);
+      } else if (refreshPending && existing.status === 'pending') {
+        const planTask = planTasks.find(p => p.folder === existing.folder);
+        if (planTask) {
+          this.refreshPendingTask(featureName, planTask, planTasks, planContent);
+        }
+        result.kept.push(existing.folder);
       } else {
         result.kept.push(existing.folder);
       }
@@ -118,24 +132,48 @@ export class TaskService {
    * Folder format: "01-task-name", "02-task-name", etc.
    * Index ensures alphabetical sort = chronological order.
    */
-  create(featureName: string, name: string, order?: number): string {
+  create(featureName: string, name: string, order?: number, metadata?: ManualTaskMetadata): string {
     const tasksPath = getTasksPath(this.projectRoot, featureName);
     const existingFolders = this.listFolders(featureName);
     
-    // Auto-increment: finds max existing index + 1
-    const nextOrder = order ?? this.getNextOrder(existingFolders);
-    // Zero-pad to 2 digits for correct alphabetical sorting (01, 02, ... 99)
-    const folder = `${String(nextOrder).padStart(2, '0')}-${name}`;
-    const taskPath = getTaskPath(this.projectRoot, featureName, folder);
+    if (metadata?.source === 'review' && metadata.dependsOn && metadata.dependsOn.length > 0) {
+      throw new Error(
+        `Review-sourced manual tasks cannot have explicit dependsOn. ` +
+        `Cross-task dependencies require a plan amendment. ` +
+        `Either remove the dependsOn field or amend the plan to express the dependency.`
+      );
+    }
 
+    const nextOrder = order ?? this.getNextOrder(existingFolders);
+    const folder = `${String(nextOrder).padStart(2, '0')}-${name}`;
+
+    const collision = existingFolders.find(f => {
+      const match = f.match(/^(\d+)-/);
+      return match && parseInt(match[1], 10) === nextOrder;
+    });
+    if (collision) {
+      throw new Error(
+        `Task folder collision: order ${nextOrder} already exists as "${collision}". ` +
+        `Choose a different order number or omit to auto-increment.`
+      );
+    }
+
+    const taskPath = getTaskPath(this.projectRoot, featureName, folder);
     ensureDir(taskPath);
+
+    const dependsOn = metadata?.dependsOn ?? [];
 
     const status: TaskStatus = {
       status: 'pending',
       origin: 'manual',
       planTitle: name,
+      dependsOn,
+      ...(metadata ? { metadata: { ...metadata, dependsOn: undefined } } : {}),
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, folder), status);
+
+    const specContent = this.buildManualTaskSpec(featureName, folder, name, dependsOn, metadata);
+    writeText(getTaskSpecPath(this.projectRoot, featureName, folder), specContent);
 
     return folder;
   }
@@ -154,6 +192,31 @@ export class TaskService {
       dependsOn,
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
+
+    const specContent = this.buildSpecContent({
+      featureName,
+      task,
+      dependsOn,
+      allTasks,
+      planContent,
+    });
+
+    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), specContent);
+  }
+
+  private refreshPendingTask(featureName: string, task: ParsedTask, allTasks: ParsedTask[], planContent: string): void {
+    const dependsOn = this.resolveDependencies(task, allTasks);
+
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
+    const current = readJson<TaskStatus>(statusPath);
+    if (current) {
+      const updated: TaskStatus = {
+        ...current,
+        planTitle: task.name,
+        dependsOn,
+      };
+      writeJson(statusPath, updated);
+    }
 
     const specContent = this.buildSpecContent({
       featureName,
@@ -416,6 +479,11 @@ export class TaskService {
     const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
     writeText(specPath, content);
     return specPath;
+  }
+
+  readSpec(featureName: string, taskFolder: string): string | null {
+    const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
+    return readText(specPath);
   }
 
   /**
@@ -819,6 +887,78 @@ export class TaskService {
     const folders = this.listSubtaskFolders(featureName, taskFolder);
     const subtaskOrder = subtaskId.split('.')[1];
     return folders.find(f => f.startsWith(`${subtaskOrder}-`)) || null;
+  }
+
+  private buildManualTaskSpec(
+    featureName: string,
+    folder: string,
+    name: string,
+    dependsOn: string[],
+    metadata?: ManualTaskMetadata,
+  ): string {
+    const lines: string[] = [
+      `# Task: ${folder}`,
+      '',
+      `## Feature: ${featureName}`,
+      '',
+      '## Dependencies',
+      '',
+    ];
+
+    if (dependsOn.length > 0) {
+      for (const dep of dependsOn) {
+        lines.push(`- ${dep}`);
+      }
+    } else {
+      lines.push('_None_');
+    }
+
+    lines.push('');
+
+    if (metadata?.goal) {
+      lines.push('## Goal', '', metadata.goal, '');
+    }
+
+    if (metadata?.description) {
+      lines.push('## Description', '', metadata.description, '');
+    }
+
+    if (metadata?.acceptanceCriteria && metadata.acceptanceCriteria.length > 0) {
+      lines.push('## Acceptance Criteria', '');
+      for (const criterion of metadata.acceptanceCriteria) {
+        lines.push(`- ${criterion}`);
+      }
+      lines.push('');
+    }
+
+    if (metadata?.files && metadata.files.length > 0) {
+      lines.push('## Files', '');
+      for (const file of metadata.files) {
+        lines.push(`- ${file}`);
+      }
+      lines.push('');
+    }
+
+    if (metadata?.references && metadata.references.length > 0) {
+      lines.push('## References', '');
+      for (const ref of metadata.references) {
+        lines.push(`- ${ref}`);
+      }
+      lines.push('');
+    }
+
+    if (metadata?.source || metadata?.reason) {
+      lines.push('## Origin', '');
+      if (metadata?.source) {
+        lines.push(`**Source:** ${metadata.source}`);
+      }
+      if (metadata?.reason) {
+        lines.push(`**Reason:** ${metadata.reason}`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
   }
 
   private slugify(name: string): string {

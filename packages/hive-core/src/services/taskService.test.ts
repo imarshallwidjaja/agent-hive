@@ -1264,4 +1264,347 @@ Align documentation wording.
       expect(specContent).not.toContain("## Task Type");
     });
   });
+
+  describe("create() - manual task hardening", () => {
+    it("writes dependsOn: [] by default for manual tasks", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      const folder = service.create(featureName, "ad-hoc-fix");
+
+      const status = service.getRawStatus(featureName, folder);
+      expect(status).not.toBeNull();
+      expect(status?.origin).toBe("manual");
+      expect(status?.dependsOn).toEqual([]);
+    });
+
+    it("creates a spec.md during manual-task creation", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      const folder = service.create(featureName, "ad-hoc-fix");
+
+      const specPath = path.join(
+        TEST_DIR,
+        ".hive",
+        "features",
+        featureName,
+        "tasks",
+        folder,
+        "spec.md"
+      );
+      expect(fs.existsSync(specPath)).toBe(true);
+      const specContent = fs.readFileSync(specPath, "utf-8");
+      expect(specContent).toContain("# Task:");
+      expect(specContent).toContain("## Dependencies");
+      expect(specContent).toContain("_None_");
+    });
+
+    it("accepts structured metadata and persists it in status.json", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      const folder = service.create(featureName, "review-fix", undefined, {
+        description: "Fix routing issue found in review",
+        goal: "Correct agent routing for swarm dispatch",
+        acceptanceCriteria: ["swarm dispatches to correct agent", "existing tests pass"],
+        references: ["packages/opencode-hive/src/agents/swarm.ts:107-111"],
+        files: ["packages/opencode-hive/src/agents/swarm.ts"],
+        reason: "Required by Hygienic review",
+        source: "review",
+      });
+
+      const status = service.getRawStatus(featureName, folder);
+      expect(status?.origin).toBe("manual");
+      expect(status?.dependsOn).toEqual([]);
+      expect((status as any).metadata?.description).toBe("Fix routing issue found in review");
+      expect((status as any).metadata?.goal).toBe("Correct agent routing for swarm dispatch");
+      expect((status as any).metadata?.acceptanceCriteria).toEqual([
+        "swarm dispatches to correct agent",
+        "existing tests pass",
+      ]);
+      expect((status as any).metadata?.source).toBe("review");
+    });
+
+    it("includes metadata in generated spec.md", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      const folder = service.create(featureName, "review-fix", undefined, {
+        description: "Fix routing issue",
+        goal: "Correct agent routing",
+        acceptanceCriteria: ["tests pass"],
+        references: ["packages/opencode-hive/src/agents/swarm.ts:107-111"],
+        files: ["packages/opencode-hive/src/agents/swarm.ts"],
+        reason: "Hygienic review",
+        source: "review",
+      });
+
+      const specPath = path.join(
+        TEST_DIR,
+        ".hive",
+        "features",
+        featureName,
+        "tasks",
+        folder,
+        "spec.md"
+      );
+      const specContent = fs.readFileSync(specPath, "utf-8");
+      expect(specContent).toContain("Fix routing issue");
+      expect(specContent).toContain("Correct agent routing");
+      expect(specContent).toContain("tests pass");
+      expect(specContent).toContain("swarm.ts");
+    });
+
+    it("accepts explicit dependsOn for manual tasks", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-setup", { status: "done", origin: "plan", dependsOn: [] });
+
+      const folder = service.create(featureName, "follow-up", undefined, {
+        dependsOn: ["01-setup"],
+      });
+
+      const status = service.getRawStatus(featureName, folder);
+      expect(status?.dependsOn).toEqual(["01-setup"]);
+    });
+
+    it("rejects order collision with existing task folder", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "05-existing-task", { status: "pending", origin: "plan", dependsOn: [] });
+
+      expect(() => service.create(featureName, "new-task", 5)).toThrow(/collision|already exists/i);
+    });
+
+    it("rejects review-sourced manual tasks with explicit dependsOn", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-setup", { status: "done", origin: "plan", dependsOn: [] });
+
+      expect(() =>
+        service.create(featureName, "review-fix", undefined, {
+          source: "review",
+          dependsOn: ["01-setup"],
+          description: "Fix found in review",
+        })
+      ).toThrow(/review.*dependsOn|dependsOn.*review|plan amendment/i);
+    });
+
+    it("allows review-sourced manual tasks without dependsOn", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      const folder = service.create(featureName, "review-fix", undefined, {
+        source: "review",
+        description: "Fix found in review",
+      });
+
+      const status = service.getRawStatus(featureName, folder);
+      expect(status?.origin).toBe("manual");
+      expect(status?.dependsOn).toEqual([]);
+    });
+  });
+
+  describe("readSpec", () => {
+    it("returns spec.md content for an existing task", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      const folder = service.create(featureName, "has-spec", undefined, {
+        goal: "Verify readSpec returns the structured content",
+        source: "review",
+      });
+
+      const spec = service.readSpec(featureName, folder);
+      expect(spec).not.toBeNull();
+      expect(spec).toContain("# Task:");
+      expect(spec).toContain("Verify readSpec returns the structured content");
+    });
+
+    it("returns null for a task without spec.md", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-no-spec");
+
+      const spec = service.readSpec(featureName, "01-no-spec");
+      expect(spec).toBeNull();
+    });
+  });
+
+  describe("sync() - refreshPending mode", () => {
+    it("rewrites pending plan tasks when refreshPending is true", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planV1 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
+      service.sync(featureName);
+
+      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup revised.\n\n### 2. Build\n\n**Depends on**: none\n\nBuild now independent.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+
+      const result = service.sync(featureName, { refreshPending: true });
+
+      const task2Status = service.getRawStatus(featureName, "02-build");
+      expect(task2Status?.dependsOn).toEqual([]);
+    });
+
+    it("deletes pending plan tasks removed from plan when refreshPending is true", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planV1 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Old Task\n\n**Depends on**: 1\n\nOld task.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
+      service.sync(featureName);
+
+      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+
+      const result = service.sync(featureName, { refreshPending: true });
+      expect(result.removed).toContain("02-old-task");
+
+      const oldTaskStatus = service.getRawStatus(featureName, "02-old-task");
+      expect(oldTaskStatus).toBeNull();
+    });
+
+    it("preserves manual tasks during refreshPending sync", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const plan = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
+      service.sync(featureName);
+
+      service.create(featureName, "manual-fix");
+
+      const result = service.sync(featureName, { refreshPending: true });
+      expect(result.manual).toContain("02-manual-fix");
+
+      const manualStatus = service.getRawStatus(featureName, "02-manual-fix");
+      expect(manualStatus).not.toBeNull();
+      expect(manualStatus?.origin).toBe("manual");
+    });
+
+    it("does not touch tasks with execution history during refreshPending", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const plan = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
+      service.sync(featureName);
+
+      service.update(featureName, "01-setup", { status: "done", summary: "Done" });
+
+      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup revised.\n\n### 2. Build\n\n**Depends on**: none\n\nBuild revised.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+
+      service.sync(featureName, { refreshPending: true });
+
+      const setupStatus = service.getRawStatus(featureName, "01-setup");
+      expect(setupStatus?.status).toBe("done");
+      expect(setupStatus?.summary).toBe("Done");
+    });
+
+    it("refreshes planTitle and spec.md for pending plan tasks", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planV1 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nOld description.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
+      service.sync(featureName);
+
+      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nNew description with changes.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+      service.sync(featureName, { refreshPending: true });
+
+      const specPath = path.join(featurePath, "tasks", "01-setup", "spec.md");
+      const specContent = fs.readFileSync(specPath, "utf-8");
+      expect(specContent).toContain("New description with changes");
+    });
+
+    it("preserves in_progress tasks during refreshPending", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const plan = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
+      service.sync(featureName);
+
+      service.update(featureName, "02-build", { status: "in_progress" });
+
+      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+
+      service.sync(featureName, { refreshPending: true });
+
+      const buildStatus = service.getRawStatus(featureName, "02-build");
+      expect(buildStatus).not.toBeNull();
+      expect(buildStatus?.status).toBe("in_progress");
+    });
+
+    it("preserves blocked/failed/partial tasks during refreshPending", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const plan = `# Plan\n\n### 1. TaskA\n\n**Depends on**: none\n\nA.\n\n### 2. TaskB\n\n**Depends on**: 1\n\nB.\n\n### 3. TaskC\n\n**Depends on**: 1\n\nC.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
+      service.sync(featureName);
+
+      service.update(featureName, "01-taska", { status: "blocked" });
+      service.update(featureName, "02-taskb", { status: "failed" });
+      service.update(featureName, "03-taskc", { status: "partial" });
+
+      const planV2 = `# Plan\n\n### 1. NewTask\n\n**Depends on**: none\n\nNew.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+
+      service.sync(featureName, { refreshPending: true });
+
+      expect(service.getRawStatus(featureName, "01-taska")?.status).toBe("blocked");
+      expect(service.getRawStatus(featureName, "02-taskb")?.status).toBe("failed");
+      expect(service.getRawStatus(featureName, "03-taskc")?.status).toBe("partial");
+    });
+  });
 });

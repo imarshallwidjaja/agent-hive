@@ -57,6 +57,17 @@ export interface WorkerSession {
   messageCount?: number;
 }
 
+export interface ManualTaskMetadata {
+  goal?: string;
+  description?: string;
+  acceptanceCriteria?: string[];
+  references?: string[];
+  files?: string[];
+  reason?: string;
+  source?: 'review' | 'operator' | 'ad_hoc';
+  dependsOn?: string[];
+}
+
 export interface TaskStatus {
   /** Schema version for forward compatibility (default: 1) */
   schemaVersion?: number;
@@ -78,6 +89,8 @@ export interface TaskStatus {
    * Resolved from plan.md dependency annotations during hive_tasks_sync.
    */
   dependsOn?: string[];
+  /** Structured metadata for manual tasks */
+  metadata?: ManualTaskMetadata;
 }
 
 export type ReviewDocument = 'plan' | 'overview';

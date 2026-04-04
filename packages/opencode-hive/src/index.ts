@@ -357,6 +357,24 @@ const plugin: Plugin = async (ctx) => {
     return session?.sessionKind === 'primary' || session?.sessionKind === 'subagent';
   };
 
+  const shouldUseWorkerReplay = (session: { sessionKind?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string } | undefined): boolean => {
+    return session?.sessionKind === 'task-worker'
+      && !!session.featureName
+      && !!session.taskFolder
+      && !!session.workerPromptPath;
+  };
+
+  const buildWorkerReplayText = (session: { agent?: string; baseAgent?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string }): string | null => {
+    if (!session.featureName || !session.taskFolder || !session.workerPromptPath) return null;
+    const role = 'Forager';
+    return [
+      `Post-compaction recovery: You are still the ${role} worker for task ${session.taskFolder}.`,
+      `Resume only this task. Do not merge, do not start the next task, and do not replace this assignment with a new goal.`,
+      `Do not call orchestration tools unless the worker prompt explicitly says so.`,
+      `Re-read @${session.workerPromptPath} and continue from the existing worktree state.`,
+    ].join('\n');
+  };
+
   /**
    * Check if a feature is blocked by the Beekeeper.
    * Returns the block message if blocked, null otherwise.
@@ -505,26 +523,36 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     const taskOrder = parseInt(taskInfo.folder.match(/^(\d+)/)?.[1] || '0', 10);
     const status = taskService.getRawStatus(feature, task);
     const dependsOn = status?.dependsOn ?? [];
-    const specContent = taskService.buildSpecContent({
-      featureName: feature,
-      task: {
-        folder: task,
-        name: taskInfo.planTitle ?? taskInfo.name,
-        order: taskOrder,
-        description: undefined,
-      },
-      dependsOn,
-      allTasks: allTasks.map(t => ({
-        folder: t.folder,
-        name: t.name,
-        order: parseInt(t.folder.match(/^(\d+)/)?.[1] || '0', 10),
-      })),
-      planContent: planResult?.content ?? null,
-      contextFiles,
-      completedTasks: previousTasks,
-    });
 
-    taskService.writeSpec(feature, task, specContent);
+    let specContent: string;
+    const existingManualSpec = status?.origin === 'manual'
+      ? taskService.readSpec(feature, task)
+      : null;
+
+    if (existingManualSpec) {
+      specContent = existingManualSpec;
+    } else {
+      specContent = taskService.buildSpecContent({
+        featureName: feature,
+        task: {
+          folder: task,
+          name: taskInfo.planTitle ?? taskInfo.name,
+          order: taskOrder,
+          description: undefined,
+        },
+        dependsOn,
+        allTasks: allTasks.map(t => ({
+          folder: t.folder,
+          name: t.name,
+          order: parseInt(t.folder.match(/^(\d+)/)?.[1] || '0', 10),
+        })),
+        planContent: planResult?.content ?? null,
+        contextFiles,
+        completedTasks: previousTasks,
+      });
+
+      taskService.writeSpec(feature, task, specContent);
+    }
 
     const workerPrompt = buildWorkerPrompt({
       feature,
@@ -900,11 +928,14 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
       const sessionID = input.event.properties.sessionID;
       const existing = sessionService.getGlobal(sessionID);
-      if (!existing?.directivePrompt || !shouldUseDirectiveReplay(existing)) {
+      if (existing?.directivePrompt && shouldUseDirectiveReplay(existing)) {
+        sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
         return;
       }
-
-      sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
+      if (shouldUseWorkerReplay(existing)) {
+        sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
+        return;
+      }
     },
 
     "experimental.chat.system.transform": async (
@@ -1009,10 +1040,43 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       const refreshed = sessionService.getGlobal(sessionID);
-      if (!refreshed?.replayDirectivePending || !shouldUseDirectiveReplay(refreshed)) {
-        if (refreshed?.replayDirectivePending && !shouldUseDirectiveReplay(refreshed)) {
+      if (!refreshed?.replayDirectivePending) {
+        return;
+      }
+
+      if (shouldUseWorkerReplay(refreshed)) {
+        const workerText = buildWorkerReplayText(refreshed);
+        if (!workerText) {
           sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
+          return;
         }
+
+        const now = Date.now();
+        output.messages.push({
+          info: {
+            id: `msg_replay_${sessionID}`,
+            sessionID,
+            role: 'user',
+            time: { created: now },
+          },
+          parts: [
+            {
+              id: `prt_replay_${sessionID}`,
+              sessionID,
+              messageID: `msg_replay_${sessionID}`,
+              type: 'text',
+              text: workerText,
+              synthetic: true,
+            },
+          ],
+        });
+
+        sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
+        return;
+      }
+
+      if (!shouldUseDirectiveReplay(refreshed)) {
+        sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
         return;
       }
 
@@ -1233,37 +1297,55 @@ Expand your Discovery section and try again.`;
       }),
 
       hive_tasks_sync: tool({
-        description: 'Generate tasks from approved plan',
+        description: 'Generate tasks from approved plan. When refreshPending is true, refresh pending plan tasks from current plan.md and delete removed pending tasks. Manual tasks and tasks with execution history are preserved.',
         args: {
           feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+          refreshPending: tool.schema.boolean().optional().describe('When true, refresh pending plan tasks from current plan.md (rewrite dependsOn, planTitle, spec.md) and delete pending tasks removed from plan'),
         },
-        async execute({ feature: explicitFeature }) {
+        async execute({ feature: explicitFeature, refreshPending }) {
           const feature = resolveFeature(explicitFeature);
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
           const featureData = featureService.get(feature);
           if (!featureData || featureData.status === 'planning') {
             return "Error: Plan must be approved first";
           }
-          const result = taskService.sync(feature);
+          const result = taskService.sync(feature, { refreshPending });
           if (featureData.status === 'approved') {
             featureService.updateStatus(feature, 'executing');
           }
-          return `Tasks synced: ${result.created.length} created, ${result.removed.length} removed, ${result.kept.length} kept`;
+          return `Tasks synced: ${result.created.length} created, ${result.removed.length} removed, ${result.kept.length} kept, ${result.manual.length} manual`;
         },
       }),
 
       hive_task_create: tool({
-        description: 'Create manual task (not from plan)',
+        description: 'Create manual task (not from plan). Manual tasks always have explicit dependsOn (default: []). Provide structured metadata for useful spec.md and worker prompt.',
         args: {
           name: tool.schema.string().describe('Task name'),
           order: tool.schema.number().optional().describe('Task order'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+          description: tool.schema.string().optional().describe('What the worker needs to achieve'),
+          goal: tool.schema.string().optional().describe('Why this task exists and what done means'),
+          acceptanceCriteria: tool.schema.array(tool.schema.string()).optional().describe('Specific observable outcomes'),
+          references: tool.schema.array(tool.schema.string()).optional().describe('File paths or line ranges relevant to this task'),
+          files: tool.schema.array(tool.schema.string()).optional().describe('Files likely to be modified'),
+          dependsOn: tool.schema.array(tool.schema.string()).optional().describe('Task folder names this task depends on (default: [] for no dependencies)'),
+          reason: tool.schema.string().optional().describe('Why this task was created'),
+          source: tool.schema.string().optional().describe('Origin: review, operator, or ad_hoc'),
         },
-        async execute({ name, order, feature: explicitFeature }) {
+        async execute({ name, order, feature: explicitFeature, description, goal, acceptanceCriteria, references, files, dependsOn, reason, source }) {
           const feature = resolveFeature(explicitFeature);
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
-          const folder = taskService.create(feature, name, order);
-          return `Manual task created: ${folder}\nReminder: start work with hive_worktree_start to use its worktree, and ensure any subagents work in that worktree too.`;
+          const metadata: Record<string, unknown> = {};
+          if (description) metadata.description = description;
+          if (goal) metadata.goal = goal;
+          if (acceptanceCriteria) metadata.acceptanceCriteria = acceptanceCriteria;
+          if (references) metadata.references = references;
+          if (files) metadata.files = files;
+          if (dependsOn) metadata.dependsOn = dependsOn;
+          if (reason) metadata.reason = reason;
+          if (source) metadata.source = source;
+          const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata as any : undefined);
+          return `Manual task created: ${folder}\nDependencies: [${(dependsOn ?? []).join(', ')}]\nReminder: start work with hive_worktree_start to use its worktree, and ensure any subagents work in that worktree too.`;
         },
       }),
 

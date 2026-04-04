@@ -1,4 +1,5 @@
 import { TaskService, TaskStatusType } from 'hive-core';
+import type { ManualTaskMetadata } from 'hive-core';
 import type { ToolRegistration } from './base';
 import { createToolResult } from './base';
 
@@ -9,7 +10,7 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
     {
       name: 'hive_tasks_sync',
       displayName: 'Sync Hive Tasks',
-      modelDescription: 'Generate tasks from approved plan.md by parsing ### numbered headers. Creates task folders with status.json. Returns summary of created/removed/kept tasks. Use after hive_plan_approve.',
+      modelDescription: 'Generate tasks from approved plan.md by parsing ### numbered headers. Creates task folders with status.json. When refreshPending is true, rewrites pending plan tasks from current plan (updates dependsOn, planTitle, spec.md) and deletes pending tasks removed from plan. Preserves manual tasks and tasks with execution history. Returns summary of created/removed/kept tasks.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -17,12 +18,16 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
             type: 'string',
             description: 'Feature name',
           },
+          refreshPending: {
+            type: 'boolean',
+            description: 'When true, refresh pending plan tasks from current plan.md (rewrite dependsOn, planTitle, spec.md) and delete pending tasks removed from plan. Manual tasks and tasks with execution history are preserved.',
+          },
         },
         required: ['feature'],
       },
       invoke: async (input, _token) => {
-        const { feature } = input as { feature: string };
-        const result = taskService.sync(feature);
+        const { feature, refreshPending } = input as { feature: string; refreshPending?: boolean };
+        const result = taskService.sync(feature, { refreshPending });
         return JSON.stringify({
           created: result.created.length,
           removed: result.removed.length,
@@ -30,9 +35,9 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
           manual: result.manual.length,
           message: `${result.created.length} tasks created, ${result.removed.length} removed, ${result.kept.length} kept, ${result.manual.length} manual`,
           hints: [
-            'Use hive_worktree_start to begin work on a task.',
-            'Tasks should be executed in order unless explicitly parallelizable.',
-            'Read context files before starting implementation.',
+            'Use hive_worktree_start to begin work on a runnable task.',
+            'Check task dependencies with hive_status to find runnable tasks.',
+            'A task is runnable when all its dependsOn tasks have status done.',
             'Update via hive_task_update when work progresses.'
           ]
         });
@@ -41,7 +46,7 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
     {
       name: 'hive_task_create',
       displayName: 'Create Manual Task',
-      modelDescription: 'Create a task manually, not from the plan. Use for ad-hoc work or tasks discovered during execution.',
+      modelDescription: 'Create a task manually, not from the plan. Use for ad-hoc work or tasks discovered during execution. Manual tasks always have explicit dependsOn (default: []) to avoid accidental implicit sequential dependencies. Provide structured metadata for a useful spec.md and worker prompt.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -57,13 +62,71 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
             type: 'number',
             description: 'Optional order number for the task',
           },
+          description: {
+            type: 'string',
+            description: 'What the worker needs to achieve',
+          },
+          goal: {
+            type: 'string',
+            description: 'Why this task exists and what done means',
+          },
+          acceptanceCriteria: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Specific observable outcomes',
+          },
+          references: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'File paths or line ranges relevant to this task',
+          },
+          files: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Files likely to be modified',
+          },
+          dependsOn: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Task folder names this task depends on (default: [] for no dependencies)',
+          },
+          reason: {
+            type: 'string',
+            description: 'Why this task was created (e.g., "Required by Hygienic review")',
+          },
+          source: {
+            type: 'string',
+            enum: ['review', 'operator', 'ad_hoc'],
+            description: 'Origin of this task',
+          },
         },
         required: ['feature', 'name'],
       },
       invoke: async (input, _token) => {
-        const { feature, name, order } = input as { feature: string; name: string; order?: number };
-        const folder = taskService.create(feature, name, order);
-        return `Created task "${folder}" with status: pending\nReminder: run hive_worktree_start to work in its worktree, and ensure any subagents work in that worktree too.`;
+        const { feature, name, order, ...metadataFields } = input as {
+          feature: string;
+          name: string;
+          order?: number;
+          description?: string;
+          goal?: string;
+          acceptanceCriteria?: string[];
+          references?: string[];
+          files?: string[];
+          dependsOn?: string[];
+          reason?: string;
+          source?: 'review' | 'operator' | 'ad_hoc';
+        };
+        const metadata: ManualTaskMetadata = {};
+        if (metadataFields.description) metadata.description = metadataFields.description;
+        if (metadataFields.goal) metadata.goal = metadataFields.goal;
+        if (metadataFields.acceptanceCriteria) metadata.acceptanceCriteria = metadataFields.acceptanceCriteria;
+        if (metadataFields.references) metadata.references = metadataFields.references;
+        if (metadataFields.files) metadata.files = metadataFields.files;
+        if (metadataFields.dependsOn) metadata.dependsOn = metadataFields.dependsOn;
+        if (metadataFields.reason) metadata.reason = metadataFields.reason;
+        if (metadataFields.source) metadata.source = metadataFields.source;
+        const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata : undefined);
+        return `Created task "${folder}" with status: pending, dependsOn: [${(metadata.dependsOn ?? []).join(', ')}]\nReminder: run hive_worktree_start to work in its worktree, and ensure any subagents work in that worktree too.`;
       },
     },
     {
