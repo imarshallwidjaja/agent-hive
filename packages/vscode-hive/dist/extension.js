@@ -738,7 +738,7 @@ var vscode6 = __toESM(require("vscode"));
 var fs15 = __toESM(require("fs"));
 var path15 = __toESM(require("path"));
 
-// ../../../../../../packages/hive-core/dist/index.js
+// ../hive-core/dist/index.js
 var import_node_module = require("node:module");
 var path = __toESM(require("path"), 1);
 var fs = __toESM(require("fs"), 1);
@@ -2217,12 +2217,19 @@ var PlanService = class {
   }
 };
 var TASK_STATUS_SCHEMA_VERSION = 1;
+var EXECUTION_HISTORY_STATUSES = /* @__PURE__ */ new Set([
+  "in_progress",
+  "done",
+  "blocked",
+  "failed",
+  "partial"
+]);
 var TaskService = class {
   projectRoot;
   constructor(projectRoot) {
     this.projectRoot = projectRoot;
   }
-  sync(featureName) {
+  sync(featureName, options) {
     const planPath = getPlanPath(this.projectRoot, featureName);
     const planContent = readText(planPath);
     if (!planContent) {
@@ -2238,12 +2245,13 @@ var TaskService = class {
       manual: []
     };
     const existingByName = new Map(existingTasks.map((t) => [t.folder, t]));
+    const refreshPending = options?.refreshPending === true;
     for (const existing of existingTasks) {
       if (existing.origin === "manual") {
         result.manual.push(existing.folder);
         continue;
       }
-      if (existing.status === "done" || existing.status === "in_progress") {
+      if (EXECUTION_HISTORY_STATUSES.has(existing.status)) {
         result.kept.push(existing.folder);
         continue;
       }
@@ -2256,6 +2264,12 @@ var TaskService = class {
       if (!stillInPlan) {
         this.deleteTask(featureName, existing.folder);
         result.removed.push(existing.folder);
+      } else if (refreshPending && existing.status === "pending") {
+        const planTask = planTasks.find((p) => p.folder === existing.folder);
+        if (planTask) {
+          this.refreshPendingTask(featureName, planTask, planTasks, planContent);
+        }
+        result.kept.push(existing.folder);
       } else {
         result.kept.push(existing.folder);
       }
@@ -2268,19 +2282,34 @@ var TaskService = class {
     }
     return result;
   }
-  create(featureName, name, order) {
+  create(featureName, name, order, metadata) {
     const tasksPath = getTasksPath(this.projectRoot, featureName);
     const existingFolders = this.listFolders(featureName);
+    if (metadata?.source === "review" && metadata.dependsOn && metadata.dependsOn.length > 0) {
+      throw new Error(`Review-sourced manual tasks cannot have explicit dependsOn. Cross-task dependencies require a plan amendment. Either remove the dependsOn field or amend the plan to express the dependency.`);
+    }
     const nextOrder = order ?? this.getNextOrder(existingFolders);
     const folder = `${String(nextOrder).padStart(2, "0")}-${name}`;
+    const collision = existingFolders.find((f) => {
+      const match = f.match(/^(\d+)-/);
+      return match && parseInt(match[1], 10) === nextOrder;
+    });
+    if (collision) {
+      throw new Error(`Task folder collision: order ${nextOrder} already exists as "${collision}". Choose a different order number or omit to auto-increment.`);
+    }
     const taskPath = getTaskPath(this.projectRoot, featureName, folder);
     ensureDir(taskPath);
+    const dependsOn = metadata?.dependsOn ?? [];
     const status = {
       status: "pending",
       origin: "manual",
-      planTitle: name
+      planTitle: name,
+      dependsOn,
+      ...metadata ? { metadata: { ...metadata, dependsOn: void 0 } } : {}
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, folder), status);
+    const specContent = this.buildManualTaskSpec(featureName, folder, name, dependsOn, metadata);
+    writeText(getTaskSpecPath(this.projectRoot, featureName, folder), specContent);
     return folder;
   }
   createFromPlan(featureName, task, allTasks, planContent) {
@@ -2294,6 +2323,27 @@ var TaskService = class {
       dependsOn
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
+    const specContent = this.buildSpecContent({
+      featureName,
+      task,
+      dependsOn,
+      allTasks,
+      planContent
+    });
+    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), specContent);
+  }
+  refreshPendingTask(featureName, task, allTasks, planContent) {
+    const dependsOn = this.resolveDependencies(task, allTasks);
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
+    const current = readJson(statusPath);
+    if (current) {
+      const updated = {
+        ...current,
+        planTitle: task.name,
+        dependsOn
+      };
+      writeJson(statusPath, updated);
+    }
     const specContent = this.buildSpecContent({
       featureName,
       task,
@@ -2463,6 +2513,10 @@ ${f.content}`).join(`
     const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
     writeText(specPath, content);
     return specPath;
+  }
+  readSpec(featureName, taskFolder) {
+    const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
+    return readText(specPath);
   }
   update(featureName, taskFolder, updates, lockOptions) {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
@@ -2759,6 +2813,63 @@ _Add detailed instructions here_
     const folders = this.listSubtaskFolders(featureName, taskFolder);
     const subtaskOrder = subtaskId.split(".")[1];
     return folders.find((f) => f.startsWith(`${subtaskOrder}-`)) || null;
+  }
+  buildManualTaskSpec(featureName, folder, name, dependsOn, metadata) {
+    const lines = [
+      `# Task: ${folder}`,
+      "",
+      `## Feature: ${featureName}`,
+      "",
+      "## Dependencies",
+      ""
+    ];
+    if (dependsOn.length > 0) {
+      for (const dep of dependsOn) {
+        lines.push(`- ${dep}`);
+      }
+    } else {
+      lines.push("_None_");
+    }
+    lines.push("");
+    if (metadata?.goal) {
+      lines.push("## Goal", "", metadata.goal, "");
+    }
+    if (metadata?.description) {
+      lines.push("## Description", "", metadata.description, "");
+    }
+    if (metadata?.acceptanceCriteria && metadata.acceptanceCriteria.length > 0) {
+      lines.push("## Acceptance Criteria", "");
+      for (const criterion of metadata.acceptanceCriteria) {
+        lines.push(`- ${criterion}`);
+      }
+      lines.push("");
+    }
+    if (metadata?.files && metadata.files.length > 0) {
+      lines.push("## Files", "");
+      for (const file of metadata.files) {
+        lines.push(`- ${file}`);
+      }
+      lines.push("");
+    }
+    if (metadata?.references && metadata.references.length > 0) {
+      lines.push("## References", "");
+      for (const ref of metadata.references) {
+        lines.push(`- ${ref}`);
+      }
+      lines.push("");
+    }
+    if (metadata?.source || metadata?.reason) {
+      lines.push("## Origin", "");
+      if (metadata?.source) {
+        lines.push(`**Source:** ${metadata.source}`);
+      }
+      if (metadata?.reason) {
+        lines.push(`**Reason:** ${metadata.reason}`);
+      }
+      lines.push("");
+    }
+    return lines.join(`
+`);
   }
   slugify(name) {
     return name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
