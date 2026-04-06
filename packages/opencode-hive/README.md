@@ -43,6 +43,10 @@ This enables tools like `grep_app_searchGitHub`, `context7_query-docs`, `websear
 
 During planning, "don't execute" means "don't implement" (no code edits, no worktrees). Read-only exploration is explicitly allowed and encouraged, both via local tools and by delegating to Scout.
 
+When delegation is warranted, synthesize the task before handing it off: name the file paths or search target, state the expected result, and say what done looks like. Workers do not inherit planner context.
+
+For execution work, treat worker output as evidence to inspect, not proof to trust blindly. Read changed files yourself and run the shared verification commands on the main branch before claiming the batch is complete.
+
 #### Canonical Delegation Threshold
 
 - Delegate to Scout when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
@@ -66,8 +70,8 @@ During planning, "don't execute" means "don't implement" (no code edits, no work
 ### Tasks
 | Tool | Description |
 |------|-------------|
-| `hive_tasks_sync` | Generate tasks from plan |
-| `hive_task_create` | Create manual task |
+| `hive_tasks_sync` | Generate tasks from plan, or rewrite pending plan tasks with `refreshPending: true` after a plan amendment |
+| `hive_task_create` | Create a manual task with explicit `dependsOn` and optional structured metadata |
 | `hive_task_update` | Update task status/summary |
 
 ### Worktree
@@ -114,13 +118,20 @@ OpenCode can compact long sessions. When that happens mid-orchestration or mid-t
 
 The plugin now persists durable session metadata and uses it during `experimental.session.compacting` to rebuild a compact re-anchor prompt.
 
+At the plugin/runtime layer:
+
+- custom Scout-derived agents are treated like other subagents for recovery semantics.
+- the compaction-time handoff stays intentionally small and role-preserving.
+- there is no first-class near-compaction hook to warn Hive before OpenCode actually compacts the session.
+
 Where:
 
 - Global session state is written to `.hive/sessions.json`.
 - Feature-local mirrors are written to `.hive/features/<feature>/sessions.json`.
 - Session classification distinguishes `primary`, `subagent`, `task-worker`, and `unknown`.
 - Primary and subagent recovery can replay the stored user directive once after compaction.
-- For task workers, the re-anchor context can include `.hive/features/<feature>/tasks/<task>/worker-prompt.md`.
+- Task-worker recovery uses the strict re-anchor plus one bounded worker-specific synthetic replay after compaction.
+- The task-worker replay can reference `.hive/features/<feature>/tasks/<task>/worker-prompt.md`.
 
 Task-worker recovery is intentionally strict:
 
@@ -128,11 +139,21 @@ Task-worker recovery is intentionally strict:
 - do not delegate
 - do not re-read the full codebase
 - re-read `worker-prompt.md`
+- finish only the current task assignment
+- do not merge
+- do not start the next task
+- do not use orchestration tools unless the worker prompt explicitly says so
 - continue from the last known point
 
-This split is deliberate: post-compaction replay is for primary/subagent intent, while task-worker recovery comes from durable worktree context plus `worker-prompt.md` so implementation sessions stay attached to the exact task contract.
+This split is deliberate: primary and subagent sessions replay the stored user directive once after compaction, while task-workers also receive one worker-specific synthetic replay after compaction that restates the active task identity and worker boundaries.
 
-This matters most for `forager-worker` and forager-derived custom agents, because they are the sessions most likely to be compacted mid-implementation.
+Manual tasks follow the same DAG model as plan-backed tasks:
+
+- `hive_task_create()` stores manual tasks with explicit `dependsOn` metadata instead of inferring sequential order.
+- Structured manual-task fields such as `goal`, `description`, `acceptanceCriteria`, `files`, and `references` are turned into worker-facing `spec.md` content.
+- If review feedback changes downstream sequencing or scope, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })` so pending plan tasks pick up the new `dependsOn` graph and regenerated specs.
+
+This recovery path applies to the built-in `forager-worker` and custom agents derived from it, because they are the sessions most likely to be compacted mid-implementation.
 
 ## Prompt Budgeting & Observability
 

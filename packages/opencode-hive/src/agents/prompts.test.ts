@@ -8,6 +8,104 @@ import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HYGIENIC_BEE_PROMPT } from './hygienic';
 
+describe('Orchestrator synthesis-before-delegation', () => {
+  it('Hive prompt contains synthesis-before-delegating reminder', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('Synthesize Before Delegating');
+    expect(QUEEN_BEE_PROMPT).toContain('Workers do not inherit your context');
+  });
+
+  it('Hive delegation check includes synthesis proof step', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('restate the task in concrete terms');
+    expect(QUEEN_BEE_PROMPT).toContain('files, line ranges, expected outcome');
+  });
+
+  it('Swarm prompt has a dedicated synthesis section with rules', () => {
+    expect(SWARM_BEE_PROMPT).toContain('## Synthesize Before Delegating');
+    expect(SWARM_BEE_PROMPT).toContain('Workers do not inherit your context');
+  });
+
+  it('Swarm synthesis section forbids vague delegation phrases', () => {
+    expect(SWARM_BEE_PROMPT).toContain('based on your findings');
+    expect(SWARM_BEE_PROMPT).toContain('based on the research');
+  });
+
+  it('Swarm synthesis section includes good/bad delegation example', () => {
+    expect(SWARM_BEE_PROMPT).toContain('<Bad>');
+    expect(SWARM_BEE_PROMPT).toContain('<Good>');
+  });
+
+  it('Swarm synthesis section requires concrete hand-off anchors', () => {
+    expect(SWARM_BEE_PROMPT).toContain('file paths and line ranges when known');
+    expect(SWARM_BEE_PROMPT).toContain('expected result');
+    expect(SWARM_BEE_PROMPT).toContain('what done looks like');
+  });
+});
+
+describe('Scout operating contract', () => {
+  it('enforces a read-only contract', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('### Read-Only Contract');
+    expect(SCOUT_BEE_PROMPT).toContain('Scout must never modify project state');
+  });
+
+  it('prohibits file writes, temp files, and state-changing commands', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('No file edits, creation, or deletion');
+    expect(SCOUT_BEE_PROMPT).toContain('No temporary files');
+    expect(SCOUT_BEE_PROMPT).toContain('No state-changing shell commands');
+  });
+
+  it('defines a preferred search sequence', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('### Preferred Search Sequence');
+    expect(SCOUT_BEE_PROMPT).toContain('Local discovery first');
+    expect(SCOUT_BEE_PROMPT).toContain('Structured lookups next');
+    expect(SCOUT_BEE_PROMPT).toContain('External sources when local is insufficient');
+    expect(SCOUT_BEE_PROMPT).toContain('Shell as narrow fallback');
+  });
+
+  it('includes speed and efficiency rules', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('### Speed and Efficiency');
+    expect(SCOUT_BEE_PROMPT).toContain('independent sub-parts');
+    expect(SCOUT_BEE_PROMPT).toContain('answer immediately');
+  });
+
+  it('includes synthesis rules prohibiting speculation about unread files', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('## Synthesis Rules');
+    expect(SCOUT_BEE_PROMPT).toContain('do not speculate about its contents');
+    expect(SCOUT_BEE_PROMPT).toContain('cited synthesis');
+  });
+});
+
+describe('Forager verification and tool-scope clarity', () => {
+  it('defers tool scope to worker prompt', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('tool access is scoped to your role');
+    expect(FORAGER_BEE_PROMPT).toContain('worker prompt');
+  });
+
+  it('records observed output in verification step', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('Record observed output');
+    expect(FORAGER_BEE_PROMPT).toContain('do not substitute explanation for execution');
+  });
+});
+
+describe('Hygienic verification routing', () => {
+  it('routes verification requests to verification-reviewer skill', () => {
+    expect(HYGIENIC_BEE_PROMPT).toContain('verification-reviewer');
+    expect(HYGIENIC_BEE_PROMPT).toContain('hive_skill("verification-reviewer")');
+  });
+
+  it('requires falsification-first protocol for verification', () => {
+    expect(HYGIENIC_BEE_PROMPT).toContain('falsification-first');
+  });
+
+  it('rejects rationalizations as evidence', () => {
+    expect(HYGIENIC_BEE_PROMPT).toContain('Do NOT accept rationalizations as evidence');
+  });
+
+  it('preserves existing plan-review and code-reviewer paths', () => {
+    expect(HYGIENIC_BEE_PROMPT).toContain('hive_skill("code-reviewer")');
+    expect(HYGIENIC_BEE_PROMPT).toContain('Review plan WITHIN the stated approach');
+  });
+});
+
 describe('Hive (Hybrid) prompt', () => {
   describe('delegation planning alignment', () => {
     it('contains the Canonical Delegation Threshold block', () => {
@@ -75,6 +173,10 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
+
+    it('tells hybrid planners to split broad research earlier', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('split broad research earlier');
+    });
   });
 
   describe('turn termination and hard blocks', () => {
@@ -132,6 +234,10 @@ describe('Architect (Planner) prompt', () => {
 
     it('broadens research to include internal repo exploration', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('internal codebase');
+    });
+
+    it('tells planners to split broad research earlier', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('split broad research earlier');
     });
   });
 
@@ -219,6 +325,10 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
+
+    it('tells orchestrators to split broad research earlier', () => {
+      expect(SWARM_BEE_PROMPT).toContain('split broad research earlier');
+    });
   });
 
   it('does NOT contain oracle reference', () => {
@@ -295,8 +405,28 @@ describe('Scout (Explorer/Researcher) prompt', () => {
     expect(SCOUT_BEE_PROMPT).toContain('research-{topic}');
   });
 
+  it('covers the sharpened operating contract with structural anchors', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('### Read-Only Contract');
+    expect(SCOUT_BEE_PROMPT).toContain('### Preferred Search Sequence');
+    expect(SCOUT_BEE_PROMPT).toContain('### Speed and Efficiency');
+  });
+
+  it('protects anti-speculation and cited-synthesis guidance', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('## Synthesis Rules');
+    expect(SCOUT_BEE_PROMPT).toContain('cited synthesis');
+    expect(SCOUT_BEE_PROMPT).toContain('unverified');
+  });
+
   it('mentions year awareness', () => {
     expect(SCOUT_BEE_PROMPT).toContain('current year');
+  });
+
+  it('limits discovery to one context window', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('fit in one context window');
+  });
+
+  it('teaches return-to-hive escalation', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('return to Hive');
   });
 });
 
@@ -307,6 +437,18 @@ describe('Hygienic (Consultant/Reviewer) prompt', () => {
 
   it('contains verification examples', () => {
     expect(HYGIENIC_BEE_PROMPT).toContain('without human judgment');
+  });
+
+  it('routes implementation verification to verification-reviewer', () => {
+    expect(HYGIENIC_BEE_PROMPT).toContain('verification-reviewer');
+    expect(HYGIENIC_BEE_PROMPT).toContain('hive_skill("verification-reviewer")');
+    expect(HYGIENIC_BEE_PROMPT).toContain('evidence-backed report format');
+  });
+
+  it('rejects rationalizations as verification evidence', () => {
+    expect(HYGIENIC_BEE_PROMPT).toContain('rationalizations');
+    expect(HYGIENIC_BEE_PROMPT).toContain('command output');
+    expect(HYGIENIC_BEE_PROMPT).toContain('observable results');
   });
 });
 

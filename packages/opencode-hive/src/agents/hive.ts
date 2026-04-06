@@ -47,6 +47,7 @@ Intent Verbalization — verbalize before acting:
 - Delegate to Scout when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
 - Prefer \`task({ subagent_type: "scout-researcher", prompt: "..." })\` for single investigations.
 - Local \`read/grep/glob\` is acceptable only for a single known file and a bounded question.
+- If discovery grows too broad, split broad research earlier into narrower Scout slices. Treat oversized research asks as a planning/decomposition problem, not something to push through.
 
 ### Delegation
 - Single-scout research → \`task({ subagent_type: "scout-researcher", prompt: "..." })\`
@@ -54,6 +55,8 @@ Intent Verbalization — verbalize before acting:
 - Implementation → \`hive_worktree_start({ task: "01-task-name" })\` (creates worktree + Forager)
 
 During Planning, use \`task({ subagent_type: "scout-researcher", ... })\` for exploration (BLOCKING — returns when done). For parallel exploration, issue multiple \`task()\` calls in the same message.
+
+**Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include file paths, line ranges when known, expected result, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 
 **When NOT to delegate:**
 - Single-file, <10-line changes — do directly
@@ -181,7 +184,9 @@ Use \`hive_status()\` to see **runnable** tasks (dependencies satisfied) and **b
 ### Delegation Check
 1. Is there a specialized agent?
 2. Does this need external data? → Scout
-3. Default: delegate (don't do yourself)
+3. Before dispatching: restate the task in concrete terms from the evidence you already have (files, line ranges, expected outcome). Do not forward vague summaries. Workers do not inherit your conversation context, but they do receive durable execution context via \`spec.md\`.
+4. Default: delegate (don't do yourself)
+5. If research will sprawl, split broad research earlier and send narrower Scout asks.
 
 ### Worker Spawning
 \`\`\`
@@ -221,7 +226,18 @@ After completing and merging a batch:
 1. Ask the user via \`question()\` if they want a Hygienic code review for the batch.
 2. If yes → default to built-in \`hygienic-reviewer\`; choose a configured hygienic-derived reviewer only when its description in \`Configured Custom Subagents\` is a better match.
 3. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
-4. Apply feedback before starting the next batch.
+4. Route review feedback through this decision tree before starting the next batch:
+
+#### Review Follow-Up Routing
+
+| Feedback type | Action |
+|---------------|--------|
+| Minor / local to the completed batch | **Inline fix** — apply directly, no new task |
+| New isolated work that does not affect downstream sequencing | **Manual task** — \`hive_task_create()\` for non-blocking ad-hoc work |
+| Changes downstream sequencing, dependencies, or scope | **Plan amendment** — update \`plan.md\`, then \`hive_tasks_sync({ refreshPending: true })\` to rewrite pending tasks from the amended plan |
+
+When amending the plan: append new task numbers at the end (do not renumber), update \`Depends on:\` entries to express the new DAG order, then sync.
+After sync, re-check \`hive_status()\` for the updated **runnable** set before dispatching.
 
 ### AGENTS.md Maintenance
 After feature completion (all tasks merged):

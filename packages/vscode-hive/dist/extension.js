@@ -738,7 +738,7 @@ var vscode6 = __toESM(require("vscode"));
 var fs15 = __toESM(require("fs"));
 var path15 = __toESM(require("path"));
 
-// ../hive-core/dist/index.js
+// ../../../../../../packages/hive-core/dist/index.js
 var import_node_module = require("node:module");
 var path = __toESM(require("path"), 1);
 var fs = __toESM(require("fs"), 1);
@@ -2217,12 +2217,19 @@ var PlanService = class {
   }
 };
 var TASK_STATUS_SCHEMA_VERSION = 1;
+var EXECUTION_HISTORY_STATUSES = /* @__PURE__ */ new Set([
+  "in_progress",
+  "done",
+  "blocked",
+  "failed",
+  "partial"
+]);
 var TaskService = class {
   projectRoot;
   constructor(projectRoot) {
     this.projectRoot = projectRoot;
   }
-  sync(featureName) {
+  sync(featureName, options) {
     const planPath = getPlanPath(this.projectRoot, featureName);
     const planContent = readText(planPath);
     if (!planContent) {
@@ -2238,12 +2245,13 @@ var TaskService = class {
       manual: []
     };
     const existingByName = new Map(existingTasks.map((t) => [t.folder, t]));
+    const refreshPending = options?.refreshPending === true;
     for (const existing of existingTasks) {
       if (existing.origin === "manual") {
         result.manual.push(existing.folder);
         continue;
       }
-      if (existing.status === "done" || existing.status === "in_progress") {
+      if (EXECUTION_HISTORY_STATUSES.has(existing.status)) {
         result.kept.push(existing.folder);
         continue;
       }
@@ -2256,6 +2264,12 @@ var TaskService = class {
       if (!stillInPlan) {
         this.deleteTask(featureName, existing.folder);
         result.removed.push(existing.folder);
+      } else if (refreshPending && existing.status === "pending") {
+        const planTask = planTasks.find((p) => p.folder === existing.folder);
+        if (planTask) {
+          this.refreshPendingTask(featureName, planTask, planTasks, planContent);
+        }
+        result.kept.push(existing.folder);
       } else {
         result.kept.push(existing.folder);
       }
@@ -2268,19 +2282,34 @@ var TaskService = class {
     }
     return result;
   }
-  create(featureName, name, order) {
+  create(featureName, name, order, metadata) {
     const tasksPath = getTasksPath(this.projectRoot, featureName);
     const existingFolders = this.listFolders(featureName);
+    if (metadata?.source === "review" && metadata.dependsOn && metadata.dependsOn.length > 0) {
+      throw new Error(`Review-sourced manual tasks cannot have explicit dependsOn. Cross-task dependencies require a plan amendment. Either remove the dependsOn field or amend the plan to express the dependency.`);
+    }
     const nextOrder = order ?? this.getNextOrder(existingFolders);
     const folder = `${String(nextOrder).padStart(2, "0")}-${name}`;
+    const collision = existingFolders.find((f) => {
+      const match = f.match(/^(\d+)-/);
+      return match && parseInt(match[1], 10) === nextOrder;
+    });
+    if (collision) {
+      throw new Error(`Task folder collision: order ${nextOrder} already exists as "${collision}". Choose a different order number or omit to auto-increment.`);
+    }
     const taskPath = getTaskPath(this.projectRoot, featureName, folder);
     ensureDir(taskPath);
+    const dependsOn = metadata?.dependsOn ?? [];
     const status = {
       status: "pending",
       origin: "manual",
-      planTitle: name
+      planTitle: name,
+      dependsOn,
+      ...metadata ? { metadata: { ...metadata, dependsOn: void 0 } } : {}
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, folder), status);
+    const specContent = this.buildManualTaskSpec(featureName, folder, name, dependsOn, metadata);
+    writeText(getTaskSpecPath(this.projectRoot, featureName, folder), specContent);
     return folder;
   }
   createFromPlan(featureName, task, allTasks, planContent) {
@@ -2294,6 +2323,27 @@ var TaskService = class {
       dependsOn
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
+    const specContent = this.buildSpecContent({
+      featureName,
+      task,
+      dependsOn,
+      allTasks,
+      planContent
+    });
+    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), specContent);
+  }
+  refreshPendingTask(featureName, task, allTasks, planContent) {
+    const dependsOn = this.resolveDependencies(task, allTasks);
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
+    const current = readJson(statusPath);
+    if (current) {
+      const updated = {
+        ...current,
+        planTitle: task.name,
+        dependsOn
+      };
+      writeJson(statusPath, updated);
+    }
     const specContent = this.buildSpecContent({
       featureName,
       task,
@@ -2463,6 +2513,10 @@ ${f.content}`).join(`
     const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
     writeText(specPath, content);
     return specPath;
+  }
+  readSpec(featureName, taskFolder) {
+    const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
+    return readText(specPath);
   }
   update(featureName, taskFolder, updates, lockOptions) {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
@@ -2759,6 +2813,63 @@ _Add detailed instructions here_
     const folders = this.listSubtaskFolders(featureName, taskFolder);
     const subtaskOrder = subtaskId.split(".")[1];
     return folders.find((f) => f.startsWith(`${subtaskOrder}-`)) || null;
+  }
+  buildManualTaskSpec(featureName, folder, name, dependsOn, metadata) {
+    const lines = [
+      `# Task: ${folder}`,
+      "",
+      `## Feature: ${featureName}`,
+      "",
+      "## Dependencies",
+      ""
+    ];
+    if (dependsOn.length > 0) {
+      for (const dep of dependsOn) {
+        lines.push(`- ${dep}`);
+      }
+    } else {
+      lines.push("_None_");
+    }
+    lines.push("");
+    if (metadata?.goal) {
+      lines.push("## Goal", "", metadata.goal, "");
+    }
+    if (metadata?.description) {
+      lines.push("## Description", "", metadata.description, "");
+    }
+    if (metadata?.acceptanceCriteria && metadata.acceptanceCriteria.length > 0) {
+      lines.push("## Acceptance Criteria", "");
+      for (const criterion of metadata.acceptanceCriteria) {
+        lines.push(`- ${criterion}`);
+      }
+      lines.push("");
+    }
+    if (metadata?.files && metadata.files.length > 0) {
+      lines.push("## Files", "");
+      for (const file of metadata.files) {
+        lines.push(`- ${file}`);
+      }
+      lines.push("");
+    }
+    if (metadata?.references && metadata.references.length > 0) {
+      lines.push("## References", "");
+      for (const ref of metadata.references) {
+        lines.push(`- ${ref}`);
+      }
+      lines.push("");
+    }
+    if (metadata?.source || metadata?.reason) {
+      lines.push("## Origin", "");
+      if (metadata?.source) {
+        lines.push(`**Source:** ${metadata.source}`);
+      }
+      if (metadata?.reason) {
+        lines.push(`**Reason:** ${metadata.reason}`);
+      }
+      lines.push("");
+    }
+    return lines.join(`
+`);
   }
   slugify(name) {
     return name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
@@ -8633,20 +8744,24 @@ function getTaskTools(workspaceRoot) {
     {
       name: "hive_tasks_sync",
       displayName: "Sync Hive Tasks",
-      modelDescription: "Generate tasks from approved plan.md by parsing ### numbered headers. Creates task folders with status.json. Returns summary of created/removed/kept tasks. Use after hive_plan_approve.",
+      modelDescription: "Generate tasks from approved plan.md by parsing ### numbered headers. Creates task folders with status.json. When refreshPending is true, rewrites pending plan tasks from current plan (updates dependsOn, planTitle, spec.md) and deletes pending tasks removed from plan. Preserves manual tasks and tasks with execution history. Returns summary of created/removed/kept tasks.",
       inputSchema: {
         type: "object",
         properties: {
           feature: {
             type: "string",
             description: "Feature name"
+          },
+          refreshPending: {
+            type: "boolean",
+            description: "When true, refresh pending plan tasks from current plan.md (rewrite dependsOn, planTitle, spec.md) and delete pending tasks removed from plan. Manual tasks and tasks with execution history are preserved."
           }
         },
         required: ["feature"]
       },
       invoke: async (input, _token) => {
-        const { feature } = input;
-        const result = taskService.sync(feature);
+        const { feature, refreshPending } = input;
+        const result = taskService.sync(feature, { refreshPending });
         return JSON.stringify({
           created: result.created.length,
           removed: result.removed.length,
@@ -8654,9 +8769,9 @@ function getTaskTools(workspaceRoot) {
           manual: result.manual.length,
           message: `${result.created.length} tasks created, ${result.removed.length} removed, ${result.kept.length} kept, ${result.manual.length} manual`,
           hints: [
-            "Use hive_worktree_start to begin work on a task.",
-            "Tasks should be executed in order unless explicitly parallelizable.",
-            "Read context files before starting implementation.",
+            "Use hive_worktree_start to begin work on a runnable task.",
+            "Check task dependencies with hive_status to find runnable tasks.",
+            "A task is runnable when all its dependsOn tasks have status done.",
             "Update via hive_task_update when work progresses."
           ]
         });
@@ -8665,7 +8780,7 @@ function getTaskTools(workspaceRoot) {
     {
       name: "hive_task_create",
       displayName: "Create Manual Task",
-      modelDescription: "Create a task manually, not from the plan. Use for ad-hoc work or tasks discovered during execution.",
+      modelDescription: "Create a task manually, not from the plan. Use for ad-hoc work or tasks discovered during execution. Manual tasks always have explicit dependsOn (default: []) to avoid accidental implicit sequential dependencies. Provide structured metadata for a useful spec.md and worker prompt.",
       inputSchema: {
         type: "object",
         properties: {
@@ -8680,14 +8795,60 @@ function getTaskTools(workspaceRoot) {
           order: {
             type: "number",
             description: "Optional order number for the task"
+          },
+          description: {
+            type: "string",
+            description: "What the worker needs to achieve"
+          },
+          goal: {
+            type: "string",
+            description: "Why this task exists and what done means"
+          },
+          acceptanceCriteria: {
+            type: "array",
+            items: { type: "string" },
+            description: "Specific observable outcomes"
+          },
+          references: {
+            type: "array",
+            items: { type: "string" },
+            description: "File paths or line ranges relevant to this task"
+          },
+          files: {
+            type: "array",
+            items: { type: "string" },
+            description: "Files likely to be modified"
+          },
+          dependsOn: {
+            type: "array",
+            items: { type: "string" },
+            description: "Task folder names this task depends on (default: [] for no dependencies)"
+          },
+          reason: {
+            type: "string",
+            description: 'Why this task was created (e.g., "Required by Hygienic review")'
+          },
+          source: {
+            type: "string",
+            enum: ["review", "operator", "ad_hoc"],
+            description: "Origin of this task"
           }
         },
         required: ["feature", "name"]
       },
       invoke: async (input, _token) => {
-        const { feature, name, order } = input;
-        const folder = taskService.create(feature, name, order);
-        return `Created task "${folder}" with status: pending
+        const { feature, name, order, ...metadataFields } = input;
+        const metadata = {};
+        if (metadataFields.description) metadata.description = metadataFields.description;
+        if (metadataFields.goal) metadata.goal = metadataFields.goal;
+        if (metadataFields.acceptanceCriteria) metadata.acceptanceCriteria = metadataFields.acceptanceCriteria;
+        if (metadataFields.references) metadata.references = metadataFields.references;
+        if (metadataFields.files) metadata.files = metadataFields.files;
+        if (metadataFields.dependsOn) metadata.dependsOn = metadataFields.dependsOn;
+        if (metadataFields.reason) metadata.reason = metadataFields.reason;
+        if (metadataFields.source) metadata.source = metadataFields.source;
+        const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata : void 0);
+        return `Created task "${folder}" with status: pending, dependsOn: [${(metadata.dependsOn ?? []).join(", ")}]
 Reminder: run hive_worktree_start to work in its worktree, and ensure any subagents work in that worktree too.`;
       }
     },
