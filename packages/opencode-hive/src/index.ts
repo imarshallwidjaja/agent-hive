@@ -204,6 +204,7 @@ import { formatRelativeTime } from "./utils/format";
 import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_COMMANDS, HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
+import { buildCheckpointRehydration } from './utils/checkpoint-rehydration.js';
 
 /**
  * Core plugin implementation.
@@ -394,13 +395,24 @@ const plugin: Plugin = async (ctx) => {
 
   const buildWorkerReplayText = (session: { agent?: string; baseAgent?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string }): string | null => {
     if (!session.featureName || !session.taskFolder || !session.workerPromptPath) return null;
-    const role = 'Forager';
-    return [
-      `Post-compaction recovery: You are still the ${role} worker for task ${session.taskFolder}.`,
-      `Resume only this task. Do not merge, do not start the next task, and do not replace this assignment with a new goal.`,
-      `Do not call orchestration tools unless the worker prompt explicitly says so.`,
-      `Re-read @${session.workerPromptPath} and continue from the existing worktree state.`,
-    ].join('\n');
+    return buildCheckpointRehydration({
+      projectRoot: directory,
+      featureName: session.featureName,
+      taskFolder: session.taskFolder,
+      workerPromptPath: session.workerPromptPath,
+    });
+  };
+
+  const markReplayPendingIfNeeded = (sessionID: string, session?: { directivePrompt?: string; directiveRecoveryState?: 'available' | 'consumed' | 'escalated'; sessionKind?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string }) => {
+    const directiveReplayPatch = getDirectiveReplayCompactionPatch(session);
+    if (directiveReplayPatch) {
+      sessionService.trackGlobal(sessionID, directiveReplayPatch);
+      return;
+    }
+
+    if (shouldUseWorkerReplay(session)) {
+      sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
+    }
   };
 
   /**
@@ -944,19 +956,19 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
   return {
     event: async (input) => {
-      if (input.event.type !== 'session.compacted') {
+      if (input.event.type === 'session.compacted') {
+        const sessionID = input.event.properties.sessionID;
+        const existing = sessionService.getGlobal(sessionID);
+        markReplayPendingIfNeeded(sessionID, existing);
         return;
       }
 
-      const sessionID = input.event.properties.sessionID;
-      const existing = sessionService.getGlobal(sessionID);
-      const directiveReplayPatch = getDirectiveReplayCompactionPatch(existing);
-      if (directiveReplayPatch) {
-        sessionService.trackGlobal(sessionID, directiveReplayPatch);
-        return;
-      }
-      if (shouldUseWorkerReplay(existing)) {
-        sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
+      if (input.event.type === 'session.status' && input.event.properties.status?.type === 'idle') {
+        const sessionID = input.event.properties.sessionID;
+        const existing = sessionService.getGlobal(sessionID);
+        if (shouldUseWorkerReplay(existing)) {
+          sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
+        }
         return;
       }
     },
@@ -1110,6 +1122,17 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       const wrapped = DockerSandboxService.wrapCommand(workdir, command, sandboxConfig);
       output.args.command = wrapped;
       output.args.workdir = undefined; // docker command runs on host
+    },
+
+    "tool.execute.after": async (input) => {
+      if (input.tool !== 'task') {
+        return;
+      }
+
+      const existing = sessionService.getGlobal(input.sessionID);
+      if (shouldUseWorkerReplay(existing)) {
+        sessionService.trackGlobal(input.sessionID, { replayDirectivePending: true });
+      }
     },
 
     mcp: builtinMcps,
