@@ -12,7 +12,7 @@ By configuring this hook to fire every 3rd turn instead of every turn, you can r
 
 ## Configuration
 
-Add a `hook_cadence` field to config. Hive reads from `<project>/.hive/agent-hive.json` first, then legacy `<project>/.opencode/agent_hive.json`, then falls back to `~/.config/opencode/agent_hive.json`:
+Add a `hook_cadence` field to config. Hive reads from `<project>/.hive/agent-hive.json` first, then legacy `<project>/.opencode/agent_hive.json` if the new file is missing, then falls back to `~/.config/opencode/agent_hive.json`:
 
 ```json
 {

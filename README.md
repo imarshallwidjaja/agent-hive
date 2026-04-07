@@ -99,10 +99,10 @@ For local plugin testing:
 Agent Hive reads configuration from the following locations (in order):
 
 1. `<project>/.hive/agent-hive.json` (preferred)
-2. `<project>/.opencode/agent_hive.json` (legacy fallback during migration)
-3. `~/.config/opencode/agent_hive.json` (fallback)
+2. `<project>/.opencode/agent_hive.json` (legacy fallback, used only when the new file is missing)
+3. `~/.config/opencode/agent_hive.json` (global fallback)
 
-If the project config is missing, invalid JSON, or invalid shape, Agent Hive reads `~/.config/opencode/agent_hive.json` next and then falls back to defaults, surfacing a runtime warning when the project config is invalid.
+If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Agent Hive warns, skips the legacy project file, and falls back to the global config and defaults.
 
 Create a project-local config at `.hive/agent-hive.json`:
 
@@ -137,6 +137,11 @@ Run Agent Hive once to auto-generate a default global configuration at `~/.confi
 | `agentMode` | `unified` (default), `dedicated` | `unified`: Single `hive-master` agent handles planning + orchestration. `dedicated`: Separate `architect-planner` and `swarm-orchestrator` agents. |
 | `disableSkills` | `string[]` | Globally disable specific skills (won't appear in `hive_skill` tool). |
 | `disableMcps` | `string[]` | Globally disable MCP servers. Options: `websearch`, `context7`, `grep_app`, `ast_grep`. |
+
+#### Local use cases
+
+- **Local skill experiments:** keep a repo-specific skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then add that ID to `skills` or `autoLoadSkills` without publishing anything globally.
+- **Local model routing:** pin a repo to different models per agent in `<project>/.hive/agent-hive.json`, such as a faster `forager-worker` model for one codebase while leaving your global defaults unchanged.
 
 #### Agent Models
 

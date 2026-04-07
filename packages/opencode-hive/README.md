@@ -49,6 +49,11 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 
 \`hive_network_query\` is an optional lookup, not a default step. There is no startup lookup: first orient on the live request and live repo state. planning, orchestration, and review roles get network access first. live-file verification still required even when network results look relevant.
 
+### Local skill and model use cases
+
+- **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md` and add it to `skills` or `autoLoadSkills` for that repo only.
+- **Local model tuning:** set per-agent models or variants in `<project>/.hive/agent-hive.json` when you want a repository-specific routing setup without changing your global OpenCode defaults.
+
 #### Canonical Delegation Threshold
 
 - Delegate to Scout when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
@@ -211,10 +216,10 @@ Description.
 Hive reads config from these locations, in order:
 
 1. `<project>/.hive/agent-hive.json` (preferred)
-2. `<project>/.opencode/agent_hive.json` (legacy fallback during migration)
-3. `~/.config/opencode/agent_hive.json` (fallback)
+2. `<project>/.opencode/agent_hive.json` (legacy fallback, used only when the new file is missing)
+3. `~/.config/opencode/agent_hive.json` (global fallback)
 
-If project config is missing, invalid JSON, or invalid shape, Hive reads `~/.config/opencode/agent_hive.json` next and then falls back to defaults, surfacing a runtime warning when the project config is invalid.
+If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Hive warns, skips the legacy project file, and falls back to the global config and defaults.
 
 You can customize agent models, variants, disable skills, and disable MCP servers.
 
