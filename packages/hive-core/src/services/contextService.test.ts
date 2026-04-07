@@ -58,4 +58,44 @@ describe('ContextService reserved overview context', () => {
 
     expect(executionContext?.map((file: { name: string }) => file.name)).toEqual(['decisions']);
   });
+
+  it('classifies known context names without constraining unknown ones', () => {
+    const featureName = 'classified-context';
+    setupFeature(featureName);
+
+    service.write(featureName, 'overview', 'Human-facing summary');
+    service.write(featureName, 'draft', 'Scratchpad notes');
+    service.write(featureName, 'execution-decisions', 'Operational note');
+    service.write(featureName, 'learnings', 'Durable learning');
+
+    expect(service.list(featureName).map(file => [
+      file.name,
+      file.role,
+      file.includeInExecution,
+      file.includeInAgentsMdSync,
+      file.includeInNetwork,
+    ])).toEqual([
+      ['draft', 'scratchpad', false, false, false],
+      ['execution-decisions', 'operational', false, false, false],
+      ['learnings', 'durable', true, true, true],
+      ['overview', 'human', false, false, false],
+    ]);
+  });
+
+  it('lists only durable context for network retrieval while preserving freshness metadata', () => {
+    const featureName = 'network-context';
+    setupFeature(featureName);
+
+    service.write(featureName, 'overview', 'Human-facing summary');
+    service.write(featureName, 'draft', 'Scratchpad notes');
+    service.write(featureName, 'execution-decisions', 'Operational note');
+    service.write(featureName, 'learnings', 'Durable learning');
+    service.write(featureName, 'research', 'Durable research');
+
+    const networkContext = service.listNetworkContext(featureName);
+
+    expect(networkContext.map(file => file.name)).toEqual(['learnings', 'research']);
+    expect(networkContext.every(file => file.includeInNetwork)).toBe(true);
+    expect(networkContext.every(file => typeof file.updatedAt === 'string' && file.updatedAt.length > 0)).toBe(true);
+  });
 });

@@ -32,6 +32,7 @@ const EXPECTED_TOOLS = [
   "hive_worktree_discard",
   "hive_merge",
   "hive_context_write",
+  "hive_network_query",
   "hive_status",
   "hive_skill",
 ] as const;
@@ -481,7 +482,7 @@ Do it
     expect(execStart.instructions).not.toContain("Read the prompt file");
   });
 
-  it("excludes reserved overview context from worker prompt payloads", async () => {
+  it("excludes non-execution context from worker prompt payloads", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -535,8 +536,32 @@ Do it
     await hooks.tool!.hive_context_write.execute(
       {
         feature: "reserved-overview-feature",
+        name: "draft",
+        content: "Scratchpad draft that must stay out of worker execution context.",
+      },
+      toolContext
+    );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: "reserved-overview-feature",
+        name: "execution-decisions",
+        content: "Operational decision that must stay out of worker execution context.",
+      },
+      toolContext
+    );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: "reserved-overview-feature",
         name: "decisions",
         content: "Technical decision that workers should receive.",
+      },
+      toolContext
+    );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: "reserved-overview-feature",
+        name: "learnings",
+        content: "Durable learning that workers should receive.",
       },
       toolContext
     );
@@ -576,10 +601,19 @@ Do it
 
     expect(specContent).toContain("## decisions");
     expect(specContent).toContain("Technical decision that workers should receive.");
+    expect(specContent).toContain("## learnings");
+    expect(specContent).toContain("Durable learning that workers should receive.");
     expect(specContent).not.toContain("## overview");
     expect(specContent).not.toContain("Human-facing overview that must stay out of worker execution context.");
+    expect(specContent).not.toContain("## draft");
+    expect(specContent).not.toContain("Scratchpad draft that must stay out of worker execution context.");
+    expect(specContent).not.toContain("## execution-decisions");
+    expect(specContent).not.toContain("Operational decision that must stay out of worker execution context.");
     expect(workerPromptContent).toContain("Technical decision that workers should receive.");
+    expect(workerPromptContent).toContain("Durable learning that workers should receive.");
     expect(workerPromptContent).not.toContain("Human-facing overview that must stay out of worker execution context.");
+    expect(workerPromptContent).not.toContain("Scratchpad draft that must stay out of worker execution context.");
+    expect(workerPromptContent).not.toContain("Operational decision that must stay out of worker execution context.");
   });
 
   it("returns forager-derived eligible agents for worktree execution delegation", async () => {
@@ -948,7 +982,7 @@ Do it
     expect(Array.isArray(result.availableFeatures)).toBe(true);
   });
 
-  it("reports overview metadata and review counts in hive_status", async () => {
+  it("reports context handling metadata in hive_status", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -991,6 +1025,30 @@ Do it
       },
       toolContext
     );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: "overview-status-feature",
+        name: "draft",
+        content: "# Draft\nScratchpad summary",
+      },
+      toolContext
+    );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: "overview-status-feature",
+        name: "execution-decisions",
+        content: "# Execution Decisions\nOperational summary",
+      },
+      toolContext
+    );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: "overview-status-feature",
+        name: "learnings",
+        content: "# Learnings\nDurable summary",
+      },
+      toolContext
+    );
 
     fs.mkdirSync(
       path.join(testRoot, ".hive", "features", "01_overview-status-feature", "comments"),
@@ -1027,6 +1085,15 @@ Do it
           overview: number;
         };
       };
+      context?: {
+        files: Array<{
+          name: string;
+          role: string;
+          includeInExecution: boolean;
+          includeInAgentsMdSync: boolean;
+          includeInNetwork: boolean;
+        }>;
+      };
     };
 
     expect(result.overview).toMatchObject({
@@ -1041,9 +1108,74 @@ Do it
         overview: 1,
       },
     });
+    expect(result.context?.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "draft",
+          role: "scratchpad",
+          includeInExecution: false,
+          includeInAgentsMdSync: false,
+        }),
+        expect.objectContaining({
+          name: "execution-decisions",
+          role: "operational",
+          includeInExecution: false,
+          includeInAgentsMdSync: false,
+        }),
+        expect.objectContaining({
+          name: "learnings",
+          role: "durable",
+          includeInExecution: true,
+          includeInAgentsMdSync: true,
+          includeInNetwork: true,
+        }),
+        expect.objectContaining({
+          name: "overview",
+          role: "human",
+          includeInExecution: false,
+          includeInAgentsMdSync: false,
+          includeInNetwork: false,
+        }),
+      ])
+    );
   });
 
-  it("guides planners to plan-centered status messaging", async () => {
+  it("keeps plan tool messaging overview-first while plan.md remains execution truth", async () => {
+    const { hooks, toolContext } = await createHooksForTest(
+      testRoot,
+      'sess_overview_first_plan_messaging'
+    );
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: 'overview-first-plan-feature' },
+      toolContext
+    );
+
+    const planOutput = await hooks.tool!.hive_plan_write.execute(
+      {
+        content: createSingleTaskPlan(
+          'Overview First Plan Feature',
+          'Yes, this regression test validates that plan write and approve messaging point reviewers to context/overview.md first while keeping plan.md as execution truth.'
+        ),
+        feature: 'overview-first-plan-feature',
+      },
+      toolContext
+    );
+
+    const approveOutput = await hooks.tool!.hive_plan_approve.execute(
+      { feature: 'overview-first-plan-feature' },
+      toolContext
+    );
+
+    expect(planOutput).toContain('Review context/overview.md first');
+    expect(planOutput).toContain('plan.md remains execution truth');
+    expect(planOutput).not.toContain('plan.md is the human-facing');
+    expect(approveOutput).toContain('context/overview.md is the primary human-facing surface');
+    expect(approveOutput).toContain('plan.md remains execution truth');
+    expect(approveOutput).not.toContain('plan.md is the primary human-facing');
+  });
+
+  it("guides planners to overview-first status messaging", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -1074,7 +1206,7 @@ A: Yes, this regression test validates that plan messaging and hive_status guida
 Do it
 `;
 
-    const planOutput = await hooks.tool!.hive_plan_write.execute(
+    await hooks.tool!.hive_plan_write.execute(
       { content: plan, feature: "overview-guidance-feature" },
       toolContext
     );
@@ -1090,6 +1222,22 @@ Do it
     );
     const status = JSON.parse(statusRaw as string) as { nextAction?: string };
     expect(status.nextAction).toBe('Generate tasks from plan with hive_tasks_sync');
+
+    const draftFeature = 'draft-overview-guidance-feature';
+    await hooks.tool!.hive_feature_create.execute(
+      { name: draftFeature },
+      createToolContext('sess_overview_guidance_draft')
+    );
+
+    const draftStatusRaw = await hooks.tool!.hive_status.execute(
+      { feature: draftFeature },
+      toolContext
+    );
+    const draftStatus = JSON.parse(draftStatusRaw as string) as { nextAction?: string };
+
+    expect(draftStatus.nextAction).toBe(
+      'Write or revise plan with hive_plan_write. Refresh context/overview.md first for human review; plan.md remains execution truth and pre-task Mermaid overview diagrams are optional.'
+    );
   });
 
   it("blocks plan approval when overview review comments remain", async () => {
@@ -1753,7 +1901,7 @@ Do it
     expect(readHeadBody(worktreePath)).toBe(expectedMessage);
   });
 
-  it("passes custom merge message through for merge strategy", async () => {
+  it("returns helper-friendly merge JSON for merge strategy", async () => {
     const feature = "merge-custom-message-feature";
     const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
       testRoot,
@@ -1793,7 +1941,33 @@ Do it
       toolContext
     );
 
-    expect(mergeRaw).toContain("merged successfully using merge strategy");
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      strategy: string;
+      sha?: string;
+      filesChanged: string[];
+      conflicts: string[];
+      conflictState: string;
+      cleanup: { worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean };
+      message: string;
+    };
+
+    expect(mergeResult).toMatchObject({
+      success: true,
+      merged: true,
+      strategy: 'merge',
+      filesChanged: ['task-note.txt'],
+      conflicts: [],
+      conflictState: 'none',
+      cleanup: {
+        worktreeRemoved: false,
+        branchDeleted: false,
+        pruned: false,
+      },
+      message: 'Task "01-first-task" merged successfully using merge strategy.',
+    });
+    expect(typeof mergeResult.sha).toBe('string');
     expect(readHeadBody(testRoot)).toBe(customMessage);
   });
 
@@ -1836,8 +2010,81 @@ Do it
       toolContext
     );
 
-    expect(mergeRaw).toContain("Merge failed:");
-    expect(mergeRaw).toContain("Custom merge message is not supported for rebase strategy");
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      strategy: string;
+      filesChanged: string[];
+      conflicts: string[];
+      conflictState: string;
+      cleanup: { worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean };
+      error?: string;
+      message: string;
+    };
+
+    expect(mergeResult).toEqual({
+      success: false,
+      merged: false,
+      strategy: 'rebase',
+      filesChanged: [],
+      conflicts: [],
+      conflictState: 'none',
+      cleanup: {
+        worktreeRemoved: false,
+        branchDeleted: false,
+        pruned: false,
+      },
+      error: 'Custom merge message is not supported for rebase strategy',
+      message: 'Merge failed: Custom merge message is not supported for rebase strategy',
+    });
+  });
+
+  it("returns helper-friendly merge JSON when task is not completed", async () => {
+    const feature = "merge-incomplete-task-feature";
+    const { hooks, toolContext } = await createSingleTaskWorktree(
+      testRoot,
+      "sess_merge_incomplete_task",
+      feature,
+      "Merge Incomplete Task Feature",
+      "Yes, this test validates the early hive_merge JSON contract for incomplete tasks.",
+    );
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        strategy: "merge",
+      },
+      toolContext
+    );
+
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      strategy: string;
+      filesChanged: string[];
+      conflicts: string[];
+      conflictState: string;
+      cleanup: { worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean };
+      error?: string;
+      message: string;
+    };
+
+    expect(mergeResult).toEqual({
+      success: false,
+      merged: false,
+      strategy: 'merge',
+      filesChanged: [],
+      conflicts: [],
+      conflictState: 'none',
+      cleanup: {
+        worktreeRemoved: false,
+        branchDeleted: false,
+        pruned: false,
+      },
+      error: 'Task must be completed before merging. Use hive_worktree_commit first.',
+      message: 'Merge failed: Task must be completed before merging. Use hive_worktree_commit first.',
+    });
   });
 
   it("auto-loads parallel exploration for planner agents by default", async () => {
@@ -2237,7 +2484,7 @@ Do the first thing.
 
     await workerHooks["chat.message"]?.(
       { sessionID: "sess_worker_start_bind", agent: "forager-worker" },
-      { message: {}, parts: [] }
+      { message: {} as any, parts: [] }
     );
 
     const sessionsPath = path.join(testRoot, ".hive", "sessions.json");

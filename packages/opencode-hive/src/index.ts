@@ -12,6 +12,7 @@ import { ARCHITECT_BEE_PROMPT } from './agents/architect.js';
 import { SWARM_BEE_PROMPT } from './agents/swarm.js';
 import { SCOUT_BEE_PROMPT } from './agents/scout.js';
 import { FORAGER_BEE_PROMPT } from './agents/forager.js';
+import { HIVE_HELPER_PROMPT } from './agents/hive-helper.js';
 import { HYGIENIC_BEE_PROMPT } from './agents/hygienic.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
@@ -183,6 +184,7 @@ import {
   PlanService,
   TaskService,
   ContextService,
+  NetworkService,
   ConfigService,
   AgentsMdService,
   DockerSandboxService,
@@ -194,7 +196,7 @@ import {
   resolveFeatureDirectoryName,
   type WorktreeInfo,
 } from "hive-core";
-import { buildWorkerPrompt, type ContextFile, type CompletedTask } from "./utils/worker-prompt";
+import { buildWorkerPrompt, type ContextFile as WorkerPromptContextFile, type CompletedTask } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
 import { applyTaskBudget, applyContextBudget, DEFAULT_BUDGET, type TruncationEvent } from "./utils/prompt-budgeting";
 import { writeWorkerPromptFile } from "./utils/prompt-file";
@@ -221,6 +223,7 @@ const plugin: Plugin = async (ctx) => {
   const planService = new PlanService(directory);
   const taskService = new TaskService(directory);
   const contextService = new ContextService(directory);
+  const networkService = new NetworkService(directory);
   const agentsMdService = new AgentsMdService(directory, contextService);
   const configService = new ConfigService(); // User config at ~/.config/opencode/agent_hive.json
   const sessionService = new SessionService(directory);
@@ -335,6 +338,8 @@ const plugin: Plugin = async (ctx) => {
     if (!session.directivePrompt) return null;
     const role = session.agent === 'scout-researcher' || session.baseAgent === 'scout-researcher'
       ? 'Scout'
+      : session.agent === 'hive-helper' || session.baseAgent === 'hive-helper'
+        ? 'Hive Helper'
       : session.agent === 'hygienic-reviewer' || session.baseAgent === 'hygienic-reviewer'
         ? 'Hygienic'
         : session.agent === 'architect-planner' || session.baseAgent === 'architect-planner'
@@ -508,13 +513,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     const planResult = planService.read(feature);
     const allTasks = taskService.list(feature);
 
-    const executionContextFiles = typeof (contextService as ContextService & {
-      listExecutionContext?: (featureName: string) => Array<{ name: string; content: string }>;
-    }).listExecutionContext === 'function'
-      ? (contextService as ContextService & {
-          listExecutionContext: (featureName: string) => Array<{ name: string; content: string }>;
-        }).listExecutionContext(feature)
-      : contextService.list(feature).filter(f => f.name !== 'overview');
+    const executionContextFiles = contextService.listExecutionContext(feature);
 
     const rawContextFiles = executionContextFiles.map(f => ({
       name: f.name,
@@ -528,7 +527,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     const taskBudgetResult = applyTaskBudget(rawPreviousTasks, { ...DEFAULT_BUDGET, feature });
     const contextBudgetResult = applyContextBudget(rawContextFiles, { ...DEFAULT_BUDGET, feature });
 
-    const contextFiles: ContextFile[] = contextBudgetResult.files.map(f => ({
+    const contextFiles: WorkerPromptContextFile[] = contextBudgetResult.files.map(f => ({
       name: f.name,
       content: f.content,
     }));
@@ -1646,34 +1645,55 @@ Expand your Discovery section and try again.`;
           task: tool.schema.string().describe('Task folder name to merge'),
           strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional().describe('Merge strategy (default: merge)'),
           message: tool.schema.string().optional().describe('Optional merge message for merge/squash. Empty uses default.'),
+          preserveConflicts: tool.schema.boolean().optional().describe('Keep merge conflict state intact instead of auto-aborting (default: false).'),
+          cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional().describe('Cleanup mode after a successful merge (default: none).'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
         },
-        async execute({ task, strategy = 'merge', message, feature: explicitFeature }) {
+        async execute({ task, strategy = 'merge', message, preserveConflicts, cleanup, feature: explicitFeature }) {
+          const failure = (error: string) => respond({
+            success: false,
+            merged: false,
+            strategy,
+            filesChanged: [],
+            conflicts: [],
+            conflictState: 'none',
+            cleanup: {
+              worktreeRemoved: false,
+              branchDeleted: false,
+              pruned: false,
+            },
+            error,
+            message: `Merge failed: ${error}`,
+          });
+
           const feature = resolveFeature(explicitFeature);
-          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+          if (!feature) return failure('No feature specified. Create a feature or provide feature param.');
 
           const taskInfo = taskService.get(feature, task);
-          if (!taskInfo) return `Error: Task "${task}" not found`;
-          if (taskInfo.status !== 'done') return "Error: Task must be completed before merging. Use hive_worktree_commit first.";
+          if (!taskInfo) return failure(`Task "${task}" not found`);
+          if (taskInfo.status !== 'done') return failure('Task must be completed before merging. Use hive_worktree_commit first.');
 
-          const result = await worktreeService.merge(feature, task, strategy, message);
+          const result = await worktreeService.merge(feature, task, strategy, message, {
+            preserveConflicts,
+            cleanup,
+          });
 
-          if (!result.success) {
-            if (result.conflicts && result.conflicts.length > 0) {
-              return `Merge failed with conflicts in:\n${result.conflicts.map(f => `- ${f}`).join('\n')}\n\nResolve conflicts manually or try a different strategy.`;
-            }
-            return `Merge failed: ${result.error}`;
-          }
+          const responseMessage = result.success
+            ? `Task "${task}" merged successfully using ${strategy} strategy.`
+            : `Merge failed: ${result.error}`;
 
-          return `Task "${task}" merged successfully using ${strategy} strategy.\nCommit: ${result.sha}\nFiles changed: ${result.filesChanged?.length || 0}`;
+          return respond({
+            ...result,
+            message: responseMessage,
+          });
         },
       }),
 
       // Context Tools
       hive_context_write: tool({
-        description: 'Write a context file for the feature. Context files store persistent notes, decisions, and reference material.',
+        description: 'Write a context file for the feature. System-known names: overview = human-facing summary/history, draft = planner scratchpad, execution-decisions = orchestration log; all other names stay durable free-form context.',
         args: {
-          name: tool.schema.string().describe('Context file name (e.g., "decisions", "architecture", "notes")'),
+          name: tool.schema.string().describe('Context file name (e.g., "overview", "draft", "execution-decisions", "learnings"). overview is the human-facing summary/history file, draft is planner scratchpad, execution-decisions is the orchestration log; other names remain durable free-form context.'),
           content: tool.schema.string().describe('Markdown content to write'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
         },
@@ -1683,7 +1703,31 @@ Expand your Discovery section and try again.`;
 
           bindFeatureSession(feature, toolContext);
           const filePath = contextService.write(feature, name, content);
-          return `Context file written: ${filePath}`;
+          return `Context file written: ${filePath}. Known names: overview = human-facing summary/history, draft = planner scratchpad, execution-decisions = orchestration log; all other context names remain durable free-form notes.`;
+        },
+      }),
+
+      hive_network_query: tool({
+        description: 'Query prior features for deterministic plan/context snippets. Returns JSON with query, currentFeature, and snippet results only. Callers must opt in to using the returned snippets.',
+        args: {
+          feature: tool.schema.string().optional().describe('Current feature to exclude from results. Defaults to active feature when available.'),
+          query: tool.schema.string().describe('Case-insensitive substring query over plan.md and network-safe context'),
+        },
+        async execute({ feature: explicitFeature, query }) {
+          const currentFeature = resolveFeature(explicitFeature) ?? null;
+          const results = networkService.query({
+            currentFeature: currentFeature ?? undefined,
+            query,
+            maxFeatures: 10,
+            maxSnippetsPerFeature: 3,
+            maxSnippetChars: 240,
+          });
+
+          return respond({
+            query,
+            currentFeature,
+            results,
+          });
         },
       }),
 
@@ -1733,8 +1777,8 @@ Expand your Discovery section and try again.`;
 
           const plan = planService.read(feature);
           const tasks = taskService.list(feature);
-          const contextFiles = contextService.list(feature);
-          const overview = contextFiles.find(file => file.name === 'overview') ?? null;
+          const featureContextFiles = contextService.list(feature);
+          const overview = contextService.getOverview(feature);
           const readThreads = (filePath: string): Array<unknown> | null => {
             if (!fs.existsSync(filePath)) {
               return null;
@@ -1776,10 +1820,14 @@ Expand your Discovery section and try again.`;
             };
           }));
 
-          const contextSummary = contextFiles.map(c => ({
+          const contextSummary = featureContextFiles.map(c => ({
             name: c.name,
             chars: c.content.length,
             updatedAt: c.updatedAt,
+            role: c.role,
+            includeInExecution: c.includeInExecution,
+            includeInAgentsMdSync: c.includeInAgentsMdSync,
+            includeInNetwork: c.includeInNetwork,
           }));
 
           const pendingTasks = tasksSummary.filter(t => t.status === 'pending');
@@ -1809,7 +1857,7 @@ Expand your Discovery section and try again.`;
               return 'Wait for plan approval or revise based on comments';
             }
             if (!hasPlan || planStatus === 'draft') {
-              return 'Write or revise plan with hive_plan_write. Keep plan.md as the human-facing review artifact; pre-task Mermaid overview diagrams are optional.';
+              return 'Write or revise plan with hive_plan_write. Refresh context/overview.md first for human review; plan.md remains execution truth and pre-task Mermaid overview diagrams are optional.';
             }
             if (tasks.length === 0) {
               return 'Generate tasks from plan with hive_tasks_sync';
@@ -1869,7 +1917,7 @@ Expand your Discovery section and try again.`;
               blockedBy,
             },
             context: {
-              fileCount: contextFiles.length,
+              fileCount: featureContextFiles.length,
               files: contextSummary,
             },
             nextAction: getNextAction(planStatus, tasksSummary, runnable, !!plan, !!overview),
@@ -1936,7 +1984,7 @@ Expand your Discovery section and try again.`;
           'hive_plan_write', 'hive_plan_read', 'hive_plan_approve',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_commit', 'hive_worktree_discard',
-          'hive_merge', 'hive_context_write', 'hive_status', 'hive_skill', 'hive_agents_md',
+          'hive_merge', 'hive_context_write', 'hive_network_query', 'hive_status', 'hive_skill', 'hive_agents_md',
         ];
         const result: Record<string, boolean> = {};
         for (const tool of allHiveTools) {
@@ -1984,7 +2032,7 @@ Expand your Discovery section and try again.`;
         temperature: architectUserConfig.temperature ?? 0.7,
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
         prompt: ARCHITECT_BEE_PROMPT + architectAutoLoadedSkills + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
-        tools: agentTools(['hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status', 'hive_skill']),
+        tools: agentTools(['hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_network_query', 'hive_status', 'hive_skill']),
         permission: {
           edit: "deny",  // Planners don't edit code
           task: "allow",
@@ -2008,7 +2056,7 @@ Expand your Discovery section and try again.`;
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
-          'hive_context_write', 'hive_status', 'hive_skill', 'hive_agents_md',
+          'hive_context_write', 'hive_network_query', 'hive_status', 'hive_skill', 'hive_agents_md',
         ]),
         permission: {
           question: "allow",
@@ -2054,6 +2102,22 @@ Expand your Discovery section and try again.`;
         },
       };
 
+      const hiveHelperUserConfig = configService.getAgentConfig('hive-helper');
+      const hiveHelperConfig = {
+        model: hiveHelperUserConfig.model,
+        variant: hiveHelperUserConfig.variant,
+        temperature: hiveHelperUserConfig.temperature ?? 0.3,
+        mode: 'subagent' as const,
+        description: 'Hive Helper - Runtime-only merge recovery helper. Merges branches and resolves preserved conflicts in isolation.',
+        prompt: HIVE_HELPER_PROMPT,
+        tools: agentTools(['hive_merge', 'hive_status', 'hive_context_write', 'hive_skill']),
+        permission: {
+          task: 'deny',
+          delegate: 'deny',
+          skill: 'allow',
+        },
+      };
+
       const hygienicUserConfig = configService.getAgentConfig('hygienic-reviewer');
       const hygienicAutoLoadedSkills = await buildAutoLoadedSkillsContent('hygienic-reviewer', configService, directory);
       const hygienicConfig = {
@@ -2063,7 +2127,7 @@ Expand your Discovery section and try again.`;
         mode: 'subagent' as const,
         description: 'Hygienic (Consultant/Reviewer/Debugger) - Reviews plan documentation quality. OKAY/REJECT verdict.',
         prompt: HYGIENIC_BEE_PROMPT + hygienicAutoLoadedSkills,
-        tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status', 'hive_skill']),
+        tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_network_query', 'hive_status', 'hive_skill']),
         permission: {
           edit: "deny",  // Reviewers don't edit
           task: "deny",
@@ -2078,6 +2142,7 @@ Expand your Discovery section and try again.`;
         'swarm-orchestrator': swarmConfig,
         'scout-researcher': scoutConfig,
         'forager-worker': foragerConfig,
+        'hive-helper': hiveHelperConfig,
         'hygienic-reviewer': hygienicConfig,
       };
 
@@ -2115,12 +2180,14 @@ Expand your Discovery section and try again.`;
         allAgents['hive-master'] = builtInAgentConfigs['hive-master'];
         allAgents['scout-researcher'] = builtInAgentConfigs['scout-researcher'];
         allAgents['forager-worker'] = builtInAgentConfigs['forager-worker'];
+        allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
         allAgents['hygienic-reviewer'] = builtInAgentConfigs['hygienic-reviewer'];
       } else {
         allAgents['architect-planner'] = builtInAgentConfigs['architect-planner'];
         allAgents['swarm-orchestrator'] = builtInAgentConfigs['swarm-orchestrator'];
         allAgents['scout-researcher'] = builtInAgentConfigs['scout-researcher'];
         allAgents['forager-worker'] = builtInAgentConfigs['forager-worker'];
+        allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
         allAgents['hygienic-reviewer'] = builtInAgentConfigs['hygienic-reviewer'];
       }
 
@@ -2145,6 +2212,7 @@ Expand your Discovery section and try again.`;
         delete (configAgent as Record<string, unknown>)['swarm-orchestrator'];
         delete (configAgent as Record<string, unknown>)['scout-researcher'];
         delete (configAgent as Record<string, unknown>)['forager-worker'];
+        delete (configAgent as Record<string, unknown>)['hive-helper'];
         delete (configAgent as Record<string, unknown>)['hygienic-reviewer'];
         Object.assign(configAgent, allAgents);
       }

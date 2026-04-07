@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Tools (15 total)
+## Tools (18 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -63,28 +63,78 @@
 ### Merge (1 tool)
 | Tool | Purpose |
 |------|---------|
-| `hive_merge` | Merge task branch (strategies: merge/squash/rebase); optional `message` for merge/squash |
+| `hive_merge` | Merge task branch (strategies: merge/squash/rebase); optional helper-friendly conflict preservation, cleanup, and `message` for merge/squash |
 
 #### hive_merge input notes
 
+- `preserveConflicts?: boolean` defaults to `false`; when `true`, merge conflicts stay in place for an isolated helper session instead of being auto-aborted.
+- `cleanup?: 'none' | 'worktree' | 'worktree+branch'` defaults to `'none'`; successful merges can keep the worktree, remove only the worktree, or remove the worktree and delete the task branch.
 - `message` is optional and applies to `merge`/`squash` strategies.
 - Do not provide `message` with `strategy: 'rebase'`.
 - Omit `message` (or pass `''`) to use default merge/squash message behavior.
+
+#### hive_merge output
+
+- Returns JSON with the shared merge result envelope plus a concise `message` string.
+- Shared result fields:
+  - `success`
+  - `merged`
+  - `strategy`
+  - `sha?`
+  - `filesChanged`
+  - `conflicts`
+  - `conflictState` (`none`, `aborted`, or `preserved`)
+  - `cleanup.worktreeRemoved`
+  - `cleanup.branchDeleted`
+  - `cleanup.pruned`
+  - `error?`
+- `conflictState: 'preserved'` means the caller requested `preserveConflicts: true` and must resolve the merge locally before cleanup can finish.
 
 ### Context (1 tool)
 | Tool | Purpose |
 |------|---------|
 | `hive_context_write` | Write context file, including reserved `context/overview.md` via `name: "overview"` |
 
+### Network (1 tool)
+| Tool | Purpose |
+|------|---------|
+| `hive_network_query` | Query prior features for deterministic `plan.md` + network-safe context snippets only |
+
+#### hive_network_query input
+
+- `feature?: string` — current feature to exclude from results; defaults to the active feature when available
+- `query: string` — case-insensitive substring query over `plan.md` and network-safe context files
+
+#### hive_network_query output
+
+- Always returns JSON with exactly these top-level fields:
+  - `query`
+  - `currentFeature` (`string | null`)
+  - `results`
+- `results` is an array of snippet records:
+  - `feature`
+  - `sourceType` (`plan` | `context`)
+  - `sourceName`
+  - `path`
+  - `updatedAt`
+  - `snippet`
+- No-match responses are explicit JSON with `results: []`.
+- The tool is read-only and callers must opt in to using returned snippets.
+
 ### Status (1 tool)
 | Tool | Purpose |
 |------|---------|
-| `hive_status` | Get comprehensive feature status as JSON, including overview metadata and per-document review counts |
+| `hive_status` | Get comprehensive feature status as JSON, including overview metadata, per-document review counts, and context inclusion flags |
 
-### Steering (1 tool)
+### AGENTS.md (1 tool)
 | Tool | Purpose |
 |------|---------|
-| `hive_steering` | Get steering comments from VSCode sidebar |
+| `hive_agents_md` | Initialize or sync AGENTS.md from codebase or feature context |
+
+### Skill (1 tool)
+| Tool | Purpose |
+|------|---------|
+| `hive_skill` | Load a Hive skill by name |
 
 ---
 
@@ -109,13 +159,15 @@
 | Worktree | 4 | start, create, commit, discard |
 | Merge | 1 | merge |
 | Context | 1 | write |
+| Network | 1 | query |
 | Status | 1 | status |
-| Steering | 1 | steering |
-| **Total** | **15** | |
+| AGENTS.md | 1 | agents_md |
+| Skill | 1 | skill |
+| **Total** | **18** | |
 
 ## Reserved Overview Convention
 
 - There is no dedicated overview write tool.
 - Use `hive_context_write({ name: "overview", content })` to maintain `.hive/features/<feature>/context/overview.md`.
-- Humans review `context/overview.md` first; `plan.md` stays authoritative for execution and task parsing.
+- Humans review `context/overview.md` first; `plan.md` stays authoritative for execution and task parsing, and can still include a readable design summary before `## Tasks`.
 - `hive_status` and the VS Code extension surface the overview as the primary human-facing document.

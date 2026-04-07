@@ -54,6 +54,13 @@ Intent Verbalization — verbalize before acting:
 - Parallel exploration → Load \`hive_skill("parallel-exploration")\` and follow the task mode delegation guidance.
 - Implementation → \`hive_worktree_start({ task: "01-task-name" })\` (creates worktree + Forager)
 
+### Hive Network Lookup
+- \`hive_network_query\` is an optional lookup. Use it only when prior feature evidence would materially improve planning, orchestration, or review-routing decisions.
+- There is no startup lookup. First orient on live files and the current feature state.
+- planning, orchestration, and review roles get network access first.
+- Treat retrieved snippets as historical leads, not execution truth. live-file verification still required.
+- Do not route worker execution through network retrieval. \`hive-helper\` is not a network consumer; it benefits indirectly from better upstream decisions.
+
 During Planning, use \`task({ subagent_type: "scout-researcher", ... })\` for exploration (BLOCKING — returns when done). For parallel exploration, issue multiple \`task()\` calls in the same message.
 
 **Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include file paths, line ranges when known, expected result, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
@@ -69,7 +76,13 @@ Save discoveries with \`hive_context_write\`:
 - User preferences
 - Research findings
 
-Use context files for durable worker notes, decisions, and research. Keep the human-facing plan summary in \`plan.md\`.
+Use the lightweight context model explicitly:
+- \`overview\` = human-facing summary/history
+- \`draft\` = planner scratchpad
+- \`execution-decisions\` = orchestration log
+- all other names = durable free-form context
+
+Treat the reserved names above as special-purpose files, not general notes. Use context files for durable worker notes, decisions, and research.
 
 When Scout returns substantial findings (3+ files discovered, architecture patterns, or key decisions), persist them to a feature context file via \`hive_context_write\`.
 
@@ -146,8 +159,8 @@ Each task declares dependencies with **Depends on**:
 - **Depends on**: none for no dependencies / parallel starts
 - **Depends on**: 1, 3 for explicit task-number dependencies
 
-\`plan.md\` is the primary human-facing summary and the execution truth.
-- Keep the summary before \`## Tasks\`.
+Refresh \`context/overview.md\` as the primary human-facing review surface, while \`plan.md\` remains execution truth.
+- Keep a readable \`Design Summary\` before \`## Tasks\` in \`plan.md\`.
 - Optional Mermaid is allowed only in the pre-task summary.
 - Never require Mermaid.
 - Use context files only for durable notes that help future execution.
@@ -206,9 +219,10 @@ hive_worktree_start({ task: "01-task-name" })  // Creates worktree + Forager
 When multiple tasks are in flight, prefer **batch completion** over per-task verification:
 1. Dispatch a batch of runnable tasks (ask user before parallelizing).
 2. Wait for all workers to finish.
-3. Merge each completed task branch into the current branch.
-4. Run full verification **once** on the merged batch: \`bun run build\` + \`bun run test\`.
-5. If verification fails, diagnose with full context. Fix directly or re-dispatch targeted tasks as needed.
+3. Decide which completed task branches belong in the next merge batch.
+4. Delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge completed tasks 01-task-name and 02-task-name into the current branch, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`.
+5. After the helper returns, inspect the merge summary and run full verification **once** on the merged batch: \`bun run build\` + \`bun run test\`.
+6. If verification fails, diagnose with full context. Fix directly or re-dispatch targeted tasks as needed.
 
 ### Failure Recovery (After 3 Consecutive Failures)
 1. Stop all further edits
@@ -217,7 +231,7 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 4. Ask user via question() — present options and context
 
 ### Merge Strategy
-\`hive_merge({ task: "01-task-name" })\` for each task after the batch completes, then verify the batch
+Hive decides when to merge, delegated \`hive-helper\` executes the batch, and Hive keeps post-batch verification.
 
 ### Post-Batch Review (Hygienic)
 After completing and merging a batch:
