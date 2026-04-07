@@ -1,10 +1,33 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getContextPath, ensureDir, fileExists, readText, writeText } from '../utils/paths.js';
-import type { ContextFile } from '../types.js';
-export type { ContextFile };
+import type { ContextFile, ContextRole } from '../types.js';
+export type { ContextFile, ContextRole };
 
 export const RESERVED_OVERVIEW_CONTEXT = 'overview';
+
+const DEFAULT_CONTEXT_CLASSIFICATION = {
+  role: 'durable',
+  includeInExecution: true,
+  includeInAgentsMdSync: true,
+  includeInNetwork: true,
+} satisfies {
+  role: ContextRole;
+  includeInExecution: boolean;
+  includeInAgentsMdSync: boolean;
+  includeInNetwork: boolean;
+};
+
+const SPECIAL_CONTEXTS = {
+  overview: { role: 'human', includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false },
+  draft: { role: 'scratchpad', includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false },
+  'execution-decisions': { role: 'operational', includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false },
+} as const satisfies Record<string, {
+  role: ContextRole;
+  includeInExecution: boolean;
+  includeInAgentsMdSync: boolean;
+  includeInNetwork: boolean;
+}>;
 
 export class ContextService {
   constructor(private projectRoot: string) {}
@@ -37,16 +60,21 @@ export class ContextService {
 
     const files = fs.readdirSync(contextPath, { withFileTypes: true })
       .filter(f => f.isFile() && f.name.endsWith('.md'))
-      .map(f => f.name);
+      .map(f => f.name)
+      .sort((a, b) => a.localeCompare(b));
 
     return files.map(name => {
       const filePath = path.join(contextPath, name);
       const stat = fs.statSync(filePath);
       const content = readText(filePath) || '';
+      const normalizedName = name.replace(/\.md$/, '');
+      const classification = this.classifyContextName(normalizedName);
+
       return {
-        name: name.replace(/\.md$/, ''),
+        name: normalizedName,
         content,
         updatedAt: stat.mtime.toISOString(),
+        ...classification,
       };
     });
   }
@@ -56,7 +84,15 @@ export class ContextService {
   }
 
   listExecutionContext(featureName: string): ContextFile[] {
-    return this.list(featureName).filter(file => file.name !== RESERVED_OVERVIEW_CONTEXT);
+    return this.list(featureName).filter(file => file.includeInExecution);
+  }
+
+  listAgentsMdSyncContext(featureName: string): ContextFile[] {
+    return this.list(featureName).filter(file => file.includeInAgentsMdSync);
+  }
+
+  listNetworkContext(featureName: string): ContextFile[] {
+    return this.list(featureName).filter(file => file.includeInNetwork);
   }
 
   delete(featureName: string, fileName: string): boolean {
@@ -120,5 +156,9 @@ export class ContextService {
   private normalizeFileName(name: string): string {
     const normalized = name.replace(/\.md$/, '');
     return `${normalized}.md`;
+  }
+
+  private classifyContextName(name: string): Pick<ContextFile, 'role' | 'includeInExecution' | 'includeInAgentsMdSync' | 'includeInNetwork'> {
+    return SPECIAL_CONTEXTS[name as keyof typeof SPECIAL_CONTEXTS] ?? DEFAULT_CONTEXT_CLASSIFICATION;
   }
 }

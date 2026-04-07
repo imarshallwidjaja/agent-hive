@@ -6,6 +6,7 @@ import { ARCHITECT_BEE_PROMPT } from './architect';
 import { SWARM_BEE_PROMPT } from './swarm';
 import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
+import { HIVE_HELPER_PROMPT } from './hive-helper';
 import { HYGIENIC_BEE_PROMPT } from './hygienic';
 
 describe('Orchestrator synthesis-before-delegation', () => {
@@ -177,6 +178,14 @@ describe('Hive (Hybrid) prompt', () => {
     it('tells hybrid planners to split broad research earlier', () => {
       expect(QUEEN_BEE_PROMPT).toContain('split broad research earlier');
     });
+
+    it('delegates batch merges to hive-helper and keeps post-batch verification with Hive', () => {
+      expect(QUEEN_BEE_PROMPT).toContain("task({ subagent_type: 'hive-helper'");
+      expect(QUEEN_BEE_PROMPT).toContain('delegate the merge batch');
+      expect(QUEEN_BEE_PROMPT).toContain('After the helper returns');
+      expect(QUEEN_BEE_PROMPT).toContain('bun run build');
+      expect(QUEEN_BEE_PROMPT).toContain('bun run test');
+    });
   });
 
   describe('turn termination and hard blocks', () => {
@@ -265,15 +274,24 @@ describe('Architect (Planner) prompt', () => {
   it('describes mermaid as optional in the plan preamble only', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('optional Mermaid');
     expect(ARCHITECT_BEE_PROMPT).toContain('dependency or sequence overview');
-    expect(ARCHITECT_BEE_PROMPT).not.toContain('context/overview.md');
-    expect(ARCHITECT_BEE_PROMPT).not.toContain('primary human review surface');
+    expect(ARCHITECT_BEE_PROMPT).toContain('context/overview.md');
+    expect(ARCHITECT_BEE_PROMPT).toContain('primary human-facing review surface');
   });
 
   it('teaches hive hybrid planning to keep the summary in plan.md', () => {
     expect(QUEEN_BEE_PROMPT).toContain('Design Summary');
     expect(QUEEN_BEE_PROMPT).toContain('before `## Tasks`');
     expect(QUEEN_BEE_PROMPT).toContain('optional Mermaid');
-    expect(QUEEN_BEE_PROMPT).not.toContain('context/overview.md');
+    expect(QUEEN_BEE_PROMPT).toContain('context/overview.md');
+  });
+
+  it('includes clarified context model in the hive agent', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('`overview` = human-facing summary/history');
+    expect(QUEEN_BEE_PROMPT).toContain('`draft` = planner scratchpad');
+    expect(QUEEN_BEE_PROMPT).toContain('`execution-decisions` = orchestration log');
+    expect(QUEEN_BEE_PROMPT).toContain('all other names');
+    expect(QUEEN_BEE_PROMPT).toContain('durable');
+    expect(QUEEN_BEE_PROMPT).not.toContain('`plan.md` is the primary human-facing summary');
   });
 });
 
@@ -329,6 +347,14 @@ describe('Swarm (Orchestrator) prompt', () => {
     it('tells orchestrators to split broad research earlier', () => {
       expect(SWARM_BEE_PROMPT).toContain('split broad research earlier');
     });
+
+    it('delegates batch merges to hive-helper and keeps post-batch verification with Swarm', () => {
+      expect(SWARM_BEE_PROMPT).toContain("task({ subagent_type: 'hive-helper'");
+      expect(SWARM_BEE_PROMPT).toContain('delegate the merge batch');
+      expect(SWARM_BEE_PROMPT).toContain('After the helper returns');
+      expect(SWARM_BEE_PROMPT).toContain('bun run build');
+      expect(SWARM_BEE_PROMPT).toContain('bun run test');
+    });
   });
 
   it('does NOT contain oracle reference', () => {
@@ -350,6 +376,12 @@ describe('Swarm (Orchestrator) prompt', () => {
     expect(SWARM_BEE_PROMPT).toContain('completion');
     expect(SWARM_BEE_PROMPT).toContain('primary human-facing document');
     expect(SWARM_BEE_PROMPT).toContain('plan.md');
+  });
+
+  it('treats reserved context names as special-purpose files', () => {
+    expect(SWARM_BEE_PROMPT).toContain('reserved special-purpose files');
+    expect(SWARM_BEE_PROMPT).toContain('research-*');
+    expect(SWARM_BEE_PROMPT).toContain('learnings');
   });
 });
 
@@ -399,10 +431,33 @@ describe('Forager (Worker/Coder) prompt', () => {
   });
 });
 
+describe('Hive Helper prompt', () => {
+  it('forbids planning and orchestration', () => {
+    expect(HIVE_HELPER_PROMPT).toContain('never plans or orchestrates');
+  });
+
+  it('uses hive_merge first and resolves preserved conflicts locally', () => {
+    expect(HIVE_HELPER_PROMPT).toContain('hive_merge');
+    expect(HIVE_HELPER_PROMPT).toContain("conflictState: 'preserved'");
+    expect(HIVE_HELPER_PROMPT).toContain('resolves locally');
+    expect(HIVE_HELPER_PROMPT).toContain('continues the merge batch');
+  });
+
+  it('requires concise summary-only output', () => {
+    expect(HIVE_HELPER_PROMPT).toContain('concise');
+    expect(HIVE_HELPER_PROMPT).toContain('merged/conflict/blocker summary');
+  });
+});
+
 describe('Scout (Explorer/Researcher) prompt', () => {
   it('has clean persistence example', () => {
     expect(SCOUT_BEE_PROMPT).not.toContain('Worker Prompt Builder');
     expect(SCOUT_BEE_PROMPT).toContain('research-{topic}');
+  });
+
+  it('treats reserved context names as special-purpose files', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('reserved names like `overview`, `draft`, and `execution-decisions`');
+    expect(SCOUT_BEE_PROMPT).toContain('not for general research notes');
   });
 
   it('covers the sharpened operating contract with structural anchors', () => {
@@ -452,9 +507,44 @@ describe('Hygienic (Consultant/Reviewer) prompt', () => {
   });
 });
 
+describe('Hive Network selective usage guidance', () => {
+  it('teaches Hive to use hive_network_query only as an optional lookup with no startup lookup', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('hive_network_query');
+    expect(QUEEN_BEE_PROMPT).toContain('optional lookup');
+    expect(QUEEN_BEE_PROMPT).toContain('no startup lookup');
+    expect(QUEEN_BEE_PROMPT).toContain('live-file verification still required');
+  });
+
+  it('teaches Architect to use hive_network_query selectively for planning only', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain('hive_network_query');
+    expect(ARCHITECT_BEE_PROMPT).toContain('optional lookup');
+    expect(ARCHITECT_BEE_PROMPT).toContain('planning, orchestration, and review roles get network access first');
+    expect(ARCHITECT_BEE_PROMPT).toContain('live-file verification still required');
+  });
+
+  it('teaches Swarm to use hive_network_query selectively for orchestration decisions only', () => {
+    expect(SWARM_BEE_PROMPT).toContain('hive_network_query');
+    expect(SWARM_BEE_PROMPT).toContain('optional lookup');
+    expect(SWARM_BEE_PROMPT).toContain('no startup lookup');
+    expect(SWARM_BEE_PROMPT).toContain('planning, orchestration, and review roles get network access first');
+  });
+
+  it('teaches Hygienic to treat network results as historical contrast, never authority over live repository state', () => {
+    expect(HYGIENIC_BEE_PROMPT).toContain('historical contrast');
+    expect(HYGIENIC_BEE_PROMPT).toContain('live repository state');
+    expect(HYGIENIC_BEE_PROMPT).toContain('citations');
+  });
+});
+
 describe('README.md documentation', () => {
   const README_PATH = path.resolve(import.meta.dir, '..', '..', 'README.md');
   const readmeContent = readFileSync(README_PATH, 'utf-8');
+  const ROOT_README_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'README.md');
+  const rootReadmeContent = readFileSync(ROOT_README_PATH, 'utf-8');
+  const HIVE_TOOLS_PATH = path.resolve(import.meta.dir, '..', '..', 'docs', 'HIVE-TOOLS.md');
+  const hiveToolsContent = readFileSync(HIVE_TOOLS_PATH, 'utf-8');
+  const PHILOSOPHY_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'PHILOSOPHY.md');
+  const philosophyContent = readFileSync(PHILOSOPHY_PATH, 'utf-8');
 
   describe('delegation planning alignment', () => {
     it('contains the heading "### Planning-mode delegation"', () => {
@@ -473,6 +563,67 @@ describe('README.md documentation', () => {
     it('contains the Canonical Delegation Threshold content', () => {
       expect(readmeContent).toContain('cannot name the file path upfront');
       expect(readmeContent).toContain('2+ files');
+    });
+  });
+
+  describe('hive-helper runtime docs alignment', () => {
+    it('documents hive-helper in runtime-facing recovery docs', () => {
+      expect(readmeContent).toContain('`hive-helper`');
+      expect(readmeContent).toContain('runtime-only');
+      expect(readmeContent).toContain('merge recovery');
+    });
+
+    it('documents hive-helper in the built-in agent defaults table', () => {
+      expect(readmeContent).toContain('| `hive-helper` | (none) |');
+    });
+
+    it('keeps hive-helper out of custom derived subagent docs', () => {
+      expect(readmeContent).toContain('does not appear in `.github/agents/`');
+      expect(readmeContent).toContain('does not appear in `packages/vscode-hive/src/generators/`');
+      expect(readmeContent).toContain('### Custom Derived Subagents');
+      expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `hygienic-reviewer`, or `hive-helper`');
+    });
+
+    it('documents hive-helper in the top-level runtime roster and recovery notes', () => {
+      expect(rootReadmeContent).toContain('**Hive Helper**');
+      expect(rootReadmeContent).toContain('Runtime-only merge recovery helper');
+      expect(rootReadmeContent).toContain('does not appear in generated `.github/agents/` docs');
+      expect(rootReadmeContent).toContain('does not appear in `packages/vscode-hive/src/generators/`');
+    });
+
+    it('documents the expanded hive_merge contract', () => {
+      expect(hiveToolsContent).toContain('preserveConflicts');
+      expect(hiveToolsContent).toContain('cleanup');
+      expect(hiveToolsContent).toContain('conflictState');
+      expect(hiveToolsContent).toContain('worktreeRemoved');
+      expect(hiveToolsContent).toContain('branchDeleted');
+      expect(hiveToolsContent).toContain('pruned');
+      expect(hiveToolsContent).toContain('message');
+    });
+  });
+
+  describe('Hive Network docs alignment', () => {
+    it('documents network access as optional and role-scoped in package docs', () => {
+      expect(readmeContent).toContain('optional lookup');
+      expect(readmeContent).toContain('no startup lookup');
+      expect(readmeContent).toContain('planning, orchestration, and review roles get network access first');
+      expect(readmeContent).toContain('live-file verification still required');
+    });
+
+    it('documents hive-helper as indirectly benefiting but not consuming network access', () => {
+      expect(readmeContent).toContain('hive-helper');
+      expect(readmeContent).toContain('not a network consumer');
+      expect(rootReadmeContent).toContain('not a network consumer');
+    });
+
+    it('updates philosophy with the post-1.3.6 architecture narrative and network boundaries', () => {
+      expect(philosophyContent).toContain('v1.3.7');
+      expect(philosophyContent).toContain('#73');
+      expect(philosophyContent).toContain('#74');
+      expect(philosophyContent).toContain('#75');
+      expect(philosophyContent).toContain('#76');
+      expect(philosophyContent).toContain('read-only retrieval');
+      expect(philosophyContent).toContain('planning, orchestration, and review roles get network access first');
     });
   });
 });

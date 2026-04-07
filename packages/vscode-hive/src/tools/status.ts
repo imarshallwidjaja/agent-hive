@@ -38,7 +38,7 @@ export function getStatusTools(workspaceRoot: string): ToolRegistration[] {
     const plan = planService.read(feature);
     const tasks = taskService.list(feature);
     const contextFiles = contextService.list(feature);
-    const overview = contextFiles.find(file => file.name === 'overview') ?? null;
+    const overview = contextService.getOverview(feature);
     const reviewCounts = readReviewCounts(workspaceRoot, feature);
 
     // Build task summaries with dependency info from raw status
@@ -71,6 +71,9 @@ export function getStatusTools(workspaceRoot: string): ToolRegistration[] {
       name: c.name,
       chars: c.content.length,
       updatedAt: c.updatedAt,
+      role: c.role,
+      includeInExecution: c.includeInExecution,
+      includeInAgentsMdSync: c.includeInAgentsMdSync,
     }));
 
     const pendingTasks = tasksSummary.filter(t => t.status === 'pending');
@@ -161,7 +164,7 @@ function getNextAction(
     return 'Wait for plan approval or revise based on comments';
   }
   if (!hasPlan || planStatus === 'draft') {
-    return 'Write or revise plan with hive_plan_write. Keep plan.md as the human-facing review artifact; pre-task Mermaid overview diagrams are optional.';
+    return 'Write or revise plan with hive_plan_write. Refresh context/overview.md first for human review; plan.md remains execution truth and pre-task Mermaid overview diagrams are optional.';
   }
   if (tasks.length === 0) {
     return 'Generate tasks from plan with hive_tasks_sync';

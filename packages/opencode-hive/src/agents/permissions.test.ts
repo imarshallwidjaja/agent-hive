@@ -102,6 +102,7 @@ describe('Agent permissions', () => {
     expect(opencodeConfig.agent?.['architect-planner']).toBeUndefined();
     expect(opencodeConfig.agent?.['scout-researcher']).toBeTruthy();
     expect(opencodeConfig.agent?.['forager-worker']).toBeTruthy();
+    expect(opencodeConfig.agent?.['hive-helper']).toBeTruthy();
     expect(opencodeConfig.agent?.['hygienic-reviewer']).toBeTruthy();
     expect(opencodeConfig.default_agent).toBe('hive-master');
 
@@ -143,6 +144,7 @@ describe('Agent permissions', () => {
     expect(opencodeConfig.agent?.['architect-planner']).toBeTruthy();
     expect(opencodeConfig.agent?.['scout-researcher']).toBeTruthy();
     expect(opencodeConfig.agent?.['forager-worker']).toBeTruthy();
+    expect(opencodeConfig.agent?.['hive-helper']).toBeTruthy();
     expect(opencodeConfig.agent?.['hygienic-reviewer']).toBeTruthy();
     expect(opencodeConfig.default_agent).toBe('architect-planner');
 
@@ -182,13 +184,56 @@ describe('Agent permissions', () => {
     } = {};
     await hooks.config?.(opencodeConfig);
 
-    const subagentNames = ['scout-researcher', 'forager-worker', 'hygienic-reviewer'] as const;
+    const subagentNames = ['scout-researcher', 'forager-worker', 'hive-helper', 'hygienic-reviewer'] as const;
     for (const name of subagentNames) {
       const perm = opencodeConfig.agent?.[name]?.permission;
       expect(perm).toBeTruthy();
       expect(perm!.task).toBe('deny');
       expect(perm!.delegate).toBe('deny');
     }
+  });
+
+  it('gives hive-helper only merge recovery tools and no auto-loaded skills appendix', async () => {
+    spyOn(ConfigService.prototype, 'get').mockReturnValue({
+      agentMode: 'unified',
+      agents: {
+        'hive-master': {},
+        'hive-helper': {},
+      },
+    } as any);
+
+    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const ctx: PluginInput = {
+      directory: repoRoot,
+      worktree: repoRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: { id: 'test', worktree: repoRoot, time: { created: Date.now() } },
+      client: createStubClient(),
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx as any);
+    const opencodeConfig: {
+      agent?: Record<string, AgentConfig>;
+      default_agent?: string;
+    } = {};
+    await hooks.config?.(opencodeConfig);
+
+    const helper = opencodeConfig.agent?.['hive-helper'];
+    expect(helper).toBeTruthy();
+    expect(helper?.tools).toBeTruthy();
+    expect(helper?.tools?.['hive_merge']).toBeUndefined();
+    expect(helper?.tools?.['hive_status']).toBeUndefined();
+    expect(helper?.tools?.['hive_context_write']).toBeUndefined();
+    expect(helper?.tools?.['hive_skill']).toBeUndefined();
+    expect(helper?.tools?.['hive_worktree_start']).toBe(false);
+    expect(helper?.tools?.['hive_worktree_create']).toBe(false);
+    expect(helper?.tools?.['hive_worktree_commit']).toBe(false);
+    expect(helper?.tools?.['hive_plan_write']).toBe(false);
+    expect(helper?.permission?.task).toBe('deny');
+    expect(helper?.permission?.delegate).toBe('deny');
+    expect(helper?.permission?.skill).toBe('allow');
+    expect(helper?.prompt).not.toContain('## Hive Skill:');
   });
 
   it('inherits subagent safety restrictions for custom forager and hygienic families', async () => {
@@ -289,6 +334,22 @@ describe('Per-agent tool filtering', () => {
     expect(foragerTools!['hive_skill']).toBeUndefined();
   });
 
+  it('hive-helper tool list is exactly [hive_merge, hive_status, hive_context_write, hive_skill]', async () => {
+    const agents = await buildConfig('unified');
+    const helperTools = agents['hive-helper']?.tools;
+    expect(helperTools).toBeTruthy();
+    expect(helperTools!['hive_merge']).toBeUndefined();
+    expect(helperTools!['hive_status']).toBeUndefined();
+    expect(helperTools!['hive_context_write']).toBeUndefined();
+    expect(helperTools!['hive_skill']).toBeUndefined();
+    expect(helperTools!['hive_plan_read']).toBe(false);
+    expect(helperTools!['hive_worktree_commit']).toBe(false);
+    expect(helperTools!['hive_worktree_start']).toBe(false);
+    expect(helperTools!['hive_worktree_create']).toBe(false);
+    expect(helperTools!['hive_tasks_sync']).toBe(false);
+    expect(helperTools!['hive_network_query']).toBe(false);
+  });
+
   it('scout has only read-only hive tools (no worktree_commit, no merge)', async () => {
     const agents = await buildConfig('unified');
     const scoutTools = agents['scout-researcher']?.tools;
@@ -303,7 +364,10 @@ describe('Per-agent tool filtering', () => {
     const agents = await buildConfig('unified');
     const hygienicTools = agents['hygienic-reviewer']?.tools;
     const scoutTools = agents['scout-researcher']?.tools;
-    expect(hygienicTools).toEqual(scoutTools);
+    expect(hygienicTools).toBeTruthy();
+    expect(scoutTools).toBeTruthy();
+    expect(hygienicTools!['hive_network_query']).toBeUndefined();
+    expect(scoutTools!['hive_network_query']).toBe(false);
   });
 
   it('architect has planning tools but no worktree tools', async () => {
@@ -311,6 +375,7 @@ describe('Per-agent tool filtering', () => {
     const architectTools = agents['architect-planner']?.tools;
     expect(architectTools).toBeTruthy();
     expect(architectTools!['hive_plan_write']).toBeUndefined();
+    expect(architectTools!['hive_network_query']).toBeUndefined();
     expect(architectTools!['hive_worktree_create']).toBe(false);
     expect(architectTools!['hive_worktree_start']).toBe(false);
     expect(architectTools!['hive_worktree_commit']).toBe(false);
@@ -323,9 +388,27 @@ describe('Per-agent tool filtering', () => {
     expect(swarmTools).toBeTruthy();
     expect(swarmTools!['hive_worktree_create']).toBeUndefined();
     expect(swarmTools!['hive_worktree_start']).toBeUndefined();
+    expect(swarmTools!['hive_network_query']).toBeUndefined();
     expect(swarmTools!['hive_plan_write']).toBe(false);
     expect(swarmTools!['hive_worktree_commit']).toBe(false);
     expect(swarmTools!['hive_plan_approve']).toBeUndefined();
+  });
+
+  it('limits hive_network_query to planning orchestration and review roles', async () => {
+    const unifiedAgents = await buildConfig('unified');
+    expect(unifiedAgents['hive-master']?.tools).toBeUndefined();
+    expect(unifiedAgents['hygienic-reviewer']?.tools?.['hive_network_query']).toBeUndefined();
+    expect(unifiedAgents['forager-worker']?.tools?.['hive_network_query']).toBe(false);
+    expect(unifiedAgents['scout-researcher']?.tools?.['hive_network_query']).toBe(false);
+    expect(unifiedAgents['hive-helper']?.tools?.['hive_network_query']).toBe(false);
+
+    const dedicatedAgents = await buildConfig('dedicated');
+    expect(dedicatedAgents['architect-planner']?.tools?.['hive_network_query']).toBeUndefined();
+    expect(dedicatedAgents['swarm-orchestrator']?.tools?.['hive_network_query']).toBeUndefined();
+    expect(dedicatedAgents['hygienic-reviewer']?.tools?.['hive_network_query']).toBeUndefined();
+    expect(dedicatedAgents['forager-worker']?.tools?.['hive_network_query']).toBe(false);
+    expect(dedicatedAgents['scout-researcher']?.tools?.['hive_network_query']).toBe(false);
+    expect(dedicatedAgents['hive-helper']?.tools?.['hive_network_query']).toBe(false);
   });
 
   it('hive-master has no tools filter (all tools allowed)', async () => {

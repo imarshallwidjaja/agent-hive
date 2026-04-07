@@ -52,7 +52,7 @@ We studied what actually works in the AI coding community and built upon it:
 |--------|-----------------|---------------------|
 | **[Boris Cherny's 13 Tips](https://www.anthropic.com/research/claude-code-best-practices)** | Feedback loops = 2-3x quality | Best-effort worker verification + batch testing |
 | **[Spec Kit](https://github.com/github/spec-kit)** | Specs are valuable | Specs emerge from dialogue, not upfront |
-| **[Conductor](https://github.com/gemini-cli-extensions/conductor)** | Context persistence matters | Feature-scoped `.hive/context/` |
+| **[Conductor](https://github.com/gemini-cli-extensions/conductor)** | Context persistence matters | Feature-scoped `.hive/features/<name>/context/` |
 | **[Ralph Wiggum](https://awesomeclaude.ai/ralph-wiggum)** | Retry loops work for verification | Best-effort verification, not infinite retries |
 | **[Oh My OpenCode](https://github.com/code-yeongyu/oh-my-opencode)** | Agent delegation scales | OMO as Hive Queen, Hive as workflow |
 | **Antigravity** | Plan gates build trust | Plan → Approve → Execute workflow |
@@ -65,25 +65,7 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full breakdown of what we learned fro
 
 ## Quick Start
 
-### Option A: GitHub Copilot
-
-1. Install the **Agent Hive** extension:
-   ```bash
-   code --install-extension tctinh.vscode-hive
-   ```
-
-2. Create `.github/agents/Hive.agent.md` in your repository (copy from this repo or see the [GitHub Copilot Guide](docs/GITHUB-COPILOT-GUIDE.md))
-
-3. In Copilot Chat, invoke your agent:
-   ```
-   I want to hive plan add user authentication
-   ```
-
-The extension provides Hive tools for plan-first development. The agent file teaches Copilot how to use them.
-
-See the full [GitHub Copilot Guide](docs/GITHUB-COPILOT-GUIDE.md) for creating and customizing your agent.
-
-### Option B: OpenCode
+### Option A: OpenCode
 
 Add `opencode-hive` to your `opencode.json`:
 
@@ -95,6 +77,16 @@ Add `opencode-hive` to your `opencode.json`:
 ```
 
 OpenCode handles the rest — no manual npm install needed.
+
+### Option B: VS Code companion (recommended with OpenCode)
+
+Install the **Agent Hive** extension for review, comments, and sidebar status:
+
+```bash
+code --install-extension tctinh.vscode-hive
+```
+
+Use the VS Code extension to review `context/overview.md`, comment on `plan.md`, approve work, and launch back into OpenCode when you want a visual companion. `vscode-hive` remains a review/sidebar surface in `1.4.0`; OpenCode is the supported execution harness.
 
 For local plugin testing:
 
@@ -378,6 +370,7 @@ You: Clear visibility into everything ✅
 | **Swarm (Orchestrator)** 🐝 | Orchestrates execution, delegates to workers |
 | **Scout (Explorer/Researcher/Retrieval)** 🔍 | Explores codebase + external docs/data |
 | **Forager (Worker/Coder)** 🍯 | Executes tasks in isolated worktrees |
+| **Hive Helper** 🛠️ | Runtime-only merge recovery helper for isolated branch reconciliation; not a network consumer |
 | **Hygienic (Consultant/Reviewer/Debugger)** 🧹 | Reviews plan quality, OKAY/REJECT verdict |
 
 ### Compaction-safe recovery path
@@ -400,6 +393,8 @@ This recovery model has a strict ownership boundary:
 Some notes:
 
 - Custom subagents derived from `forager-worker` are treated as task workers for compaction recovery.
+- `hive-helper` is treated as a runtime-only subagent for merge recovery; it does not appear in generated `.github/agents/` docs and does not appear in `packages/vscode-hive/src/generators/` in v1.
+- `hive-helper` is not a network consumer; it benefits indirectly from better upstream planning/orchestration/review decisions.
 - Custom subagents derived from `hygienic-reviewer` are treated as subagents.
 - One-recovery-attempt escalation means a primary or subagent session gets one normal directive replay cycle after compaction, then must escalate back to the parent/orchestrator instead of looping through repeated compact-and-replay retries.
 - The recovery prompt avoids telling agents to call broad status tools or re-scan the repository because that tends to recreate drift after compaction.
@@ -436,12 +431,12 @@ Convert all routes to use the new AuthService.
 
 ### Step 2: Review in VS Code
 
-Open VS Code. The Hive sidebar shows each feature's status and task progress, while `plan.md` remains the human-facing plan artifact. You can:
+Open VS Code. The Hive sidebar shows each feature's status and task progress, while `context/overview.md` is the primary human-facing branch summary and `plan.md` remains execution truth. You can:
 
-- Open `plan.md` for the human-facing summary, optional Mermaid overview diagram, and numbered task details
-- Add comments on `plan.md` as the main review surface
+- Open `context/overview.md` for the branch summary/history and main review surface
+- Open `plan.md` for the execution contract, optional Design Summary, and numbered task details
 - Browse other context files when supporting detail helps
-- Approve when the plan story and execution details both look right
+- Approve when the overview and execution details both look right
 
 ### Step 3: Execute
 
@@ -462,12 +457,13 @@ When done, you have:
 ```
 .hive/features/01_user-auth/
 ├── feature.json         # Feature metadata
-├── plan.md              # Human-facing plan artifact and execution source of truth
+├── plan.md              # Execution source of truth (can include a readable design summary before ## Tasks)
 ├── tasks.json           # Task list with status
 ├── comments/            # Review threads (plan comments live here)
 │   └── plan.json
 ├── context/             # Persistent knowledge files
-│   └── architecture.md
+│   ├── overview.md      # Primary human-facing branch summary/history
+│   └── architecture.md  # Optional example context file
 └── tasks/
     ├── 01-extract-auth-logic/
     │   ├── status.json  # Task state
@@ -496,7 +492,7 @@ When done, you have:
 │  Agent creates structured plan in .hive/                    │
 ├─────────────────────────────────────────────────────────────┤
 │  2. REVIEW (in VS Code)                                     │
-│  Review plan.md, inspect context files when useful          │
+│  Review context/overview.md first, then plan.md             │
 │  Add inline comments, refine, approve                       │
 ├─────────────────────────────────────────────────────────────┤
 │  3. EXECUTE (parallel-friendly)                             │
@@ -516,8 +512,8 @@ When done, you have:
 Visual management without leaving your editor:
 
 - **Sidebar** — See all features and progress at a glance
-- **Plan-Centered Review** — Open `plan.md` as the human-facing review and execution artifact
-- **Inline Comments** — Add review comments on `plan.md`
+- **Overview-First Review** — Open `context/overview.md` first, then use `plan.md` for execution details
+- **Inline Comments** — Add review comments on `context/overview.md` or `plan.md`
 - **Approve Button** — One-click plan approval
 - **Real-time Updates** — Watches `.hive/` for changes
 - **Launch Tasks** — Open tasks in OpenCode from VS Code
@@ -538,14 +534,14 @@ Visual management without leaving your editor:
 └─────────────────────────────────────┘
 ```
 
-**Review plan.md, optionally include a pre-task Mermaid overview, add comments, approve — all without leaving VS Code.**
+**Review `context/overview.md` first, then `plan.md`; optionally include a Mermaid summary before `## Tasks`, add comments, approve — all without leaving VS Code.**
 
 ### Extension Features
 
 | Feature | Description |
 |---------|-------------|
 | **Feature Tree** | Hierarchical view of all features, tasks, and their status |
-| **Plan Review** | Open `plan.md` for the human-facing summary, optional Mermaid overview, execution details, and inline commenting |
+| **Plan Review** | Open `context/overview.md` for branch review, then `plan.md` for execution details, optional design summary, and inline commenting |
 | **Task Details** | Expand any task to see spec.md (context) and report.md (results) |
 | **Status Icons** | Visual indicators: ✅ done, 🔄 in-progress, ⏳ pending, ❌ failed |
 | **Context Files** | Browse per-feature context files for supporting detail alongside the plan |
@@ -568,11 +564,12 @@ The extension watches your `.hive/` directory and displays the current state. Al
 2. **Click the Hive icon** in the Activity Bar (left sidebar)
 3. **Browse features** — Expand to see tasks, context, sessions
    - New features may be stored on disk as `01_feature-name`, while `.hive/active-feature` keeps the active logical feature name
-4. **Review the plan** — Click `plan.md` for the human-facing summary and numbered tasks
-5. **Use Mermaid only when it helps** — Optional pre-task `graph TD`, `graph LR`, or `sequenceDiagram` blocks can summarize the work
-6. **Add comments** — Use VS Code's comment feature on plan lines
-7. **Approve plans** — Click the approve button when the plan is aligned
-8. **Monitor progress** — Watch task status update in real-time as OpenCode executes
+4. **Review the branch summary** — Click `context/overview.md` first for the current summary/history
+5. **Review the execution plan** — Open `plan.md` for the execution contract and numbered tasks
+6. **Use Mermaid only when it helps** — Optional pre-task `graph TD`, `graph LR`, or `sequenceDiagram` blocks can summarize the work
+7. **Add comments** — Use VS Code's comment feature on overview or plan lines
+8. **Approve plans** — Click the approve button when the branch summary and plan are aligned
+9. **Monitor progress** — Watch task status update in real-time as OpenCode executes
 
 ---
 
@@ -580,10 +577,12 @@ The extension watches your `.hive/` directory and displays the current state. Al
 
 | Package | Platform | Description |
 |---------|----------|-------------|
-| **[opencode-hive](https://www.npmjs.com/package/opencode-hive)** | npm | OpenCode plugin — 6 specialized bee agents, 15 tools, 11 skills |
-| **[vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)** | VS Code | Visual management — review, comment, approve |
+| **[opencode-hive](https://www.npmjs.com/package/opencode-hive)** | npm | OpenCode plugin — 7 specialized bee agents, 18 tools, 11 skills. `hive_network_query` is a read-only retrieval tool for planning, orchestration, and review roles first. |
+| **[vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)** | VS Code | Review/sidebar companion — inspect status, comment on plans, approve, launch OpenCode |
 
 **Agent Selection:** Use `hive`, `architect`, or `swarm` as your primary agent. Use `@scout`, `@forager`, or `@hygienic` to mention subagents directly.
+
+When Hive Network is available, treat it as an optional lookup with no startup lookup. Start from the live request and live repository state, then query prior features only when it would materially improve planning, orchestration, or review. planning, orchestration, and review roles get network access first. live-file verification still required.
 
 ---
 
@@ -656,15 +655,15 @@ Hive complements these excellent projects:
 
 | Platform | Setup | Status |
 |----------|-------|--------|
-| **GitHub Copilot** | Install extension + create agent file | Full support |
+| **GitHub Copilot** | Legacy generated `.github/*` artifacts may still exist for continuity | Not supported as an execution harness in `1.4.0` |
 | **OpenCode** | Add `opencode-hive` plugin | Full support |
-| **VS Code** | Extension for visual management | Full support |
+| **VS Code** | Install the extension for review/sidebar workflows | Full support as a companion |
 
 Designed to work seamlessly with:
 
-- **[GitHub Copilot](https://github.com/features/copilot)** — Use keyword `hive` in Copilot Chat
-- **[OpenCode](https://opencode.ai)** — The AI coding CLI
-- **VS Code** — Your editor for reviews
+- **[OpenCode](https://opencode.ai)** — The primary Hive runtime and supported execution harness
+- **VS Code** — Your editor for overview/plan review, comments, and approvals via `vscode-hive`
+- **Legacy `.github/*` bootstrap artifacts** — Still generated for continuity when teams choose to keep them, but no longer the supported primary path
 - **Git** — Worktrees for isolation
 
 ---

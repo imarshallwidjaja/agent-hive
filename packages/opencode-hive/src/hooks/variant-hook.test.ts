@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'bun:test';
 import { normalizeVariant, createVariantHook, classifySession } from './variant-hook.js';
-import type { SessionKind } from 'hive-core';
-
 describe('normalizeVariant', () => {
   it('returns trimmed string for valid variant', () => {
     expect(normalizeVariant('high')).toBe('high');
@@ -66,6 +64,7 @@ describe('createVariantHook', () => {
         'swarm-orchestrator': 'medium',
         'scout-researcher': 'low',
         'forager-worker': 'high',
+        'hive-helper': 'medium',
         'hygienic-reviewer': 'medium',
       };
 
@@ -273,6 +272,12 @@ describe('classifySession', () => {
       const result = classifySession('hygienic-reviewer', NO_CUSTOM_AGENTS);
       expect(result.sessionKind).toBe('subagent');
       expect(result.baseAgent).toBe('hygienic-reviewer');
+    });
+
+    it('classifies hive-helper as subagent', () => {
+      const result = classifySession('hive-helper', NO_CUSTOM_AGENTS);
+      expect(result.sessionKind).toBe('subagent');
+      expect(result.baseAgent).toBe('hive-helper');
     });
   });
 
