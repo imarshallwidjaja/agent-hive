@@ -167,6 +167,9 @@ export interface SessionInfo {
   sessionId: string;
   featureName?: string;
   taskFolder?: string;
+  replayTaskFeatureName?: string;
+  replayTaskFolder?: string;
+  replayWorkerPromptPath?: string;
   agent?: string;
   baseAgent?: string;
   sessionKind?: SessionKind;

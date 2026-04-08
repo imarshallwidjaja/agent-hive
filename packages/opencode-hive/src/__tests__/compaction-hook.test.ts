@@ -140,6 +140,21 @@ function writeTaskCheckpointFixture(root: string, featureName: string, taskFolde
   const taskDir = path.join(root, '.hive', 'features', featureName, 'tasks', taskFolder);
   fs.mkdirSync(taskDir, { recursive: true });
   fs.writeFileSync(
+    path.join(taskDir, 'checkpoint.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      taskFolder,
+      currentObjective: 'Finish dashboard implementation',
+      stateSummary: 'Parent orchestrator should resume from the semantic checkpoint.',
+      importantDecisions: ['Use checkpoint.json first.'],
+      filesInPlay: [`.hive/features/${featureName}/tasks/${taskFolder}/checkpoint.json`],
+      verificationState: 'Targeted tests pending.',
+      nextAction: 'Resume from durable task artifacts only.',
+      status: 'active',
+      updatedAt: '2026-04-08T00:00:00.000Z',
+    }, null, 2),
+  );
+  fs.writeFileSync(
     path.join(taskDir, 'status.json'),
     JSON.stringify({
       status: 'in_progress',
@@ -298,14 +313,20 @@ describe('compaction replay on supported hooks', () => {
     expect(cleared?.replayDirectivePending).toBe(false);
   });
 
-  test('session.status idle marks replay pending for task-worker sessions', async () => {
+  test('session.status idle marks replay pending on the parent session for task-worker children', async () => {
     const sessionService = new SessionService(testRoot);
+    sessionService.trackGlobal('sess-parent-orchestrator', {
+      agent: 'hive-master',
+      sessionKind: 'primary',
+      replayDirectivePending: false,
+    } as any);
     sessionService.trackGlobal('sess-tw-idle', {
       agent: 'forager-worker',
       sessionKind: 'task-worker',
       featureName: 'my-feature',
       taskFolder: '01-task',
       workerPromptPath: '.hive/features/my-feature/tasks/01-task/worker-prompt.md',
+      parentSessionId: 'sess-parent-orchestrator',
       replayDirectivePending: false,
     } as any);
 
@@ -319,28 +340,71 @@ describe('compaction replay on supported hooks', () => {
       } as any,
     });
 
-    const marked = sessionService.getGlobal('sess-tw-idle');
-    expect(marked?.replayDirectivePending).toBe(true);
+    const child = sessionService.getGlobal('sess-tw-idle');
+    const parent = sessionService.getGlobal('sess-parent-orchestrator');
+    expect(child?.replayDirectivePending).toBe(false);
+    expect(parent?.replayDirectivePending).toBe(true);
+    expect(parent?.replayTaskFeatureName).toBe('my-feature');
+    expect(parent?.replayTaskFolder).toBe('01-task');
+    expect(parent?.replayWorkerPromptPath).toBe('.hive/features/my-feature/tasks/01-task/worker-prompt.md');
   });
 
-  test('tool.execute.after marks replay pending after task tool returns for task-worker sessions', async () => {
+  test('tool.execute.after marks replay pending on the parent session after task-worker launch returns', async () => {
     const sessionService = new SessionService(testRoot);
     sessionService.trackGlobal('sess-task-after', {
-      agent: 'forager-worker',
-      sessionKind: 'task-worker',
-      featureName: 'my-feature',
-      taskFolder: '01-task',
-      workerPromptPath: '.hive/features/my-feature/tasks/01-task/worker-prompt.md',
+      agent: 'hive-master',
+      sessionKind: 'primary',
       replayDirectivePending: false,
     } as any);
 
+    await hooks['tool.execute.before']?.(
+      { tool: 'task', sessionID: 'sess-task-after', callID: 'call-task-1' } as any,
+      {
+        args: {
+          subagent_type: 'forager-worker',
+          description: 'Hive: 01-task',
+          prompt: 'Follow instructions in @.hive/features/my-feature/tasks/01-task/worker-prompt.md',
+        },
+      } as any,
+    );
+
     await hooks['tool.execute.after']?.(
       { tool: 'task', sessionID: 'sess-task-after', callID: 'call-task-1' } as any,
-      { title: 'task', output: 'done', metadata: {} } as any,
+      { title: 'task', output: 'done', metadata: { sessionId: 'sess-child-worker' } } as any,
     );
 
     const marked = sessionService.getGlobal('sess-task-after');
     expect(marked?.replayDirectivePending).toBe(true);
+    expect(marked?.replayTaskFeatureName).toBe('my-feature');
+    expect(marked?.replayTaskFolder).toBe('01-task');
+    expect(marked?.replayWorkerPromptPath).toBe('.hive/features/my-feature/tasks/01-task/worker-prompt.md');
+  });
+
+  test('messages.transform replays the selected checkpoint into the parent session after child idle', async () => {
+    writeTaskCheckpointFixture(testRoot, 'my-feature', '05-implement-dashboard');
+
+    const sessionService = new SessionService(testRoot);
+    sessionService.trackGlobal('sess-parent-resume', {
+      agent: 'hive-master',
+      sessionKind: 'primary',
+      replayDirectivePending: true,
+      replayTaskFeatureName: 'my-feature',
+      replayTaskFolder: '05-implement-dashboard',
+      replayWorkerPromptPath: '.hive/features/my-feature/tasks/05-implement-dashboard/worker-prompt.md',
+    } as any);
+
+    const output = buildCompactionTransformOutput('sess-parent-resume', testRoot);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+
+    expect(output.messages).toHaveLength(3);
+    const replayText = (output.messages[2].parts[0] as any).text;
+    expect(replayText).toContain('Task checkpoint rehydration');
+    expect(replayText).toContain('.hive/features/my-feature/tasks/05-implement-dashboard/checkpoint.json');
+    expect(replayText).toContain('Parent orchestrator should resume from the semantic checkpoint.');
+    expect(replayText).not.toContain('RAW_PROMPT_SHOULD_NOT_SURVIVE');
+
+    const cleared = sessionService.getGlobal('sess-parent-resume');
+    expect(cleared?.replayDirectivePending).toBe(false);
   });
 
   test('messages.transform captures initial non-synthetic user directive for later recovery', async () => {

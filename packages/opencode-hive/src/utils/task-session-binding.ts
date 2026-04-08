@@ -12,6 +12,8 @@ export interface TaskToolLaunchState {
   source: 'opencode-task-tool';
 }
 
+export type PendingTaskToolLaunches = Record<string, TaskToolLaunchState>;
+
 interface ClassifyTaskToolLaunchInput {
   sessionID: string;
   tool?: string;
@@ -20,7 +22,18 @@ interface ClassifyTaskToolLaunchInput {
     description?: string;
     prompt?: string;
   };
-  previous?: TaskToolLaunchState;
+}
+
+interface RecordTaskToolLaunchInput extends ClassifyTaskToolLaunchInput {
+  pending: PendingTaskToolLaunches;
+  callID?: string;
+}
+
+interface ConsumeTaskToolLaunchInput {
+  pending: PendingTaskToolLaunches;
+  sessionID: string;
+  callID?: string;
+  tool?: string;
 }
 
 const WORKER_PROMPT_PATTERN = /@((?:\.hive\/)?features\/([^/]+)\/tasks\/([^/]+)\/worker-prompt\.md)/;
@@ -65,6 +78,45 @@ export function classifyTaskToolLaunch(input: ClassifyTaskToolLaunchInput): Task
     kind: 'subagent',
     source: 'opencode-task-tool',
   };
+}
+
+function toPendingTaskToolLaunchKey(sessionID: string, callID: string): string {
+  return `${sessionID}:${callID}`;
+}
+
+export function recordTaskToolLaunch(input: RecordTaskToolLaunchInput): PendingTaskToolLaunches {
+  const launch = classifyTaskToolLaunch(input);
+  if (!launch) {
+    return input.pending;
+  }
+
+  const callID = input.callID?.trim();
+  if (!callID) {
+    return input.pending;
+  }
+
+  return {
+    ...input.pending,
+    [toPendingTaskToolLaunchKey(input.sessionID, callID)]: launch,
+  };
+}
+
+export function consumeTaskToolLaunch(input: ConsumeTaskToolLaunchInput): {
+  launch?: TaskToolLaunchState;
+  pending: PendingTaskToolLaunches;
+} {
+  if (input.tool && input.tool !== 'task') {
+    return { pending: input.pending };
+  }
+
+  const callID = input.callID?.trim();
+  if (!callID) {
+    return { pending: input.pending };
+  }
+
+  const key = toPendingTaskToolLaunchKey(input.sessionID, callID);
+  const { [key]: launch, ...rest } = input.pending;
+  return { launch, pending: rest };
 }
 
 export function normalizeHiveFeatureName(featureName: string): string {

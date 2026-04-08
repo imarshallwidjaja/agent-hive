@@ -2884,4 +2884,84 @@ Do the first thing.
     );
     expect(fs.existsSync(featureCheckpoint)).toBe(false);
   });
+
+  it('binds interleaved task() launches by sessionID and callID without crossing child sessions', async () => {
+    const { hooks, toolContext } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_interleave_parent_a',
+      'interleave-feature-a',
+      'Interleave Feature A',
+      'Yes, this regression test validates that concurrent task() launches bind child sessions by sessionID plus callID instead of a single global slot.',
+    );
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'interleave-feature-b' }, createToolContext('sess_interleave_parent_b'));
+    await hooks.tool!.hive_plan_write.execute(
+      {
+        content: createSingleTaskPlan(
+          'Interleave Feature B',
+          'Yes, this regression test creates a second in-flight task() launch to prove bindings stay isolated per parent session and call.'
+        ),
+        feature: 'interleave-feature-b',
+      },
+      createToolContext('sess_interleave_parent_b'),
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'interleave-feature-b' }, createToolContext('sess_interleave_parent_b'));
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'interleave-feature-b' }, createToolContext('sess_interleave_parent_b'));
+    await hooks.tool!.hive_worktree_start.execute(
+      { feature: 'interleave-feature-b', task: FIRST_TASK },
+      createToolContext('sess_interleave_parent_b'),
+    );
+
+    await hooks['tool.execute.before']?.(
+      { tool: 'task', sessionID: 'sess_interleave_parent_a', callID: 'call-a' } as any,
+      {
+        args: {
+          subagent_type: 'forager-worker',
+          description: 'Hive: 01-first-task',
+          prompt: 'Follow instructions in @.hive/features/01_interleave-feature-a/tasks/01-first-task/worker-prompt.md',
+        },
+      } as any,
+    );
+    await hooks['tool.execute.before']?.(
+      { tool: 'task', sessionID: 'sess_interleave_parent_b', callID: 'call-b' } as any,
+      {
+        args: {
+          subagent_type: 'forager-worker',
+          description: 'Hive: 01-first-task',
+          prompt: 'Follow instructions in @.hive/features/02_interleave-feature-b/tasks/01-first-task/worker-prompt.md',
+        },
+      } as any,
+    );
+
+    await hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: 'sess_interleave_parent_a', callID: 'call-a' } as any,
+      { metadata: { sessionId: 'sess_child_a' }, output: 'Worker A launched.' } as any,
+    );
+    await hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: 'sess_interleave_parent_b', callID: 'call-b' } as any,
+      { metadata: { sessionId: 'sess_child_b' }, output: 'Worker B launched.' } as any,
+    );
+
+    const sessionsPath = path.join(testRoot, '.hive', 'sessions.json');
+    const sessions = JSON.parse(fs.readFileSync(sessionsPath, 'utf-8'));
+    const childA = sessions.sessions.find((s: { sessionId: string }) => s.sessionId === 'sess_child_a');
+    const childB = sessions.sessions.find((s: { sessionId: string }) => s.sessionId === 'sess_child_b');
+
+    expect(childA).toMatchObject({
+      sessionId: 'sess_child_a',
+      parentSessionId: 'sess_interleave_parent_a',
+      featureName: 'interleave-feature-a',
+      taskFolder: FIRST_TASK,
+    });
+    expect(childB).toMatchObject({
+      sessionId: 'sess_child_b',
+      parentSessionId: 'sess_interleave_parent_b',
+      featureName: 'interleave-feature-b',
+      taskFolder: FIRST_TASK,
+    });
+  });
+
+  it('declares tool.execute.after in the supported hook source of truth', () => {
+    expect([...SUPPORTED_PLUGIN_HOOKS]).toContain('tool.execute.after');
+  });
 });

@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { getTaskReportPath, getTaskSpecPath, getTaskStatusPath, normalizePath, readJson, readText } from 'hive-core';
 import type { TaskStatus } from 'hive-core';
+import { readTaskCheckpoint } from './task-checkpoint.js';
 
 export const MAX_REHYDRATION_CHARS = 1200;
 const MAX_SUMMARY_CHARS = 280;
@@ -62,15 +63,36 @@ function appendLine(lines: string[], line: string | null) {
   lines.push(line);
 }
 
+function appendList(lines: string[], heading: string, values: string[] | undefined, maxItems = 3, maxChars = MAX_FILE_SNIPPET_CHARS) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return;
+  }
+
+  const sanitized = values
+    .map((value) => clampText(value, maxChars))
+    .filter((value): value is string => !!value)
+    .slice(0, maxItems);
+
+  if (sanitized.length === 0) {
+    return;
+  }
+
+  lines.push(heading);
+  for (const value of sanitized) {
+    lines.push(`- ${value}`);
+  }
+}
+
 export function buildCheckpointRehydration(input: CheckpointRehydrationInput): string | null {
   const statusPath = getTaskStatusPath(input.projectRoot, input.featureName, input.taskFolder);
   const specPath = getTaskSpecPath(input.projectRoot, input.featureName, input.taskFolder);
   const reportPath = getTaskReportPath(input.projectRoot, input.featureName, input.taskFolder);
+  const checkpoint = readTaskCheckpoint(input.projectRoot, input.featureName, input.taskFolder);
   const status = readJson<TaskStatus>(statusPath);
   const specSnippet = sanitizeSupportFile(readText(specPath), MAX_FILE_SNIPPET_CHARS);
   const reportSnippet = sanitizeSupportFile(readText(reportPath), MAX_FILE_SNIPPET_CHARS);
 
-  if (!status && !specSnippet && !reportSnippet) {
+  if (!checkpoint && !status && !specSnippet && !reportSnippet) {
     return null;
   }
 
@@ -80,14 +102,28 @@ export function buildCheckpointRehydration(input: CheckpointRehydrationInput): s
     `Task: ${input.taskFolder}`,
   ];
 
-  appendLine(lines, status?.planTitle ? `Title: ${status.planTitle}` : null);
-  appendLine(lines, status?.status ? `Durable status: ${status.status}` : null);
-  appendLine(lines, clampText(status?.summary, MAX_SUMMARY_CHARS) ? `Checkpoint summary: ${clampText(status?.summary, MAX_SUMMARY_CHARS)}` : null);
-  appendLine(lines, status?.workerSession?.attempt ? `Worker attempt: ${status.workerSession.attempt}` : null);
-  appendLine(lines, status?.workerSession?.mode ? `Execution mode: ${status.workerSession.mode}` : null);
+  if (checkpoint) {
+    appendLine(lines, clampText(checkpoint.currentObjective, MAX_SUMMARY_CHARS) ? `Objective: ${clampText(checkpoint.currentObjective, MAX_SUMMARY_CHARS)}` : null);
+    appendLine(lines, checkpoint.status ? `Checkpoint status: ${checkpoint.status}` : null);
+    appendLine(lines, clampText(checkpoint.stateSummary, MAX_SUMMARY_CHARS) ? `Checkpoint summary: ${clampText(checkpoint.stateSummary, MAX_SUMMARY_CHARS)}` : null);
+    appendList(lines, 'Important decisions:', checkpoint.importantDecisions, 3, MAX_FILE_SNIPPET_CHARS);
+    appendList(lines, 'Files already in play:', checkpoint.filesInPlay, 4, MAX_FILE_SNIPPET_CHARS);
+    appendLine(lines, clampText(checkpoint.verificationState, MAX_FILE_SNIPPET_CHARS) ? `Verification state: ${clampText(checkpoint.verificationState, MAX_FILE_SNIPPET_CHARS)}` : null);
+    appendLine(lines, clampText(checkpoint.nextAction, MAX_FILE_SNIPPET_CHARS) ? `Next action: ${clampText(checkpoint.nextAction, MAX_FILE_SNIPPET_CHARS)}` : null);
+    appendLine(lines, clampText(checkpoint.blocker, MAX_FILE_SNIPPET_CHARS) ? `Blocker: ${clampText(checkpoint.blocker, MAX_FILE_SNIPPET_CHARS)}` : null);
+  } else {
+    appendLine(lines, status?.planTitle ? `Title: ${status.planTitle}` : null);
+    appendLine(lines, status?.status ? `Durable status: ${status.status}` : null);
+    appendLine(lines, clampText(status?.summary, MAX_SUMMARY_CHARS) ? `Checkpoint summary: ${clampText(status?.summary, MAX_SUMMARY_CHARS)}` : null);
+    appendLine(lines, status?.workerSession?.attempt ? `Worker attempt: ${status.workerSession.attempt}` : null);
+    appendLine(lines, status?.workerSession?.mode ? `Execution mode: ${status.workerSession.mode}` : null);
+  }
 
   lines.push('Use durable files, not the vanished chat window:');
   lines.push(`- @${input.workerPromptPath}`);
+  if (checkpoint) {
+    lines.push(`- @${taskBasePath}/checkpoint.json`);
+  }
   lines.push(`- @${taskBasePath}/status.json`);
   lines.push(`- @${taskBasePath}/spec.md`);
   if (reportSnippet || readText(reportPath)) {
