@@ -407,6 +407,28 @@ describe('compaction replay on supported hooks', () => {
     expect(cleared?.replayDirectivePending).toBe(false);
   });
 
+  test('messages.transform advertises indexed feature attachment paths for parent replay', async () => {
+    writeTaskCheckpointFixture(testRoot, '01_my-feature', '05-implement-dashboard');
+
+    const sessionService = new SessionService(testRoot);
+    sessionService.trackGlobal('sess-parent-indexed', {
+      agent: 'hive-master',
+      sessionKind: 'primary',
+      replayDirectivePending: true,
+      replayTaskFeatureName: 'my-feature',
+      replayTaskFolder: '05-implement-dashboard',
+      replayWorkerPromptPath: '.hive/features/01_my-feature/tasks/05-implement-dashboard/worker-prompt.md',
+    } as any);
+
+    const output = buildCompactionTransformOutput('sess-parent-indexed', testRoot);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+
+    expect(output.messages).toHaveLength(3);
+    const replayText = (output.messages[2].parts[0] as any).text;
+    expect(replayText).toContain('.hive/features/01_my-feature/tasks/05-implement-dashboard/checkpoint.json');
+    expect(replayText).not.toContain('.hive/features/my-feature/tasks/05-implement-dashboard/checkpoint.json');
+  });
+
   test('messages.transform captures initial non-synthetic user directive for later recovery', async () => {
     const output = {
       messages: [

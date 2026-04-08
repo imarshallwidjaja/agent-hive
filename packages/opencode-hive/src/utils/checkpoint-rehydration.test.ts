@@ -127,6 +127,39 @@ describe('buildCheckpointRehydration', () => {
     expect(text!.length).toBeLessThanOrEqual(MAX_REHYDRATION_CHARS);
   });
 
+  test('advertises indexed feature attachment paths when the logical feature name resolves to an indexed directory', () => {
+    const taskDir = path.join(testRoot, '.hive', 'features', '01_feature-a', 'tasks', '01-first-task');
+    fs.mkdirSync(taskDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(taskDir, 'checkpoint.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        taskFolder: '01-first-task',
+        currentObjective: 'Resume indexed feature replay.',
+        stateSummary: 'Attachment paths should point at the indexed feature directory.',
+        importantDecisions: [],
+        filesInPlay: [],
+        verificationState: 'Pending.',
+        status: 'active',
+        updatedAt: '2026-04-08T00:00:00.000Z',
+      }, null, 2),
+    );
+
+    const text = buildCheckpointRehydration({
+      projectRoot: testRoot,
+      featureName: 'feature-a',
+      taskFolder: '01-first-task',
+      workerPromptPath: '.hive/features/01_feature-a/tasks/01-first-task/worker-prompt.md',
+    });
+
+    expect(text).not.toBeNull();
+    expect(text).toContain('.hive/features/01_feature-a/tasks/01-first-task/checkpoint.json');
+    expect(text).toContain('.hive/features/01_feature-a/tasks/01-first-task/status.json');
+    expect(text).toContain('.hive/features/01_feature-a/tasks/01-first-task/spec.md');
+    expect(text).not.toContain('.hive/features/feature-a/tasks/01-first-task/checkpoint.json');
+  });
+
   test('returns null when no durable task state can be found', () => {
     const text = buildCheckpointRehydration({
       projectRoot: testRoot,

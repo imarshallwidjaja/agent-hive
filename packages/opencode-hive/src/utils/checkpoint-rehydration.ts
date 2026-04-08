@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { getTaskReportPath, getTaskSpecPath, getTaskStatusPath, normalizePath, readJson, readText } from 'hive-core';
+import { getTaskReportPath, getTaskSpecPath, getTaskStatusPath, normalizePath, readJson, readText, resolveFeatureDirectoryName } from 'hive-core';
 import type { TaskStatus } from 'hive-core';
 import { readTaskCheckpoint } from './task-checkpoint.js';
 
@@ -96,7 +96,8 @@ export function buildCheckpointRehydration(input: CheckpointRehydrationInput): s
     return null;
   }
 
-  const taskBasePath = normalizePath(path.posix.join('.hive', 'features', input.featureName, 'tasks', input.taskFolder));
+  const featureDir = resolveFeatureDirectoryName(input.projectRoot, input.featureName);
+  const taskBasePath = normalizePath(path.posix.join('.hive', 'features', featureDir, 'tasks', input.taskFolder));
   const lines: string[] = [
     'Task checkpoint rehydration — prior chat may have been compacted or a child session just returned idle.',
     `Task: ${input.taskFolder}`,
