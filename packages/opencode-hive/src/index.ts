@@ -202,7 +202,7 @@ import { applyTaskBudget, applyContextBudget, DEFAULT_BUDGET, type TruncationEve
 import { writeWorkerPromptFile } from "./utils/prompt-file";
 import { formatRelativeTime } from "./utils/format";
 import { finalizeTaskCheckpoint, readTaskCheckpoint, updateTaskCheckpoint } from './utils/task-checkpoint.js';
-import { classifyTaskToolLaunch, extractTaskToolChildSessionId, toChildSessionPatch, type TaskToolLaunchState } from './utils/task-session-binding.js';
+import { consumeTaskToolLaunch, extractTaskToolChildSessionId, recordTaskToolLaunch, toChildSessionPatch, type PendingTaskToolLaunches } from './utils/task-session-binding.js';
 import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_COMMANDS, HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
@@ -242,7 +242,7 @@ const plugin: Plugin = async (ctx) => {
     baseDir: directory,
     hiveDir: path.join(directory, '.hive'),
   });
-  let pendingTaskToolLaunch: TaskToolLaunchState | undefined;
+  let pendingTaskToolLaunches: PendingTaskToolLaunches = {};
 
   const customAgentConfigsForClassification = getCustomAgentConfigsCompat(configService);
   const runtimeContext = detectContext(worktree || directory);
@@ -445,7 +445,75 @@ const plugin: Plugin = async (ctx) => {
     });
   };
 
-  const markReplayPendingIfNeeded = (sessionID: string, session?: { directivePrompt?: string; directiveRecoveryState?: 'available' | 'consumed' | 'escalated'; sessionKind?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string }) => {
+  const getReplaySelection = (session?: {
+    sessionKind?: string;
+    featureName?: string;
+    taskFolder?: string;
+    workerPromptPath?: string;
+    replayTaskFeatureName?: string;
+    replayTaskFolder?: string;
+    replayWorkerPromptPath?: string;
+  }): { featureName: string; taskFolder: string; workerPromptPath: string } | undefined => {
+    if (session?.replayTaskFeatureName && session?.replayTaskFolder && session?.replayWorkerPromptPath) {
+      return {
+        featureName: session.replayTaskFeatureName,
+        taskFolder: session.replayTaskFolder,
+        workerPromptPath: session.replayWorkerPromptPath,
+      };
+    }
+
+    if (shouldUseWorkerReplay(session)) {
+      return {
+        featureName: session.featureName!,
+        taskFolder: session.taskFolder!,
+        workerPromptPath: session.workerPromptPath!,
+      };
+    }
+
+    return undefined;
+  };
+
+  const getReplayTargetSession = (sessionID: string, session?: {
+    sessionKind?: string;
+    parentSessionId?: string;
+    replayTaskFeatureName?: string;
+    replayTaskFolder?: string;
+    replayWorkerPromptPath?: string;
+    featureName?: string;
+    taskFolder?: string;
+    workerPromptPath?: string;
+  }) => {
+    if (session?.parentSessionId && shouldUseWorkerReplay(session)) {
+      return {
+        sessionID: session.parentSessionId,
+        patch: {
+          replayDirectivePending: true,
+          replayTaskFeatureName: session.featureName,
+          replayTaskFolder: session.taskFolder,
+          replayWorkerPromptPath: session.workerPromptPath,
+        },
+      };
+    }
+
+    if (session?.replayTaskFeatureName && session?.replayTaskFolder && session?.replayWorkerPromptPath) {
+      return {
+        sessionID,
+        patch: {
+          replayDirectivePending: true,
+          replayTaskFeatureName: session.replayTaskFeatureName,
+          replayTaskFolder: session.replayTaskFolder,
+          replayWorkerPromptPath: session.replayWorkerPromptPath,
+        },
+      };
+    }
+
+    return {
+      sessionID,
+      patch: { replayDirectivePending: true },
+    };
+  };
+
+  const markReplayPendingIfNeeded = (sessionID: string, session?: { directivePrompt?: string; directiveRecoveryState?: 'available' | 'consumed' | 'escalated'; sessionKind?: string; parentSessionId?: string; replayTaskFeatureName?: string; replayTaskFolder?: string; replayWorkerPromptPath?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string }) => {
     const directiveReplayPatch = getDirectiveReplayCompactionPatch(session);
     if (directiveReplayPatch) {
       sessionService.trackGlobal(sessionID, directiveReplayPatch);
@@ -453,7 +521,8 @@ const plugin: Plugin = async (ctx) => {
     }
 
     if (shouldUseWorkerReplay(session)) {
-      sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
+      const replayTarget = getReplayTargetSession(sessionID, session);
+      sessionService.trackGlobal(replayTarget.sessionID, replayTarget.patch as any);
     }
   };
 
@@ -1030,9 +1099,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       if (input.event.type === 'session.status' && input.event.properties.status?.type === 'idle') {
         const sessionID = input.event.properties.sessionID;
         const existing = sessionService.getGlobal(sessionID);
-        if (shouldUseWorkerReplay(existing)) {
-          sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
-        }
+        markReplayPendingIfNeeded(sessionID, existing);
         return;
       }
     },
@@ -1080,10 +1147,17 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         return;
       }
 
-      if (shouldUseWorkerReplay(refreshed)) {
-        const workerText = buildWorkerReplayText(refreshed);
+      const replaySelection = getReplaySelection(refreshed);
+
+      if (replaySelection) {
+        const workerText = buildWorkerReplayText(replaySelection);
         if (!workerText) {
-          sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
+          sessionService.trackGlobal(sessionID, {
+            replayDirectivePending: false,
+            replayTaskFeatureName: undefined,
+            replayTaskFolder: undefined,
+            replayWorkerPromptPath: undefined,
+          });
           return;
         }
 
@@ -1107,7 +1181,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           ],
         });
 
-        sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
+        sessionService.trackGlobal(sessionID, {
+          replayDirectivePending: false,
+          replayTaskFeatureName: undefined,
+          replayTaskFolder: undefined,
+          replayWorkerPromptPath: undefined,
+        });
         return;
       }
 
@@ -1151,11 +1230,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     },
 
     "tool.execute.before": async (input, output) => {
-      pendingTaskToolLaunch = classifyTaskToolLaunch({
+      pendingTaskToolLaunches = recordTaskToolLaunch({
+        pending: pendingTaskToolLaunches,
         tool: input.tool,
         sessionID: input.sessionID,
+        callID: (input as { callID?: string }).callID,
         args: output.args as any,
-        previous: pendingTaskToolLaunch,
       });
 
       // Cadence gate: check if this hook should execute this turn
@@ -1197,17 +1277,17 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
     "tool.execute.after": async (input, output) => {
       if (input.tool !== 'task') {
-        pendingTaskToolLaunch = undefined;
         return;
       }
 
-      const existing = sessionService.getGlobal(input.sessionID);
-      if (shouldUseWorkerReplay(existing)) {
-        sessionService.trackGlobal(input.sessionID, { replayDirectivePending: true });
-      }
-
-      const launch = pendingTaskToolLaunch;
-      pendingTaskToolLaunch = undefined;
+      const consumed = consumeTaskToolLaunch({
+        pending: pendingTaskToolLaunches,
+        sessionID: input.sessionID,
+        callID: (input as { callID?: string }).callID,
+        tool: input.tool,
+      });
+      pendingTaskToolLaunches = consumed.pending;
+      const launch = consumed.launch;
       if (!launch) {
         return;
       }
@@ -1225,6 +1305,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       if (launch.kind === 'task-worker' && launch.featureName && launch.taskFolder) {
+        sessionService.trackGlobal(launch.parentSessionId, {
+          replayDirectivePending: true,
+          replayTaskFeatureName: sessionPatch.featureName,
+          replayTaskFolder: launch.taskFolder,
+          replayWorkerPromptPath: launch.workerPromptPath,
+        } as any);
+
         taskService.patchBackgroundFields(launch.featureName, launch.taskFolder, {
           workerSession: {
             sessionId: childSessionId,
