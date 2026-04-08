@@ -5,6 +5,7 @@ import * as path from "path";
 import type { PluginInput } from "@opencode-ai/plugin";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import plugin from "../index";
+import { QUEEN_BEE_PROMPT } from "../agents/hive";
 import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { buildPluginManifest, HIVE_COMMANDS, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 
@@ -1156,6 +1157,194 @@ Do it
     );
   });
 
+  it("projects Hive state into todoProjection and marks state-changing responses as stale", async () => {
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_todo_projection");
+
+    const createOutput = await hooks.tool!.hive_feature_create.execute(
+      { name: "todo-projection-feature" },
+      toolContext
+    );
+    expect(createOutput).toContain("Refresh hive_status() before syncing OpenCode todos.");
+
+    const planningStatusRaw = await hooks.tool!.hive_status.execute(
+      { feature: "todo-projection-feature" },
+      toolContext
+    );
+    const planningStatus = JSON.parse(planningStatusRaw as string) as {
+      todoProjection?: {
+        managedBy?: string;
+        sync?: { preserveNonHiveTodos?: boolean; requiresTodoRead?: boolean };
+        items?: Array<{ id: string; content: string; status: string; priority: string }>;
+      };
+    };
+
+    expect(planningStatus.todoProjection).toMatchObject({
+      managedBy: "opencode-hive",
+      sync: {
+        preserveNonHiveTodos: true,
+        requiresTodoRead: true,
+      },
+    });
+    expect(planningStatus.todoProjection?.items).toContainEqual({
+      id: "hive:todo-projection-feature:feature",
+      content: "Finish the plan for todo-projection-feature",
+      status: "pending",
+      priority: "high",
+    });
+
+    const plan = `# Todo Projection Feature
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes, this regression test validates the OpenCode-only todoProjection contract and stale refresh hints for Hive-managed todo sync.
+
+## Tasks
+
+### 1. Build Projection
+Do it
+`;
+
+    const planOutput = await hooks.tool!.hive_plan_write.execute(
+      { content: plan, feature: "todo-projection-feature" },
+      toolContext
+    );
+    expect(planOutput).toContain("Refresh hive_status() before syncing OpenCode todos.");
+
+    const approveOutput = await hooks.tool!.hive_plan_approve.execute(
+      { feature: "todo-projection-feature" },
+      toolContext
+    );
+    expect(approveOutput).toContain("Refresh hive_status() before syncing OpenCode todos.");
+
+    const approvedStatusRaw = await hooks.tool!.hive_status.execute(
+      { feature: "todo-projection-feature" },
+      toolContext
+    );
+    const approvedStatus = JSON.parse(approvedStatusRaw as string) as {
+      todoProjection?: {
+        items?: Array<{ id: string; content: string; status: string; priority: string }>;
+      };
+    };
+    expect(approvedStatus.todoProjection?.items).toContainEqual({
+      id: "hive:todo-projection-feature:feature",
+      content: "Generate the task list for todo-projection-feature",
+      status: "pending",
+      priority: "high",
+    });
+
+    const syncOutput = await hooks.tool!.hive_tasks_sync.execute(
+      { feature: "todo-projection-feature" },
+      toolContext
+    );
+    expect(syncOutput).toContain("Refresh hive_status() before syncing OpenCode todos.");
+
+    const runnableStatusRaw = await hooks.tool!.hive_status.execute(
+      { feature: "todo-projection-feature" },
+      toolContext
+    );
+    const runnableStatus = JSON.parse(runnableStatusRaw as string) as {
+      todoProjection?: {
+        items?: Array<{ id: string; content: string; status: string; priority: string }>;
+      };
+    };
+    expect(runnableStatus.todoProjection?.items).toContainEqual({
+      id: "hive:todo-projection-feature:task:01-build-projection",
+      content: "Start Build Projection",
+      status: "pending",
+      priority: "high",
+    });
+
+    const startRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature: "todo-projection-feature", task: "01-build-projection" },
+      toolContext
+    );
+    const startResult = JSON.parse(startRaw as string) as {
+      todoSync?: { stale?: boolean; reason?: string; refreshHint?: string };
+    };
+    expect(startResult.todoSync).toMatchObject({
+      stale: true,
+      reason: "task_started",
+      refreshHint: "Refresh hive_status() before syncing OpenCode todos.",
+    });
+
+    const blockedCommitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature: "todo-projection-feature",
+        task: "01-build-projection",
+        status: "blocked",
+        summary: "Blocked waiting for a design decision.",
+        blocker: {
+          reason: "Need a design decision",
+          options: ["Option A", "Option B"],
+        },
+      },
+      toolContext
+    );
+    const blockedCommit = JSON.parse(blockedCommitRaw as string) as {
+      todoSync?: { stale?: boolean; reason?: string; refreshHint?: string };
+    };
+    expect(blockedCommit.todoSync).toMatchObject({
+      stale: true,
+      reason: "task_blocked",
+      refreshHint: "Refresh hive_status() before syncing OpenCode todos.",
+    });
+
+    const blockedStatusRaw = await hooks.tool!.hive_status.execute(
+      { feature: "todo-projection-feature" },
+      toolContext
+    );
+    const blockedStatus = JSON.parse(blockedStatusRaw as string) as {
+      todoProjection?: {
+        items?: Array<{ id: string; content: string; status: string; priority: string }>;
+      };
+    };
+    expect(blockedStatus.todoProjection?.items).toContainEqual({
+      id: "hive:todo-projection-feature:task:01-build-projection",
+      content: "Resolve blocker for Build Projection",
+      status: "pending",
+      priority: "medium",
+    });
+
+    const taskUpdateOutput = await hooks.tool!.hive_task_update.execute(
+      { feature: "todo-projection-feature", task: "01-build-projection", status: "done" },
+      toolContext
+    );
+    expect(taskUpdateOutput).toContain("Refresh hive_status() before syncing OpenCode todos.");
+
+    const completeOutput = await hooks.tool!.hive_feature_complete.execute(
+      { name: "todo-projection-feature" },
+      toolContext
+    );
+    expect(completeOutput).toContain("Refresh hive_status() before syncing OpenCode todos.");
+
+    const completedStatusRaw = await hooks.tool!.hive_status.execute(
+      { feature: "todo-projection-feature" },
+      toolContext
+    );
+    const completedStatus = JSON.parse(completedStatusRaw as string) as {
+      todoProjection?: {
+        items?: Array<{ id: string; content: string; status: string; priority: string }>;
+      };
+    };
+    expect(completedStatus.todoProjection?.items).toContainEqual({
+      id: "hive:todo-projection-feature:feature",
+      content: "todo-projection-feature is complete",
+      status: "completed",
+      priority: "low",
+    });
+  });
+
   it("keeps plan tool messaging overview-first while plan.md remains execution truth", async () => {
     const { hooks, toolContext } = await createHooksForTest(
       testRoot,
@@ -1447,6 +1636,58 @@ Do it
     expect(agents["forager-ui"]).toBeDefined();
     expect(agents["reviewer-security"]).toBeDefined();
     
+  });
+
+  it("system prompt hook teaches todoProjection sync and checkpoint-grounded recovery for primary roles only", async () => {
+    const configPath = path.join(process.env.HOME || "", ".config", "opencode", "agent_hive.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        agentMode: "dedicated",
+        agents: {
+          "architect-planner": {},
+          "swarm-orchestrator": {},
+        },
+      }),
+    );
+
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const opencodeConfig: Record<string, unknown> = { agent: {} };
+    await hooks.config!(opencodeConfig);
+
+    const agents = opencodeConfig.agent as Record<string, { prompt?: string }>;
+    const hivePrompt = QUEEN_BEE_PROMPT;
+    const architectPrompt = agents["architect-planner"]?.prompt ?? "";
+    const swarmPrompt = agents["swarm-orchestrator"]?.prompt ?? "";
+    const foragerPrompt = agents["forager-worker"]?.prompt ?? "";
+
+    expect(hivePrompt).toContain("OpenCode todos are the current-session projection of Hive work");
+    expect(hivePrompt).toContain("Preserve non-Hive todo items");
+    expect(hivePrompt).toContain("replace only Hive-managed todo IDs");
+    expect(hivePrompt).toContain("task checkpoints are the durable grounded recovery layer");
+
+    expect(architectPrompt).toContain("OpenCode todos are the current-session projection of Hive work");
+    expect(architectPrompt).toContain("plan write/approval");
+    expect(architectPrompt).toContain("feature creation");
+
+    expect(swarmPrompt).toContain("OpenCode todos are the current-session projection of Hive work");
+    expect(swarmPrompt).toContain("runnable-set changes");
+    expect(swarmPrompt).toContain("worker return/block");
+    expect(swarmPrompt).toContain("merge/feature completion");
+    expect(swarmPrompt).toContain("OpenCode disables todo tools in spawned `task()` sessions");
+
+    expect(foragerPrompt).not.toContain("todowrite");
+    expect(foragerPrompt).not.toContain("todoProjection");
   });
 
   it("blocks hive_worktree_create when dependencies are not done", async () => {
