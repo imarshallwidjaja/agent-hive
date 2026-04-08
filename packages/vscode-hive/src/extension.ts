@@ -109,11 +109,11 @@ class HiveExtension {
 
     const onHiveCreated = () => {
       const newRoot = findHiveRoot(this.workspaceFolder)
-        if (newRoot && !this.initialized) {
-          this.workspaceRoot = newRoot
-          this.initializeWithHive(newRoot)
-        }
+      if (newRoot && !this.initialized) {
+        this.workspaceRoot = newRoot
+        this.initializeWithHive(newRoot)
       }
+    }
 
     this.creationWatcher.onDidCreate(onHiveCreated)
     this.context.subscriptions.push(this.creationWatcher)

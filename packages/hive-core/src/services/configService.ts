@@ -217,10 +217,17 @@ export class ConfigService {
    * Initialize config with defaults if it doesn't exist.
    */
   init(): HiveConfig {
+    const resolved = this.get();
+
+    // Project-aware instances should not create or overwrite global config on init.
+    if (this.projectConfigPath || this.legacyProjectConfigPath) {
+      return resolved;
+    }
+
     if (!this.exists()) {
       return this.set(DEFAULT_HIVE_CONFIG);
     }
-    return this.get();
+    return resolved;
   }
 
   /**
