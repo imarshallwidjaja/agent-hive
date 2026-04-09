@@ -167,7 +167,7 @@ Manual tasks follow the same DAG model as plan-backed tasks:
 - Structured manual-task fields such as `goal`, `description`, `acceptanceCriteria`, `files`, and `references` are turned into worker-facing `spec.md` content.
 - If review feedback changes downstream sequencing or scope, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })` so pending plan tasks pick up the new `dependsOn` graph and regenerated specs.
 
-This recovery path applies to the built-in `forager-worker`, the runtime-only `hive-helper` merge recovery subagent, and custom agents derived from `forager-worker`. `hive-helper` is intentionally OpenCode runtime-only in v1: it does not appear in `.github/agents/` or `packages/vscode-hive/src/generators/`.
+This recovery path applies to the built-in `forager-worker`, the runtime-only `hive-helper` bounded hard-task operational assistant, and custom agents derived from `forager-worker`. `hive-helper` handles merge recovery, state clarification, and safe manual-follow-up assistance while staying inside the current approved DAG boundary. It may summarize observable state and create safe append-only manual tasks, but it may never update plan-backed task state and must escalate DAG-changing requests for plan amendment. `hive-helper` is intentionally OpenCode runtime-only in v1: it does not appear in `.github/agents/` or `packages/vscode-hive/src/generators/`.
 
 `hive-helper` also remains not a network consumer. It benefits indirectly from better upstream planning/orchestration/review decisions, but it does not call `hive_network_query` itself.
 

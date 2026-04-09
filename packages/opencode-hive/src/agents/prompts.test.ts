@@ -422,8 +422,12 @@ describe('Forager (Worker/Coder) prompt', () => {
 });
 
 describe('Hive Helper prompt', () => {
-  it('forbids planning and orchestration', () => {
-    expect(HIVE_HELPER_PROMPT).toContain('never plans or orchestrates');
+  it('defines the bounded helper modes and forbids generalized orchestration', () => {
+    expect(HIVE_HELPER_PROMPT).toContain('bounded hard-task operational assistant');
+    expect(HIVE_HELPER_PROMPT).toContain('merge recovery');
+    expect(HIVE_HELPER_PROMPT).toContain('state clarification');
+    expect(HIVE_HELPER_PROMPT).toContain('safe manual-follow-up assistance');
+    expect(HIVE_HELPER_PROMPT).toContain('never plans, orchestrates, or broadens the assignment');
   });
 
   it('uses hive_merge first and resolves preserved conflicts locally', () => {
@@ -433,9 +437,21 @@ describe('Hive Helper prompt', () => {
     expect(HIVE_HELPER_PROMPT).toContain('continues the merge batch');
   });
 
-  it('requires concise summary-only output', () => {
+  it('allows state summaries and append-only manual tasks but forbids plan-backed task updates', () => {
+    expect(HIVE_HELPER_PROMPT).toContain('summarize observable state');
+    expect(HIVE_HELPER_PROMPT).toContain('safe append-only manual tasks');
+    expect(HIVE_HELPER_PROMPT).toContain('never update plan-backed task state');
+    expect(HIVE_HELPER_PROMPT).toContain('Hive Master / Swarm');
+    expect(HIVE_HELPER_PROMPT).toContain('plan amendment');
+  });
+
+  it('requires concise operational summaries only', () => {
     expect(HIVE_HELPER_PROMPT).toContain('concise');
-    expect(HIVE_HELPER_PROMPT).toContain('merged/conflict/blocker summary');
+    expect(HIVE_HELPER_PROMPT).toContain('merged/state/task/blocker summary');
+  });
+
+  it('does not auto-load a Hive Skill appendix into the helper prompt', () => {
+    expect(HIVE_HELPER_PROMPT).not.toContain('## Hive Skill:');
   });
 });
 
@@ -561,6 +577,8 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain('`hive-helper`');
       expect(readmeContent).toContain('runtime-only');
       expect(readmeContent).toContain('merge recovery');
+      expect(readmeContent).toContain('state clarification');
+      expect(readmeContent).toContain('safe manual-follow-up assistance');
     });
 
     it('documents hive-helper in the built-in agent defaults table', () => {
@@ -576,7 +594,9 @@ describe('README.md documentation', () => {
 
     it('documents hive-helper in the top-level runtime roster and recovery notes', () => {
       expect(rootReadmeContent).toContain('**Hive Helper**');
-      expect(rootReadmeContent).toContain('Runtime-only merge recovery helper');
+      expect(rootReadmeContent).toContain('Runtime-only bounded hard-task operational assistant');
+      expect(rootReadmeContent).toContain('merge recovery');
+      expect(rootReadmeContent).toContain('safe manual-follow-up assistance');
       expect(rootReadmeContent).toContain('does not appear in generated `.github/agents/` docs');
       expect(rootReadmeContent).toContain('does not appear in `packages/vscode-hive/src/generators/`');
     });

@@ -2079,9 +2079,9 @@ Expand your Discovery section and try again.`;
         variant: hiveHelperUserConfig.variant,
         temperature: hiveHelperUserConfig.temperature ?? 0.3,
         mode: 'subagent' as const,
-        description: 'Hive Helper - Runtime-only merge recovery helper. Merges branches and resolves preserved conflicts in isolation.',
+        description: 'Hive Helper - Runtime-only bounded hard-task operational assistant for merge recovery, state clarification, and safe manual follow-up assistance.',
         prompt: HIVE_HELPER_PROMPT + HIVE_SYSTEM_PROMPT,
-        tools: agentTools(['hive_merge', 'hive_status', 'hive_context_write', 'hive_skill']),
+        tools: agentTools(['hive_merge', 'hive_status', 'hive_context_write', 'hive_task_create', 'hive_skill']),
         permission: {
           task: 'deny',
           delegate: 'deny',
