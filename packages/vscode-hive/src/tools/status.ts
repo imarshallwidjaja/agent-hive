@@ -3,6 +3,7 @@ import * as path from 'path';
 import { FeatureService, TaskService, PlanService, ContextService, buildEffectiveDependencies, computeRunnableAndBlocked, getFeaturePath } from 'hive-core';
 import type { TaskWithDeps } from 'hive-core';
 import type { ToolRegistration } from './base';
+import { defineTool } from './base';
 
 export function getStatusTools(workspaceRoot: string): ToolRegistration[] {
   const featureService = new FeatureService(workspaceRoot);
@@ -125,9 +126,11 @@ export function getStatusTools(workspaceRoot: string): ToolRegistration[] {
     });
   };
 
-  const baseStatusTool: Omit<ToolRegistration, 'name'> = {
+  const baseStatusTool: Omit<ToolRegistration, 'name' | 'toolReferenceName'> = {
     displayName: 'Get Hive Status',
     modelDescription: 'Get comprehensive status of a feature including plan, tasks, and context. Returns JSON with all relevant state for resuming work.',
+    userDescription: 'Get comprehensive Hive feature status.',
+    canBeReferencedInPrompt: true,
     readOnly: true,
     inputSchema: {
       type: 'object',
@@ -142,14 +145,16 @@ export function getStatusTools(workspaceRoot: string): ToolRegistration[] {
   };
 
   return [
-    {
+    defineTool({
       name: 'hive_status',
+      toolReferenceName: 'hiveStatus',
       ...baseStatusTool,
-    },
-    {
+    }),
+    defineTool({
       name: 'hiveStatus',
+      toolReferenceName: 'hiveStatus',
       ...baseStatusTool,
-    },
+    }),
   ];
 }
 

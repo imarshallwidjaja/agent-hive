@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { WorktreeService, TaskService, buildEffectiveDependencies } from 'hive-core';
 import type { ToolRegistration } from './base';
+import { defineTool } from './base';
 
 /**
  * Check if a task's dependencies are satisfied.
@@ -252,10 +253,13 @@ export function getExecTools(workspaceRoot: string): ToolRegistration[] {
   };
 
   return [
-    {
+    defineTool({
       name: 'hive_worktree_start',
+      toolReferenceName: 'hiveWorktreeStart',
       displayName: 'Start Task Worktree',
       modelDescription: 'Create a git worktree for a pending/in-progress task. Use for normal task starts.',
+      userDescription: 'Create a worktree for a runnable Hive task.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -268,11 +272,14 @@ export function getExecTools(workspaceRoot: string): ToolRegistration[] {
         const { feature, task } = input as { feature: string; task: string };
         return startWorktree({ feature, task });
       },
-    },
-    {
+    }),
+    defineTool({
       name: 'hive_worktree_create',
+      toolReferenceName: 'hiveWorktreeCreate',
       displayName: 'Resume Blocked Task Worktree',
       modelDescription: 'Resume a blocked task in its existing worktree. Requires continueFrom: "blocked" and a decision.',
+      userDescription: 'Resume a blocked Hive task in its existing worktree.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -292,11 +299,19 @@ export function getExecTools(workspaceRoot: string): ToolRegistration[] {
         };
         return resumeBlockedWorktree({ feature, task, continueFrom, decision });
       },
-    },
-    {
+    }),
+    defineTool({
       name: 'hive_worktree_commit',
+      toolReferenceName: 'hiveWorktreeCommit',
       displayName: 'Commit Task Worktree',
       modelDescription: 'Commit changes in worktree and mark task done. Does NOT merge - use hive_merge for that. Use when task implementation is finished.',
+      userDescription: 'Commit changes in a Hive task worktree and mark the task done.',
+      canBeReferencedInPrompt: true,
+      confirmation: {
+        title: 'Commit Hive task worktree',
+        message: 'Commit the current task worktree changes and update the task status to done?',
+        invocationMessage: 'Committing Hive task worktree',
+      },
       inputSchema: {
         type: 'object',
         properties: {
@@ -338,12 +353,20 @@ export function getExecTools(workspaceRoot: string): ToolRegistration[] {
           ] : []
         });
       },
-    },
-    {
+    }),
+    defineTool({
       name: 'hive_worktree_discard',
+      toolReferenceName: 'hiveWorktreeDiscard',
       displayName: 'Discard Task Worktree',
       modelDescription: 'Discard all changes and remove worktree. Use when task approach is wrong and needs restart. This is destructive and irreversible.',
+      userDescription: 'Discard a Hive task worktree and reset the task to pending.',
+      canBeReferencedInPrompt: true,
       destructive: true,
+      confirmation: {
+        title: 'Discard Hive task worktree',
+        message: 'Discard all changes in this task worktree and reset the task back to pending?',
+        invocationMessage: 'Discarding Hive task worktree',
+      },
       inputSchema: {
         type: 'object',
         properties: {
@@ -362,6 +385,6 @@ export function getExecTools(workspaceRoot: string): ToolRegistration[] {
           message: `Worktree removed. Task status reset to pending. Can restart with hive_worktree_start.`,
         });
       },
-    },
+    }),
   ];
 }

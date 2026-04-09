@@ -1,16 +1,19 @@
 import { TaskService, TaskStatusType } from 'hive-core';
 import type { ManualTaskMetadata } from 'hive-core';
 import type { ToolRegistration } from './base';
-import { createToolResult } from './base';
+import { defineTool } from './base';
 
 export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
   const taskService = new TaskService(workspaceRoot);
 
   return [
-    {
+    defineTool({
       name: 'hive_tasks_sync',
+      toolReferenceName: 'hiveTasksSync',
       displayName: 'Sync Hive Tasks',
       modelDescription: 'Generate tasks from approved plan.md by parsing ### numbered headers. Creates task folders with status.json. When refreshPending is true, rewrites pending plan tasks from current plan (updates dependsOn, planTitle, spec.md) and deletes pending tasks removed from plan. Preserves manual tasks and tasks with execution history. Returns summary of created/removed/kept tasks.',
+      userDescription: 'Generate or refresh Hive tasks from an approved plan.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -42,11 +45,14 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
           ]
         });
       },
-    },
-    {
+    }),
+    defineTool({
       name: 'hive_task_create',
+      toolReferenceName: 'hiveTaskCreate',
       displayName: 'Create Manual Task',
       modelDescription: 'Create a task manually, not from the plan. Use for ad-hoc work or tasks discovered during execution. Manual tasks always have explicit dependsOn (default: []) to avoid accidental implicit sequential dependencies. Provide structured metadata for a useful spec.md and worker prompt.',
+      userDescription: 'Create a manual Hive task that is not sourced from the plan.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -128,11 +134,14 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
         const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata : undefined);
         return `Created task "${folder}" with status: pending, dependsOn: [${(metadata.dependsOn ?? []).join(', ')}]\nReminder: run hive_worktree_start to work in its worktree, and ensure any subagents work in that worktree too.`;
       },
-    },
-    {
+    }),
+    defineTool({
       name: 'hive_task_update',
+      toolReferenceName: 'hiveTaskUpdate',
       displayName: 'Update Hive Task',
       modelDescription: 'Update a task status (pending/in_progress/done/cancelled) or add a work summary. Returns plain text confirmation. Does NOT merge - use hive_merge for integration.',
+      userDescription: 'Update a Hive task status or summary.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -170,6 +179,6 @@ export function getTaskTools(workspaceRoot: string): ToolRegistration[] {
         const statusMsg = summary ? `. Summary: ${summary}` : '';
         return `Task "${task}" updated to ${updated.status}${statusMsg}`;
       },
-    },
+    }),
   ];
 }

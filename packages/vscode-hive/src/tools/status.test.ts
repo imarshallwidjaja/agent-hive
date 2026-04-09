@@ -138,19 +138,37 @@ describe('getStatusTools', () => {
     );
   });
 
-  it('keeps welcome copy focused on bootstrap artifacts without Copilot wording', () => {
+  it('contributes prompt-visible LM tool metadata alongside the existing welcome copy', () => {
     const packageJson = JSON.parse(
       fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')
     ) as {
       contributes?: {
-        languageModelTools?: Array<unknown>;
+        languageModelTools?: Array<{
+          name?: string;
+          toolReferenceName?: string;
+          canBeReferencedInPrompt?: boolean;
+        }>;
         viewsWelcome?: Array<{ view?: string; contents?: string }>;
       };
     };
 
     const welcome = packageJson.contributes?.viewsWelcome?.find(view => view.view === 'hive.features');
+    const languageModelTools = packageJson.contributes?.languageModelTools ?? [];
+    const toolNames = new Map(languageModelTools.map(tool => [tool.name, tool]));
 
-    expect(packageJson.contributes?.languageModelTools).toBeUndefined();
+    expect(languageModelTools.length).toBeGreaterThan(0);
+    expect(toolNames.get('hive_status')).toMatchObject({
+      toolReferenceName: 'hiveStatus',
+      canBeReferencedInPrompt: true,
+    });
+    expect(toolNames.get('hive_plan_read')).toMatchObject({
+      toolReferenceName: 'hivePlanRead',
+      canBeReferencedInPrompt: true,
+    });
+    expect(toolNames.get('hive_worktree_commit')).toMatchObject({
+      toolReferenceName: 'hiveWorktreeCommit',
+      canBeReferencedInPrompt: true,
+    });
     expect(welcome?.contents).toContain('.github/agents/');
     expect(welcome?.contents).toContain('Agent skills (.github/skills/)');
     expect(welcome?.contents).not.toContain('Copilot agents');
