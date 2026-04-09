@@ -2739,6 +2739,8 @@ Also wait for task one.
         "multiple_runnable_tasks",
       ],
     });
+  });
+
   it("rejects manual-task insertion outside the next append-only slot", async () => {
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_manual_task_order_guard');
 
