@@ -22,6 +22,13 @@ describe('plugin manifest generator', () => {
     });
   });
 
+  it('keeps plugin.json focused on consumed artifact surfaces and does not enumerate prompts', () => {
+    const manifest = generators.generatePluginManifest();
+
+    expect('prompts' in manifest).toBe(false);
+    expect(manifest.instructions).toEqual(['.github/instructions']);
+  });
+
   it('supports overriding only the manifest version', () => {
     const manifest = generators.generatePluginManifest({ version: '2.4.0-beta.1' });
 

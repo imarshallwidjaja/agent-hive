@@ -9,6 +9,7 @@ function getBody(content: string): string {
 describe('instructions generator', () => {
   it('exports both generators and returns the two instruction files', () => {
     expect(generators.generateAllInstructions).toBeDefined();
+    expect(generators.generateCopilotInstructions).toBeDefined();
     expect(generators.generateHiveWorkflowInstructions).toBeDefined();
     expect(generators.generateCodingStandardsTemplate).toBeDefined();
 
@@ -51,5 +52,20 @@ describe('instructions generator', () => {
     expect(instruction.body).toContain('## Error Handling');
     expect(instruction.body).toContain('## Testing');
     expect(instruction.body).toContain('<!-- TODO: customize -->');
+  });
+
+  it('builds repository-wide copilot instructions without duplicating AGENTS.md', () => {
+    const content = generators.generateCopilotInstructions();
+    const body = getBody(content);
+
+    expect(content.startsWith('---\n')).toBe(true);
+    expect(content).toContain('description: "Repository-wide GitHub Copilot steering for Hive workflows"');
+    expect(body).toContain('AGENTS.md');
+    expect(body).toContain('.github/instructions/');
+    expect(body).toContain('.github/prompts/');
+    expect(body).toContain('built-in browser tools');
+    expect(body).toContain('MCP');
+    expect(body).not.toContain('question()');
+    expect(body.length).toBeLessThanOrEqual(1000);
   });
 });

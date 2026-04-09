@@ -78,6 +78,7 @@ describe('initNest', () => {
       { message: 'Generating builtin skills...' },
       { message: 'Generating hooks...' },
       { message: 'Generating instructions...' },
+      { message: 'Generating prompt files...' },
       { message: 'Generating plugin manifest...' },
     ]);
     assert.equal(mock.infoMessages[0], 'Hive Nest initialized! Created bootstrap files for agents, skills, hooks, and instructions.');
@@ -99,6 +100,19 @@ describe('initNest', () => {
     assert.ok(fs.existsSync(path.join(projectRoot, '.github', 'hooks', 'hive-context-injection.json')));
     assert.ok(fs.existsSync(path.join(projectRoot, '.github', 'instructions', 'hive-workflow.instructions.md')));
     assert.ok(fs.existsSync(path.join(projectRoot, '.github', 'instructions', 'coding-standards.instructions.md')));
+    assert.ok(fs.existsSync(path.join(projectRoot, '.github', 'copilot-instructions.md')));
+
+    const promptFiles = fs.readdirSync(path.join(projectRoot, '.github', 'prompts')).sort();
+    assert.deepEqual(promptFiles, [
+      'execute-approved-plan.prompt.md',
+      'plan-feature.prompt.md',
+      'request-review.prompt.md',
+      'review-plan.prompt.md',
+      'verify-completion.prompt.md',
+    ]);
+
+    assert.match(readFile(projectRoot, '.github/copilot-instructions.md'), /AGENTS\.md/);
+    assert.match(readFile(projectRoot, '.github/prompts/plan-feature.prompt.md'), /hive_plan_write/);
 
     const plugin = JSON.parse(readFile(projectRoot, 'plugin.json')) as { agents: string[]; hooks: string[]; instructions: string[] };
     assert.deepEqual(plugin.agents, ['.github/agents']);

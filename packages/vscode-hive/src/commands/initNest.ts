@@ -3,8 +3,9 @@ import * as path from 'path';
 
 import { generateAllAgents } from '../generators/agents.js';
 import { generateAllHooks } from '../generators/hooks.js';
-import { generateAllInstructions, generateHiveWorkflowInstructions } from '../generators/instructions.js';
+import { generateAllInstructions, generateCopilotInstructions, generateHiveWorkflowInstructions } from '../generators/instructions.js';
 import { generatePluginManifest } from '../generators/plugin.js';
+import { generateAllPrompts } from '../generators/prompts.js';
 import { getBuiltinSkills } from '../generators/skills.js';
 
 const EXTENSION_ID = 'tctinh.vscode-hive';
@@ -58,6 +59,10 @@ export function generatePlugin(): ReturnType<typeof generatePluginManifest> {
   return generatePluginManifest();
 }
 
+export function generatePrompts(): ReturnType<typeof generateAllPrompts> {
+  return generateAllPrompts();
+}
+
 export async function initNest(projectRoot: string, deps?: InitNestDeps): Promise<void> {
   const vscode = deps?.vscodeApi ?? await loadVscode();
 
@@ -103,6 +108,14 @@ export async function initNest(projectRoot: string, deps?: InitNestDeps): Promis
 
       for (const instruction of generateInstructions()) {
         writeFile(path.join(projectRoot, '.github', 'instructions', instruction.filename), instruction.body);
+      }
+
+      writeFile(path.join(projectRoot, '.github', 'copilot-instructions.md'), generateCopilotInstructions());
+
+      progress.report({ message: 'Generating prompt files...' });
+
+      for (const prompt of generatePrompts()) {
+        writeFile(path.join(projectRoot, '.github', 'prompts', prompt.filename), prompt.body);
       }
 
       progress.report({ message: 'Generating plugin manifest...' });

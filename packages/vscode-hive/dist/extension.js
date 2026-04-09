@@ -257,6 +257,17 @@ Refer to a skill only when detailed guidance is needed:
 
 Load one skill at a time, only when guidance is needed.
 
+### Copilot-Native Workspace Surfaces
+- Treat .github/copilot-instructions.md as concise repository-wide steering that complements AGENTS.md instead of replacing it.
+- Use path-specific files under .github/instructions/ for focused coding standards or workflow rules.
+- Reach for .github/prompts/ when a reusable entry point would help the user start planning, review, execution, review-request, or final verification with the right tools and context.
+- In prompt files, use 'vscode/askQuestions' only when extra inputs materially improve the result; otherwise rely on Copilot's normal clarification flow in chat.
+
+### Browser, MCP, and Web Work
+- For browser exploration or web verification, prefer Copilot's built-in browser tools.
+- For browser automation and end-to-end testing, prefer Playwright MCP when it is available.
+- Use MCP or browser tools when they are a better fit than inventing extension-specific replacements.
+
 ---
 
 ## Planning Phase
@@ -8836,14 +8847,17 @@ function generateAllHooks() {
 }
 
 // src/generators/instructions.ts
-function buildInstructionBody(description, applyTo, content) {
+function buildFrontmatter(frontmatter, content) {
   return `---
-description: "${description}"
-applyTo: "${applyTo}"
+${frontmatter}
 ---
 
 ${content.trim()}
 `;
+}
+function buildInstructionBody(description, applyTo, content) {
+  return buildFrontmatter(`description: "${description}"
+applyTo: "${applyTo}"`, content);
 }
 function createInstructionFile(filename, description, applyTo, content) {
   return {
@@ -8887,6 +8901,18 @@ function generateCodingStandardsTemplate() {
 - Describe required test coverage, frameworks, and verification expectations.`
   );
 }
+function generateCopilotInstructions() {
+  return buildFrontmatter(
+    'description: "Repository-wide GitHub Copilot steering for Hive workflows"',
+    `Use AGENTS.md for the full Hive operating model and non-negotiable plan-first guardrails.
+
+Use .github/instructions/ for path-specific coding and workflow guidance, and .github/prompts/ for reusable entry points such as plan creation, plan review, execution, review handoff, and completion verification.
+
+Prefer GitHub Copilot's built-in clarification flow in chat. Use vscode/askQuestions inside prompt files only when extra structured input materially improves the result.
+
+When web research, browser inspection, or end-to-end verification is needed, prefer built-in browser tools and MCP integrations such as Playwright MCP over extension-specific substitutes.`
+  );
+}
 function generateAllInstructions() {
   return [generateHiveWorkflowInstructions(), generateCodingStandardsTemplate()];
 }
@@ -8915,6 +8941,116 @@ function generatePluginManifest(options = {}) {
     hooks: [...pluginManifestTemplate.hooks],
     instructions: [...pluginManifestTemplate.instructions]
   };
+}
+
+// src/generators/prompts.ts
+var EXTENSION_ID = "tctinh.vscode-hive";
+function buildPrompt(prompt, content) {
+  const frontmatter = [
+    `name: "${prompt.name}"`,
+    `description: "${prompt.description}"`,
+    `agent: "${prompt.agent}"`,
+    `model: "${prompt.model}"`,
+    "tools:",
+    ...prompt.tools.map((tool) => `  - "${tool}"`)
+  ].join("\n");
+  return {
+    ...prompt,
+    body: `---
+${frontmatter}
+---
+
+${content.trim()}
+`
+  };
+}
+function generatePlanFeaturePrompt() {
+  return buildPrompt(
+    {
+      filename: "plan-feature.prompt.md",
+      name: "Plan Hive Feature",
+      description: "Create or revise a Hive feature plan with plan-first guardrails.",
+      agent: "hive",
+      model: "gpt-5.4",
+      tools: ["read", "search", "codebase", "usages", `${EXTENSION_ID}/hiveStatus`, `${EXTENSION_ID}/hivePlanWrite`]
+    },
+    `Start by checking AGENTS.md, .github/copilot-instructions.md, and any relevant .github/instructions/ files. Use read-only exploration first, then write or revise the plan with hive_plan_write.
+
+If key requirements are missing, use vscode/askQuestions only for the minimum structured clarification needed; otherwise prefer Copilot's built-in clarification flow in chat.
+
+Keep Hive's plan-first contract intact: no implementation edits, explicit task dependencies, exact file references, and concrete verification commands.`
+  );
+}
+function generateReviewPlanPrompt() {
+  return buildPrompt(
+    {
+      filename: "review-plan.prompt.md",
+      name: "Review Hive Plan",
+      description: "Inspect a Hive plan and prepare approval or revision guidance.",
+      agent: "hive",
+      model: "gpt-5.4",
+      tools: ["read", "search", `${EXTENSION_ID}/hivePlanRead`, `${EXTENSION_ID}/hiveStatus`]
+    },
+    `Read the current plan and any review comments with hive_plan_read. Summarize whether the plan is ready for approval, what revisions are required, and which task-level verification details are missing.
+
+Keep the response focused on approval and revision guidance rather than implementation. Respect Hive's plan-first workflow and call out missing dependencies, vague acceptance criteria, or unclear references.`
+  );
+}
+function generateExecuteApprovedPlanPrompt() {
+  return buildPrompt(
+    {
+      filename: "execute-approved-plan.prompt.md",
+      name: "Execute Approved Hive Plan",
+      description: "Sync tasks from an approved plan and begin execution.",
+      agent: "hive",
+      model: "gpt-5.4",
+      tools: ["read", "search", `${EXTENSION_ID}/hiveStatus`, `${EXTENSION_ID}/hiveTasksSync`, `${EXTENSION_ID}/hiveWorktreeStart`]
+    },
+    `Confirm the plan is approved, sync tasks with hive_tasks_sync, then start the next runnable task with hive_worktree_start.
+
+Preserve Hive guardrails: follow task dependencies, keep planning and execution separate, and delegate implementation to workers rather than doing it inline.
+
+If the work involves browser behavior, web flows, or end-to-end validation, prefer built-in browser tools and Playwright MCP where available instead of inventing extension-only browser helpers.`
+  );
+}
+function generateRequestReviewPrompt() {
+  return buildPrompt(
+    {
+      filename: "request-review.prompt.md",
+      name: "Request Hive Review",
+      description: "Hand completed implementation to Hygienic for code review readiness.",
+      agent: "hive",
+      model: "gpt-5.4",
+      tools: ["read", "search", `${EXTENSION_ID}/hiveStatus`]
+    },
+    `Prepare a concise code review handoff for Hygienic. Summarize the completed implementation batch, the relevant files or commits, and the verification already run.
+
+Keep this focused on review readiness and code review context so Hygienic can assess the implementation without re-planning the feature.`
+  );
+}
+function generateVerifyCompletionPrompt() {
+  return buildPrompt(
+    {
+      filename: "verify-completion.prompt.md",
+      name: "Verify Hive Completion",
+      description: "Run final verification and summarize completion readiness.",
+      agent: "hive",
+      model: "gpt-5.4",
+      tools: ["read", "search", "execute", `${EXTENSION_ID}/hiveStatus`]
+    },
+    `Apply the verification-before-completion standard: gather fresh verification evidence before claiming the work is complete.
+
+Run the relevant checks, summarize the observed results, and state whether the batch is ready for merge or needs follow-up. Use AGENTS.md and existing verification commands as the source of truth for required checks.`
+  );
+}
+function generateAllPrompts() {
+  return [
+    generatePlanFeaturePrompt(),
+    generateReviewPlanPrompt(),
+    generateExecuteApprovedPlanPrompt(),
+    generateRequestReviewPrompt(),
+    generateVerifyCompletionPrompt()
+  ];
 }
 
 // src/generators/skills.ts
@@ -8949,7 +9085,7 @@ function stripFrontmatter(content) {
   }
   return normalized.slice(endIndex + 5).trim();
 }
-function buildFrontmatter(name, description) {
+function buildFrontmatter2(name, description) {
   return `---
 name: ${name}
 description: ${description}
@@ -8965,7 +9101,7 @@ function generateSkillFile(skill) {
   const name = ensureSkillName(skill.name);
   const description = ensureSkillDescription(skill.description);
   const body = stripFrontmatter(skill.content);
-  const content = `${buildFrontmatter(name, description)}
+  const content = `${buildFrontmatter2(name, description)}
 
 ${body}
 `;
@@ -11298,7 +11434,7 @@ function getBuiltinSkills() {
 }
 
 // src/commands/initNest.ts
-var EXTENSION_ID = "tctinh.vscode-hive";
+var EXTENSION_ID2 = "tctinh.vscode-hive";
 var BACKWARD_COMPAT_SKILL = `---
 name: hive
 description: Hive plan-first development workflow
@@ -11317,7 +11453,7 @@ async function loadVscode() {
   return await import("vscode");
 }
 function generateAgents() {
-  return generateAllAgents({ extensionId: EXTENSION_ID });
+  return generateAllAgents({ extensionId: EXTENSION_ID2 });
 }
 function generateBuiltinSkills() {
   return getBuiltinSkills();
@@ -11327,6 +11463,9 @@ function generateInstructions() {
 }
 function generatePlugin() {
   return generatePluginManifest();
+}
+function generatePrompts() {
+  return generateAllPrompts();
 }
 async function initNest(projectRoot, deps) {
   const vscode6 = deps?.vscodeApi ?? await loadVscode();
@@ -11364,6 +11503,11 @@ async function initNest(projectRoot, deps) {
       for (const instruction of generateInstructions()) {
         writeFile2(path8.join(projectRoot, ".github", "instructions", instruction.filename), instruction.body);
       }
+      writeFile2(path8.join(projectRoot, ".github", "copilot-instructions.md"), generateCopilotInstructions());
+      progress.report({ message: "Generating prompt files..." });
+      for (const prompt of generatePrompts()) {
+        writeFile2(path8.join(projectRoot, ".github", "prompts", prompt.filename), prompt.body);
+      }
       progress.report({ message: "Generating plugin manifest..." });
       writeFile2(path8.join(projectRoot, "plugin.json"), `${JSON.stringify(generatePlugin(), null, 2)}
 `);
@@ -11377,13 +11521,13 @@ async function initNest(projectRoot, deps) {
 // src/commands/regenerateAgents.ts
 var fs11 = __toESM(require("fs"));
 var path10 = __toESM(require("path"));
-var EXTENSION_ID2 = "tctinh.vscode-hive";
+var EXTENSION_ID3 = "tctinh.vscode-hive";
 async function loadVscode2() {
   return await import("vscode");
 }
 async function loadGenerateAgents() {
   const { generateAllAgents: generateAllAgents2 } = await Promise.resolve().then(() => (init_agents(), agents_exports));
-  return () => generateAllAgents2({ extensionId: EXTENSION_ID2 });
+  return () => generateAllAgents2({ extensionId: EXTENSION_ID3 });
 }
 async function regenerateAgents(workspaceRoot, deps = {}) {
   const vscode6 = deps.vscodeApi ?? await loadVscode2();
