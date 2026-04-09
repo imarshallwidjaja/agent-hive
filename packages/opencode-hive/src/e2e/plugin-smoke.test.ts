@@ -34,6 +34,7 @@ const REMOVED_TODO_REFRESH_HINT = ['Refresh hive_status() before syncing OpenCod
 const LEGACY_IDLE_CHILD_REPLAY = ['child-session', ' idle'].join('');
 
 const TEST_ROOT_BASE = "/tmp/hive-e2e-plugin";
+const TEST_PROCESS_CWD = process.cwd();
 const FIRST_TASK = "01-first-task";
 
 function createStubShell(): PluginInput["$"] {
@@ -162,6 +163,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
   let originalHome: string | undefined;
 
   beforeEach(() => {
+    process.chdir(TEST_PROCESS_CWD);
     originalHome = process.env.HOME;
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
@@ -177,6 +179,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
   });
 
   afterEach(() => {
+    process.chdir(TEST_PROCESS_CWD);
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     if (originalHome === undefined) {
       delete process.env.HOME;
@@ -2564,6 +2567,178 @@ Do the first thing.
     expect(specAfter).toContain("Fix routing issue found in review");
     expect(specAfter).toContain("swarm dispatches to correct agent");
     expect(specAfter).not.toContain("_No plan section available._");
+  });
+
+  it("reports deterministic helperStatus that distinguishes done tasks from live wrap-up state", async () => {
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_helper_status_contract");
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "helper-status-feature" },
+      toolContext
+    );
+
+    const plan = `# Helper Status Feature
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes, this regression test validates that OpenCode hive_status exposes deterministic helperStatus fields showing observable task/worktree wrap-up state without inventing merge truth.
+
+## Tasks
+
+### 1. First Task
+
+**Depends on**: none
+
+Finish the first task.
+
+### 2. Second Task
+
+**Depends on**: 1
+
+Wait for task one.
+
+### 3. Third Task
+
+**Depends on**: 1
+
+Also wait for task one.
+`;
+
+    await hooks.tool!.hive_plan_write.execute(
+      { content: plan, feature: "helper-status-feature" },
+      toolContext
+    );
+    await hooks.tool!.hive_plan_approve.execute(
+      { feature: "helper-status-feature" },
+      toolContext
+    );
+    await hooks.tool!.hive_tasks_sync.execute(
+      { feature: "helper-status-feature" },
+      toolContext
+    );
+
+    await hooks.tool!.hive_task_create.execute(
+      {
+        feature: "helper-status-feature",
+        name: "operator-followup",
+        source: "operator",
+      },
+      toolContext
+    );
+
+    const startRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature: "helper-status-feature", task: FIRST_TASK },
+      toolContext
+    );
+    const startResult = JSON.parse(startRaw as string) as {
+      success?: boolean;
+      worktreePath?: string;
+    };
+
+    expect(startResult.success).toBe(true);
+    expect(startResult.worktreePath).toBeDefined();
+
+    fs.writeFileSync(
+      path.join(startResult.worktreePath!, "wrapup.txt"),
+      "observable wrap-up state\n"
+    );
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature: "helper-status-feature",
+        task: FIRST_TASK,
+        status: "completed",
+        summary: "Finished the first task. Regression test recorded wrap-up state.",
+      },
+      createToolContext("sess_helper_status_worker")
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      ok?: boolean;
+      taskState?: string;
+      worktreePath?: string;
+    };
+
+    expect(commitResult.ok).toBe(true);
+    expect(commitResult.taskState).toBe("done");
+    expect(commitResult.worktreePath).toBe(startResult.worktreePath);
+
+    fs.writeFileSync(
+      path.join(startResult.worktreePath!, "post-commit-dirty.txt"),
+      "still dirty after task marked done\n"
+    );
+
+    const statusRaw = await hooks.tool!.hive_status.execute(
+      { feature: "helper-status-feature" },
+      toolContext
+    );
+    const status = JSON.parse(statusRaw as string) as {
+      tasks?: {
+        pending?: number;
+        runnable?: string[];
+      };
+      helperStatus?: {
+        doneTasksWithLiveWorktrees: string[];
+        dirtyWorktrees: string[];
+        nonInProgressTasksWithWorktrees: string[];
+        manualTaskPolicy: {
+          order: {
+            omitted: string;
+            explicitNextOrder: string;
+            explicitOtherOrder: string;
+          };
+          dependsOn: {
+            omitted: string;
+            explicitDoneTargetsOnly: string;
+            explicitMissingTarget: string;
+            explicitNotDoneTarget: string;
+            reviewSourceWithExplicitDependsOn: string;
+          };
+        };
+        ambiguityFlags: string[];
+      };
+    };
+
+    expect(status.tasks?.pending).toBe(3);
+    expect(status.tasks?.runnable).toEqual([
+      "02-second-task",
+      "03-third-task",
+      "04-operator-followup",
+    ]);
+    expect(status.helperStatus).toEqual({
+      doneTasksWithLiveWorktrees: ["01-first-task"],
+      dirtyWorktrees: ["01-first-task"],
+      nonInProgressTasksWithWorktrees: ["01-first-task"],
+      manualTaskPolicy: {
+        order: {
+          omitted: "append_next_order",
+          explicitNextOrder: "append_next_order",
+          explicitOtherOrder: "plan_amendment_required",
+        },
+        dependsOn: {
+          omitted: "store_empty_array",
+          explicitDoneTargetsOnly: "allowed",
+          explicitMissingTarget: "plan_amendment_required",
+          explicitNotDoneTarget: "plan_amendment_required",
+          reviewSourceWithExplicitDependsOn: "plan_amendment_required",
+        },
+      },
+      ambiguityFlags: [
+        "done_task_has_live_worktree",
+        "dirty_non_in_progress_worktree",
+        "multiple_runnable_tasks",
+      ],
+    });
   });
 
   it("worker chat.message in task worktree binds featureName, taskFolder, and workerPromptPath before commit", async () => {

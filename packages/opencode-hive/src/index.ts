@@ -1765,6 +1765,15 @@ Expand your Discovery section and try again.`;
           const pendingTasks = tasksSummary.filter(t => t.status === 'pending');
           const inProgressTasks = tasksSummary.filter(t => t.status === 'in_progress');
           const doneTasks = tasksSummary.filter(t => t.status === 'done');
+          const doneTasksWithLiveWorktrees = tasksSummary
+            .filter(t => t.status === 'done' && t.worktree)
+            .map(t => t.folder);
+          const dirtyWorktrees = tasksSummary
+            .filter(t => t.worktree && t.worktree.hasChanges === true)
+            .map(t => t.folder);
+          const nonInProgressTasksWithWorktrees = tasksSummary
+            .filter(t => t.status !== 'in_progress' && t.worktree)
+            .map(t => t.folder);
 
           const tasksWithDeps = tasksSummary.map(t => ({
             folder: t.folder,
@@ -1777,6 +1786,23 @@ Expand your Discovery section and try again.`;
             dependsOn: effectiveDeps.get(task.folder),
           }));
           const { runnable, blocked: blockedBy } = computeRunnableAndBlocked(normalizedTasks);
+          const ambiguityFlags: string[] = [];
+
+          if (doneTasksWithLiveWorktrees.length > 0) {
+            ambiguityFlags.push('done_task_has_live_worktree');
+          }
+
+          if (dirtyWorktrees.some(folder => nonInProgressTasksWithWorktrees.includes(folder))) {
+            ambiguityFlags.push('dirty_non_in_progress_worktree');
+          }
+
+          if (runnable.length > 1) {
+            ambiguityFlags.push('multiple_runnable_tasks');
+          }
+
+          if (pendingTasks.length > 0 && runnable.length === 0) {
+            ambiguityFlags.push('pending_tasks_blocked');
+          }
 
           const getNextAction = (
             planStatus: string | null,
@@ -1847,6 +1873,26 @@ Expand your Discovery section and try again.`;
               list: tasksSummary,
               runnable,
               blockedBy,
+            },
+            helperStatus: {
+              doneTasksWithLiveWorktrees,
+              dirtyWorktrees,
+              nonInProgressTasksWithWorktrees,
+              manualTaskPolicy: {
+                order: {
+                  omitted: 'append_next_order',
+                  explicitNextOrder: 'append_next_order',
+                  explicitOtherOrder: 'plan_amendment_required',
+                },
+                dependsOn: {
+                  omitted: 'store_empty_array',
+                  explicitDoneTargetsOnly: 'allowed',
+                  explicitMissingTarget: 'plan_amendment_required',
+                  explicitNotDoneTarget: 'plan_amendment_required',
+                  reviewSourceWithExplicitDependsOn: 'plan_amendment_required',
+                },
+              },
+              ambiguityFlags,
             },
             context: {
               fileCount: featureContextFiles.length,
