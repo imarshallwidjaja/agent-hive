@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **GitHub Copilot is back as a VS Code desktop preview path**: Hive's forward support story now reflects the milestone-1 direction honestly—OpenCode remains the first-class runtime, while modernized Copilot-native artifacts, revived VS Code LM tools, and Copilot's built-in browser/MCP/Playwright workflow make VS Code desktop a strong preview path again without claiming parity across GitHub.com, cloud, CLI, or JetBrains.
+
 ## [1.4.0] - 2026-04-07
 
 ### Added

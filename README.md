@@ -637,15 +637,15 @@ Hive complements these excellent projects:
 
 | Platform | Setup | Status |
 |----------|-------|--------|
-| **GitHub Copilot** | Legacy generated `.github/*` artifacts may still exist for continuity | Not supported as an execution harness in `1.4.0` |
-| **OpenCode** | Add `opencode-hive` plugin | Full support |
-| **VS Code** | Install the extension for review/sidebar workflows | Full support as a companion |
+| **GitHub Copilot** | Use the generated Copilot-native `.github/*` artifacts from VS Code desktop, plus built-in browser tools, MCP, and Playwright where needed | Strong preview path in VS Code desktop; not first-class parity across GitHub.com, cloud, CLI, or JetBrains |
+| **OpenCode** | Add `opencode-hive` plugin | First-class support |
+| **VS Code** | Install the extension for review/sidebar workflows and Hive LM tools | Full support as a companion, and the best desktop host for Copilot preview flows |
 
 Designed to work seamlessly with:
 
-- **[OpenCode](https://opencode.ai)** — The primary Hive runtime and supported execution harness
-- **VS Code** — Your editor for overview/plan review, comments, and approvals via `vscode-hive`
-- **Legacy `.github/*` bootstrap artifacts** — Still generated for continuity when teams choose to keep them, but no longer the supported primary path
+- **[OpenCode](https://opencode.ai)** — The first-class Hive runtime and supported execution harness
+- **VS Code** — Your editor for overview/plan review, comments, approvals via `vscode-hive`, and the recommended desktop host for Copilot preview workflows
+- **GitHub Copilot in VS Code desktop** — A serious preview path built around Copilot-native artifacts (`.github/agents`, prompts, and `copilot-instructions.md`), built-in browser tools, MCP / Playwright, and revived VS Code LM tools; this preview scope is intentional and does not claim parity across every Copilot surface
 - **Git** — Worktrees for isolation
 
 ---
