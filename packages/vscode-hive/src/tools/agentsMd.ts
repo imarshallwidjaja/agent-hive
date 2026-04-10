@@ -1,12 +1,16 @@
 import { AgentsMdService, ContextService } from 'hive-core';
 import type { ToolRegistration } from './base';
+import { defineTool } from './base';
 
 export function getAgentsMdTools(workspaceRoot: string): ToolRegistration[] {
   return [
-    {
+    defineTool({
       name: 'hive_agents_md',
+      toolReferenceName: 'hiveAgentsMd',
       displayName: 'Manage AGENTS.md',
       modelDescription: 'Initialize, sync, or apply changes to AGENTS.md. init: scan codebase and generate. sync: propose updates from feature contexts. apply: write approved content.',
+      userDescription: 'Initialize, sync, or apply AGENTS.md content.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -57,6 +61,6 @@ export function getAgentsMdTools(workspaceRoot: string): ToolRegistration[] {
 
         return JSON.stringify({ error: `Unknown action: ${action}` });
       },
-    },
+    }),
   ];
 }

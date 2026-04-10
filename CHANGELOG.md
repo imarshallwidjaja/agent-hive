@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **`hive-helper` hard-task guidance is now explicit**: `hive-helper` now documents bounded merge recovery, `helperStatus`-based state clarification, interrupted-state wrap-up, and safe manual follow-up handling while keeping the contract honest: manual tasks are append-only, unfinished-task dependencies require plan amendment, and Helper remains runtime-only plus network-blind.
+- **GitHub Copilot is back as a VS Code desktop preview path**: Hive's forward support story now reflects the milestone-1 direction honestly—OpenCode remains the first-class runtime, while modernized Copilot-native artifacts, revived VS Code LM tools, and Copilot's built-in browser/MCP/Playwright workflow make VS Code desktop a strong preview path again without claiming parity across GitHub.com, cloud, CLI, or JetBrains.
 
 ## [1.4.1] - 2026-04-10
 

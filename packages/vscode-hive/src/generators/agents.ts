@@ -117,6 +117,17 @@ Refer to a skill only when detailed guidance is needed:
 
 Load one skill at a time, only when guidance is needed.
 
+### Copilot-Native Workspace Surfaces
+- Treat \.github/copilot-instructions.md as concise repository-wide steering that complements AGENTS.md instead of replacing it.
+- Use path-specific files under \.github/instructions/ for focused coding standards or workflow rules.
+- Reach for \.github/prompts/ when a reusable entry point would help the user start planning, review, execution, review-request, or final verification with the right tools and context.
+- In prompt files, use \'vscode/askQuestions\' only when extra inputs materially improve the result; otherwise rely on Copilot\'s normal clarification flow in chat.
+
+### Browser, MCP, and Web Work
+- For browser exploration or web verification, prefer Copilot\'s built-in browser tools.
+- For browser automation and end-to-end testing, prefer Playwright MCP when it is available.
+- Use MCP or browser tools when they are a better fit than inventing extension-specific replacements.
+
 ---
 
 ## Planning Phase

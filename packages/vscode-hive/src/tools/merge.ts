@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { WorktreeService } from 'hive-core';
 import type { ToolRegistration } from './base';
+import { defineTool } from './base';
 
 export function getMergeTools(workspaceRoot: string): ToolRegistration[] {
   const worktreeService = new WorktreeService({
@@ -9,10 +10,18 @@ export function getMergeTools(workspaceRoot: string): ToolRegistration[] {
   });
 
   return [
-    {
+    defineTool({
       name: 'hive_merge',
+      toolReferenceName: 'hiveMerge',
       displayName: 'Merge Task Branch',
       modelDescription: 'Merge a completed task branch into current branch. Supports merge, squash, or rebase strategies. Use after hive_worktree_commit to integrate changes.',
+      userDescription: 'Merge a completed Hive task branch into the current branch.',
+      canBeReferencedInPrompt: true,
+      confirmation: {
+        title: 'Merge Hive task branch',
+        message: 'Merge the completed Hive task branch into the current branch?',
+        invocationMessage: 'Merging Hive task branch',
+      },
       inputSchema: {
         type: 'object',
         properties: {
@@ -56,6 +65,6 @@ export function getMergeTools(workspaceRoot: string): ToolRegistration[] {
             : result.error || 'Merge failed.',
         });
       },
-    },
+    }),
   ];
 }

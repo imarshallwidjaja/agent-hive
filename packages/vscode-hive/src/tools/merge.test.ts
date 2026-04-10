@@ -103,19 +103,20 @@ describe('getMergeTools', () => {
     }
   });
 
-  it('drops LM tool manifest entries while keeping merge-related extension commands', () => {
+  it('keeps merge-related extension commands while LM tools are contributed separately', () => {
     const packageJson = JSON.parse(
       fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')
     ) as {
       contributes?: {
-        languageModelTools?: Array<unknown>;
+        languageModelTools?: Array<{ name?: string }>;
         commands?: Array<{ command?: string }>;
       };
     };
 
     const commandNames = packageJson.contributes?.commands?.map(command => command.command) ?? [];
+    const toolNames = packageJson.contributes?.languageModelTools?.map(tool => tool.name) ?? [];
 
-    expect(packageJson.contributes?.languageModelTools).toBeUndefined();
+    expect(toolNames).toContain('hive_merge');
     expect(commandNames).toContain('hive.startTask');
     expect(commandNames).toContain('hive.regenerateAgents');
   });

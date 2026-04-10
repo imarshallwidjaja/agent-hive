@@ -5,8 +5,12 @@ export interface InstructionFile {
   body: string;
 }
 
+function buildFrontmatter(frontmatter: string, content: string): string {
+  return `---\n${frontmatter}\n---\n\n${content.trim()}\n`;
+}
+
 function buildInstructionBody(description: string, applyTo: string, content: string): string {
-  return `---\ndescription: "${description}"\napplyTo: "${applyTo}"\n---\n\n${content.trim()}\n`;
+  return buildFrontmatter(`description: "${description}"\napplyTo: "${applyTo}"`, content);
 }
 
 function createInstructionFile(filename: string, description: string, applyTo: string, content: string): InstructionFile {
@@ -51,6 +55,19 @@ export function generateCodingStandardsTemplate(): InstructionFile {
 
 <!-- TODO: customize -->
 - Describe required test coverage, frameworks, and verification expectations.`,
+  );
+}
+
+export function generateCopilotInstructions(): string {
+  return buildFrontmatter(
+    'description: "Repository-wide GitHub Copilot steering for Hive workflows"',
+    `Use AGENTS.md for the full Hive operating model and non-negotiable plan-first guardrails.
+
+Use .github/instructions/ for path-specific coding and workflow guidance, and .github/prompts/ for reusable entry points such as plan creation, plan review, execution, review handoff, and completion verification.
+
+Prefer GitHub Copilot's built-in clarification flow in chat. Use vscode/askQuestions inside prompt files only when extra structured input materially improves the result.
+
+When web research, browser inspection, or end-to-end verification is needed, prefer built-in browser tools and MCP integrations such as Playwright MCP over extension-specific substitutes.`,
   );
 }
 

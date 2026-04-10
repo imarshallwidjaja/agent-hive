@@ -1,5 +1,6 @@
 import { FeatureService, PlanService, ContextService } from 'hive-core';
 import type { ToolRegistration } from './base';
+import { defineTool } from './base';
 
 export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
   const featureService = new FeatureService(workspaceRoot);
@@ -7,10 +8,13 @@ export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
   const contextService = new ContextService(workspaceRoot);
 
   return [
-    {
+    defineTool({
       name: 'hive_plan_write',
+      toolReferenceName: 'hivePlanWrite',
       displayName: 'Write Hive Plan',
       modelDescription: 'Write or update the plan.md for a feature. Review context/overview.md first as the human-facing summary/history surface on this branch, while plan.md remains execution truth. Include a concise design summary before ## Tasks, and optionally include a Mermaid dependency or sequence overview in that pre-task summary only. Use markdown with ### numbered headers for tasks. Clears existing plan review comments when plan is rewritten.',
+      userDescription: 'Write or rewrite a feature plan.md file.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -45,11 +49,14 @@ export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
           message: `Plan written. Review context/overview.md first as the human-facing summary/history surface; plan.md remains execution truth. When ready, use hive_plan_approve.${contextWarning}`,
         });
       },
-    },
-    {
+    }),
+    defineTool({
       name: 'hive_plan_read',
+      toolReferenceName: 'hivePlanRead',
       displayName: 'Read Hive Plan',
       modelDescription: 'Read the plan.md and related review comments for a feature. Use to inspect the plan.md execution contract, task structure, status, and review feedback while keeping context/overview.md as the human-facing summary/history surface on this branch.',
+      userDescription: 'Read a feature plan and its review comments.',
+      canBeReferencedInPrompt: true,
       readOnly: true,
       inputSchema: {
         type: 'object',
@@ -74,11 +81,14 @@ export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
           commentCount: result.comments.length,
         });
       },
-    },
-    {
+    }),
+    defineTool({
       name: 'hive_plan_approve',
+      toolReferenceName: 'hivePlanApprove',
       displayName: 'Approve Hive Plan',
       modelDescription: 'Approve a plan for execution. Use after reviewers have checked context/overview.md first, confirmed plan.md as the execution contract, and resolved any comments. Changes feature status to approved.',
+      userDescription: 'Approve a Hive feature plan for execution.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -128,6 +138,6 @@ export function getPlanTools(workspaceRoot: string): ToolRegistration[] {
           message: `Plan approved. Use hive_tasks_sync to generate tasks from plan.md as the execution contract. Refresh context/overview.md if the human-facing summary/history should change.${contextWarning}`,
         });
       },
-    },
+    }),
   ];
 }

@@ -34,6 +34,12 @@ describe('generateAllAgents', () => {
     expect(hive).toContain('use the agent tool to invoke @scout');
     expect(hive).toContain('refer to the skill at .github/skills/parallel-exploration/');
     expect(hive).toContain('ask the user directly in chat');
+    expect(hive).toContain('.github/prompts/');
+    expect(hive).toContain('.github/copilot-instructions.md');
+    expect(hive).toContain('AGENTS.md');
+    expect(hive).toContain('vscode/askQuestions');
+    expect(hive).toContain('Playwright MCP');
+    expect(hive).toContain('browser tools');
 
     expect(hive).not.toContain('question()');
     expect(hive).not.toContain('task({ subagent_type: "scout-researcher" })');

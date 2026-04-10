@@ -1,4 +1,4 @@
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -78,9 +78,13 @@ describe('initNest', () => {
       { message: 'Generating builtin skills...' },
       { message: 'Generating hooks...' },
       { message: 'Generating instructions...' },
+      { message: 'Generating prompt files...' },
       { message: 'Generating plugin manifest...' },
     ]);
-    assert.equal(mock.infoMessages[0], 'Hive Nest initialized! Created bootstrap files for agents, skills, hooks, and instructions.');
+    assert.equal(
+      mock.infoMessages[0],
+      'Hive Nest initialized! Created GitHub agents, prompts, instructions, Copilot steering, hooks, plugin manifest, and compatibility skills.'
+    );
 
     assert.ok(fs.existsSync(path.join(projectRoot, '.hive', 'features')));
     assert.ok(fs.existsSync(path.join(projectRoot, '.hive', 'skills')));
@@ -99,6 +103,20 @@ describe('initNest', () => {
     assert.ok(fs.existsSync(path.join(projectRoot, '.github', 'hooks', 'hive-context-injection.json')));
     assert.ok(fs.existsSync(path.join(projectRoot, '.github', 'instructions', 'hive-workflow.instructions.md')));
     assert.ok(fs.existsSync(path.join(projectRoot, '.github', 'instructions', 'coding-standards.instructions.md')));
+    assert.ok(fs.existsSync(path.join(projectRoot, '.github', 'copilot-instructions.md')));
+    assert.equal(fs.existsSync(path.join(projectRoot, 'AGENTS.md')), false);
+
+    const promptFiles = fs.readdirSync(path.join(projectRoot, '.github', 'prompts')).sort();
+    assert.deepEqual(promptFiles, [
+      'execute-approved-plan.prompt.md',
+      'plan-feature.prompt.md',
+      'request-review.prompt.md',
+      'review-plan.prompt.md',
+      'verify-completion.prompt.md',
+    ]);
+
+    assert.match(readFile(projectRoot, '.github/copilot-instructions.md'), /AGENTS\.md/);
+    assert.match(readFile(projectRoot, '.github/prompts/plan-feature.prompt.md'), /hive_plan_write/);
 
     const plugin = JSON.parse(readFile(projectRoot, 'plugin.json')) as { agents: string[]; hooks: string[]; instructions: string[] };
     assert.deepEqual(plugin.agents, ['.github/agents']);

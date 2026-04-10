@@ -1,14 +1,18 @@
 import { ContextService } from 'hive-core';
 import type { ToolRegistration } from './base';
+import { defineTool } from './base';
 
 export function getContextTools(workspaceRoot: string): ToolRegistration[] {
   const contextService = new ContextService(workspaceRoot);
 
   return [
-    {
+    defineTool({
       name: 'hive_context_write',
+      toolReferenceName: 'hiveContextWrite',
       displayName: 'Write Context File',
       modelDescription: 'Write a context file to store research findings, decisions, or reference material. System-known names are: "overview" for the human-facing summary/history file at context/overview.md, "draft" for planner scratchpad notes, and "execution-decisions" for the orchestration log. All other names remain durable free-form context while plan.md remains execution truth.',
+      userDescription: 'Write a Hive context markdown file.',
+      canBeReferencedInPrompt: true,
       inputSchema: {
         type: 'object',
         properties: {
@@ -33,7 +37,7 @@ export function getContextTools(workspaceRoot: string): ToolRegistration[] {
                 : 'Context file written as durable free-form context.',
         });
       },
-    },
+    }),
 
   ];
 }

@@ -10,9 +10,11 @@ import { generateAllHooks, generateContextInjectionHook, generatePlanEnforcement
 import {
   generateAllInstructions,
   generateCodingStandardsTemplate,
+  generateCopilotInstructions,
   generateHiveWorkflowInstructions,
 } from '../generators/instructions.js';
 import { generatePluginManifest } from '../generators/plugin.js';
+import { generateAllPrompts } from '../generators/prompts.js';
 import { generateSkillFile, getBuiltinSkills } from '../generators/skills.js';
 
 function extractFrontmatter(content: string): string {
@@ -165,6 +167,37 @@ describe('Instruction Generators', () => {
     const template = generateCodingStandardsTemplate();
     expect(template.filename).toBe('coding-standards.instructions.md');
     expect(template.applyTo).toBe('**/*.ts');
+  });
+
+  test('repository copilot instructions stay concise and reference companion artifacts', () => {
+    const content = generateCopilotInstructions();
+    const body = getBody(content);
+    expect(body).toContain('AGENTS.md');
+    expect(body).toContain('.github/prompts/');
+    expect(body.length).toBeLessThanOrEqual(1000);
+  });
+});
+
+describe('Prompt Generators', () => {
+  test('returns the expected prompt filenames', () => {
+    expect(generateAllPrompts().map((prompt) => prompt.filename)).toEqual([
+      'plan-feature.prompt.md',
+      'review-plan.prompt.md',
+      'execute-approved-plan.prompt.md',
+      'request-review.prompt.md',
+      'verify-completion.prompt.md',
+    ]);
+  });
+
+  test('all prompts have required frontmatter fields', () => {
+    for (const prompt of generateAllPrompts()) {
+      const frontmatter = extractFrontmatter(prompt.body);
+      expect(frontmatter).toContain('name:');
+      expect(frontmatter).toContain('description:');
+      expect(frontmatter).toContain('agent:');
+      expect(frontmatter).toContain('model:');
+      expect(frontmatter).toContain('tools:');
+    }
   });
 });
 
