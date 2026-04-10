@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-04-10
+
+### Added
+- **Project-local config at `.hive/agent-hive.json` (PR #77)**: Agent Hive now reads config with explicit precedence: `<project>/.hive/agent-hive.json` first, falling back to the legacy `<project>/.opencode/agent_hive.json`, then global `~/.config/opencode/agent_hive.json`. If the new project config exists but is invalid, it skips the legacy fallback and falls back to global defaults with a visible `[hive:config]` runtime warning — rather than silently inheriting a stale config.
+- **`hive_status()` now surfaces `helperStatus` (OpenCode-only, PR #79)**: Machine-readable interrupted wrap-up state is now available directly in `hive_status()` output under the `helperStatus` key. Fields include `doneTasksWithLiveWorktrees`, `dirtyWorktrees`, `nonInProgressTasksWithWorktrees`, `manualTaskPolicy`, and `ambiguityFlags`, giving orchestrators and operators an explicit, queryable surface for diagnosing stuck state.
+- **Integrated issue #72 regression suite (PR #79)**: E2e smoke tests now cover the `3b`/`3c` helper follow-up failure modes from issue #72 — specifically, `hive_task_create` append-only enforcement and `hive_status` `helperStatus` contract — as a gated regression that runs with the standard `bun run test` suite.
+
 ### Changed
-- **`hive-helper` hard-task guidance is now explicit**: `hive-helper` now documents bounded merge recovery, `helperStatus`-based state clarification, interrupted-state wrap-up, and safe manual follow-up handling while keeping the contract honest: manual tasks are append-only, unfinished-task dependencies require plan amendment, and Helper remains runtime-only plus network-blind.
-- **GitHub Copilot is back as a VS Code desktop preview path**: Hive's forward support story now reflects the milestone-1 direction honestly—OpenCode remains the first-class runtime, while modernized Copilot-native artifacts, revived VS Code LM tools, and Copilot's built-in browser/MCP/Playwright workflow make VS Code desktop a strong preview path again without claiming parity across GitHub.com, cloud, CLI, or JetBrains.
+- **`hive-helper` is now a bounded hard-task operational assistant (PR #79)**: Previously merge-only, `hive-helper` now documents three bounded modes — merge recovery, state clarification, and safe manual follow-up assistance — while keeping the contract honest: manual tasks remain append-only, unfinished-task dependencies require plan amendment back to Hive/Swarm, and Helper stays runtime-only and network-blind. Its tool boundary is locked to `hive_merge`, `hive_status`, and `hive_context_write` only.
+- **GitHub Copilot restored as a VS Code desktop preview path (PR #80)**: Hive's forward support story now reflects the milestone-1 direction honestly. OpenCode remains the first-class runtime. The VS Code desktop path is back as a supported preview via revived VS Code LM tool registration, modernized Copilot-native artifacts (prompt files, `copilot-instructions.md`, updated skill templates), and guidance that leans on Copilot's built-in browser, MCP, and Playwright workflows — without claiming parity across GitHub.com, cloud, CLI, or JetBrains.
+- **OpenCode runtime contract trimmed to verifiable surfaces (PR #79)**: Removed `todoProjection`, `checkpoint.json`, child-session replay/provenance plumbing, and prompt/doc/test assertions that depended on extra runtime-only contracts that do not exist in the shipped OpenCode binary. Recovery stays bounded through durable `.hive` session metadata and `worker-prompt.md`.
+- **Deterministic manual-task accept/reject matrix (PR #79)**: `TaskService.createManualTask()` now enforces the documented append-only, DAG-preserving policy deterministically: explicit dependencies on not-done tasks are rejected, insertion at non-sequential order positions is rejected, and the error messages are machine-readable with the correct follow-up action.
+- **VS Code sidebar and bootstrap surfacing expanded (PR #80)**: `sidebarProvider` now surfaces more Hive artifacts (plan, tasks, context), `initNest` scaffolding generates updated Copilot-native artifact structure, and `regenerateAgents` refreshes the full suite including prompt files and `copilot-instructions.md`.
+- **Plugin manifest regenerated to match slimmer runtime (PR #79)**: `packages/opencode-hive/plugin.json` regenerated to reflect only the hooks, tools, and agents that the plugin actually registers — removing stale contract entries that referenced removed infrastructure.
+
+### Fixed
+- **OpenCode smoke test no longer depends on local binary or layout assumptions (PR #79)**: `plugin-smoke.test.ts` is now gated behind a real `opencode` CLI check so CI no longer fails on environments without OpenCode installed. The `.opencode/plugin/hive.ts` fixture path is corrected to match the actual installed layout.
 
 ## [1.4.1] - 2026-04-10
 

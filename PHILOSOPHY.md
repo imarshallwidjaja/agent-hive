@@ -744,6 +744,20 @@ The alignment in this branch is intentionally pragmatic. OpenCode still owns ses
 
 **Boundary insight:** Honest contracts make systems easier to operate. Saying “OpenCode-owned todos plus bounded replay from `.hive` artifacts” is less glamorous than saying “native OpenCode sync,” but it matches the code and gives operators something real to trust.
 
+### v1.4.2 (Honest Contracts — Config, Helper, and Copilot)
+
+**Theme:** Trim what was aspirational, name what is real, and restore what was prematurely retired.
+
+Three parallel threads landed in this patch:
+
+**Project-local config (PR #77, contributor: PhucTruong-ctrl):** The config resolution chain is now explicit and documented. `<project>/.hive/agent-hive.json` is preferred; the legacy `<project>/.opencode/agent_hive.json` stays as migration fallback; global config is the final backstop. An invalid project config stops the fallback chain and emits a visible `[hive:config]` warning instead of silently inheriting a stale state. This is P7 (Iron Laws + Hard Gates) at the config layer — not just prompts but a deterministic resolution contract with test coverage.
+
+**`hive-helper` expansion within bounded scope (PR #79):** `hive-helper` started as "merge-only." In practice, operators also need state clarification after interruptions and a safe path for append-only follow-up tasks. PR #79 formalizes those three modes — merge recovery, state clarification, and safe manual follow-up — while keeping the tool boundary exact: `hive_merge`, `hive_status`, `hive_context_write`. DAG-changing requests must still route back to Hive/Swarm for plan amendment. The `helperStatus` surface is now machine-readable in `hive_status()` output, so orchestrators can inspect interrupted wrap-up state programmatically instead of guessing from narrative. This aligns with P8/P9 (Cross-Model Prompts, Deterministic Contracts Beat Soft Memory): the helper mode is now a documented bounded contract, not an inference problem.
+
+**GitHub Copilot back as VS Code preview (PR #80):** `v1.4.0` correctly identified OpenCode as the first-class runtime and correctly retired promises we couldn't keep about Copilot parity across GitHub.com, cloud, and CLI. But VS Code desktop was over-cut. The LM tool registration, prompt files, `copilot-instructions.md`, and Playwright/MCP-native guidance make VS Code desktop a genuinely useful preview path for teams that aren't ready to commit to OpenCode full-time. P3 (Human Shapes, Agent Builds): the shape is "OpenCode is first-class; VS Code desktop is a supported preview." PR #80 makes the shipped artifact match that shape.
+
+**Shared insight:** All three threads answer the same meta-question: *Does the code match the contract?* Config resolution had a hidden fallback chain. The helper role had undocumented modes. VS Code support was listed as deprecated when it actually worked. `v1.4.2` aligns the observable behavior with the stated contract in each case.
+
 ---
 
 <p align="center">
