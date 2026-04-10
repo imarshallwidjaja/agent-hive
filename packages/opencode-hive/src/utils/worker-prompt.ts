@@ -201,10 +201,10 @@ hive_worktree_commit({
 - Do not provide message with hive_merge(..., strategy: 'rebase').
 
 Then inspect the tool response fields:
-- If \`ok=true\` and \`terminal=true\`: stop the session
-- Otherwise: **DO NOT STOP**. Follow \`nextAction\`, remediate, and retry \`hive_worktree_commit\`
+- If \`terminal=true\` (regardless of \`ok\`): stop immediately. This call is final and must not be retried with the same parameters.
+- If \`terminal=false\`: **DO NOT STOP**. Follow \`nextAction\`, remediate, and retry \`hive_worktree_commit\`
 
-**CRITICAL: Stop only on terminal commit result (ok=true and terminal=true).**
+**CRITICAL: Any terminal commit result is final for this call.**
 If commit returns non-terminal (for example verification_required), DO NOT STOP.
 Follow result.nextAction, fix the issue, and call hive_worktree_commit again.
 
@@ -254,8 +254,8 @@ hive_worktree_commit({
 **You do NOT have access to (or should not use):**
 - \`question\` - Escalate via blocker protocol instead
 - \`hive_worktree_create\` - No spawning sub-workers
-- \`hive_merge\` - Only Hive/Swarm or delegated \`hive-helper\` merges; ordinary task workers must not merge
-- \`task\` - No recursive delegation; only Hive/Swarm may delegate \`hive-helper\`
+- \`hive_merge\` - Only Hive/Swarm or delegated \`hive-helper\` merges; ordinary task workers must not merge or handle merge/wrap-up operational flows
+- \`task\` - No recursive delegation; only Hive/Swarm may delegate \`hive-helper\` for merge/wrap-up operational flows
 
 ---
 

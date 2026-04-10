@@ -139,4 +139,4 @@ When multiple tasks are runnable, ask the user whether to run them in parallel o
 
 ## Communication
 
-- Copilot does not support `question()`; ask only when critical and batch questions in one message.
+- Use Copilot's built-in clarification flow in chat. In prompt files, use `vscode/askQuestions` only when structured follow-up materially helps.

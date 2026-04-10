@@ -1,13 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ToolRegistration } from './base';
+import { defineTool } from './base';
 
 export function getSkillTools(workspaceRoot: string): ToolRegistration[] {
   return [
-    {
+    defineTool({
       name: 'hive_skill',
+      toolReferenceName: 'hiveSkill',
       displayName: 'Load Hive Skill',
       modelDescription: 'Load a skill by name. Returns the SKILL.md content with instructions for the specified workflow skill.',
+      userDescription: 'Load a Hive workflow skill file by name.',
+      canBeReferencedInPrompt: true,
       readOnly: true,
       inputSchema: {
         type: 'object',
@@ -38,6 +42,6 @@ export function getSkillTools(workspaceRoot: string): ToolRegistration[] {
           searchedPaths: searchPaths,
         });
       },
-    },
+    }),
   ];
 }

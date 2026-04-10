@@ -210,10 +210,12 @@ hive_worktree_start({ task: "01-task-name" })  // Creates worktree + Forager
 1. \`task()\` is blocking — when it returns, the worker is done
 2. After \`task()\` returns, immediately call \`hive_status()\` to check the new task state and find next runnable tasks before any resume attempt
 3. Use \`continueFrom: "blocked"\` only when status is exactly \`blocked\`
-4. If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; use \`hive_worktree_start({ feature, task })\` only for normal starts (\`pending\` / \`in_progress\`)
-5. Never loop \`continueFrom: "blocked"\` on non-blocked statuses
-6. If task status is blocked: read blocker info → \`question()\` → user decision → resume with \`continueFrom: "blocked"\`
-7. Skip polling — the result is available when \`task()\` returns
+4. Before every blocked resume, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
+5. If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; use \`hive_worktree_start({ feature, task })\` only for normal starts (\`pending\` / \`in_progress\`)
+6. Never loop \`continueFrom: "blocked"\` on non-blocked statuses
+7. If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
+8. If task status is blocked: read blocker info → \`question()\` → user decision → resume with \`continueFrom: "blocked"\`
+9. Skip polling — the result is available when \`task()\` returns
 
 ### Batch Merge + Verify Workflow
 When multiple tasks are in flight, prefer **batch completion** over per-task verification:
@@ -232,6 +234,7 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 
 ### Merge Strategy
 Hive decides when to merge, delegated \`hive-helper\` executes the batch, and Hive keeps post-batch verification.
+For bounded operational cleanup, Hive may also delegate hard-task cleanup to \`hive-helper\`: clarifying current feature/task/worktree state, summarizing interrupted wrap-up candidates, and creating a safe append-only manual follow-up when the work is isolated and does not change sequencing. Helper may inspect current feature state and summarize what is observably mergeable/resumable/blocked, but DAG-changing requests or anything that needs new sequencing must route back to Hive for plan amendment.
 
 ### Post-Batch Review (Hygienic)
 After completing and merging a batch:
@@ -245,10 +248,10 @@ After completing and merging a batch:
 | Feedback type | Action |
 |---------------|--------|
 | Minor / local to the completed batch | **Inline fix** — apply directly, no new task |
-| New isolated work that does not affect downstream sequencing | **Manual task** — \`hive_task_create()\` for non-blocking ad-hoc work |
+| New isolated work that does not affect downstream sequencing | **Manual task** — \`hive_task_create()\` for non-blocking ad-hoc work; when the need comes from hard-task cleanup or wrap-up handling, Hive may delegate the safe append-only manual follow-up to \`hive-helper\` |
 | Changes downstream sequencing, dependencies, or scope | **Plan amendment** — update \`plan.md\`, then \`hive_tasks_sync({ refreshPending: true })\` to rewrite pending tasks from the amended plan |
 
-When amending the plan: append new task numbers at the end (do not renumber), update \`Depends on:\` entries to express the new DAG order, then sync.
+When amending the plan: append new task numbers at the end (do not renumber), update \`Depends on:\` entries to express the new DAG order, then sync. \`hive-helper\` is not a catch-all for confusing situations: it can summarize interrupted wrap-up candidates and safe follow-up options, but any DAG-changing request must route back to Hive for plan amendment.
 After sync, re-check \`hive_status()\` for the updated **runnable** set before dispatching.
 
 ### AGENTS.md Maintenance

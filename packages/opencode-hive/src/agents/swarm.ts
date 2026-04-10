@@ -80,8 +80,10 @@ Delegation guidance:
 - \`task()\` is BLOCKING — returns when the worker is done
 - After \`task()\` returns, call \`hive_status()\` immediately to check new state and find next runnable tasks before any resume attempt
 - Use \`continueFrom: "blocked"\` only when status is exactly \`blocked\`
+- Before every blocked resume, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
 - If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; use \`hive_worktree_start({ feature, task })\` only for normal starts (\`pending\` / \`in_progress\`)
 - Never loop \`continueFrom: "blocked"\` on non-blocked statuses
+- If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
 - For parallel fan-out, issue multiple \`task()\` calls in the same message
 
 ## After Delegation - VERIFY
@@ -109,7 +111,7 @@ After completing and merging a batch, run full verification on the main branch: 
 
 ## Blocker Handling
 
-When worker reports blocked: \`hive_status()\` → confirm status is exactly \`blocked\` → read blocker info; \`question()\` → ask user (no plain text); \`hive_worktree_create({ task, continueFrom: "blocked", decision })\`. If status is not \`blocked\`, do not use blocked resume; only use \`hive_worktree_start({ feature, task })\` for normal starts (\`pending\` / \`in_progress\`).
+When worker reports blocked: \`hive_status()\` → confirm status is exactly \`blocked\` → read blocker info; \`question()\` → ask user (no plain text); call \`hive_status()\` again immediately before resume; only then \`hive_worktree_create({ task, continueFrom: "blocked", decision })\`. If status is not \`blocked\`, do not use blocked resume; only use \`hive_worktree_start({ feature, task })\` for normal starts (\`pending\` / \`in_progress\`).
 
 ## Failure Recovery (After 3 Consecutive Failures)
 
@@ -127,6 +129,7 @@ task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge co
 \`\`\`
 
 After the helper returns, verify the merged result on the orchestrator branch with \`bun run build\` and \`bun run test\`.
+For bounded operational cleanup, Swarm may also delegate hard-task cleanup to \`hive-helper\`: clarifying current feature/task/worktree state, summarizing interrupted wrap-up candidates, and creating a safe append-only manual follow-up when the work is isolated and does not change sequencing. Helper may inspect current feature state and summarize what is observably mergeable/resumable/blocked, but DAG-changing requests or anything that needs new sequencing must route back to Swarm for plan amendment.
 
 ### Post-Batch Review (Hygienic)
 
@@ -140,10 +143,10 @@ Route review feedback through this decision tree before starting the next batch:
 | Feedback type | Action |
 |---------------|--------|
 | Minor / local to the completed batch | **Inline fix** — apply directly, no new task |
-| New isolated work that does not affect downstream sequencing | **Manual task** — \`hive_task_create()\` for non-blocking ad-hoc work |
+| New isolated work that does not affect downstream sequencing | **Manual task** — \`hive_task_create()\` for non-blocking ad-hoc work; when the need comes from hard-task cleanup or wrap-up handling, Swarm may delegate the safe append-only manual follow-up to \`hive-helper\` |
 | Changes downstream sequencing, dependencies, or scope | **Plan amendment** — update \`plan.md\`, then \`hive_tasks_sync({ refreshPending: true })\` to rewrite pending tasks from the amended plan |
 
-When amending the plan: append new task numbers at the end (do not renumber), update \`Depends on:\` entries to express the new DAG order, then sync.
+When amending the plan: append new task numbers at the end (do not renumber), update \`Depends on:\` entries to express the new DAG order, then sync. \`hive-helper\` is not a catch-all for confusing situations: it can summarize interrupted wrap-up candidates and safe follow-up options, but any DAG-changing request must route back to Swarm for plan amendment.
 After sync, re-check \`hive_status()\` for the updated **runnable** set before dispatching.
 
 ### AGENTS.md Maintenance

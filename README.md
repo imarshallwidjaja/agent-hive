@@ -72,11 +72,18 @@ Add `opencode-hive` to your `opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-hive"]
+  "plugin": ["opencode-hive@latest"]
 }
 ```
 
 OpenCode handles the rest — no manual npm install needed.
+
+Today, the supported execution contract is still OpenCode-native:
+
+- OpenCode owns sessions, compaction, and todo storage.
+- Hive layers plan/task/worktree state into `.hive/` files and primary-session prompts.
+- Hive does **not** add a derived projected-todo field, a Hive-specific todo write API, or checkpoint-backed child-session replay.
+- Subagents and task workers should not be described as independently syncing Hive task state back into OpenCode.
 
 ### Option B: VS Code companion (recommended with OpenCode)
 
@@ -90,13 +97,30 @@ Use the VS Code extension to review `context/overview.md`, comment on `plan.md`,
 
 For local plugin testing:
 
-1. Keep `plugin: ["opencode-hive"]` in `opencode.json` (not `opencode-hive@latest`).
+1. Keep `plugin: ["opencode-hive"]` in `opencode.json` as a temporary contributor-only override.
 2. Build `packages/hive-core` first, then `packages/opencode-hive`.
 3. Symlink `~/.cache/opencode/node_modules/opencode-hive` to your local `packages/opencode-hive` checkout.
 
 ### Configuration
 
-Run Agent Hive once to auto-generate a default configuration at `~/.config/opencode/agent_hive.json`. Review it to ensure it matches your local setup.
+Agent Hive reads configuration from the following locations (in order):
+
+1. `<project>/.hive/agent-hive.json` (preferred)
+2. `<project>/.opencode/agent_hive.json` (legacy fallback, used only when the new file is missing)
+3. `~/.config/opencode/agent_hive.json` (global fallback)
+
+If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Agent Hive warns, skips the legacy project file, and falls back to the global config and defaults.
+
+Create a project-local config at `.hive/agent-hive.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "agentMode": "unified"
+}
+```
+
+Run Agent Hive once to auto-generate a default global configuration at `~/.config/opencode/agent_hive.json`. Review it to ensure it matches your local setup.
 
 ```json
 {
@@ -120,6 +144,11 @@ Run Agent Hive once to auto-generate a default configuration at `~/.config/openc
 | `agentMode` | `unified` (default), `dedicated` | `unified`: Single `hive-master` agent handles planning + orchestration. `dedicated`: Separate `architect-planner` and `swarm-orchestrator` agents. |
 | `disableSkills` | `string[]` | Globally disable specific skills (won't appear in `hive_skill` tool). |
 | `disableMcps` | `string[]` | Globally disable MCP servers. Options: `websearch`, `context7`, `grep_app`, `ast_grep`. |
+
+#### Local use cases
+
+- **Local skill experiments:** keep a repo-specific skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then add that ID to `skills` or `autoLoadSkills` without publishing anything globally.
+- **Local model routing:** pin a repo to different models per agent in `<project>/.hive/agent-hive.json`, such as a faster `forager-worker` model for one codebase while leaving your global defaults unchanged.
 
 #### Agent Models
 
@@ -286,11 +315,11 @@ Recommended baseline:
 }
 ```
 
-Also keep OpenCode plugin config as `"opencode-hive"` (not `"opencode-hive@latest"`) during local testing.
+Also keep OpenCode plugin config as `"opencode-hive"` during local testing only; the normal install should use `"opencode-hive@latest"`.
 
 #### Compaction recovery for Hive sessions
 
-OpenCode session compaction can strip away role and task framing at exactly the point Hive depends on it. Hive now persists enough session metadata to rebuild that framing after compaction.
+OpenCode session compaction can strip away role and task framing at exactly the point Hive depends on it. Hive therefore persists enough semantic `.hive` state to rebuild that framing after compaction without pretending that raw chat history is durable.
 
 Recovery state is stored in two places:
 
@@ -302,12 +331,13 @@ Where:
 - Primary sessions are re-anchored to their current Hive role.
 - Scout and Hygienic subagents are re-anchored as subagents.
 - Forager workers and forager-derived custom agents are re-anchored as task workers.
-- Primary and subagent sessions replay the stored user directive once after compaction.
+- Primary and subagent sessions replay the stored user directive once after compaction, then escalate on later compactions if no new real directive arrived.
 - Task workers are told to re-read `worker-prompt.md` instead of rediscovering the assignment from scratch.
+- The task-scoped recovery contract is semantic and file-backed: task folder identity, `workerPromptPath`, and bounded recovery text are the durable recovery surface.
 
 The recovery prompt is intentionally narrow. It reminds the session that compaction happened, restores the expected role, replays the directive only for primary/subagent sessions, points task workers back to `worker-prompt.md`, and tells the agent to continue from where it left off without re-reading the full codebase.
 
-To make it simple: if a long-running Hive session or worker is compacted mid-task, Hive now has a durable breadcrumb trail in `.hive/sessions.json`, feature-local `sessions.json` files, and task `worker-prompt.md` files so the session can resume with the right constraints instead of improvising a new role.
+To make it simple: if a long-running Hive session or worker is compacted mid-task, Hive now has a durable breadcrumb trail in `.hive/sessions.json`, feature-local `sessions.json` files, and task `worker-prompt.md` files so the session can resume with the right constraints instead of improvising a new role. This is a grounded recovery aid, not an upstream OpenCode checkpoint API or hidden replay subsystem.
 
 ---
 
@@ -353,7 +383,7 @@ You: Clear visibility into everything ✅
 | **Swarm (Orchestrator)** 🐝 | Orchestrates execution, delegates to workers |
 | **Scout (Explorer/Researcher/Retrieval)** 🔍 | Explores codebase + external docs/data |
 | **Forager (Worker/Coder)** 🍯 | Executes tasks in isolated worktrees |
-| **Hive Helper** 🛠️ | Runtime-only merge recovery helper for isolated branch reconciliation; not a network consumer |
+| **Hive Helper** 🛠️ | Runtime-only bounded hard-task operational assistant for merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance; not a network consumer |
 | **Hygienic (Consultant/Reviewer/Debugger)** 🧹 | Reviews plan quality, OKAY/REJECT verdict |
 
 ### Compaction-safe recovery path
@@ -364,8 +394,14 @@ Recovery involves the following:
 
 1. The plugin records durable session metadata as the session runs.
 2. Feature-aware tool boundaries attach feature, task, and worker-prompt metadata when that metadata becomes known.
-3. When OpenCode compacts a session, the compaction hook rebuilds a minimal re-anchor prompt from that durable state.
+3. When OpenCode emits `session.compacted`, Hive rebuilds a minimal re-anchor prompt from that durable state and replays it through `experimental.chat.messages.transform`.
 4. Task workers get their `worker-prompt.md` path added back into context so they can recover the exact assignment without broad rediscovery.
+
+Todo ownership stays simple:
+
+- OpenCode todos are session-scoped and replace-all.
+- Hive does not expose a derived projected-todo field, stale refresh hints, or a hidden todo-sync layer.
+- No upstream change in this feature gives subagents first-class todo write access.
 
 This recovery model has a strict ownership boundary:
 
@@ -376,11 +412,14 @@ This recovery model has a strict ownership boundary:
 Some notes:
 
 - Custom subagents derived from `forager-worker` are treated as task workers for compaction recovery.
-- `hive-helper` is treated as a runtime-only subagent for merge recovery; it does not appear in generated `.github/agents/` docs and does not appear in `packages/vscode-hive/src/generators/` in v1.
+- `hive-helper` is treated as a runtime-only bounded hard-task operational assistant for merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance; it may summarize observable state, including `helperStatus`, and create safe append-only manual tasks, but it does not appear in generated `.github/agents/` docs, does not appear in `packages/vscode-hive/src/generators/` in v1, and is not a custom base agent.
 - `hive-helper` is not a network consumer; it benefits indirectly from better upstream planning/orchestration/review decisions.
+- manual tasks are append-only. If you need `3b` / `3c` inserted between existing plan tasks, intermediate insertion requires plan amendment.
+- For an issue-72 style interruption, first ask for a locally testable state and observable wrap-up summary. Only request a manual follow-up when it can append after the approved DAG; dependencies on unfinished work require plan amendment.
 - Custom subagents derived from `hygienic-reviewer` are treated as subagents.
 - One-recovery-attempt escalation means a primary or subagent session gets one normal directive replay cycle after compaction, then must escalate back to the parent/orchestrator instead of looping through repeated compact-and-replay retries.
 - The recovery prompt avoids telling agents to call broad status tools or re-scan the repository because that tends to recreate drift after compaction.
+- OpenCode still does not expose a public Hive-specific todo write API or a first-class native checkpoint API; the durable truth remains Hive's `.hive` artifacts plus bounded recovery prompts.
 
 ---
 
@@ -539,7 +578,7 @@ Visual management without leaving your editor:
 2. **opencode-hive plugin** — Installed in your OpenCode configuration
 3. **vscode-hive extension** — For visual management in VS Code
 
-The extension watches your `.hive/` directory and displays the current state. All planning and execution happens through OpenCode.
+The extension watches your `.hive/` directory and displays the current state. All planning and execution happens through OpenCode. Compaction recovery and task state come from the OpenCode runtime plus durable `.hive` artifacts; the extension is only a review/status surface.
 
 ### Using the Extension
 
@@ -606,7 +645,7 @@ Clean git history (worktree merges), full documentation (generated as you work),
 
 ## Philosophy
 
-Hive is built on 7 core principles:
+Hive is built on 8 core principles:
 
 1. **Context Persists** — Calibration survives sessions. The "3 months later" problem solved.
 2. **Plan → Approve → Execute** — Dialogue until approved, then trust. Two phases with a clear gate.
@@ -615,6 +654,7 @@ Hive is built on 7 core principles:
 5. **Batched Parallelism** — Parallel tasks in batches. Sequential batches share context.
 6. **Tests Define Done** — Workers do best-effort checks; orchestrator runs full suite after batch merge.
 7. **Iron Laws + Hard Gates** — Non-negotiable constraints enforced by tools, not guidelines.
+8. **Cross-Model Prompts** — Prompts must work across supported LLM providers using conditional, portable guidance.
 
 See [PHILOSOPHY.md](PHILOSOPHY.md) for the full framework.
 
@@ -637,15 +677,15 @@ Hive complements these excellent projects:
 
 | Platform | Setup | Status |
 |----------|-------|--------|
-| **GitHub Copilot** | Legacy generated `.github/*` artifacts may still exist for continuity | Not supported as an execution harness in `1.4.0` |
-| **OpenCode** | Add `opencode-hive` plugin | Full support |
-| **VS Code** | Install the extension for review/sidebar workflows | Full support as a companion |
+| **GitHub Copilot** | Use the generated Copilot-native `.github/*` artifacts from VS Code desktop, plus built-in browser tools, MCP, and Playwright where needed | Strong preview path in VS Code desktop; not first-class parity across GitHub.com, cloud, CLI, or JetBrains |
+| **OpenCode** | Add `opencode-hive` plugin | First-class support |
+| **VS Code** | Install the extension for review/sidebar workflows and Hive LM tools | Full support as a companion, and the best desktop host for Copilot preview flows |
 
 Designed to work seamlessly with:
 
-- **[OpenCode](https://opencode.ai)** — The primary Hive runtime and supported execution harness
-- **VS Code** — Your editor for overview/plan review, comments, and approvals via `vscode-hive`
-- **Legacy `.github/*` bootstrap artifacts** — Still generated for continuity when teams choose to keep them, but no longer the supported primary path
+- **[OpenCode](https://opencode.ai)** — The first-class Hive runtime and supported execution harness
+- **VS Code** — Your editor for overview/plan review, comments, approvals via `vscode-hive`, and the recommended desktop host for Copilot preview workflows
+- **GitHub Copilot in VS Code desktop** — A serious preview path built around Copilot-native artifacts (`.github/agents`, prompts, and `copilot-instructions.md`), built-in browser tools, MCP / Playwright, and revived VS Code LM tools; this preview scope is intentional and does not claim parity across every Copilot surface
 - **Git** — Worktrees for isolation
 
 ---

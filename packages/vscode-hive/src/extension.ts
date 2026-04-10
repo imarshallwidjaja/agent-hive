@@ -6,8 +6,68 @@ import { HiveWatcher, Launcher } from './services'
 import { HiveSidebarProvider, PlanCommentController } from './providers'
 import { initNest } from './commands/initNest'
 import { regenerateAgents } from './commands/regenerateAgents'
+import { getAllToolRegistrations } from './tools'
 
 type ReviewDocument = 'plan' | 'overview'
+
+type HiveLanguageModelTool = {
+  prepareInvocation?: (
+    options: { input: Record<string, unknown> },
+    token: vscode.CancellationToken,
+  ) => Promise<{
+    invocationMessage?: string
+    confirmationMessages?: {
+      title: string
+      message: vscode.MarkdownString
+    }
+  } | undefined>
+  invoke: (
+    options: { input: Record<string, unknown> },
+    token: vscode.CancellationToken,
+  ) => Promise<vscode.LanguageModelToolResult>
+}
+
+function createLanguageModelTextResult(content: string): vscode.LanguageModelToolResult {
+  return new vscode.LanguageModelToolResult([
+    new vscode.LanguageModelTextPart(content),
+  ])
+}
+
+function registerLanguageModelTools(context: vscode.ExtensionContext, workspaceRoot: string): void {
+  if (!vscode.lm?.registerTool) {
+    return
+  }
+
+  const stableTools = getAllToolRegistrations(workspaceRoot)
+    .filter(tool => tool.canBeReferencedInPrompt && tool.toolReferenceName)
+    .filter(tool => !tool.name.includes('Status'))
+
+  for (const tool of stableTools) {
+    const implementation: HiveLanguageModelTool = {
+      prepareInvocation: async (options) => {
+        if (!tool.confirmation) {
+          return {
+            invocationMessage: `Running ${tool.displayName}`,
+          }
+        }
+
+        return {
+          invocationMessage: tool.confirmation.invocationMessage ?? `Running ${tool.displayName}`,
+          confirmationMessages: {
+            title: tool.confirmation.title,
+            message: new vscode.MarkdownString(tool.confirmation.message),
+          },
+        }
+      },
+      invoke: async (options, token) => {
+        const result = await tool.invoke(options.input, token)
+        return createLanguageModelTextResult(result)
+      },
+    }
+
+    context.subscriptions.push(vscode.lm.registerTool(tool.name, implementation as vscode.LanguageModelTool<Record<string, unknown>>))
+  }
+}
 
 function getReviewTarget(workspaceRoot: string, filePath: string): { featureName: string; document: ReviewDocument } | null {
   const normalizedWorkspace = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -81,6 +141,8 @@ class HiveExtension {
     if (this.initialized) return
     this.initialized = true
 
+    registerLanguageModelTools(this.context, workspaceRoot)
+
     this.sidebarProvider = new HiveSidebarProvider(workspaceRoot)
     this.launcher = new Launcher(workspaceRoot)
     this.commentController = new PlanCommentController(workspaceRoot)
@@ -112,7 +174,6 @@ class HiveExtension {
       if (newRoot && !this.initialized) {
         this.workspaceRoot = newRoot
         this.initializeWithHive(newRoot)
-        vscode.window.showInformationMessage('Hive: .hive directory detected, extension activated')
       }
     }
 

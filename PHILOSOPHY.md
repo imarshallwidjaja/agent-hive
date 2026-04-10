@@ -693,9 +693,9 @@ The fix is a clean API split: `hive_worktree_start` for normal starts (pending/f
 
 PR #64 formalizes that recovery model. Hive now tracks session identity in global `.hive/sessions.json` and mirrors bound sessions into feature-local `sessions.json` files once a feature is known. That split solves two different needs at once: global recovery can find the right feature after compaction, while feature-local recovery keeps session history close to the work it belongs to.
 
-**Recovery by session kind:** Compacted sessions are classified as `primary`, `subagent`, `task-worker`, or `unknown`. Primary and subagent sessions recover by re-anchoring to their role and using directive replay to restore the stored user directive once after compaction. Task workers recover differently: they keep the same worker role, do not delegate, and are told to re-read `worker-prompt.md` so they resume from the original task contract instead of improvising a new one.
+**Recovery by session kind:** Compacted sessions are classified as `primary`, `subagent`, `task-worker`, or `unknown`. Primary and subagent sessions recover by re-anchoring to their role and using directive replay to restore the stored user directive once after compaction. Task workers recover differently: they keep the same worker role, do not delegate, and are told to re-read `worker-prompt.md` so they resume from the original task contract instead of improvising a new one. The task-level checkpoint here is semantic `.hive` state, not a raw transcript dump.
 
-**Design rationale:** Compaction is a memory-loss event, not a planning event. Recovery should restore the smallest durable contract that gets the agent safely moving again: role identity for orchestrators and subagents, plus `worker-prompt.md` for task workers. The system does not ask compacted sessions to rediscover state by re-reading the whole codebase or by re-running orchestration tools, because that invites drift exactly when the context window is already weakest.
+**Design rationale:** Compaction is a memory-loss event, not a planning event. Recovery should restore the smallest durable contract that gets the agent safely moving again: role identity for orchestrators and subagents, plus task-scoped `.hive` artifacts (`worker-prompt.md`, task identity, bound session metadata) for task workers. The system does not ask compacted sessions to rediscover state by re-reading the whole codebase or by re-running orchestration tools, because that invites drift exactly when the context window is already weakest.
 
 **Design insight:** Durable breadcrumbs beat speculative recovery. Persist the role, the feature binding, the directive, and the worker prompt path before compaction happens; then recovery can be narrow, deterministic, and safe.
 
@@ -724,13 +724,39 @@ PR #69 applies the same philosophy to review-driven execution. Review feedback i
 
 **Theme:** Add narrow cross-feature retrieval without turning memory into authority or making every agent query history by default.
 
-PRs #73, #74, #75, and #76 established the post-1.3.6 baseline: compaction recovery is durable, delegation/verification prompts are more evidence-first, `overview.md` remains the branch-facing review surface while `plan.md` stays execution truth, and `hive-helper` exists as a runtime-only merge isolation helper. `hive_network_query` builds on that baseline as read-only retrieval, not as a replacement for reading the current repository.
+PRs #73, #74, #75, and #76 established the post-1.3.6 baseline: compaction recovery is durable, delegation/verification prompts are more evidence-first, `overview.md` remains the branch-facing review surface while `plan.md` stays execution truth, and `hive-helper` exists as a runtime-only bounded hard-task operational assistant rather than a planner, custom base agent, or general executor. It now covers merge recovery, state clarification, interrupted-state wrap-up, and safe append-only manual follow-up while keeping `helperStatus` and other observable runtime fields as its truth surface. `hive_network_query` builds on that baseline as read-only retrieval, not as a replacement for reading the current repository.
 
 The key operating rule is selective use. There is no startup lookup. Agents start from the live request, live repository state, and current feature context. `hive_network_query` becomes an optional lookup only when prior feature evidence would materially improve a planning choice, an orchestration decision, or a review route. In other words: planning, orchestration, and review roles get network access first.
 
-That role boundary matters. Workers still execute from `spec.md`, live files, and direct verification. `hive-helper` is not a network consumer; it benefits only indirectly when upstream planning/orchestration/review choices are better grounded. Hygienic may use retrieved snippets as historical contrast with citations, but never as authority over live repository state.
+That role boundary matters. Workers still execute from `spec.md`, live files, and direct verification. `hive-helper` is not a network consumer; it benefits only indirectly when upstream planning/orchestration/review choices are better grounded. Manual tasks are append-only, intermediate insertion requires plan amendment, and dependencies on unfinished work require plan amendment. Hygienic may use retrieved snippets as historical contrast with citations, but never as authority over live repository state.
 
 **Design insight:** File-based memory is useful when it narrows judgment, not when it replaces judgment. Hive Network works only if it stays read-only, selective, and subordinate to current code and command-backed verification.
+
+### v1.3.8 (OpenCode Runtime Alignment)
+
+**Theme:** Document the real runtime contract instead of hinting at upstream APIs that do not exist.
+
+The alignment in this branch is intentionally pragmatic. OpenCode still owns session lifecycle, compaction, and todo storage. Hive adds durable `.hive` state, role/session classification, and bounded post-compaction replay so operators can recover grounded task state without pretending there is a first-class Hive runtime inside OpenCode.
+
+**Todo model:** OpenCode todos are session-scoped and replace-all. Hive does not expose a derived projected-todo field, stale refresh hints, or a hidden sync layer in this contract. `.hive` remains the durable source of truth, and any todo usage stays an explicit OpenCode behavior rather than a Hive-managed projection surface.
+
+**Recovery model:** The durable recovery surface is task-level semantic `.hive` state: task folder identity, `worker-prompt.md`, bound feature/task/session metadata, and bounded recovery text. This is intentionally different from raw prompt dumps or extra checkpoint artifacts. Recovery uses those artifacts to answer, “What task am I still executing?” rather than, “Can I replay the whole transcript?”
+
+**Boundary insight:** Honest contracts make systems easier to operate. Saying “OpenCode-owned todos plus bounded replay from `.hive` artifacts” is less glamorous than saying “native OpenCode sync,” but it matches the code and gives operators something real to trust.
+
+### v1.4.2 (Honest Contracts — Config, Helper, and Copilot)
+
+**Theme:** Trim what was aspirational, name what is real, and restore what was prematurely retired.
+
+Three parallel threads landed in this patch:
+
+**Project-local config (PR #77, contributor: PhucTruong-ctrl):** The config resolution chain is now explicit and documented. `<project>/.hive/agent-hive.json` is preferred; the legacy `<project>/.opencode/agent_hive.json` stays as migration fallback; global config is the final backstop. An invalid project config stops the fallback chain and emits a visible `[hive:config]` warning instead of silently inheriting a stale state. This is P7 (Iron Laws + Hard Gates) at the config layer — not just prompts but a deterministic resolution contract with test coverage.
+
+**`hive-helper` expansion within bounded scope (PR #79):** `hive-helper` started as "merge-only." In practice, operators also need state clarification after interruptions and a safe path for append-only follow-up tasks. PR #79 formalizes those three modes — merge recovery, state clarification, and safe manual follow-up — while keeping the tool boundary exact: `hive_merge`, `hive_status`, `hive_context_write`. DAG-changing requests must still route back to Hive/Swarm for plan amendment. The `helperStatus` surface is now machine-readable in `hive_status()` output, so orchestrators can inspect interrupted wrap-up state programmatically instead of guessing from narrative. This aligns with P8/P9 (Cross-Model Prompts, Deterministic Contracts Beat Soft Memory): the helper mode is now a documented bounded contract, not an inference problem.
+
+**GitHub Copilot back as VS Code preview (PR #80):** `v1.4.0` correctly identified OpenCode as the first-class runtime and correctly retired promises we couldn't keep about Copilot parity across GitHub.com, cloud, and CLI. But VS Code desktop was over-cut. The LM tool registration, prompt files, `copilot-instructions.md`, and Playwright/MCP-native guidance make VS Code desktop a genuinely useful preview path for teams that aren't ready to commit to OpenCode full-time. P3 (Human Shapes, Agent Builds): the shape is "OpenCode is first-class; VS Code desktop is a supported preview." PR #80 makes the shipped artifact match that shape.
+
+**Shared insight:** All three threads answer the same meta-question: *Does the code match the contract?* Config resolution had a hidden fallback chain. The helper role had undocumented modes. VS Code support was listed as deprecated when it actually worked. `v1.4.2` aligns the observable behavior with the stated contract in each case.
 
 ---
 
