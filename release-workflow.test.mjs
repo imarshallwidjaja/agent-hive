@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 
 const workspaceRoot = path.resolve(import.meta.dirname);
@@ -11,6 +12,16 @@ function readText(relativePath) {
 
 function readJson(relativePath) {
   return JSON.parse(readText(relativePath));
+}
+
+async function loadNpmPublishAccessHelper() {
+  const helperPath = path.join(workspaceRoot, '.github', 'scripts', 'verify-npm-publish-access.mjs');
+
+  if (!fs.existsSync(helperPath)) {
+    return null;
+  }
+
+  return import(pathToFileURL(helperPath).href);
 }
 
 describe('release workflow recovery contract', () => {
@@ -57,5 +68,59 @@ describe('release workflow recovery contract', () => {
     assert.match(workflow, /needs\.prepare\.outputs\.publish_vscode == 'true' && needs\.publish-vscode\.result == 'success'\)\s*\|\|\s*\(needs\.prepare\.outputs\.publish_vscode != 'true' && needs\.publish-vscode\.result == 'skipped'\)/);
     assert.match(workflow, /tag_name:\s*\$\{\{ needs\.prepare\.outputs\.release_tag \}\}/);
     assert.match(packageJson.scripts['release:check'], /node --test release-workflow\.test\.mjs/);
+  });
+});
+
+describe('npm publish access helper', () => {
+  it('accepts read-write collaborator access', async () => {
+    const helperModule = await loadNpmPublishAccessHelper();
+
+    assert.ok(helperModule, 'expected .github/scripts/verify-npm-publish-access.mjs to exist');
+    assert.equal(
+      helperModule.validateNpmPublishAccess({
+        npmUser: 'release-bot',
+        collaborators: {
+          'release-bot': 'read-write',
+        },
+      }),
+      'read-write'
+    );
+  });
+
+  it('rejects missing collaborator entries', async () => {
+    const helperModule = await loadNpmPublishAccessHelper();
+
+    assert.ok(helperModule, 'expected .github/scripts/verify-npm-publish-access.mjs to exist');
+    assert.throws(
+      () =>
+        helperModule.validateNpmPublishAccess({
+          npmUser: 'release-bot',
+          collaborators: {},
+        }),
+      /npm user release-bot is not listed as a collaborator on opencode-hive/
+    );
+  });
+
+  it('rejects weaker-than-read-write collaborator access', async () => {
+    const helperModule = await loadNpmPublishAccessHelper();
+
+    assert.ok(helperModule, 'expected .github/scripts/verify-npm-publish-access.mjs to exist');
+    assert.throws(
+      () =>
+        helperModule.validateNpmPublishAccess({
+          npmUser: 'release-bot',
+          collaborators: {
+            'release-bot': 'read-only',
+          },
+        }),
+      /npm user release-bot has read-only access to opencode-hive; expected read-write/
+    );
+  });
+
+  it('uses the checked-in helper script from the workflow instead of inline node-e JavaScript', () => {
+    const workflow = readText('.github/workflows/release.yml');
+
+    assert.match(workflow, /node \.github\/scripts\/verify-npm-publish-access\.mjs/);
+    assert.doesNotMatch(workflow, /node -e/);
   });
 });
