@@ -206,6 +206,28 @@ import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_COMMANDS, HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 
 /**
+ * Runtime rollback control point. Set ENABLE_WORKER_TERMINAL_HANDOFF_SYNTHESIS=false
+ * to disable deterministic closure artifact emission and fall back to legacy behavior.
+ * Default: true (synthesis enabled).
+ */
+function isTerminalHandoffSynthesisEnabled(): boolean {
+  return process.env.ENABLE_WORKER_TERMINAL_HANDOFF_SYNTHESIS !== 'false';
+}
+
+function buildTerminalHandoffArtifact(
+  toolContext: { sessionID: string; messageID: string },
+  task: string,
+  status: string,
+): Record<string, string> {
+  const dedupeKey = `${toolContext.sessionID}:${toolContext.messageID}:${task}:${status}`;
+  return {
+    type: 'worker_terminal_handoff',
+    source: 'hive_worktree_commit',
+    dedupeKey,
+  };
+}
+
+/**
  * Core plugin implementation.
  */
 type ToolContext = {
@@ -1494,6 +1516,7 @@ Expand your Discovery section and try again.`;
               branch: worktree?.branch,
               message: 'Task blocked. Hive Master will ask user and resume with hive_worktree_create(continueFrom: "blocked", decision: answer)',
               nextAction: 'Wait for orchestrator to collect user decision and resume with continueFrom: "blocked".',
+              ...(isTerminalHandoffSynthesisEnabled() && buildTerminalHandoffArtifact(toolContext as ToolContext, task, 'blocked')),
             });
           }
 
@@ -1588,6 +1611,7 @@ Expand your Discovery section and try again.`;
             reportPath,
             message: `Task "${task}" ${status}.`,
             nextAction: 'Use hive_merge to integrate changes. Worktree is preserved for review.',
+            ...(isTerminalHandoffSynthesisEnabled() && buildTerminalHandoffArtifact(toolContext as ToolContext, task, status)),
           });
         },
       }),

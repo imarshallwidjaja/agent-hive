@@ -3143,4 +3143,106 @@ Original plan task four content must stay isolated from any append-only manual f
       'tool.execute.before',
     ]);
   });
+
+  it('hive_worktree_commit completed terminal response includes worker_terminal_handoff artifact type and dedupeKey', async () => {
+    const { hooks, toolContext } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_terminal_handoff_completed',
+      'terminal-handoff-feature',
+      'Terminal Handoff Feature',
+      'Yes, this regression test validates that completed terminal commits include worker_terminal_handoff artifact fields.',
+    );
+
+    const workerContext = createToolContext('sess_worker_terminal_handoff_completed');
+    const raw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        task: FIRST_TASK,
+        summary: 'Completed task. Tests pass.',
+        status: 'completed',
+        feature: 'terminal-handoff-feature',
+      },
+      workerContext,
+    );
+
+    const result = JSON.parse(raw as string) as Record<string, unknown>;
+    expect(result.ok).toBe(true);
+    expect(result.terminal).toBe(true);
+    expect(result.type).toBe('worker_terminal_handoff');
+    expect(result.source).toBe('hive_worktree_commit');
+    expect(typeof result.dedupeKey).toBe('string');
+    expect((result.dedupeKey as string).length).toBeGreaterThan(0);
+    const parts = (result.dedupeKey as string).split(':');
+    expect(parts[0]).toBe('sess_worker_terminal_handoff_completed');
+    expect(parts[parts.length - 1]).toBe('completed');
+  });
+
+  it('hive_worktree_commit blocked terminal response includes worker_terminal_handoff artifact type and dedupeKey', async () => {
+    const { hooks, toolContext } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_terminal_handoff_blocked',
+      'terminal-handoff-blocked-feature',
+      'Terminal Handoff Blocked Feature',
+      'Yes, this regression test validates that blocked terminal commits include worker_terminal_handoff artifact fields.',
+    );
+
+    const workerContext = createToolContext('sess_worker_terminal_handoff_blocked');
+    const raw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        task: FIRST_TASK,
+        summary: 'Blocked waiting for decision.',
+        status: 'blocked',
+        feature: 'terminal-handoff-blocked-feature',
+        blocker: { reason: 'Need a design decision' },
+      },
+      workerContext,
+    );
+
+    const result = JSON.parse(raw as string) as Record<string, unknown>;
+    expect(result.ok).toBe(true);
+    expect(result.terminal).toBe(true);
+    expect(result.type).toBe('worker_terminal_handoff');
+    expect(result.source).toBe('hive_worktree_commit');
+    expect(typeof result.dedupeKey).toBe('string');
+    const parts = (result.dedupeKey as string).split(':');
+    expect(parts[0]).toBe('sess_worker_terminal_handoff_blocked');
+    expect(parts[parts.length - 1]).toBe('blocked');
+  });
+
+  it('hive_worktree_commit terminal response omits worker_terminal_handoff fields when synthesis disabled', async () => {
+    const { hooks, toolContext } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_terminal_handoff_disabled',
+      'terminal-handoff-disabled-feature',
+      'Terminal Handoff Disabled Feature',
+      'Yes, this regression test validates that synthesis can be disabled via control point.',
+    );
+
+    const prev = process.env.ENABLE_WORKER_TERMINAL_HANDOFF_SYNTHESIS;
+    process.env.ENABLE_WORKER_TERMINAL_HANDOFF_SYNTHESIS = 'false';
+    try {
+      const workerContext = createToolContext('sess_worker_terminal_handoff_disabled');
+      const raw = await hooks.tool!.hive_worktree_commit.execute(
+        {
+          task: FIRST_TASK,
+          summary: 'Completed. Tests pass.',
+          status: 'completed',
+          feature: 'terminal-handoff-disabled-feature',
+        },
+        workerContext,
+      );
+
+      const result = JSON.parse(raw as string) as Record<string, unknown>;
+      expect(result.ok).toBe(true);
+      expect(result.terminal).toBe(true);
+      expect(result.type).toBeUndefined();
+      expect(result.source).toBeUndefined();
+      expect(result.dedupeKey).toBeUndefined();
+    } finally {
+      if (prev === undefined) {
+        delete process.env.ENABLE_WORKER_TERMINAL_HANDOFF_SYNTHESIS;
+      } else {
+        process.env.ENABLE_WORKER_TERMINAL_HANDOFF_SYNTHESIS = prev;
+      }
+    }
+  });
 });
