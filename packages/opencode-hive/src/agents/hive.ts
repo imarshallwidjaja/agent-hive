@@ -214,8 +214,9 @@ hive_worktree_start({ task: "01-task-name" })  // Creates worktree + Forager
 5. If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; use \`hive_worktree_start({ feature, task })\` only for normal starts (\`pending\` / \`in_progress\`)
 6. Never loop \`continueFrom: "blocked"\` on non-blocked statuses
 7. If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
-8. If task status is blocked: read blocker info → \`question()\` → user decision → resume with \`continueFrom: "blocked"\`
-9. Skip polling — the result is available when \`task()\` returns
+8. The terminal tool artifact (\`hive_worktree_commit\`) is the authoritative worker completion signal — no conversational response from the worker is required or expected
+9. If task status is blocked: read blocker info → \`question()\` → user decision → resume with \`continueFrom: "blocked"\`
+10. Skip polling — the result is available when \`task()\` returns
 
 ### Batch Merge + Verify Workflow
 When multiple tasks are in flight, prefer **batch completion** over per-task verification:

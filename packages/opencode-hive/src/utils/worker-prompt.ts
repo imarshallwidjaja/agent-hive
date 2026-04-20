@@ -209,7 +209,8 @@ If commit returns non-terminal (for example verification_required), DO NOT STOP.
 Follow result.nextAction, fix the issue, and call hive_worktree_commit again.
 
 Only when commit result is terminal should you stop.
-Do NOT continue working after a terminal result. Do NOT respond further. Your session is DONE.
+The terminal tool artifact is the authoritative completion handoff — no conversational response is required or expected.
+Do NOT continue working after a terminal result. Your session is DONE.
 The Hive Master will take over from here.
 
 **Summary Guidance** (used verbatim for downstream task context):

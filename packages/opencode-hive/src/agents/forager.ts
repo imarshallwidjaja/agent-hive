@@ -117,8 +117,8 @@ hive_worktree_commit({
 \`\`\`
 
 Then inspect the tool response fields:
-- If \`ok=true\` and \`terminal=true\`: stop and hand off to orchestrator
-- If \`ok=false\` or \`terminal=false\`: DO NOT STOP. Follow \`nextAction\`, remediate, and retry \`hive_worktree_commit\`
+- If \`terminal=true\` (regardless of \`ok\`): the tool artifact is the authoritative handoff — stop immediately, no conversational response needed
+- If \`terminal=false\` (or \`ok=false\` with non-terminal): DO NOT STOP. Follow \`nextAction\`, remediate, and retry \`hive_worktree_commit\`
 
 **Blocked (need user decision):**
 \`\`\`

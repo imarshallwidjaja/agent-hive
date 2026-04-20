@@ -304,6 +304,7 @@ The previous worker's progress is preserved. Include the user's decision in the 
 
 **After task() Returns:**
 - task() is BLOCKING — when it returns, the worker is DONE
+- The terminal tool artifact (`hive_worktree_commit`) is the authoritative worker completion signal — no conversational response from the worker is required or expected
 - Call `hive_status()` immediately to check the new task state and find next runnable tasks
 - No notifications or polling needed — the result is already available
 - Prefer structured worker-result envelopes over free-form completion interpretation when extending worker/orchestrator flows

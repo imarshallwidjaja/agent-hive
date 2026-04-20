@@ -164,6 +164,21 @@ UNIQUE_MARKER_12345
     expect(prompt).toContain('result.nextAction');
   });
 
+  it('states terminal tool artifact is the authoritative completion handoff', () => {
+    const params = createTestParams();
+    const prompt = buildWorkerPrompt(params);
+
+    expect(prompt).toContain('terminal tool artifact');
+    expect(prompt).toContain('authoritative');
+  });
+
+  it('does not require conversational prose after terminal commit', () => {
+    const params = createTestParams();
+    const prompt = buildWorkerPrompt(params);
+
+    expect(prompt).toContain('no conversational response');
+  });
+
   it('keeps ordinary workers merge-forbidden and delegation-forbidden', () => {
     const params = createTestParams();
     const prompt = buildWorkerPrompt(params);

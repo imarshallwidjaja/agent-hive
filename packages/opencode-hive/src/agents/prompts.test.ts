@@ -162,6 +162,11 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('do not retry the same parameters');
     });
 
+    it('treats terminal worker result as authoritative completion signal, no extra prose expected', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('terminal tool artifact');
+      expect(QUEEN_BEE_PROMPT).toContain('no conversational response');
+    });
+
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
       expect(QUEEN_BEE_PROMPT).toContain('If status is not `blocked`');
       expect(QUEEN_BEE_PROMPT).toContain('do not use `continueFrom: "blocked"`');
@@ -347,6 +352,11 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('hive_worktree_start({ feature, task })');
     });
 
+    it('treats terminal worker result as authoritative completion signal, no extra prose expected', () => {
+      expect(SWARM_BEE_PROMPT).toContain('terminal tool artifact');
+      expect(SWARM_BEE_PROMPT).toContain('no conversational response');
+    });
+
     it('includes task() guidance for research fan-out', () => {
       expect(SWARM_BEE_PROMPT).toContain('task() for research fan-out');
     });
@@ -425,6 +435,16 @@ describe('Forager (Worker/Coder) prompt', () => {
     expect(FORAGER_BEE_PROMPT).toContain('ok');
     expect(FORAGER_BEE_PROMPT).toContain('terminal');
     expect(FORAGER_BEE_PROMPT).toContain('DO NOT STOP');
+  });
+
+  it('stops on terminal=true regardless of ok value', () => {
+    expect(FORAGER_BEE_PROMPT).not.toContain('ok=true` and `terminal=true`');
+    expect(FORAGER_BEE_PROMPT).toContain('terminal=true` (regardless of `ok`)');
+  });
+
+  it('states terminal tool artifact is the authoritative handoff, no prose needed', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('authoritative handoff');
+    expect(FORAGER_BEE_PROMPT).toContain('no conversational response');
   });
 
   it('adds resolve-before-blocking guidance', () => {
