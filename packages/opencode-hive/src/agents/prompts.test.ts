@@ -160,6 +160,8 @@ describe('Hive (Hybrid) prompt', () => {
     it('treats terminal tool responses as non-retriable for same parameters', () => {
       expect(QUEEN_BEE_PROMPT).toContain('If any Hive tool response has `terminal: true`');
       expect(QUEEN_BEE_PROMPT).toContain('do not retry the same parameters');
+      expect(QUEEN_BEE_PROMPT).toContain('tool call parameters');
+      expect(QUEEN_BEE_PROMPT).toContain('final natural-language handoff response');
     });
 
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
@@ -338,6 +340,13 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('forbids blocked resume loops on non-blocked statuses', () => {
       expect(SWARM_BEE_PROMPT).toContain('Never loop `continueFrom: "blocked"` on non-blocked statuses');
+    });
+
+    it('clarifies terminal finality scope while allowing final natural-language handoff', () => {
+      expect(SWARM_BEE_PROMPT).toContain('If any Hive tool response has `terminal: true`');
+      expect(SWARM_BEE_PROMPT).toContain('do not retry the same parameters');
+      expect(SWARM_BEE_PROMPT).toContain('tool call parameters');
+      expect(SWARM_BEE_PROMPT).toContain('final natural-language handoff response');
     });
 
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
