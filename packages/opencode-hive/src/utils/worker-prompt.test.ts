@@ -163,6 +163,8 @@ UNIQUE_MARKER_12345
     expect(prompt).toContain('DO NOT STOP');
     expect(prompt).toContain('result.nextAction');
     expect(prompt).toContain('regardless of `ok`');
+    expect(prompt).toContain('must not be retried with the same parameters');
+    expect(prompt).not.toContain('stop immediately');
   });
 
   it('requires final concise handoff response after terminal commit', () => {

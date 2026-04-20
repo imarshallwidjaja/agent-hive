@@ -201,7 +201,7 @@ hive_worktree_commit({
 - Do not provide message with hive_merge(..., strategy: 'rebase').
 
 Then inspect the tool response fields:
-- If \`terminal=true\` (regardless of \`ok\`): stop immediately. This call is final and must not be retried with the same parameters.
+- If \`terminal=true\` (regardless of \`ok\`): this call is final and must not be retried with the same parameters. Send one final concise handoff response to the orchestrator, then stop.
 - If \`terminal=false\`: **DO NOT STOP**. Follow \`nextAction\`, remediate, and retry \`hive_worktree_commit\`
 
 **CRITICAL: Any terminal commit result is final for this call.**
