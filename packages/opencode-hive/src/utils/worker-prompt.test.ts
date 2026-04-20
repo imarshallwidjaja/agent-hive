@@ -162,6 +162,18 @@ UNIQUE_MARKER_12345
     expect(prompt).toContain('terminal=true');
     expect(prompt).toContain('DO NOT STOP');
     expect(prompt).toContain('result.nextAction');
+    expect(prompt).toContain('regardless of `ok`');
+  });
+
+  it('requires final concise handoff response after terminal commit', () => {
+    const params = createTestParams();
+    const prompt = buildWorkerPrompt(params);
+
+    expect(prompt).toContain('send one final concise handoff response');
+    expect(prompt).toContain('what changed');
+    expect(prompt).toContain('why');
+    expect(prompt).toContain('verification evidence');
+    expect(prompt).not.toContain('Do NOT respond further');
   });
 
   it('keeps ordinary workers merge-forbidden and delegation-forbidden', () => {

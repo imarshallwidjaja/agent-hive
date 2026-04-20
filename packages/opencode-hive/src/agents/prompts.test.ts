@@ -422,9 +422,16 @@ describe('Forager (Worker/Coder) prompt', () => {
   });
 
   it('requires terminal commit result before stopping', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('ok');
+    expect(FORAGER_BEE_PROMPT).toContain('regardless of `ok`');
     expect(FORAGER_BEE_PROMPT).toContain('terminal');
     expect(FORAGER_BEE_PROMPT).toContain('DO NOT STOP');
+  });
+
+  it('requires a final concise handoff response after terminal commit', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('send one final concise handoff response');
+    expect(FORAGER_BEE_PROMPT).toContain('what changed');
+    expect(FORAGER_BEE_PROMPT).toContain('verification evidence');
+    expect(FORAGER_BEE_PROMPT).not.toContain('stop and hand off to orchestrator');
   });
 
   it('adds resolve-before-blocking guidance', () => {
