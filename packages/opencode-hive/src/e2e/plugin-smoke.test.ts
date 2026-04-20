@@ -3185,9 +3185,7 @@ Original plan task four content must stay isolated from any append-only manual f
     expect(result.source).toBe('hive_worktree_commit');
     expect(typeof result.dedupeKey).toBe('string');
     expect((result.dedupeKey as string).length).toBeGreaterThan(0);
-    const parts = (result.dedupeKey as string).split(':');
-    expect(parts[0]).toBe('sess_worker_terminal_handoff_completed');
-    expect(parts[parts.length - 1]).toBe('completed');
+    expect(result.dedupeKey).toBe(`sess_worker_terminal_handoff_completed:msg_test:${FIRST_TASK}:completed`);
   });
 
   it('hive_worktree_commit blocked terminal response includes worker_terminal_handoff artifact type and dedupeKey', async () => {
@@ -3217,9 +3215,7 @@ Original plan task four content must stay isolated from any append-only manual f
     expect(result.type).toBe('worker_terminal_handoff');
     expect(result.source).toBe('hive_worktree_commit');
     expect(typeof result.dedupeKey).toBe('string');
-    const parts = (result.dedupeKey as string).split(':');
-    expect(parts[0]).toBe('sess_worker_terminal_handoff_blocked');
-    expect(parts[parts.length - 1]).toBe('blocked');
+    expect(result.dedupeKey).toBe(`sess_worker_terminal_handoff_blocked:msg_test:${FIRST_TASK}:blocked`);
   });
 
   it('hive_worktree_commit terminal response omits worker_terminal_handoff fields when synthesis disabled', async () => {
@@ -3317,8 +3313,6 @@ Original plan task four content must stay isolated from any append-only manual f
     expect(result.source).toBe('hive_worktree_commit');
     expect(typeof result.dedupeKey).toBe('string');
     expect((result.dedupeKey as string).length).toBeGreaterThan(0);
-    const parts = (result.dedupeKey as string).split(':');
-    expect(parts[0]).toBe('sess_worker_terminal_handoff_partial');
-    expect(parts[parts.length - 1]).toBe('partial');
+    expect(result.dedupeKey).toBe(`sess_worker_terminal_handoff_partial:msg_test:${FIRST_TASK}:partial`);
   });
 });
