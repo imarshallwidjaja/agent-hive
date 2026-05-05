@@ -47,4 +47,12 @@ describe('skill content', () => {
       'Parallelize by issuing multiple task() calls in the same assistant message.'
     );
   });
+
+  it('bundled skill content does not contain removed Hive skill tool references', () => {
+    const removedHiveSkillTool = ['hive', 'skill'].join('_');
+
+    for (const entry of BUILTIN_SKILLS) {
+      expect(entry.template).not.toContain(removedHiveSkillTool);
+    }
+  });
 });
