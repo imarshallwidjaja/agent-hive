@@ -7,7 +7,7 @@
  * - Apply max budget for inlined context (or switch to file references / name-only listing past a cap)
  * - Emit warnings when any budget causes truncation so it's never silent
  *
- * Shared by opencode-hive, hive-mcp, and any future harness.
+ * Shared by opencode-hive and any future harness.
  *
  * IMPORTANT: Never removes access to full info - always provides file paths the worker can read.
  */
