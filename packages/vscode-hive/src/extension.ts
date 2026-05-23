@@ -4,7 +4,7 @@ import * as path from 'path'
 import { HiveWatcher, Launcher } from './services'
 import { HiveSidebarProvider, PlanCommentController } from './providers'
 
-type ReviewDocument = 'plan'
+type ReviewDocument = 'plan' | 'overview'
 
 function getReviewTarget(workspaceRoot: string, filePath: string): { featureName: string; document: ReviewDocument } | null {
   const normalizedWorkspace = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -21,6 +21,11 @@ function getReviewTarget(workspaceRoot: string, filePath: string): { featureName
     return { featureName: planMatch[1], document: 'plan' }
   }
 
+  const overviewMatch = normalizedPath.match(/\.hive\/features\/([^/]+)\/context\/overview\.md$/)
+  if (overviewMatch) {
+    return { featureName: overviewMatch[1], document: 'overview' }
+  }
+
   return null
 }
 
@@ -30,7 +35,11 @@ function getReviewCommentsPath(workspaceRoot: string, featureName: string, docum
     return canonicalPath
   }
 
-  return path.join(workspaceRoot, '.hive', 'features', featureName, 'comments.json')
+  if (document === 'plan') {
+    return path.join(workspaceRoot, '.hive', 'features', featureName, 'comments.json')
+  }
+
+  return canonicalPath
 }
 
 function findHiveRoot(startPath: string): string | null {
@@ -146,7 +155,7 @@ class HiveExtension {
         const filePath = editor.document.uri.fsPath
         const target = getReviewTarget(this.workspaceRoot, filePath)
         if (!target) {
-          vscode.window.showErrorMessage('Not a reviewable plan.md file')
+          vscode.window.showErrorMessage('Not a reviewable plan.md or overview.md file')
           return
         }
 
@@ -161,10 +170,11 @@ class HiveExtension {
           // No comments file is fine
         }
 
+        const docLabel = target.document === 'overview' ? 'Overview' : 'Plan'
         const hasComments = comments.length > 0
         const inputPrompt = hasComments 
-          ? `Plan: ${comments.length} comment(s) found. Add feedback or leave empty to submit comments only`
-          : 'Enter your plan review feedback (or leave empty to approve)'
+          ? `${docLabel}: ${comments.length} comment(s) found. Add feedback or leave empty to submit comments only`
+          : `Enter your ${docLabel.toLowerCase()} review feedback (or leave empty to approve)`
         
         const userInput = await vscode.window.showInputBox({
           prompt: inputPrompt,
@@ -172,17 +182,17 @@ class HiveExtension {
         })
         
         if (userInput === undefined) return
-
+        
         let feedback: string
         if (hasComments) {
           const allComments = comments.map(c => `Line ${c.line}: ${c.body}`).join('\n')
           feedback = userInput === '' 
-            ? `Plan review comments:\n${allComments}`
-            : `Plan review comments:\n${allComments}\n\nAdditional feedback: ${userInput}`
+            ? `${docLabel} review comments:\n${allComments}`
+            : `${docLabel} review comments:\n${allComments}\n\nAdditional feedback: ${userInput}`
         } else {
           feedback = userInput === ''
-            ? 'Plan approved'
-            : `Plan review feedback: ${userInput}`
+            ? `${docLabel} approved`
+            : `${docLabel} review feedback: ${userInput}`
         }
 
         vscode.window.showInformationMessage(

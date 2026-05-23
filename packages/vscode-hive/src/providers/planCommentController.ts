@@ -13,7 +13,7 @@ interface CommentsFile {
   threads: StoredThread[]
 }
 
-type ReviewDocument = 'plan'
+type ReviewDocument = 'plan' | 'overview'
 
 interface ReviewTarget {
   featureName: string
@@ -42,21 +42,25 @@ export class PlanCommentController {
 
     const patterns = [
       new vscode.RelativePattern(workspaceRoot, '.hive/features/*/comments.json'),
-      new vscode.RelativePattern(workspaceRoot, '.hive/features/*/comments/plan.json')
+      new vscode.RelativePattern(workspaceRoot, '.hive/features/*/comments/plan.json'),
+      new vscode.RelativePattern(workspaceRoot, '.hive/features/*/comments/overview.json')
     ]
     const rootWatcher = vscode.workspace.createFileSystemWatcher(patterns[0])
     const nestedWatcher = vscode.workspace.createFileSystemWatcher(patterns[1])
+    const overviewWatcher = vscode.workspace.createFileSystemWatcher(patterns[2])
     rootWatcher.onDidChange(uri => this.onCommentsFileChanged(uri))
     rootWatcher.onDidDelete(uri => this.onCommentsFileChanged(uri))
     nestedWatcher.onDidChange(uri => this.onCommentsFileChanged(uri))
     nestedWatcher.onDidDelete(uri => this.onCommentsFileChanged(uri))
-    this.commentsWatchers = [rootWatcher, nestedWatcher]
+    overviewWatcher.onDidChange(uri => this.onCommentsFileChanged(uri))
+    overviewWatcher.onDidDelete(uri => this.onCommentsFileChanged(uri))
+    this.commentsWatchers = [rootWatcher, nestedWatcher, overviewWatcher]
   }
 
   private onCommentsFileChanged(commentsUri: vscode.Uri): void {
     const target = this.getCommentsTarget(commentsUri.fsPath)
     if (!target) return
-    this.loadComments(vscode.Uri.file(this.getDocumentPath(target.featureName)))
+    this.loadComments(vscode.Uri.file(this.getDocumentPath(target.featureName, target.document)))
   }
 
   registerCommands(context: vscode.ExtensionContext): void {
@@ -123,14 +127,19 @@ export class PlanCommentController {
       return { featureName: planMatch[1], document: 'plan' }
     }
 
+    const overviewMatch = normalized.match(/\.hive\/features\/([^/]+)\/context\/overview\.md$/)
+    if (overviewMatch) {
+      return { featureName: overviewMatch[1], document: 'overview' }
+    }
+
     return null
   }
 
   private getCommentsTarget(filePath: string): ReviewTarget | null {
     const normalized = this.normalizePath(filePath)
-    const reviewMatch = normalized.match(/\.hive\/features\/([^/]+)\/comments\/plan\.json$/)
+    const reviewMatch = normalized.match(/\.hive\/features\/([^/]+)\/comments\/(plan|overview)\.json$/)
     if (reviewMatch) {
-      return { featureName: reviewMatch[1], document: 'plan' }
+      return { featureName: reviewMatch[1], document: reviewMatch[2] as ReviewDocument }
     }
 
     const legacyMatch = normalized.match(/\.hive\/features\/([^/]+)\/comments\.json$/)
@@ -189,24 +198,31 @@ export class PlanCommentController {
   private getCommentsPath(uri: vscode.Uri): string | null {
     const target = this.getReviewTarget(uri.fsPath)
     if (!target) return null
-    return path.join(this.workspaceRoot, '.hive', 'features', target.featureName, 'comments', 'plan.json')
+    const doc = target.document === 'overview' ? 'overview' : 'plan'
+    return path.join(this.workspaceRoot, '.hive', 'features', target.featureName, 'comments', `${doc}.json`)
   }
 
   private getReadableCommentsPath(uri: vscode.Uri): string | null {
     const target = this.getReviewTarget(uri.fsPath)
     if (!target) return null
 
-    const canonicalPath = path.join(this.workspaceRoot, '.hive', 'features', target.featureName, 'comments', 'plan.json')
+    const doc = target.document === 'overview' ? 'overview' : 'plan'
+    const canonicalPath = path.join(this.workspaceRoot, '.hive', 'features', target.featureName, 'comments', `${doc}.json`)
     if (fs.existsSync(canonicalPath)) {
       return canonicalPath
     }
 
-    const legacyPath = path.join(this.workspaceRoot, '.hive', 'features', target.featureName, 'comments.json')
-    return legacyPath
+    if (target.document === 'plan') {
+      const legacyPath = path.join(this.workspaceRoot, '.hive', 'features', target.featureName, 'comments.json')
+      return legacyPath
+    }
+
+    return null
   }
 
-  private getDocumentPath(featureName: string): string {
-    return path.join(this.workspaceRoot, '.hive', 'features', featureName, 'plan.md')
+  private getDocumentPath(featureName: string, document: ReviewDocument = 'plan'): string {
+    const file = document === 'overview' ? 'context/overview.md' : 'plan.md'
+    return path.join(this.workspaceRoot, '.hive', 'features', featureName, file)
   }
 
   private loadComments(uri: vscode.Uri): void {
