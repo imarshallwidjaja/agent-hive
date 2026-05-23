@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "bun run --filter hive-core build && bun run --filter oc-arkive build && bun run --filter @tctinh/agent-hive-mcp build && bun run --filter claude-code-hive build && bun run --filter vscode-hive build",
+    "build": "bun run --filter hive-core build && bun run --filter oc-arkive build && bun run --filter vscode-hive build",
     "build:opencode": "bun run --filter hive-core build && bun run --filter oc-arkive build",
     "dev": "bun run --filter hive-core build && bun run --filter '*' dev",
     "test": "npm -ws --if-present run test",

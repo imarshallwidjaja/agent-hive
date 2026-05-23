@@ -5,10 +5,6 @@
     "": {
       "name": "agent-hive",
     },
-    "packages/claude-code-hive": {
-      "name": "claude-code-hive",
-      "version": "1.4.8",
-    },
     "packages/hive-core": {
       "name": "hive-core",
       "version": "1.4.9",
@@ -18,21 +14,6 @@
       "devDependencies": {
         "@types/bun": "^1.2.0",
         "@types/node": "^20.0.0",
-        "typescript": "^5.0.0",
-      },
-    },
-    "packages/hive-mcp": {
-      "name": "@tctinh/agent-hive-mcp",
-      "version": "1.4.8",
-      "bin": {
-        "hive-mcp": "./dist/index.js",
-      },
-      "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.12.1",
-      },
-      "devDependencies": {
-        "@types/node": "^20.0.0",
-        "hive-core": "workspace:*",
         "typescript": "^5.0.0",
       },
     },
@@ -259,8 +240,6 @@
 
     "@sindresorhus/merge-streams": ["@sindresorhus/merge-streams@2.3.0", "", {}, "sha512-LtoMMhxAlorcGhmFYI+LhPgbPZCkgP6ra1YL604EeF6U98pLlQ3iWIGMdWSC+vWmPBWBNgmDBAhnAobLROJmwg=="],
 
-    "@tctinh/agent-hive-mcp": ["@tctinh/agent-hive-mcp@workspace:packages/hive-mcp"],
-
     "@textlint/ast-node-types": ["@textlint/ast-node-types@15.5.0", "", {}, "sha512-K0LEuuTo4rza8yDrlYkRdXLao8Iz/QBMsQdIxRrOOrLYb4HAtZaypZ78c+J6rDA1UlGxadZVLmkkiv4KV5fMKQ=="],
 
     "@textlint/linter-formatter": ["@textlint/linter-formatter@15.5.0", "", { "dependencies": { "@azu/format-text": "^1.0.2", "@azu/style-format": "^1.0.1", "@textlint/module-interop": "15.5.0", "@textlint/resolver": "15.5.0", "@textlint/types": "15.5.0", "chalk": "^4.1.2", "debug": "^4.4.3", "js-yaml": "^4.1.1", "lodash": "^4.17.21", "pluralize": "^2.0.0", "string-width": "^4.2.3", "strip-ansi": "^6.0.1", "table": "^6.9.0", "text-table": "^0.2.0" } }, "sha512-DPTm2+VXKID41qKQWagg/4JynM6hEEpvbq0PlGsEoC4Xm7IqXIxFym3mSf5+ued0cuiIV1hR9kgXjqGdP035tw=="],
@@ -404,8 +383,6 @@
     "chownr": ["chownr@1.1.4", "", {}, "sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg=="],
 
     "citty": ["citty@0.1.6", "", { "dependencies": { "consola": "^3.2.3" } }, "sha512-tskPPKEs8D2KPafUypv2gxwJP8h/OaJmC82QQGGDQcHvXX43xF2VDACcJVmZ0EuSxkpO9Kc4MlrA3q0+FG58AQ=="],
-
-    "claude-code-hive": ["claude-code-hive@workspace:packages/claude-code-hive"],
 
     "cluster-key-slot": ["cluster-key-slot@1.1.2", "", {}, "sha512-RMr0FhtfXemyinomL4hrWcYJxmX6deFdCxpJzhDttxgO1+bcCnkk+9drydLVDmAMG7NE6aN/fl4F7ucU/90gAA=="],
 
