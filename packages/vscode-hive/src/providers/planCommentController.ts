@@ -47,11 +47,14 @@ export class PlanCommentController {
     ]
     const rootWatcher = vscode.workspace.createFileSystemWatcher(patterns[0])
     const nestedWatcher = vscode.workspace.createFileSystemWatcher(patterns[1])
+    const overviewWatcher = vscode.workspace.createFileSystemWatcher(patterns[2])
     rootWatcher.onDidChange(uri => this.onCommentsFileChanged(uri))
     rootWatcher.onDidDelete(uri => this.onCommentsFileChanged(uri))
     nestedWatcher.onDidChange(uri => this.onCommentsFileChanged(uri))
     nestedWatcher.onDidDelete(uri => this.onCommentsFileChanged(uri))
-    this.commentsWatchers = [rootWatcher, nestedWatcher]
+    overviewWatcher.onDidChange(uri => this.onCommentsFileChanged(uri))
+    overviewWatcher.onDidDelete(uri => this.onCommentsFileChanged(uri))
+    this.commentsWatchers = [rootWatcher, nestedWatcher, overviewWatcher]
   }
 
   private onCommentsFileChanged(commentsUri: vscode.Uri): void {
