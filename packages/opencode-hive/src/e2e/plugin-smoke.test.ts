@@ -22,6 +22,7 @@ type ToolContext = {
 const EXPECTED_TOOLS = [...HIVE_TOOL_NAMES];
 
 const EXPECTED_COMMANDS = HIVE_COMMANDS.map(({ name, description }) => ({ name, description }));
+const removedHiveSkillTool = ['hive', 'skill'].join('_');
 
 const UNSUPPORTED_RUNTIME_HOOKS = [
   "experimental.chat.system.transform",
@@ -201,6 +202,8 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     const hooks = await plugin(ctx);
 
     expect(hooks.tool).toBeDefined();
+    expect(hooks.tool?.[removedHiveSkillTool]).toBeUndefined();
+    expect(HIVE_TOOL_NAMES).not.toContain(removedHiveSkillTool);
 
     for (const toolName of EXPECTED_TOOLS) {
       expect(hooks.tool?.[toolName]).toBeDefined();
@@ -349,6 +352,7 @@ Do it
 
     expect(pluginJson.version).toBe(expectedManifest.version);
     expect(pluginJson.commands).toEqual([...EXPECTED_COMMANDS]);
+    expect(pluginJson.tools).not.toContain(removedHiveSkillTool);
     expect(pluginJson.tools).toEqual([...EXPECTED_TOOLS]);
     expect(pluginJson).toEqual(expectedManifest);
   });
@@ -648,6 +652,11 @@ Do it
       configPath,
       JSON.stringify({
         customAgents: {
+          "scout-docs": {
+            baseAgent: "scout-researcher",
+            description: "Use for documentation-heavy research tasks.",
+            autoLoadSkills: [],
+          },
           "forager-ui": {
             baseAgent: "forager-worker",
             description: "Use for UI-heavy implementation tasks.",
@@ -1470,6 +1479,11 @@ Do it
           },
         },
         customAgents: {
+          "scout-docs": {
+            baseAgent: "scout-researcher",
+            description: "Use for documentation-heavy research tasks.",
+            autoLoadSkills: [],
+          },
           "forager-ui": {
             baseAgent: "forager-worker",
             description: "Use for UI-heavy implementation tasks.",
@@ -1512,13 +1526,18 @@ Do it
     expect(brainstormingSkill).toBeDefined();
     expect(agentConfig.prompt).toContain(brainstormingSkill!.template);
     expect(agentConfig.prompt).toContain("Configured Custom Subagents");
+    expect(agentConfig.prompt).toContain("`scout-docs`");
     expect(agentConfig.prompt).toContain("`reviewer-security`");
+    expect(agentConfig.prompt).toContain("default to built-in `scout-researcher`");
+    expect(agentConfig.prompt).toContain("Configured Custom Subagents` is a better match");
+    expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-researcher>\"");
     expect(agentConfig.prompt).toContain("default to built-in `hygienic-reviewer`");
     expect(agentConfig.prompt).toContain("Configured Custom Subagents` is a better match");
     expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-reviewer>\"");
 
     const agents = opencodeConfig.agent as Record<string, unknown>;
     expect(agents["forager-worker"]).toBeDefined();
+    expect(agents["scout-docs"]).toBeDefined();
     expect(agents["hygienic-reviewer"]).toBeDefined();
     expect(agents["forager-ui"]).toBeDefined();
     expect(agents["reviewer-security"]).toBeDefined();

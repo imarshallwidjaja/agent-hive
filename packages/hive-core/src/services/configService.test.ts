@@ -55,6 +55,11 @@ describe("ConfigService defaults", () => {
       autoLoadSkills: [],
     });
     expect(config.customAgents).toEqual({
+      'scout-example-template': {
+        baseAgent: 'scout-researcher',
+        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
+        autoLoadSkills: [],
+      },
       'forager-example-template': {
         baseAgent: 'forager-worker',
         description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
@@ -132,6 +137,11 @@ describe("ConfigService defaults", () => {
     const config = service.get();
     expect(config.agentMode).toBe("dedicated");
     expect(config.customAgents).toEqual({
+      'scout-example-template': {
+        baseAgent: 'scout-researcher',
+        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
+        autoLoadSkills: [],
+      },
       'forager-example-template': {
         baseAgent: 'forager-worker',
         description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
@@ -332,7 +342,7 @@ describe("ConfigService defaults", () => {
     expect(config.autoLoadSkills).toEqual([]);
   });
 
-  it("removes autoLoadSkills via disableSkills", () => {
+  it("keeps disabled names in autoLoadSkills so native skills can still shadow Hive bundles", () => {
     const service = new ConfigService();
     const configPath = service.getPath();
 
@@ -354,7 +364,7 @@ describe("ConfigService defaults", () => {
     );
 
     const config = service.getAgentConfig("hive-master");
-    expect(config.autoLoadSkills).toEqual([]);
+    expect(config.autoLoadSkills).toEqual(["parallel-exploration", "custom-skill"]);
   });
 
   it("defaults have no variant set", () => {
@@ -387,12 +397,21 @@ describe("ConfigService defaults", () => {
       JSON.stringify(
         {
           agents: {
+            "scout-researcher": {
+              variant: "medium",
+              autoLoadSkills: ["onboarding", "research-focus"],
+            },
             "forager-worker": {
               variant: "high",
               autoLoadSkills: ["verification-before-completion", "onboarding", "ui-focus"],
             },
           },
           customAgents: {
+            "scout-docs": {
+              baseAgent: "scout-researcher",
+              description: "Scout focused on documentation research.",
+              autoLoadSkills: ["research-focus"],
+            },
             "forager-lite": {
               baseAgent: "forager-worker",
               description: "General forager with inherited defaults.",
@@ -416,6 +435,16 @@ describe("ConfigService defaults", () => {
     );
 
     const custom = service.getCustomAgentConfigs();
+
+    expect(custom["scout-docs"]).toMatchObject({
+      baseAgent: "scout-researcher",
+      model: "zai-coding-plan/glm-4.7",
+      temperature: 0.5,
+      variant: "medium",
+    });
+    expect(custom["scout-docs"]?.autoLoadSkills).toEqual([
+      "research-focus",
+    ]);
 
     expect(custom["forager-lite"]).toMatchObject({
       baseAgent: "forager-worker",

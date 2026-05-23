@@ -5,6 +5,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk";
 import plugin from "../index";
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" });
+const removedHiveSkillTool = ['hive', 'skill'].join('_');
 
 const TEST_ROOT_BASE = "/tmp/hive-agent-mode-test";
 
@@ -109,6 +110,11 @@ describe("agentMode gating", () => {
       JSON.stringify({
         agentMode: "dedicated",
         customAgents: {
+          "scout-docs": {
+            baseAgent: "scout-researcher",
+            description: "Use for documentation-heavy research tasks.",
+            autoLoadSkills: [],
+          },
           "forager-ui": {
             baseAgent: "forager-worker",
             description: "Use for UI-heavy implementation tasks.",
@@ -136,14 +142,17 @@ describe("agentMode gating", () => {
     await hooks.config!(opencodeConfig);
 
     expect(opencodeConfig.agent["forager-ui"]).toBeDefined();
+    expect(opencodeConfig.agent["scout-docs"]).toBeDefined();
     expect(opencodeConfig.agent["reviewer-security"]).toBeDefined();
 
     const architectPrompt = opencodeConfig.agent["architect-planner"]?.prompt as string;
     expect(architectPrompt).toContain("## Configured Custom Subagents");
+    expect(architectPrompt).toContain("scout-docs");
     expect(architectPrompt).toContain("forager-ui");
 
     const swarmPrompt = opencodeConfig.agent["swarm-orchestrator"]?.prompt as string;
     expect(swarmPrompt).toContain("## Configured Custom Subagents");
+    expect(swarmPrompt).toContain("scout-docs");
     expect(swarmPrompt).toContain("reviewer-security");
 
     expect(opencodeConfig.agent["hive-master"]).toBeUndefined();
@@ -179,7 +188,7 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["hive-helper"]?.tools?.["hive_network_query"]).toBe(false);
   });
 
-  it("keeps hive-helper bounded to merge recovery, state clarification, and append-only manual follow-up", async () => {
+  it("keeps hive-helper bounded to merge recovery, state clarification, append-only manual follow-up, and no plugin-defined skill tool", async () => {
     const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(
@@ -214,7 +223,7 @@ describe("agentMode gating", () => {
     expect(helper.tools?.["hive_status"]).toBeUndefined();
     expect(helper.tools?.["hive_context_write"]).toBeUndefined();
     expect(helper.tools?.["hive_task_create"]).toBeUndefined();
-    expect(helper.tools?.["hive_skill"]).toBeUndefined();
+    expect(helper.tools?.[removedHiveSkillTool]).toBeUndefined();
     expect(helper.tools?.["hive_task_update"]).toBe(false);
     expect(helper.tools?.["hive_plan_read"]).toBe(false);
     expect(helper.tools?.["hive_tasks_sync"]).toBe(false);

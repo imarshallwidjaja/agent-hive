@@ -110,9 +110,9 @@ describe('Scout ast-grep references', () => {
 });
 
 describe('Hygienic verification routing', () => {
-  it('routes verification requests to verification-reviewer skill', () => {
+  it('routes verification requests to verification-reviewer skill via native skill tool', () => {
     expect(HYGIENIC_BEE_PROMPT).toContain('verification-reviewer');
-    expect(HYGIENIC_BEE_PROMPT).toContain('hive_skill("verification-reviewer")');
+    expect(HYGIENIC_BEE_PROMPT).toContain('native skill');
   });
 
   it('requires falsification-first protocol for verification', () => {
@@ -123,8 +123,9 @@ describe('Hygienic verification routing', () => {
     expect(HYGIENIC_BEE_PROMPT).toContain('Do NOT accept rationalizations as evidence');
   });
 
-  it('preserves existing plan-review and code-reviewer paths', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('hive_skill("code-reviewer")');
+  it('preserves existing plan-review and code-reviewer paths via native skill tool', () => {
+    expect(HYGIENIC_BEE_PROMPT).toContain('code-reviewer');
+    expect(HYGIENIC_BEE_PROMPT).toContain('native skill');
     expect(HYGIENIC_BEE_PROMPT).toContain('Review plan WITHIN the stated approach');
   });
 });
@@ -159,6 +160,12 @@ describe('Hive (Hybrid) prompt', () => {
     it('includes task() guidance for research', () => {
       expect(QUEEN_BEE_PROMPT).toContain('task(');
       expect(QUEEN_BEE_PROMPT).toContain('scout-researcher');
+    });
+
+    it('documents scout researcher routing fallback and custom researcher selection', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `scout-researcher`');
+      expect(QUEEN_BEE_PROMPT).toContain('configured scout-derived researcher only when its description in `Configured Custom Subagents` is a better match');
+      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
     });
 
     it('requires hive_status() before any resume attempt', () => {
@@ -287,6 +294,12 @@ describe('Architect (Planner) prompt', () => {
     it('tells planners to split broad research earlier', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('split broad research earlier');
     });
+
+    it('documents scout researcher routing fallback and custom researcher selection', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('default to built-in `scout-researcher`');
+      expect(ARCHITECT_BEE_PROMPT).toContain('configured scout-derived researcher only when its description in `Configured Custom Subagents` is a better match');
+      expect(ARCHITECT_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
+    });
   });
 
   it('contains expanded clearance checklist', () => {
@@ -387,6 +400,12 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('includes task() guidance for research fan-out', () => {
       expect(SWARM_BEE_PROMPT).toContain('task() for research fan-out');
+    });
+
+    it('documents scout researcher routing fallback and custom researcher selection', () => {
+      expect(SWARM_BEE_PROMPT).toContain('default to built-in `scout-researcher`');
+      expect(SWARM_BEE_PROMPT).toContain('configured scout-derived researcher only when its description in `Configured Custom Subagents` is a better match');
+      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
     });
 
     it('documents hygienic reviewer routing fallback and custom reviewer selection', () => {
@@ -586,7 +605,7 @@ describe('Hygienic (Consultant/Reviewer) prompt', () => {
 
   it('routes implementation verification to verification-reviewer', () => {
     expect(HYGIENIC_BEE_PROMPT).toContain('verification-reviewer');
-    expect(HYGIENIC_BEE_PROMPT).toContain('hive_skill("verification-reviewer")');
+    expect(HYGIENIC_BEE_PROMPT).toContain('native skill');
     expect(HYGIENIC_BEE_PROMPT).toContain('evidence-backed report format');
   });
 
@@ -673,6 +692,7 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain('does not appear in `.github/agents/`');
       expect(readmeContent).toContain('does not appear in `packages/vscode-hive/src/generators/`');
       expect(readmeContent).toContain('### Custom Derived Subagents');
+      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, or `hygienic-reviewer`');
       expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `hygienic-reviewer`, or `hive-helper`');
     });
 
@@ -746,6 +766,26 @@ describe('AGENTS.md tool guidance', () => {
     it('contains agents-md-mastery skill reference', () => {
       expect(SWARM_BEE_PROMPT).toContain('agents-md-mastery');
     });
+  });
+});
+
+describe('no removed Hive skill tool references in agent prompts', () => {
+  const removedHiveSkillCall = `${['hive', 'skill'].join('_')}(`;
+
+  it('Hive prompt does not contain the removed tool call', () => {
+    expect(QUEEN_BEE_PROMPT).not.toContain(removedHiveSkillCall);
+  });
+
+  it('Swarm prompt does not contain the removed tool call', () => {
+    expect(SWARM_BEE_PROMPT).not.toContain(removedHiveSkillCall);
+  });
+
+  it('Forager prompt does not contain the removed tool call', () => {
+    expect(FORAGER_BEE_PROMPT).not.toContain(removedHiveSkillCall);
+  });
+
+  it('Hygienic prompt does not contain the removed tool call', () => {
+    expect(HYGIENIC_BEE_PROMPT).not.toContain(removedHiveSkillCall);
   });
 });
 
