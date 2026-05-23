@@ -3,16 +3,11 @@
 [![npm version](https://img.shields.io/npm/v/oc-arkive)](https://www.npmjs.com/package/oc-arkive)
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
 
-**From Vibe Coding to Hive Coding** — The OpenCode plugin that brings structure to AI-assisted development.
+OpenCode plugin for plan-first development with isolated task execution, review gates, and persistent audit trails.
 
 ## Why Hive?
 
-Stop losing context. Stop repeating decisions. Start shipping with confidence.
-
-```
-Vibe: "Just make it work"
-Hive: Plan → Review → Approve → Execute → Ship
-```
+Hive adds a small, strict loop on top of OpenCode: plan, approve, then execute in isolated git worktrees with full audit trails.
 
 ## Installation
 
@@ -35,7 +30,7 @@ Add the plugin to `opencode.json`. OpenCode handles npm resolution automatically
 
 This enables tools like `grep_app_searchGitHub`, `context7_query-docs`, `websearch_web_search_exa`, and the official ast-grep MCP tools: `ast_grep_dump_syntax_tree`, `ast_grep_test_match_code_rule`, `ast_grep_find_code`, and `ast_grep_find_code_by_rule`.
 
-The builtin `ast_grep` MCP now runs the official server through a plain local command array using bundled `uv` and by prepending the bundled `ast-grep` binary directory to `PATH`.
+The bundled `ast_grep` MCP tools run through the official ast-grep server.
 
 ## The Workflow
 
@@ -52,9 +47,9 @@ During planning, "don't execute" means "don't implement" (no code edits, no work
 
 When delegation is warranted, synthesize the task before handing it off: name the file paths or search target, state the expected result, and say what done looks like. Workers do not inherit planner context.
 
-For execution work, treat worker output as evidence to inspect, not proof to trust blindly. OpenCode is the supported execution harness in `1.4.0`; if you use `vscode-hive`, treat it as a review/sidebar companion. Read changed files yourself and run the shared verification commands on the main branch before claiming the batch is complete.
+For execution work, treat worker output as evidence to inspect, not proof to trust blindly. OpenCode is the supported execution runtime; if you use `vscode-hive`, treat it as a review/sidebar companion. Read changed files yourself and run the shared verification commands on the main branch before claiming the batch is complete.
 
-\`hive_network_query\` is an optional lookup, not a default step. There is no startup lookup: first orient on the live request and live repo state. planning, orchestration, and review roles get network access first. live-file verification still required even when network results look relevant.
+`hive_network_query` is an optional lookup, not a default step. There is no startup lookup: first orient on the live request and live repo state. Planning, orchestration, and review roles get network access first; live-file verification still required even when network results look relevant.
 
 ### Local skill and model use cases
 
@@ -126,65 +121,13 @@ When using Dynamic Context Pruning (DCP), use a Hive-safe config in `~/.config/o
 
 For normal usage, set the OpenCode plugin entry to `"oc-arkive@latest"`. Keep a local file path entry only for contributor testing with a checkout.
 
-#### OpenCode alignment: honest hook contract and bounded recovery
+### Task worker recovery
 
-Agent Hive aligns to the OpenCode surfaces that exist today. It does **not** depend on a first-class upstream Hive orchestration API, a native checkpoint API, or a hidden todo-sync surface.
+After session compaction, task workers re-read `worker-prompt.md` and continue from the current worktree state. Primary and subagent sessions replay the stored user directive once, then escalate if needed.
 
-At the current plugin/runtime layer, Hive relies on these supported hooks:
+Manual tasks created with `hive_task_create()` follow the same DAG model as plan-backed tasks. The `goal`, `description`, `acceptanceCriteria`, `files`, and `references` fields are turned into `spec.md` content visible to the worker. To change downstream sequencing or scope after review feedback, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })`.
 
-- `event`
-- `config`
-- `chat.message`
-- `experimental.chat.messages.transform`
-- `tool.execute.before`
-
-That contract matters because some older wording implied deeper integration than OpenCode currently exposes. The recovery path in this branch is hook-timed and file-backed, not storage-level magic.
-
-Todo ownership is intentionally modest:
-
-- OpenCode todos remain **session-scoped** and **replace-all**.
-- Hive does not add a new upstream todo API.
-- This plugin does not expose a derived projected-todo field or stale refresh hints as part of its runtime contract.
-- Worker and subagent sessions still follow normal OpenCode limits; they should not be described as independently syncing Hive task state.
-- `.hive` remains the durable source of truth for plan/task/worktree state.
-
-Compaction recovery uses durable Hive artifacts instead of transcript dumps:
-
-- Global session state is written to `.hive/sessions.json`.
-- Feature-local mirrors are written to `.hive/features/<feature>/sessions.json`.
-- Session classification distinguishes `primary`, `subagent`, `task-worker`, and `unknown`.
-- Primary and subagent recovery can replay the stored user directive once after compaction, with `directiveRecoveryState` enforcing the one-replay-then-escalate contract.
-- Task-worker recovery does **not** replay the whole user directive. Workers re-read `worker-prompt.md` and continue the current task from the existing worktree state.
-- Recovery uses durable session metadata plus `worker-prompt.md` instead of an extra checkpoint artifact, idle child-session replay, or parent-scoped task rehydration.
-
-In practice, the durable task-level recovery surface is the semantic `.hive` artifact set for that task, with `worker-prompt.md` plus bound feature/task/session metadata as the re-entry surface. Hive does **not** persist raw transcript dumps as its recovery contract.
-
-Task-worker recovery is intentionally strict:
-
-- keep the same role
-- do not delegate
-- do not re-read the full codebase
-- re-read `worker-prompt.md`
-- finish only the current task assignment
-- do not merge
-- do not start the next task
-- do not use orchestration tools unless the worker prompt explicitly says so
-- continue from the last known point
-
-This split is deliberate: primary and subagent sessions replay the stored user directive once after compaction, while task workers recover from their own bounded task contract instead of relying on parent-session replay.
-
-Manual tasks follow the same DAG model as plan-backed tasks:
-
-- `hive_task_create()` stores manual tasks with explicit `dependsOn` metadata instead of inferring sequential order.
-- manual tasks are append-only.
-- intermediate insertion requires plan amendment.
-- dependencies on unfinished work require plan amendment.
-- Structured manual-task fields such as `goal`, `description`, `acceptanceCriteria`, `files`, and `references` are turned into worker-facing `spec.md` content.
-- If review feedback changes downstream sequencing or scope, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })` so pending plan tasks pick up the new `dependsOn` graph and regenerated specs.
-
-This recovery path applies to the built-in `forager-worker`, the runtime-only `hive-helper` bounded hard-task operational assistant, and custom agents derived from `forager-worker`. `hive-helper` handles merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance while staying inside the current approved DAG boundary. It may summarize observable state, including `helperStatus`, and create safe append-only manual tasks, but it may never update plan-backed task state and must escalate DAG-changing requests for plan amendment. For the issue-72 style "task 3 is locally testable but task 4 has not started" situation, ask Helper to clarify the locally testable state and wrap-up surface first; ask it to create a safe manual follow-up only when the work can append after the current DAG; if you think you need `3b` / `3c` inserted before later plan-backed work, amend `plan.md` instead. `hive-helper` is intentionally OpenCode runtime-only in v1, not a custom base agent, and it does not appear in `.github/agents/` or `packages/vscode-hive/src/generators/`.
-
-`hive-helper` also remains not a network consumer. It benefits indirectly from better upstream planning/orchestration/review decisions, but it does not call `hive_network_query` itself.
+`hive-helper` is a runtime-only bounded assistant for merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance. It stays within the current approved DAG boundary and does not appear in `.github/agents/`.
 
 ## Prompt Budgeting & Observability
 
@@ -391,7 +334,7 @@ Define plugin-only custom subagents with `customAgents`. Freshly initialized `ag
 - `baseAgent`: one of `scout-researcher`, `forager-worker`, or `hygienic-reviewer`
 - `description`: delegation guidance injected into primary planner/orchestrator prompts
 
-`hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/` and does not appear in `packages/vscode-hive/src/generators/`.
+`hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/`.
 
 It is also not a network consumer; planning, orchestration, and review roles get network access first.
 
@@ -470,12 +413,10 @@ Override models for specific agents:
 
 ## Pair with VS Code
 
-For the full OpenCode-first workflow, install [vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive) as an optional review/sidebar companion for inline comments and approvals.
+For the full OpenCode-first workflow, install [vscode-hive](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive) as an optional review/sidebar companion for inline comments and document review.
 
 ## License
 
 MIT with Commons Clause — Free for personal and non-commercial use. See [LICENSE](../../LICENSE) for details.
 
 ---
-
-**Stop vibing. Start hiving.** 🐝

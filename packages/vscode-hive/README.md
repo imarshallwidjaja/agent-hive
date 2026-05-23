@@ -3,16 +3,11 @@
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/tctinh.vscode-hive)](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
 
-**From Vibe Coding to Hive Coding** — The VS Code companion for reviewing, commenting on, and approving Hive work through plan.md.
+VS Code companion for reviewing and commenting on Hive `.hive/` output — sidebar, plan.md and overview.md review, and inline comments.
 
 ## Why Hive?
 
-OpenCode runs the work. This extension keeps the plan, comments, approvals, feature status, and retained Copilot-facing Hive tools close to your editor.
-
-```
-Vibe: Hope it works
-Hive: Review → Approve → Confidence
-```
+OpenCode runs the work. This extension keeps the plan, comments, overviews, and feature status close to your editor.
 
 ## Installation
 
@@ -29,20 +24,14 @@ Download from [Releases](https://github.com/tctinh/agent-hive/releases) and inst
 
 ## Features
 
-### 📋 Feature Sidebar
-See all your features at a glance with progress indicators.
+### Feature Sidebar
+Feature tree with status indicators.
 
-### 💬 Inline Plan Review
-Add comments directly on plan.md. Discuss, iterate, approve.
+### Inline Review
+Add comments on plan.md and overview.md.
 
-### 🔄 Real-time Updates
-Watches `.hive/` folder for changes. Always in sync.
-
-### 🧭 Retained Copilot Tool Surface
-Copilot Chat sees only the Hive feature, plan, task, and status tools that still add structured value.
-
-### 🚀 Execution Companion
-Keep review and task status in VS Code, then delegate implementation directly to `@forager` and record progress with `hive_task_update`.
+### File Watching
+Watches `.hive/` for changes and refreshes automatically.
 
 ## Usage
 
@@ -50,49 +39,36 @@ Keep review and task status in VS Code, then delegate implementation directly to
 
 1. Create or open a repository that already has `.hive/` output from `opencode-hive`
 2. Click the Hive icon in the Activity Bar
-3. Open `plan.md` from the sidebar and review it as the single required review and execution document
-4. Add comments directly on `plan.md`, then click **Done Review** when the plan is ready
-5. Sync or inspect tasks with the retained Hive feature/plan/task/status tools in Copilot Chat
-6. Delegate runnable implementation directly to `@forager` and use `hive_task_update` to record progress or completion
+3. Open `plan.md` or `overview.md` from the sidebar and review
+4. Add comments directly on the document, then click **Done Review** when ready
 
-### What this extension is for in `1.4.0`
+### What this extension does
 
-- **Plan-first review**: inspect `plan.md` as the single required review and execution document
+- **Document review**: inspect `plan.md` and `overview.md` as the required review documents
 - **Sidebar visibility**: features, tasks, status, and reports in one place
-- **Inline comments**: discuss changes directly in `plan.md`
-- **Retained Hive tools**: use feature, plan, task, and status tools in Copilot Chat without the legacy worktree/merge/context-write surface
-
-### Bootstrap generation (kept for continuity)
-
-The extension still ships bootstrap helpers that can generate `.github/agents`, `.github/skills`, `.github/hooks`, `.github/instructions`, and related scaffolding for teams that want continuity with older repository layouts.
-
-Those generated artifacts are no longer the primary supported execution path for Hive. In `1.4.0`, the supported harness is OpenCode; `vscode-hive` stays focused on review/sidebar UX.
+- **Inline comments**: discuss changes directly in `plan.md` and `overview.md`
+- **File watching**: tracks `.hive/` changes and refreshes in real time
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| Hive: New Feature | Create a new feature |
 | Hive: Refresh | Refresh the feature tree |
-| View Details | Show feature details |
-| View Report | Open feature report |
-| Open in OpenCode | Open step in OpenCode |
+| Hive: Open File | Open a file from the sidebar |
+| Hive: Done Review | Complete review of plan.md or overview.md |
+| Hive: Add Comment | Add an inline comment on plan.md or overview.md |
+| Hive: Reply Comment | Reply to an existing comment |
+| Hive: Resolve Comment | Mark a comment as resolved |
+| Hive: Delete Comment | Delete a comment |
 
-### Usage Tips
+### Tips
 
-- **Task names**: Use kebab-case or snake_case. Spaces in task names may cause git worktree errors.
 - **Context management**: Check `.hive/features/<name>/context/` for optional notes; files like `overview.md`, `decisions.md`, or `architecture.md` are ordinary context files, not separate review gates.
-- **Plan review**: `plan.md` is the only required review document and should keep a readable overview/design summary before `## Tasks`.
-- **Execution handoff**: delegate runnable implementation directly to `@forager` and record task progress with `hive_task_update`.
-
-### Troubleshooting
-
-**Issue**: "Invalid reference" error when starting task
-- **Solution**: Task names with spaces may cause git worktree errors. Use kebab-case (e.g., `user-auth` instead of `User Authentication`).
+- **Plan and overview review**: `plan.md` and `overview.md` are the review documents available in the sidebar. Both support inline comments.
 
 ## Pair with OpenCode
 
-For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc-arkive) and use this extension as the review/sidebar companion plus the reduced Copilot-facing Hive tool surface.
+For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc-arkive) and use this extension as the review/sidebar companion.
 
 ## Requirements
 
@@ -103,6 +79,4 @@ For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc
 
 MIT with Commons Clause — Free for personal and non-commercial use. See [LICENSE](../../LICENSE) for details.
 
----
 
-**Stop vibing. Start hiving.** 🐝

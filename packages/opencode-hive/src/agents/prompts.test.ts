@@ -690,7 +690,6 @@ describe('README.md documentation', () => {
 
     it('keeps hive-helper out of custom derived subagent docs', () => {
       expect(readmeContent).toContain('does not appear in `.github/agents/`');
-      expect(readmeContent).toContain('does not appear in `packages/vscode-hive/src/generators/`');
       expect(readmeContent).toContain('### Custom Derived Subagents');
       expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, or `hygienic-reviewer`');
       expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `hygienic-reviewer`, or `hive-helper`');

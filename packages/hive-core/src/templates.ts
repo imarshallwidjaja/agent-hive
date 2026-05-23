@@ -1,4 +1,4 @@
-// Skill templates for Init Hive Nest
+// Skill templates for remaining Hive runtime surfaces.
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -10,10 +10,6 @@ export function getSkillTemplate(name: string): string {
     return fs.readFileSync(templatePath, 'utf-8');
   }
   throw new Error(`Template not found: ${name}`);
-}
-
-export function getCopilotAgentTemplate(): string {
-  return getSkillTemplate('copilot-agent');
 }
 
 export function getAllSkillNames(): string[] {
