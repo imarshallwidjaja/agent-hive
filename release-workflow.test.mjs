@@ -175,14 +175,14 @@ describe('release recovery docs contract', () => {
     const agents = readText('AGENTS.md');
 
     assert.match(releasing, /workflow_dispatch/);
-    assert.match(releasing, /manual runs default to .*rehearse/i);
+    assert.match(releasing, /Manual `workflow_dispatch` runs default to `rehearse`/i);
     assert.match(releasing, /first publish/i);
     assert.match(releasing, /package does not exist yet|package is currently absent/i);
     assert.match(releasing, /Recovery mode is only for existing .*vX\.Y\.Z.* tags/i);
     assert.match(releasing, /only publishes `oc-arkive` to npm/i);
     assert.match(releasing, /requires a recovery tag and at least one explicit target toggle/i);
     assert.match(releasing, /rerun only the unfinished targets/i);
-    assert.match(releasing, /oc-arkive npm publish and\/or GitHub Release/i);
+    assert.match(releasing, /`oc-arkive` npm publish and\/or GitHub Release/i);
     assert.match(releasing, /release-only recovery remains possible when npm was intentionally skipped/i);
     assert.match(agents, /OpenCode-only release workflow/i);
   });

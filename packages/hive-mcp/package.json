@@ -29,7 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "hive-core": "1.4.8",
+    "hive-core": "workspace:*",
     "typescript": "^5.0.0"
   },
   "files": ["dist/"]

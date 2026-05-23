@@ -1,6 +1,6 @@
 # Releasing oc-arkive
 
-This fork's release workflow is OpenCode-only. It builds the shared `hive-core` package, builds and tests `packages/opencode-hive`, publishes `oc-arkive` to npm, and creates a GitHub Release from the matching release note file.
+This fork's release workflow is OpenCode-only. It builds the shared `hive-core` package, builds and tests `packages/opencode-hive`, only publishes `oc-arkive` to npm, and creates a GitHub Release from the matching release note file.
 
 The `Release` workflow publishes only on tags matching `v*`. Manual `workflow_dispatch` runs default to `rehearse`: they build and test the candidate without publishing to npm or creating a GitHub Release. Recovery mode is only for existing `vX.Y.Z` tags and reuses that tagged commit.
 

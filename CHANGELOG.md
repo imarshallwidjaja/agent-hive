@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.9] - 2026-05-23
+
+### Changed
+- **OpenCode package renamed to `oc-arkive`**: The forked OpenCode runtime now publishes under the npm package name `oc-arkive`, so OpenCode users can install it with `"plugin": ["oc-arkive@latest"]`.
+- **Release workflow narrowed to OpenCode**: Tagged releases now build and test `hive-core` plus `oc-arkive`, publish only the OpenCode npm package, and create the GitHub Release from checked-in release notes.
+
+### Fixed
+- **CI install no longer resolves unpublished `hive-core` pins**: Non-release workspace packages now use local workspace references for `hive-core`, preventing root `bun install` from fetching unavailable npm versions during the OpenCode-only release.
+
 ## [1.4.8] - 2026-04-23
 
 ### Added
