@@ -1,16 +1,17 @@
 {
   "name": "agent-hive",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "private": true,
   "description": "Context-Driven Development for AI coding assistants",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "bun run --filter hive-core build && bun run --filter opencode-hive build && bun run --filter @tctinh/agent-hive-mcp build && bun run --filter claude-code-hive build && bun run --filter vscode-hive build",
+    "build": "bun run --filter hive-core build && bun run --filter oc-arkive build && bun run --filter @tctinh/agent-hive-mcp build && bun run --filter claude-code-hive build && bun run --filter vscode-hive build",
+    "build:opencode": "bun run --filter hive-core build && bun run --filter oc-arkive build",
     "dev": "bun run --filter hive-core build && bun run --filter '*' dev",
     "test": "npm -ws --if-present run test",
-    "release:check": "bun install && node --test release-artifacts.test.mjs && node --test release-workflow.test.mjs && bun run build && npm -ws --if-present run test"
+    "release:check": "bun install && node --test release-artifacts.test.mjs && node --test release-workflow.test.mjs && bun run build:opencode && bun run --filter hive-core test && bun run --filter oc-arkive test"
   },
   "license": "MIT"
 }

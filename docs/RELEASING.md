@@ -1,80 +1,62 @@
-# Releasing Agent Hive
+# Releasing oc-arkive
 
-This repo publishes:
+This fork's release workflow is OpenCode-only. It builds the shared `hive-core` package, builds and tests `packages/opencode-hive`, publishes `oc-arkive` to npm, and creates a GitHub Release from the matching release note file.
 
-- `opencode-hive` to npm (GitHub Actions `Release` workflow)
-- `hive-mcp` to npm (same workflow)
-- `claude-code-hive` to npm (same workflow)
-- `vscode-hive` to the VS Code Marketplace (same workflow)
+The `Release` workflow publishes only on tags matching `v*`. Manual `workflow_dispatch` runs default to `rehearse`: they build and test the candidate without publishing to npm or creating a GitHub Release. Recovery mode is only for existing `vX.Y.Z` tags and reuses that tagged commit.
 
-The `Release` workflow publishes **only on tags** matching `v*`. Under `workflow_dispatch`, manual runs default to `rehearse`: they build and test the candidate without publishing to npm, the VS Code Marketplace, or GitHub Releases. Recovery mode is only for existing `vX.Y.Z` tags and reuses that tagged commit.
+## 1. One-time npm setup
 
-## 1) Prep the release locally
+Create an npm automation token for the account that will own `oc-arkive`, then add it to the fork as a repository secret named `NPM_KEY`.
 
-Release preparation is manual. Do not rely on any old release-prep helper; it is not part of the real release flow.
+For the first publish, the package does not exist yet. The release helper treats that as first-publish-ready as long as `npm whoami` succeeds with the configured token. After the package exists, the same helper verifies that the publishing account has read-write collaborator access.
 
-Update the release branch explicitly for `vX.Y.Z`:
+## 2. Prep the release locally
 
-- bump the root and workspace package versions to `X.Y.Z`
-- refresh tracked workspace lockfiles so their version markers also read `X.Y.Z`
+Release preparation is manual. Update the release branch explicitly for `vX.Y.Z`:
+
+- bump the root version, `packages/hive-core/package.json`, and `packages/opencode-hive/package.json` to `X.Y.Z`
+- refresh `bun.lock` and `package-lock.json`
+- regenerate `packages/opencode-hive/plugin.json` by running the package build
 - add `docs/releases/vX.Y.Z.md`
 - add the `X.Y.Z` entry near the top of `CHANGELOG.md`
-- update any operator-facing release/version docs that still mention the previous release contract
+- update OpenCode install or release docs if the package contract changed
 
-Review those edits before validation. The release workflow publishes `docs/releases/${github.ref_name}.md` as the GitHub Release body, so the matching release note file must exist before tagging.
+The release workflow publishes `docs/releases/${github.ref_name}.md` as the GitHub Release body, so the matching release note file must exist before tagging.
 
-## 2) Run local release preflight
+## 3. Run local release preflight
 
-Before tagging, confirm the operator credentials and package access that the tag-triggered publish jobs need:
+Before tagging, confirm local package state and npm access:
 
 ```bash
 npm whoami
-node .github/scripts/verify-npm-publish-access.mjs opencode-hive hive-mcp claude-code-hive
-npx @vscode/vsce verify-pat tctinh
+node .github/scripts/verify-npm-publish-access.mjs opencode-hive
 bun run release:check
 ```
 
-Treat these as preflight checks, not preparation shortcuts:
+These are preflight checks, not preparation shortcuts:
 
-- `npm whoami` confirms the npm token is valid
-- `node .github/scripts/verify-npm-publish-access.mjs opencode-hive hive-mcp claude-code-hive` confirms the publishing account still has collaborator access to already-published npm packages and treats a package that does not exist yet as a first publish
-- `npx @vscode/vsce verify-pat tctinh` confirms the Marketplace PAT is still valid for the publisher account
-- `bun run release:check` is the repo safety net for artifacts, builds, and tests
+- `npm whoami` confirms your local npm login works.
+- `node .github/scripts/verify-npm-publish-access.mjs opencode-hive` reads `packages/opencode-hive/package.json`, so it checks `oc-arkive` even though the package directory is still named `opencode-hive`.
+- `bun run release:check` installs dependencies, verifies the release artifacts and workflow contract, builds `hive-core` plus `oc-arkive`, and runs their test suites.
 
-If any preflight fails, fix credentials/access or branch content before opening the release PR or creating a tag.
+If any preflight fails, fix credentials, access, or branch content before creating a tag.
 
-For `claude-code-hive`, the first tagged publish may be the package's first publish on npm. In that case, the helper should report that the package is currently absent and allow the release path to continue as a first publish, rather than requiring existing collaborator metadata up front.
-
-## 3) Rehearse the GitHub workflow with `workflow_dispatch`
+## 4. Rehearse the GitHub workflow
 
 Before tagging, run the `Release` GitHub Actions workflow manually with `workflow_dispatch` from the release branch or the merge commit you expect to tag.
 
-Use this rehearsal to confirm:
+Use the default `rehearse` mode to confirm:
 
-- the workflow still boots on the current branch
+- the workflow boots on the current branch
 - build and test steps pass in CI
 - generated release artifacts look correct
 - no publish step runs during the manual rehearsal
 
-Manual runs default to the `rehearse` mode, so this path is for build/test confidence only. The real npm publish, VS Code Marketplace publish, and GitHub Release creation happen only from a pushed `vX.Y.Z` tag or from a later tag-backed recovery run.
+The real npm publish and GitHub Release creation happen only from a pushed `vX.Y.Z` tag or from a later tag-backed recovery run.
 
-If a tagged release partially fails later, rerun the same workflow with `release_mode=recover`. Recovery requires a recovery tag and at least one explicit target toggle, and it only accepts an existing `vX.Y.Z` tag. Do not use recovery from a branch or arbitrary commit SHA.
+## 5. Tag and release
 
-## 4) Merge to `main`
-
-Open a PR with the release prep changes:
-
-- version bumps
-- lockfile refreshes
-- `CHANGELOG.md` updates
-- `docs/releases/vX.Y.Z.md` release notes
-- any release-contract documentation updates needed for the tagged release
-
-Merge only after local preflight and the `workflow_dispatch` rehearsal both pass.
-
-## 5) Tag and release
-
-After merging to `main`, create and push the release tag:
+After merging the release prep changes to `main`, create and push the release tag:
 
 ```bash
 git checkout main
@@ -83,13 +65,16 @@ git tag -a vX.Y.Z -m "Release X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-That tag triggers `.github/workflows/release.yml` to build, publish, and create the GitHub Release.
+That tag triggers `.github/workflows/release.yml` to build, test, publish `oc-arkive`, and create the GitHub Release.
 
-### Publish order
+Users can then install the forked OpenCode plugin with:
 
-Publish order guidance: `opencode-hive`, `hive-mcp`, `claude-code-hive`, and VS Code Marketplace are all part of the tagged release flow, but the only enforced package dependency is that `hive-mcp` must publish before `claude-code-hive`; `opencode-hive` and VS Code Marketplace can publish independently after the build, and GitHub Release waits for the selected publish targets.
-
-`claude-code-hive` is intentionally published after `hive-mcp` because the Claude plugin package depends on the MCP runtime package. Recovery runs are package-specific, so rerun only the unfinished target or targets instead of replaying the whole npm sequence.
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["oc-arkive@latest"]
+}
+```
 
 ## Missed-release recovery
 
@@ -97,21 +82,19 @@ When a tag already exists but one or more release targets failed, recover by man
 
 ### Recovery contract
 
-- Recovery is tag-only: set `release_mode=recover` and provide an existing `recovery_tag` such as `v1.4.2`.
+- Recovery is tag-only: set `release_mode=recover` and provide an existing `recovery_tag` such as `v1.4.9`.
 - Recovery requires a recovery tag and at least one explicit target toggle.
-- Recovery toggles are operator-selected, not automatic: enable only `recover_opencode_hive`, `recover_hive_mcp`, `recover_claude_code_hive`, `recover_vscode`, and/or `recover_github_release` for the unfinished targets.
-- Rerun only the unfinished targets. If npm already published but the VS Code Marketplace step failed, rerun only `recover_vscode`. If both publishes succeeded but the GitHub Release was skipped or failed, run release-only recovery.
+- Recovery toggles are operator-selected: enable only `recover_oc_arkive` and/or `recover_github_release` for the unfinished target.
+- Rerun only the unfinished targets. If npm already published but the GitHub Release failed, enable only `recover_github_release`.
 
 ### Operator flow for a partially published version
 
-1. Check which targets actually finished for the tagged version.
-2. Repair the credentials or access issue that caused the partial failure.
+1. Check whether `oc-arkive@X.Y.Z` exists on npm and whether the GitHub Release exists for `vX.Y.Z`.
+2. Repair the credential or access issue that caused the partial failure.
 3. Open the `Release` workflow with `workflow_dispatch`.
 4. Set `release_mode` to `recover`.
 5. Set `recovery_tag` to the existing release tag.
-6. Enable only the unfinished targets: opencode-hive, hive-mcp, claude-code-hive, VS Code, and/or GitHub Release as needed.
+6. Enable only the unfinished target: `oc-arkive` npm publish and/or GitHub Release.
 7. Run the workflow and verify only the selected targets executed.
 
-Release-only recovery remains possible even when npm and VS Code were intentionally skipped. For example, if a previous recovery run published the registries successfully but left the GitHub Release missing, rerun with only `recover_github_release=true`.
-
-Do not start the next patch release until the current tag is fully recovered from its tagged commit.
+Release-only recovery remains possible when npm was intentionally skipped. Do not start the next patch release until the current tag is fully recovered from its tagged commit.

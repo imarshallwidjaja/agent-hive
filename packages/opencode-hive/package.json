@@ -1,18 +1,18 @@
 {
-  "name": "opencode-hive",
-  "version": "1.4.8",
+  "name": "oc-arkive",
+  "version": "1.4.",
   "type": "module",
-  "description": "OpenCode plugin for Agent Hive - from vibe coding to hive coding",
+  "description": "OpenCode plugin for Agent Hive - plan-first AI coding workflow",
   "license": "MIT WITH Commons-Clause",
-  "author": "tctinh",
+  "author": "imarshallwidjaja",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tctinh/agent-hive.git",
+    "url": "https://github.com/imarshallwidjaja/agent-hive.git",
     "directory": "packages/opencode-hive"
   },
-  "homepage": "https://github.com/tctinh/agent-hive#readme",
+  "homepage": "https://github.com/imarshallwidjaja/agent-hive#readme",
   "bugs": {
-    "url": "https://github.com/tctinh/agent-hive/issues"
+    "url": "https://github.com/imarshallwidjaja/agent-hive/issues"
   },
   "keywords": [
     "opencode",

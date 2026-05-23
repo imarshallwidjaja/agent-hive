@@ -92,7 +92,7 @@ Those generated artifacts are no longer the primary supported execution path for
 
 ## Pair with OpenCode
 
-For the supported workflow, install [opencode-hive](https://www.npmjs.com/package/opencode-hive) and use this extension as the review/sidebar companion plus the reduced Copilot-facing Hive tool surface.
+For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc-arkive) and use this extension as the review/sidebar companion plus the reduced Copilot-facing Hive tool surface.
 
 ## Requirements
 

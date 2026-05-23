@@ -300,7 +300,7 @@ export const DEFAULT_AGENT_MODELS = {
 } as const;
 
 export const DEFAULT_HIVE_CONFIG: HiveConfig = {
-  $schema: 'https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json',
+  $schema: 'https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json',
   enableToolsFor: [],
   disableSkills: [],
   disableMcps: [],

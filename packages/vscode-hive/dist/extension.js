@@ -1638,7 +1638,7 @@ var DEFAULT_AGENT_MODELS = {
   "hygienic-reviewer": "github-copilot/gpt-5.2-codex"
 };
 var DEFAULT_HIVE_CONFIG = {
-  $schema: "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  $schema: "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   enableToolsFor: [],
   disableSkills: [],
   disableMcps: [],

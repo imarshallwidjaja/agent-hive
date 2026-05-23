@@ -8,8 +8,6 @@ import { describe, it } from 'node:test';
 const workspaceRoot = path.resolve(import.meta.dirname);
 const releaseVersion = readJson('package.json').version;
 const opencodeHiveRoot = path.join(workspaceRoot, 'packages', 'opencode-hive');
-const hiveMcpRoot = path.join(workspaceRoot, 'packages', 'hive-mcp');
-const claudeCodeHiveRoot = path.join(workspaceRoot, 'packages', 'claude-code-hive');
 const bunBinary = resolveBunBinary();
 
 function readJson(relativePath) {
@@ -86,20 +84,17 @@ function assertPackedFile(fileSet, relativePath, packageName) {
 }
 
 describe(`release ${releaseVersion} artifact contract on main`, () => {
-  it(`bumps root and workspace manifests to ${releaseVersion}`, () => {
+  it(`bumps root and OpenCode runtime manifests to ${releaseVersion}`, () => {
     for (const file of [
       'package.json',
       'packages/hive-core/package.json',
       'packages/opencode-hive/package.json',
-      'packages/hive-mcp/package.json',
-      'packages/claude-code-hive/package.json',
-      'packages/vscode-hive/package.json',
     ]) {
       assert.equal(readJson(file).version, releaseVersion, `${file} should be ${releaseVersion}`);
     }
   });
 
-  it(`refreshes tracked workspace lockfile version markers to ${releaseVersion}`, () => {
+  it(`refreshes tracked OpenCode lockfile markers to ${releaseVersion}`, () => {
     const packageLock = readJson('package-lock.json');
     const bunLock = readText('bun.lock');
     const escapedReleaseVersion = releaseVersion.replaceAll('.', '\\.');
@@ -107,32 +102,20 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     assert.equal(packageLock.version, releaseVersion, `package-lock.json root version should be ${releaseVersion}`);
     assert.equal(packageLock.packages[''].version, releaseVersion, `package-lock.json workspace root should be ${releaseVersion}`);
     assert.equal(packageLock.packages['packages/hive-core'].version, releaseVersion, `package-lock.json hive-core version should be ${releaseVersion}`);
-    assert.equal(packageLock.packages['packages/opencode-hive'].version, releaseVersion, `package-lock.json opencode-hive version should be ${releaseVersion}`);
-    assert.equal(packageLock.packages['packages/hive-mcp'].version, releaseVersion, `package-lock.json hive-mcp version should be ${releaseVersion}`);
-    assert.equal(packageLock.packages['packages/claude-code-hive'].version, releaseVersion, `package-lock.json claude-code-hive version should be ${releaseVersion}`);
-    assert.equal(packageLock.packages['packages/vscode-hive'].version, releaseVersion, `package-lock.json vscode-hive version should be ${releaseVersion}`);
+    assert.equal(packageLock.packages['packages/opencode-hive'].version, releaseVersion, `package-lock.json oc-arkive version should be ${releaseVersion}`);
+    assert.equal(packageLock.packages['node_modules/oc-arkive']?.resolved, 'packages/opencode-hive', 'package-lock.json should link oc-arkive to packages/opencode-hive');
+    assert.equal(packageLock.packages['node_modules/opencode-hive'], undefined, 'package-lock.json should not keep the old opencode-hive workspace link');
 
     assert.match(bunLock, new RegExp(`"name": "hive-core",\\s+"version": "${escapedReleaseVersion}"`, 's'));
-    assert.match(bunLock, new RegExp(`"name": "opencode-hive",\\s+"version": "${escapedReleaseVersion}"`, 's'));
-    assert.match(bunLock, new RegExp(`"name": "@tctinh/agent-hive-mcp",\\s+"version": "${escapedReleaseVersion}"`, 's'));
-    assert.match(bunLock, new RegExp(`"name": "claude-code-hive",\\s+"version": "${escapedReleaseVersion}"`, 's'));
-    assert.match(bunLock, new RegExp(`"name": "vscode-hive",\\s+"version": "${escapedReleaseVersion}"`, 's'));
+    assert.match(bunLock, new RegExp(`"name": "oc-arkive",\\s+"version": "${escapedReleaseVersion}"`, 's'));
+    assert.match(bunLock, /"oc-arkive": \["oc-arkive@workspace:packages\/opencode-hive"\]/);
+    assert.doesNotMatch(bunLock, /"opencode-hive": \["opencode-hive@workspace:packages\/opencode-hive"\]/);
   });
 
-  it(`refreshes plugin manifests, dependency pins, runtime version, and philosophy history to ${releaseVersion}`, () => {
-    const hiveMcpPackageJson = readJson('packages/hive-mcp/package.json');
-    const vscodeHivePackageJson = readJson('packages/vscode-hive/package.json');
+  it(`refreshes the OpenCode plugin manifest to ${releaseVersion}`, () => {
     const opencodePluginJson = readJson('packages/opencode-hive/plugin.json');
-    const claudePluginJson = readJson('packages/claude-code-hive/.claude-plugin/plugin.json');
-    const hiveMcpEntry = readText('packages/hive-mcp/src/index.ts');
-    const philosophy = readText('PHILOSOPHY.md');
 
     assert.equal(opencodePluginJson.version, releaseVersion, `packages/opencode-hive/plugin.json should be ${releaseVersion}`);
-    assert.equal(claudePluginJson.version, releaseVersion, `packages/claude-code-hive/.claude-plugin/plugin.json should be ${releaseVersion}`);
-    assert.equal(hiveMcpPackageJson.devDependencies['hive-core'], releaseVersion, `packages/hive-mcp/package.json should pin hive-core to ${releaseVersion}`);
-    assert.equal(vscodeHivePackageJson.dependencies['hive-core'], releaseVersion, `packages/vscode-hive/package.json should pin hive-core to ${releaseVersion}`);
-    assert.match(hiveMcpEntry, new RegExp(`version: '${releaseVersion.replaceAll('.', '\\.')}'`), 'packages/hive-mcp/src/index.ts should advertise the release version');
-    assert.match(philosophy, new RegExp(`### v${releaseVersion.replaceAll('.', '\\.')}`), `PHILOSOPHY.md should include a v${releaseVersion} entry`);
   });
 
   it(`publishes ${releaseVersion} release notes and changelog entries in descending order`, () => {
@@ -178,55 +161,15 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     );
   });
 
-  it('packs every opencode-hive asset promised by the README install contract', () => {
+  it('packs every oc-arkive asset promised by the README install contract', () => {
     const packedFiles = listPackedFiles(opencodeHiveRoot);
 
-    assertPackedFile(packedFiles, 'dist/index.js', 'opencode-hive');
+    assertPackedFile(packedFiles, 'dist/index.js', 'oc-arkive');
     assert.ok(
       [...packedFiles].some((filePath) => filePath.startsWith('skills/')),
-      'README-promised opencode-hive asset missing from npm pack dry run: skills/'
+      'README-promised oc-arkive asset missing from npm pack dry run: skills/'
     );
-    assertPackedFile(packedFiles, 'templates/mcp-servers.json', 'opencode-hive');
-    assertPackedFile(packedFiles, 'templates/context/tools.md', 'opencode-hive');
-  });
-
-  it('packs the hive-mcp runtime entry for npm publishing', () => {
-    const packedFiles = listPackedFiles(hiveMcpRoot);
-
-    assertPackedFile(packedFiles, 'dist/index.js', 'hive-mcp');
-  });
-
-  it('packs the self-contained claude-code-hive plugin assets', () => {
-    const packedFiles = listPackedFiles(claudeCodeHiveRoot);
-
-    assertPackedFile(packedFiles, '.claude-plugin/plugin.json', 'claude-code-hive');
-    assertPackedFile(packedFiles, 'agents/hive.md', 'claude-code-hive');
-    assertPackedFile(packedFiles, 'agents/forager.md', 'claude-code-hive');
-    assertPackedFile(packedFiles, 'agents/hygienic.md', 'claude-code-hive');
-    assertPackedFile(packedFiles, 'commands/hive.md', 'claude-code-hive');
-    assertPackedFile(packedFiles, 'instructions/hive-workflow.md', 'claude-code-hive');
-    assertPackedFile(packedFiles, 'hooks/hooks.json', 'claude-code-hive');
-    assertPackedFile(packedFiles, 'hooks/scripts/inject-context.sh', 'claude-code-hive');
-    assertPackedFile(packedFiles, 'scripts/verify-plugin-assets.mjs', 'claude-code-hive');
-    assert.ok(
-      [...packedFiles].some((filePath) => filePath.startsWith('skills/') && filePath.endsWith('/SKILL.md')),
-      'claude-code-hive asset missing from npm pack dry run: skills/**/SKILL.md'
-    );
-  });
-
-  it('claude-code-hive plugin.json invokes the MCP runtime via npx without requiring a local dependency', () => {
-    const pluginManifest = readJson('packages/claude-code-hive/.claude-plugin/plugin.json');
-    const server = pluginManifest.mcpServers?.hive;
-
-    assert.equal(server?.command, 'npx', 'plugin.mcpServers.hive.command must be npx so the MCP runs without a global install');
-    assert.ok(Array.isArray(server?.args), 'plugin.mcpServers.hive.args must be an array');
-    assert.ok(server.args.includes('@tctinh/agent-hive-mcp@latest'), 'MCP args must pin @tctinh/agent-hive-mcp@latest so npx fetches the right package');
-    assert.equal(server.args.at(-1), 'hive-mcp', 'MCP args must end with the hive-mcp bin name so npx invokes the correct entry');
-    const claudeCodeHivePackageJson = readJson('packages/claude-code-hive/package.json');
-    assert.equal(
-      claudeCodeHivePackageJson.dependencies?.['@tctinh/agent-hive-mcp'],
-      undefined,
-      'claude-code-hive should not depend on @tctinh/agent-hive-mcp — npx fetches it at runtime'
-    );
+    assertPackedFile(packedFiles, 'templates/mcp-servers.json', 'oc-arkive');
+    assertPackedFile(packedFiles, 'templates/context/tools.md', 'oc-arkive');
   });
 });

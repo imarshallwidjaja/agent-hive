@@ -1,6 +1,6 @@
-# opencode-hive
+# oc-arkive
 
-[![npm version](https://img.shields.io/npm/v/opencode-hive)](https://www.npmjs.com/package/opencode-hive)
+[![npm version](https://img.shields.io/npm/v/oc-arkive)](https://www.npmjs.com/package/oc-arkive)
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
 
 **From Vibe Coding to Hive Coding** — The OpenCode plugin that brings structure to AI-assisted development.
@@ -16,15 +16,20 @@ Hive: Plan → Review → Approve → Execute → Ship
 
 ## Installation
 
-```bash
-npm install opencode-hive
+Add the plugin to `opencode.json`. OpenCode handles npm resolution automatically; you do not need to run `npm install` yourself.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["oc-arkive@latest"]
+}
 ```
 
 ## Optional: Enable MCP Research Tools
 
 1. Create `.opencode/mcp-servers.json` using the template:
    - From this repo: `packages/opencode-hive/templates/mcp-servers.json`
-   - Or from the installed npm package: `node_modules/opencode-hive/templates/mcp-servers.json`
+   - Or from the installed npm package: `node_modules/oc-arkive/templates/mcp-servers.json`
 2. Set `EXA_API_KEY` to enable `websearch_exa` (optional).
 3. Restart OpenCode.
 
@@ -119,7 +124,7 @@ When using Dynamic Context Pruning (DCP), use a Hive-safe config in `~/.config/o
   - `strategies.supersedeWrites.enabled: false`
   - `strategies.purgeErrors.enabled: false`
 
-For normal usage, set the OpenCode plugin entry to `"opencode-hive@latest"`. Keep `"opencode-hive"` only for local contributor testing with a symlinked checkout.
+For normal usage, set the OpenCode plugin entry to `"oc-arkive@latest"`. Keep a local file path entry only for contributor testing with a checkout.
 
 #### OpenCode alignment: honest hook contract and bounded recovery
 
@@ -246,7 +251,7 @@ Create `.hive/agent-hive.json`:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "agentMode": "unified",
   "disableSkills": []
 }
@@ -256,7 +261,7 @@ Create `.hive/agent-hive.json`:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "disableSkills": ["brainstorming", "writing-plans"],
   "disableMcps": ["websearch", "ast_grep"]
 }
@@ -339,7 +344,7 @@ You can set a `variant` for each Hive agent to control model reasoning/effort le
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "agents": {
     "hive-master": {
       "model": "anthropic/claude-sonnet-4-20250514",

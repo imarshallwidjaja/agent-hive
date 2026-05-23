@@ -18,23 +18,8 @@ on:
         description: 'Existing v* tag to recover'
         required: false
         type: string
-      recover_opencode_hive:
-        description: 'Recover the opencode-hive npm publish for the requested tag'
-        required: false
-        default: false
-        type: boolean
-      recover_hive_mcp:
-        description: 'Recover the hive-mcp npm publish for the requested tag'
-        required: false
-        default: false
-        type: boolean
-      recover_claude_code_hive:
-        description: 'Recover the claude-code-hive npm publish for the requested tag'
-        required: false
-        default: false
-        type: boolean
-      recover_vscode:
-        description: 'Recover the VS Code Marketplace publish for the requested tag'
+      recover_oc_arkive:
+        description: 'Recover the oc-arkive npm publish for the requested tag'
         required: false
         default: false
         type: boolean
@@ -50,10 +35,7 @@ jobs:
     outputs:
       checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
       release_tag: ${{ steps.resolve.outputs.release_tag }}
-      publish_opencode_hive: ${{ steps.resolve.outputs.publish_opencode_hive }}
-      publish_hive_mcp: ${{ steps.resolve.outputs.publish_hive_mcp }}
-      publish_claude_code_hive: ${{ steps.resolve.outputs.publish_claude_code_hive }}
-      publish_vscode: ${{ steps.resolve.outputs.publish_vscode }}
+      publish_oc_arkive: ${{ steps.resolve.outputs.publish_oc_arkive }}
       publish_github_release: ${{ steps.resolve.outputs.publish_github_release }}
     steps:
       - name: Resolve release mode
@@ -61,19 +43,13 @@ jobs:
         env:
           REQUESTED_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_mode || '' }}
           REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.recovery_tag || '' }}
-          RECOVER_OPENCODE_HIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_opencode_hive || false }}
-          RECOVER_HIVE_MCP: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_hive_mcp || false }}
-          RECOVER_CLAUDE_CODE_HIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_claude_code_hive || false }}
-          RECOVER_VSCODE: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_vscode || false }}
+          RECOVER_OC_ARKIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_oc_arkive || false }}
           RECOVER_GITHUB_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_github_release || false }}
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == 'push' ]]; then
             echo "checkout_ref=${GITHUB_REF}" >> "${GITHUB_OUTPUT}"
             echo "release_tag=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
-            echo 'publish_opencode_hive=true' >> "${GITHUB_OUTPUT}"
-            echo 'publish_hive_mcp=true' >> "${GITHUB_OUTPUT}"
-            echo 'publish_claude_code_hive=true' >> "${GITHUB_OUTPUT}"
-            echo 'publish_vscode=true' >> "${GITHUB_OUTPUT}"
+            echo 'publish_oc_arkive=true' >> "${GITHUB_OUTPUT}"
             echo 'publish_github_release=true' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -81,10 +57,7 @@ jobs:
           if [[ "${REQUESTED_MODE}" != 'recover' ]]; then
             echo "checkout_ref=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
             echo 'release_tag=' >> "${GITHUB_OUTPUT}"
-            echo 'publish_opencode_hive=false' >> "${GITHUB_OUTPUT}"
-            echo 'publish_hive_mcp=false' >> "${GITHUB_OUTPUT}"
-            echo 'publish_claude_code_hive=false' >> "${GITHUB_OUTPUT}"
-            echo 'publish_vscode=false' >> "${GITHUB_OUTPUT}"
+            echo 'publish_oc_arkive=false' >> "${GITHUB_OUTPUT}"
             echo 'publish_github_release=false' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -96,7 +69,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "${RECOVER_OPENCODE_HIVE}" != 'true' && "${RECOVER_HIVE_MCP}" != 'true' && "${RECOVER_CLAUDE_CODE_HIVE}" != 'true' && "${RECOVER_VSCODE}" != 'true' && "${RECOVER_GITHUB_RELEASE}" != 'true' ]]; then
+          if [[ "${RECOVER_OC_ARKIVE}" != 'true' && "${RECOVER_GITHUB_RELEASE}" != 'true' ]]; then
             echo 'No recovery targets were selected' >&2
             exit 1
           fi
@@ -105,10 +78,7 @@ jobs:
 
           echo "checkout_ref=refs/tags/${requested_tag}" >> "${GITHUB_OUTPUT}"
           echo "release_tag=${requested_tag}" >> "${GITHUB_OUTPUT}"
-          echo "publish_opencode_hive=${RECOVER_OPENCODE_HIVE}" >> "${GITHUB_OUTPUT}"
-          echo "publish_hive_mcp=${RECOVER_HIVE_MCP}" >> "${GITHUB_OUTPUT}"
-          echo "publish_claude_code_hive=${RECOVER_CLAUDE_CODE_HIVE}" >> "${GITHUB_OUTPUT}"
-          echo "publish_vscode=${RECOVER_VSCODE}" >> "${GITHUB_OUTPUT}"
+          echo "publish_oc_arkive=${RECOVER_OC_ARKIVE}" >> "${GITHUB_OUTPUT}"
           echo "publish_github_release=${RECOVER_GITHUB_RELEASE}" >> "${GITHUB_OUTPUT}"
 
   build:
@@ -136,61 +106,23 @@ jobs:
       - name: Reinstall to link workspace packages
         run: bun install
 
-      - name: Build hive-mcp
-        working-directory: packages/hive-mcp
-        run: bun run build
-
-      - name: Build opencode-hive
+      - name: Build oc-arkive
         working-directory: packages/opencode-hive
-        run: bun run build
-
-      - name: Build claude-code-hive
-        working-directory: packages/claude-code-hive
-        run: bun run build
-
-      - name: Build vscode-hive
-        working-directory: packages/vscode-hive
         run: bun run build
 
       - name: Test hive-core
         working-directory: packages/hive-core
         run: bun test
 
-      - name: Test hive-mcp
-        working-directory: packages/hive-mcp
-        run: bun run test
-
-      - name: Test opencode-hive
+      - name: Test oc-arkive
         working-directory: packages/opencode-hive
         run: bun test
 
-      - name: Test claude-code-hive
-        working-directory: packages/claude-code-hive
-        run: bun run test
-
-      - name: Upload VSIX artifact
+      - name: Upload oc-arkive npm package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vsix
-          path: packages/vscode-hive/*.vsix
-
-      - name: Upload opencode-hive npm package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-package-opencode-hive
+          name: npm-package-oc-arkive
           path: packages/opencode-hive/
-
-      - name: Upload hive-mcp npm package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-package-hive-mcp
-          path: packages/hive-mcp/
-
-      - name: Upload claude-code-hive npm package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-package-claude-code-hive
-          path: packages/claude-code-hive/
 
       - name: Upload release notes artifact
         if: ${{ needs.prepare.outputs.release_tag != '' }}
@@ -199,10 +131,10 @@ jobs:
           name: release-notes
           path: docs/releases/${{ needs.prepare.outputs.release_tag }}.md
 
-  publish-opencode-hive:
+  publish-oc-arkive:
     needs: [prepare, build]
     runs-on: ubuntu-latest
-    if: needs.prepare.outputs.publish_opencode_hive == 'true'
+    if: needs.prepare.outputs.publish_oc_arkive == 'true'
     permissions:
       contents: read
       id-token: write
@@ -211,10 +143,10 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.checkout_ref }}
 
-      - name: Download opencode-hive npm package artifact
+      - name: Download oc-arkive npm package artifact
         uses: actions/download-artifact@v4
         with:
-          name: npm-package-opencode-hive
+          name: npm-package-oc-arkive
           path: packages/opencode-hive
 
       - name: Setup Node.js
@@ -236,7 +168,7 @@ jobs:
           ver=$(node -p "require('./package.json').version")
           if npm view "${pkg}@${ver}" version 2>/dev/null | grep -q .; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::${pkg}@${ver} is already published on npm — skipping."
+            echo "::notice::${pkg}@${ver} is already published on npm -- skipping."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -250,161 +182,18 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
 
-  publish-hive-mcp:
-    needs: [prepare, build]
-    runs-on: ubuntu-latest
-    if: needs.prepare.outputs.publish_hive_mcp == 'true'
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.checkout_ref }}
-
-      - name: Download hive-mcp npm package artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: npm-package-hive-mcp
-          path: packages/hive-mcp
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Verify npm publish credentials
-        run: node .github/scripts/verify-npm-publish-access.mjs hive-mcp
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
-
-      - name: Check if already published on npm
-        id: npm_check
-        working-directory: packages/hive-mcp
-        run: |
-          pkg=$(node -p "require('./package.json').name")
-          ver=$(node -p "require('./package.json').version")
-          if npm view "${pkg}@${ver}" version 2>/dev/null | grep -q .; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::${pkg}@${ver} is already published on npm — skipping."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
-
-      - name: Publish to npm
-        if: steps.npm_check.outputs.skip != 'true'
-        working-directory: packages/hive-mcp
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
-
-  publish-claude-code-hive:
-    needs: [prepare, build, publish-hive-mcp]
-    runs-on: ubuntu-latest
-    if: >-
-      always() &&
-      needs.prepare.result == 'success' &&
-      needs.build.result == 'success' &&
-      needs.prepare.outputs.publish_claude_code_hive == 'true' &&
-      ((needs.prepare.outputs.publish_hive_mcp == 'true' && needs.publish-hive-mcp.result == 'success') || (needs.prepare.outputs.publish_hive_mcp != 'true' && needs.publish-hive-mcp.result == 'skipped'))
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.checkout_ref }}
-
-      - name: Download claude-code-hive npm package artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: npm-package-claude-code-hive
-          path: packages/claude-code-hive
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Verify npm publish credentials
-        run: node .github/scripts/verify-npm-publish-access.mjs claude-code-hive
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
-
-      - name: Check if already published on npm
-        id: npm_check
-        working-directory: packages/claude-code-hive
-        run: |
-          pkg=$(node -p "require('./package.json').name")
-          ver=$(node -p "require('./package.json').version")
-          if npm view "${pkg}@${ver}" version 2>/dev/null | grep -q .; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::${pkg}@${ver} is already published on npm — skipping."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
-
-      - name: Publish to npm
-        if: steps.npm_check.outputs.skip != 'true'
-        working-directory: packages/claude-code-hive
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
-
-  publish-vscode:
-    needs: [prepare, build]
-    runs-on: ubuntu-latest
-    if: needs.prepare.outputs.publish_vscode == 'true'
-    steps:
-      - name: Download VSIX
-        uses: actions/download-artifact@v4
-        with:
-          name: vsix
-
-      - name: Verify VS Code Marketplace credentials
-        run: npx @vscode/vsce verify-pat tctinh
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-
-      - name: Publish to VS Code Marketplace
-        run: |
-          set +e
-          output=$(npx @vscode/vsce publish --packagePath *.vsix 2>&1)
-          code=$?
-          echo "$output"
-          if [ $code -ne 0 ] && ! echo "$output" | grep -qi "already exist"; then
-            exit $code
-          fi
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-
   release:
-    needs: [prepare, build, publish-opencode-hive, publish-hive-mcp, publish-claude-code-hive, publish-vscode]
+    needs: [prepare, build, publish-oc-arkive]
     runs-on: ubuntu-latest
     if: >-
       always() &&
       needs.prepare.result == 'success' &&
       needs.build.result == 'success' &&
       needs.prepare.outputs.publish_github_release == 'true' &&
-      ((needs.prepare.outputs.publish_opencode_hive == 'true' && needs.publish-opencode-hive.result == 'success') || (needs.prepare.outputs.publish_opencode_hive != 'true' && needs.publish-opencode-hive.result == 'skipped')) &&
-      ((needs.prepare.outputs.publish_hive_mcp == 'true' && needs.publish-hive-mcp.result == 'success') || (needs.prepare.outputs.publish_hive_mcp != 'true' && needs.publish-hive-mcp.result == 'skipped')) &&
-      ((needs.prepare.outputs.publish_claude_code_hive == 'true' && needs.publish-claude-code-hive.result == 'success') || (needs.prepare.outputs.publish_claude_code_hive != 'true' && needs.publish-claude-code-hive.result == 'skipped')) &&
-      ((needs.prepare.outputs.publish_vscode == 'true' && needs.publish-vscode.result == 'success') || (needs.prepare.outputs.publish_vscode != 'true' && needs.publish-vscode.result == 'skipped'))
+      ((needs.prepare.outputs.publish_oc_arkive == 'true' && needs.publish-oc-arkive.result == 'success') || (needs.prepare.outputs.publish_oc_arkive != 'true' && needs.publish-oc-arkive.result == 'skipped'))
     permissions:
       contents: write
     steps:
-      - name: Download VSIX
-        uses: actions/download-artifact@v4
-        with:
-          name: vsix
-          path: artifacts/
-
       - name: Download release notes
         uses: actions/download-artifact@v4
         with:
@@ -415,8 +204,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
-          files: artifacts/*.vsix
           body_path: docs/releases/${{ needs.prepare.outputs.release_tag }}.md
-          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

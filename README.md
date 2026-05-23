@@ -4,7 +4,9 @@
 
 Agent Hive is a workflow layer that sits on top of your AI coding tool. It imposes just enough structure to make multi-agent, multi-step work traceable and recoverable — without taking ownership of your editor, your model, or your coding style.
 
-[![npm](https://img.shields.io/npm/v/opencode-hive.svg?label=opencode-hive)](https://www.npmjs.com/package/opencode-hive)
+This fork currently publishes the OpenCode runtime to npm as `oc-arkive`.
+
+[![npm](https://img.shields.io/npm/v/oc-arkive.svg?label=oc-arkive)](https://www.npmjs.com/package/oc-arkive)
 [![npm](https://img.shields.io/npm/v/claude-code-hive.svg?label=claude-code-hive)](https://www.npmjs.com/package/claude-code-hive)
 [![npm](https://img.shields.io/npm/v/@tctinh/agent-hive-mcp.svg?label=agent-hive-mcp)](https://www.npmjs.com/package/@tctinh/agent-hive-mcp)
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/tctinh.vscode-hive.svg?label=vscode-hive)](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)
@@ -105,7 +107,7 @@ Add the plugin to `opencode.json` — OpenCode handles npm resolution automatica
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-hive@latest"]
+  "plugin": ["oc-arkive@latest"]
 }
 ```
 
@@ -115,7 +117,7 @@ Project-scoped config (preferred); falls back to `.opencode/agent_hive.json` or 
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/tctinh/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "agentMode": "unified",
   "agents": {
     "hive-master":    { "model": "anthropic/claude-sonnet-4-20250514", "temperature": 0.5 },
@@ -240,7 +242,7 @@ Independent tasks run concurrently. Dependent tasks wait. Each worker runs in it
 | **Entry point** | `/hive` slash command | Ask in chat | Sidebar + LM tools |
 | **Worker dispatch** | `Agent` tool (native) | OpenCode subagent system | N/A |
 | **Worktree isolation** | `isolation: worktree` (auto) | `hive_worktree_*` tools | N/A |
-| **MCP runtime** | `@tctinh/agent-hive-mcp` sidecar | `opencode-hive` plugin (in-process) | Built-in LM tool bridge |
+| **MCP runtime** | `@tctinh/agent-hive-mcp` sidecar | `oc-arkive` plugin (in-process) | Built-in LM tool bridge |
 | **Skills** | 11 bundled | 11 via native `skill` | N/A |
 | **Context injection** | `SessionStart` hook | Compaction hooks + sessions.json | Watches `.hive/` passively |
 | **Distribution** | Plugin marketplace + npm | npm (via `opencode.json`) | VS Code Marketplace |
@@ -317,7 +319,7 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full evolution log.
 
 | Package | Registry | Description |
 |---|---|---|
-| [`opencode-hive`](https://www.npmjs.com/package/opencode-hive) | npm | OpenCode plugin — full runtime, 7 agents, 17 tools |
+| [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin — full runtime, 7 agents, 17 tools |
 | [`claude-code-hive`](https://www.npmjs.com/package/claude-code-hive) | npm | Claude Code plugin assets — agents, skills, hooks, `/hive` |
 | [`@tctinh/agent-hive-mcp`](https://www.npmjs.com/package/@tctinh/agent-hive-mcp) | npm | MCP gate-tools server (used by Claude Code) |
 | [`vscode-hive`](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive) | VS Code Marketplace | Sidebar, plan review, LM tool bridge |

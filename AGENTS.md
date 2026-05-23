@@ -18,10 +18,10 @@ bun run test              # Run all tests
 bun run test -- <file>    # Run specific test
 
 # Release verification / manual preparation
-bun run release:check     # Install, build, and test all packages
+bun run release:check     # Install, build, and test the OpenCode npm release path
 ```
 
-Release note: prepare version bumps, lockfile updates, changelog entries, and `docs/releases/vX.Y.Z.md` manually before running the GitHub `workflow_dispatch` rehearsal and tagging. If a tagged release partially fails, manual selective recovery exists after a tagged release partially fails: rerun the same workflow in tag-backed recovery mode and enable only the unfinished npm, VS Code, and/or GitHub Release targets.
+Release note: the active release path is the OpenCode-only release workflow for `oc-arkive`. Prepare root/hive-core/opencode package version bumps, lockfile updates, changelog entries, and `docs/releases/vX.Y.Z.md` manually before running the GitHub `workflow_dispatch` rehearsal and tagging. If a tagged release partially fails, rerun the same workflow in tag-backed recovery mode and enable only the unfinished `oc-arkive` npm publish and/or GitHub Release target.
 
 Worktree dependency note: worktrees are lightweight checkouts without project dependencies. Workers do best-effort verification using ast-grep (no dependencies needed). Full build and test verification (`bun run build` + `bun run test`) runs on the main branch after the orchestrator merges a batch of task branches.
 
@@ -33,7 +33,7 @@ bun run build             # Build hive-core
 bun run test              # Run hive-core tests
 
 # From packages/opencode-hive/
-bun run build             # Build opencode-hive plugin
+bun run build             # Build oc-arkive OpenCode plugin
 bun run dev               # Watch mode
 
 # From packages/vscode-hive/
