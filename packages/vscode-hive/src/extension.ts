@@ -35,7 +35,11 @@ function getReviewCommentsPath(workspaceRoot: string, featureName: string, docum
     return canonicalPath
   }
 
-  return path.join(workspaceRoot, '.hive', 'features', featureName, 'comments.json')
+  if (document === 'plan') {
+    return path.join(workspaceRoot, '.hive', 'features', featureName, 'comments.json')
+  }
+
+  return canonicalPath
 }
 
 function findHiveRoot(startPath: string): string | null {
