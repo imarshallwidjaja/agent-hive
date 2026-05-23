@@ -3,14 +3,13 @@ import * as fs from 'fs';
 const source = fs.readFileSync(new URL('./launcher.ts', import.meta.url), 'utf-8');
 
 describe('Launcher', () => {
-  it('opens plan.md even when overview.md is present', () => {
-    expect(source).toContain('const targetPath = planPath');
-    expect(source).not.toContain('fs.existsSync(overviewPath) ? overviewPath : planPath');
-    expect(source).not.toContain("fs.existsSync(overviewPath) ? 'overview' : 'plan'");
+  it('provides simple openFile without plan/overview branching', () => {
+    expect(source).toContain('async openFile(filePath: string)');
+    expect(source).not.toContain('overviewPath');
+    expect(source).not.toContain('planPath');
   });
 
-  it('warns about a missing plan without mentioning overview review flow', () => {
-    expect(source).toContain('No plan found for feature');
-    expect(source).not.toContain('No overview or plan found');
+  it('shows warning for invalid file path', () => {
+    expect(source).toContain('Invalid file path');
   });
 });

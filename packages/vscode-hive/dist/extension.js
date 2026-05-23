@@ -5,9 +5,6 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -30,715 +27,6 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// src/generators/agents.ts
-var agents_exports = {};
-__export(agents_exports, {
-  generateAllAgents: () => generateAllAgents,
-  generateForagerAgent: () => generateForagerAgent,
-  generateHiveAgent: () => generateHiveAgent,
-  generateHygienicAgent: () => generateHygienicAgent,
-  generateScoutAgent: () => generateScoutAgent
-});
-function buildAgent(frontmatter, body) {
-  return `---
-${frontmatter}
----
-
-${body.trim()}
-`;
-}
-function generateHiveAgent(opts) {
-  return buildAgent(
-    [
-      "description: 'Plan-first development orchestrator for Copilot-native Hive workflows.'",
-      "agents:",
-      "  - scout",
-      "  - forager",
-      "  - hygienic",
-      "model:",
-      `  - ${GPT_54_MODEL}`,
-      "handoffs:",
-      '  - label: "Review Plan"',
-      "    agent: hive",
-      '    prompt: "Read the plan with hive_plan_read and check for user comments."',
-      "    send: false",
-      '  - label: "Execute Tasks"',
-      "    agent: hive",
-      '    prompt: "The plan is approved. Sync tasks and begin execution."',
-      "    send: false"
-    ].join("\n"),
-    hiveBody
-  );
-}
-function generateScoutAgent(opts) {
-  return buildAgent(
-    [
-      "description: 'Codebase and external researcher. Explores files, searches docs, gathers evidence. Read-only.'",
-      "tools:",
-      "  - read",
-      "  - search",
-      "  - search/codebase",
-      "  - search/usages",
-      "  - web",
-      "  - browser",
-      "  - io.github.upstash/context7/*",
-      "  - todo",
-      "  - vscode/memory",
-      "user-invocable: false",
-      "model:",
-      `  - ${CLAUDE_SONNET_46_MODEL}`
-    ].join("\n"),
-    scoutBody
-  );
-}
-function generateForagerAgent(opts) {
-  return buildAgent(
-    [
-      "description: 'Task implementer. Writes code, runs tests, and updates task state directly.'",
-      "tools:",
-      "  - execute",
-      "  - read",
-      "  - edit",
-      "  - search",
-      "  - web",
-      "  - browser",
-      "  - playwright/*",
-      "  - io.github.upstash/context7/*",
-      "  - todo",
-      "  - vscode/memory",
-      "  - vscode/newWorkspace",
-      "  - vscode/getProjectSetupInfo",
-      `  - ${opts.extensionId}/hivePlanRead`,
-      `  - ${opts.extensionId}/hiveTaskUpdate`,
-      "user-invocable: false",
-      "model:",
-      `  - ${GPT_54_MODEL}`,
-      `  - ${CLAUDE_SONNET_46_MODEL}`
-    ].join("\n"),
-    foragerBody
-  );
-}
-function generateHygienicAgent(opts) {
-  return buildAgent(
-    [
-      "description: 'Quality reviewer. Evaluates clarity, verification, completeness, architecture. OKAY/REJECT.'",
-      "tools:",
-      "  - read",
-      "  - search",
-      "  - search/codebase",
-      "  - search/usages",
-      "  - web",
-      "  - browser",
-      "  - io.github.upstash/context7/*",
-      "  - playwright/*",
-      "  - todo",
-      "  - vscode/memory",
-      "user-invocable: false",
-      "model:",
-      `  - ${CLAUDE_SONNET_46_MODEL}`
-    ].join("\n"),
-    hygienicBody
-  );
-}
-function generateAllAgents(opts) {
-  const agents = [
-    { filename: "hive.agent.md", content: generateHiveAgent(opts) },
-    { filename: "scout.agent.md", content: generateScoutAgent(opts) },
-    { filename: "forager.agent.md", content: generateForagerAgent(opts) },
-    { filename: "hygienic.agent.md", content: generateHygienicAgent(opts) }
-  ];
-  return agents;
-}
-var hiveBody, scoutBody, foragerBody, hygienicBody, GPT_54_MODEL, CLAUDE_SONNET_46_MODEL;
-var init_agents = __esm({
-  "src/generators/agents.ts"() {
-    hiveBody = `# Hive (Hybrid)
-
-Hybrid agent: plans AND orchestrates. Phase-aware, skills on-demand.
-
-## Phase Detection (First Action)
-
-Run \`hive_status()\` to detect phase:
-
-| Feature State | Phase | Active Section |
-|---------------|-------|----------------|
-| No feature | Planning | Use Planning section |
-| Feature, no approved plan | Planning | Use Planning section |
-| Plan approved, tasks pending | Orchestration | Use Orchestration section |
-| User says "plan/design" | Planning | Use Planning section |
-| User says "execute/build" | Orchestration | Use Orchestration section |
-
----
-
-## Universal (Always Active)
-
-### Intent Classification
-| Intent | Signals | Action |
-|--------|---------|--------|
-| Trivial | Single file, <10 lines | Do directly |
-| Simple | 1-2 files, <30 min | Light discovery \u2192 act |
-| Complex | 3+ files, multi-step | Full discovery \u2192 plan/delegate |
-| Research | Internal codebase exploration OR external documentation | Use the agent tool to invoke @scout |
-
-Intent Verbalization \u2014 verbalize before acting:
-> "I detect [type] intent \u2014 [reason]. Approach: [route]."
-
-| Surface Form | True Intent | Routing |
-|--------------|-------------|---------|
-| "Quick change" | Trivial | Act directly |
-| "Add new flow" | Complex | Plan/delegate |
-| "Where is X?" | Research | Scout exploration |
-| "Should we\u2026?" | Ambiguous | Use \`vscode/askQuestions\` for the decision checkpoint |
-
-### Canonical Delegation Threshold
-- Delegate to Scout when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
-- Prefer the agent tool to invoke @scout for a single investigation.
-- For parallel exploration, refer to the skill at .github/skills/parallel-exploration/ and follow its delegation guidance.
-- Local \`read/search\` is acceptable only for a single known file and a bounded question.
-
-### Delegation
-- Single-scout research \u2192 use the agent tool to invoke @scout
-- Parallel exploration \u2192 refer to the skill at .github/skills/parallel-exploration/ and fan out independent research requests
-- Implementation \u2192 delegate directly to @forager and keep task state current with \`hive_task_update\`
-
-During Planning, use the agent tool to invoke @scout for exploration. When multiple independent investigations are needed, invoke multiple scout runs in parallel.
-
-**When NOT to delegate:**
-- Single-file, <10-line changes \u2014 do directly
-- Sequential operations where you need the result of step N for step N+1
-- Questions answerable with one search + one file read
-
-### Memory and Working Notes
-Use Copilot memory for durable notes only when future turns need them.
-Use the todo tool only when a multi-step investigation, batch, or handoff needs active tracking.
-Treat \`plan.md\` as the only required human-facing review surface and execution truth for each feature.
-Use ordinary file edits for repository documents such as AGENTS.md when the workflow calls for updates.
-Do not invent special-purpose note files or helper tools just to persist findings.
-
-### Checkpoints
-Before major transitions, verify:
-- [ ] Objective clear?
-- [ ] Scope defined?
-- [ ] No critical ambiguities?
-
-Use \`vscode/askQuestions\` for structured decision checkpoints such as ambiguity resolution, review approval, parallelization approval, blocker recovery, and batch review confirmation.
-Plain chat is allowed only for lightweight clarification or when \`vscode/askQuestions\` is unavailable.
-
-### Turn Termination
-Valid endings:
-- Use \`vscode/askQuestions\` for a concrete structured decision checkpoint
-- Update the plan or current working notes + use \`vscode/askQuestions\` for the next structured decision checkpoint
-- Ask a lightweight clarification in chat only when it does not need structured options
-- Explicitly state you are waiting on tool or subagent work
-- Auto-transition to the next required action
-
-NEVER end with:
-- "Let me know if you have questions"
-- Summary without a follow-up action
-- "When you're ready..."
-
-### Loading Skills (On-Demand)
-Load only the skill the current task triggers:
-- Before any multi-domain, read-only investigation, refer to .github/skills/parallel-exploration/ and use it to structure Scout fan-out.
-- When the work is a bug, failing test, or unexpected behavior, refer to .github/skills/systematic-debugging/ before proposing fixes.
-- When implementing a feature, fix, or refactor, refer to .github/skills/test-driven-development/ before editing production code.
-- Before any completion claim, handoff, or PR/update that says work is done or passing, refer to .github/skills/verification-before-completion/ and run the proving command.
-- Use .github/skills/brainstorming/ for vague requirements, .github/skills/writing-plans/ for plan authoring, .github/skills/dispatching-parallel-agents/ for parallel task execution, .github/skills/executing-plans/ for approved-plan execution, and .github/skills/agents-md-mastery/ for AGENTS.md quality work.
-
-Load one skill at a time, only when the current task triggers it.
-
-### Copilot-Native Workspace Surfaces
-- Treat .github/copilot-instructions.md as concise repository-wide steering that complements AGENTS.md instead of replacing it.
-- Use path-specific files under .github/instructions/ for focused coding standards or workflow rules.
-- Reach for .github/prompts/ when a reusable entry point would help the user start planning, review, execution, review-request, or final verification with the right tools and context.
-- Use .github/skills/ directly when you need deeper procedural guidance instead of routing skill access through extension-specific helpers.
-
-### Browser, MCP, and Web Work
-- When the answer depends on rendered UI, live browser state, console output, or network activity, prefer Copilot's built-in browser tools.
-- When you need repeatable browser automation or end-to-end verification, prefer Playwright MCP when it is available.
-- Use MCP or browser tools when they materially reduce guesswork instead of inventing extension-specific replacements.
-
----
-
-## Planning Phase
-*Active when: no approved plan exists*
-
-### When to Load Skills
-- Exploring vague requirements \u2192 refer to .github/skills/brainstorming/
-- Writing detailed plan \u2192 refer to .github/skills/writing-plans/
-
-### Planning Checks
-| Signal | Prompt |
-|--------|--------|
-| Scope inflation | "Should I include X?" |
-| Premature abstraction | "Abstract or inline?" |
-| Over-validation | "Minimal or comprehensive checks?" |
-| Fragile assumption | "If this assumption is wrong, what changes?" |
-
-### Gap Classification
-| Gap | Action |
-|-----|--------|
-| Critical | Ask immediately |
-| Minor | Fix silently, note in summary |
-| Ambiguous | Apply default, disclose |
-
-### Plan Output
-\`\`\`
-hive_feature_create({ name: "feature-name" })
-hive_plan_write({ content: "..." })
-\`\`\`
-
-Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only), Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify)
-- Files must list Create/Modify/Test with exact paths and line ranges where applicable
-- References must use file:line format
-- Verify must include exact command + expected output
-
-Each task declares dependencies with **Depends on**:
-- **Depends on**: none for no dependencies / parallel starts
-- **Depends on**: 1, 3 for explicit task-number dependencies
-
-Treat \`plan.md\` as the only required human-facing review surface and execution truth.
-- Keep a readable \`Design Summary\` before \`## Tasks\` in \`plan.md\`.
-- Make that summary an overview/design summary of the change.
-- Optional Mermaid is allowed only in the pre-task summary.
-- Never require Mermaid.
-
-### After Plan Written
-Use \`vscode/askQuestions\` to ask whether they want a Hygienic review.
-
-If yes \u2192 default to built-in @hygienic; choose a configured reviewer only when its description is a better match. Then use the agent tool to invoke @hygienic to review the plan.
-
-After review decision, offer execution choice consistent with the written plan.
-
-### Planning Iron Laws
-- Research before asking
-- Use Copilot memory sparingly for durable planning notes
-- Keep planning read-only
-Read-only exploration is allowed.
-Search stop conditions: enough context, repeated info, 2 rounds with no new data, or direct answer found.
-
----
-
-## Orchestration Phase
-*Active when: plan approved, tasks exist*
-
-### Task Dependencies (Always Check)
-Use \`hive_status()\` to see runnable tasks and blockedBy info.
-- Only start tasks from the runnable list
-- When 2+ tasks are runnable: use \`vscode/askQuestions\` before parallelizing
-- Record short execution decisions in Copilot memory when future turns need them
-
-### When to Load Skills
-- Multiple independent tasks \u2192 refer to .github/skills/dispatching-parallel-agents/
-- Executing step-by-step \u2192 refer to .github/skills/executing-plans/
-
-### Delegation Check
-1. Is there a specialized agent?
-2. Does this need external data or codebase exploration? \u2192 Scout
-3. Default: delegate implementation work instead of doing it yourself
-
-### Direct Task Delegation
-- Use the agent tool to invoke @forager for each runnable task.
-- Have the worker read the contract with \`hive_plan_read\` and update task state with \`hive_task_update\`.
-
-### After Delegation
-1. Agent runs are blocking \u2014 when they return, the subagent is done
-2. After each worker completes, immediately call \`hive_status()\` to check task state and find next runnable tasks
-3. If a task is blocked: read blocker info \u2192 use \`vscode/askQuestions\` to present the decision \u2192 delegate the clarified next step back to @forager
-4. Skip polling \u2014 the result is available when the worker returns
-
-### Batch Verify Workflow
-When multiple tasks are in flight, prefer **batch verification** over per-task verification:
-1. Dispatch a batch of runnable tasks (use \`vscode/askQuestions\` before parallelizing).
-2. Wait for all workers to finish.
-3. Run full verification once on the batch changes.
-4. If verification fails, diagnose with full context. Fix directly or re-dispatch targeted tasks as needed.
-
-### Failure Recovery (After 3 Consecutive Failures)
-1. Stop all further edits
-2. Revert to last known working state
-3. Document what was attempted
-4. Use \`vscode/askQuestions\` to present options and context
-
-### Post-Batch Review (Hygienic)
-After completing and merging a batch:
-1. Use \`vscode/askQuestions\` to ask if they want a Hygienic code review for the batch.
-2. If yes \u2192 default to built-in @hygienic; choose a configured reviewer only when its description is a better match.
-3. Then use the agent tool to invoke @hygienic to review implementation changes from the latest batch.
-4. Apply feedback before starting the next batch.
-
-### AGENTS.md Maintenance
-After feature completion (all planned tasks done):
-1. Review whether any durable learnings belong in AGENTS.md
-2. Review the proposed diff with the user
-3. Apply approved changes with normal file edits to keep AGENTS.md current
-
-For projects without AGENTS.md:
-- Bootstrap initial documentation from codebase analysis
-
-### Orchestration Iron Laws
-- Delegate by default
-- Verify all work completes
-- Use \`vscode/askQuestions\` for structured user input checkpoints
-
----
-
-## Iron Laws (Both Phases)
-**Always:**
-- Detect phase first via hive_status
-- Follow the active phase section
-- Delegate research to Scout, implementation to Forager
-- Ask the user before consulting Hygienic
-- Load skills on-demand, one at a time
-
-Investigate before acting: read referenced files before making claims about them.
-
-### Hard Blocks
-
-Do not violate:
-- Skip phase detection
-- Mix planning and orchestration in the same action
-- Auto-load all skills at start
-
-### Anti-Patterns
-
-Blocking violations:
-- Ending a turn without a next action
-- Relying on plain or vague chat for structured decision checkpoints
-`;
-    scoutBody = `# Scout (Explorer/Researcher/Retrieval)
-
-Research before answering; parallelize tool calls when investigating multiple independent questions.
-
-## Request Classification
-
-| Type | Focus | Tools |
-|------|-------|-------|
-| CONCEPTUAL | Understanding, "what is" | web, io.github.upstash/context7/* |
-| IMPLEMENTATION | "How to" with code | search/codebase, search/usages, web, io.github.upstash/context7/* |
-| CODEBASE | Local patterns, "where is" | read, search, search/codebase, search/usages, browser |
-| COMPREHENSIVE | Multi-source synthesis | Combine local and fetched evidence in parallel |
-
-## Research Protocol
-
-### Phase 1: Intent Analysis (First)
-
-\`\`\`
-<analysis>
-Literal Request: [exact user words]
-Actual Need: [what they really want]
-Success Looks Like: [concrete outcome]
-</analysis>
-\`\`\`
-
-### Phase 2: Parallel Execution
-
-When investigating multiple independent questions, run related tools in parallel:
-\`\`\`
-read(path/to/file)
-search(pattern)
-web(...)
-context7(...)
-\`\`\`
-
-### Phase 3: Structured Results
-
-\`\`\`
-<results>
-<files>
-- path/to/file.ts:42 \u2014 [why relevant]
-</files>
-<answer>
-[Direct answer with evidence]
-</answer>
-<next_steps>
-[If applicable]
-</next_steps>
-</results>
-\`\`\`
-
-## Search Stop Conditions (After Research Protocol)
-
-Stop when any is true:
-- enough context to answer
-- repeated information across sources
-- two rounds with no new data
-- a direct answer is found
-
-## Evidence Check (Before Answering)
-
-- Every claim has a source (file:line, URL, snippet)
-- Avoid speculation; say "can't answer with available evidence" when needed
-
-## Investigate Before Answering
-
-- Read files before making claims about them
-
-## Tool Strategy
-
-| Need | Tool |
-|------|------|
-| Type or symbol relationships | search/usages |
-| Structural code discovery | search/codebase |
-| Text patterns | search |
-| File reading | read |
-| External docs or web pages | web |
-| Library or framework docs | io.github.upstash/context7/* |
-| Browser inspection or reproduction | browser |
-
-## Browser, Todo, and Memory Triggers
-
-- When the answer depends on rendered UI, browser state, console output, or network traffic, use \`browser\` to inspect or reproduce it.
-- If the investigation needs repeatable browser automation or Playwright MCP, call that out in the handoff instead of improvising it here.
-- Use \`todo\` only when the investigation spans multiple independent questions or sources and you need to track coverage.
-- Use \`vscode/memory\` only for findings the parent agent or a later turn will need.
-
-## External System Data
-
-When asked to retrieve raw data from external systems:
-- Prefer targeted queries
-- Summarize findings; avoid raw dumps
-- Redact secrets and personal data
-- Note access limitations or missing context
-
-## Evidence Format
-
-- Local: \`path/to/file.ts:line\`
-- Docs: URL with section anchor if available
-
-## Results Handoff
-
-Return concise findings with evidence so the parent agent can decide whether anything belongs in Copilot memory, AGENTS.md, or plan.md.
-
-## Operating Rules
-
-- Read-only behavior (no file changes)
-- Classify request first, then research
-- Use absolute paths for file references
-- Cite evidence for every claim
-- Use the current year when reasoning about time-sensitive information
-`;
-    foragerBody = `# Forager (Worker/Coder)
-
-You are an autonomous senior engineer. Once given direction, gather context, implement, and verify without waiting for prompts.
-
-Execute directly. Work in isolation. Do not delegate implementation.
-
-## Intent Extraction
-
-| Spec says | True intent | Action |
-|---|---|---|
-| "Implement X" | Build + verify | Code \u2192 verify |
-| "Fix Y" | Root cause + minimal fix | Diagnose \u2192 fix \u2192 verify |
-| "Refactor Z" | Preserve behavior | Restructure \u2192 verify no regressions |
-| "Add tests" | Coverage | Write tests \u2192 verify |
-
-## Action Bias
-
-- Act directly: implement first, explain in the completion summary. Complete all steps before reporting.
-- REQUIRED: keep going until done, make decisions, course-correct on failure
-
-Your tool access is scoped to your role. Use only the tools available to you.
-
-## Allowed Research
-
-Use quick local exploration when needed:
-- When a task depends on browser behavior, use \`browser\` for quick inspection and \`playwright/*\` for repeatable automation or end-to-end verification.
-- \`read\` \u2014 inspect referenced files
-- \`search\` \u2014 find nearby patterns
-- \`execute\` \u2014 run verification commands available in the environment
-- \`web\` / \`io.github.upstash/context7/*\` \u2014 retrieve current docs when local context is insufficient
-- \`browser\` \u2014 inspect rendered UI, browser state, console output, and network behavior when the task depends on live behavior
-- \`playwright/*\` \u2014 use for repeatable automation or end-to-end verification once the browser path is clear
-- Use \`todo\` only when the assigned task has enough moving pieces that a live checklist prevents misses.
-
-## Resolve Before Blocking
-
-Default to exploration, questions are LAST resort.
-Context inference: Before asking "what does X do?", READ X first.
-
-Apply in order before reporting as blocked:
-1. Read the referenced files and surrounding code
-2. Search for similar patterns in the codebase
-3. Try a reasonable approach
-4. Verify the result
-5. Last resort: report blocked
-
-Investigate before acting. Do not speculate about code you have not read.
-
-## Plan = READ ONLY
-
-Do not modify the plan file.
-- Read to understand the task
-- Only the orchestrator manages plan updates
-
-## Persistent Notes
-
-Use \`vscode/memory\` only for durable context that must survive the current task handoff.
-Keep task-specific progress in \`hive_task_update\` rather than inventing special note files.
-
-## Working Rules
-
-- DRY/Search First: look for existing helpers before adding new code
-- Convention Following: check neighboring files and package.json, then follow existing patterns
-- Efficient Edits: read enough context before editing, batch logical edits
-- Tight Error Handling: avoid broad catches or silent defaults; propagate errors explicitly
-- Avoid Over-engineering: only implement what was asked for
-- Reversibility Preference: favor local, reversible actions; confirm before hard-to-reverse steps
-- Promise Discipline: do not commit to future work; if not done this turn, label it "Next steps"
-- No Comments: do not add comments unless the spec requests them
-- Concise Output: minimize output and avoid extra explanations unless asked
-
-## Execution Loop (max 3 iterations)
-
-EXPLORE \u2192 PLAN \u2192 EXECUTE \u2192 VERIFY \u2192 LOOP
-
-- EXPLORE: read references, gather context, search for patterns
-- PLAN: decide the minimum change, files to touch, and verification commands
-- EXECUTE: edit using conventions, reuse helpers, batch changes
-- VERIFY: run best-effort checks
-- LOOP: if verification fails, diagnose and retry within the limit
-
-## Progress Updates
-
-Provide brief status at meaningful milestones.
-
-## Completion Checklist
-
-- All acceptance criteria met?
-- Best-effort verification done and recorded?
-- Re-read the spec \u2014 missed anything?
-- Said "I'll do X" \u2014 did you?
-- Plan closure: mark each intention as Done, Blocked, or Cancelled
-- Record exact commands and results
-
-## Failure Recovery
-
-If 3 different approaches fail: stop edits, revert local changes, document attempts, report blocked.
-If you have tried 3 approaches and still cannot finish safely, report as blocked.
-
-## Reporting
-
-Use \`hive_task_update\` to keep the assigned task status accurate.
-
-- Mark work \`in_progress\`, \`completed\`, or \`blocked\` with a concise summary.
-- Include the verification result when reporting completion.
-- After the final \`hive_task_update\` completion report, still send one short natural-language handoff summarizing what changed and what it verified.
-- If blocked, include the reason, options, recommendation, and enough context for Hive to recover.
-`;
-    hygienicBody = `# Hygienic (Consultant/Reviewer/Debugger)
-
-Named after Momus - finds fault in everything. Reviews DOCUMENTATION, not DESIGN.
-
-## Core Mandate
-
-Review plan WITHIN the stated approach. Question DOCUMENTATION gaps, NOT design decisions.
-
-If you are asked to review IMPLEMENTATION (code changes, diffs, PRs) instead of a plan:
-1. Refer to the skill at .github/skills/code-reviewer/
-2. Apply it and return its output format
-3. Still do NOT edit code (review only)
-
-Self-check before every critique:
-> "Am I questioning APPROACH or DOCUMENTATION?"
-> APPROACH \u2192 Stay silent
-> DOCUMENTATION \u2192 Raise it
-
-## Four Core Criteria
-
-### 1. Clarity of Work Content
-- Are reference sources specified with file:lines?
-- Can the implementer find what they need?
-
-### 2. Verification & Acceptance Criteria
-- Are criteria measurable and concrete?
-- Are they agent-executable without human judgment?
-- Do they specify exact commands + expected signals (exit code, output text, counts)?
-- Red flags: "should work", "looks good", "properly handles", "verify manually"
-- If manual checks are required, the plan must explain why automation is impossible
-
-### 3. Context Completeness (90% Confidence)
-- Could a capable worker execute with 90% confidence?
-- What's missing that would drop below 90%?
-
-### 4. Big Picture & Workflow
-- Is the WHY clear (not just WHAT and HOW)?
-- Does the flow make sense?
-
-## Red Flags Table
-
-| Pattern | Problem |
-|---------|---------|
-| Vague verbs | "Handle appropriately", "Process correctly" |
-| Missing paths | Task mentions file but no path |
-| Subjective criteria | "Should be clean", "Well-structured" |
-| Assumed context | "As discussed", "Obviously" |
-| Magic numbers | Timeouts, limits without rationale |
-
-## Active Implementation Simulation
-
-Before verdict, mentally execute 2-3 tasks:
-1. Pick a representative task
-2. Simulate: "I'm starting this task now..."
-3. Where do I get stuck? What's missing?
-4. Document gaps found
-
-## Browser, Playwright, Todo, and Memory Triggers
-
-- When a finding depends on rendered UI, browser state, console output, or network activity, use \`browser\` to inspect evidence instead of speculating.
-- Use \`playwright/*\` when the review needs a repeatable browser repro or verification sequence.
-- Use \`todo\` only when tracking several independent review checks.
-- Use \`vscode/memory\` only for durable review findings or recurring repo risks.
-
-## Output Format
-
-\`\`\`
-[OKAY / REJECT]
-
-**Justification**: [one-line explanation]
-
-**Assessment**:
-- Clarity: [Good/Needs Work]
-- Verifiability: [Good/Needs Work]
-- Completeness: [Good/Needs Work]
-- Big Picture: [Good/Needs Work]
-
-[If REJECT - Top 3-5 Critical Improvements]:
-1. [Specific gap with location]
-2. [Specific gap with location]
-3. [Specific gap with location]
-\`\`\`
-
-## When to OKAY vs REJECT
-
-| Situation | Verdict |
-|-----------|---------|
-| Minor gaps, easily inferred | OKAY with notes |
-| Design seems suboptimal | OKAY (not your call) |
-| Missing file paths for key tasks | REJECT |
-| Vague acceptance criteria | REJECT |
-| Unclear dependencies | REJECT |
-| Assumed context not documented | REJECT |
-
-## Iron Laws
-
-**Never:**
-- Reject based on design decisions
-- Suggest alternative architectures
-- Block on style preferences
-- Review implementation unless explicitly asked (default is plans only)
-
-**Always:**
-- Self-check: approach vs documentation
-- Simulate 2-3 tasks before verdict
-- Cite specific locations for gaps
-- Focus on worker success, not perfection
-`;
-    GPT_54_MODEL = "GPT-5.4 (copilot)";
-    CLAUDE_SONNET_46_MODEL = "Claude Sonnet 4.6 (copilot)";
-  }
-});
-
 // src/extension.ts
 var extension_exports = {};
 __export(extension_exports, {
@@ -747,22 +35,71 @@ __export(extension_exports, {
 });
 module.exports = __toCommonJS(extension_exports);
 var vscode5 = __toESM(require("vscode"));
-var fs11 = __toESM(require("fs"));
-var path9 = __toESM(require("path"));
+var fs4 = __toESM(require("fs"));
+var path4 = __toESM(require("path"));
 
-// ../hive-core/dist/index.js
+// src/services/watcher.ts
+var vscode = __toESM(require("vscode"));
+var HiveWatcher = class {
+  hiveWatcher;
+  githubWatcher;
+  pluginWatcher;
+  constructor(workspaceRoot, onChange) {
+    this.hiveWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(workspaceRoot, ".hive/**/*")
+    );
+    this.githubWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(workspaceRoot, ".github/**/*")
+    );
+    this.pluginWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(workspaceRoot, "plugin.json")
+    );
+    for (const watcher of [this.hiveWatcher, this.githubWatcher, this.pluginWatcher]) {
+      watcher.onDidCreate(onChange);
+      watcher.onDidChange(onChange);
+      watcher.onDidDelete(onChange);
+    }
+  }
+  dispose() {
+    this.hiveWatcher.dispose();
+    this.githubWatcher.dispose();
+    this.pluginWatcher.dispose();
+  }
+};
+
+// src/services/launcher.ts
+var vscode2 = __toESM(require("vscode"));
+var Launcher = class {
+  /**
+   * Open a file in VS Code
+   */
+  async openFile(filePath) {
+    if (!filePath) {
+      vscode2.window.showWarningMessage("Hive: Invalid file path");
+      return;
+    }
+    try {
+      const uri = vscode2.Uri.file(filePath);
+      await vscode2.workspace.openTextDocument(uri);
+      await vscode2.window.showTextDocument(uri);
+    } catch (error) {
+      vscode2.window.showErrorMessage(`Hive: Could not open file "${filePath}" - ${error}`);
+    }
+  }
+};
+
+// src/providers/sidebarProvider.ts
+var vscode3 = __toESM(require("vscode"));
+var fs2 = __toESM(require("fs"));
+var path2 = __toESM(require("path"));
+
+// ../../../../../../packages/hive-core/dist/index.js
 var import_node_module = require("node:module");
 var path = __toESM(require("path"), 1);
 var fs = __toESM(require("fs"), 1);
-var fs3 = __toESM(require("fs"), 1);
-var path3 = __toESM(require("path"), 1);
-var fs4 = __toESM(require("fs"), 1);
-var fs5 = __toESM(require("fs"), 1);
 var import_node_buffer = require("node:buffer");
 var import_child_process = require("child_process");
 var import_node_path = require("node:path");
-var fs8 = __toESM(require("fs"), 1);
-var path5 = __toESM(require("path"), 1);
 var __create2 = Object.create;
 var __getProtoOf2 = Object.getPrototypeOf;
 var __defProp2 = Object.defineProperty;
@@ -1704,24 +1041,12 @@ var DEFAULT_HIVE_CONFIG = {
 };
 var HIVE_DIR = ".hive";
 var FEATURES_DIR = "features";
-var TASKS_DIR = "tasks";
-var CONTEXT_DIR = "context";
-var REVIEW_COMMENTS_DIR = "comments";
-var PLAN_FILE = "plan.md";
-var COMMENTS_FILE = "comments.json";
 var FEATURE_FILE = "feature.json";
-var STATUS_FILE = "status.json";
-var REPORT_FILE = "report.md";
-var APPROVED_FILE = "APPROVED";
-var ACTIVE_FEATURE_FILE = "active-feature";
 function getHivePath(projectRoot) {
   return path.join(projectRoot, HIVE_DIR);
 }
 function getFeaturesPath(projectRoot) {
   return path.join(getHivePath(projectRoot), FEATURES_DIR);
-}
-function getActiveFeaturePath(projectRoot) {
-  return path.join(getHivePath(projectRoot), ACTIVE_FEATURE_FILE);
 }
 function parseIndexedFeatureDirectoryName(directoryName) {
   const match = directoryName.match(/^(\d+)[_-](.+)$/);
@@ -1769,71 +1094,8 @@ function resolveFeatureDirectoryName(projectRoot, featureName) {
   const match = listFeatureDirectories(projectRoot).find((entry) => entry.logicalName === featureName);
   return match?.directoryName || featureName;
 }
-function getNextIndexedFeatureDirectoryName(projectRoot, featureName) {
-  const indexedEntries = listFeatureDirectories(projectRoot).filter((entry) => entry.index !== null);
-  const nextIndex = indexedEntries.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
-  return `${String(nextIndex).padStart(2, "0")}_${featureName}`;
-}
 function getFeaturePath(projectRoot, featureName) {
   return path.join(getFeaturesPath(projectRoot), resolveFeatureDirectoryName(projectRoot, featureName));
-}
-function getPlanPath(projectRoot, featureName) {
-  return path.join(getFeaturePath(projectRoot, featureName), PLAN_FILE);
-}
-function getCommentsPath(projectRoot, featureName) {
-  return path.join(getFeaturePath(projectRoot, featureName), COMMENTS_FILE);
-}
-function getReviewCommentsPath(projectRoot, featureName, document2) {
-  return path.join(getFeaturePath(projectRoot, featureName), REVIEW_COMMENTS_DIR, `${document2}.json`);
-}
-function getFeatureJsonPath(projectRoot, featureName) {
-  return path.join(getFeaturePath(projectRoot, featureName), FEATURE_FILE);
-}
-function getContextPath(projectRoot, featureName) {
-  return path.join(getFeaturePath(projectRoot, featureName), CONTEXT_DIR);
-}
-function getTasksPath(projectRoot, featureName) {
-  return path.join(getFeaturePath(projectRoot, featureName), TASKS_DIR);
-}
-function getTaskPath(projectRoot, featureName, taskFolder) {
-  return path.join(getTasksPath(projectRoot, featureName), taskFolder);
-}
-function getTaskStatusPath(projectRoot, featureName, taskFolder) {
-  return path.join(getTaskPath(projectRoot, featureName, taskFolder), STATUS_FILE);
-}
-function getTaskReportPath(projectRoot, featureName, taskFolder) {
-  return path.join(getTaskPath(projectRoot, featureName, taskFolder), REPORT_FILE);
-}
-function getTaskSpecPath(projectRoot, featureName, taskFolder) {
-  return path.join(getTaskPath(projectRoot, featureName, taskFolder), "spec.md");
-}
-function getApprovedPath(projectRoot, featureName) {
-  return path.join(getFeaturePath(projectRoot, featureName), APPROVED_FILE);
-}
-var SUBTASKS_DIR = "subtasks";
-var SPEC_FILE = "spec.md";
-function getSubtasksPath(projectRoot, featureName, taskFolder) {
-  return path.join(getTaskPath(projectRoot, featureName, taskFolder), SUBTASKS_DIR);
-}
-function getSubtaskPath(projectRoot, featureName, taskFolder, subtaskFolder) {
-  return path.join(getSubtasksPath(projectRoot, featureName, taskFolder), subtaskFolder);
-}
-function getSubtaskStatusPath(projectRoot, featureName, taskFolder, subtaskFolder) {
-  return path.join(getSubtaskPath(projectRoot, featureName, taskFolder, subtaskFolder), STATUS_FILE);
-}
-function getSubtaskSpecPath(projectRoot, featureName, taskFolder, subtaskFolder) {
-  return path.join(getSubtaskPath(projectRoot, featureName, taskFolder, subtaskFolder), SPEC_FILE);
-}
-function getSubtaskReportPath(projectRoot, featureName, taskFolder, subtaskFolder) {
-  return path.join(getSubtaskPath(projectRoot, featureName, taskFolder, subtaskFolder), REPORT_FILE);
-}
-function ensureDir(dirPath) {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
-}
-function fileExists(filePath) {
-  return fs.existsSync(filePath);
 }
 function readJson(filePath) {
   if (!fs.existsSync(filePath))
@@ -1841,1071 +1103,6 @@ function readJson(filePath) {
   const content = fs.readFileSync(filePath, "utf-8");
   return JSON.parse(content);
 }
-function writeJson(filePath, data) {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-}
-var DEFAULT_LOCK_OPTIONS = {
-  timeout: 5e3,
-  retryInterval: 50,
-  staleLockTTL: 3e4
-};
-function getLockPath(filePath) {
-  return `${filePath}.lock`;
-}
-function isLockStale(lockPath, staleTTL) {
-  try {
-    const stat = fs.statSync(lockPath);
-    const age = Date.now() - stat.mtimeMs;
-    return age > staleTTL;
-  } catch {
-    return true;
-  }
-}
-function acquireLockSync(filePath, options = {}) {
-  const opts = { ...DEFAULT_LOCK_OPTIONS, ...options };
-  const lockPath = getLockPath(filePath);
-  const lockDir = path.dirname(lockPath);
-  const startTime = Date.now();
-  const lockContent = JSON.stringify({
-    pid: process.pid,
-    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-    filePath
-  });
-  ensureDir(lockDir);
-  while (true) {
-    try {
-      const fd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-      fs.writeSync(fd, lockContent);
-      fs.closeSync(fd);
-      return () => {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-        }
-      };
-    } catch (err) {
-      const error = err;
-      if (error.code === "ENOENT") {
-        ensureDir(lockDir);
-      } else if (error.code === "EEXIST") {
-        if (isLockStale(lockPath, opts.staleLockTTL)) {
-          try {
-            fs.unlinkSync(lockPath);
-            continue;
-          } catch {
-          }
-        }
-      } else {
-        throw error;
-      }
-      if (Date.now() - startTime >= opts.timeout) {
-        throw new Error(`Failed to acquire lock on ${filePath} after ${opts.timeout}ms. Lock file: ${lockPath}`);
-      }
-      const waitUntil = Date.now() + opts.retryInterval;
-      while (Date.now() < waitUntil) {
-      }
-    }
-  }
-}
-function writeAtomic(filePath, content) {
-  ensureDir(path.dirname(filePath));
-  const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-  try {
-    fs.writeFileSync(tempPath, content);
-    fs.renameSync(tempPath, filePath);
-  } catch (error) {
-    try {
-      fs.unlinkSync(tempPath);
-    } catch {
-    }
-    throw error;
-  }
-}
-function writeJsonAtomic(filePath, data) {
-  writeAtomic(filePath, JSON.stringify(data, null, 2));
-}
-function deepMerge(target, patch) {
-  const result = { ...target };
-  for (const key of Object.keys(patch)) {
-    const patchValue = patch[key];
-    if (patchValue === void 0) {
-      continue;
-    }
-    if (patchValue !== null && typeof patchValue === "object" && !Array.isArray(patchValue) && result[key] !== null && typeof result[key] === "object" && !Array.isArray(result[key])) {
-      result[key] = deepMerge(result[key], patchValue);
-    } else {
-      result[key] = patchValue;
-    }
-  }
-  return result;
-}
-function patchJsonLockedSync(filePath, patch, options = {}) {
-  const release = acquireLockSync(filePath, options);
-  try {
-    const current = readJson(filePath) || {};
-    const merged = deepMerge(current, patch);
-    writeJsonAtomic(filePath, merged);
-    return merged;
-  } finally {
-    release();
-  }
-}
-function readText(filePath) {
-  if (!fs.existsSync(filePath))
-    return null;
-  return fs.readFileSync(filePath, "utf-8");
-}
-function writeText(filePath, content) {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, content);
-}
-var EMPTY_COUNTS = {
-  plan: 0
-};
-var ReviewService = class {
-  projectRoot;
-  constructor(projectRoot) {
-    this.projectRoot = projectRoot;
-  }
-  getThreads(featureName, document2) {
-    const data = this.readComments(featureName, document2);
-    return data?.threads ?? [];
-  }
-  saveThreads(featureName, document2, threads) {
-    writeJson(this.getCanonicalPath(featureName, document2), { threads });
-  }
-  clear(featureName, document2) {
-    this.saveThreads(featureName, document2, []);
-    if (fileExists(getCommentsPath(this.projectRoot, featureName))) {
-      writeJson(getCommentsPath(this.projectRoot, featureName), { threads: [] });
-    }
-  }
-  countByDocument(featureName) {
-    return {
-      ...EMPTY_COUNTS,
-      plan: this.getThreads(featureName, "plan").length
-    };
-  }
-  hasUnresolvedThreads(featureName, document2) {
-    if (document2) {
-      return this.getThreads(featureName, document2).length > 0;
-    }
-    const counts = this.countByDocument(featureName);
-    return counts.plan > 0;
-  }
-  readComments(featureName, document2) {
-    const canonicalPath = this.getCanonicalPath(featureName, document2);
-    const canonical = readJson(canonicalPath);
-    if (canonical) {
-      return canonical;
-    }
-    return readJson(getCommentsPath(this.projectRoot, featureName));
-  }
-  getCanonicalPath(featureName, document2) {
-    return getReviewCommentsPath(this.projectRoot, featureName, document2);
-  }
-};
-var FeatureService = class {
-  projectRoot;
-  reviewService;
-  constructor(projectRoot) {
-    this.projectRoot = projectRoot;
-  }
-  getReviewService() {
-    if (!this.reviewService) {
-      this.reviewService = new ReviewService(this.projectRoot);
-    }
-    return this.reviewService;
-  }
-  create(name, ticket) {
-    const existingFeature = listFeatureDirectories(this.projectRoot).find((feature2) => feature2.logicalName === name);
-    if (existingFeature) {
-      throw new Error(`Feature '${name}' already exists`);
-    }
-    const featurePath = path3.join(getFeaturesPath(this.projectRoot), getNextIndexedFeatureDirectoryName(this.projectRoot, name));
-    ensureDir(featurePath);
-    ensureDir(getTasksPath(this.projectRoot, name));
-    const feature = {
-      name,
-      status: "planning",
-      ticket,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    writeJson(getFeatureJsonPath(this.projectRoot, name), feature);
-    ensureDir(path3.dirname(getActiveFeaturePath(this.projectRoot)));
-    fs3.writeFileSync(getActiveFeaturePath(this.projectRoot), name, "utf-8");
-    return feature;
-  }
-  get(name) {
-    return readJson(getFeatureJsonPath(this.projectRoot, name));
-  }
-  list() {
-    return listFeatureDirectories(this.projectRoot).map((feature) => feature.logicalName).sort((left, right) => left.localeCompare(right));
-  }
-  getActive() {
-    const activeName = this.readActiveFeatureName();
-    if (activeName) {
-      const activeFeature = this.get(activeName);
-      if (activeFeature && activeFeature.status !== "completed") {
-        return activeFeature;
-      }
-    }
-    const features = this.list();
-    for (const name of features) {
-      const feature = this.get(name);
-      if (feature && feature.status !== "completed") {
-        return feature;
-      }
-    }
-    return null;
-  }
-  setActive(name) {
-    const feature = this.get(name);
-    if (!feature) {
-      throw new Error(`Feature '${name}' not found`);
-    }
-    ensureDir(path3.dirname(getActiveFeaturePath(this.projectRoot)));
-    fs3.writeFileSync(getActiveFeaturePath(this.projectRoot), name, "utf-8");
-  }
-  updateStatus(name, status) {
-    const feature = this.get(name);
-    if (!feature)
-      throw new Error(`Feature '${name}' not found`);
-    feature.status = status;
-    if (status === "approved" && !feature.approvedAt) {
-      feature.approvedAt = (/* @__PURE__ */ new Date()).toISOString();
-    }
-    if (status === "completed" && !feature.completedAt) {
-      feature.completedAt = (/* @__PURE__ */ new Date()).toISOString();
-    }
-    writeJson(getFeatureJsonPath(this.projectRoot, name), feature);
-    return feature;
-  }
-  getInfo(name) {
-    const feature = this.get(name);
-    if (!feature)
-      return null;
-    const tasks = this.getTasks(name);
-    const hasPlan = fileExists(getPlanPath(this.projectRoot, name));
-    const reviewCounts = this.getReviewService().countByDocument(name);
-    const commentCount = reviewCounts.plan;
-    return {
-      name: feature.name,
-      status: feature.status,
-      tasks,
-      hasPlan,
-      commentCount,
-      reviewCounts
-    };
-  }
-  getTasks(featureName) {
-    const tasksPath = getTasksPath(this.projectRoot, featureName);
-    if (!fileExists(tasksPath))
-      return [];
-    const folders = fs3.readdirSync(tasksPath, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
-    return folders.map((folder) => {
-      const statusPath = `${tasksPath}/${folder}/status.json`;
-      const status = readJson(statusPath);
-      const name = folder.replace(/^\d+-/, "");
-      return {
-        folder,
-        name,
-        status: status?.status || "pending",
-        origin: status?.origin || "plan",
-        planTitle: status?.planTitle,
-        summary: status?.summary
-      };
-    });
-  }
-  complete(name) {
-    const feature = this.get(name);
-    if (!feature)
-      throw new Error(`Feature '${name}' not found`);
-    if (feature.status === "completed") {
-      throw new Error(`Feature '${name}' is already completed`);
-    }
-    return this.updateStatus(name, "completed");
-  }
-  setSession(name, sessionId) {
-    const feature = this.get(name);
-    if (!feature)
-      throw new Error(`Feature '${name}' not found`);
-    feature.sessionId = sessionId;
-    writeJson(getFeatureJsonPath(this.projectRoot, name), feature);
-  }
-  getSession(name) {
-    const feature = this.get(name);
-    return feature?.sessionId;
-  }
-  readActiveFeatureName() {
-    const activeFeaturePath = getActiveFeaturePath(this.projectRoot);
-    if (!fileExists(activeFeaturePath)) {
-      return null;
-    }
-    const activeFeature = fs3.readFileSync(activeFeaturePath, "utf-8").trim();
-    return activeFeature || null;
-  }
-};
-var PlanService = class {
-  projectRoot;
-  reviewService;
-  constructor(projectRoot) {
-    this.projectRoot = projectRoot;
-  }
-  getReviewService() {
-    if (!this.reviewService) {
-      this.reviewService = new ReviewService(this.projectRoot);
-    }
-    return this.reviewService;
-  }
-  write(featureName, content) {
-    const planPath = getPlanPath(this.projectRoot, featureName);
-    writeText(planPath, content);
-    this.clearComments(featureName);
-    this.revokeApproval(featureName);
-    return planPath;
-  }
-  read(featureName) {
-    const planPath = getPlanPath(this.projectRoot, featureName);
-    const content = readText(planPath);
-    if (content === null)
-      return null;
-    const comments2 = this.getComments(featureName);
-    const isApproved = this.isApproved(featureName);
-    return {
-      content,
-      status: isApproved ? "approved" : "planning",
-      comments: comments2
-    };
-  }
-  approve(featureName) {
-    if (!fileExists(getPlanPath(this.projectRoot, featureName))) {
-      throw new Error(`No plan.md found for feature '${featureName}'`);
-    }
-    if (this.getReviewService().hasUnresolvedThreads(featureName, "plan")) {
-      throw new Error(`Cannot approve feature '${featureName}' with unresolved review comments`);
-    }
-    const approvedPath = getApprovedPath(this.projectRoot, featureName);
-    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-    fs4.writeFileSync(approvedPath, `Approved at ${timestamp}
-`);
-    const featurePath = getFeatureJsonPath(this.projectRoot, featureName);
-    const feature = readJson(featurePath);
-    if (feature) {
-      feature.status = "approved";
-      feature.approvedAt = timestamp;
-      writeJson(featurePath, feature);
-    }
-  }
-  isApproved(featureName) {
-    return fileExists(getApprovedPath(this.projectRoot, featureName));
-  }
-  revokeApproval(featureName) {
-    const approvedPath = getApprovedPath(this.projectRoot, featureName);
-    if (fileExists(approvedPath)) {
-      fs4.unlinkSync(approvedPath);
-    }
-    const featurePath = getFeatureJsonPath(this.projectRoot, featureName);
-    const feature = readJson(featurePath);
-    if (feature && feature.status === "approved") {
-      feature.status = "planning";
-      delete feature.approvedAt;
-      writeJson(featurePath, feature);
-    }
-  }
-  getComments(featureName) {
-    return this.getReviewService().getThreads(featureName, "plan");
-  }
-  addComment(featureName, comment) {
-    const newComment = {
-      ...comment,
-      id: `comment-${Date.now()}`
-    };
-    this.getReviewService().saveThreads(featureName, "plan", [
-      ...this.getComments(featureName),
-      newComment
-    ]);
-    return newComment;
-  }
-  clearComments(featureName) {
-    this.getReviewService().clear(featureName, "plan");
-  }
-};
-var TASK_STATUS_SCHEMA_VERSION = 1;
-var EXECUTION_HISTORY_STATUSES = /* @__PURE__ */ new Set([
-  "in_progress",
-  "done",
-  "blocked",
-  "failed",
-  "partial"
-]);
-var TaskService = class {
-  projectRoot;
-  constructor(projectRoot) {
-    this.projectRoot = projectRoot;
-  }
-  sync(featureName, options) {
-    const planPath = getPlanPath(this.projectRoot, featureName);
-    const planContent = readText(planPath);
-    if (!planContent) {
-      throw new Error(`No plan.md found for feature '${featureName}'`);
-    }
-    const planTasks = this.parseTasksFromPlan(planContent);
-    this.validateDependencyGraph(planTasks, featureName);
-    const existingTasks = this.list(featureName);
-    const result = {
-      created: [],
-      removed: [],
-      kept: [],
-      manual: []
-    };
-    const existingByName = new Map(existingTasks.map((t) => [t.folder, t]));
-    const refreshPending = options?.refreshPending === true;
-    for (const existing of existingTasks) {
-      if (existing.origin === "manual") {
-        result.manual.push(existing.folder);
-        continue;
-      }
-      if (EXECUTION_HISTORY_STATUSES.has(existing.status)) {
-        result.kept.push(existing.folder);
-        continue;
-      }
-      if (existing.status === "cancelled") {
-        this.deleteTask(featureName, existing.folder);
-        result.removed.push(existing.folder);
-        continue;
-      }
-      const stillInPlan = planTasks.some((p) => p.folder === existing.folder);
-      if (!stillInPlan) {
-        this.deleteTask(featureName, existing.folder);
-        result.removed.push(existing.folder);
-      } else if (refreshPending && existing.status === "pending") {
-        const planTask = planTasks.find((p) => p.folder === existing.folder);
-        if (planTask) {
-          this.refreshPendingTask(featureName, planTask, planTasks, planContent);
-        }
-        result.kept.push(existing.folder);
-      } else {
-        result.kept.push(existing.folder);
-      }
-    }
-    for (const planTask of planTasks) {
-      if (!existingByName.has(planTask.folder)) {
-        this.createFromPlan(featureName, planTask, planTasks, planContent);
-        result.created.push(planTask.folder);
-      }
-    }
-    return result;
-  }
-  create(featureName, name, order, metadata) {
-    const existingFolders = this.listFolders(featureName);
-    const nextOrder = this.getNextOrder(existingFolders);
-    if (order !== void 0 && order !== nextOrder) {
-      throw new Error(`Manual tasks are append-only: requested order ${order} does not match the next available order ${nextOrder}. Intermediate insertion requires plan amendment.`);
-    }
-    if (metadata?.source === "review" && metadata.dependsOn && metadata.dependsOn.length > 0) {
-      throw new Error(`Review-sourced manual tasks cannot have explicit dependsOn. Cross-task dependencies require a plan amendment. Either remove the dependsOn field or amend the plan to express the dependency.`);
-    }
-    const dependsOn = metadata?.dependsOn ?? [];
-    this.validateManualTaskDependsOn(featureName, dependsOn);
-    const resolvedOrder = order ?? nextOrder;
-    const folder = `${String(resolvedOrder).padStart(2, "0")}-${name}`;
-    const collision = existingFolders.find((f) => {
-      const match = f.match(/^(\d+)-/);
-      return match && parseInt(match[1], 10) === resolvedOrder;
-    });
-    if (collision) {
-      throw new Error(`Task folder collision: order ${resolvedOrder} already exists as "${collision}". Choose a different order number or omit to auto-increment.`);
-    }
-    const taskPath = getTaskPath(this.projectRoot, featureName, folder);
-    ensureDir(taskPath);
-    const status = {
-      status: "pending",
-      origin: "manual",
-      planTitle: name,
-      dependsOn,
-      ...metadata ? { metadata: { ...metadata, dependsOn: void 0 } } : {}
-    };
-    writeJson(getTaskStatusPath(this.projectRoot, featureName, folder), status);
-    const specContent = this.buildManualTaskSpec(featureName, folder, name, dependsOn, metadata);
-    writeText(getTaskSpecPath(this.projectRoot, featureName, folder), specContent);
-    return folder;
-  }
-  createFromPlan(featureName, task, allTasks, planContent) {
-    const taskPath = getTaskPath(this.projectRoot, featureName, task.folder);
-    ensureDir(taskPath);
-    const dependsOn = this.resolveDependencies(task, allTasks);
-    const status = {
-      status: "pending",
-      origin: "plan",
-      planTitle: task.name,
-      dependsOn
-    };
-    writeJson(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
-    const specContent = this.buildSpecContent({
-      featureName,
-      task,
-      dependsOn,
-      allTasks,
-      planContent
-    });
-    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), specContent);
-  }
-  refreshPendingTask(featureName, task, allTasks, planContent) {
-    const dependsOn = this.resolveDependencies(task, allTasks);
-    const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
-    const current = readJson(statusPath);
-    if (current) {
-      const updated = {
-        ...current,
-        planTitle: task.name,
-        dependsOn
-      };
-      writeJson(statusPath, updated);
-    }
-    const specContent = this.buildSpecContent({
-      featureName,
-      task,
-      dependsOn,
-      allTasks,
-      planContent
-    });
-    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), specContent);
-  }
-  buildSpecContent(params) {
-    const { featureName, task, dependsOn, allTasks, planContent, contextFiles = [], completedTasks = [] } = params;
-    const getTaskType = (planSection2, taskName) => {
-      if (!planSection2) {
-        return null;
-      }
-      const fileTypeMatches = Array.from(planSection2.matchAll(/-\s*(Create|Modify|Test):/gi)).map((match) => match[1].toLowerCase());
-      const fileTypes = new Set(fileTypeMatches);
-      if (fileTypes.size === 0) {
-        return taskName.toLowerCase().includes("test") ? "testing" : null;
-      }
-      if (fileTypes.size === 1) {
-        const onlyType = Array.from(fileTypes)[0];
-        if (onlyType === "create")
-          return "greenfield";
-        if (onlyType === "test")
-          return "testing";
-      }
-      if (fileTypes.has("modify")) {
-        return "modification";
-      }
-      return null;
-    };
-    const specLines = [
-      `# Task: ${task.folder}`,
-      "",
-      `## Feature: ${featureName}`,
-      "",
-      "## Dependencies",
-      ""
-    ];
-    if (dependsOn.length > 0) {
-      for (const dep of dependsOn) {
-        const depTask = allTasks.find((t) => t.folder === dep);
-        if (depTask) {
-          specLines.push(`- **${depTask.order}. ${depTask.name}** (${dep})`);
-        } else {
-          specLines.push(`- ${dep}`);
-        }
-      }
-    } else {
-      specLines.push("_None_");
-    }
-    specLines.push("", "## Plan Section", "");
-    const planSection = this.extractPlanSection(planContent ?? null, task);
-    if (planSection) {
-      specLines.push(planSection.trim());
-    } else {
-      specLines.push("_No plan section available._");
-    }
-    specLines.push("");
-    const taskType = getTaskType(planSection, task.name);
-    if (taskType) {
-      specLines.push("## Task Type", "", taskType, "");
-    }
-    if (contextFiles.length > 0) {
-      const contextCompiled = contextFiles.map((f) => `## ${f.name}
-
-${f.content}`).join(`
-
----
-
-`);
-      specLines.push("## Context", "", contextCompiled, "");
-    }
-    if (completedTasks.length > 0) {
-      const completedLines = completedTasks.map((t) => `- ${t.name}: ${t.summary}`);
-      specLines.push("## Completed Tasks", "", ...completedLines, "");
-    }
-    return specLines.join(`
-`);
-  }
-  extractPlanSection(planContent, task) {
-    if (!planContent)
-      return null;
-    const escapedTitle = task.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const titleRegex = new RegExp(`###\\s*\\d+\\.\\s*${escapedTitle}[\\s\\S]*?(?=###|$)`, "i");
-    let taskMatch = planContent.match(titleRegex);
-    if (!taskMatch && task.order > 0) {
-      const orderRegex = new RegExp(`###\\s*${task.order}\\.\\s*[^\\n]+[\\s\\S]*?(?=###|$)`, "i");
-      taskMatch = planContent.match(orderRegex);
-    }
-    return taskMatch ? taskMatch[0].trim() : null;
-  }
-  resolveDependencies(task, allTasks) {
-    if (task.dependsOnNumbers !== null && task.dependsOnNumbers.length === 0) {
-      return [];
-    }
-    if (task.dependsOnNumbers !== null) {
-      return task.dependsOnNumbers.map((num) => allTasks.find((t) => t.order === num)?.folder).filter((folder) => folder !== void 0);
-    }
-    if (task.order === 1) {
-      return [];
-    }
-    const previousTask = allTasks.find((t) => t.order === task.order - 1);
-    return previousTask ? [previousTask.folder] : [];
-  }
-  validateDependencyGraph(tasks, featureName) {
-    const taskNumbers = new Set(tasks.map((t) => t.order));
-    for (const task of tasks) {
-      if (task.dependsOnNumbers === null) {
-        continue;
-      }
-      for (const depNum of task.dependsOnNumbers) {
-        if (depNum === task.order) {
-          throw new Error(`Invalid dependency graph in plan.md: Self-dependency detected for task ${task.order} ("${task.name}"). A task cannot depend on itself. Please fix the "Depends on:" line in plan.md.`);
-        }
-        if (!taskNumbers.has(depNum)) {
-          throw new Error(`Invalid dependency graph in plan.md: Unknown task number ${depNum} referenced in dependencies for task ${task.order} ("${task.name}"). Available task numbers are: ${Array.from(taskNumbers).sort((a, b) => a - b).join(", ")}. Please fix the "Depends on:" line in plan.md.`);
-        }
-      }
-    }
-    this.detectCycles(tasks);
-  }
-  detectCycles(tasks) {
-    const taskByOrder = new Map(tasks.map((t) => [t.order, t]));
-    const getDependencies = (task) => {
-      if (task.dependsOnNumbers !== null) {
-        return task.dependsOnNumbers;
-      }
-      if (task.order === 1) {
-        return [];
-      }
-      return [task.order - 1];
-    };
-    const visited = /* @__PURE__ */ new Map();
-    const path42 = [];
-    const dfs = (taskOrder) => {
-      const state = visited.get(taskOrder);
-      if (state === 2) {
-        return;
-      }
-      if (state === 1) {
-        const cycleStart = path42.indexOf(taskOrder);
-        const cyclePath = [...path42.slice(cycleStart), taskOrder];
-        const cycleDesc = cyclePath.join(" -> ");
-        throw new Error(`Invalid dependency graph in plan.md: Cycle detected in task dependencies: ${cycleDesc}. Tasks cannot have circular dependencies. Please fix the "Depends on:" lines in plan.md.`);
-      }
-      visited.set(taskOrder, 1);
-      path42.push(taskOrder);
-      const task = taskByOrder.get(taskOrder);
-      if (task) {
-        const deps = getDependencies(task);
-        for (const depOrder of deps) {
-          dfs(depOrder);
-        }
-      }
-      path42.pop();
-      visited.set(taskOrder, 2);
-    };
-    for (const task of tasks) {
-      if (!visited.has(task.order)) {
-        dfs(task.order);
-      }
-    }
-  }
-  writeSpec(featureName, taskFolder, content) {
-    const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
-    writeText(specPath, content);
-    return specPath;
-  }
-  readSpec(featureName, taskFolder) {
-    const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
-    return readText(specPath);
-  }
-  update(featureName, taskFolder, updates, lockOptions) {
-    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
-    if (!fileExists(statusPath)) {
-      throw new Error(`Task '${taskFolder}' not found`);
-    }
-    const release = acquireLockSync(statusPath, lockOptions);
-    try {
-      const current = readJson(statusPath);
-      if (!current) {
-        throw new Error(`Task '${taskFolder}' not found`);
-      }
-      const updated = {
-        ...current,
-        ...updates,
-        schemaVersion: TASK_STATUS_SCHEMA_VERSION
-      };
-      if (updates.status === "in_progress" && !current.startedAt) {
-        updated.startedAt = (/* @__PURE__ */ new Date()).toISOString();
-      }
-      if (updates.status === "done" && !current.completedAt) {
-        updated.completedAt = (/* @__PURE__ */ new Date()).toISOString();
-      }
-      writeJsonAtomic(statusPath, updated);
-      return updated;
-    } finally {
-      release();
-    }
-  }
-  patchBackgroundFields(featureName, taskFolder, patch, lockOptions) {
-    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
-    const safePatch = {
-      schemaVersion: TASK_STATUS_SCHEMA_VERSION
-    };
-    if (patch.idempotencyKey !== void 0) {
-      safePatch.idempotencyKey = patch.idempotencyKey;
-    }
-    if (patch.workerSession !== void 0) {
-      safePatch.workerSession = patch.workerSession;
-    }
-    return patchJsonLockedSync(statusPath, safePatch, lockOptions);
-  }
-  getRawStatus(featureName, taskFolder) {
-    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
-    return readJson(statusPath);
-  }
-  get(featureName, taskFolder) {
-    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
-    const status = readJson(statusPath);
-    if (!status)
-      return null;
-    return {
-      folder: taskFolder,
-      name: taskFolder.replace(/^\d+-/, ""),
-      status: status.status,
-      origin: status.origin,
-      planTitle: status.planTitle,
-      summary: status.summary
-    };
-  }
-  list(featureName) {
-    const folders = this.listFolders(featureName);
-    return folders.map((folder) => this.get(featureName, folder)).filter((t) => t !== null);
-  }
-  writeReport(featureName, taskFolder, report) {
-    const reportPath = getTaskReportPath(this.projectRoot, featureName, taskFolder);
-    writeText(reportPath, report);
-    return reportPath;
-  }
-  listFolders(featureName) {
-    const tasksPath = getTasksPath(this.projectRoot, featureName);
-    if (!fileExists(tasksPath))
-      return [];
-    return fs5.readdirSync(tasksPath, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
-  }
-  deleteTask(featureName, taskFolder) {
-    const taskPath = getTaskPath(this.projectRoot, featureName, taskFolder);
-    if (fileExists(taskPath)) {
-      fs5.rmSync(taskPath, { recursive: true });
-    }
-  }
-  getNextOrder(existingFolders) {
-    if (existingFolders.length === 0)
-      return 1;
-    const orders = existingFolders.map((f) => parseInt(f.split("-")[0], 10)).filter((n) => !isNaN(n));
-    return Math.max(...orders, 0) + 1;
-  }
-  validateManualTaskDependsOn(featureName, dependsOn) {
-    for (const dependency of dependsOn) {
-      const dependencyStatus = this.getRawStatus(featureName, dependency);
-      if (!dependencyStatus) {
-        throw new Error(`Manual tasks are append-only: dependency "${dependency}" does not exist. Dependencies on unfinished work require plan amendment.`);
-      }
-      if (dependencyStatus.status !== "done") {
-        throw new Error(`Manual tasks are append-only: dependency "${dependency}" is ${dependencyStatus.status}, not done. Dependencies on unfinished work require plan amendment.`);
-      }
-    }
-  }
-  parseTasksFromPlan(content) {
-    const tasks = [];
-    const lines = content.split(`
-`);
-    let currentTask = null;
-    let descriptionLines = [];
-    const dependsOnRegex = /^\s*\*{0,2}Depends\s+on\*{0,2}\s*:\s*(.+)$/i;
-    for (const line of lines) {
-      const taskMatch = line.match(/^###\s+(\d+)\.\s+(.+)$/);
-      if (taskMatch) {
-        if (currentTask) {
-          currentTask.description = descriptionLines.join(`
-`).trim();
-          tasks.push(currentTask);
-        }
-        const order = parseInt(taskMatch[1], 10);
-        const rawName = taskMatch[2].trim();
-        const folderName = rawName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-        const folder = `${String(order).padStart(2, "0")}-${folderName}`;
-        currentTask = {
-          folder,
-          order,
-          name: rawName,
-          description: "",
-          dependsOnNumbers: null
-        };
-        descriptionLines = [];
-      } else if (currentTask) {
-        if (line.match(/^##\s+/) || line.match(/^###\s+[^0-9]/)) {
-          currentTask.description = descriptionLines.join(`
-`).trim();
-          tasks.push(currentTask);
-          currentTask = null;
-          descriptionLines = [];
-        } else {
-          const dependsMatch = line.match(dependsOnRegex);
-          if (dependsMatch) {
-            const value = dependsMatch[1].trim().toLowerCase();
-            if (value === "none") {
-              currentTask.dependsOnNumbers = [];
-            } else {
-              const numbers = value.split(/[,\s]+/).map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
-              currentTask.dependsOnNumbers = numbers;
-            }
-          }
-          descriptionLines.push(line);
-        }
-      }
-    }
-    if (currentTask) {
-      currentTask.description = descriptionLines.join(`
-`).trim();
-      tasks.push(currentTask);
-    }
-    return tasks;
-  }
-  createSubtask(featureName, taskFolder, name, type) {
-    const subtasksPath = getSubtasksPath(this.projectRoot, featureName, taskFolder);
-    ensureDir(subtasksPath);
-    const existingFolders = this.listSubtaskFolders(featureName, taskFolder);
-    const taskOrder = parseInt(taskFolder.split("-")[0], 10);
-    const nextOrder = existingFolders.length + 1;
-    const subtaskId = `${taskOrder}.${nextOrder}`;
-    const folderName = `${nextOrder}-${this.slugify(name)}`;
-    const subtaskPath = getSubtaskPath(this.projectRoot, featureName, taskFolder, folderName);
-    ensureDir(subtaskPath);
-    const subtaskStatus = {
-      status: "pending",
-      type,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    writeJson(getSubtaskStatusPath(this.projectRoot, featureName, taskFolder, folderName), subtaskStatus);
-    const specContent = `# Subtask: ${name}
-
-**Type:** ${type || "custom"}
-**ID:** ${subtaskId}
-
-## Instructions
-
-_Add detailed instructions here_
-`;
-    writeText(getSubtaskSpecPath(this.projectRoot, featureName, taskFolder, folderName), specContent);
-    return {
-      id: subtaskId,
-      name,
-      folder: folderName,
-      status: "pending",
-      type,
-      createdAt: subtaskStatus.createdAt
-    };
-  }
-  updateSubtask(featureName, taskFolder, subtaskId, status) {
-    const subtaskFolder = this.findSubtaskFolder(featureName, taskFolder, subtaskId);
-    if (!subtaskFolder) {
-      throw new Error(`Subtask '${subtaskId}' not found in task '${taskFolder}'`);
-    }
-    const statusPath = getSubtaskStatusPath(this.projectRoot, featureName, taskFolder, subtaskFolder);
-    const current = readJson(statusPath);
-    if (!current) {
-      throw new Error(`Subtask status not found for '${subtaskId}'`);
-    }
-    const updated = { ...current, status };
-    if (status === "done" && !current.completedAt) {
-      updated.completedAt = (/* @__PURE__ */ new Date()).toISOString();
-    }
-    writeJson(statusPath, updated);
-    const name = subtaskFolder.replace(/^\d+-/, "");
-    return {
-      id: subtaskId,
-      name,
-      folder: subtaskFolder,
-      status,
-      type: current.type,
-      createdAt: current.createdAt,
-      completedAt: updated.completedAt
-    };
-  }
-  listSubtasks(featureName, taskFolder) {
-    const folders = this.listSubtaskFolders(featureName, taskFolder);
-    const taskOrder = parseInt(taskFolder.split("-")[0], 10);
-    return folders.map((folder, index) => {
-      const statusPath = getSubtaskStatusPath(this.projectRoot, featureName, taskFolder, folder);
-      const status = readJson(statusPath);
-      const name = folder.replace(/^\d+-/, "");
-      const subtaskOrder = parseInt(folder.split("-")[0], 10) || index + 1;
-      return {
-        id: `${taskOrder}.${subtaskOrder}`,
-        name,
-        folder,
-        status: status?.status || "pending",
-        type: status?.type,
-        createdAt: status?.createdAt,
-        completedAt: status?.completedAt
-      };
-    });
-  }
-  deleteSubtask(featureName, taskFolder, subtaskId) {
-    const subtaskFolder = this.findSubtaskFolder(featureName, taskFolder, subtaskId);
-    if (!subtaskFolder) {
-      throw new Error(`Subtask '${subtaskId}' not found in task '${taskFolder}'`);
-    }
-    const subtaskPath = getSubtaskPath(this.projectRoot, featureName, taskFolder, subtaskFolder);
-    if (fileExists(subtaskPath)) {
-      fs5.rmSync(subtaskPath, { recursive: true });
-    }
-  }
-  getSubtask(featureName, taskFolder, subtaskId) {
-    const subtaskFolder = this.findSubtaskFolder(featureName, taskFolder, subtaskId);
-    if (!subtaskFolder)
-      return null;
-    const statusPath = getSubtaskStatusPath(this.projectRoot, featureName, taskFolder, subtaskFolder);
-    const status = readJson(statusPath);
-    if (!status)
-      return null;
-    const taskOrder = parseInt(taskFolder.split("-")[0], 10);
-    const subtaskOrder = parseInt(subtaskFolder.split("-")[0], 10);
-    const name = subtaskFolder.replace(/^\d+-/, "");
-    return {
-      id: `${taskOrder}.${subtaskOrder}`,
-      name,
-      folder: subtaskFolder,
-      status: status.status,
-      type: status.type,
-      createdAt: status.createdAt,
-      completedAt: status.completedAt
-    };
-  }
-  writeSubtaskSpec(featureName, taskFolder, subtaskId, content) {
-    const subtaskFolder = this.findSubtaskFolder(featureName, taskFolder, subtaskId);
-    if (!subtaskFolder) {
-      throw new Error(`Subtask '${subtaskId}' not found in task '${taskFolder}'`);
-    }
-    const specPath = getSubtaskSpecPath(this.projectRoot, featureName, taskFolder, subtaskFolder);
-    writeText(specPath, content);
-    return specPath;
-  }
-  writeSubtaskReport(featureName, taskFolder, subtaskId, content) {
-    const subtaskFolder = this.findSubtaskFolder(featureName, taskFolder, subtaskId);
-    if (!subtaskFolder) {
-      throw new Error(`Subtask '${subtaskId}' not found in task '${taskFolder}'`);
-    }
-    const reportPath = getSubtaskReportPath(this.projectRoot, featureName, taskFolder, subtaskFolder);
-    writeText(reportPath, content);
-    return reportPath;
-  }
-  readSubtaskSpec(featureName, taskFolder, subtaskId) {
-    const subtaskFolder = this.findSubtaskFolder(featureName, taskFolder, subtaskId);
-    if (!subtaskFolder)
-      return null;
-    const specPath = getSubtaskSpecPath(this.projectRoot, featureName, taskFolder, subtaskFolder);
-    return readText(specPath);
-  }
-  readSubtaskReport(featureName, taskFolder, subtaskId) {
-    const subtaskFolder = this.findSubtaskFolder(featureName, taskFolder, subtaskId);
-    if (!subtaskFolder)
-      return null;
-    const reportPath = getSubtaskReportPath(this.projectRoot, featureName, taskFolder, subtaskFolder);
-    return readText(reportPath);
-  }
-  listSubtaskFolders(featureName, taskFolder) {
-    const subtasksPath = getSubtasksPath(this.projectRoot, featureName, taskFolder);
-    if (!fileExists(subtasksPath))
-      return [];
-    return fs5.readdirSync(subtasksPath, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
-  }
-  findSubtaskFolder(featureName, taskFolder, subtaskId) {
-    const folders = this.listSubtaskFolders(featureName, taskFolder);
-    const subtaskOrder = subtaskId.split(".")[1];
-    return folders.find((f) => f.startsWith(`${subtaskOrder}-`)) || null;
-  }
-  buildManualTaskSpec(featureName, folder, name, dependsOn, metadata) {
-    const lines = [
-      `# Task: ${folder}`,
-      "",
-      `## Feature: ${featureName}`,
-      "",
-      "## Dependencies",
-      ""
-    ];
-    if (dependsOn.length > 0) {
-      for (const dep of dependsOn) {
-        lines.push(`- ${dep}`);
-      }
-    } else {
-      lines.push("_None_");
-    }
-    lines.push("");
-    if (metadata?.goal) {
-      lines.push("## Goal", "", metadata.goal, "");
-    }
-    if (metadata?.description) {
-      lines.push("## Description", "", metadata.description, "");
-    }
-    if (metadata?.acceptanceCriteria && metadata.acceptanceCriteria.length > 0) {
-      lines.push("## Acceptance Criteria", "");
-      for (const criterion of metadata.acceptanceCriteria) {
-        lines.push(`- ${criterion}`);
-      }
-      lines.push("");
-    }
-    if (metadata?.files && metadata.files.length > 0) {
-      lines.push("## Files", "");
-      for (const file of metadata.files) {
-        lines.push(`- ${file}`);
-      }
-      lines.push("");
-    }
-    if (metadata?.references && metadata.references.length > 0) {
-      lines.push("## References", "");
-      for (const ref of metadata.references) {
-        lines.push(`- ${ref}`);
-      }
-      lines.push("");
-    }
-    if (metadata?.source || metadata?.reason) {
-      lines.push("## Origin", "");
-      if (metadata?.source) {
-        lines.push(`**Source:** ${metadata.source}`);
-      }
-      if (metadata?.reason) {
-        lines.push(`**Reason:** ${metadata.reason}`);
-      }
-      lines.push("");
-    }
-    return lines.join(`
-`);
-  }
-  slugify(name) {
-    return name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-  }
-};
 var import_file_exists = __toESM2(require_dist(), 1);
 var import_debug = __toESM2(require_src(), 1);
 var import_promise_deferred = __toESM2(require_dist2(), 1);
@@ -2914,7 +1111,7 @@ var __defProp22 = Object.defineProperty;
 var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames22 = Object.getOwnPropertyNames;
 var __hasOwnProp22 = Object.prototype.hasOwnProperty;
-var __esm2 = (fn, res) => function __init() {
+var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames22(fn)[0]])(fn = 0)), res;
 };
 var __commonJS2 = (cb, mod) => function __require2() {
@@ -2942,13 +1139,13 @@ function isPathSpec(path42) {
   return path42 instanceof String && cache.has(path42);
 }
 var cache;
-var init_pathspec = __esm2({
+var init_pathspec = __esm({
   "src/lib/args/pathspec.ts"() {
     cache = /* @__PURE__ */ new WeakMap();
   }
 });
 var GitError;
-var init_git_error = __esm2({
+var init_git_error = __esm({
   "src/lib/errors/git-error.ts"() {
     GitError = class extends Error {
       constructor(task, message) {
@@ -2960,7 +1157,7 @@ var init_git_error = __esm2({
   }
 });
 var GitResponseError;
-var init_git_response_error = __esm2({
+var init_git_response_error = __esm({
   "src/lib/errors/git-response-error.ts"() {
     init_git_error();
     GitResponseError = class extends GitError {
@@ -2972,7 +1169,7 @@ var init_git_response_error = __esm2({
   }
 });
 var TaskConfigurationError;
-var init_task_configuration_error = __esm2({
+var init_task_configuration_error = __esm({
   "src/lib/errors/task-configuration-error.ts"() {
     init_git_error();
     TaskConfigurationError = class extends GitError {
@@ -3103,7 +1300,7 @@ function orVoid(input) {
 var NULL;
 var NOOP;
 var objectToString;
-var init_util = __esm2({
+var init_util = __esm({
   "src/lib/utils/util.ts"() {
     init_argument_filters();
     NULL = "\0";
@@ -3133,7 +1330,7 @@ var filterNumber;
 var filterString;
 var filterStringOrStringArray;
 var filterHasLength;
-var init_argument_filters = __esm2({
+var init_argument_filters = __esm({
   "src/lib/utils/argument-filters.ts"() {
     init_pathspec();
     init_util();
@@ -3158,7 +1355,7 @@ var init_argument_filters = __esm2({
   }
 });
 var ExitCodes;
-var init_exit_codes = __esm2({
+var init_exit_codes = __esm({
   "src/lib/utils/exit-codes.ts"() {
     ExitCodes = /* @__PURE__ */ ((ExitCodes2) => {
       ExitCodes2[ExitCodes2["SUCCESS"] = 0] = "SUCCESS";
@@ -3170,7 +1367,7 @@ var init_exit_codes = __esm2({
   }
 });
 var GitOutputStreams;
-var init_git_output_streams = __esm2({
+var init_git_output_streams = __esm({
   "src/lib/utils/git-output-streams.ts"() {
     GitOutputStreams = class _GitOutputStreams {
       constructor(stdOut, stdErr) {
@@ -3188,7 +1385,7 @@ function useMatchesDefault() {
 }
 var LineParser;
 var RemoteLineParser;
-var init_line_parser = __esm2({
+var init_line_parser = __esm({
   "src/lib/utils/line-parser.ts"() {
     LineParser = class {
       constructor(regExp, useMatches) {
@@ -3243,7 +1440,7 @@ function createInstanceConfig(...options) {
   return config;
 }
 var defaultOptions;
-var init_simple_git_options = __esm2({
+var init_simple_git_options = __esm({
   "src/lib/utils/simple-git-options.ts"() {
     defaultOptions = {
       binary: "git",
@@ -3253,9 +1450,9 @@ var init_simple_git_options = __esm2({
     };
   }
 });
-function appendTaskOptions(options, commands4 = []) {
+function appendTaskOptions(options, commands3 = []) {
   if (!filterPlainObject(options)) {
-    return commands4;
+    return commands3;
   }
   return Object.keys(options).reduce((commands22, key) => {
     const value = options[key];
@@ -3273,7 +1470,7 @@ function appendTaskOptions(options, commands4 = []) {
       commands22.push(key);
     }
     return commands22;
-  }, commands4);
+  }, commands3);
 }
 function getTrailingOptions(args, initialPrimitive = 0, objectOnly = false) {
   const command = [];
@@ -3300,7 +1497,7 @@ function trailingFunctionArgument(args, includeNoop = true) {
   const callback = asFunction(last(args));
   return includeNoop || isUserFunction(callback) ? callback : void 0;
 }
-var init_task_options = __esm2({
+var init_task_options = __esm({
   "src/lib/utils/task-options.ts"() {
     init_argument_filters();
     init_util();
@@ -3324,7 +1521,7 @@ function parseStringResponse(result, parsers12, texts, trim = true) {
   });
   return result;
 }
-var init_task_parser = __esm2({
+var init_task_parser = __esm({
   "src/lib/utils/task-parser.ts"() {
     init_util();
   }
@@ -3375,7 +1572,7 @@ __export2(utils_exports, {
   trailingFunctionArgument: () => trailingFunctionArgument,
   trailingOptionsArgument: () => trailingOptionsArgument
 });
-var init_utils = __esm2({
+var init_utils = __esm({
   "src/lib/utils/index.ts"() {
     init_argument_filters();
     init_exit_codes();
@@ -3401,18 +1598,18 @@ function checkIsRepoTask(action) {
     case "root":
       return checkIsRepoRootTask();
   }
-  const commands4 = ["rev-parse", "--is-inside-work-tree"];
+  const commands3 = ["rev-parse", "--is-inside-work-tree"];
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     onError,
     parser
   };
 }
 function checkIsRepoRootTask() {
-  const commands4 = ["rev-parse", "--git-dir"];
+  const commands3 = ["rev-parse", "--git-dir"];
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     onError,
     parser(path42) {
@@ -3421,9 +1618,9 @@ function checkIsRepoRootTask() {
   };
 }
 function checkIsBareRepoTask() {
-  const commands4 = ["rev-parse", "--is-bare-repository"];
+  const commands3 = ["rev-parse", "--is-bare-repository"];
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     onError,
     parser
@@ -3435,7 +1632,7 @@ function isNotRepoMessage(error) {
 var CheckRepoActions;
 var onError;
 var parser;
-var init_check_is_repo = __esm2({
+var init_check_is_repo = __esm({
   "src/lib/tasks/check-is-repo.ts"() {
     init_utils();
     CheckRepoActions = /* @__PURE__ */ ((CheckRepoActions2) => {
@@ -3469,7 +1666,7 @@ var CleanResponse;
 var removalRegexp;
 var dryRunRemovalRegexp;
 var isFolderRegexp;
-var init_CleanSummary = __esm2({
+var init_CleanSummary = __esm({
   "src/lib/responses/CleanSummary.ts"() {
     init_utils();
     CleanResponse = class {
@@ -3511,18 +1708,18 @@ function configurationErrorTask(error) {
     }
   };
 }
-function straightThroughStringTask(commands4, trimmed2 = false) {
+function straightThroughStringTask(commands3, trimmed2 = false) {
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser(text) {
       return trimmed2 ? String(text).trim() : text;
     }
   };
 }
-function straightThroughBufferTask(commands4) {
+function straightThroughBufferTask(commands3) {
   return {
-    commands: commands4,
+    commands: commands3,
     format: "buffer",
     parser(buffer) {
       return buffer;
@@ -3536,7 +1733,7 @@ function isEmptyTask(task) {
   return task.format === "empty" || !task.commands.length;
 }
 var EMPTY_COMMANDS;
-var init_task = __esm2({
+var init_task = __esm({
   "src/lib/tasks/task.ts"() {
     init_task_configuration_error();
     EMPTY_COMMANDS = [];
@@ -3567,9 +1764,9 @@ function cleanWithOptionsTask(mode, customArgs) {
   return cleanTask(cleanMode, options);
 }
 function cleanTask(mode, customArgs) {
-  const commands4 = ["clean", `-${mode}`, ...customArgs];
+  const commands3 = ["clean", `-${mode}`, ...customArgs];
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser(text) {
       return cleanSummaryParser(mode === "n", text);
@@ -3614,7 +1811,7 @@ var CONFIG_ERROR_MODE_REQUIRED;
 var CONFIG_ERROR_UNKNOWN_OPTION;
 var CleanOptions;
 var CleanOptionValues;
-var init_clean = __esm2({
+var init_clean = __esm({
   "src/lib/tasks/clean.ts"() {
     init_CleanSummary();
     init_utils();
@@ -3687,7 +1884,7 @@ function* configParser(text, requestedKey = null) {
   }
 }
 var ConfigList;
-var init_ConfigList = __esm2({
+var init_ConfigList = __esm({
   "src/lib/responses/ConfigList.ts"() {
     init_utils();
     ConfigList = class {
@@ -3732,13 +1929,13 @@ function asConfigScope(scope, fallback) {
   return fallback;
 }
 function addConfigTask(key, value, append2, scope) {
-  const commands4 = ["config", `--${scope}`];
+  const commands3 = ["config", `--${scope}`];
   if (append2) {
-    commands4.push("--add");
+    commands3.push("--add");
   }
-  commands4.push(key, value);
+  commands3.push(key, value);
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser(text) {
       return text;
@@ -3746,12 +1943,12 @@ function addConfigTask(key, value, append2, scope) {
   };
 }
 function getConfigTask(key, scope) {
-  const commands4 = ["config", "--null", "--show-origin", "--get-all", key];
+  const commands3 = ["config", "--null", "--show-origin", "--get-all", key];
   if (scope) {
-    commands4.splice(1, 0, `--${scope}`);
+    commands3.splice(1, 0, `--${scope}`);
   }
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser(text) {
       return configGetParser(text, key);
@@ -3759,12 +1956,12 @@ function getConfigTask(key, scope) {
   };
 }
 function listConfigTask(scope) {
-  const commands4 = ["config", "--list", "--show-origin", "--null"];
+  const commands3 = ["config", "--list", "--show-origin", "--null"];
   if (scope) {
-    commands4.push(`--${scope}`);
+    commands3.push(`--${scope}`);
   }
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser(text) {
       return configListParser(text);
@@ -3785,7 +1982,7 @@ function config_default() {
   };
 }
 var GitConfigScope;
-var init_config = __esm2({
+var init_config = __esm({
   "src/lib/tasks/config.ts"() {
     init_ConfigList();
     init_utils();
@@ -3803,7 +2000,7 @@ function isDiffNameStatus(input) {
 }
 var DiffNameStatus;
 var diffNameStatus;
-var init_diff_name_status = __esm2({
+var init_diff_name_status = __esm({
   "src/lib/tasks/diff-name-status.ts"() {
     DiffNameStatus = /* @__PURE__ */ ((DiffNameStatus2) => {
       DiffNameStatus2["ADDED"] = "A";
@@ -3853,9 +2050,9 @@ function grep_default() {
       if (typeof searchTerm === "string") {
         searchTerm = grepQueryBuilder().param(searchTerm);
       }
-      const commands4 = ["grep", "--null", "-n", "--full-name", ...options, ...searchTerm];
+      const commands3 = ["grep", "--null", "-n", "--full-name", ...options, ...searchTerm];
       return this._runTask({
-        commands: commands4,
+        commands: commands3,
         format: "utf-8",
         parser(stdOut) {
           return parseGrep(stdOut);
@@ -3868,7 +2065,7 @@ var disallowedOptions;
 var Query;
 var _a;
 var GrepQuery;
-var init_grep = __esm2({
+var init_grep = __esm({
   "src/lib/tasks/grep.ts"() {
     init_utils();
     init_task();
@@ -3901,12 +2098,12 @@ __export2(reset_exports, {
   resetTask: () => resetTask
 });
 function resetTask(mode, customArgs) {
-  const commands4 = ["reset"];
+  const commands3 = ["reset"];
   if (isValidResetMode(mode)) {
-    commands4.push(`--${mode}`);
+    commands3.push(`--${mode}`);
   }
-  commands4.push(...customArgs);
-  return straightThroughStringTask(commands4);
+  commands3.push(...customArgs);
+  return straightThroughStringTask(commands3);
 }
 function getResetMode(mode) {
   if (isValidResetMode(mode)) {
@@ -3924,7 +2121,7 @@ function isValidResetMode(mode) {
 }
 var ResetMode;
 var validResetModes;
-var init_reset = __esm2({
+var init_reset = __esm({
   "src/lib/tasks/reset.ts"() {
     init_utils();
     init_task();
@@ -3987,7 +2184,7 @@ function createLogger(label, verbose, initialStep, infoDebugger = createLog()) {
     });
   }
 }
-var init_git_logger = __esm2({
+var init_git_logger = __esm({
   "src/lib/git-logger.ts"() {
     init_utils();
     import_debug.default.formatters.L = (value) => String(filterHasLength(value) ? value.length : "-");
@@ -4000,7 +2197,7 @@ var init_git_logger = __esm2({
   }
 });
 var TasksPendingQueue;
-var init_tasks_pending_queue = __esm2({
+var init_tasks_pending_queue = __esm({
   "src/lib/runners/tasks-pending-queue.ts"() {
     init_git_error();
     init_git_logger();
@@ -4064,10 +2261,10 @@ var init_tasks_pending_queue = __esm2({
     };
   }
 });
-function pluginContext(task, commands4) {
+function pluginContext(task, commands3) {
   return {
     method: first(task.commands) || "",
-    commands: commands4
+    commands: commands3
   };
 }
 function onErrorReceived(target, logger) {
@@ -4084,7 +2281,7 @@ function onDataReceived(target, name, logger, output) {
   };
 }
 var GitExecutorChain;
-var init_git_executor_chain = __esm2({
+var init_git_executor_chain = __esm({
   "src/lib/runners/git-executor-chain.ts"() {
     init_git_error();
     init_task();
@@ -4249,7 +2446,7 @@ __export2(git_executor_exports, {
   GitExecutor: () => GitExecutor
 });
 var GitExecutor;
-var init_git_executor = __esm2({
+var init_git_executor = __esm({
   "src/lib/runners/git-executor.ts"() {
     init_git_executor_chain();
     GitExecutor = class {
@@ -4300,7 +2497,7 @@ function addDeprecationNoticeToError(err) {
     return all;
   }
 }
-var init_task_callback = __esm2({
+var init_task_callback = __esm({
   "src/lib/task-callback.ts"() {
     init_git_response_error();
     init_utils();
@@ -4314,18 +2511,18 @@ function changeWorkingDirectoryTask(directory, root) {
     return (root || instance).cwd = directory;
   });
 }
-var init_change_working_directory = __esm2({
+var init_change_working_directory = __esm({
   "src/lib/tasks/change-working-directory.ts"() {
     init_utils();
     init_task();
   }
 });
 function checkoutTask(args) {
-  const commands4 = ["checkout", ...args];
-  if (commands4[1] === "-b" && commands4.includes("-B")) {
-    commands4[1] = remove(commands4, "-B");
+  const commands3 = ["checkout", ...args];
+  if (commands3[1] === "-b" && commands3.includes("-B")) {
+    commands3[1] = remove(commands3, "-B");
   }
-  return straightThroughStringTask(commands4);
+  return straightThroughStringTask(commands3);
 }
 function checkout_default() {
   return {
@@ -4340,7 +2537,7 @@ function checkout_default() {
     }
   };
 }
-var init_checkout = __esm2({
+var init_checkout = __esm({
   "src/lib/tasks/checkout.ts"() {
     init_utils();
     init_task();
@@ -4372,7 +2569,7 @@ function count_objects_default() {
   };
 }
 var parser2;
-var init_count_objects = __esm2({
+var init_count_objects = __esm({
   "src/lib/tasks/count-objects.ts"() {
     init_utils();
     parser2 = new LineParser(/([a-z-]+): (\d+)$/, (result, [key, value]) => {
@@ -4398,7 +2595,7 @@ function parseCommitResult(stdOut) {
   return parseStringResponse(result, parsers, stdOut);
 }
 var parsers;
-var init_parse_commit = __esm2({
+var init_parse_commit = __esm({
   "src/lib/parsers/parse-commit.ts"() {
     init_utils();
     parsers = [
@@ -4436,7 +2633,7 @@ var init_parse_commit = __esm2({
   }
 });
 function commitTask(message, files, customArgs) {
-  const commands4 = [
+  const commands3 = [
     "-c",
     "core.abbrev=40",
     "commit",
@@ -4445,7 +2642,7 @@ function commitTask(message, files, customArgs) {
     ...customArgs
   ];
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser: parseCommitResult
   };
@@ -4465,7 +2662,7 @@ function commit_default() {
     return !filterStringOrStringArray(message) && configurationErrorTask(`git.commit: requires the commit message to be supplied as a string/string[]`);
   }
 }
-var init_commit = __esm2({
+var init_commit = __esm({
   "src/lib/tasks/commit.ts"() {
     init_parse_commit();
     init_utils();
@@ -4479,20 +2676,20 @@ function first_commit_default() {
     }
   };
 }
-var init_first_commit = __esm2({
+var init_first_commit = __esm({
   "src/lib/tasks/first-commit.ts"() {
     init_utils();
     init_task();
   }
 });
 function hashObjectTask(filePath, write) {
-  const commands4 = ["hash-object", filePath];
+  const commands3 = ["hash-object", filePath];
   if (write) {
-    commands4.push("-w");
+    commands3.push("-w");
   }
-  return straightThroughStringTask(commands4, true);
+  return straightThroughStringTask(commands3, true);
 }
-var init_hash_object = __esm2({
+var init_hash_object = __esm({
   "src/lib/tasks/hash-object.ts"() {
     init_task();
   }
@@ -4520,7 +2717,7 @@ function parseInit(bare, path42, text) {
 var InitSummary;
 var initResponseRegex;
 var reInitResponseRegex;
-var init_InitSummary = __esm2({
+var init_InitSummary = __esm({
   "src/lib/responses/InitSummary.ts"() {
     InitSummary = class {
       constructor(bare, path42, existing, gitDir) {
@@ -4538,20 +2735,20 @@ function hasBareCommand(command) {
   return command.includes(bareCommand);
 }
 function initTask(bare = false, path42, customArgs) {
-  const commands4 = ["init", ...customArgs];
-  if (bare && !hasBareCommand(commands4)) {
-    commands4.splice(1, 0, bareCommand);
+  const commands3 = ["init", ...customArgs];
+  if (bare && !hasBareCommand(commands3)) {
+    commands3.splice(1, 0, bareCommand);
   }
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser(text) {
-      return parseInit(commands4.includes("--bare"), path42, text);
+      return parseInit(commands3.includes("--bare"), path42, text);
     }
   };
 }
 var bareCommand;
-var init_init = __esm2({
+var init_init = __esm({
   "src/lib/tasks/init.ts"() {
     init_InitSummary();
     bareCommand = "--bare";
@@ -4570,13 +2767,13 @@ function isLogFormat(customArg) {
   return logFormatRegex.test(customArg);
 }
 var logFormatRegex;
-var init_log_format = __esm2({
+var init_log_format = __esm({
   "src/lib/args/log-format.ts"() {
     logFormatRegex = /^--(stat|numstat|name-only|name-status)(=|$)/;
   }
 });
 var DiffSummary;
-var init_DiffSummary = __esm2({
+var init_DiffSummary = __esm({
   "src/lib/responses/DiffSummary.ts"() {
     DiffSummary = class {
       constructor() {
@@ -4597,7 +2794,7 @@ var numStatParser;
 var nameOnlyParser;
 var nameStatusParser;
 var diffSummaryParsers;
-var init_parse_diff_summary = __esm2({
+var init_parse_diff_summary = __esm({
   "src/lib/parsers/parse-diff-summary.ts"() {
     init_log_format();
     init_DiffSummary();
@@ -4718,7 +2915,7 @@ var START_BOUNDARY;
 var COMMIT_BOUNDARY;
 var SPLITTER;
 var defaultFieldNames;
-var init_parse_list_log_summary = __esm2({
+var init_parse_list_log_summary = __esm({
   "src/lib/parsers/parse-list-log-summary.ts"() {
     init_utils();
     init_parse_diff_summary();
@@ -4736,14 +2933,14 @@ __export2(diff_exports, {
 });
 function diffSummaryTask(customArgs) {
   let logFormat = logFormatFromCommand(customArgs);
-  const commands4 = ["diff"];
+  const commands3 = ["diff"];
   if (logFormat === "") {
     logFormat = "--stat";
-    commands4.push("--stat=4096");
+    commands3.push("--stat=4096");
   }
-  commands4.push(...customArgs);
-  return validateLogFormatConfig(commands4) || {
-    commands: commands4,
+  commands3.push(...customArgs);
+  return validateLogFormatConfig(commands3) || {
+    commands: commands3,
     format: "utf-8",
     parser: getDiffParser(logFormat)
   };
@@ -4757,7 +2954,7 @@ function validateLogFormatConfig(customArgs) {
     return configurationErrorTask(`Summary flag ${flags} parsing is not compatible with null termination option '-z'`);
   }
 }
-var init_diff = __esm2({
+var init_diff = __esm({
   "src/lib/tasks/diff.ts"() {
     init_log_format();
     init_parse_diff_summary();
@@ -4841,7 +3038,7 @@ function log_default() {
   }
 }
 var excludeOptions;
-var init_log = __esm2({
+var init_log = __esm({
   "src/lib/tasks/log.ts"() {
     init_log_format();
     init_pathspec();
@@ -4869,7 +3066,7 @@ var init_log = __esm2({
 });
 var MergeSummaryConflict;
 var MergeSummaryDetail;
-var init_MergeSummary = __esm2({
+var init_MergeSummary = __esm({
   "src/lib/responses/MergeSummary.ts"() {
     MergeSummaryConflict = class {
       constructor(reason, file = null, meta) {
@@ -4904,7 +3101,7 @@ var init_MergeSummary = __esm2({
 });
 var PullSummary;
 var PullFailedSummary;
-var init_PullSummary = __esm2({
+var init_PullSummary = __esm({
   "src/lib/responses/PullSummary.ts"() {
     PullSummary = class {
       constructor() {
@@ -4961,7 +3158,7 @@ function asObjectCount(source) {
   };
 }
 var remoteMessagesObjectParsers;
-var init_parse_remote_objects = __esm2({
+var init_parse_remote_objects = __esm({
   "src/lib/parsers/parse-remote-objects.ts"() {
     init_utils();
     remoteMessagesObjectParsers = [
@@ -4989,7 +3186,7 @@ function parseRemoteMessages(_stdOut, stdErr) {
 }
 var parsers2;
 var RemoteMessageSummary;
-var init_parse_remote_messages = __esm2({
+var init_parse_remote_messages = __esm({
   "src/lib/parsers/parse-remote-messages.ts"() {
     init_utils();
     init_parse_remote_objects();
@@ -5028,7 +3225,7 @@ var parsers3;
 var errorParsers;
 var parsePullDetail;
 var parsePullResult;
-var init_parse_pull = __esm2({
+var init_parse_pull = __esm({
   "src/lib/parsers/parse-pull.ts"() {
     init_PullSummary();
     init_utils();
@@ -5081,7 +3278,7 @@ var init_parse_pull = __esm2({
 var parsers4;
 var parseMergeResult;
 var parseMergeDetail;
-var init_parse_merge = __esm2({
+var init_parse_merge = __esm({
   "src/lib/parsers/parse-merge.ts"() {
     init_MergeSummary();
     init_utils();
@@ -5127,7 +3324,7 @@ function mergeTask(customArgs) {
     }
   };
 }
-var init_merge = __esm2({
+var init_merge = __esm({
   "src/lib/tasks/merge.ts"() {
     init_git_response_error();
     init_parse_merge();
@@ -5151,7 +3348,7 @@ function pushResultPushedItem(local, remote, status) {
 var parsers5;
 var parsePushResult;
 var parsePushDetail;
-var init_parse_push = __esm2({
+var init_parse_push = __esm({
   "src/lib/parsers/parse-push.ts"() {
     init_utils();
     init_parse_remote_messages();
@@ -5212,23 +3409,23 @@ function pushTagsTask(ref = {}, customArgs) {
   return pushTask(ref, customArgs);
 }
 function pushTask(ref = {}, customArgs) {
-  const commands4 = ["push", ...customArgs];
+  const commands3 = ["push", ...customArgs];
   if (ref.branch) {
-    commands4.splice(1, 0, ref.branch);
+    commands3.splice(1, 0, ref.branch);
   }
   if (ref.remote) {
-    commands4.splice(1, 0, ref.remote);
+    commands3.splice(1, 0, ref.remote);
   }
-  remove(commands4, "-v");
-  append(commands4, "--verbose");
-  append(commands4, "--porcelain");
+  remove(commands3, "-v");
+  append(commands3, "--verbose");
+  append(commands3, "--porcelain");
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser: parsePushResult
   };
 }
-var init_push = __esm2({
+var init_push = __esm({
   "src/lib/tasks/push.ts"() {
     init_parse_push();
     init_utils();
@@ -5237,19 +3434,19 @@ var init_push = __esm2({
 function show_default() {
   return {
     showBuffer() {
-      const commands4 = ["show", ...getTrailingOptions(arguments, 1)];
-      if (!commands4.includes("--binary")) {
-        commands4.splice(1, 0, "--binary");
+      const commands3 = ["show", ...getTrailingOptions(arguments, 1)];
+      if (!commands3.includes("--binary")) {
+        commands3.splice(1, 0, "--binary");
       }
-      return this._runTask(straightThroughBufferTask(commands4), trailingFunctionArgument(arguments));
+      return this._runTask(straightThroughBufferTask(commands3), trailingFunctionArgument(arguments));
     },
     show() {
-      const commands4 = ["show", ...getTrailingOptions(arguments, 1)];
-      return this._runTask(straightThroughStringTask(commands4), trailingFunctionArgument(arguments));
+      const commands3 = ["show", ...getTrailingOptions(arguments, 1)];
+      return this._runTask(straightThroughStringTask(commands3), trailingFunctionArgument(arguments));
     }
   };
 }
-var init_show = __esm2({
+var init_show = __esm({
   "src/lib/tasks/show.ts"() {
     init_utils();
     init_task();
@@ -5257,7 +3454,7 @@ var init_show = __esm2({
 });
 var fromPathRegex;
 var FileStatusSummary;
-var init_FileStatusSummary = __esm2({
+var init_FileStatusSummary = __esm({
   "src/lib/responses/FileStatusSummary.ts"() {
     fromPathRegex = /^(.+)\0(.+)$/;
     FileStatusSummary = class {
@@ -5311,7 +3508,7 @@ function splitLine(result, lineStr) {
 var StatusSummary;
 var parsers6;
 var parseStatusSummary;
-var init_StatusSummary = __esm2({
+var init_StatusSummary = __esm({
   "src/lib/responses/StatusSummary.ts"() {
     init_utils();
     init_FileStatusSummary();
@@ -5402,7 +3599,7 @@ var init_StatusSummary = __esm2({
   }
 });
 function statusTask(customArgs) {
-  const commands4 = [
+  const commands3 = [
     "status",
     "--porcelain",
     "-b",
@@ -5412,14 +3609,14 @@ function statusTask(customArgs) {
   ];
   return {
     format: "utf-8",
-    commands: commands4,
+    commands: commands3,
     parser(text) {
       return parseStatusSummary(text);
     }
   };
 }
 var ignoredOptions;
-var init_status = __esm2({
+var init_status = __esm({
   "src/lib/tasks/status.ts"() {
     init_StatusSummary();
     ignoredOptions = ["--null", "-z"];
@@ -5468,7 +3665,7 @@ function versionParser(stdOut) {
 }
 var NOT_INSTALLED;
 var parsers7;
-var init_version = __esm2({
+var init_version = __esm({
   "src/lib/tasks/version.ts"() {
     init_utils();
     NOT_INSTALLED = "installed=false";
@@ -5487,7 +3684,7 @@ __export2(simple_git_api_exports, {
   SimpleGitApi: () => SimpleGitApi
 });
 var SimpleGitApi;
-var init_simple_git_api = __esm2({
+var init_simple_git_api = __esm({
   "src/lib/simple-git-api.ts"() {
     init_task_callback();
     init_change_working_directory();
@@ -5578,7 +3775,7 @@ __export2(scheduler_exports, {
 });
 var createScheduledTask;
 var Scheduler;
-var init_scheduler = __esm2({
+var init_scheduler = __esm({
   "src/lib/runners/scheduler.ts"() {
     init_utils();
     init_git_logger();
@@ -5631,7 +3828,7 @@ __export2(apply_patch_exports, {
 function applyPatchTask(patches, customArgs) {
   return straightThroughStringTask(["apply", ...customArgs, ...patches]);
 }
-var init_apply_patch = __esm2({
+var init_apply_patch = __esm({
   "src/lib/tasks/apply-patch.ts"() {
     init_task();
   }
@@ -5651,7 +3848,7 @@ function branchDeletionFailure(branch) {
   };
 }
 var BranchDeletionBatch;
-var init_BranchDeleteSummary = __esm2({
+var init_BranchDeleteSummary = __esm({
   "src/lib/responses/BranchDeleteSummary.ts"() {
     BranchDeletionBatch = class {
       constructor() {
@@ -5672,7 +3869,7 @@ var deleteSuccessRegex;
 var deleteErrorRegex;
 var parsers8;
 var parseBranchDeletions;
-var init_parse_branch_delete = __esm2({
+var init_parse_branch_delete = __esm({
   "src/lib/parsers/parse-branch-delete.ts"() {
     init_BranchDeleteSummary();
     init_utils();
@@ -5697,7 +3894,7 @@ var init_parse_branch_delete = __esm2({
   }
 });
 var BranchSummaryResult;
-var init_BranchSummary = __esm2({
+var init_BranchSummary = __esm({
   "src/lib/responses/BranchSummary.ts"() {
     BranchSummaryResult = class {
       constructor() {
@@ -5731,7 +3928,7 @@ function parseBranchSummary(stdOut, currentOnly = false) {
 }
 var parsers9;
 var currentBranchParser;
-var init_parse_branch = __esm2({
+var init_parse_branch = __esm({
   "src/lib/parsers/parse-branch.ts"() {
     init_BranchSummary();
     init_utils();
@@ -5756,23 +3953,23 @@ __export2(branch_exports, {
   deleteBranchTask: () => deleteBranchTask,
   deleteBranchesTask: () => deleteBranchesTask
 });
-function containsDeleteBranchCommand(commands4) {
+function containsDeleteBranchCommand(commands3) {
   const deleteCommands = ["-d", "-D", "--delete"];
-  return commands4.some((command) => deleteCommands.includes(command));
+  return commands3.some((command) => deleteCommands.includes(command));
 }
 function branchTask(customArgs) {
   const isDelete = containsDeleteBranchCommand(customArgs);
   const isCurrentOnly = customArgs.includes("--show-current");
-  const commands4 = ["branch", ...customArgs];
-  if (commands4.length === 1) {
-    commands4.push("-a");
+  const commands3 = ["branch", ...customArgs];
+  if (commands3.length === 1) {
+    commands3.push("-a");
   }
-  if (!commands4.includes("-v")) {
-    commands4.splice(1, 0, "-v");
+  if (!commands3.includes("-v")) {
+    commands3.splice(1, 0, "-v");
   }
   return {
     format: "utf-8",
-    commands: commands4,
+    commands: commands3,
     parser(stdOut, stdErr) {
       if (isDelete) {
         return parseBranchDeletions(stdOut, stdErr).all[0];
@@ -5821,7 +4018,7 @@ function deleteBranchTask(branch, forceDelete = false) {
   };
   return task;
 }
-var init_branch = __esm2({
+var init_branch = __esm({
   "src/lib/tasks/branch.ts"() {
     init_git_response_error();
     init_parse_branch_delete();
@@ -5834,7 +4031,7 @@ function toPath(input) {
   return path42 && (0, import_node_path.normalize)(path42);
 }
 var parseCheckIgnore;
-var init_CheckIgnore = __esm2({
+var init_CheckIgnore = __esm({
   "src/lib/responses/CheckIgnore.ts"() {
     parseCheckIgnore = (text) => {
       return text.split(/\n/g).map(toPath).filter(Boolean);
@@ -5852,7 +4049,7 @@ function checkIgnoreTask(paths) {
     parser: parseCheckIgnore
   };
 }
-var init_check_ignore = __esm2({
+var init_check_ignore = __esm({
   "src/lib/tasks/check-ignore.ts"() {
     init_CheckIgnore();
   }
@@ -5866,20 +4063,20 @@ function disallowedCommand(command) {
   return /^--upload-pack(=|$)/.test(command);
 }
 function cloneTask(repo, directory, customArgs) {
-  const commands4 = ["clone", ...customArgs];
-  filterString(repo) && commands4.push(repo);
-  filterString(directory) && commands4.push(directory);
-  const banned = commands4.find(disallowedCommand);
+  const commands3 = ["clone", ...customArgs];
+  filterString(repo) && commands3.push(repo);
+  filterString(directory) && commands3.push(directory);
+  const banned = commands3.find(disallowedCommand);
   if (banned) {
     return configurationErrorTask(`git.fetch: potential exploit argument blocked.`);
   }
-  return straightThroughStringTask(commands4);
+  return straightThroughStringTask(commands3);
 }
 function cloneMirrorTask(repo, directory, customArgs) {
   append(customArgs, "--mirror");
   return cloneTask(repo, directory, customArgs);
 }
-var init_clone = __esm2({
+var init_clone = __esm({
   "src/lib/tasks/clone.ts"() {
     init_task();
     init_utils();
@@ -5897,7 +4094,7 @@ function parseFetchResult(stdOut, stdErr) {
   return parseStringResponse(result, parsers10, [stdOut, stdErr]);
 }
 var parsers10;
-var init_parse_fetch = __esm2({
+var init_parse_fetch = __esm({
   "src/lib/parsers/parse-fetch.ts"() {
     init_utils();
     parsers10 = [
@@ -5940,21 +4137,21 @@ function disallowedCommand2(command) {
   return /^--upload-pack(=|$)/.test(command);
 }
 function fetchTask(remote, branch, customArgs) {
-  const commands4 = ["fetch", ...customArgs];
+  const commands3 = ["fetch", ...customArgs];
   if (remote && branch) {
-    commands4.push(remote, branch);
+    commands3.push(remote, branch);
   }
-  const banned = commands4.find(disallowedCommand2);
+  const banned = commands3.find(disallowedCommand2);
   if (banned) {
     return configurationErrorTask(`git.fetch: potential exploit argument blocked.`);
   }
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser: parseFetchResult
   };
 }
-var init_fetch = __esm2({
+var init_fetch = __esm({
   "src/lib/tasks/fetch.ts"() {
     init_parse_fetch();
     init_task();
@@ -5964,7 +4161,7 @@ function parseMoveResult(stdOut) {
   return parseStringResponse({ moves: [] }, parsers11, stdOut);
 }
 var parsers11;
-var init_parse_move = __esm2({
+var init_parse_move = __esm({
   "src/lib/parsers/parse-move.ts"() {
     init_utils();
     parsers11 = [
@@ -5985,7 +4182,7 @@ function moveTask(from, to) {
     parser: parseMoveResult
   };
 }
-var init_move = __esm2({
+var init_move = __esm({
   "src/lib/tasks/move.ts"() {
     init_parse_move();
     init_utils();
@@ -5996,12 +4193,12 @@ __export2(pull_exports, {
   pullTask: () => pullTask
 });
 function pullTask(remote, branch, customArgs) {
-  const commands4 = ["pull", ...customArgs];
+  const commands3 = ["pull", ...customArgs];
   if (remote && branch) {
-    commands4.splice(1, 0, remote, branch);
+    commands3.splice(1, 0, remote, branch);
   }
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser(stdOut, stdErr) {
       return parsePullResult(stdOut, stdErr);
@@ -6015,7 +4212,7 @@ function pullTask(remote, branch, customArgs) {
     }
   };
 }
-var init_pull = __esm2({
+var init_pull = __esm({
   "src/lib/tasks/pull.ts"() {
     init_git_response_error();
     init_parse_pull();
@@ -6045,7 +4242,7 @@ function parseGetRemotesVerbose(text) {
 function forEach(text, handler) {
   forEachLineWithContent(text, (line) => handler(line.split(/\s+/)));
 }
-var init_GetRemoteSummary = __esm2({
+var init_GetRemoteSummary = __esm({
   "src/lib/responses/GetRemoteSummary.ts"() {
     init_utils();
   }
@@ -6062,34 +4259,34 @@ function addRemoteTask(remoteName, remoteRepo, customArgs) {
   return straightThroughStringTask(["remote", "add", ...customArgs, remoteName, remoteRepo]);
 }
 function getRemotesTask(verbose) {
-  const commands4 = ["remote"];
+  const commands3 = ["remote"];
   if (verbose) {
-    commands4.push("-v");
+    commands3.push("-v");
   }
   return {
-    commands: commands4,
+    commands: commands3,
     format: "utf-8",
     parser: verbose ? parseGetRemotesVerbose : parseGetRemotes
   };
 }
 function listRemotesTask(customArgs) {
-  const commands4 = [...customArgs];
-  if (commands4[0] !== "ls-remote") {
-    commands4.unshift("ls-remote");
+  const commands3 = [...customArgs];
+  if (commands3[0] !== "ls-remote") {
+    commands3.unshift("ls-remote");
   }
-  return straightThroughStringTask(commands4);
+  return straightThroughStringTask(commands3);
 }
 function remoteTask(customArgs) {
-  const commands4 = [...customArgs];
-  if (commands4[0] !== "remote") {
-    commands4.unshift("remote");
+  const commands3 = [...customArgs];
+  if (commands3[0] !== "remote") {
+    commands3.unshift("remote");
   }
-  return straightThroughStringTask(commands4);
+  return straightThroughStringTask(commands3);
 }
 function removeRemoteTask(remoteName) {
   return straightThroughStringTask(["remote", "remove", remoteName]);
 }
-var init_remote = __esm2({
+var init_remote = __esm({
   "src/lib/tasks/remote.ts"() {
     init_GetRemoteSummary();
     init_task();
@@ -6101,15 +4298,15 @@ __export2(stash_list_exports, {
 });
 function stashListTask(opt = {}, customArgs) {
   const options = parseLogOptions(opt);
-  const commands4 = ["stash", "list", ...options.commands, ...customArgs];
-  const parser4 = createListLogSummaryParser(options.splitter, options.fields, logFormatFromCommand(commands4));
-  return validateLogFormatConfig(commands4) || {
-    commands: commands4,
+  const commands3 = ["stash", "list", ...options.commands, ...customArgs];
+  const parser4 = createListLogSummaryParser(options.splitter, options.fields, logFormatFromCommand(commands3));
+  return validateLogFormatConfig(commands3) || {
+    commands: commands3,
     format: "utf-8",
     parser: parser4
   };
 }
-var init_stash_list = __esm2({
+var init_stash_list = __esm({
   "src/lib/tasks/stash-list.ts"() {
     init_log_format();
     init_parse_list_log_summary();
@@ -6131,16 +4328,16 @@ function initSubModuleTask(customArgs) {
   return subModuleTask(["init", ...customArgs]);
 }
 function subModuleTask(customArgs) {
-  const commands4 = [...customArgs];
-  if (commands4[0] !== "submodule") {
-    commands4.unshift("submodule");
+  const commands3 = [...customArgs];
+  if (commands3[0] !== "submodule") {
+    commands3.unshift("submodule");
   }
-  return straightThroughStringTask(commands4);
+  return straightThroughStringTask(commands3);
 }
 function updateSubModuleTask(customArgs) {
   return subModuleTask(["update", ...customArgs]);
 }
-var init_sub_module = __esm2({
+var init_sub_module = __esm({
   "src/lib/tasks/sub-module.ts"() {
     init_task();
   }
@@ -6167,7 +4364,7 @@ function toNumber(input) {
 }
 var TagList;
 var parseTagList;
-var init_TagList = __esm2({
+var init_TagList = __esm({
   "src/lib/responses/TagList.ts"() {
     TagList = class {
       constructor(all, latest) {
@@ -6233,7 +4430,7 @@ function addAnnotatedTagTask(name, tagMessage) {
     }
   };
 }
-var init_tag = __esm2({
+var init_tag = __esm({
   "src/lib/tasks/tag.ts"() {
     init_TagList();
   }
@@ -6377,9 +4574,9 @@ var require_git = __commonJS2({
     Git2.prototype.branchLocal = function(then) {
       return this._runTask(branchLocalTask2(), trailingFunctionArgument2(arguments));
     };
-    Git2.prototype.raw = function(commands4) {
-      const createRestCommands = !Array.isArray(commands4);
-      const command = [].slice.call(createRestCommands ? arguments : commands4, 0);
+    Git2.prototype.raw = function(commands3) {
+      const createRestCommands = !Array.isArray(commands3);
+      const command = [].slice.call(createRestCommands ? arguments : commands3, 0);
       for (let i = 0; i < command.length && createRestCommands; i++) {
         if (!filterPrimitives2(command[i])) {
           command.splice(i, command.length - i);
@@ -6471,8 +4668,8 @@ var require_git = __commonJS2({
       return this._runTask(task, trailingFunctionArgument2(arguments));
     };
     Git2.prototype.revparse = function() {
-      const commands4 = ["rev-parse", ...getTrailingOptions2(arguments, true)];
-      return this._runTask(straightThroughStringTask2(commands4, true), trailingFunctionArgument2(arguments));
+      const commands3 = ["rev-parse", ...getTrailingOptions2(arguments, true)];
+      return this._runTask(straightThroughStringTask2(commands3, true), trailingFunctionArgument2(arguments));
     };
     Git2.prototype.clean = function(mode, options, then) {
       const usingCleanOptionsArray = isCleanOptionsArray2(mode);
@@ -6528,303 +4725,8 @@ init_pathspec();
 init_utils();
 var Git = require_git();
 init_git_response_error();
-var OVERVIEW_CONTEXT_NAME = "overview";
-var DEFAULT_CONTEXT_CLASSIFICATION = {
-  role: "durable",
-  includeInExecution: true,
-  includeInAgentsMdSync: true,
-  includeInNetwork: true
-};
-var SPECIAL_CONTEXTS = {
-  draft: { role: "scratchpad", includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false },
-  "execution-decisions": { role: "operational", includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false },
-  overview: { role: "operational", includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false }
-};
-var ContextService = class {
-  projectRoot;
-  constructor(projectRoot) {
-    this.projectRoot = projectRoot;
-  }
-  write(featureName, fileName, content) {
-    const contextPath = getContextPath(this.projectRoot, featureName);
-    ensureDir(contextPath);
-    const filePath = path5.join(contextPath, this.normalizeFileName(fileName));
-    writeText(filePath, content);
-    const totalChars = this.list(featureName).reduce((sum, c) => sum + c.content.length, 0);
-    if (totalChars > 2e4) {
-      return `${filePath}
-
-\u26A0\uFE0F Context total: ${totalChars} chars (exceeds 20,000). Consider archiving older contexts with contextService.archive().`;
-    }
-    return filePath;
-  }
-  read(featureName, fileName) {
-    const contextPath = getContextPath(this.projectRoot, featureName);
-    const filePath = path5.join(contextPath, this.normalizeFileName(fileName));
-    return readText(filePath);
-  }
-  list(featureName) {
-    const contextPath = getContextPath(this.projectRoot, featureName);
-    if (!fileExists(contextPath))
-      return [];
-    const files = fs8.readdirSync(contextPath, { withFileTypes: true }).filter((f) => f.isFile() && f.name.endsWith(".md")).map((f) => f.name).sort((a, b) => a.localeCompare(b));
-    return files.map((name) => {
-      const filePath = path5.join(contextPath, name);
-      const stat2 = fs8.statSync(filePath);
-      const content = readText(filePath) || "";
-      const normalizedName = name.replace(/\.md$/, "");
-      const classification = this.classifyContextName(normalizedName);
-      return {
-        name: normalizedName,
-        content,
-        updatedAt: stat2.mtime.toISOString(),
-        ...classification
-      };
-    });
-  }
-  getOverview(featureName) {
-    return this.list(featureName).find((file) => file.name === OVERVIEW_CONTEXT_NAME) ?? null;
-  }
-  listExecutionContext(featureName) {
-    return this.list(featureName).filter((file) => file.includeInExecution);
-  }
-  listAgentsMdSyncContext(featureName) {
-    return this.list(featureName).filter((file) => file.includeInAgentsMdSync);
-  }
-  listNetworkContext(featureName) {
-    return this.list(featureName).filter((file) => file.includeInNetwork);
-  }
-  delete(featureName, fileName) {
-    const contextPath = getContextPath(this.projectRoot, featureName);
-    const filePath = path5.join(contextPath, this.normalizeFileName(fileName));
-    if (fileExists(filePath)) {
-      fs8.unlinkSync(filePath);
-      return true;
-    }
-    return false;
-  }
-  compile(featureName) {
-    const files = this.list(featureName);
-    if (files.length === 0)
-      return "";
-    const sections = files.map((f) => `## ${f.name}
-
-${f.content}`);
-    return sections.join(`
-
----
-
-`);
-  }
-  archive(featureName) {
-    const contexts = this.list(featureName);
-    if (contexts.length === 0)
-      return { archived: [], archivePath: "" };
-    const contextPath = getContextPath(this.projectRoot, featureName);
-    const archiveDir = path5.join(contextPath, "..", "archive");
-    ensureDir(archiveDir);
-    const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const archived = [];
-    for (const ctx of contexts) {
-      const archiveName = `${timestamp}_${ctx.name}.md`;
-      const src = path5.join(contextPath, `${ctx.name}.md`);
-      const dest = path5.join(archiveDir, archiveName);
-      fs8.copyFileSync(src, dest);
-      fs8.unlinkSync(src);
-      archived.push(ctx.name);
-    }
-    return { archived, archivePath: archiveDir };
-  }
-  stats(featureName) {
-    const contexts = this.list(featureName);
-    if (contexts.length === 0)
-      return { count: 0, totalChars: 0 };
-    const sorted2 = [...contexts].sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
-    return {
-      count: contexts.length,
-      totalChars: contexts.reduce((sum, c) => sum + c.content.length, 0),
-      oldest: sorted2[0].name,
-      newest: sorted2[sorted2.length - 1].name
-    };
-  }
-  normalizeFileName(name) {
-    const normalized = name.replace(/\.md$/, "");
-    return `${normalized}.md`;
-  }
-  classifyContextName(name) {
-    return SPECIAL_CONTEXTS[name] ?? DEFAULT_CONTEXT_CLASSIFICATION;
-  }
-};
-function computeRunnableAndBlocked(tasks) {
-  const statusByFolder = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    statusByFolder.set(task.folder, task.status);
-  }
-  const runnable = [];
-  const blocked = {};
-  const effectiveDepsByFolder = buildEffectiveDependencies(tasks);
-  for (const task of tasks) {
-    if (task.status !== "pending") {
-      continue;
-    }
-    const deps = effectiveDepsByFolder.get(task.folder) ?? [];
-    const unmetDeps = deps.filter((dep) => {
-      const depStatus = statusByFolder.get(dep);
-      return depStatus !== "done";
-    });
-    if (unmetDeps.length === 0) {
-      runnable.push(task.folder);
-    } else {
-      blocked[task.folder] = unmetDeps;
-    }
-  }
-  return { runnable, blocked };
-}
-function buildEffectiveDependencies(tasks) {
-  const orderByFolder = /* @__PURE__ */ new Map();
-  const folderByOrder = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    const match = task.folder.match(/^(\d+)-/);
-    if (!match) {
-      orderByFolder.set(task.folder, null);
-      continue;
-    }
-    const order = parseInt(match[1], 10);
-    orderByFolder.set(task.folder, order);
-    if (!folderByOrder.has(order)) {
-      folderByOrder.set(order, task.folder);
-    }
-  }
-  const effectiveDeps = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    if (task.dependsOn !== void 0) {
-      effectiveDeps.set(task.folder, task.dependsOn);
-      continue;
-    }
-    const order = orderByFolder.get(task.folder);
-    if (!order || order <= 1) {
-      effectiveDeps.set(task.folder, []);
-      continue;
-    }
-    const previousFolder = folderByOrder.get(order - 1);
-    effectiveDeps.set(task.folder, previousFolder ? [previousFolder] : []);
-  }
-  return effectiveDeps;
-}
-
-// src/services/watcher.ts
-var vscode = __toESM(require("vscode"));
-var HiveWatcher = class {
-  hiveWatcher;
-  githubWatcher;
-  pluginWatcher;
-  constructor(workspaceRoot, onChange) {
-    this.hiveWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(workspaceRoot, ".hive/**/*")
-    );
-    this.githubWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(workspaceRoot, ".github/**/*")
-    );
-    this.pluginWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(workspaceRoot, "plugin.json")
-    );
-    for (const watcher of [this.hiveWatcher, this.githubWatcher, this.pluginWatcher]) {
-      watcher.onDidCreate(onChange);
-      watcher.onDidChange(onChange);
-      watcher.onDidDelete(onChange);
-    }
-  }
-  dispose() {
-    this.hiveWatcher.dispose();
-    this.githubWatcher.dispose();
-    this.pluginWatcher.dispose();
-  }
-};
-
-// src/services/launcher.ts
-var vscode2 = __toESM(require("vscode"));
-var fs2 = __toESM(require("fs"));
-var path2 = __toESM(require("path"));
-var Launcher = class {
-  constructor(workspaceRoot) {
-    this.workspaceRoot = workspaceRoot;
-  }
-  /**
-    * Open a feature's plan in VS Code and show instructions
-   */
-  async openFeature(feature) {
-    if (!feature || !this.workspaceRoot) {
-      vscode2.window.showWarningMessage("Hive: Invalid feature name or workspace root");
-      return;
-    }
-    const activeFeaturePath = path2.join(this.workspaceRoot, ".hive", "active-feature");
-    fs2.mkdirSync(path2.dirname(activeFeaturePath), { recursive: true });
-    fs2.writeFileSync(activeFeaturePath, feature, "utf-8");
-    const featurePath = getFeaturePath(this.workspaceRoot, feature);
-    const planPath = `${featurePath}/plan.md`;
-    const targetPath = planPath;
-    try {
-      const uri = vscode2.Uri.file(targetPath);
-      await vscode2.workspace.openTextDocument(uri);
-      await vscode2.window.showTextDocument(uri);
-      vscode2.window.showInformationMessage(
-        `Hive: Opened ${feature} plan. Continue reviewing in the sidebar or editor.`
-      );
-    } catch (error) {
-      vscode2.window.showWarningMessage(`Hive: No plan found for feature "${feature}" - ${error}`);
-    }
-  }
-  /**
-   * Open a task's worktree folder in a new VS Code window
-   */
-  async openTask(feature, task) {
-    if (!feature || !task || !this.workspaceRoot) {
-      vscode2.window.showWarningMessage("Hive: Invalid feature name, task name, or workspace root");
-      return;
-    }
-    const worktreePath = path2.join(this.workspaceRoot, ".hive", ".worktrees", feature, task);
-    const uri = vscode2.Uri.file(worktreePath);
-    try {
-      await vscode2.commands.executeCommand("vscode.openFolder", uri, { forceNewWindow: true });
-    } catch (error) {
-      vscode2.window.showErrorMessage(`Hive: Worktree not found for ${feature}/${task} - ${error}`);
-    }
-  }
-  /**
-   * Open a file in VS Code
-   */
-  async openFile(filePath) {
-    if (!filePath || !this.workspaceRoot) {
-      vscode2.window.showWarningMessage("Hive: Invalid file path or workspace root");
-      return;
-    }
-    try {
-      const uri = vscode2.Uri.file(filePath);
-      await vscode2.workspace.openTextDocument(uri);
-      await vscode2.window.showTextDocument(uri);
-    } catch (error) {
-      vscode2.window.showErrorMessage(`Hive: Could not open file "${filePath}" - ${error}`);
-    }
-  }
-};
 
 // src/providers/sidebarProvider.ts
-var vscode3 = __toESM(require("vscode"));
-var fs6 = __toESM(require("fs"));
-var path4 = __toESM(require("path"));
-var ActionItem = class extends vscode3.TreeItem {
-  constructor(label, commandId, iconName) {
-    super(label, vscode3.TreeItemCollapsibleState.None);
-    this.label = label;
-    this.commandId = commandId;
-    this.contextValue = "action";
-    this.iconPath = new vscode3.ThemeIcon(iconName);
-    this.command = {
-      command: commandId,
-      title: label
-    };
-  }
-};
 var STATUS_ICONS = {
   pending: "circle-outline",
   in_progress: "sync~spin",
@@ -6896,10 +4798,12 @@ var ContextFolderItem = class extends vscode3.TreeItem {
   }
 };
 var ContextFileItem = class extends vscode3.TreeItem {
-  constructor(filename, filePath) {
+  constructor(filename, filePath, commentCount = 0) {
     super(filename, vscode3.TreeItemCollapsibleState.None);
     this.filename = filename;
     this.filePath = filePath;
+    this.commentCount = commentCount;
+    this.description = commentCount > 0 ? `${commentCount} comment(s)` : "";
     this.contextValue = "context-file";
     this.iconPath = new vscode3.ThemeIcon(filename.endsWith(".md") ? "markdown" : "file");
     this.command = {
@@ -6963,34 +4867,6 @@ var TaskFileItem = class extends vscode3.TreeItem {
     };
   }
 };
-var CopilotArtifactsGroupItem = class extends vscode3.TreeItem {
-  constructor(workspaceRoot) {
-    super("Workspace Artifacts", vscode3.TreeItemCollapsibleState.Collapsed);
-    this.workspaceRoot = workspaceRoot;
-    this.contextValue = "workspace-artifacts";
-    this.iconPath = new vscode3.ThemeIcon("github");
-  }
-};
-var ArtifactFileItem = class extends vscode3.TreeItem {
-  constructor(label, filePath, iconName) {
-    super(label, vscode3.TreeItemCollapsibleState.None);
-    this.filePath = filePath;
-    this.iconPath = new vscode3.ThemeIcon(iconName);
-    this.command = {
-      command: "vscode.open",
-      title: "Open",
-      arguments: [vscode3.Uri.file(filePath)]
-    };
-  }
-};
-var ArtifactCategoryItem = class extends vscode3.TreeItem {
-  constructor(label, files, iconName) {
-    super(label, files.length > 0 ? vscode3.TreeItemCollapsibleState.Collapsed : vscode3.TreeItemCollapsibleState.None);
-    this.files = files;
-    this.description = `${files.length}`;
-    this.iconPath = new vscode3.ThemeIcon(iconName);
-  }
-};
 var HiveSidebarProvider = class {
   constructor(workspaceRoot) {
     this.workspaceRoot = workspaceRoot;
@@ -7005,30 +4881,14 @@ var HiveSidebarProvider = class {
   }
   async getChildren(element) {
     if (!element) {
-      const items = [
-        new ActionItem("Init Skills", "hive.initNest", "symbol-misc")
-      ];
-      const githubDir = path4.join(this.workspaceRoot, ".github");
-      if (fs6.existsSync(githubDir)) {
-        items.push(new CopilotArtifactsGroupItem(this.workspaceRoot));
-      }
       const statusGroups = await this.getStatusGroups();
-      return [...items, ...statusGroups];
-    }
-    if (element instanceof ActionItem) {
-      return [];
+      return statusGroups;
     }
     if (element instanceof StatusGroupItem) {
       return element.features;
     }
     if (element instanceof FeatureItem) {
       return this.getFeatureChildren(element.name);
-    }
-    if (element instanceof CopilotArtifactsGroupItem) {
-      return this.getCopilotArtifactCategories(element.workspaceRoot);
-    }
-    if (element instanceof ArtifactCategoryItem) {
-      return element.files;
     }
     if (element instanceof ContextFolderItem) {
       return this.getContextFiles(element.featureName, element.contextPath);
@@ -7072,9 +4932,9 @@ var HiveSidebarProvider = class {
     const features = [];
     const dirs = listFeatureDirectories(this.workspaceRoot);
     for (const dir of dirs) {
-      const featureJsonPath = path4.join(getFeaturePath(this.workspaceRoot, dir.logicalName), "feature.json");
-      if (!fs6.existsSync(featureJsonPath)) continue;
-      const feature = JSON.parse(fs6.readFileSync(featureJsonPath, "utf-8"));
+      const featureJsonPath = path2.join(getFeaturePath(this.workspaceRoot, dir.logicalName), "feature.json");
+      if (!fs2.existsSync(featureJsonPath)) continue;
+      const feature = JSON.parse(fs2.readFileSync(featureJsonPath, "utf-8"));
       const taskStats = this.getTaskStats(dir.logicalName);
       const isActive = dir.logicalName === activeFeature;
       features.push(new FeatureItem(dir.logicalName, feature, taskStats, isActive));
@@ -7089,83 +4949,35 @@ var HiveSidebarProvider = class {
   getFeatureChildren(featureName) {
     const featurePath = getFeaturePath(this.workspaceRoot, featureName);
     const items = [];
-    const featureJsonPath = path4.join(featurePath, "feature.json");
-    const feature = JSON.parse(fs6.readFileSync(featureJsonPath, "utf-8"));
-    const planPath = path4.join(featurePath, "plan.md");
-    if (fs6.existsSync(planPath)) {
-      const commentCount = this.getCommentCount(featureName);
+    const featureJsonPath = path2.join(featurePath, "feature.json");
+    const feature = JSON.parse(fs2.readFileSync(featureJsonPath, "utf-8"));
+    const planPath = path2.join(featurePath, "plan.md");
+    if (fs2.existsSync(planPath)) {
+      const commentCount = this.getReviewCommentCount(featureName, "plan");
       items.push(new PlanItem(featureName, planPath, feature.status, commentCount));
     }
-    const contextPath = path4.join(featurePath, "context");
-    const contextFiles = fs6.existsSync(contextPath) ? fs6.readdirSync(contextPath).filter((f) => !f.startsWith(".")) : [];
+    const contextPath = path2.join(featurePath, "context");
+    const contextFiles = fs2.existsSync(contextPath) ? fs2.readdirSync(contextPath).filter((f) => !f.startsWith(".")) : [];
     items.push(new ContextFolderItem(featureName, contextPath, contextFiles.length));
     const tasks = this.getTaskList(featureName);
     items.push(new TasksGroupItem(featureName, tasks));
     return items;
   }
-  getCopilotArtifactCategories(workspaceRoot) {
-    const githubRoot = path4.join(workspaceRoot, ".github");
-    const agentsDir = path4.join(githubRoot, "agents");
-    const skillsDir = path4.join(githubRoot, "skills");
-    const hooksDir = path4.join(githubRoot, "hooks");
-    const instructionsDir = path4.join(githubRoot, "instructions");
-    const promptsDir = path4.join(githubRoot, "prompts");
-    const copilotInstructionsPath = path4.join(githubRoot, "copilot-instructions.md");
-    const pluginPath = path4.join(workspaceRoot, "plugin.json");
-    const categories = [
-      new ArtifactCategoryItem(
-        "Agents",
-        this.getArtifactFiles(agentsDir, (file) => file.endsWith(".agent.md"), "person"),
-        "person"
-      ),
-      new ArtifactCategoryItem(
-        "Skills",
-        this.getArtifactFiles(skillsDir, (file) => file === "SKILL.md", "book", true),
-        "book"
-      ),
-      new ArtifactCategoryItem(
-        "Hooks",
-        this.getArtifactFiles(hooksDir, (file) => file.endsWith(".json"), "zap"),
-        "zap"
-      ),
-      new ArtifactCategoryItem(
-        "Instructions",
-        this.getArtifactFiles(instructionsDir, (file) => file.endsWith(".instructions.md"), "note"),
-        "note"
-      ),
-      new ArtifactCategoryItem(
-        "Prompts",
-        this.getArtifactFiles(promptsDir, (file) => file.endsWith(".prompt.md"), "comment-discussion"),
-        "comment-discussion"
-      )
-    ];
-    if (fs6.existsSync(copilotInstructionsPath)) {
-      categories.push(new ArtifactFileItem("copilot-instructions.md", copilotInstructionsPath, "note"));
-    }
-    if (fs6.existsSync(pluginPath)) {
-      categories.push(new ArtifactFileItem("Plugin Manifest", pluginPath, "package"));
-    }
-    return categories;
-  }
-  getArtifactFiles(basePath, matches, iconName, nestedSkillDirs = false) {
-    if (!fs6.existsSync(basePath)) return [];
-    if (nestedSkillDirs) {
-      return fs6.readdirSync(basePath, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => path4.join(basePath, entry.name, "SKILL.md")).filter((filePath) => fs6.existsSync(filePath)).map((filePath) => new ArtifactFileItem(path4.basename(path4.dirname(filePath)), filePath, iconName)).sort((a, b) => String(a.label).localeCompare(String(b.label)));
-    }
-    return fs6.readdirSync(basePath, { withFileTypes: true }).filter((entry) => entry.isFile() && matches(entry.name)).map((entry) => new ArtifactFileItem(entry.name, path4.join(basePath, entry.name), iconName)).sort((a, b) => String(a.label).localeCompare(String(b.label)));
-  }
   getContextFiles(featureName, contextPath) {
-    if (!fs6.existsSync(contextPath)) return [];
-    return fs6.readdirSync(contextPath).filter((f) => !f.startsWith(".")).map((f) => new ContextFileItem(f, path4.join(contextPath, f)));
+    if (!fs2.existsSync(contextPath)) return [];
+    return fs2.readdirSync(contextPath).filter((f) => !f.startsWith(".")).map((f) => {
+      const commentCount = f === "overview.md" ? this.getReviewCommentCount(featureName, "overview") : 0;
+      return new ContextFileItem(f, path2.join(contextPath, f), commentCount);
+    });
   }
   getTasks(featureName, tasks) {
     const featurePath = getFeaturePath(this.workspaceRoot, featureName);
     return tasks.map((t) => {
-      const taskDir = path4.join(featurePath, "tasks", t.folder);
-      const specPath = path4.join(taskDir, "spec.md");
-      const reportPath = path4.join(taskDir, "report.md");
-      const hasSpec = fs6.existsSync(specPath);
-      const hasReport = fs6.existsSync(reportPath);
+      const taskDir = path2.join(featurePath, "tasks", t.folder);
+      const specPath = path2.join(taskDir, "spec.md");
+      const reportPath = path2.join(taskDir, "report.md");
+      const hasSpec = fs2.existsSync(specPath);
+      const hasReport = fs2.existsSync(reportPath);
       return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null);
     });
   }
@@ -7180,12 +4992,12 @@ var HiveSidebarProvider = class {
     return items;
   }
   getTaskList(featureName) {
-    const tasksPath = path4.join(getFeaturePath(this.workspaceRoot, featureName), "tasks");
-    if (!fs6.existsSync(tasksPath)) return [];
-    const folders = fs6.readdirSync(tasksPath, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+    const tasksPath = path2.join(getFeaturePath(this.workspaceRoot, featureName), "tasks");
+    if (!fs2.existsSync(tasksPath)) return [];
+    const folders = fs2.readdirSync(tasksPath, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
     return folders.map((folder) => {
-      const statusPath = path4.join(tasksPath, folder, "status.json");
-      const status = fs6.existsSync(statusPath) ? JSON.parse(fs6.readFileSync(statusPath, "utf-8")) : { status: "pending", origin: "plan" };
+      const statusPath = path2.join(tasksPath, folder, "status.json");
+      const status = fs2.existsSync(statusPath) ? JSON.parse(fs2.readFileSync(statusPath, "utf-8")) : { status: "pending", origin: "plan" };
       return { folder, status };
     });
   }
@@ -7197,8 +5009,8 @@ var HiveSidebarProvider = class {
     };
   }
   getActiveFeature() {
-    const activePath = path4.join(this.workspaceRoot, ".hive", "active-feature");
-    const configuredActive = fs6.existsSync(activePath) ? fs6.readFileSync(activePath, "utf-8").trim() : null;
+    const activePath = path2.join(this.workspaceRoot, ".hive", "active-feature");
+    const configuredActive = fs2.existsSync(activePath) ? fs2.readFileSync(activePath, "utf-8").trim() : null;
     if (configuredActive) {
       const feature = this.readFeature(configuredActive);
       if (feature && feature.status !== "completed") {
@@ -7212,33 +5024,29 @@ var HiveSidebarProvider = class {
     return available[0] ?? null;
   }
   readFeature(featureName) {
-    const featureJsonPath = path4.join(getFeaturePath(this.workspaceRoot, featureName), "feature.json");
-    if (!fs6.existsSync(featureJsonPath)) return null;
-    return JSON.parse(fs6.readFileSync(featureJsonPath, "utf-8"));
+    const featureJsonPath = path2.join(getFeaturePath(this.workspaceRoot, featureName), "feature.json");
+    if (!fs2.existsSync(featureJsonPath)) return null;
+    return JSON.parse(fs2.readFileSync(featureJsonPath, "utf-8"));
   }
-  getCommentCount(featureName) {
+  getReviewCommentCount(featureName, document2) {
     const featurePath = getFeaturePath(this.workspaceRoot, featureName);
-    const commentsPath = this.firstExistingPath([
-      path4.join(featurePath, "comments", "plan.json"),
-      path4.join(featurePath, "comments.json")
-    ]);
-    if (!commentsPath || !fs6.existsSync(commentsPath)) return 0;
+    const canonicalPath = path2.join(featurePath, "comments", `${document2}.json`);
+    const legacyPlanPath = path2.join(featurePath, "comments.json");
+    const commentsPath = fs2.existsSync(canonicalPath) ? canonicalPath : document2 === "plan" ? legacyPlanPath : null;
+    if (!commentsPath || !fs2.existsSync(commentsPath)) return 0;
     try {
-      const data = JSON.parse(fs6.readFileSync(commentsPath, "utf-8"));
+      const data = JSON.parse(fs2.readFileSync(commentsPath, "utf-8"));
       return data.threads?.length || 0;
     } catch {
       return 0;
     }
   }
-  firstExistingPath(paths) {
-    return paths.find((candidate) => fs6.existsSync(candidate)) ?? null;
-  }
 };
 
 // src/providers/planCommentController.ts
 var vscode4 = __toESM(require("vscode"));
-var fs7 = __toESM(require("fs"));
-var path6 = __toESM(require("path"));
+var fs3 = __toESM(require("fs"));
+var path3 = __toESM(require("path"));
 var PlanCommentController = class {
   constructor(workspaceRoot) {
     this.workspaceRoot = workspaceRoot;
@@ -7255,15 +5063,19 @@ var PlanCommentController = class {
     };
     const patterns = [
       new vscode4.RelativePattern(workspaceRoot, ".hive/features/*/comments.json"),
-      new vscode4.RelativePattern(workspaceRoot, ".hive/features/*/comments/plan.json")
+      new vscode4.RelativePattern(workspaceRoot, ".hive/features/*/comments/plan.json"),
+      new vscode4.RelativePattern(workspaceRoot, ".hive/features/*/comments/overview.json")
     ];
     const rootWatcher = vscode4.workspace.createFileSystemWatcher(patterns[0]);
     const nestedWatcher = vscode4.workspace.createFileSystemWatcher(patterns[1]);
+    const overviewWatcher = vscode4.workspace.createFileSystemWatcher(patterns[2]);
     rootWatcher.onDidChange((uri) => this.onCommentsFileChanged(uri));
     rootWatcher.onDidDelete((uri) => this.onCommentsFileChanged(uri));
     nestedWatcher.onDidChange((uri) => this.onCommentsFileChanged(uri));
     nestedWatcher.onDidDelete((uri) => this.onCommentsFileChanged(uri));
-    this.commentsWatchers = [rootWatcher, nestedWatcher];
+    overviewWatcher.onDidChange((uri) => this.onCommentsFileChanged(uri));
+    overviewWatcher.onDidDelete((uri) => this.onCommentsFileChanged(uri));
+    this.commentsWatchers = [rootWatcher, nestedWatcher, overviewWatcher];
   }
   controller;
   threads = /* @__PURE__ */ new Map();
@@ -7272,7 +5084,7 @@ var PlanCommentController = class {
   onCommentsFileChanged(commentsUri) {
     const target = this.getCommentsTarget(commentsUri.fsPath);
     if (!target) return;
-    this.loadComments(vscode4.Uri.file(this.getDocumentPath(target.featureName)));
+    this.loadComments(vscode4.Uri.file(this.getDocumentPath(target.featureName, target.document)));
   }
   registerCommands(context) {
     context.subscriptions.push(
@@ -7328,13 +5140,17 @@ var PlanCommentController = class {
     if (planMatch) {
       return { featureName: planMatch[1], document: "plan" };
     }
+    const overviewMatch = normalized.match(/\.hive\/features\/([^/]+)\/context\/overview\.md$/);
+    if (overviewMatch) {
+      return { featureName: overviewMatch[1], document: "overview" };
+    }
     return null;
   }
   getCommentsTarget(filePath) {
     const normalized = this.normalizePath(filePath);
-    const reviewMatch = normalized.match(/\.hive\/features\/([^/]+)\/comments\/plan\.json$/);
+    const reviewMatch = normalized.match(/\.hive\/features\/([^/]+)\/comments\/(plan|overview)\.json$/);
     if (reviewMatch) {
-      return { featureName: reviewMatch[1], document: "plan" };
+      return { featureName: reviewMatch[1], document: reviewMatch[2] };
     }
     const legacyMatch = normalized.match(/\.hive\/features\/([^/]+)\/comments\.json$/);
     if (legacyMatch) {
@@ -7383,20 +5199,26 @@ var PlanCommentController = class {
   getCommentsPath(uri) {
     const target = this.getReviewTarget(uri.fsPath);
     if (!target) return null;
-    return path6.join(this.workspaceRoot, ".hive", "features", target.featureName, "comments", "plan.json");
+    const doc = target.document === "overview" ? "overview" : "plan";
+    return path3.join(this.workspaceRoot, ".hive", "features", target.featureName, "comments", `${doc}.json`);
   }
   getReadableCommentsPath(uri) {
     const target = this.getReviewTarget(uri.fsPath);
     if (!target) return null;
-    const canonicalPath = path6.join(this.workspaceRoot, ".hive", "features", target.featureName, "comments", "plan.json");
-    if (fs7.existsSync(canonicalPath)) {
+    const doc = target.document === "overview" ? "overview" : "plan";
+    const canonicalPath = path3.join(this.workspaceRoot, ".hive", "features", target.featureName, "comments", `${doc}.json`);
+    if (fs3.existsSync(canonicalPath)) {
       return canonicalPath;
     }
-    const legacyPath = path6.join(this.workspaceRoot, ".hive", "features", target.featureName, "comments.json");
-    return legacyPath;
+    if (target.document === "plan") {
+      const legacyPath = path3.join(this.workspaceRoot, ".hive", "features", target.featureName, "comments.json");
+      return legacyPath;
+    }
+    return null;
   }
-  getDocumentPath(featureName) {
-    return path6.join(this.workspaceRoot, ".hive", "features", featureName, "plan.md");
+  getDocumentPath(featureName, document2 = "plan") {
+    const file = document2 === "overview" ? "context/overview.md" : "plan.md";
+    return path3.join(this.workspaceRoot, ".hive", "features", featureName, file);
   }
   loadComments(uri) {
     const commentsPath = this.getReadableCommentsPath(uri);
@@ -7406,9 +5228,9 @@ var PlanCommentController = class {
         this.threads.delete(id);
       }
     });
-    if (!commentsPath || !fs7.existsSync(commentsPath)) return;
+    if (!commentsPath || !fs3.existsSync(commentsPath)) return;
     try {
-      const data = JSON.parse(fs7.readFileSync(commentsPath, "utf-8"));
+      const data = JSON.parse(fs3.readFileSync(commentsPath, "utf-8"));
       for (const stored of data.threads) {
         const comments2 = [
           {
@@ -7454,8 +5276,8 @@ var PlanCommentController = class {
     });
     const data = { threads };
     try {
-      fs7.mkdirSync(path6.dirname(commentsPath), { recursive: true });
-      fs7.writeFileSync(commentsPath, JSON.stringify(data, null, 2));
+      fs3.mkdirSync(path3.dirname(commentsPath), { recursive: true });
+      fs3.writeFileSync(commentsPath, JSON.stringify(data, null, 2));
     } catch (error) {
       console.error("Failed to save comments:", error);
     }
@@ -7466,3516 +5288,7 @@ var PlanCommentController = class {
   }
 };
 
-// src/commands/initNest.ts
-var fs9 = __toESM(require("fs"));
-var path7 = __toESM(require("path"));
-init_agents();
-
-// src/generators/hooks.ts
-function buildScript(body) {
-  return `#!/usr/bin/env bash
-set -e
-
-${body.trim()}
-`;
-}
-function buildHookOutput(configFilename, config, scripts) {
-  return {
-    configFilename,
-    config,
-    scripts
-  };
-}
-function generatePlanEnforcementHook() {
-  const script = buildScript(`shopt -s nullglob
-
-input_json="$(</dev/stdin)"
-tool_name="$(jq -r '(.toolName // .tool?.name // .tool_name // .name // .tool // empty) | strings' <<<"$input_json")"
-
-if [[ "$tool_name" != 'edit' && "$tool_name" != 'editFiles' && "$tool_name" != 'execute' ]]; then
-  exit 0
-fi
-
-has_approved_plan=false
-
-for feature_json in .hive/features/*/feature.json; do
-  status="$(jq -r '.status // empty' "$feature_json")"
-  if [[ "$status" == 'approved' || "$status" == 'executing' ]]; then
-    has_approved_plan=true
-    break
-  fi
-done
-
-if [[ "$has_approved_plan" == 'true' ]]; then
-  exit 0
-fi
-
-jq -n '{ permissionDecision: "deny", message: "No approved Hive plan found. Create and approve a plan first." }'
-`);
-  return buildHookOutput(
-    "hive-plan-enforcement.json",
-    {
-      version: 1,
-      hooks: {
-        preToolUse: [
-          {
-            type: "command",
-            command: { bash: ".github/hooks/scripts/check-plan.sh" },
-            timeoutSec: 5
-          }
-        ]
-      }
-    },
-    [
-      {
-        filename: "check-plan.sh",
-        content: script
-      }
-    ]
-  );
-}
-function generateContextInjectionHook() {
-  const script = buildScript(`shopt -s nullglob
-
-active_feature=''
-
-logical_name_for_feature() {
-  local feature_json="$1"
-  local directory_name logical_name
-
-  logical_name="$(jq -r '.name // empty' "$feature_json")"
-  if [[ -n "$logical_name" ]]; then
-    printf '%s' "$logical_name"
-    return
-  fi
-
-  directory_name="\${feature_json%/feature.json}"
-  directory_name="\${directory_name##*/}"
-  if [[ "$directory_name" =~ ^[0-9]+[_-](.+)$ ]]; then
-    printf '%s' "\${BASH_REMATCH[1]}"
-    return
-  fi
-
-  printf '%s' "$directory_name"
-}
-
-if [[ -f .hive/active-feature ]]; then
-  active_feature="$(tr -d '\r
-' < .hive/active-feature)"
-fi
-
-if [[ -n "$active_feature" ]]; then
-  resolved_active_feature=''
-
-  for feature_json in .hive/features/*/feature.json; do
-    status="$(jq -r '.status // empty' "$feature_json")"
-    logical_name="$(logical_name_for_feature "$feature_json")"
-
-    if [[ "$status" != 'completed' && "$logical_name" == "$active_feature" ]]; then
-      resolved_active_feature="\${feature_json%/feature.json}"
-      resolved_active_feature="\${resolved_active_feature##*/}"
-      break
-    fi
-  done
-
-  active_feature="$resolved_active_feature"
-fi
-
-if [[ -z "$active_feature" ]]; then
-  for feature_json in .hive/features/*/feature.json; do
-    status="$(jq -r '.status // empty' "$feature_json")"
-
-    if [[ "$status" != 'completed' ]]; then
-      active_feature="\${feature_json%/feature.json}"
-      active_feature="\${active_feature##*/}"
-      break
-    fi
-  done
-fi
-
-if [[ -z "$active_feature" ]]; then
-  jq -n '{}'
-  exit 0
-fi
-
-context_dir=".hive/features/$active_feature/context"
-
-if [[ ! -d "$context_dir" ]]; then
-  context_dir=".hive/features/$active_feature/contexts"
-fi
-
-if [[ ! -d "$context_dir" ]]; then
-  jq -n '{}'
-  exit 0
-fi
-
-combined_context=''
-
-for context_file in "$context_dir"/*; do
-  if [[ ! -f "$context_file" ]]; then
-    continue
-  fi
-
-  file_name="\${context_file##*/}"
-  file_content="$(<"$context_file")"
-
-  if [[ -n "$file_content" ]]; then
-    if [[ -n "$combined_context" ]]; then
-      combined_context+=$'
-
-'
-    fi
-
-    combined_context+="## $file_name"
-    combined_context+=$'
-
-'
-    combined_context+="$file_content"
-  fi
-done
-
-if [[ -z "$combined_context" ]]; then
-  jq -n '{}'
-  exit 0
-fi
-
-jq -n --arg additionalContext "$combined_context" '{ additionalContext: $additionalContext }'
-`);
-  return buildHookOutput(
-    "hive-context-injection.json",
-    {
-      version: 1,
-      hooks: {
-        sessionStart: [
-          {
-            type: "command",
-            command: { bash: ".github/hooks/scripts/inject-context.sh" },
-            timeoutSec: 10
-          }
-        ]
-      }
-    },
-    [
-      {
-        filename: "inject-context.sh",
-        content: script
-      }
-    ]
-  );
-}
-function generateAllHooks() {
-  return [generatePlanEnforcementHook(), generateContextInjectionHook()];
-}
-
-// src/generators/instructions.ts
-function buildFrontmatter(frontmatter, content) {
-  return `---
-${frontmatter}
----
-
-${content.trim()}
-`;
-}
-function buildInstructionBody(description, applyTo, content) {
-  return buildFrontmatter(`description: "${description}"
-applyTo: "${applyTo}"`, content);
-}
-function createInstructionFile(filename, description, applyTo, content) {
-  return {
-    filename,
-    description,
-    applyTo,
-    body: buildInstructionBody(description, applyTo, content)
-  };
-}
-function generateHiveWorkflowInstructions() {
-  return createInstructionFile(
-    "hive-workflow.instructions.md",
-    "Hive plan-first development workflow",
-    "**",
-    "This project uses Hive plan-first development. Before making changes, check for an active feature with hive_status and follow Plan \u2192 Review \u2192 Approve \u2192 Execute. plan.md is the only required human-review and execution document. Load only the skill or tool guidance the current task triggers: use browser tools for web or UI inspection, Playwright MCP for browser automation or end-to-end verification, Copilot memory for durable notes needed across turns, and todo for multi-step work. Never execute code without an approved plan."
-  );
-}
-function generateCodingStandardsTemplate() {
-  return createInstructionFile(
-    "coding-standards.instructions.md",
-    "Project coding standards template",
-    "**/*.ts",
-    `## Imports
-
-<!-- TODO: customize -->
-- Prefer explicit imports and keep local import style consistent.
-
-## Naming
-
-<!-- TODO: customize -->
-- Document naming conventions for files, types, functions, and constants.
-
-## Error Handling
-
-<!-- TODO: customize -->
-- Define how errors should be surfaced, wrapped, or logged.
-
-## Testing
-
-<!-- TODO: customize -->
-- Describe required test coverage, frameworks, and verification expectations.`
-  );
-}
-function generateCopilotInstructions() {
-  return buildFrontmatter(
-    'description: "Repository-wide GitHub Copilot steering for Hive workflows"',
-    `Use AGENTS.md for the full Hive operating model and non-negotiable plan-first guardrails.
-
-Use .github/instructions/ for path-specific coding and workflow guidance, and .github/prompts/ for reusable entry points such as plan creation, plan review, execution, review handoff, and completion verification.
-
-Load .github/skills/ only when the current task triggers that workflow: parallel read-only investigation, bugs or test failures, implementation work, or completion claims.
-
-Use Copilot memory only for durable notes and todo for multi-step work.
-
-Use vscode/askQuestions for practical structured decision checkpoints wherever Copilot supports it. Use plain chat only as a fallback when the tool is unavailable or a truly lightweight clarification is better.
-
-When web research, browser inspection, or end-to-end verification is needed, prefer built-in browser tools and Playwright MCP over extension-specific substitutes.`
-  );
-}
-function generateAllInstructions() {
-  return [generateHiveWorkflowInstructions(), generateCodingStandardsTemplate()];
-}
-
-// src/generators/plugin.ts
-var pluginManifestTemplate = {
-  name: "agent-hive",
-  description: "Plan-first AI development with isolated worktrees and human review",
-  author: { name: "tctinh" },
-  repository: "https://github.com/tctinh/agent-hive",
-  license: "MIT",
-  keywords: ["planning", "orchestration", "multi-agent", "worktree", "hive"],
-  agents: [".github/agents"],
-  skills: [".github/skills/*"],
-  hooks: [".github/hooks/*"],
-  instructions: [".github/instructions"]
-};
-function generatePluginManifest(options = {}) {
-  return {
-    ...pluginManifestTemplate,
-    version: options.version ?? "1.0.0",
-    author: { ...pluginManifestTemplate.author },
-    keywords: [...pluginManifestTemplate.keywords],
-    agents: [...pluginManifestTemplate.agents],
-    skills: [...pluginManifestTemplate.skills],
-    hooks: [...pluginManifestTemplate.hooks],
-    instructions: [...pluginManifestTemplate.instructions]
-  };
-}
-
-// src/generators/prompts.ts
-var EXTENSION_ID = "tctinh.vscode-hive";
-function buildPrompt(prompt, content) {
-  const frontmatter = [
-    `name: "${prompt.name}"`,
-    `description: "${prompt.description}"`,
-    `agent: "${prompt.agent}"`,
-    `model: "${prompt.model}"`,
-    "tools:",
-    ...prompt.tools.map((tool) => `  - "${tool}"`)
-  ].join("\n");
-  return {
-    ...prompt,
-    body: `---
-${frontmatter}
----
-
-${content.trim()}
-`
-  };
-}
-function generatePlanFeaturePrompt() {
-  return buildPrompt(
-    {
-      filename: "plan-feature.prompt.md",
-      name: "Plan Hive Feature",
-      description: "Create or revise a Hive feature plan with plan-first guardrails.",
-      agent: "hive",
-      model: "gpt-5.4",
-      tools: ["read", "search", "search/codebase", "search/usages", "vscode/askQuestions", `${EXTENSION_ID}/hiveStatus`, `${EXTENSION_ID}/hivePlanWrite`]
-    },
-    `Start by checking AGENTS.md, .github/copilot-instructions.md, and any relevant .github/instructions/ files. Keep planning read-only, use built-in exploration tools first, then write or revise the plan with hive_plan_write.
-
-If key requirements are missing, use vscode/askQuestions as the normal structured clarification path for the minimum practical decision checkpoints. Use plain chat only as a fallback when the tool is unavailable or a truly lightweight clarification is better.
-
-Keep Hive's plan-first contract intact: no implementation edits, explicit task dependencies, exact file references, concrete verification commands, and an overview/design summary before ## Tasks in plan.md.`
-  );
-}
-function generateReviewPlanPrompt() {
-  return buildPrompt(
-    {
-      filename: "review-plan.prompt.md",
-      name: "Review Hive Plan",
-      description: "Inspect a Hive plan and prepare approval or revision guidance.",
-      agent: "hive",
-      model: "gpt-5.4",
-      tools: ["read", "search", `${EXTENSION_ID}/hivePlanRead`, `${EXTENSION_ID}/hiveStatus`]
-    },
-    `Read the current plan and any review comments with hive_plan_read. Summarize whether the plan is ready for approval, what revisions are required, and which task-level verification details are missing from plan.md.
-
-Keep the response focused on approval and revision guidance rather than implementation. Respect Hive's plan-first workflow and call out missing dependencies, vague acceptance criteria, or unclear references.`
-  );
-}
-function generateExecuteApprovedPlanPrompt() {
-  return buildPrompt(
-    {
-      filename: "execute-approved-plan.prompt.md",
-      name: "Execute Approved Hive Plan",
-      description: "Sync tasks from an approved plan and begin execution.",
-      agent: "hive",
-      model: "gpt-5.4",
-      tools: ["read", "search", `${EXTENSION_ID}/hivePlanRead`, `${EXTENSION_ID}/hiveStatus`, `${EXTENSION_ID}/hiveTasksSync`]
-    },
-    `Confirm the plan is approved with hive_plan_read, sync tasks with hive_tasks_sync, then delegate the next runnable task directly to @forager.
-
-Preserve Hive guardrails: follow task dependencies, keep planning and execution separate, and have the worker record progress and completion with hive_task_update rather than worktree or merge flows.
-
-If the work involves browser behavior, web flows, or end-to-end validation, prefer built-in browser tools and Playwright MCP where available instead of inventing extension-only browser helpers.`
-  );
-}
-function generateRequestReviewPrompt() {
-  return buildPrompt(
-    {
-      filename: "request-review.prompt.md",
-      name: "Request Hive Review",
-      description: "Hand completed implementation to Hygienic for code review readiness.",
-      agent: "hive",
-      model: "gpt-5.4",
-      tools: ["read", "search", `${EXTENSION_ID}/hiveStatus`]
-    },
-    `Prepare a concise code review handoff for Hygienic. Summarize the completed implementation batch, the relevant files or commits, and the verification already run.
-
-Keep this focused on review readiness and code review context so Hygienic can assess the implementation without re-planning the feature.`
-  );
-}
-function generateVerifyCompletionPrompt() {
-  return buildPrompt(
-    {
-      filename: "verify-completion.prompt.md",
-      name: "Verify Hive Completion",
-      description: "Run final verification and summarize completion readiness.",
-      agent: "hive",
-      model: "gpt-5.4",
-      tools: ["read", "search", "execute", `${EXTENSION_ID}/hiveStatus`]
-    },
-    `Apply the verification-before-completion standard: gather fresh verification evidence before claiming the work is complete.
-
-Run the relevant checks, summarize the observed results, and state whether the execution batch is ready to close or needs follow-up. Use AGENTS.md and existing verification commands as the source of truth for required checks.`
-  );
-}
-function generateAllPrompts() {
-  return [
-    generatePlanFeaturePrompt(),
-    generateReviewPlanPrompt(),
-    generateExecuteApprovedPlanPrompt(),
-    generateRequestReviewPrompt(),
-    generateVerifyCompletionPrompt()
-  ];
-}
-
-// src/generators/skills.ts
-var MAX_SKILL_NAME_LENGTH = 64;
-var MIN_SKILL_DESCRIPTION_LENGTH = 10;
-var MAX_SKILL_DESCRIPTION_LENGTH = 1024;
-var MAX_SKILL_CONTENT_LENGTH = 3e4;
-function ensureSkillName(name) {
-  const trimmed2 = name.trim();
-  if (trimmed2.length === 0 || trimmed2.length > MAX_SKILL_NAME_LENGTH) {
-    throw new Error(`Skill name must be between 1 and ${MAX_SKILL_NAME_LENGTH} characters.`);
-  }
-  return trimmed2;
-}
-function ensureSkillDescription(description) {
-  const trimmed2 = description.trim();
-  if (trimmed2.length < MIN_SKILL_DESCRIPTION_LENGTH || trimmed2.length > MAX_SKILL_DESCRIPTION_LENGTH) {
-    throw new Error(
-      `Skill description must be between ${MIN_SKILL_DESCRIPTION_LENGTH} and ${MAX_SKILL_DESCRIPTION_LENGTH} characters.`
-    );
-  }
-  return trimmed2;
-}
-function stripFrontmatter(content) {
-  const normalized = content.trim();
-  if (!normalized.startsWith("---\n")) {
-    return normalized;
-  }
-  const endIndex = normalized.indexOf("\n---\n", 4);
-  if (endIndex === -1) {
-    return normalized;
-  }
-  return normalized.slice(endIndex + 5).trim();
-}
-function buildFrontmatter2(name, description) {
-  return `---
-name: ${name}
-description: ${description}
----`;
-}
-function assertSkillContentLength(content) {
-  if (content.length > MAX_SKILL_CONTENT_LENGTH) {
-    throw new Error(`Skill content must be at most ${MAX_SKILL_CONTENT_LENGTH} characters.`);
-  }
-  return content;
-}
-function generateSkillFile(skill) {
-  const name = ensureSkillName(skill.name);
-  const description = ensureSkillDescription(skill.description);
-  const body = stripFrontmatter(skill.content);
-  const content = `${buildFrontmatter2(name, description)}
-
-${body}
-`;
-  return assertSkillContentLength(content);
-}
-var builtinSkillSources = [
-  {
-    name: "writing-plans",
-    description: "Use when you have a spec or requirements for a multi-step task, before touching code",
-    body: `# Writing Plans
-
-## Overview
-
-Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
-
-Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
-
-**Announce at start:** "I'm using the writing-plans skill to create the implementation plan."
-
-**Context:** Planning is read-only. Use \`hive_feature_create\` + \`hive_plan_write\` and keep implementation out of the planning session.
-
-**Save plans to:** \`hive_plan_write\` (writes to \`.hive/features/<feature>/plan.md\`)
-
-## Task Lookup and Working Notes
-
-- If a feature or draft plan already exists, start from \`hive_status()\` to confirm the active feature, current task IDs, and any blocked or runnable work before revising the plan.
-- Use \`todo\` only when shaping a multi-task plan or review response needs an active checklist.
-- Use \`vscode/memory\` only for durable planning decisions or blocker history that future turns need.
-
-## Bite-Sized Task Granularity
-
-**Each step is one action (2-5 minutes):**
-- "Write the failing test" - step
-- "Run it to make sure it fails" - step
-- "Implement the minimal code to make the test pass" - step
-- "Run the tests and make sure they pass" - step
-- "Commit" - step
-
-## Plan Structure
-
-**Every plan MUST follow this structure:**
-
-\`\`\`\`markdown
-# [Feature Name]
-
-## Discovery
-
-### Original Request
-- "{User's exact words}"
-
-### Interview Summary
-- {Point}: {Decision}
-
-### Research Findings
-- \`{file:lines}\`: {Finding}
-
----
-
-## Non-Goals (What we're NOT building)
-- {Explicit exclusion}
-
----
-
-## Design Summary
-
-{Concise human-facing summary of the feature before task details. Optional Mermaid is allowed here for dependency or sequence overview only.}
-
----
-
-## Tasks
-
-### 1. Task Name
-
-Use the Task Structure template below for every task.
-\`\`\`\`
-
-
-## Task Structure
-
-The **Depends on** annotation declares task execution order:
-- **Depends on**: none \u2014 No dependencies; can run immediately or in parallel
-- **Depends on**: 1 \u2014 Depends on task 1
-- **Depends on**: 1, 3 \u2014 Depends on tasks 1 and 3
-
-Always include **Depends on** for each task. Use \`none\` to enable parallel starts.
-
-\`\`\`\`markdown
-### N. Task Name
-
-**Depends on**: none
-
-**Files:**
-- Create: \`exact/path/to/file.py\`
-- Modify: \`exact/path/to/existing.py:123-145\`
-- Test: \`tests/exact/path/to/test.py\`
-
-**What to do**:
-- Step 1: Write the failing test
-  \`\`\`python
-  def test_specific_behavior():
-      result = function(input)
-      assert result == expected
-  \`\`\`
-- Step 2: Run test to verify it fails
-  - Run: \`pytest tests/path/test.py::test_name -v\`
-  - Expected: FAIL with "function not defined"
-- Step 3: Write minimal implementation
-  \`\`\`python
-  def function(input):
-      return expected
-  \`\`\`
-- Step 4: Run test to verify it passes
-  - Run: \`pytest tests/path/test.py::test_name -v\`
-  - Expected: PASS
-- Step 5: Commit
-  \`\`\`bash
-  git add tests/path/test.py src/path/file.py
-  git commit -m "feat: add specific feature"
-  \`\`\`
-
-**Must NOT do**:
-- {Task guardrail}
-
-**References**:
-- \`{file:lines}\` \u2014 {Why this reference matters}
-
-**Verify**:
-- [ ] Run: \`{command}\` \u2192 {expected}
-- [ ] {Additional acceptance criteria}
-
-All verification MUST be agent-executable (no human intervention):
-\u2705 \`bun test\` \u2192 all pass
-\u2705 \`curl -X POST /api/x\` \u2192 201
-\u274C "User manually tests..."
-\u274C "Visually confirm..."
-\`\`\`\`
-
-## Remember
-- Exact file paths always
-- Complete code in plan (not "add validation")
-- Exact commands with expected output
-- Reference relevant skills with @ syntax
-- DRY, YAGNI, TDD, frequent commits
-- All acceptance criteria must be agent-executable (zero human intervention)
-- Treat \`plan.md\` as the human-facing review surface and execution truth
-- Every plan needs a concise human-facing \`Design Summary\` before \`## Tasks\`
-- Make that section an overview/design summary before \`## Tasks\`
-- Use Copilot memory or normal file edits when planning notes are needed; do not depend on special-purpose note helpers
-
-## Execution Handoff
-
-After saving the plan, ask whether to consult Hygienic (Consultant/Reviewer/Debugger) before offering execution choice.
-
-Plan complete and saved to \`.hive/features/<feature>/plan.md\`.
-
-Two execution options:
-1. Agent-Driven (this session) - I dispatch fresh subagent per task, review between tasks, fast iteration
-2. Parallel Session (separate) - Open new session with executing-plans, batch execution with checkpoints
-
-Which approach?
-
-**If Agent-Driven chosen:**
-- Stay in this session
-- Fresh subagent per task + code review
-
-**If Parallel Session chosen:**
-- Guide them to open a new Copilot session focused on execution
-- **REQUIRED SUB-SKILL:** New session uses Refer to the skill at .github/skills/executing-plans/SKILL.md
-`
-  },
-  {
-    name: "executing-plans",
-    description: "Use when you have a written implementation plan to execute in a separate session with review checkpoints",
-    body: `# Executing Plans
-
-## Overview
-
-Load plan, review critically, execute tasks in batches, report for review between batches.
-
-**Core principle:** Batch execution with checkpoints for architect review.
-
-**Announce at start:** "I'm using the executing-plans skill to implement this plan."
-
-## The Process
-
-### Step 1: Load and Review Plan
-1. Read plan file
-2. Review critically - identify any questions or concerns about the plan
-3. If concerns: Raise them with your human partner before starting
-4. If no concerns: Create a short checklist in \`todo\` or your working notes only when the batch has enough moving parts to justify active tracking, then proceed
-
-### Step 2: Identify Runnable Tasks
-
-Use \`hive_status()\` to get the **runnable** list \u2014 tasks with all dependencies satisfied.
-
-Only \`done\` satisfies dependencies (not \`blocked\`, \`failed\`, \`partial\`, \`cancelled\`).
-
-**When 2+ tasks are runnable:**
-- Prefer \`vscode/askQuestions\` for a structured choice: "Multiple tasks are runnable: [list]. Run in parallel, sequential, or a specific subset?"
-- Fall back to asking directly in chat only when \`vscode/askQuestions\` is unavailable or a lightweight follow-up is enough
-- Record the decision in Copilot memory or current working notes only when future turns need it
-
-**When 1 task is runnable:** Proceed directly.
-
-Use \`vscode/memory\` only for durable execution decisions or blocker history that future turns need.
-
-### Step 3: Execute Batch
-
-For each task in the batch:
-1. Delegate implementation directly to @forager
-2. Make sure the worker reads the approved plan and records progress with \`hive_task_update\`
-3. Follow each step exactly (plan has bite-sized steps)
-4. Run verifications as specified and confirm the task state is updated accurately
-
-### Step 4: Report
-When batch complete:
-- Show what was implemented
-- Show verification output
-- Say: "Ready for feedback."
-
-### Step 4.5: Post-Batch Hygienic Review
-
-After the batch report, prefer \`vscode/askQuestions\` to ask whether the user wants a Hygienic code review for the batch.
-Fall back to asking directly in chat only when \`vscode/askQuestions\` is unavailable or a lightweight follow-up is enough.
-If yes, invoke the @hygienic agent via the agent tool to review implementation changes from the latest batch, then apply feedback before starting the next batch.
-
-### Step 5: Continue
-Based on feedback:
-- Apply changes if needed
-- Execute next batch
-- Repeat until complete
-
-### Step 6: Complete Development
-
-After all tasks complete and verified:
-- Announce: "I'm using the verification-before-completion skill to complete this work."
-- **REQUIRED SUB-SKILL:** Refer to the skill at .github/skills/verification-before-completion/SKILL.md
-- Follow that skill to verify tests, present options, execute choice
-
-## When to Stop and Ask for Help
-
-**STOP executing immediately when:**
-- Hit a blocker mid-batch (missing dependency, test fails, instruction unclear)
-- Plan has critical gaps preventing starting
-- You don't understand an instruction
-- Verification fails repeatedly
-
-**Ask for clarification rather than guessing.**
-
-## When to Revisit Earlier Steps
-
-**Return to Review (Step 1) when:**
-- Partner updates the plan based on your feedback
-- Fundamental approach needs rethinking
-
-**Don't force through blockers** - stop and ask.
-
-## Remember
-- Review plan critically first
-- Follow plan steps exactly
-- Don't skip verifications
-- Reference skills when plan says to
-- Between batches: just report and wait
-- Stop when blocked, don't guess
-`
-  },
-  {
-    name: "brainstorming",
-    description: "Use before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.",
-    body: `# Brainstorming Ideas Into Designs
-
-## Overview
-
-Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
-
-Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design in small sections (200-300 words), checking after each section whether it looks right so far.
-
-## The Process
-
-**Understanding the idea:**
-- Check out the current project state first (files, docs, recent commits)
-- Ask questions one at a time to refine the idea
-- Prefer multiple choice questions when possible, but open-ended is fine too
-- Only one question per message - if a topic needs more exploration, break it into multiple questions
-- Focus on understanding: purpose, constraints, success criteria
-
-**Exploring approaches:**
-- Propose 2-3 different approaches with trade-offs
-- Present options conversationally with your recommendation and reasoning
-- Lead with your recommended option and explain why
-
-**Presenting the design:**
-- Once you believe you understand what you're building, present the design
-- Break it into sections of 200-300 words
-- Ask after each section whether it looks right so far
-- Cover: architecture, components, data flow, error handling, testing
-- Be ready to go back and clarify if something doesn't make sense
-
-## After the Design
-
-**Documentation:**
-- Write the validated design to \`docs/plans/YYYY-MM-DD-<topic>-design.md\`
-- Commit the design document to git
-
-**Implementation (if continuing):**
-- Ask: "Ready to set up for implementation?"
-- Refer to the skill at .github/skills/writing-plans/SKILL.md to create a detailed implementation plan
-
-## Key Principles
-
-- **One question at a time** - Don't overwhelm with multiple questions
-- **Multiple choice preferred** - Easier to answer than open-ended when possible
-- **YAGNI ruthlessly** - Remove unnecessary features from all designs
-- **Explore alternatives** - Always propose 2-3 approaches before settling
-- **Incremental validation** - Present design in sections, validate each
-- **Be flexible** - Go back and clarify when something doesn't make sense
-- **Challenge assumptions** - Surface fragile assumptions, ask what changes if they fail, offer lean fallback options
-`
-  },
-  {
-    name: "parallel-exploration",
-    description: "Use when you need parallel, read-only exploration with the agent tool (Scout fan-out)",
-    body: `# Parallel Exploration (Scout Fan-Out)
-
-## Overview
-
-When you need to answer "where/how does X work?" across multiple domains (codebase, tests, docs, OSS), investigating sequentially wastes time. Each investigation is independent and can happen in parallel.
-
-**Core principle:** Decompose into independent sub-questions, invoke one scout agent per sub-question, and synthesize the results together.
-
-**Safe in Planning mode:** This is read-only exploration. It is OK to use during exploratory research even when there is no feature, no plan, and no approved tasks.
-
-**This skill is for read-only research.** For parallel implementation work, refer to the skill at .github/skills/dispatching-parallel-agents/SKILL.md and invoke @forager directly for each runnable task.
-
-## When to Use
-
-**Default to this skill when:**
-**Use when:**
-- Investigation spans multiple domains (code + tests + docs)
-- User asks **2+ questions across different domains** (e.g., code + tests, code + docs/OSS, code + config/runtime)
-- Questions are independent (answer to A doesn't affect B)
-- User asks **3+ independent questions** (often as a numbered list or separate bullets)
-- No edits needed (read-only exploration)
-- User asks for an exploration that likely spans multiple files/packages
-- The work is read-only and the questions can be investigated independently
-
-**Only skip this skill when:**
-- Investigation requires shared state or context between questions
-- It's a single focused question that is genuinely answerable with **one quick grep + one file read**
-- Questions are dependent (answer A materially changes what to ask for B)
-- Work involves file edits (use Hive tasks / Forager instead)
-
-**Important:** Do not treat "this is exploratory" as a reason to avoid delegation. This skill is specifically for exploratory research when fan-out makes it faster and cleaner.
-
-## Tool-Aware Research
-
-Load this skill before any multi-domain, read-only investigation that benefits from Scout fan-out.
-
-- When the answer depends on rendered UI, browser state, console output, or network activity, use \`browser\` as one of the read-only slices.
-- When external docs, APIs, or third-party implementations matter, use \`web\` or \`io.github.upstash/context7/*\` for the docs/OSS slice.
-- Use \`todo\` only when you need to track multiple questions and evidence coverage during synthesis.
-- Use \`vscode/memory\` only for findings the parent agent or a later turn will need after synthesis.
-
-## The Pattern
-
-### 1. Decompose Into Independent Questions
-
-Split your investigation into 2-4 independent sub-questions. Good decomposition:
-
-| Domain | Question Example |
-|--------|------------------|
-| Codebase | "Where is X implemented? What files define it?" |
-| Tests | "How is X tested? What test patterns exist?" |
-| Docs/OSS | "How do other projects implement X? What's the recommended pattern?" |
-| Config | "How is X configured? What environment variables affect it?" |
-
-**Bad decomposition (dependent questions):**
-- "What is X?" then "How is X used?" (second depends on first)
-- "Find the bug" then "Fix the bug" (not read-only)
-
-### 2. Invoke Scout Agents in Parallel
-
-Start all independent scout requests before waiting on any result.
-
-\`\`\`text
-Invoke the @scout agent via the agent tool for question 1.
-Invoke the @scout agent via the agent tool for question 2.
-Invoke the @scout agent via the agent tool for question 3.
-\`\`\`
-
-**Key points:**
-- Invoke the @scout agent via the agent tool for read-only exploration
-- Give each invocation a clear, focused scope
-- Make prompts specific about what evidence to return
-
-### 3. Continue Working (Optional)
-
-While tasks run, you can:
-- Work on other aspects of the problem
-- Prepare synthesis structure
-- Start drafting based on what you already know
-
-Each scout result returns to the parent chat when it completes.
-
-### 4. Collect Results
-
-When each task completes, its result is returned directly. Collect the outputs from each task and proceed to synthesis.
-
-### 5. Synthesize Findings
-
-Combine results from all tasks:
-- Cross-reference findings (file X mentioned by tasks A and B)
-- Identify gaps (task C found nothing, need different approach)
-- Build coherent answer from parallel evidence
-
-### 6. Cleanup (If Needed)
-
-No manual cancellation is required for these agent invocations.
-
-## Prompt Templates
-
-### Codebase Slice
-
-\`\`\`
-Investigate [TOPIC] in the codebase:
-- Where is [X] defined/implemented?
-- What files contain [X]?
-- How does [X] interact with [Y]?
-
-Return:
-- File paths with line numbers
-- Brief code snippets as evidence
-- Key patterns observed
-\`\`\`
-
-### Tests Slice
-
-\`\`\`
-Investigate how [TOPIC] is tested:
-- What test files cover [X]?
-- What testing patterns are used?
-- What edge cases are tested?
-
-Return:
-- Test file paths
-- Example test patterns
-- Coverage gaps if obvious
-\`\`\`
-
-### Docs/OSS Slice
-
-\`\`\`
-Research [TOPIC] in external sources:
-- How do other projects implement [X]?
-- What does the official documentation say?
-- What are common patterns/anti-patterns?
-
-Return:
-- Links to relevant docs/repos
-- Key recommendations
-- Patterns that apply to our codebase
-\`\`\`
-
-## Real Example
-
-**Investigation:** "How does the API routing system work?"
-
-**Decomposition:**
-1. Implementation: Where are API routes defined?
-2. Routing: How does route registration work?
-3. Notifications: How are errors surfaced to the caller?
-
-**Fan-out:**
-\`\`\`text
-Invoke the @scout agent via the agent tool to find API route implementation.
-Invoke the @scout agent via the agent tool to analyze concurrency.
-Invoke the @scout agent via the agent tool to find the notification mechanism.
-\`\`\`
-
-**Results:**
-- Task 1: Found \`background-tools.ts\` (tool definition), \`index.ts\` (registration)
-- Task 2: Found \`manager.ts\` with concurrency=3 default, queue-based scheduling
-- Task 3: Found \`session.prompt()\` call in manager for parent notification
-
-**Synthesis:** Complete picture of background task lifecycle in ~1/3 the time of sequential investigation.
-
-## Common Mistakes
-
-**Spawning sequentially (defeats the purpose):**
-\`\`\`text
-Bad: invoke one scout agent, wait, then decide whether to invoke the next.
-\`\`\`
-
-\`\`\`text
-Good: issue all independent scout invocations in the same response.
-\`\`\`
-
-**Too many tasks (diminishing returns):**
-- 2-4 tasks: Good parallelization
-- 5+ tasks: Overhead exceeds benefit, harder to synthesize
-
-**Dependent questions:**
-- Don't spawn task B if it needs task A's answer
-- Either make them independent or run sequentially
-
-**Using for edits:**
-- Scout is read-only; use Forager for implementation
-- This skill is for exploration, not execution
-
-## Key Benefits
-
-1. **Speed** - 3 investigations in time of 1
-2. **Focus** - Each Scout has narrow scope
-3. **Independence** - No interference between tasks
-4. **Flexibility** - Cancel unneeded tasks, add new ones
-
-## Verification
-
-After using this pattern, verify:
-- [ ] All tasks spawned before collecting any results (true fan-out)
-- [ ] Verified agent-tool fan-out pattern used for parallel exploration
-- [ ] Synthesized findings into coherent answer
-`
-  },
-  {
-    name: "dispatching-parallel-agents",
-    description: "Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies",
-    body: `# Dispatching Parallel Agents
-
-## Overview
-
-When you have multiple unrelated failures (different test files, different subsystems, different bugs), investigating them sequentially wastes time. Each investigation is independent and can happen in parallel.
-
-**Core principle:** Dispatch one agent per independent problem domain. Let them work concurrently.
-
-Load this skill when \`hive_status()\` shows 2+ runnable independent tasks. If the work is still read-only investigation, refer to the skill at .github/skills/parallel-exploration/SKILL.md instead.
-
-## Prerequisite: Check Runnable Tasks
-
-Before dispatching, use \`hive_status()\` to get the **runnable** list \u2014 tasks whose dependencies are all satisfied.
-
-**Only dispatch tasks that are runnable.** Never start tasks with unmet dependencies.
-
-Only \`done\` satisfies dependencies (not \`blocked\`, \`failed\`, \`partial\`, \`cancelled\`).
-
-**Ask the operator first:**
-- Prefer \`vscode/askQuestions\` for the approval prompt: "These tasks are runnable and independent: [list]. Execute in parallel?"
-- Fall back to asking directly in chat only when \`vscode/askQuestions\` is unavailable or a lightweight follow-up is enough
-- Record the decision in Copilot memory or current working notes only when future turns need it
-- Use \`todo\` only when the batch needs a live checklist for task ownership, integration, or follow-up.
-- Use \`vscode/memory\` only for durable coordination decisions or blocker history that future turns need.
-- Proceed only after operator approval
-
-## When to Use
-
-\`\`\`dot
-digraph when_to_use {
-    "Multiple failures?" [shape=diamond];
-    "Are they independent?" [shape=diamond];
-    "Single agent investigates all" [shape=box];
-    "One agent per problem domain" [shape=box];
-    "Can they work in parallel?" [shape=diamond];
-    "Sequential agents" [shape=box];
-    "Parallel dispatch" [shape=box];
-
-    "Multiple failures?" -> "Are they independent?" [label="yes"];
-    "Are they independent?" -> "Single agent investigates all" [label="no - related"];
-    "Are they independent?" -> "Can they work in parallel?" [label="yes"];
-    "Can they work in parallel?" -> "Parallel dispatch" [label="yes"];
-    "Can they work in parallel?" -> "Sequential agents" [label="no - shared state"];
-}
-\`\`\`
-
-**Use when:**
-- 3+ test files failing with different root causes
-- Multiple subsystems broken independently
-- Each problem can be understood without context from others
-- No shared state between investigations
-
-**Don't use when:**
-- Failures are related (fix one might fix others)
-- Need to understand full system state
-- Agents would interfere with each other
-
-## The Pattern
-
-### 1. Identify Independent Domains
-
-Group failures by what's broken:
-- File A tests: Tool approval flow
-- File B tests: Batch completion behavior
-- File C tests: Abort functionality
-
-Each domain is independent - fixing tool approval doesn't affect abort tests.
-
-### 2. Create Focused Agent Tasks
-
-Each agent gets:
-- **Specific scope:** One test file or subsystem
-- **Clear goal:** Make these tests pass
-- **Constraints:** Don't change other code
-- **Expected output:** Summary of what you found and fixed
-
-### 3. Dispatch in Parallel
-
-\`\`\`text
-Invoke @forager for runnable task 01 and require \`hive_task_update\` for progress reporting.
-Invoke @forager for runnable task 02 and require \`hive_task_update\` for progress reporting.
-Invoke @forager for runnable task 03 and require \`hive_task_update\` for progress reporting.
-\`\`\`
-
-Parallelize by issuing multiple agent-tool invocations in the same response.
-
-\`\`\`text
-Invoke the appropriate agent for failure A.
-Invoke the appropriate agent for failure B.
-\`\`\`
-
-### 4. Review and Integrate
-
-When agents return:
-- Read each summary
-- Verify fixes don't conflict
-- Run full test suite
-- Apply any needed follow-up edits directly and rerun verification
-
-## Agent Prompt Structure
-
-Good agent prompts are:
-1. **Focused** - One clear problem domain
-2. **Self-contained** - All context needed to understand the problem
-3. **Specific about output** - What should the agent return?
-
-\`\`\`markdown
-Fix the 3 failing tests in src/agents/agent-tool-abort.test.ts:
-
-1. "should abort tool with partial output capture" - expects 'interrupted at' in message
-2. "should handle mixed completed and aborted tools" - fast tool aborted instead of completed
-3. "should properly track pendingToolCount" - expects 3 results but gets 0
-
-These are timing/race condition issues. Your task:
-
-1. Read the test file and understand what each test verifies
-2. Identify root cause - timing issues or actual bugs?
-3. Fix by:
-   - Replacing arbitrary timeouts with event-based waiting
-   - Fixing bugs in abort implementation if found
-   - Adjusting test expectations if testing changed behavior
-
-Do NOT just increase timeouts - find the real issue.
-
-Return: Summary of what you found and what you fixed.
-\`\`\`
-
-## Common Mistakes
-
-**\u274C Too broad:** "Fix all the tests" - agent gets lost
-**\u2705 Specific:** "Fix agent-tool-abort.test.ts" - focused scope
-
-**\u274C No context:** "Fix the race condition" - agent doesn't know where
-**\u2705 Context:** Paste the error messages and test names
-
-**\u274C No constraints:** Agent might refactor everything
-**\u2705 Constraints:** "Do NOT change production code" or "Fix tests only"
-
-**\u274C Vague output:** "Fix it" - you don't know what changed
-**\u2705 Specific:** "Return summary of root cause and changes"
-
-## When NOT to Use
-
-**Related failures:** Fixing one might fix others - investigate together first
-**Need full context:** Understanding requires seeing entire system
-**Exploratory debugging:** You don't know what's broken yet
-**Shared state:** Agents would interfere (editing same files, using same resources)
-
-## Real Example from Session
-
-**Scenario:** 6 test failures across 3 files after major refactoring
-
-**Failures:**
-- agent-tool-abort.test.ts: 3 failures (timing issues)
-- batch-completion-behavior.test.ts: 2 failures (tools not executing)
-- tool-approval-race-conditions.test.ts: 1 failure (execution count = 0)
-
-**Decision:** Independent domains - abort logic separate from batch completion separate from race conditions
-
-**Dispatch:**
-\`\`\`
-Agent 1 \u2192 Fix agent-tool-abort.test.ts
-Agent 2 \u2192 Fix batch-completion-behavior.test.ts
-Agent 3 \u2192 Fix tool-approval-race-conditions.test.ts
-\`\`\`
-
-**Results:**
-- Agent 1: Replaced timeouts with event-based waiting
-- Agent 2: Fixed event structure bug (threadId in wrong place)
-- Agent 3: Added wait for async tool execution to complete
-
-**Integration:** All fixes independent, no conflicts, full suite green
-
-**Time saved:** 3 problems solved in parallel vs sequentially
-
-## Key Benefits
-
-1. **Parallelization** - Multiple investigations happen simultaneously
-2. **Focus** - Each agent has narrow scope, less context to track
-3. **Independence** - Agents don't interfere with each other
-4. **Speed** - 3 problems solved in time of 1
-
-## Verification
-
-After agents return:
-1. **Review each summary** - Understand what changed
-2. **Check for conflicts** - Did agents edit same code?
-3. **Run full suite** - Verify all fixes work together
-4. **Spot check** - Agents can make systematic errors
-
-## Real-World Impact
-
-From debugging session (2025-10-03):
-- 6 failures across 3 files
-- 3 agents dispatched in parallel
-- All investigations completed concurrently
-- All fixes integrated successfully
-- Zero conflicts between agent changes
-`
-  },
-  {
-    name: "systematic-debugging",
-    description: "Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes",
-    body: `# Systematic Debugging
-
-## Overview
-
-Random fixes waste time and create new bugs. Quick patches mask underlying issues.
-
-**Core principle:** ALWAYS find root cause before attempting fixes. Symptom fixes are failure.
-
-**Violating the letter of this process is violating the spirit of debugging.**
-
-## The Iron Law
-
-\`\`\`
-NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
-\`\`\`
-
-If you haven't completed Phase 1, you cannot propose fixes.
-
-## When to Use
-
-Use for ANY technical issue:
-- Test failures
-- Bugs in production
-- Unexpected behavior
-- Performance problems
-- Build failures
-- Integration issues
-
-**Use this ESPECIALLY when:**
-- Under time pressure (emergencies make guessing tempting)
-- "Just one quick fix" seems obvious
-- You've already tried multiple fixes
-- Previous fix didn't work
-- You don't fully understand the issue
-
-**Don't skip when:**
-- Issue seems simple (simple bugs have root causes too)
-- You're in a hurry (rushing guarantees rework)
-- Manager wants it fixed NOW (systematic is faster than thrashing)
-
-## Tool-Aware Evidence Gathering
-
-- If the issue depends on rendered UI, browser state, console output, or network activity, reproduce it with \`browser\` before changing code.
-- Use \`playwright/*\` when you need a repeatable browser repro or end-to-end trace.
-- Use \`todo\` only when tracking multiple hypotheses, component boundaries, or repro attempts.
-- Use \`vscode/memory\` only for durable root-cause findings or blocker history another turn will need.
-
-## The Four Phases
-
-You MUST complete each phase before proceeding to the next.
-
-### Phase 1: Root Cause Investigation
-
-**BEFORE attempting ANY fix:**
-
-1. **Read Error Messages Carefully**
-   - Don't skip past errors or warnings
-   - They often contain the exact solution
-   - Read stack traces completely
-   - Note line numbers, file paths, error codes
-
-2. **Reproduce Consistently**
-   - Can you trigger it reliably?
-   - What are the exact steps?
-   - Does it happen every time?
-   - If not reproducible \u2192 gather more data, don't guess
-
-3. **Check Recent Changes**
-   - What changed that could cause this?
-   - Git diff, recent commits
-   - New dependencies, config changes
-   - Environmental differences
-
-4. **Gather Evidence in Multi-Component Systems**
-
-   **WHEN system has multiple components (CI \u2192 build \u2192 signing, API \u2192 service \u2192 database):**
-
-   **BEFORE proposing fixes, add diagnostic instrumentation:**
-   \`\`\`
-   For EACH component boundary:
-     - Log what data enters component
-     - Log what data exits component
-     - Verify environment/config propagation
-     - Check state at each layer
-
-   Run once to gather evidence showing WHERE it breaks
-   THEN analyze evidence to identify failing component
-   THEN investigate that specific component
-   \`\`\`
-
-   **Example (multi-layer system):**
-   \`\`\`bash
-   # Layer 1: Workflow
-   echo "=== Secrets available in workflow: ==="
-   echo "IDENTITY: \${IDENTITY:+SET}\${IDENTITY:-UNSET}"
-
-   # Layer 2: Build script
-   echo "=== Env vars in build script: ==="
-   env | grep IDENTITY || echo "IDENTITY not in environment"
-
-   # Layer 3: Signing script
-   echo "=== Keychain state: ==="
-   security list-keychains
-   security find-identity -v
-
-   # Layer 4: Actual signing
-   codesign --sign "$IDENTITY" --verbose=4 "$APP"
-   \`\`\`
-
-   **This reveals:** Which layer fails (secrets \u2192 workflow \u2713, workflow \u2192 build \u2717)
-
-5. **Trace Data Flow**
-
-   **WHEN error is deep in call stack:**
-
-   See \`root-cause-tracing.md\` in this directory for the complete backward tracing technique.
-
-   **Quick version:**
-   - Where does bad value originate?
-   - What called this with bad value?
-   - Keep tracing up until you find the source
-   - Fix at source, not at symptom
-
-### Phase 2: Pattern Analysis
-
-**Find the pattern before fixing:**
-
-1. **Find Working Examples**
-   - Locate similar working code in same codebase
-   - What works that's similar to what's broken?
-
-2. **Compare Against References**
-   - If implementing pattern, read reference implementation COMPLETELY
-   - Don't skim - read every line
-   - Understand the pattern fully before applying
-
-3. **Identify Differences**
-   - What's different between working and broken?
-   - List every difference, however small
-   - Don't assume "that can't matter"
-
-4. **Understand Dependencies**
-   - What other components does this need?
-   - What settings, config, environment?
-   - What assumptions does it make?
-
-### Phase 3: Hypothesis and Testing
-
-**Scientific method:**
-
-1. **Form Single Hypothesis**
-   - State clearly: "I think X is the root cause because Y"
-   - Write it down
-   - Be specific, not vague
-
-2. **Test Minimally**
-   - Make the SMALLEST possible change to test hypothesis
-   - One variable at a time
-   - Don't fix multiple things at once
-
-3. **Verify Before Continuing**
-   - Did it work? Yes \u2192 Phase 4
-   - Didn't work? Form NEW hypothesis
-   - DON'T add more fixes on top
-
-4. **When You Don't Know**
-   - Say "I don't understand X"
-   - Don't pretend to know
-   - Ask for help
-   - Research more
-
-### Phase 4: Implementation
-
-**Fix the root cause, not the symptom:**
-
-1. **Create Failing Test Case**
-   - Simplest possible reproduction
-   - Automated test if possible
-   - One-off test script if no framework
-   - MUST have before fixing
-   - Refer to the skill at .github/skills/test-driven-development/SKILL.md for writing proper failing tests
-
-2. **Implement Single Fix**
-   - Address the root cause identified
-   - ONE change at a time
-   - No "while I'm here" improvements
-   - No bundled refactoring
-
-3. **Verify Fix**
-   - Test passes now?
-   - No other tests broken?
-   - Issue actually resolved?
-
-4. **If Fix Doesn't Work**
-   - STOP
-   - Count: How many fixes have you tried?
-   - If < 3: Return to Phase 1, re-analyze with new information
-   - **If \u2265 3: STOP and question the architecture (step 5 below)**
-   - DON'T attempt Fix #4 without architectural discussion
-
-5. **If 3+ Fixes Failed: Question Architecture**
-
-   **Pattern indicating architectural problem:**
-   - Each fix reveals new shared state/coupling/problem in different place
-   - Fixes require "massive refactoring" to implement
-   - Each fix creates new symptoms elsewhere
-
-   **STOP and question fundamentals:**
-   - Is this pattern fundamentally sound?
-   - Are we "sticking with it through sheer inertia"?
-   - Should we refactor architecture vs. continue fixing symptoms?
-
-   **Discuss with your human partner before attempting more fixes**
-
-   This is NOT a failed hypothesis - this is a wrong architecture.
-
-## Red Flags - STOP and Follow Process
-
-If you catch yourself thinking:
-- "Quick fix for now, investigate later"
-- "Just try changing X and see if it works"
-- "Add multiple changes, run tests"
-- "Skip the test, I'll manually verify"
-- "It's probably X, let me fix that"
-- "I don't fully understand but this might work"
-- "Pattern says X but I'll adapt it differently"
-- "Here are the main problems: [lists fixes without investigation]"
-- Proposing solutions before tracing data flow
-- **"One more fix attempt" (when already tried 2+)**
-- **Each fix reveals new problem in different place**
-
-**ALL of these mean: STOP. Return to Phase 1.**
-
-**If 3+ fixes failed:** Question the architecture (see Phase 4.5)
-
-## your human partner's Signals You're Doing It Wrong
-
-**Watch for these redirections:**
-- "Is that not happening?" - You assumed without verifying
-- "Will it show us...?" - You should have added evidence gathering
-- "Stop guessing" - You're proposing fixes without understanding
-- "Ultrathink this" - Question fundamentals, not just symptoms
-- "We're stuck?" (frustrated) - Your approach isn't working
-
-**When you see these:** STOP. Return to Phase 1.
-
-## Common Rationalizations
-
-| Excuse | Reality |
-|--------|---------|
-| "Issue is simple, don't need process" | Simple issues have root causes too. Process is fast for simple bugs. |
-| "Emergency, no time for process" | Systematic debugging is FASTER than guess-and-check thrashing. |
-| "Just try this first, then investigate" | First fix sets the pattern. Do it right from the start. |
-| "I'll write test after confirming fix works" | Untested fixes don't stick. Test first proves it. |
-| "Multiple fixes at once saves time" | Can't isolate what worked. Causes new bugs. |
-| "Reference too long, I'll adapt the pattern" | Partial understanding guarantees bugs. Read it completely. |
-| "I see the problem, let me fix it" | Seeing symptoms \u2260 understanding root cause. |
-| "One more fix attempt" (after 2+ failures) | 3+ failures = architectural problem. Question pattern, don't fix again. |
-
-## Quick Reference
-
-| Phase | Key Activities | Success Criteria |
-|-------|---------------|------------------|
-| **1. Root Cause** | Read errors, reproduce, check changes, gather evidence | Understand WHAT and WHY |
-| **2. Pattern** | Find working examples, compare | Identify differences |
-| **3. Hypothesis** | Form theory, test minimally | Confirmed or new hypothesis |
-| **4. Implementation** | Create test, fix, verify | Bug resolved, tests pass |
-
-## When Process Reveals "No Root Cause"
-
-If systematic investigation reveals issue is truly environmental, timing-dependent, or external:
-
-1. You've completed the process
-2. Document what you investigated
-3. Implement appropriate handling (retry, timeout, error message)
-4. Add monitoring/logging for future investigation
-
-**But:** 95% of "no root cause" cases are incomplete investigation.
-
-## Supporting Techniques
-
-These techniques are part of systematic debugging and available in this directory:
-
-- **\`root-cause-tracing.md\`** - Trace bugs backward through call stack to find original trigger
-- **\`defense-in-depth.md\`** - Add validation at multiple layers after finding root cause
-- **\`condition-based-waiting.md\`** - Replace arbitrary timeouts with condition polling
-
-**Related skills:**
-- **Refer to the skill at .github/skills/test-driven-development/SKILL.md** - For creating a failing test case (Phase 4, Step 1)
-- **Refer to the skill at .github/skills/verification-before-completion/SKILL.md** - Verify the fix worked before claiming success
-
-## Real-World Impact
-
-From debugging sessions:
-- Systematic approach: 15-30 minutes to fix
-- Random fixes approach: 2-3 hours of thrashing
-- First-time fix rate: 95% vs 40%
-- New bugs introduced: Near zero vs common
-`
-  },
-  {
-    name: "test-driven-development",
-    description: "Use when implementing any feature or bugfix, before writing implementation code",
-    body: `# Test-Driven Development (TDD)
-
-## Overview
-
-Write the test first. Watch it fail. Write minimal code to pass.
-
-**Core principle:** If you didn't watch the test fail, you don't know if it tests the right thing.
-
-**Violating the letter of the rules is violating the spirit of the rules.**
-
-## When to Use
-
-**Always:**
-- New features
-- Bug fixes
-- Refactoring
-- Behavior changes
-
-**Exceptions (ask your human partner):**
-- Throwaway prototypes
-- Generated code
-- Configuration files
-
-Thinking "skip TDD just this once"? Stop. That's rationalization.
-
-## The Iron Law
-
-\`\`\`
-NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
-\`\`\`
-
-Write code before the test? Delete it. Start over.
-
-**No exceptions:**
-- Don't keep it as "reference"
-- Don't "adapt" it while writing tests
-- Don't look at it
-- Delete means delete
-
-Implement fresh from tests. Period.
-
-## Tool-Aware Test Setup
-
-- When the work starts from a bug, failing test, or unexpected behavior, refer to the skill at .github/skills/systematic-debugging/SKILL.md first to confirm root cause, then return here for the red-green-refactor cycle.
-- For UI or end-to-end behavior, use \`browser\` for quick inspection and \`playwright/*\` for repeatable failing and passing coverage.
-- Use \`todo\` only when the red-green-refactor cycle spans multiple cases that need active tracking.
-- Use \`vscode/memory\` only for durable test decisions, flaky-environment notes, or blocker history that later turns need.
-
-## Red-Green-Refactor
-
-\`\`\`dot
-digraph tdd_cycle {
-    rankdir=LR;
-    red [label="RED\\nWrite failing test", shape=box, style=filled, fillcolor="#ffcccc"];
-    verify_red [label="Verify fails\\ncorrectly", shape=diamond];
-    green [label="GREEN\\nMinimal code", shape=box, style=filled, fillcolor="#ccffcc"];
-    verify_green [label="Verify passes\\nAll green", shape=diamond];
-    refactor [label="REFACTOR\\nClean up", shape=box, style=filled, fillcolor="#ccccff"];
-    next [label="Next", shape=ellipse];
-
-    red -> verify_red;
-    verify_red -> green [label="yes"];
-    verify_red -> red [label="wrong\\nfailure"];
-    green -> verify_green;
-    verify_green -> refactor [label="yes"];
-    verify_green -> green [label="no"];
-    refactor -> verify_green [label="stay\\ngreen"];
-    verify_green -> next;
-    next -> red;
-}
-\`\`\`
-
-### RED - Write Failing Test
-
-Write one minimal test showing what should happen.
-
-<Good>
-\`\`\`typescript
-test('retries failed operations 3 times', async () => {
-  let attempts = 0;
-  const operation = () => {
-    attempts++;
-    if (attempts < 3) throw new Error('fail');
-    return 'success';
-  };
-
-  const result = await retryOperation(operation);
-
-  expect(result).toBe('success');
-  expect(attempts).toBe(3);
-});
-\`\`\`
-Clear name, tests real behavior, one thing
-</Good>
-
-<Bad>
-\`\`\`typescript
-test('retry works', async () => {
-  const mock = jest.fn()
-    .mockRejectedValueOnce(new Error())
-    .mockRejectedValueOnce(new Error())
-    .mockResolvedValueOnce('success');
-  await retryOperation(mock);
-  expect(mock).toHaveBeenCalledTimes(3);
-});
-\`\`\`
-Vague name, tests mock not code
-</Bad>
-
-**Requirements:**
-- One behavior
-- Clear name
-- Real code (no mocks unless unavoidable)
-
-### Verify RED - Watch It Fail
-
-**MANDATORY. Never skip.**
-
-\`\`\`bash
-npm test path/to/test.test.ts
-\`\`\`
-
-Confirm:
-- Test fails (not errors)
-- Failure message is expected
-- Fails because feature missing (not typos)
-
-**Test passes?** You're testing existing behavior. Fix test.
-
-**Test errors?** Fix error, re-run until it fails correctly.
-
-### GREEN - Minimal Code
-
-Write simplest code to pass the test.
-
-<Good>
-\`\`\`typescript
-async function retryOperation<T>(fn: () => Promise<T>): Promise<T> {
-  for (let i = 0; i < 3; i++) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (i === 2) throw e;
-    }
-  }
-  throw new Error('unreachable');
-}
-\`\`\`
-Just enough to pass
-</Good>
-
-<Bad>
-\`\`\`typescript
-async function retryOperation<T>(
-  fn: () => Promise<T>,
-  options?: {
-    maxRetries?: number;
-    backoff?: 'linear' | 'exponential';
-    onRetry?: (attempt: number) => void;
-  }
-): Promise<T> {
-  // YAGNI
-}
-\`\`\`
-Over-engineered
-</Bad>
-
-Don't add features, refactor other code, or "improve" beyond the test.
-
-### Verify GREEN - Watch It Pass
-
-**MANDATORY.**
-
-\`\`\`bash
-npm test path/to/test.test.ts
-\`\`\`
-
-Confirm:
-- Test passes
-- Other tests still pass
-- Output pristine (no errors, warnings)
-
-**Test fails?** Fix code, not test.
-
-**Other tests fail?** Fix now.
-
-### REFACTOR - Clean Up
-
-After green only:
-- Remove duplication
-- Improve names
-- Extract helpers
-
-Keep tests green. Don't add behavior.
-
-### Repeat
-
-Next failing test for next feature.
-
-## Good Tests
-
-| Quality | Good | Bad |
-|---------|------|-----|
-| **Minimal** | One thing. "and" in name? Split it. | \`test('validates email and domain and whitespace')\` |
-| **Clear** | Name describes behavior | \`test('test1')\` |
-| **Shows intent** | Demonstrates desired API | Obscures what code should do |
-
-## Why Order Matters
-
-**"I'll write tests after to verify it works"**
-
-Tests written after code pass immediately. Passing immediately proves nothing:
-- Might test wrong thing
-- Might test implementation, not behavior
-- Might miss edge cases you forgot
-- You never saw it catch the bug
-
-Test-first forces you to see the test fail, proving it actually tests something.
-
-**"I already manually tested all the edge cases"**
-
-Manual testing is ad-hoc. You think you tested everything but:
-- No record of what you tested
-- Can't re-run when code changes
-- Easy to forget cases under pressure
-- "It worked when I tried it" \u2260 comprehensive
-
-Automated tests are systematic. They run the same way every time.
-
-**"Deleting X hours of work is wasteful"**
-
-Sunk cost fallacy. The time is already gone. Your choice now:
-- Delete and rewrite with TDD (X more hours, high confidence)
-- Keep it and add tests after (30 min, low confidence, likely bugs)
-
-The "waste" is keeping code you can't trust. Working code without real tests is technical debt.
-
-**"TDD is dogmatic, being pragmatic means adapting"**
-
-TDD IS pragmatic:
-- Finds bugs before commit (faster than debugging after)
-- Prevents regressions (tests catch breaks immediately)
-- Documents behavior (tests show how to use code)
-- Enables refactoring (change freely, tests catch breaks)
-
-"Pragmatic" shortcuts = debugging in production = slower.
-
-**"Tests after achieve the same goals - it's spirit not ritual"**
-
-No. Tests-after answer "What does this do?" Tests-first answer "What should this do?"
-
-Tests-after are biased by your implementation. You test what you built, not what's required. You verify remembered edge cases, not discovered ones.
-
-Tests-first force edge case discovery before implementing. Tests-after verify you remembered everything (you didn't).
-
-30 minutes of tests after \u2260 TDD. You get coverage, lose proof tests work.
-
-## Common Rationalizations
-
-| Excuse | Reality |
-|--------|---------|
-| "Too simple to test" | Simple code breaks. Test takes 30 seconds. |
-| "I'll test after" | Tests passing immediately prove nothing. |
-| "Tests after achieve same goals" | Tests-after = "what does this do?" Tests-first = "what should this do?" |
-| "Already manually tested" | Ad-hoc \u2260 systematic. No record, can't re-run. |
-| "Deleting X hours is wasteful" | Sunk cost fallacy. Keeping unverified code is technical debt. |
-| "Keep as reference, write tests first" | You'll adapt it. That's testing after. Delete means delete. |
-| "Need to explore first" | Fine. Throw away exploration, start with TDD. |
-| "Test hard = design unclear" | Listen to test. Hard to test = hard to use. |
-| "TDD will slow me down" | TDD faster than debugging. Pragmatic = test-first. |
-| "Manual test faster" | Manual doesn't prove edge cases. You'll re-test every change. |
-| "Existing code has no tests" | You're improving it. Add tests for existing code. |
-
-## Red Flags - STOP and Start Over
-
-- Code before test
-- Test after implementation
-- Test passes immediately
-- Can't explain why test failed
-- Tests added "later"
-- Rationalizing "just this once"
-- "I already manually tested it"
-- "Tests after achieve the same purpose"
-- "It's about spirit not ritual"
-- "Keep as reference" or "adapt existing code"
-- "Already spent X hours, deleting is wasteful"
-- "TDD is dogmatic, I'm being pragmatic"
-- "This is different because..."
-
-**All of these mean: Delete code. Start over with TDD.**
-
-## Example: Bug Fix
-
-**Bug:** Empty email accepted
-
-**RED**
-\`\`\`typescript
-test('rejects empty email', async () => {
-  const result = await submitForm({ email: '' });
-  expect(result.error).toBe('Email required');
-});
-\`\`\`
-
-**Verify RED**
-\`\`\`bash
-$ npm test
-FAIL: expected 'Email required', got undefined
-\`\`\`
-
-**GREEN**
-\`\`\`typescript
-function submitForm(data: FormData) {
-  if (!data.email?.trim()) {
-    return { error: 'Email required' };
-  }
-  // ...
-}
-\`\`\`
-
-**Verify GREEN**
-\`\`\`bash
-$ npm test
-PASS
-\`\`\`
-
-**REFACTOR**
-Extract validation for multiple fields if needed.
-
-## Verification Checklist
-
-Before marking work complete:
-
-- [ ] Every new function/method has a test
-- [ ] Watched each test fail before implementing
-- [ ] Each test failed for expected reason (feature missing, not typo)
-- [ ] Wrote minimal code to pass each test
-- [ ] All tests pass
-- [ ] Output pristine (no errors, warnings)
-- [ ] Tests use real code (mocks only if unavoidable)
-- [ ] Edge cases and errors covered
-
-Can't check all boxes? You skipped TDD. Start over.
-
-## When Stuck
-
-| Problem | Solution |
-|---------|----------|
-| Don't know how to test | Write wished-for API. Write assertion first. Ask your human partner. |
-| Test too complicated | Design too complicated. Simplify interface. |
-| Must mock everything | Code too coupled. Use dependency injection. |
-| Test setup huge | Extract helpers. Still complex? Simplify design. |
-
-## Debugging Integration
-
-Bug found? Write failing test reproducing it. Follow TDD cycle. Test proves fix and prevents regression.
-
-Never fix bugs without a test.
-
-## Testing Anti-Patterns
-
-When adding mocks or test utilities, avoid common pitfalls:
-- Testing mock behavior instead of real behavior
-- Adding test-only methods to production classes
-- Mocking without understanding dependencies
-
-## Final Rule
-
-\`\`\`
-Production code \u2192 test exists and failed first
-Otherwise \u2192 not TDD
-\`\`\`
-
-No exceptions without your human partner's permission.
-`
-  },
-  {
-    name: "code-reviewer",
-    description: "Use when reviewing implementation changes against an approved plan or task (especially before merging or between Hive tasks) to catch missing requirements, YAGNI, dead code, and risky patterns",
-    body: `# Code Reviewer
-
-## Overview
-
-This skill teaches a reviewer to evaluate implementation changes for:
-- Adherence to the approved plan/task (did we build what we said?)
-- Correctness (does it work, including edge cases?)
-- Simplicity (YAGNI, dead code, over-abstraction)
-- Risk (security, performance, maintainability)
-
-**Core principle:** The best change is the smallest correct change that satisfies the plan.
-
-## Iron Laws
-
-- Review against the task/plan first. Code quality comes second.
-- Bias toward deletion and simplification. Every extra line is a liability.
-- Prefer changes that leverage existing patterns and dependencies.
-- Be specific: cite file paths and (when available) line numbers.
-- Do not invent requirements. If the plan/task is ambiguous, mark it and request clarification.
-
-## What Inputs You Need
-
-Minimum:
-- The task intent (1-3 sentences)
-- The plan/task requirements (or a link/path to plan section)
-- The code changes (diff or list of changed files)
-
-If available (recommended):
-- Acceptance criteria / verification steps from the plan
-- Test output or proof the change was verified
-- Any relevant context files (design decisions, constraints)
-
-## Review Process (In Order)
-
-### 1) Identify Scope
-
-1. List all files changed.
-2. For each file, state why it changed (what requirement it serves).
-3. Flag any changes that do not map to the task/plan.
-
-**Rule:** If you cannot map a change to a requirement, treat it as suspicious until justified.
-
-### 2) Plan/Task Adherence (Non-Negotiable)
-
-Create a simple checklist:
-- What the task says must happen
-- Evidence in code/tests that it happens
-
-Flag as issues:
-- Missing requirements (implemented behavior does not match intent)
-- Partial implementation with no follow-up task (TODO-driven shipping)
-- Behavior changes that are not in the plan/task
-
-### 3) Correctness Layer
-
-Review for:
-- Edge cases and error paths
-- Incorrect assumptions about inputs/types
-- Inconsistent behavior across platforms/environments
-- Broken invariants (e.g., state can become invalid)
-
-Prefer "fail fast, fail loud": invalid states should become clear errors, not silent fallbacks.
-
-### 4) Simplicity / YAGNI Layer
-
-Be ruthless and concrete:
-- Remove dead branches, unused flags/options, unreachable code
-- Remove speculative TODOs and "reserved for future" scaffolding
-- Remove comments that restate the code or narrate obvious steps
-- Inline one-off abstractions (helpers/classes/interfaces used once)
-- Replace cleverness with obvious code
-- Reduce nesting with guard clauses / early returns
-
-Prefer clarity over brevity:
-- Avoid nested ternary operators; use \`if/else\` or \`switch\` when branches matter
-- Avoid dense one-liners that hide intent or make debugging harder
-
-### 4b) De-Slop Pass (AI Artifacts / Style Drift)
-
-Scan the diff (not just the final code) for AI-generated slop introduced in this branch:
-- Extra comments that a human would not add, or that do not match the file's tone
-- Defensive checks or try/catch blocks that are abnormal for that area of the codebase
-  - Especially swallowed errors ("ignore and continue") and silent fallbacks
-  - Especially redundant validation in trusted internal codepaths
-- TypeScript escape hatches used to dodge type errors (\`as any\`, \`as unknown as X\`) without necessity
-- Style drift: naming, error handling patterns, logging style, and structure inconsistent with nearby code
-
-Default stance:
-- Prefer deletion over justification.
-- If validation is needed, do it at boundaries; keep internals trusting parsed inputs.
-- If a cast is truly unavoidable, localize it and keep the justification to a single short note.
-
-When recommending simplifications, do not accidentally change behavior. If the current behavior is unclear, request clarification or ask for a test that pins it down.
-
-**Default stance:** Do not add extensibility points without an explicit current requirement.
-
-### 5) Risk Layer (Security / Performance / Maintainability)
-
-Only report what you are confident about.
-
-Security checks (examples):
-- No secrets in code/logs
-- No injection vectors (shell/SQL/HTML) introduced
-- Authz/authn checks preserved
-- Sensitive data not leaked
-
-Performance checks (examples):
-- Avoid unnecessary repeated work (N+1 queries, repeated parsing, repeated filesystem hits)
-- Avoid obvious hot-path allocations or large sync operations
-
-Maintainability checks:
-- Clear naming and intent
-- Consistent error handling
-- API boundaries not blurred
-- Consistent with local file patterns (imports, export style, function style)
-
-### 6) Make One Primary Recommendation
-
-Provide one clear path to reach approval.
-Mention alternatives only when they have materially different trade-offs.
-
-### 7) Signal the Investment
-
-Tag the required follow-up effort using:
-- Quick (<1h)
-- Short (1-4h)
-- Medium (1-2d)
-- Large (3d+)
-
-## Confidence Filter
-
-Only report findings you believe are >=80% likely to be correct.
-If you are unsure, explicitly label it as "Uncertain" and explain what evidence would confirm it.
-
-## Output Format (Use This Exactly)
-
----
-
-**Files Reviewed:** [list]
-
-**Plan/Task Reference:** [task name + link/path to plan section if known]
-
-**Overall Assessment:** [APPROVE | REQUEST_CHANGES | NEEDS_DISCUSSION]
-
-**Bottom Line:** 2-3 sentences describing whether it matches the task/plan and what must change.
-
-### Critical Issues
-- None | [file:line] - [issue] (why it blocks approval) + (recommended fix)
-
-### Major Issues
-- None | [file:line] - [issue] + (recommended fix)
-
-### Minor Issues
-- None | [file:line] - [issue] + (suggested fix)
-
-### YAGNI / Dead Code
-- None | [file:line] - [what to remove/simplify] + (why it is unnecessary)
-
-### Positive Observations
-- [at least one concrete good thing]
-
-### Action Plan
-1. [highest priority change]
-2. [next]
-3. [next]
-
-### Effort Estimate
-[Quick | Short | Medium | Large]
-
----
-
-## Common Review Smells (Fast Scan)
-
-Task/plan adherence:
-- Adds features not mentioned in the plan/task
-- Leaves TODOs as the mechanism for correctness
-- Introduces new configuration modes/flags "for future"
-
-YAGNI / dead code:
-- Options/config that are parsed but not used
-- Branches that do the same thing on both sides
-- Comments like "reserved for future" or "we might need this"
-
-AI slop / inconsistency:
-- Commentary that restates code, narrates obvious steps, or adds process noise
-- try/catch that swallows errors or returns defaults without a requirement
-- \`as any\` used to silence type errors instead of fixing types
-- New helpers/abstractions with a single call site
-
-Correctness:
-- Silent fallbacks to defaults on error when the task expects a hard failure
-- Unhandled error paths, missing cleanup, missing returns
-
-Maintainability:
-- Abstractions used once
-- Unclear naming, "utility" grab-bags
-
-## When to Escalate
-
-Use NEEDS_DISCUSSION (instead of REQUEST_CHANGES) when:
-- The plan/task is ambiguous and multiple implementations could be correct
-- The change implies a product/architecture decision not documented
-- Fixing issues requires changing scope, dependencies, or public API
-`
-  },
-  {
-    name: "verification-before-completion",
-    description: "Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always",
-    body: `# Verification Before Completion
-
-## Overview
-
-Claiming work is complete without verification is dishonesty, not efficiency.
-
-**Core principle:** Evidence before claims, always.
-
-**Violating the letter of this rule is violating the spirit of this rule.**
-
-## The Iron Law
-
-\`\`\`
-NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
-\`\`\`
-
-If you haven't run the verification command in this message, you cannot claim it passes.
-
-## The Gate Function
-
-\`\`\`
-BEFORE claiming any status or expressing satisfaction:
-
-1. IDENTIFY: What command proves this claim?
-2. RUN: Execute the FULL command (fresh, complete)
-3. READ: Full output, check exit code, count failures
-4. VERIFY: Does output confirm the claim?
-   - If NO: State actual status with evidence
-   - If YES: State claim WITH evidence
-5. ONLY THEN: Make the claim
-
-Skip any step = lying, not verifying
-\`\`\`
-
-## Choosing the Proving Command
-
-- For code or CLI claims, run the narrowest test, build, or lint command that proves the claim.
-- For rendered UI, browser-state, console, or network claims, use \`browser\` to gather direct evidence.
-- For repeatable user-flow or end-to-end claims, use \`playwright/*\` to run the proving sequence.
-- Use \`todo\` only when the verification plan has multiple independent checks.
-- Use \`vscode/memory\` only for durable verification gaps or recurring environment caveats that later turns need.
-
-## Common Failures
-
-| Claim | Requires | Not Sufficient |
-|-------|----------|----------------|
-| Tests pass | Test command output: 0 failures | Previous run, "should pass" |
-| Linter clean | Linter output: 0 errors | Partial check, extrapolation |
-| Build succeeds | Build command: exit 0 | Linter passing, logs look good |
-| Bug fixed | Test original symptom: passes | Code changed, assumed fixed |
-| Regression test works | Red-green cycle verified | Test passes once |
-| Agent completed | VCS diff shows changes | Agent reports "success" |
-| Requirements met | Line-by-line checklist | Tests passing |
-
-## Red Flags - STOP
-
-- Using "should", "probably", "seems to"
-- Expressing satisfaction before verification ("Great!", "Perfect!", "Done!", etc.)
-- About to commit/push/PR without verification
-- Trusting agent success reports
-- Relying on partial verification
-- Thinking "just this once"
-- Tired and wanting work over
-- **ANY wording implying success without having run verification**
-
-## Rationalization Prevention
-
-| Excuse | Reality |
-|--------|---------|
-| "Should work now" | RUN the verification |
-| "I'm confident" | Confidence \u2260 evidence |
-| "Just this once" | No exceptions |
-| "Linter passed" | Linter \u2260 compiler |
-| "Agent said success" | Verify independently |
-| "I'm tired" | Exhaustion \u2260 excuse |
-| "Partial check is enough" | Partial proves nothing |
-| "Different words so rule doesn't apply" | Spirit over letter |
-
-## Key Patterns
-
-**Tests:**
-\`\`\`
-\u2705 [Run test command] [See: 34/34 pass] "All tests pass"
-\u274C "Should pass now" / "Looks correct"
-\`\`\`
-
-**Regression tests (TDD Red-Green):**
-\`\`\`
-\u2705 Write \u2192 Run (pass) \u2192 Revert fix \u2192 Run (MUST FAIL) \u2192 Restore \u2192 Run (pass)
-\u274C "I've written a regression test" (without red-green verification)
-\`\`\`
-
-**Build:**
-\`\`\`
-\u2705 [Run build] [See: exit 0] "Build passes"
-\u274C "Linter passed" (linter doesn't check compilation)
-\`\`\`
-
-**Requirements:**
-\`\`\`
-\u2705 Re-read plan \u2192 Create checklist \u2192 Verify each \u2192 Report gaps or completion
-\u274C "Tests pass, phase complete"
-\`\`\`
-
-**Agent delegation:**
-\`\`\`
-\u2705 Agent reports success \u2192 Check VCS diff \u2192 Verify changes \u2192 Report actual state
-\u274C Trust agent report
-\`\`\`
-
-## Why This Matters
-
-From 24 failure memories:
-- your human partner said "I don't believe you" - trust broken
-- Undefined functions shipped - would crash
-- Missing requirements shipped - incomplete features
-- Time wasted on false completion \u2192 redirect \u2192 rework
-- Violates: "Honesty is a core value. If you lie, you'll be replaced."
-
-## When To Apply
-
-**ALWAYS before:**
-- ANY variation of success/completion claims
-- ANY expression of satisfaction
-- ANY positive statement about work state
-- Committing, PR creation, task completion
-- Moving to next task
-- Delegating to agents
-
-**Rule applies to:**
-- Exact phrases
-- Paraphrases and synonyms
-- Implications of success
-- ANY communication suggesting completion/correctness
-
-## The Bottom Line
-
-**No shortcuts for verification.**
-
-Run the command. Read the output. THEN claim the result.
-
-This is non-negotiable.
-`
-  },
-  {
-    name: "docker-mastery",
-    description: "Use when working with Docker containers \u2014 debugging container failures, writing Dockerfiles, docker-compose for integration tests, image optimization, or deploying containerized applications",
-    body: `# Docker Mastery
-
-## Overview
-
-Docker is a **platform for building, shipping, and running applications**, not just isolation.
-
-Agents should think in containers: reproducible environments, declarative dependencies, isolated execution.
-
-**Core principle:** Containers are not virtual machines. They share the kernel but isolate processes, filesystems, and networks.
-
-**Violating the letter of these guidelines is violating the spirit of containerization.**
-
-## The Iron Law
-
-\`\`\`
-UNDERSTAND THE CONTAINER BEFORE DEBUGGING INSIDE IT
-\`\`\`
-
-Before exec'ing into a container or adding debug commands:
-1. Check the image (what's installed?)
-2. Check mounts (what host files are visible?)
-3. Check environment variables (what config is passed?)
-4. Check the Dockerfile (how was it built?)
-
-Random debugging inside containers wastes time. Context first, then debug.
-
-## When to Use
-
-Use this skill when working with:
-- **Container build failures** - Dockerfile errors, missing dependencies
-- **Test environment setup** - Reproducible test environments across machines
-- **Integration test orchestration** - Multi-service setups (DB + API + tests)
-- **Dockerfile authoring** - Writing efficient, maintainable Dockerfiles
-- **Image size optimization** - Reducing image size, layer caching
-- **Deployment** - Containerized application deployment
-- **Sandbox debugging** - Issues with Hive's Docker sandbox mode
-
-**Use this ESPECIALLY when:**
-- Tests pass locally but fail in CI (environment mismatch)
-- "Works on my machine" problems
-- Need to test against specific dependency versions
-- Multiple services must coordinate (database + API)
-- Building for production deployment
-
-## Core Concepts
-
-### Images vs Containers
-
-- **Image**: Read-only template (built from Dockerfile)
-- **Container**: Running instance of an image (ephemeral by default)
-
-\`\`\`bash
-# Build once
-docker build -t myapp:latest .
-
-# Run many times
-docker run --rm myapp:latest
-docker run --rm -e DEBUG=true myapp:latest
-\`\`\`
-
-**Key insight:** Changes inside containers are lost unless committed or volumes are used.
-
-### Volumes & Mounts
-
-Mount host directories into containers for persistence and code sharing:
-
-\`\`\`bash
-# Mount current directory to /app in container
-docker run -v $(pwd):/app myapp:latest
-
-# Hive worktrees are mounted automatically
-# Your code edits (via Read/Write/editFiles tools) affect the host
-# Container sees the same files at runtime
-\`\`\`
-
-**How Hive uses this:** Worktree is mounted into container, so file tools work on host, bash commands run in container.
-
-### Multi-Stage Builds
-
-Minimize image size by using multiple FROM statements:
-
-\`\`\`dockerfile
-# Build stage (large, has compilers)
-FROM node:22 AS builder
-WORKDIR /app
-COPY package.json bun.lockb ./
-RUN bun install
-COPY . .
-RUN bun run build
-
-# Runtime stage (small, production only)
-FROM node:22-slim
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-CMD ["node", "dist/index.js"]
-\`\`\`
-
-**Result:** Builder tools (TypeScript, bundlers) not included in final image.
-
-### Docker Compose for Multi-Service Setups
-
-Define multiple services in \`docker-compose.yml\`:
-
-\`\`\`yaml
-version: '3.8'
-services:
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_PASSWORD: testpass
-    ports:
-      - "5432:5432"
-  
-  api:
-    build: .
-    environment:
-      DATABASE_URL: postgres://db:5432/testdb
-    depends_on:
-      - db
-    ports:
-      - "3000:3000"
-\`\`\`
-
-Run with: \`docker-compose up -d\`
-Teardown with: \`docker-compose down\`
-
-### Network Modes
-
-- **bridge** (default): Isolated network, containers can talk to each other by name
-- **host**: Container uses host's network directly (no isolation)
-- **none**: No network access
-
-**When to use host mode:** Debugging network issues, accessing host services directly.
-
-## Common Patterns
-
-### Debug a Failing Container
-
-**Problem:** Container exits immediately, logs unclear.
-
-**Pattern:**
-1. Run interactively with shell:
-   \`\`\`bash
-   docker run -it --entrypoint sh myapp:latest
-   \`\`\`
-2. Inspect filesystem, check if dependencies exist:
-   \`\`\`bash
-   ls /app
-   which node
-   cat /etc/os-release
-   \`\`\`
-3. Run command manually to see full error:
-   \`\`\`bash
-   node dist/index.js
-   \`\`\`
-
-### Integration Tests with Docker Compose
-
-**Pattern:**
-1. Define services in \`docker-compose.test.yml\`
-2. Add wait logic (wait for DB to be ready)
-3. Run tests
-4. Teardown
-
-\`\`\`yaml
-# docker-compose.test.yml
-services:
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_PASSWORD: test
-  test:
-    build: .
-    command: bun run test:integration
-    depends_on:
-      - db
-    environment:
-      DATABASE_URL: postgres://postgres:test@db:5432/testdb
-\`\`\`
-
-\`\`\`bash
-docker-compose -f docker-compose.test.yml up --abort-on-container-exit
-docker-compose -f docker-compose.test.yml down
-\`\`\`
-
-### Optimize Dockerfile
-
-**Anti-pattern:**
-\`\`\`dockerfile
-FROM node:22
-WORKDIR /app
-COPY . .              # Copies everything (including node_modules, .git)
-RUN bun install       # Invalidates cache on any file change
-CMD ["bun", "run", "start"]
-\`\`\`
-
-**Optimized:**
-\`\`\`dockerfile
-FROM node:22-slim     # Use slim variant
-WORKDIR /app
-
-# Copy dependency files first (cache layer)
-COPY package.json bun.lockb ./
-RUN bun install --production
-
-# Copy source code (changes frequently)
-COPY src ./src
-COPY tsconfig.json ./
-
-CMD ["bun", "run", "start"]
-\`\`\`
-
-**Add \`.dockerignore\`:**
-\`\`\`
-node_modules
-.git
-.env
-*.log
-dist
-.DS_Store
-\`\`\`
-
-### Handle Missing Dependencies
-
-**Problem:** Command fails with "not found" in container.
-
-**Pattern:**
-1. Check if dependency is in image:
-   \`\`\`bash
-   docker run -it myapp:latest which git
-   \`\`\`
-2. If missing, add to Dockerfile:
-   \`\`\`dockerfile
-   RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-   \`\`\`
-3. Or use a richer base image (e.g., \`node:22\` instead of \`node:22-slim\`).
-
-## Sandbox Integration
-
-### How Hive Wraps Commands
-
-When sandbox mode is active (\`sandbox: 'docker'\` in config):
-1. Hive hook intercepts bash commands before execution
-2. Wraps with \`docker run --rm -v <worktree>:/workspace -w /workspace <image> sh -c "<command>"\`
-3. Command runs in container, but file edits (read/editFiles) still affect the host
-
-**Workers are unaware** \u2014 they issue normal bash commands, Hive handles containerization.
-
-### When Host Access is Needed
-
-Some operations MUST run on host:
-- **Git operations** (commit, push, branch) \u2014 repo state is on host
-- **Host-level tools** (Docker itself, system config)
-- **Cross-worktree operations** (accessing main repo from worktree)
-
-**Pattern:** Use \`HOST:\` prefix to escape sandbox:
-\`\`\`bash
-HOST: git status
-HOST: docker ps
-\`\`\`
-
-**If you need host access frequently:** Report as blocked and ask user if sandbox should be disabled for this task.
-
-### Persistent vs Ephemeral Containers
-
-**Current (v1.2.0):** Each command runs \`docker run --rm\` (ephemeral). State does NOT persist.
-
-Example: \`npm install lodash\` in one command \u2192 not available in next command.
-
-**Workaround:** Install dependencies in Dockerfile, not at runtime.
-
-**Future:** \`docker exec\` will reuse containers, persisting state across commands.
-
-### Auto-Detected Images
-
-Hive detects runtime from project files:
-- \`package.json\` \u2192 \`node:22-slim\`
-- \`requirements.txt\` / \`pyproject.toml\` \u2192 \`python:3.12-slim\`
-- \`go.mod\` \u2192 \`golang:1.22-slim\`
-- \`Cargo.toml\` \u2192 \`rust:1.77-slim\`
-- \`Dockerfile\` \u2192 Builds from project Dockerfile
-- Fallback \u2192 \`ubuntu:24.04\`
-
-**Override:** Set \`dockerImage\` in config (\`~/.config/opencode/agent_hive.json\`).
-
-## Red Flags - STOP
-
-If you catch yourself:
-- Installing packages on host instead of in Dockerfile
-- Running \`docker build\` without \`.dockerignore\` (cache invalidation)
-- Using \`latest\` tag in production (non-reproducible)
-- Ignoring container exit codes (hides failures)
-- Assuming state persists between \`docker run --rm\` commands
-- Using absolute host paths in Dockerfile (not portable)
-- Copying secrets into image layers (leaks credentials)
-
-**ALL of these mean: STOP. Review pattern.**
-
-## Anti-Patterns
-
-| Excuse | Reality |
-|--------|---------|
-| "I'll just run it on host" | Container mismatch bugs are worse to debug later. Build happens in container anyway. |
-| "Works in my container, don't need CI" | CI uses different cache state. Always test in CI-like environment. |
-| "I'll optimize the Dockerfile later" | Later never comes. Large images slow down deployments now. |
-| "latest tag is fine for dev" | Dev should match prod. Pin versions or face surprises. |
-| "Don't need .dockerignore, COPY is fast" | Invalidates cache on every file change. Wastes minutes per build. |
-| "Install at runtime, not in image" | Ephemeral containers lose state. Slows down every command. |
-| "Skip depends_on, services start fast" | Race conditions in integration tests. Use wait-for-it or health checks. |
-
-## Verification Before Completion
-
-Before marking Docker work complete:
-
-- [ ] Container runs successfully: \`docker run --rm <image> <command>\` exits 0
-- [ ] Tests pass inside container (not just on host)
-- [ ] No host pollution (dependencies installed in container, not host)
-- [ ] \`.dockerignore\` exists if using \`COPY . .\`
-- [ ] Image tags are pinned (not \`latest\`) for production
-- [ ] Multi-stage build used if applicable (separate build/runtime)
-- [ ] Integration tests teardown properly (\`docker-compose down\`)
-
-**If any fail:** Don't claim success. Fix or report blocker.
-
-## Quick Reference
-
-| Task | Command Pattern |
-|------|----------------|
-| **Debug container** | \`docker run -it --entrypoint sh <image>\` |
-| **Run with mounts** | \`docker run -v $(pwd):/app <image>\` |
-| **Multi-service tests** | \`docker-compose up --abort-on-container-exit\` |
-| **Check image contents** | \`docker run --rm <image> ls /app\` |
-| **Optimize build** | Add \`.dockerignore\`, use multi-stage, pin versions |
-| **Escape Hive sandbox** | Prefix with \`HOST:\` (e.g., \`HOST: git status\`) |
-
-## Related Skills
-
-- **Refer to the skill at .github/skills/systematic-debugging/SKILL.md** - When container behavior is unexpected
-- **Refer to the skill at .github/skills/test-driven-development/SKILL.md** - Write tests that run in containers
-- **Refer to the skill at .github/skills/verification-before-completion/SKILL.md** - Verify tests pass in container before claiming done
-`
-  },
-  {
-    name: "agents-md-mastery",
-    description: "Use when bootstrapping, updating, or reviewing AGENTS.md \u2014 teaches what makes effective agent memory, how to structure sections, signal vs noise filtering, and when to prune stale entries",
-    body: `# AGENTS.md Mastery
-
-## Overview
-
-**AGENTS.md is pseudo-memory loaded at session start.** Every line shapes agent behavior for the entire session. Quality beats quantity. Write for agents, not humans.
-
-Unlike code comments or READMEs, AGENTS.md entries persist across all agent sessions. A bad entry misleads agents hundreds of times. A missing entry causes the same mistake repeatedly.
-
-**Core principle:** Optimize for agent comprehension and behavioral change, not human readability.
-
-## The Iron Law
-
-\`\`\`
-EVERY ENTRY MUST CHANGE AGENT BEHAVIOR
-\`\`\`
-
-If an entry doesn't:
-- Prevent a specific mistake
-- Enable a capability the agent would otherwise miss
-- Override a default assumption that breaks in this codebase
-
-...then it doesn't belong in AGENTS.md.
-
-**Test:** Would a fresh agent session make a mistake without this entry? If no \u2192 noise.
-
-## When to Use
-
-| Trigger | Action |
-|---------|--------|
-| New project bootstrap | Write initial AGENTS.md with build/test/style basics |
-| Feature completion | Sync new learnings by editing AGENTS.md directly after reviewing the diff |
-| Periodic review | Audit for stale/redundant entries (quarterly) |
-| Quality issues | Agent repeating mistakes? Check if AGENTS.md has the fix |
-
-## What Makes Good Agent Memory
-
-### Signal Entries (Keep)
-
-\u2705 **Project-specific conventions:**
-- "We use Zustand, not Redux \u2014 never add Redux"
-- "Auth lives in \`/lib/auth\` \u2014 never create auth elsewhere"
-- "Run \`bun test\` not \`npm test\` (we don't use npm)"
-
-\u2705 **Non-obvious patterns:**
-- "Use \`.js\` extension for local imports (ESM requirement)"
-- "Use Copilot memory for durable notes; don't invent extra workflow files"
-- "SandboxConfig is in \`dockerSandboxService.ts\`, NOT \`types.ts\`"
-
-\u2705 **Gotchas that break builds:**
-- "Never use \`ensureDirSync\` \u2014 doesn't exist. Use \`ensureDir\` (sync despite name)"
-- "Import from \`../utils/paths.js\` not \`./paths\` (ESM strict)"
-
-### Noise Entries (Remove)
-
-\u274C **Agent already knows:**
-- "This project uses TypeScript" (agent detects from files)
-- "We follow semantic versioning" (universal convention)
-- "Use descriptive variable names" (generic advice)
-
-\u274C **Irrelevant metadata:**
-- "Created on January 2024"
-- "Originally written by X"
-- "License: MIT" (in LICENSE file already)
-
-\u274C **Describes what code does:**
-- "FeatureService manages features" (agent can read code)
-- "The system uses git worktrees" (observable from commands)
-
-### Rule of Thumb
-
-**Signal:** Changes how agent acts  
-**Noise:** Documents what agent observes
-
-## Section Structure for Fast Comprehension
-
-Agents read AGENTS.md top-to-bottom once at session start. Put high-value info first:
-
-\`\`\`markdown
-# Project Name
-
-## Build & Test Commands
-# \u2190 Agents need this IMMEDIATELY
-bun run build
-bun run test
-bun run release:check
-
-## Code Style
-# \u2190 Prevents syntax/import errors
-- Semicolons: Yes
-- Quotes: Single
-- Imports: Use \`.js\` extension
-
-## Architecture
-# \u2190 Key directories, where things live
-packages/
-\u251C\u2500\u2500 hive-core/      # Shared logic
-\u251C\u2500\u2500 opencode-hive/  # Plugin
-\u2514\u2500\u2500 vscode-hive/    # Extension
-
-## Important Patterns
-# \u2190 How to do common tasks correctly
-Use \`readText\` from paths.ts, not fs.readFileSync
-
-## Gotchas & Anti-Patterns
-# \u2190 Things that break or mislead
-NEVER use \`ensureDirSync\` \u2014 doesn't exist
-\`\`\`
-
-**Keep total under 500 lines.** Beyond that, agents lose focus and miss critical entries.
-
-## The Sync Workflow
-
-After completing a feature, sync learnings to AGENTS.md:
-
-1. **Draft the proposed additions:**
-  - Use Copilot memory or temporary notes if you need a staging area
-  - Keep each proposal to one behavior-changing point
-
-2. **Review each proposal:**
-   - Read the proposed change
-   - Ask: "Does this change agent behavior?"
-   - Check: Is this already obvious from code/files?
-
-3. **Accept signal, reject noise:**
-   - \u274C "TypeScript is used" \u2192 Agent detects this
-   - \u2705 "Use \`.js\` extension for imports" \u2192 Prevents build failures
-
-4. **Apply approved changes directly:**
-  - Edit AGENTS.md with the approved additions and removals
-  - Review the diff before finalizing
-
-**Warning:** Don't auto-approve all proposals. One bad entry pollutes all future sessions.
-
-## When to Prune
-
-Remove entries when they become:
-
-**Outdated:**
-- "We use Redux" \u2192 Project migrated to Zustand
-- "Node 16 compatibility required" \u2192 Now on Node 22
-
-**Redundant:**
-- "Use single quotes" + "Strings use single quotes" \u2192 Keep one
-- Near-duplicates in different sections
-
-**Too generic:**
-- "Write clear code" \u2192 Applies to any project
-- "Test your changes" \u2192 Universal advice
-
-**Describing code:**
-- "TaskService manages tasks" \u2192 Agent can read \`TaskService\` class
-- "Worktrees are in \`.hive/.worktrees/\`" \u2192 Observable from filesystem
-
-**Proven unnecessary:**
-- Entry added 6 months ago, but agents haven't hit that issue since
-
-## Red Flags
-
-| Warning Sign | Why It's Bad | Fix |
-|-------------|-------------|-----|
-| AGENTS.md > 800 lines | Agents lose focus, miss critical info | Prune aggressively |
-| Describes what code does | Agent can read code | Remove descriptions |
-| Missing build/test commands | First thing agents need | Add at top |
-| No gotchas section | Agents repeat past mistakes | Document failure modes |
-| Generic best practices | Doesn't change behavior | Remove or make specific |
-| Outdated patterns | Misleads agents | Prune during sync |
-
-## Anti-Patterns
-
-| Anti-Pattern | Better Approach |
-|-------------|----------------|
-| "Document everything" | Document only what changes behavior |
-| "Keep for historical record" | Version control is history |
-| "Might be useful someday" | Add when proven necessary |
-| "Explains the system" | Agents read code for that |
-| "Comprehensive reference" | AGENTS.md is a filter, not docs |
-
-## Good Examples
-
-**Build Commands (High value, agents need immediately):**
-\`\`\`markdown
-## Build & Test Commands
-bun run build              # Build all packages
-bun run test               # Run all tests
-bun run release:check      # Full CI check
-\`\`\`
-
-**Project-Specific Convention (Prevents mistakes):**
-\`\`\`markdown
-## Code Style
-- Imports: Use \`.js\` extension for local imports (ESM requirement)
-- Paths: Import from \`../utils/paths.js\` never \`./paths\`
-\`\`\`
-
-**Non-Obvious Gotcha (Prevents build failure):**
-\`\`\`markdown
-## Important Patterns
-Use \`ensureDir\` from paths.ts \u2014 sync despite name
-NEVER use \`ensureDirSync\` (doesn't exist)
-\`\`\`
-
-## Bad Examples
-
-**Generic advice (agent already knows):**
-\`\`\`markdown
-## Best Practices
-- Use meaningful variable names
-- Write unit tests
-- Follow DRY principle
-\`\`\`
-
-**Describes code (agent can read it):**
-\`\`\`markdown
-## Architecture
-The FeatureService class manages features. It has methods
-for create, read, update, and delete operations.
-\`\`\`
-
-**Irrelevant metadata:**
-\`\`\`markdown
-## Project History
-Created in January 2024 by the platform team.
-Originally built for internal use.
-\`\`\`
-
-## Verification
-
-Before finalizing AGENTS.md updates:
-
-- [ ] Every entry answers: "What mistake does this prevent?"
-- [ ] No generic advice that applies to all projects
-- [ ] Build/test commands are first
-- [ ] Gotchas section exists and is populated
-- [ ] Total length under 500 lines (800 absolute max)
-- [ ] No entries describing what code does
-- [ ] Fresh agent session would benefit from each entry
-
-## Summary
-
-AGENTS.md is **behavioral memory**, not documentation:
-- Write for agents, optimize for behavior change
-- Signal = prevents mistakes, Noise = describes observables
-- Sync after features, prune quarterly
-- Test: Would agent make a mistake without this entry?
-
-**Quality > quantity. Every line counts.**
-`
-  }
-];
-function getBuiltinSkills() {
-  return builtinSkillSources.map((skill) => ({
-    name: skill.name,
-    description: skill.description,
-    content: generateSkillFile({
-      name: skill.name,
-      description: skill.description,
-      content: skill.body
-    })
-  }));
-}
-
-// src/commands/initNest.ts
-var EXTENSION_ID2 = "tctinh.vscode-hive";
-var BACKWARD_COMPAT_SKILL = `---
-name: hive
-description: Hive plan-first development workflow
----
-
-${generateHiveWorkflowInstructions().body.split(/^---$/m).slice(2).join("---").trim()}
-`;
-function ensureDir2(dirPath) {
-  fs9.mkdirSync(dirPath, { recursive: true });
-}
-function writeFile(filePath, content) {
-  ensureDir2(path7.dirname(filePath));
-  fs9.writeFileSync(filePath, content);
-}
-async function loadVscode() {
-  return await import("vscode");
-}
-function generateAgents() {
-  return generateAllAgents({ extensionId: EXTENSION_ID2 });
-}
-function generateBuiltinSkills() {
-  return getBuiltinSkills();
-}
-function generateInstructions() {
-  return generateAllInstructions();
-}
-function generatePlugin() {
-  return generatePluginManifest();
-}
-function generatePrompts() {
-  return generateAllPrompts();
-}
-async function initNest(projectRoot, deps) {
-  const vscode6 = deps?.vscodeApi ?? await loadVscode();
-  await vscode6.window.withProgress(
-    {
-      location: vscode6.ProgressLocation.Notification,
-      title: "Initializing Hive Nest"
-    },
-    async (progress) => {
-      progress.report({ message: "Creating Hive directories..." });
-      ensureDir2(path7.join(projectRoot, ".hive"));
-      ensureDir2(path7.join(projectRoot, ".hive", "features"));
-      ensureDir2(path7.join(projectRoot, ".hive", "skills"));
-      ensureDir2(path7.join(projectRoot, ".claude", "skills"));
-      ensureDir2(path7.join(projectRoot, ".opencode", "skill"));
-      progress.report({ message: "Generating GitHub agent files..." });
-      for (const agent of generateAgents()) {
-        writeFile(path7.join(projectRoot, ".github", "agents", agent.filename), agent.content);
-      }
-      progress.report({ message: "Generating builtin skills..." });
-      for (const skill of generateBuiltinSkills()) {
-        writeFile(path7.join(projectRoot, ".github", "skills", skill.name, "SKILL.md"), skill.content);
-      }
-      progress.report({ message: "Generating hooks..." });
-      for (const hook of generateAllHooks()) {
-        writeFile(path7.join(projectRoot, ".github", "hooks", hook.configFilename), `${JSON.stringify(hook.config, null, 2)}
-`);
-        for (const script of hook.scripts) {
-          const scriptPath = path7.join(projectRoot, ".github", "hooks", "scripts", script.filename);
-          writeFile(scriptPath, script.content);
-          fs9.chmodSync(scriptPath, 493);
-        }
-      }
-      progress.report({ message: "Generating instructions..." });
-      for (const instruction of generateInstructions()) {
-        writeFile(path7.join(projectRoot, ".github", "instructions", instruction.filename), instruction.body);
-      }
-      writeFile(path7.join(projectRoot, ".github", "copilot-instructions.md"), generateCopilotInstructions());
-      progress.report({ message: "Generating prompt files..." });
-      for (const prompt of generatePrompts()) {
-        writeFile(path7.join(projectRoot, ".github", "prompts", prompt.filename), prompt.body);
-      }
-      progress.report({ message: "Generating plugin manifest..." });
-      writeFile(path7.join(projectRoot, "plugin.json"), `${JSON.stringify(generatePlugin(), null, 2)}
-`);
-      writeFile(path7.join(projectRoot, ".claude", "skills", "hive", "SKILL.md"), BACKWARD_COMPAT_SKILL);
-      writeFile(path7.join(projectRoot, ".opencode", "skill", "hive", "SKILL.md"), BACKWARD_COMPAT_SKILL);
-    }
-  );
-  await vscode6.window.showInformationMessage(
-    "Hive Nest initialized! Created GitHub agents, prompts, instructions, Copilot steering, hooks, plugin manifest, and compatibility skills."
-  );
-}
-
-// src/commands/regenerateAgents.ts
-var fs10 = __toESM(require("fs"));
-var path8 = __toESM(require("path"));
-var EXTENSION_ID3 = "tctinh.vscode-hive";
-async function loadVscode2() {
-  return await import("vscode");
-}
-async function loadGenerateAgents() {
-  const { generateAllAgents: generateAllAgents2 } = await Promise.resolve().then(() => (init_agents(), agents_exports));
-  return () => generateAllAgents2({ extensionId: EXTENSION_ID3 });
-}
-async function regenerateAgents(workspaceRoot, deps = {}) {
-  const vscode6 = deps.vscodeApi ?? await loadVscode2();
-  const generateAgents2 = deps.generateAgents ?? await loadGenerateAgents();
-  const confirm = await vscode6.window.showQuickPick(
-    [
-      { label: "Regenerate agents", description: "Overwrite all agent files with latest templates" },
-      { label: "Cancel", description: "Do nothing" }
-    ],
-    { title: "Regenerate Hive Agents" }
-  );
-  if (!confirm || confirm.label === "Cancel") {
-    return;
-  }
-  const agents = generateAgents2();
-  const agentsDir = path8.join(workspaceRoot, ".github", "agents");
-  fs10.mkdirSync(agentsDir, { recursive: true });
-  const existingFiles = fs10.readdirSync(agentsDir).filter((filename) => filename.endsWith(".agent.md"));
-  for (const filename of existingFiles) {
-    fs10.unlinkSync(path8.join(agentsDir, filename));
-  }
-  for (const agent of agents) {
-    fs10.writeFileSync(path8.join(agentsDir, agent.filename), agent.content);
-  }
-  await vscode6.window.showInformationMessage(`Hive: Regenerated ${agents.length} agents`);
-}
-
-// src/tools/base.ts
-function defineTool(registration) {
-  return registration;
-}
-
-// src/tools/feature.ts
-function getFeatureTools(workspaceRoot) {
-  const featureService = new FeatureService(workspaceRoot);
-  return [
-    defineTool({
-      name: "hive_feature_create",
-      toolReferenceName: "hiveFeatureCreate",
-      displayName: "Create Hive Feature",
-      modelDescription: "Create a new Hive feature for plan-first development. Use at the start of any new work to establish a planning workspace with plan.md and task tracking.",
-      userDescription: "Create a new Hive feature and initialize its planning workspace.",
-      canBeReferencedInPrompt: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: {
-            type: "string",
-            description: "Feature name (kebab-case recommended)"
-          },
-          ticket: {
-            type: "string",
-            description: "Optional ticket/issue reference"
-          }
-        },
-        required: ["name"]
-      },
-      invoke: async (input) => {
-        const { name, ticket } = input;
-        const feature = featureService.create(name, ticket);
-        return JSON.stringify({
-          success: true,
-          feature: feature.name,
-          status: feature.status,
-          message: `Feature '${name}' created. Next: write a plan with hive_plan_write.`
-        });
-      }
-    }),
-    defineTool({
-      name: "hive_feature_complete",
-      toolReferenceName: "hiveFeatureComplete",
-      displayName: "Complete Hive Feature",
-      modelDescription: "Mark a feature as completed. Use when all tasks are done and the feature is ready for final integration. This is irreversible.",
-      userDescription: "Mark a Hive feature as completed.",
-      canBeReferencedInPrompt: true,
-      destructive: true,
-      confirmation: {
-        title: "Complete Hive feature",
-        message: "Mark this Hive feature as completed? This is intended for final wrap-up after all task work is done.",
-        invocationMessage: "Completing Hive feature"
-      },
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: {
-            type: "string",
-            description: "Feature name to mark as completed"
-          }
-        },
-        required: ["name"]
-      },
-      invoke: async (input) => {
-        const { name } = input;
-        const feature = featureService.complete(name);
-        return JSON.stringify({
-          success: true,
-          feature: feature.name,
-          status: feature.status,
-          completedAt: feature.completedAt
-        });
-      }
-    })
-  ];
-}
-
-// src/tools/plan.ts
-function getPlanTools(workspaceRoot) {
-  const planService = new PlanService(workspaceRoot);
-  return [
-    defineTool({
-      name: "hive_plan_write",
-      toolReferenceName: "hivePlanWrite",
-      displayName: "Write Hive Plan",
-      modelDescription: "Write or update the plan.md for a feature. plan.md is the only required human-review and execution document. Include a concise overview/design summary before ## Tasks, and optionally include a Mermaid dependency or sequence overview in that pre-task summary only. Use markdown with ### numbered headers for tasks. Clears existing plan review comments when plan is rewritten.",
-      userDescription: "Write or rewrite a feature plan.md file.",
-      canBeReferencedInPrompt: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          feature: {
-            type: "string",
-            description: "Feature name"
-          },
-          content: {
-            type: "string",
-            description: "Plan content in markdown. Use ### 1. Task Name format for tasks."
-          }
-        },
-        required: ["feature", "content"]
-      },
-      invoke: async (input) => {
-        const { feature, content } = input;
-        const planPath = planService.write(feature, content);
-        return JSON.stringify({
-          success: true,
-          path: planPath,
-          message: "Plan written. plan.md is the only required review document and execution contract. Keep an overview/design summary before ## Tasks. When ready, use hive_plan_approve."
-        });
-      }
-    }),
-    defineTool({
-      name: "hive_plan_read",
-      toolReferenceName: "hivePlanRead",
-      displayName: "Read Hive Plan",
-      modelDescription: "Read the plan.md and related review comments for a feature. Use to inspect the single execution contract, task structure, status, and review feedback in the only required review document.",
-      userDescription: "Read a feature plan and its review comments.",
-      canBeReferencedInPrompt: true,
-      readOnly: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          feature: {
-            type: "string",
-            description: "Feature name"
-          }
-        },
-        required: ["feature"]
-      },
-      invoke: async (input) => {
-        const { feature } = input;
-        const result = planService.read(feature);
-        if (!result) {
-          return JSON.stringify({ error: `No plan found for feature '${feature}'` });
-        }
-        return JSON.stringify({
-          content: result.content,
-          status: result.status,
-          comments: result.comments,
-          commentCount: result.comments.length
-        });
-      }
-    }),
-    defineTool({
-      name: "hive_plan_approve",
-      toolReferenceName: "hivePlanApprove",
-      displayName: "Approve Hive Plan",
-      modelDescription: "Approve a plan for execution. Use after reviewers have checked plan.md as the only required review document and resolved any plan comments. Changes feature status to approved.",
-      userDescription: "Approve a Hive feature plan for execution.",
-      canBeReferencedInPrompt: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          feature: {
-            type: "string",
-            description: "Feature name"
-          }
-        },
-        required: ["feature"]
-      },
-      invoke: async (input) => {
-        const { feature } = input;
-        try {
-          planService.approve(feature);
-        } catch (error) {
-          if (error instanceof Error && /unresolved review comments/i.test(error.message)) {
-            const unresolvedTotal = planService.read(feature)?.comments.length ?? 0;
-            return JSON.stringify({
-              success: false,
-              message: `Cannot approve - ${unresolvedTotal} unresolved plan review comment(s) remain. Address them first.`
-            });
-          }
-          throw error;
-        }
-        return JSON.stringify({
-          success: true,
-          message: "Plan approved. plan.md is the only required review document. Use hive_tasks_sync to generate tasks from the execution contract."
-        });
-      }
-    })
-  ];
-}
-
-// src/tools/status.ts
-function getStatusTools(workspaceRoot) {
-  const featureService = new FeatureService(workspaceRoot);
-  const taskService = new TaskService(workspaceRoot);
-  const contextService = new ContextService(workspaceRoot);
-  const invokeStatus = async (input) => {
-    const { feature: explicitFeature } = input;
-    const feature = explicitFeature || featureService.getActive()?.name;
-    if (!feature) {
-      return JSON.stringify({
-        success: false,
-        terminal: true,
-        reason: "feature_required",
-        error: "No feature specified and no active feature found",
-        hint: "Use hive_feature_create to create a new feature"
-      });
-    }
-    const featureData = featureService.get(feature);
-    if (!featureData) {
-      return JSON.stringify({
-        success: false,
-        terminal: true,
-        reason: "feature_not_found",
-        error: `Feature '${feature}' not found`,
-        availableFeatures: featureService.list()
-      });
-    }
-    const featureInfo = featureService.getInfo(feature);
-    const tasks = taskService.list(feature);
-    const contextFiles = contextService.list(feature);
-    const reviewCounts = featureInfo?.reviewCounts ?? { plan: 0 };
-    const hasPlan = featureInfo?.hasPlan ?? false;
-    const tasksSummary = tasks.map((t) => {
-      const rawStatus = taskService.getRawStatus(feature, t.folder);
-      return {
-        folder: t.folder,
-        name: t.folder.replace(/^\d+-/, ""),
-        status: t.status,
-        summary: t.summary || null,
-        origin: t.origin,
-        dependsOn: rawStatus?.dependsOn ?? null
-      };
-    });
-    const tasksWithDeps = tasksSummary.map((t) => ({
-      folder: t.folder,
-      status: t.status,
-      dependsOn: t.dependsOn ?? void 0
-    }));
-    const effectiveDeps = buildEffectiveDependencies(tasksWithDeps);
-    const normalizedTasks = tasksWithDeps.map((task) => ({
-      ...task,
-      dependsOn: effectiveDeps.get(task.folder)
-    }));
-    const { runnable, blocked } = computeRunnableAndBlocked(normalizedTasks);
-    const contextSummary = contextFiles.map((c) => ({
-      name: c.name,
-      chars: c.content.length,
-      updatedAt: c.updatedAt,
-      role: c.role,
-      includeInExecution: c.includeInExecution,
-      includeInAgentsMdSync: c.includeInAgentsMdSync
-    }));
-    const pendingTasks = tasksSummary.filter((t) => t.status === "pending");
-    const inProgressTasks = tasksSummary.filter((t) => t.status === "in_progress");
-    const doneTasks = tasksSummary.filter((t) => t.status === "done");
-    const planStatus = featureData.status === "planning" ? "draft" : featureData.status === "approved" ? "approved" : featureData.status === "executing" ? "locked" : "none";
-    return JSON.stringify({
-      feature: {
-        name: feature,
-        status: featureData.status,
-        ticket: featureData.ticket || null,
-        createdAt: featureData.createdAt
-      },
-      plan: {
-        exists: hasPlan,
-        status: planStatus,
-        approved: planStatus === "approved" || planStatus === "locked",
-        reviewDocument: "plan.md is the only required review document"
-      },
-      review: {
-        unresolvedTotal: reviewCounts.plan,
-        byDocument: {
-          plan: reviewCounts.plan
-        }
-      },
-      tasks: {
-        total: tasks.length,
-        pending: pendingTasks.length,
-        inProgress: inProgressTasks.length,
-        done: doneTasks.length,
-        list: tasksSummary,
-        runnable,
-        blockedBy: blocked
-      },
-      context: {
-        fileCount: contextFiles.length,
-        files: contextSummary
-      },
-      nextAction: getNextAction(planStatus, tasksSummary, runnable, hasPlan)
-    });
-  };
-  const baseStatusTool = {
-    displayName: "Get Hive Status",
-    modelDescription: "Get comprehensive status of a feature including plan.md, tasks, and context. plan.md is the only required review document. Returns JSON with all relevant state for resuming work.",
-    userDescription: "Get comprehensive Hive feature status.",
-    canBeReferencedInPrompt: true,
-    readOnly: true,
-    inputSchema: {
-      type: "object",
-      properties: {
-        feature: {
-          type: "string",
-          description: "Feature name (optional, uses active feature if omitted)"
-        }
-      }
-    },
-    invoke: invokeStatus
-  };
-  return [
-    defineTool({
-      name: "hive_status",
-      toolReferenceName: "hiveStatus",
-      ...baseStatusTool
-    }),
-    defineTool({
-      name: "hiveStatus",
-      toolReferenceName: "hiveStatus",
-      ...baseStatusTool
-    })
-  ];
-}
-function getNextAction(planStatus, tasks, runnable, hasPlan) {
-  if (planStatus === "review") {
-    return "Wait for plan approval or revise based on comments";
-  }
-  if (!hasPlan || planStatus === "draft") {
-    return "Write or revise plan with hive_plan_write. plan.md is the only required review document and execution contract. Keep an overview/design summary before ## Tasks.";
-  }
-  if (tasks.length === 0) {
-    return "Generate tasks from plan with hive_tasks_sync";
-  }
-  const inProgress = tasks.find((t) => t.status === "in_progress");
-  if (inProgress) {
-    return `Continue direct @forager execution on task: ${inProgress.folder}. Use hive_task_update to record progress.`;
-  }
-  if (runnable.length > 1) {
-    return `${runnable.length} tasks are ready for direct @forager delegation in parallel: ${runnable.join(", ")}. Use hive_task_update to record progress.`;
-  }
-  if (runnable.length === 1) {
-    return `Delegate next runnable task directly to @forager: ${runnable[0]}. Use hive_task_update to record progress or completion.`;
-  }
-  const pending = tasks.find((t) => t.status === "pending");
-  if (pending) {
-    return `Pending tasks exist but are blocked by dependencies. Check blockedBy for details.`;
-  }
-  return "All tasks complete. Review plan.md and complete the feature when ready.";
-}
-
-// src/tools/task.ts
-function getTaskTools(workspaceRoot) {
-  const taskService = new TaskService(workspaceRoot);
-  const foragerGuidance = "Delegate runnable execution directly to @forager and use hive_task_update to record progress or completion.";
-  return [
-    defineTool({
-      name: "hive_tasks_sync",
-      toolReferenceName: "hiveTasksSync",
-      displayName: "Sync Hive Tasks",
-      modelDescription: "Generate tasks from approved plan.md by parsing ### numbered headers. Creates task folders with status.json. When refreshPending is true, rewrites pending plan tasks from current plan (updates dependsOn, planTitle, spec.md) and deletes pending tasks removed from plan. Preserves manual tasks and tasks with execution history. Returns summary of created/removed/kept tasks.",
-      userDescription: "Generate or refresh Hive tasks from an approved plan.",
-      canBeReferencedInPrompt: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          feature: {
-            type: "string",
-            description: "Feature name"
-          },
-          refreshPending: {
-            type: "boolean",
-            description: "When true, refresh pending plan tasks from current plan.md (rewrite dependsOn, planTitle, spec.md) and delete pending tasks removed from plan. Manual tasks and tasks with execution history are preserved."
-          }
-        },
-        required: ["feature"]
-      },
-      invoke: async (input, _token) => {
-        const { feature, refreshPending } = input;
-        const result = taskService.sync(feature, { refreshPending });
-        return JSON.stringify({
-          created: result.created.length,
-          removed: result.removed.length,
-          kept: result.kept.length,
-          manual: result.manual.length,
-          message: `${result.created.length} tasks created, ${result.removed.length} removed, ${result.kept.length} kept, ${result.manual.length} manual`,
-          hints: [
-            "Check task dependencies with hive_status to find runnable tasks.",
-            "A task is runnable when all its dependsOn tasks have status done.",
-            foragerGuidance
-          ]
-        });
-      }
-    }),
-    defineTool({
-      name: "hive_task_create",
-      toolReferenceName: "hiveTaskCreate",
-      displayName: "Create Manual Task",
-      modelDescription: "Create a task manually, not from the plan. Use for ad-hoc work or tasks discovered during execution. Manual tasks always have explicit dependsOn (default: []) to avoid accidental implicit sequential dependencies. Provide structured metadata for a useful spec.md and worker prompt.",
-      userDescription: "Create a manual Hive task that is not sourced from the plan.",
-      canBeReferencedInPrompt: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          feature: {
-            type: "string",
-            description: "Feature name"
-          },
-          name: {
-            type: "string",
-            description: "Task name"
-          },
-          order: {
-            type: "number",
-            description: "Optional order number for the task"
-          },
-          description: {
-            type: "string",
-            description: "What the worker needs to achieve"
-          },
-          goal: {
-            type: "string",
-            description: "Why this task exists and what done means"
-          },
-          acceptanceCriteria: {
-            type: "array",
-            items: { type: "string" },
-            description: "Specific observable outcomes"
-          },
-          references: {
-            type: "array",
-            items: { type: "string" },
-            description: "File paths or line ranges relevant to this task"
-          },
-          files: {
-            type: "array",
-            items: { type: "string" },
-            description: "Files likely to be modified"
-          },
-          dependsOn: {
-            type: "array",
-            items: { type: "string" },
-            description: "Task folder names this task depends on (default: [] for no dependencies)"
-          },
-          reason: {
-            type: "string",
-            description: 'Why this task was created (e.g., "Required by Hygienic review")'
-          },
-          source: {
-            type: "string",
-            enum: ["review", "operator", "ad_hoc"],
-            description: "Origin of this task"
-          }
-        },
-        required: ["feature", "name"]
-      },
-      invoke: async (input, _token) => {
-        const { feature, name, order, ...metadataFields } = input;
-        const metadata = {};
-        if (metadataFields.description) metadata.description = metadataFields.description;
-        if (metadataFields.goal) metadata.goal = metadataFields.goal;
-        if (metadataFields.acceptanceCriteria) metadata.acceptanceCriteria = metadataFields.acceptanceCriteria;
-        if (metadataFields.references) metadata.references = metadataFields.references;
-        if (metadataFields.files) metadata.files = metadataFields.files;
-        if (metadataFields.dependsOn) metadata.dependsOn = metadataFields.dependsOn;
-        if (metadataFields.reason) metadata.reason = metadataFields.reason;
-        if (metadataFields.source) metadata.source = metadataFields.source;
-        const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata : void 0);
-        return `Created task "${folder}" with status: pending, dependsOn: [${(metadata.dependsOn ?? []).join(", ")}]
-Reminder: ${foragerGuidance}`;
-      }
-    }),
-    defineTool({
-      name: "hive_task_update",
-      toolReferenceName: "hiveTaskUpdate",
-      displayName: "Update Hive Task",
-      modelDescription: "Update a task status (pending/in_progress/done/cancelled) or add a work summary. Use during direct @forager execution to record progress or completion.",
-      userDescription: "Update a Hive task status or summary.",
-      canBeReferencedInPrompt: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          feature: {
-            type: "string",
-            description: "Feature name"
-          },
-          task: {
-            type: "string",
-            description: "Task folder name"
-          },
-          status: {
-            type: "string",
-            enum: ["pending", "in_progress", "done", "cancelled"],
-            description: "New status"
-          },
-          summary: {
-            type: "string",
-            description: "Summary of what was done"
-          }
-        },
-        required: ["feature", "task"]
-      },
-      invoke: async (input, _token) => {
-        const { feature, task, status, summary } = input;
-        const updates = {};
-        if (status) updates.status = status;
-        if (summary) updates.summary = summary;
-        const updated = taskService.update(feature, task, updates);
-        const statusMsg = summary ? `. Summary: ${summary}` : "";
-        return `Task "${task}" updated to ${updated.status}${statusMsg}`;
-      }
-    })
-  ];
-}
-
-// src/tools/index.ts
-function getAllToolRegistrations(workspaceRoot) {
-  return [
-    ...getFeatureTools(workspaceRoot),
-    ...getPlanTools(workspaceRoot),
-    ...getTaskTools(workspaceRoot),
-    ...getStatusTools(workspaceRoot)
-  ];
-}
-
 // src/extension.ts
-function createLanguageModelTextResult(content) {
-  return new vscode5.LanguageModelToolResult([
-    new vscode5.LanguageModelTextPart(content)
-  ]);
-}
-function registerLanguageModelTools(context, workspaceRoot) {
-  if (!vscode5.lm?.registerTool) {
-    return;
-  }
-  const stableTools = getAllToolRegistrations(workspaceRoot).filter((tool) => tool.canBeReferencedInPrompt && tool.toolReferenceName).filter((tool) => !tool.name.includes("Status"));
-  for (const tool of stableTools) {
-    const implementation = {
-      prepareInvocation: async (options) => {
-        if (!tool.confirmation) {
-          return {
-            invocationMessage: `Running ${tool.displayName}`
-          };
-        }
-        return {
-          invocationMessage: tool.confirmation.invocationMessage ?? `Running ${tool.displayName}`,
-          confirmationMessages: {
-            title: tool.confirmation.title,
-            message: new vscode5.MarkdownString(tool.confirmation.message)
-          }
-        };
-      },
-      invoke: async (options, token) => {
-        const result = await tool.invoke(options.input, token);
-        return createLanguageModelTextResult(result);
-      }
-    };
-    context.subscriptions.push(vscode5.lm.registerTool(tool.name, implementation));
-  }
-}
 function getReviewTarget(workspaceRoot, filePath) {
   const normalizedWorkspace = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
   const normalizedPath = filePath.replace(/\\/g, "/");
@@ -10988,22 +5301,29 @@ function getReviewTarget(workspaceRoot, filePath) {
   if (planMatch) {
     return { featureName: planMatch[1], document: "plan" };
   }
+  const overviewMatch = normalizedPath.match(/\.hive\/features\/([^/]+)\/context\/overview\.md$/);
+  if (overviewMatch) {
+    return { featureName: overviewMatch[1], document: "overview" };
+  }
   return null;
 }
-function getReviewCommentsPath2(workspaceRoot, featureName, document2) {
-  const canonicalPath = path9.join(workspaceRoot, ".hive", "features", featureName, "comments", `${document2}.json`);
-  if (fs11.existsSync(canonicalPath)) {
+function getReviewCommentsPath(workspaceRoot, featureName, document2) {
+  const canonicalPath = path4.join(workspaceRoot, ".hive", "features", featureName, "comments", `${document2}.json`);
+  if (fs4.existsSync(canonicalPath)) {
     return canonicalPath;
   }
-  return path9.join(workspaceRoot, ".hive", "features", featureName, "comments.json");
+  if (document2 === "plan") {
+    return path4.join(workspaceRoot, ".hive", "features", featureName, "comments.json");
+  }
+  return canonicalPath;
 }
 function findHiveRoot(startPath) {
   let current = startPath;
-  while (current !== path9.dirname(current)) {
-    if (fs11.existsSync(path9.join(current, ".hive"))) {
+  while (current !== path4.dirname(current)) {
+    if (fs4.existsSync(path4.join(current, ".hive"))) {
       return current;
     }
-    current = path9.dirname(current);
+    current = path4.dirname(current);
   }
   return null;
 }
@@ -11030,9 +5350,8 @@ var HiveExtension = class {
   initializeWithHive(workspaceRoot) {
     if (this.initialized) return;
     this.initialized = true;
-    registerLanguageModelTools(this.context, workspaceRoot);
     this.sidebarProvider = new HiveSidebarProvider(workspaceRoot);
-    this.launcher = new Launcher(workspaceRoot);
+    this.launcher = new Launcher();
     this.commentController = new PlanCommentController(workspaceRoot);
     vscode5.window.registerTreeDataProvider("hive.features", this.sidebarProvider);
     this.commentController.registerCommands(this.context);
@@ -11064,14 +5383,6 @@ var HiveExtension = class {
   registerCommands() {
     const workspaceFolder = this.workspaceFolder;
     this.context.subscriptions.push(
-      vscode5.commands.registerCommand("hive.initNest", async () => {
-        await initNest(workspaceFolder);
-        const newRoot = findHiveRoot(workspaceFolder);
-        if (newRoot && !this.initialized) {
-          this.workspaceRoot = newRoot;
-          this.initializeWithHive(newRoot);
-        }
-      }),
       vscode5.commands.registerCommand("hive.refresh", () => {
         if (!this.initialized) {
           const newRoot = findHiveRoot(workspaceFolder);
@@ -11079,93 +5390,15 @@ var HiveExtension = class {
             this.workspaceRoot = newRoot;
             this.initializeWithHive(newRoot);
           } else {
-            vscode5.window.showWarningMessage("Hive: No .hive directory found. Initialize a Hive nest to start reviewing and planning features.");
+            vscode5.window.showWarningMessage("Hive: No .hive directory found. Open a Hive workspace, then refresh this view.");
             return;
           }
         }
         this.sidebarProvider?.refresh();
       }),
-      vscode5.commands.registerCommand("hive.regenerateAgents", async () => {
-        if (this.workspaceRoot) {
-          await regenerateAgents(this.workspaceRoot);
-        }
-      }),
-      vscode5.commands.registerCommand("hive.newFeature", async () => {
-        const name = await vscode5.window.showInputBox({
-          prompt: "Feature name",
-          placeHolder: "my-feature"
-        });
-        if (name && this.workspaceRoot) {
-          const featureService = new FeatureService(this.workspaceRoot);
-          try {
-            featureService.create(name);
-            this.sidebarProvider?.refresh();
-            vscode5.window.showInformationMessage(`Hive: Feature "${name}" created. Open the plan from the sidebar to continue.`);
-          } catch (error) {
-            vscode5.window.showErrorMessage(`Hive: Failed to create feature - ${error}`);
-          }
-        } else if (name) {
-          const hiveDir = path9.join(workspaceFolder, ".hive");
-          fs11.mkdirSync(hiveDir, { recursive: true });
-          this.workspaceRoot = workspaceFolder;
-          this.initializeWithHive(workspaceFolder);
-          const featureService = new FeatureService(workspaceFolder);
-          featureService.create(name);
-          this.sidebarProvider?.refresh();
-          vscode5.window.showInformationMessage(`Hive: Feature "${name}" created. Open the plan from the sidebar to continue.`);
-        }
-      }),
-      vscode5.commands.registerCommand("hive.openFeature", (featureName) => {
-        this.launcher?.openFeature(featureName);
-      }),
-      vscode5.commands.registerCommand("hive.openTask", (item) => {
-        if (item?.featureName && item?.folder) {
-          this.launcher?.openTask(item.featureName, item.folder);
-        }
-      }),
       vscode5.commands.registerCommand("hive.openFile", (filePath) => {
         if (filePath) {
           this.launcher?.openFile(filePath);
-        }
-      }),
-      vscode5.commands.registerCommand("hive.approvePlan", async (item) => {
-        if (item?.featureName && this.workspaceRoot) {
-          const featureService = new FeatureService(this.workspaceRoot);
-          const planService = new PlanService(this.workspaceRoot);
-          const reviewCounts = featureService.getInfo(item.featureName)?.reviewCounts ?? { plan: 0 };
-          const unresolvedTotal = reviewCounts.plan;
-          if (unresolvedTotal > 0) {
-            vscode5.window.showWarningMessage(`Hive: Cannot approve - ${unresolvedTotal} unresolved plan review comment(s) remain. Address them first.`);
-            return;
-          }
-          try {
-            planService.approve(item.featureName);
-            this.sidebarProvider?.refresh();
-            vscode5.window.showInformationMessage(`Hive: Plan approved for "${item.featureName}". Use @Hive to sync tasks.`);
-          } catch (error) {
-            vscode5.window.showErrorMessage(`Hive: Failed to approve plan - ${error}`);
-          }
-        }
-      }),
-      vscode5.commands.registerCommand("hive.syncTasks", async (item) => {
-        if (item?.featureName && this.workspaceRoot) {
-          const featureService = new FeatureService(this.workspaceRoot);
-          const taskService = new TaskService(this.workspaceRoot);
-          const featureData = featureService.get(item.featureName);
-          if (!featureData || featureData.status === "planning") {
-            vscode5.window.showWarningMessage("Hive: Plan must be approved before syncing tasks.");
-            return;
-          }
-          try {
-            const result = taskService.sync(item.featureName);
-            if (featureData.status === "approved") {
-              featureService.updateStatus(item.featureName, "executing");
-            }
-            this.sidebarProvider?.refresh();
-            vscode5.window.showInformationMessage(`Hive: ${result.created.length} tasks created for "${item.featureName}".`);
-          } catch (error) {
-            vscode5.window.showErrorMessage(`Hive: Failed to sync tasks - ${error}`);
-          }
         }
       }),
       vscode5.commands.registerCommand("hive.plan.doneReview", async () => {
@@ -11178,18 +5411,19 @@ var HiveExtension = class {
         const filePath = editor.document.uri.fsPath;
         const target = getReviewTarget(this.workspaceRoot, filePath);
         if (!target) {
-          vscode5.window.showErrorMessage("Not a reviewable plan.md file");
+          vscode5.window.showErrorMessage("Not a reviewable plan.md or overview.md file");
           return;
         }
-        const commentsPath = getReviewCommentsPath2(this.workspaceRoot, target.featureName, target.document);
+        const commentsPath = getReviewCommentsPath(this.workspaceRoot, target.featureName, target.document);
         let comments2 = [];
         try {
-          const commentsData = JSON.parse(fs11.readFileSync(commentsPath, "utf-8"));
+          const commentsData = JSON.parse(fs4.readFileSync(commentsPath, "utf-8"));
           comments2 = commentsData.threads || [];
         } catch (error) {
         }
+        const docLabel = target.document === "overview" ? "Overview" : "Plan";
         const hasComments = comments2.length > 0;
-        const inputPrompt = hasComments ? `Plan: ${comments2.length} comment(s) found. Add feedback or leave empty to submit comments only` : "Enter your plan review feedback (or leave empty to approve)";
+        const inputPrompt = hasComments ? `${docLabel}: ${comments2.length} comment(s) found. Add feedback or leave empty to submit comments only` : `Enter your ${docLabel.toLowerCase()} review feedback (or leave empty to approve)`;
         const userInput = await vscode5.window.showInputBox({
           prompt: inputPrompt,
           placeHolder: hasComments ? "Additional feedback (optional)" : 'e.g., "looks good" to approve, or describe changes needed'
@@ -11198,13 +5432,13 @@ var HiveExtension = class {
         let feedback;
         if (hasComments) {
           const allComments = comments2.map((c) => `Line ${c.line}: ${c.body}`).join("\n");
-          feedback = userInput === "" ? `Plan review comments:
-${allComments}` : `Plan review comments:
+          feedback = userInput === "" ? `${docLabel} review comments:
+${allComments}` : `${docLabel} review comments:
 ${allComments}
 
 Additional feedback: ${userInput}`;
         } else {
-          feedback = userInput === "" ? "Plan approved" : `Plan review feedback: ${userInput}`;
+          feedback = userInput === "" ? `${docLabel} approved` : `${docLabel} review feedback: ${userInput}`;
         }
         vscode5.window.showInformationMessage(
           `Hive: ${hasComments ? "Comments submitted" : "Review submitted"}. The review summary has been copied to your clipboard.`

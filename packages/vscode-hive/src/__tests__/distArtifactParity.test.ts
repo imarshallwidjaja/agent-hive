@@ -4,12 +4,17 @@ import * as fs from 'fs';
 const bundle = fs.readFileSync(new URL('../../dist/extension.js', import.meta.url), 'utf8');
 
 describe('shipped extension artifact parity', () => {
-  it('writes new plan comments to the canonical file in dist', () => {
-    expect(bundle).toMatch(/return path\d+\.join\(this\.workspaceRoot, "\.hive", "features", target\.featureName, "comments", "plan\.json"\);/);
-    expect(bundle).not.toMatch(/return path\d+\.join\(this\.workspaceRoot, "\\.hive", "features", target\.featureName, "comments\.json"\);/);
+  it('includes overview comment routing and storage in the bundle', () => {
+    expect(bundle).toContain('context/overview.md');
+    expect(bundle).toContain('comments/overview.json');
   });
 
-  it('omits the removed start-task command from dist', () => {
-    expect(bundle).not.toContain('registerCommand("hive.startTask"');
+  it('uses canonical plan comments path comments/plan.json in dist', () => {
+    expect(bundle).toContain('comments/plan.json');
+  });
+
+  it('does not contain the structural LM registration API string in the bundle', () => {
+    const lmKey = ['language', 'Model', 'Tools'].join('');
+    expect(bundle).not.toContain(lmKey);
   });
 });

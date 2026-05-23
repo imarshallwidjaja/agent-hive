@@ -207,9 +207,16 @@ describe('HiveSidebarProvider', () => {
     expect(children.map(child => child.label)).toEqual(['Plan', 'Context', 'Tasks']);
     expect(children.find((child) => (child as any).contextValue === 'overview-file')).toBeUndefined();
     expect((children[1] as any).description).toBe('2 file(s)');
+
+    const contextItem = children.find(child => child.label === 'Context');
+    const contextChildren = await provider.getChildren(contextItem);
+    const overviewItem = contextChildren.find((c: any) => c.label === 'overview.md');
+    expect((overviewItem as any)?.description).toBe('1 comment(s)');
+    const notesItem = contextChildren.find((c: any) => c.label === 'notes.md');
+    expect((notesItem as any)?.description).toBe('');
   });
 
-  it('shows workspace artifacts with prompts and copilot steering when .github exists', async () => {
+  it('ignores non-.hive workspace artifacts', async () => {
     fs.mkdirSync(path.join(testRoot, '.github', 'agents'), { recursive: true });
     fs.mkdirSync(path.join(testRoot, '.github', 'skills', 'executing-plans'), { recursive: true });
     fs.mkdirSync(path.join(testRoot, '.github', 'hooks'), { recursive: true });
@@ -226,19 +233,7 @@ describe('HiveSidebarProvider', () => {
     const provider = new HiveSidebarProvider(testRoot);
     const rootItems = await provider.getChildren();
 
-    expect(rootItems.map(item => item.label)).toEqual(['Init Skills', 'Workspace Artifacts']);
-
-    const artifactItems = await provider.getChildren(rootItems[1] as any);
-
-    expect(artifactItems.map(item => item.label)).toEqual([
-      'Agents',
-      'Skills',
-      'Hooks',
-      'Instructions',
-      'Prompts',
-      'copilot-instructions.md',
-      'Plugin Manifest',
-    ]);
+    expect(rootItems.map(item => item.label)).toEqual([]);
   });
 });
 
