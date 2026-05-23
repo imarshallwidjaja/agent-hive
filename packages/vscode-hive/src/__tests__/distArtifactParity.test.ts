@@ -14,7 +14,7 @@ describe('shipped extension artifact parity', () => {
   });
 
   it('does not contain the structural LM registration API string in the bundle', () => {
-    const lmKey = ['language', 'Model', 'Tools'].join('');
-    expect(bundle).not.toContain(lmKey);
+    const registrationApi = ['register', 'Tool'].join('');
+    expect(bundle).not.toContain(registrationApi);
   });
 });
