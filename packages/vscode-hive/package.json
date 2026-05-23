@@ -109,7 +109,7 @@
       "editor/title": [
         {
           "command": "hive.plan.doneReview",
-          "when": "resourceFilename =~ /^plan\\.md$/",
+          "when": "resourceFilename =~ /^(plan|overview)\\.md$/",
           "group": "navigation"
         }
       ],
