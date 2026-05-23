@@ -82,7 +82,7 @@ class HiveExtension {
     this.initialized = true
 
     this.sidebarProvider = new HiveSidebarProvider(workspaceRoot)
-    this.launcher = new Launcher(workspaceRoot)
+    this.launcher = new Launcher()
     this.commentController = new PlanCommentController(workspaceRoot)
 
     vscode.window.registerTreeDataProvider('hive.features', this.sidebarProvider)

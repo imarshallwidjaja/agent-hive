@@ -4,24 +4,7 @@ import * as path from 'path'
 import { getFeaturePath, listFeatureDirectories } from 'hive-core'
 import type { FeatureJson, TaskStatus } from 'hive-core'
 
-type SidebarItem = ActionItem | StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem | TaskFileItem
-
-// Quick action button
-class ActionItem extends vscode.TreeItem {
-  constructor(
-    public readonly label: string,
-    public readonly commandId: string,
-    iconName: string
-  ) {
-    super(label, vscode.TreeItemCollapsibleState.None)
-    this.contextValue = 'action'
-    this.iconPath = new vscode.ThemeIcon(iconName)
-    this.command = {
-      command: commandId,
-      title: label
-    }
-  }
-}
+type SidebarItem = StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem | TaskFileItem
 
 const STATUS_ICONS: Record<string, string> = {
   pending: 'circle-outline',
@@ -114,10 +97,12 @@ class ContextFolderItem extends vscode.TreeItem {
 class ContextFileItem extends vscode.TreeItem {
   constructor(
     public readonly filename: string,
-    public readonly filePath: string
+    public readonly filePath: string,
+    public readonly commentCount: number = 0
   ) {
     super(filename, vscode.TreeItemCollapsibleState.None)
     
+    this.description = commentCount > 0 ? `${commentCount} comment(s)` : ''
     this.contextValue = 'context-file'
     this.iconPath = new vscode.ThemeIcon(filename.endsWith('.md') ? 'markdown' : 'file')
     this.command = {
@@ -206,10 +191,6 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     if (!element) {
       const statusGroups = await this.getStatusGroups()
       return statusGroups
-    }
-
-    if (element instanceof ActionItem) {
-      return []
     }
 
     if (element instanceof StatusGroupItem) {
@@ -304,7 +285,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
     const planPath = path.join(featurePath, 'plan.md')
     if (fs.existsSync(planPath)) {
-      const commentCount = this.getCommentCount(featureName)
+      const commentCount = this.getReviewCommentCount(featureName, 'plan')
       items.push(new PlanItem(featureName, planPath, feature.status, commentCount))
     }
 
@@ -326,7 +307,10 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
     return fs.readdirSync(contextPath)
       .filter(f => !f.startsWith('.'))
-      .map(f => new ContextFileItem(f, path.join(contextPath, f)))
+      .map(f => {
+        const commentCount = f === 'overview.md' ? this.getReviewCommentCount(featureName, 'overview') : 0
+        return new ContextFileItem(f, path.join(contextPath, f), commentCount)
+      })
   }
 
   private getTasks(featureName: string, tasks: Array<{ folder: string; status: TaskStatus }>): TaskItem[] {
@@ -413,13 +397,13 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     return JSON.parse(fs.readFileSync(featureJsonPath, 'utf-8'))
   }
 
-  private getCommentCount(featureName: string): number {
+  private getReviewCommentCount(featureName: string, document: 'plan' | 'overview'): number {
     const featurePath = getFeaturePath(this.workspaceRoot, featureName)
-    const commentsPath = this.firstExistingPath([
-      path.join(featurePath, 'comments', 'plan.json'),
-      path.join(featurePath, 'comments', 'overview.json'),
-      path.join(featurePath, 'comments.json')
-    ])
+    const canonicalPath = path.join(featurePath, 'comments', `${document}.json`)
+    const legacyPlanPath = path.join(featurePath, 'comments.json')
+    const commentsPath = fs.existsSync(canonicalPath)
+      ? canonicalPath
+      : document === 'plan' ? legacyPlanPath : null
 
     if (!commentsPath || !fs.existsSync(commentsPath)) return 0
 
@@ -429,9 +413,5 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     } catch {
       return 0
     }
-  }
-
-  private firstExistingPath(paths: string[]): string | null {
-    return paths.find(candidate => fs.existsSync(candidate)) ?? null
   }
 }

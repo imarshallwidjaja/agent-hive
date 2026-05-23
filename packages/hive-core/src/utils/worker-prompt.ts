@@ -2,7 +2,7 @@
  * Worker prompt builder for Hive delegated execution.
  * Builds context-rich prompts for worker agents with all Hive context.
  *
- * Shared by opencode-hive and any future harness.
+ * Shared by OpenCode task execution.
  */
 import type { ContextFile } from '../types.js';
 
