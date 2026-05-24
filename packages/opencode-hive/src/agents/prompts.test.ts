@@ -7,6 +7,7 @@ import { SWARM_BEE_PROMPT } from './swarm';
 import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
+import { HIVE_BUILDER_PROMPT } from './hive-builder';
 import { HYGIENIC_BEE_PROMPT } from './hygienic';
 import { buildWorkerPrompt } from '../utils/worker-prompt';
 
@@ -863,6 +864,78 @@ describe('trimmed OpenCode runtime prompts', () => {
     expect(SWARM_BEE_PROMPT).not.toContain('todowrite');
     expect(SWARM_BEE_PROMPT).not.toContain('task checkpoints');
     expect(SWARM_BEE_PROMPT).not.toContain('worker return/block');
+  });
+});
+
+describe('Hive Builder (ad-hoc executor) prompt', () => {
+  it('identifies role as ad-hoc executor, not planner-first', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Hive Builder');
+    expect(HIVE_BUILDER_PROMPT).toContain('ad-hoc executor');
+    expect(HIVE_BUILDER_PROMPT).toContain('not planner-first');
+  });
+
+  it('contains default lifecycle: inspect, isolate, execute, verify, commit, merge, cleanup', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('inspect');
+    expect(HIVE_BUILDER_PROMPT).toContain('isolate');
+    expect(HIVE_BUILDER_PROMPT).toContain('execute');
+    expect(HIVE_BUILDER_PROMPT).toContain('verify');
+    expect(HIVE_BUILDER_PROMPT).toContain('commit');
+    expect(HIVE_BUILDER_PROMPT).toContain('merge');
+    expect(HIVE_BUILDER_PROMPT).toContain('cleanup');
+  });
+
+  it('contains verification before integration and forbids claiming checks passed without output', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Verification before integration');
+    expect(HIVE_BUILDER_PROMPT).toContain('never claim');
+  });
+
+  it('says do not create Hive features/plans/tasks by default', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('do not create');
+    expect(HIVE_BUILDER_PROMPT).toContain('features');
+    expect(HIVE_BUILDER_PROMPT).toContain('plans');
+    expect(HIVE_BUILDER_PROMPT).toContain('tasks');
+    expect(HIVE_BUILDER_PROMPT).toContain('by default');
+  });
+
+  it('says escalation is advisory only and rejected escalation must continue ad-hoc', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('advisory');
+    expect(HIVE_BUILDER_PROMPT).toContain('continue ad-hoc');
+  });
+
+  it('contains synthesis-before-delegation wording', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('subagents do not inherit');
+    expect(HIVE_BUILDER_PROMPT).toContain('evidence');
+    expect(HIVE_BUILDER_PROMPT).toContain('expected result');
+    expect(HIVE_BUILDER_PROMPT).toContain('done criteria');
+  });
+
+  it('contains explicit ad-hoc tool names', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_merge');
+  });
+
+  it('contains background-delegation policy', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('BLOCKING by default');
+    expect(HIVE_BUILDER_PROMPT).toContain('background-delegation');
+    expect(HIVE_BUILDER_PROMPT).toContain('task_id');
+    expect(HIVE_BUILDER_PROMPT).toContain('task_status');
+  });
+
+  it('says subagents must not call task() recursively', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('subagents');
+    expect(HIVE_BUILDER_PROMPT).toContain('not call');
+    expect(HIVE_BUILDER_PROMPT).toContain('task()');
+    expect(HIVE_BUILDER_PROMPT).toContain('recursively');
+  });
+
+  it('does NOT contain task-DAG defaults', () => {
+    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_tasks_sync({ refreshPending: true })');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('Depends on:');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_worktree_start(task)');
+  });
+
+  it('does NOT contain stale background wrappers', () => {
+    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_background_task');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_background_output');
   });
 });
 

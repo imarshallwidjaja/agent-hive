@@ -8,6 +8,7 @@
  * - Scout (Research/Collector): Explores codebase and external docs
  * - Forager (Worker/Coder): Executes tasks in isolation
  * - Hygienic (Consultant/Reviewer): Reviews plan quality
+ * - Hive Builder: Ad-hoc executor for direct work
  */
 
 // Bee agents (lean, focused)
@@ -17,6 +18,7 @@ export { swarmBeeAgent, SWARM_BEE_PROMPT } from './swarm';
 export { scoutBeeAgent, SCOUT_BEE_PROMPT } from './scout';
 export { foragerBeeAgent, FORAGER_BEE_PROMPT } from './forager';
 export { hiveHelperAgent, HIVE_HELPER_PROMPT } from './hive-helper';
+export { hiveBuilderAgent, HIVE_BUILDER_PROMPT } from './hive-builder';
 export { hygienicBeeAgent, HYGIENIC_BEE_PROMPT } from './hygienic';
 
 
@@ -30,6 +32,7 @@ export { hygienicBeeAgent, HYGIENIC_BEE_PROMPT } from './hygienic';
  * - scout: Research/collection (codebase + external docs/data)
  * - forager: Worker/coder (executes tasks in worktrees)
  * - hygienic: Consultant/reviewer (plan quality)
+ * - hive-builder: Primary general-purpose Hive-aware executor for ad-hoc work
  */
 export const hiveAgents = {
   // Bee Agents (lean, focused - recommended)
@@ -67,5 +70,10 @@ export const hiveAgents = {
     name: 'Hygienic (Consultant/Reviewer/Debugger)',
     description: 'Reviews plan documentation quality. OKAY/REJECT verdict.',
     mode: 'subagent' as const,
+  },
+  'hive-builder': {
+    name: 'Hive Builder',
+    description: 'Primary general-purpose Hive-aware executor for ad-hoc work. Executes directly without plan/task DAG overhead.',
+    mode: 'primary' as const,
   },
 };
