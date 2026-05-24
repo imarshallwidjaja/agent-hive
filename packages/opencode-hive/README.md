@@ -91,16 +91,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 
 ### Ad-hoc Worktree
 
-These tools are for isolated executor work (Hive Builder). They do not create feature/task records and do not appear in `hive_status`. Ad-hoc worktrees live under `.hive/.worktrees/adhoc/<runId>`.
-
-| Tool | Description |
-|------|-------------|
-| `hive_adhoc_worktree_create` | Create an isolated ad-hoc worktree |
-| `hive_adhoc_worktree_commit` | Commit changes in the ad-hoc worktree |
-| `hive_adhoc_merge` | Merge the ad-hoc branch into the current branch |
-| `hive_adhoc_cleanup` | Remove the ad-hoc worktree and branch |
-
-`task_status` is not a Hive tool; it is opencode-native when the background subagent experiment is active.
+Hive Builder uses `hive_adhoc_*` tools for isolated executor work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. See `docs/HIVE-TOOLS.md` for the tool contracts.
 
 ### Troubleshooting
 

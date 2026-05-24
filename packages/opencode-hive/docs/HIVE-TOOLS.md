@@ -89,11 +89,10 @@ These tools are for isolated executor work (Hive Builder). They operate on `.hiv
 
 #### Ad-hoc worktree input/output notes
 
-- All tools carry `runId`, `workspacePath`, and `branch` between calls.
-- `hive_adhoc_worktree_create` accepts `message` (description) and `repos` (for manifest-backed composite projects); on manifest-backed projects where the root is non-git with no manifest, it returns a structured JSON requirement before any git command.
-- `hive_adhoc_worktree_commit` accepts `message` (commit message).
-- `hive_adhoc_merge` accepts `strategy` (`merge`, `squash`, `rebase`) and `message`.
-- `hive_adhoc_cleanup` accepts `repos` (composite-only) and `keepBranch` (`true` to delete the worktree but preserve the branch for later use).
+- `hive_adhoc_worktree_create` returns `runId`, `workspacePath`, and `branch`. It accepts optional `runId`, `label`, `baseBranch`, and `repoIds` for manifest-backed composite workspaces. On non-git project roots without a project repository manifest, it returns `reason: "repo_manifest_required"` before any git command.
+- `hive_adhoc_worktree_commit` requires `runId`, `workspacePath`, `branch`, and `message`; `workspacePath` and `branch` must match the run returned by create.
+- `hive_adhoc_merge` accepts `runId`, optional `strategy` (`merge`, `squash`, `rebase`), optional `message`, optional `preserveConflicts`, and optional `cleanup` (`none`, `worktree`, `worktree+branch`).
+- `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID.
 
 ### Merge (1 tool)
 | Tool | Purpose |
