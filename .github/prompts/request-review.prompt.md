@@ -6,7 +6,6 @@ model: "gpt-5.4"
 tools:
   - "read"
   - "search"
-  - "tctinh.vscode-hive/hiveStatus"
 ---
 
 Prepare a concise code review handoff for Hygienic. Summarize the completed implementation batch, the relevant files or commits, and the verification already run.

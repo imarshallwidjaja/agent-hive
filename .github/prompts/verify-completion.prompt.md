@@ -7,7 +7,6 @@ tools:
   - "read"
   - "search"
   - "execute"
-  - "tctinh.vscode-hive/hiveStatus"
 ---
 
 Apply the verification-before-completion standard: gather fresh verification evidence before claiming the work is complete.

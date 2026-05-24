@@ -9,11 +9,9 @@ tools:
   - "search/codebase"
   - "search/usages"
   - "vscode/askQuestions"
-  - "tctinh.vscode-hive/hiveStatus"
-  - "tctinh.vscode-hive/hivePlanWrite"
 ---
 
-Start by checking AGENTS.md, .github/copilot-instructions.md, and any relevant .github/instructions/ files. Keep planning read-only, use built-in exploration tools first, then write or revise the plan with hive_plan_write.
+Start by checking AGENTS.md, .github/copilot-instructions.md, and any relevant .github/instructions/ files. Keep planning read-only and use built-in exploration tools first. The VS Code extension is viewer-only; create or revise Hive plans through the supported OpenCode runtime.
 
 If key requirements are missing, use vscode/askQuestions as the normal structured clarification path for the minimum practical decision checkpoints. Use plain chat only as a fallback when the tool is unavailable or a truly lightweight clarification is better.
 

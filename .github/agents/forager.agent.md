@@ -13,8 +13,6 @@ tools:
   - vscode/memory
   - vscode/newWorkspace
   - vscode/getProjectSetupInfo
-  - tctinh.vscode-hive/hivePlanRead
-  - tctinh.vscode-hive/hiveTaskUpdate
 user-invocable: false
 model:
   - GPT-5.4 (copilot)

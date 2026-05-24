@@ -780,7 +780,7 @@ The new release contract test (`claude-code-hive plugin.json invokes the MCP run
 
 Two threads define this patch:
 
-**Skip-if-already-published:** Each npm publish job now queries `npm view <pkg>@<version>` before running `npm publish`. If the version is already on the registry, the step is skipped with an Actions notice and the job completes successfully. The VS Code Marketplace publish step treats "already exists" as success. This makes the full workflow re-entrant: a recovery run does only the work still needed, not the full sequence again.
+**Skip-if-already-published:** Each npm publish job now queries `npm view <pkg>@<version>` before running `npm publish`. If the version is already on the registry, the step is skipped with an Actions notice and the job completes successfully. This makes the full workflow re-entrant: a recovery run does only the work still needed, not the full sequence again.
 
 **Provenance-ready package metadata:** The `@tctinh/agent-hive-mcp` package was missing `repository`, `homepage`, and `bugs` fields. npm provenance validation requires `repository.url` to match the OIDC source repository; the omission caused `E422` rejections on every publish attempt.
 
