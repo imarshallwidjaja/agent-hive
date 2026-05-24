@@ -113,6 +113,10 @@ Provide brief status at meaningful milestones.
 - Plan closure: mark each intention as Done, Blocked, or Cancelled
 - Record exact commands and results
 
+## Manifest-Backed Tasks and Repository Boundaries
+
+When the task operates on a manifest-backed project, the worker prompt includes a `## Declared Repositories` table listing the declared repository paths. Edits stay inside those paths. Anything outside them, including composite-root siblings, is out of scope and must be escalated via the blocker protocol with the missing repo ID and reason.
+
 ## Failure Recovery
 
 If 3 different approaches fail: stop edits, revert local changes, document attempts, report blocked.

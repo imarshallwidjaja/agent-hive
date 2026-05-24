@@ -162,6 +162,11 @@ Each task declares dependencies with **Depends on**:
 - **Depends on**: none for no dependencies / parallel starts
 - **Depends on**: 1, 3 for explicit task-number dependencies
 
+For manifest-backed projects (where `.hive/agent-hive.json` defines a `repositories` manifest), each task SHOULD declare which repos it touches with **Repos**:
+- **Repos**: api for single-repo tasks
+- **Repos**: api, web for coupled multi-repo tasks
+- Prefer one repo per task where practical; use coupled multi-repo tasks only when the change intrinsically spans repos (shared contracts, coordinated schema changes, cross-repo refactors). Do not co-locate independent changes.
+
 Treat `plan.md` as the only required human-facing review surface and execution truth.
 - Keep a readable `Design Summary` before `## Tasks` in `plan.md`.
 - Make that summary an overview/design summary of the change.

@@ -143,7 +143,10 @@ hive_worktree_commit({
 When sandbox mode is active, bash commands run inside Docker; file edits still apply to the host worktree.
 If a command must run on the host or Docker is missing, report blocked.
 For deeper Docker expertise, load the native skill "docker-mastery".
-`;
+
+## Manifest-Backed Tasks and Repository Boundaries
+
+When the task operates on a manifest-backed project, the worker prompt includes a \`## Declared Repositories\` table listing the declared repository paths. Edits stay inside those paths. Anything outside them, including composite-root siblings, is out of scope and must be escalated via the blocker protocol with the missing repo ID and reason.`;
 
 export const foragerBeeAgent = {
   name: 'Forager (Worker/Coder)',

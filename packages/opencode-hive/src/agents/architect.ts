@@ -103,6 +103,11 @@ Each task MUST declare dependencies with **Depends on**:
 - **Depends on**: none for no dependencies / parallel starts
 - **Depends on**: 1, 3 for explicit task-number dependencies
 
+For manifest-backed projects (where \`.hive/agent-hive.json\` defines a \`repositories\` manifest), each task SHOULD declare which repos it touches with **Repos**:
+- **Repos**: api for single-repo tasks
+- **Repos**: api, web for coupled multi-repo tasks
+- Prefer one repo per task where practical; use coupled multi-repo tasks only when the change intrinsically spans repos (shared contracts, coordinated schema changes, cross-repo refactors). Do not co-locate independent changes.
+
 Refresh \`context/overview.md\` as the primary human-facing review surface, while \`plan.md\` remains execution truth.
 - Keep the human-facing \`Design Summary\` in \`plan.md\` before \`## Tasks\`.
 - Optional Mermaid is allowed only in the pre-task summary.

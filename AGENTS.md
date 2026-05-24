@@ -25,6 +25,8 @@ Release note: the active release path publishes `oc-arkive` to npm and attaches 
 
 Worktree dependency note: worktrees are lightweight checkouts without project dependencies. Workers do best-effort verification using ast-grep (no dependencies needed). Full build and test verification (`bun run build` + `bun run test`) runs on the main branch after the orchestrator merges a batch of task branches.
 
+For manifest-backed projects with multiple repos, each task worktree is a composite workspace with a worktree per declared repo under `repos/<repoId>/`.
+
 ### Package-Specific Commands
 
 ```bash

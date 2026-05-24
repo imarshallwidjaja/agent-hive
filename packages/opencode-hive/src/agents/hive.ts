@@ -153,6 +153,11 @@ Each task declares dependencies with **Depends on**:
 - **Depends on**: none for no dependencies / parallel starts
 - **Depends on**: 1, 3 for explicit task-number dependencies
 
+For manifest-backed projects (where \`.hive/agent-hive.json\` defines a \`repositories\` manifest), each task SHOULD declare which repos it touches with **Repos**:
+- **Repos**: api for single-repo tasks
+- **Repos**: api, web for coupled multi-repo tasks
+- Prefer per-repo task boundaries where practical; use coupled multi-repo tasks only when the change intrinsically spans repos (shared contracts, coordinated schema changes, cross-repo refactors). Do not co-locate independent single-repo changes into one task.
+
 Refresh \`context/overview.md\` as the primary human-facing review surface, while \`plan.md\` remains execution truth.
 - Keep a readable \`Design Summary\` before \`## Tasks\` in \`plan.md\`.
 - Optional Mermaid is allowed only in the pre-task summary.
@@ -229,6 +234,7 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 
 ### Merge Strategy
 Hive decides when to merge, delegated \`hive-helper\` executes the batch, and Hive keeps post-batch verification.
+For manifest-backed tasks, merge results surface per-repo outcomes through the aggregate \`repos\` field. \`partial: true\` means at least one repo succeeded before a later repo failed or hit a conflict — do not treat a partial merge as complete. Route partial merges back to plan amendment. Preflight failures (\`partial: false\`) leave all repos untouched.
 For bounded operational cleanup, Hive may also delegate hard-task cleanup to \`hive-helper\`: clarifying current feature/task/worktree state, summarizing interrupted wrap-up candidates, and creating a safe append-only manual follow-up when the work is isolated and does not change sequencing. Helper may inspect current feature state and summarize what is observably mergeable/resumable/blocked, but DAG-changing requests or anything that needs new sequencing must route back to Hive for plan amendment.
 
 ### Post-Batch Review (Hygienic)

@@ -22,12 +22,16 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 │       ├── context/      <- Optional persistent knowledge files (all free-form support notes)
 │       └── tasks/        <- Individual task folders
 │           └── {task}/
-│               ├── status.json      <- Task state
+│               ├── status.json      <- Task state (repoIds, baseCommits for manifest-backed tasks)
 │               ├── spec.md          <- Task context and requirements
 │               ├── worker-prompt.md <- Full worker prompt
 │               └── report.md        <- Execution summary and results
-└── .worktrees/           <- Isolated git worktrees per task
-    └── {feature}/{task}/ <- Full repo copy for safe execution
+├── .worktrees/           <- Isolated git worktrees per task
+│   └── {feature}/{task}/ <- Composite root (manifest-backed) or single git worktree (legacy)
+│       ├── workspace.json  <- Repo manifest, branches, base commits (composite only)
+│       └── repos/          <- Per-repo git worktrees (composite only)
+│           └── {repoId}/
+└── agent-hive.json       <- Optional project config (sandbox, repositories manifest)
 
 packages/
 ├── hive-core/            <- Shared logic (services, types, utils)
@@ -179,11 +183,73 @@ Contains execution results:
 
 ## Worktree Isolation
 
-Each task executes in an isolated git worktree:
-- Full repo copy at `.hive/.worktrees/{feature}/{task}/`
-- Agent makes changes freely without affecting main repo
-- On `hive_worktree_commit`: diff extracted and applied to main repo
-- On `hive_worktree_discard`: worktree discarded, no changes applied
+Each task executes in an isolated workspace under `.hive/.worktrees/{feature}/{task}/`. In legacy mode that path is a single git worktree. In manifest-backed mode that path is a composite workspace, with one git worktree per declared repo under `repos/<repoId>/`.
+
+Agents edit only the task workspace. `hive_worktree_commit` collects the task diff, and `hive_worktree_discard` removes the workspace without applying changes.
+
+### Multi-Repo Composite Workspaces
+
+When a project defines a `repositories` manifest in `.hive/agent-hive.json`, tasks with a `Repos:` annotation use composite workspaces. Each declared repo gets its own git worktree under the composite root.
+
+**Project manifest example:**
+
+```json
+{
+  "sandbox": "none",
+  "repositories": [
+    { "id": "api", "path": "./packages/api" },
+    { "id": "web", "path": "./packages/web-ui" }
+  ]
+}
+```
+
+**Repository ID grammar:**
+- Must match `^[a-z0-9][a-z0-9._-]*$`
+- Must not be `.`, `..`, contain `..`, `/`, `\\`, whitespace, uppercase, or Unicode
+- Must not end in `.lock`
+- Must pass `git check-ref-format --branch hive/<repoId>/<feature>/<task>`
+
+**Manifest source rule:**
+- Repository manifests are read only from project-local config (`<project>/.hive/agent-hive.json` or legacy `<project>/.opencode/agent_hive.json`)
+- Global `~/.config/opencode/agent_hive.json` `repositories` are ignored for project orchestration
+- Non-git project root without a project manifest fails worktree/commit/merge tools with a manifest-required error
+
+**Composite workspace layout:**
+
+```
+.hive/.worktrees/{feature}/{task}/   <- composite root (WorktreeInfo.path)
+├── workspace.json                   <- repo IDs, paths, branches, base commits
+└── repos/
+    └── {repoId}/                    <- per-repo git worktree
+```
+
+**Path semantics:**
+- Legacy (no manifest): `WorktreeInfo.path` is the single git worktree; `workspacePath` is absent or equal to `path`
+- Composite: `WorktreeInfo.path` is the composite workspace root; `workspacePath === path`; per-repo git worktree paths live under `repos[repoId].path`
+- OpenCode/VS Code expose `worktreePath` from `WorktreeInfo.path`; workers start from the composite root and use the repo map for git operations
+
+**Task Repos annotation:**
+- Plan tasks on manifest-backed projects declare `**Repos**: api` or `**Repos**: api, web`
+- Missing, empty, or unknown repo IDs fail before worktree creation
+- Legacy single-root tasks omit `Repos:` and keep implicit root behavior
+
+### Aggregate Commit Contract
+
+Composite commits iterate declared repos in stable sorted ID order:
+
+| Scenario | `committed` | `partial` | `error` |
+|---|---|---|---|
+| All changed repos succeed | `true` | absent | absent |
+| All repos no changes | `false` | `false` | absent |
+| Some succeed, later repo fails | `false` | `true` | names failed repo |
+
+Top-level `sha` is the first repo result SHA in stable order. Per-repo SHAs are authoritative. `committed: true` only when at least one repo committed and none failed.
+
+### Aggregate Merge Contract
+
+Composite merges preflight all repos before mutating any. Preflight failure returns `success: false`, `partial: false`, and names the failing repo. Mutation failure after earlier repo success returns `success: false`, `partial: true`, stops immediately, and does not roll back.
+
+Top-level `filesChanged` and `conflicts` flatten per-repo paths as `repoId:path` in stable repo order. Rebase with custom `message` is rejected before any mutation.
 
 ## Key Principles
 
@@ -227,7 +293,9 @@ Task `status.json` fields and who writes them:
 | `summary` | Worker via `hive_worktree_commit` | On completion |
 | `startedAt` | `hive_worktree_start` / `hive_worktree_create` | On task start/resume |
 | `completedAt` | `hive_worktree_commit` | On completion |
-| `baseCommit` | `hive_worktree_start` / `hive_worktree_create` | On worktree creation/resume |
+| `baseCommit` | `hive_worktree_start` / `hive_worktree_create` | On worktree creation/resume (legacy; first repo HEAD) |
+| `baseCommits` | `hive_worktree_start` / `hive_worktree_create` | On composite worktree creation/resume (per-repo) |
+| `repoIds` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
 | `blocker` | Worker via `hive_worktree_commit` | When blocked |
 | `dependsOn` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
 | `metadata` | `hive_task_create` | On structured manual task creation |

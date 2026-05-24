@@ -129,6 +129,9 @@ task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge co
 \`\`\`
 
 After the helper returns, verify the merged result on the orchestrator branch with \`bun run build\` and \`bun run test\`.
+
+For manifest-backed tasks, merge results surface per-repo outcomes through the aggregate \`repos\` field. \`partial: true\` in the merge response means at least one repo succeeded before a later repo failed or hit a conflict — do not treat a partial merge as complete. The next action must route back to Swarm for diagnosis and plan amendment. On preflight failure (\`partial: false\`), all repos are untouched and the error names the failing repo.
+
 For bounded operational cleanup, Swarm may also delegate hard-task cleanup to \`hive-helper\`: clarifying current feature/task/worktree state, summarizing interrupted wrap-up candidates, and creating a safe append-only manual follow-up when the work is isolated and does not change sequencing. Helper may inspect current feature state and summarize what is observably mergeable/resumable/blocked, but DAG-changing requests or anything that needs new sequencing must route back to Swarm for plan amendment.
 
 ### Post-Batch Review (Hygienic)

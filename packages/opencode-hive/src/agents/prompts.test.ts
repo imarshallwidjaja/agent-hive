@@ -265,6 +265,14 @@ describe('Hive (Hybrid) prompt', () => {
   });
 });
 
+describe('Multi-repo planning guidance', () => {
+  it('teaches hive hybrid planners to prefer per-repo task boundaries on manifest-backed projects', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('**Repos**:');
+    expect(QUEEN_BEE_PROMPT).toContain('per-repo task');
+    expect(QUEEN_BEE_PROMPT).toContain('coupled multi-repo');
+  });
+});
+
 describe('Architect (Planner) prompt', () => {
   describe('delegation planning alignment', () => {
     it('allows read-only research delegation to Scout', () => {
@@ -345,6 +353,12 @@ describe('Architect (Planner) prompt', () => {
     expect(QUEEN_BEE_PROMPT).toContain('all other names');
     expect(QUEEN_BEE_PROMPT).toContain('durable');
     expect(QUEEN_BEE_PROMPT).not.toContain('`plan.md` is the primary human-facing summary');
+  });
+
+  it('instructs planners to prefer per-repo task boundaries and use the `**Repos**:` annotation on manifest-backed projects', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain('**Repos**:');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Prefer one repo per task');
+    expect(ARCHITECT_BEE_PROMPT).toContain('coupled multi-repo');
   });
 });
 
@@ -467,6 +481,16 @@ describe('Swarm (Orchestrator) prompt', () => {
     expect(SWARM_BEE_PROMPT).toContain('research-*');
     expect(SWARM_BEE_PROMPT).toContain('learnings');
   });
+
+  it('teaches swarm about aggregate per-repo merge outcomes and partial failure handling', () => {
+    expect(SWARM_BEE_PROMPT).toContain('per-repo outcomes');
+    expect(SWARM_BEE_PROMPT).toContain('partial: true');
+    expect(SWARM_BEE_PROMPT).toContain('aggregate');
+  });
+
+  it('tells swarm not to treat partial multi-repo merges as complete', () => {
+    expect(SWARM_BEE_PROMPT).toContain('do not treat a partial merge as complete');
+  });
 });
 
 describe('Forager (Worker/Coder) prompt', () => {
@@ -522,6 +546,12 @@ describe('Forager (Worker/Coder) prompt', () => {
 
   it('contains docker-mastery skill reference', () => {
     expect(FORAGER_BEE_PROMPT).toContain('docker-mastery');
+  });
+
+  it('directs forager to honor declared repository scope and escalate out-of-scope files through the blocker protocol', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('declared repository paths');
+    expect(FORAGER_BEE_PROMPT).toContain('out of scope');
+    expect(FORAGER_BEE_PROMPT).toContain('blocker protocol');
   });
 });
 
