@@ -898,6 +898,7 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
   });
 
   it('says escalation is advisory only and rejected escalation must continue ad-hoc', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('question()');
     expect(HIVE_BUILDER_PROMPT).toContain('advisory');
     expect(HIVE_BUILDER_PROMPT).toContain('continue ad-hoc');
   });
@@ -910,7 +911,12 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
   });
 
   it('contains explicit ad-hoc tool names', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_create');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_commit');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_merge');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_cleanup');
+    expect(HIVE_BUILDER_PROMPT).toContain('workspacePath');
+    expect(HIVE_BUILDER_PROMPT).toContain('branch');
   });
 
   it('contains background-delegation policy', () => {

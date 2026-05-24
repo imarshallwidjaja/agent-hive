@@ -146,18 +146,20 @@ export class AdhocWorktreeService {
     const branchName = this.getBranchName(runId);
     const git = this.getGit();
 
-    // Idempotent return only when the same explicit runId targets an existing worktree.
-    if (explicit) {
-      const existing = await this.get(runId);
-      if (existing) return existing;
-    }
-
     const pathExists = await fs
       .access(worktreePath)
       .then(() => true)
       .catch(() => false);
     const branches = await git.branch().catch(() => null);
     const branchPresent = branches?.all.includes(branchName) ?? false;
+
+    if (pathExists && branchPresent) {
+      const existing = await this.get(runId);
+      if (explicit && existing) return existing;
+      throw new Error(
+        `Ad-hoc run collision: ${worktreePath} and ${branchName} already exist but do not match the requested ad-hoc worktree`,
+      );
+    }
 
     if (pathExists && !branchPresent) {
       throw new Error(
@@ -189,12 +191,16 @@ export class AdhocWorktreeService {
   async get(runId: string): Promise<AdhocWorktreeInfo | null> {
     this.assertSafeRunId(runId);
     const worktreePath = this.getWorktreePath(runId);
+    const branchName = this.getBranchName(runId);
     try {
-      const commit = (await this.getGit(worktreePath).revparse(['HEAD'])).trim();
+      const git = this.getGit(worktreePath);
+      const currentBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+      if (currentBranch !== branchName) return null;
+      const commit = (await git.revparse(['HEAD'])).trim();
       return {
         runId,
         path: worktreePath,
-        branch: this.getBranchName(runId),
+        branch: branchName,
         commit,
       };
     } catch {

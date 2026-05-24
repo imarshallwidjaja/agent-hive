@@ -139,6 +139,45 @@ describe("AdhocWorktreeService.create", () => {
       await pathExists(path.join(fixture.hiveDir, ".worktrees", "adhoc", runId)),
     ).toBe(false);
   });
+
+  it("rejects an explicit runId when the path is an unrelated git repository", async () => {
+    const fixture = await createFixture();
+    const runId = "stale-run";
+    const stalePath = path.join(fixture.hiveDir, ".worktrees", "adhoc", runId);
+
+    await fs.mkdir(stalePath, { recursive: true });
+    const staleGit = simpleGit(stalePath);
+    await staleGit.raw(["init"]);
+    await staleGit.raw(["config", "user.email", "test@example.com"]);
+    await staleGit.raw(["config", "user.name", "Test User"]);
+    await fs.writeFile(path.join(stalePath, "stale.txt"), "stale\n", "utf-8");
+    await staleGit.add("stale.txt");
+    await staleGit.commit("chore: stale repo");
+
+    await expect(fixture.service.create({ runId })).rejects.toThrow(
+      /without matching branch/i,
+    );
+  });
+
+  it("rejects an explicit runId when path and branch exist but are not the same worktree", async () => {
+    const fixture = await createFixture();
+    const runId = "wrong-worktree";
+    const stalePath = path.join(fixture.hiveDir, ".worktrees", "adhoc", runId);
+
+    await fixture.repoGit.raw(["branch", `hive/adhoc/${runId}`]);
+    await fs.mkdir(stalePath, { recursive: true });
+    const staleGit = simpleGit(stalePath);
+    await staleGit.raw(["init"]);
+    await staleGit.raw(["config", "user.email", "test@example.com"]);
+    await staleGit.raw(["config", "user.name", "Test User"]);
+    await fs.writeFile(path.join(stalePath, "stale.txt"), "stale\n", "utf-8");
+    await staleGit.add("stale.txt");
+    await staleGit.commit("chore: stale repo");
+
+    await expect(fixture.service.create({ runId })).rejects.toThrow(
+      /do not match the requested ad-hoc worktree/i,
+    );
+  });
 });
 
 describe("AdhocWorktreeService.commit", () => {
