@@ -30,6 +30,16 @@ export interface DiffResult {
   filesChanged: string[];
   insertions: number;
   deletions: number;
+  /** Per-repo diff details when the workspace is a composite. Omitted for legacy single-root workspaces. */
+  repos?: Record<string, RepoDiffResult>;
+}
+
+export interface RepoDiffResult {
+  hasDiff: boolean;
+  diffContent: string;
+  filesChanged: string[];
+  insertions: number;
+  deletions: number;
 }
 
 export interface ApplyResult {
@@ -39,6 +49,18 @@ export interface ApplyResult {
 }
 
 export interface CommitResult {
+  committed: boolean;
+  sha: string;
+  message?: string;
+  /** Per-repo commit results when the workspace is a composite. Omitted for legacy single-root workspaces. */
+  repos?: Record<string, RepoCommitResult>;
+  /** True when at least one repo committed and at least one repo failed. */
+  partial?: boolean;
+  /** First per-repo error encountered, if any. */
+  error?: string;
+}
+
+export interface RepoCommitResult {
   committed: boolean;
   sha: string;
   message?: string;
@@ -491,48 +513,96 @@ export class WorktreeService {
   }
 
   async getDiff(feature: string, step: string, baseCommit?: string): Promise<DiffResult> {
-    const worktreePath = this.getWorktreePath(feature, step);
-    const statusPath = await this.getStepStatusPath(feature, step);
+    const manifest = await this.readWorkspaceManifest(feature, step);
+    if (manifest) {
+      return this.getCompositeDiff(feature, step, manifest);
+    }
+    return this.getLegacyDiff(feature, step, baseCommit);
+  }
 
-    let base = baseCommit;
-    if (!base) {
-      try {
-        const status = JSON.parse(await fs.readFile(statusPath, "utf-8"));
-        base = status.baseCommit;
-      } catch {}
+  private async getCompositeDiff(
+    feature: string,
+    step: string,
+    manifest: WorkspaceManifest,
+  ): Promise<DiffResult> {
+    const compositeRoot = this.getCompositeRoot(feature, step);
+    const repoIds = Object.keys(manifest.repos).sort();
+    const repos: Record<string, RepoDiffResult> = {};
+    const aggregatedFiles: string[] = [];
+    const diffContentParts: string[] = [];
+    let totalInsertions = 0;
+    let totalDeletions = 0;
+    let anyDiff = false;
+
+    for (const repoId of repoIds) {
+      const entry = manifest.repos[repoId];
+      const repoWtPath = path.join(compositeRoot, entry.path);
+      const base = manifest.baseCommits[repoId];
+      const repoDiff = await this.diffOneRepo(repoWtPath, base);
+      repos[repoId] = repoDiff;
+      if (repoDiff.hasDiff) {
+        anyDiff = true;
+        totalInsertions += repoDiff.insertions;
+        totalDeletions += repoDiff.deletions;
+        for (const f of repoDiff.filesChanged) {
+          aggregatedFiles.push(`${repoId}:${f}`);
+        }
+        if (repoDiff.diffContent) {
+          diffContentParts.push(`# repo: ${repoId}\n${repoDiff.diffContent}`);
+        }
+      }
     }
 
-    if (!base) {
-      base = "HEAD~1";
-    }
+    return {
+      hasDiff: anyDiff,
+      diffContent: diffContentParts.join('\n'),
+      filesChanged: aggregatedFiles,
+      insertions: totalInsertions,
+      deletions: totalDeletions,
+      repos,
+    };
+  }
 
-    const worktreeGit = this.getGit(worktreePath);
+  private async diffOneRepo(repoWtPath: string, baseCommit?: string): Promise<RepoDiffResult> {
+    const empty: RepoDiffResult = {
+      hasDiff: false,
+      diffContent: '',
+      filesChanged: [],
+      insertions: 0,
+      deletions: 0,
+    };
 
     try {
-      await worktreeGit.raw(["add", "-A"]);
+      await fs.access(repoWtPath);
+    } catch {
+      return empty;
+    }
 
-      const status = await worktreeGit.status();
+    const git = this.getGit(repoWtPath);
+    const base = baseCommit || 'HEAD~1';
+
+    try {
+      await git.raw(['add', '-A']);
+      const status = await git.status();
       const hasStaged = status.staged.length > 0;
 
-      let diffContent = "";
-      let stat = "";
+      let diffContent = '';
+      let stat = '';
 
       if (hasStaged) {
-        diffContent = await worktreeGit.diff(["--cached"]);
-        stat = diffContent ? await worktreeGit.diff(["--cached", "--stat"]) : "";
+        diffContent = await git.diff(['--cached']);
+        stat = diffContent ? await git.diff(['--cached', '--stat']) : '';
       } else {
-        diffContent = await worktreeGit.diff([`${base}..HEAD`]).catch(() => "");
-        stat = diffContent ? await worktreeGit.diff([`${base}..HEAD`, "--stat"]) : "";
+        diffContent = await git.diff([`${base}..HEAD`]).catch(() => '');
+        stat = diffContent ? await git.diff([`${base}..HEAD`, '--stat']) : '';
       }
 
-      const statLines = stat.split("\n").filter((l) => l.trim());
-
+      const statLines = stat.split('\n').filter(l => l.trim());
       const filesChanged = statLines
         .slice(0, -1)
-        .map((line) => line.split("|")[0].trim())
+        .map(line => line.split('|')[0].trim())
         .filter(Boolean);
-
-      const summaryLine = statLines[statLines.length - 1] || "";
+      const summaryLine = statLines[statLines.length - 1] || '';
       const insertMatch = summaryLine.match(/(\d+) insertion/);
       const deleteMatch = summaryLine.match(/(\d+) deletion/);
 
@@ -544,14 +614,22 @@ export class WorktreeService {
         deletions: deleteMatch ? parseInt(deleteMatch[1], 10) : 0,
       };
     } catch {
-      return {
-        hasDiff: false,
-        diffContent: "",
-        filesChanged: [],
-        insertions: 0,
-        deletions: 0,
-      };
+      return empty;
     }
+  }
+
+  private async getLegacyDiff(feature: string, step: string, baseCommit?: string): Promise<DiffResult> {
+    const statusPath = await this.getStepStatusPath(feature, step);
+
+    let base = baseCommit;
+    if (!base) {
+      try {
+        const status = JSON.parse(await fs.readFile(statusPath, "utf-8"));
+        base = status.baseCommit;
+      } catch {}
+    }
+
+    return this.diffOneRepo(this.getWorktreePath(feature, step), base);
   }
 
   async exportPatch(feature: string, step: string, baseBranch?: string): Promise<string> {
@@ -922,44 +1000,95 @@ export class WorktreeService {
   }
 
   async commitChanges(feature: string, step: string, message?: string): Promise<CommitResult> {
-    const worktreePath = this.getWorktreePath(feature, step);
+    const manifest = await this.readWorkspaceManifest(feature, step);
+    if (manifest) {
+      return this.commitComposite(feature, step, manifest, message);
+    }
+    return this.commitLegacy(feature, step, message);
+  }
 
-    try {
-      await fs.access(worktreePath);
-    } catch {
-      return { committed: false, sha: "", message: "Worktree not found" };
+  private async commitComposite(
+    feature: string,
+    step: string,
+    manifest: WorkspaceManifest,
+    message?: string,
+  ): Promise<CommitResult> {
+    const compositeRoot = this.getCompositeRoot(feature, step);
+    const repoIds = Object.keys(manifest.repos).sort();
+    const repos: Record<string, RepoCommitResult> = {};
+    let anyCommitted = false;
+    let anyFailed = false;
+    let firstError: string | undefined;
+
+    for (const repoId of repoIds) {
+      const entry = manifest.repos[repoId];
+      const repoWtPath = path.join(compositeRoot, entry.path);
+      const commitMessage = message || `hive(${step}): task changes`;
+      const repoResult = await this.commitOneRepo(repoWtPath, commitMessage);
+      repos[repoId] = repoResult;
+
+      if (repoResult.committed) {
+        anyCommitted = true;
+      } else if (repoResult.message && repoResult.message !== 'No changes to commit') {
+        anyFailed = true;
+        if (!firstError) firstError = `${repoId}: ${repoResult.message}`;
+      }
     }
 
-    const worktreeGit = this.getGit(worktreePath);
+    const partial = anyCommitted && anyFailed;
+    const committed = anyCommitted && !anyFailed;
+    const firstResult = repos[repoIds[0]];
 
+    const result: CommitResult = {
+      committed,
+      sha: firstResult.sha,
+      message: firstResult.message,
+      repos,
+    };
+    if (partial) result.partial = true;
+    if (firstError) result.error = firstError;
+    return result;
+  }
+
+  private async commitOneRepo(repoWtPath: string, commitMessage: string): Promise<RepoCommitResult> {
     try {
-      await worktreeGit.add("-A");
+      await fs.access(repoWtPath);
+    } catch {
+      return { committed: false, sha: '', message: 'Worktree not found' };
+    }
 
-      const status = await worktreeGit.status();
-      const hasChanges = status.staged.length > 0 || status.modified.length > 0 || status.not_added.length > 0;
+    const git = this.getGit(repoWtPath);
+    try {
+      await git.add('-A');
+      const status = await git.status();
+      const hasChanges =
+        status.staged.length > 0 ||
+        status.modified.length > 0 ||
+        status.not_added.length > 0 ||
+        status.deleted.length > 0 ||
+        status.created.length > 0;
 
       if (!hasChanges) {
-        const currentSha = (await worktreeGit.revparse(["HEAD"])).trim();
-        return { committed: false, sha: currentSha, message: "No changes to commit" };
+        const currentSha = (await git.revparse(['HEAD']).catch(() => '')).trim();
+        return { committed: false, sha: currentSha, message: 'No changes to commit' };
       }
 
-      const commitMessage = message || `hive(${step}): task changes`;
-      const result = await worktreeGit.commit(commitMessage, ["--allow-empty-message"]);
-
-      return {
-        committed: true,
-        sha: result.commit,
-        message: commitMessage,
-      };
+      const result = await git.commit(commitMessage, ['--allow-empty-message']);
+      return { committed: true, sha: result.commit, message: commitMessage };
     } catch (error: unknown) {
       const err = error as { message?: string };
-      const currentSha = (await worktreeGit.revparse(["HEAD"]).catch(() => "")).trim();
+      const currentSha = (await git.revparse(['HEAD']).catch(() => '')).trim();
       return {
         committed: false,
         sha: currentSha,
-        message: err.message || "Commit failed",
+        message: err.message || 'Commit failed',
       };
     }
+  }
+
+  private async commitLegacy(feature: string, step: string, message?: string): Promise<CommitResult> {
+    const commitMessage = message || `hive(${step}): task changes`;
+    return this.commitOneRepo(this.getWorktreePath(feature, step), commitMessage);
   }
 
   async merge(

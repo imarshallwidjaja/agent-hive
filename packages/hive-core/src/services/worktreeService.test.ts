@@ -635,3 +635,187 @@ describe("WorktreeService composite workspaces", () => {
     expect(await pathExists(wt.path)).toBe(false);
   });
 });
+
+describe("WorktreeService composite diff aggregation", () => {
+  it("returns repo-qualified files and per-repo details for a single-repo composite task", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+
+    await fs.writeFile(path.join(wt.repos!['api'].path, 'new.txt'), 'hello\n', 'utf-8');
+
+    const diff = await fx.service.getDiff(fx.feature, fx.task);
+
+    expect(diff.hasDiff).toBe(true);
+    expect(diff.repos).toBeDefined();
+    expect(Object.keys(diff.repos!).sort()).toEqual(['api']);
+    expect(diff.repos!['api'].hasDiff).toBe(true);
+    expect(diff.repos!['api'].filesChanged).toContain('new.txt');
+    expect(diff.filesChanged).toContain('api:new.txt');
+    expect(diff.insertions).toBeGreaterThanOrEqual(1);
+  });
+
+  it("aggregates diff across multiple repos with mixed change states", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+
+    // Only modify the api repo
+    await fs.writeFile(path.join(wt.repos!['api'].path, 'a.txt'), 'a\n', 'utf-8');
+
+    const diff = await fx.service.getDiff(fx.feature, fx.task);
+
+    expect(diff.hasDiff).toBe(true);
+    expect(diff.repos!['api'].hasDiff).toBe(true);
+    expect(diff.repos!['web-ui'].hasDiff).toBe(false);
+    expect(diff.filesChanged).toContain('api:a.txt');
+    expect(diff.filesChanged.every(f => !f.startsWith('web-ui:'))).toBe(true);
+  });
+
+  it("returns hasDiff=false when no composite repo has changes", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+
+    const diff = await fx.service.getDiff(fx.feature, fx.task);
+
+    expect(diff.hasDiff).toBe(false);
+    expect(diff.filesChanged).toEqual([]);
+    expect(diff.insertions).toBe(0);
+    expect(diff.deletions).toBe(0);
+    expect(Object.keys(diff.repos!).sort()).toEqual(['api', 'web-ui']);
+    expect(diff.repos!['api'].hasDiff).toBe(false);
+    expect(diff.repos!['web-ui'].hasDiff).toBe(false);
+  });
+
+  it("preserves legacy diff behavior when no manifest is configured", async () => {
+    const { repoPath } = await createTempRepo();
+    const service = new WorktreeService({
+      baseDir: repoPath,
+      hiveDir: path.join(repoPath, ".hive"),
+    });
+    const feature = 'legacy-diff';
+    const task = '01-legacy';
+    const wt = await service.create(feature, task);
+    await fs.writeFile(path.join(wt.path, 'legacy-change.txt'), 'legacy\n', 'utf-8');
+
+    const diff = await service.getDiff(feature, task);
+
+    expect(diff.hasDiff).toBe(true);
+    expect(diff.repos).toBeUndefined();
+    expect(diff.filesChanged).toContain('legacy-change.txt');
+  });
+});
+
+describe("WorktreeService composite commit aggregation", () => {
+  it("commits a single-repo composite task and returns aggregate sha", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await fs.writeFile(path.join(wt.repos!['api'].path, 'change.txt'), 'x\n', 'utf-8');
+
+    const result = await fx.service.commitChanges(fx.feature, fx.task, 'feat: api change');
+
+    expect(result.committed).toBe(true);
+    expect(result.partial).not.toBe(true);
+    expect(result.repos).toBeDefined();
+    expect(result.repos!['api'].committed).toBe(true);
+    expect(typeof result.repos!['api'].sha).toBe('string');
+    expect(result.repos!['api'].sha.length).toBeGreaterThan(0);
+    expect(result.sha).toBe(result.repos!['api'].sha);
+  });
+
+  it("commits multiple repos in stable repo ID order when all have changes", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['web-ui', 'api'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await fs.writeFile(path.join(wt.repos!['api'].path, 'a.txt'), 'a\n', 'utf-8');
+    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
+
+    const result = await fx.service.commitChanges(fx.feature, fx.task, 'feat: multi');
+
+    expect(result.committed).toBe(true);
+    expect(result.partial).not.toBe(true);
+    expect(Object.keys(result.repos!)).toEqual(['api', 'web-ui']);
+    expect(result.repos!['api'].committed).toBe(true);
+    expect(result.repos!['web-ui'].committed).toBe(true);
+  });
+
+  it("commits only changed repos and reports no-change for the rest as success", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await fs.writeFile(path.join(wt.repos!['api'].path, 'a.txt'), 'a\n', 'utf-8');
+
+    const result = await fx.service.commitChanges(fx.feature, fx.task, 'feat: partial change');
+
+    expect(result.committed).toBe(true);
+    expect(result.partial).not.toBe(true);
+    expect(result.repos!['api'].committed).toBe(true);
+    expect(result.repos!['web-ui'].committed).toBe(false);
+    expect(result.repos!['web-ui'].message).toMatch(/no changes/i);
+  });
+
+  it("returns committed=false and no error when no composite repo has changes", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+
+    const result = await fx.service.commitChanges(fx.feature, fx.task, 'feat: nothing');
+
+    expect(result.committed).toBe(false);
+    expect(result.partial).toBeUndefined();
+    expect(result.error).toBeUndefined();
+    expect(result.message).toBe('No changes to commit');
+    expect(result.repos!['api'].committed).toBe(false);
+    expect(result.repos!['web-ui'].committed).toBe(false);
+    // Aggregate sha is the first repo (in stable ID order) HEAD.
+    const firstRepoHead = (await simpleGit(wt.repos!['api'].path).revparse(['HEAD'])).trim();
+    expect(result.sha).toBe(firstRepoHead);
+    expect(result.sha).toBe(result.repos!['api'].sha);
+  });
+
+  it("uses first repo HEAD as top-level sha when first repo has no changes but a later repo does", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    // Only the second repo (web-ui in stable order) has changes; api has none.
+    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
+
+    const result = await fx.service.commitChanges(fx.feature, fx.task, 'feat: only second');
+
+    expect(result.committed).toBe(true);
+    expect(result.partial).not.toBe(true);
+    expect(result.repos!['api'].committed).toBe(false);
+    expect(result.repos!['web-ui'].committed).toBe(true);
+    // Top-level sha is the first repo (api) HEAD, NOT the committed web-ui sha.
+    const apiHead = (await simpleGit(wt.repos!['api'].path).revparse(['HEAD'])).trim();
+    expect(result.sha).toBe(apiHead);
+    expect(result.sha).toBe(result.repos!['api'].sha);
+    expect(result.sha).not.toBe(result.repos!['web-ui'].sha);
+    expect(result.message).toBe('No changes to commit');
+  });
+
+  it("reports partial=true and error when a later repo commit fails after an earlier success", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await fs.writeFile(path.join(wt.repos!['api'].path, 'a.txt'), 'a\n', 'utf-8');
+    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
+
+    // Sabotage web-ui by removing its worktree directory after staging would otherwise succeed.
+    await fs.rm(wt.repos!['web-ui'].path, { recursive: true, force: true });
+
+    const result = await fx.service.commitChanges(fx.feature, fx.task, 'feat: partial fail');
+
+    expect(result.committed).toBe(false);
+    expect(result.partial).toBe(true);
+    expect(result.error).toBeDefined();
+    expect(result.repos!['api'].committed).toBe(true);
+    expect(result.repos!['web-ui'].committed).toBe(false);
+  });
+
+  it("preserves legacy single-repo commit shape when no manifest is configured", async () => {
+    const fixture = await createFixture();
+    await fs.writeFile(path.join(fixture.worktreePath, 'legacy.txt'), 'legacy\n', 'utf-8');
+
+    const result = await fixture.service.commitChanges(fixture.feature, fixture.task, 'chore: legacy commit');
+
+    expect(result.committed).toBe(true);
+    expect(typeof result.sha).toBe('string');
+    expect(result.sha.length).toBeGreaterThan(0);
+    expect(result.repos).toBeUndefined();
+    expect(result.partial).toBeUndefined();
+  });
+});
