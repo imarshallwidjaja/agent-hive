@@ -102,6 +102,34 @@ export class AdhocWorktreeService {
     return `hive/adhoc/${runId}`;
   }
 
+  private async isRegisteredWorktree(worktreePath: string, branchName: string): Promise<boolean> {
+    try {
+      const output = await this.getGit().raw(['worktree', 'list', '--porcelain']);
+      const entries = output
+        .split(/\n(?=worktree )/)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+
+      return entries.some((entry) => {
+        const lines = entry.split('\n');
+        const listedPath = lines
+          .find((line) => line.startsWith('worktree '))
+          ?.slice('worktree '.length);
+        const listedBranch = lines
+          .find((line) => line.startsWith('branch '))
+          ?.slice('branch refs/heads/'.length);
+
+        return (
+          listedPath !== undefined &&
+          path.resolve(listedPath) === path.resolve(worktreePath) &&
+          listedBranch === branchName
+        );
+      });
+    } catch {
+      return false;
+    }
+  }
+
   private assertSafeRunId(runId: string): void {
     if (!runId || !RUN_ID_PATTERN.test(runId)) {
       throw new Error(
@@ -193,6 +221,7 @@ export class AdhocWorktreeService {
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
     try {
+      if (!(await this.isRegisteredWorktree(worktreePath, branchName))) return null;
       const git = this.getGit(worktreePath);
       const currentBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
       if (currentBranch !== branchName) return null;

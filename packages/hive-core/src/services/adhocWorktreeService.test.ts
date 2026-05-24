@@ -146,13 +146,6 @@ describe("AdhocWorktreeService.create", () => {
     const stalePath = path.join(fixture.hiveDir, ".worktrees", "adhoc", runId);
 
     await fs.mkdir(stalePath, { recursive: true });
-    const staleGit = simpleGit(stalePath);
-    await staleGit.raw(["init"]);
-    await staleGit.raw(["config", "user.email", "test@example.com"]);
-    await staleGit.raw(["config", "user.name", "Test User"]);
-    await fs.writeFile(path.join(stalePath, "stale.txt"), "stale\n", "utf-8");
-    await staleGit.add("stale.txt");
-    await staleGit.commit("chore: stale repo");
 
     await expect(fixture.service.create({ runId })).rejects.toThrow(
       /without matching branch/i,
@@ -166,6 +159,20 @@ describe("AdhocWorktreeService.create", () => {
 
     await fixture.repoGit.raw(["branch", `hive/adhoc/${runId}`]);
     await fs.mkdir(stalePath, { recursive: true });
+
+    await expect(fixture.service.create({ runId })).rejects.toThrow(
+      /do not match the requested ad-hoc worktree/i,
+    );
+  });
+
+  it("rejects an explicit runId when an unrelated repo has the matching branch name", async () => {
+    const fixture = await createFixture();
+    const runId = "stale-matching-branch";
+    const branchName = `hive/adhoc/${runId}`;
+    const stalePath = path.join(fixture.hiveDir, ".worktrees", "adhoc", runId);
+
+    await fixture.repoGit.raw(["branch", branchName]);
+    await fs.mkdir(stalePath, { recursive: true });
     const staleGit = simpleGit(stalePath);
     await staleGit.raw(["init"]);
     await staleGit.raw(["config", "user.email", "test@example.com"]);
@@ -173,6 +180,7 @@ describe("AdhocWorktreeService.create", () => {
     await fs.writeFile(path.join(stalePath, "stale.txt"), "stale\n", "utf-8");
     await staleGit.add("stale.txt");
     await staleGit.commit("chore: stale repo");
+    await staleGit.raw(["branch", "-M", branchName]);
 
     await expect(fixture.service.create({ runId })).rejects.toThrow(
       /do not match the requested ad-hoc worktree/i,
