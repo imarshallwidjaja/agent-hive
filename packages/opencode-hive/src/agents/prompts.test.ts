@@ -719,6 +719,21 @@ describe('README.md documentation', () => {
     });
   });
 
+  describe('background-delegation docs alignment', () => {
+    it('mentions background-delegation in the available skills table', () => {
+      expect(readmeContent).toContain('background-delegation');
+    });
+
+    it('documents the env gate for background-delegation', () => {
+      expect(readmeContent).toContain('OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS');
+    });
+
+    it('clarifies background-delegation is not a default autoLoadSkills entry', () => {
+      expect(readmeContent).toContain('is not a default');
+      expect(readmeContent).toContain('autoLoadSkills');
+    });
+  });
+
   describe('hive-helper runtime docs alignment', () => {
     it('documents hive-helper in runtime-facing recovery docs', () => {
       expect(readmeContent).toContain('`hive-helper`');

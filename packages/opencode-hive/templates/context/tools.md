@@ -51,28 +51,23 @@ websearch_web_search_exa({ query: "Next.js 15 new features 2026", numResults: 5 
 
 ## Delegation
 
-| Tool | Purpose | When to Use |
-|------|---------|-------------|
-| `hive_background_task` | Spawn async subagent | Parallel exploration via Scout fan-out |
-
 ### Parallel Exploration (Preferred)
 
-In task mode, use task() for research fan-out; in hive mode, use hive_background_task.
+In task mode, use task() for research fan-out.
 
 For exploratory research, load the native `parallel-exploration` skill for the full playbook.
 When custom Scout-derived subagents are configured, choose one only when its description is a better match than the built-in `scout-researcher`.
 
 Quick pattern:
 ```
-hive_background_task({ 
-  agent: "<chosen-researcher>", 
+task({
+  subagent_name: "<chosen-researcher>",
   prompt: "Find all API routes in src/ and summarize patterns",
-  description: "Explore API patterns",
-  sync: false
+  description: "Explore API patterns"
 })
 ```
 
-Use `hive_background_output({ task_id })` to retrieve results when notified.
+When opencode background subagents are enabled (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), primary agents can use `task({ background: true, ... })` plus `task_status` through the `background-delegation` protocol. Load the bundled `background-delegation` skill for the full playbook.
 
 ---
 
@@ -86,4 +81,4 @@ Use `hive_background_output({ task_id })` to retrieve results when notified.
 | Current events/info | `websearch_web_search_exa` |
 | Inspect AST structure | `ast_grep_dump_syntax_tree` |
 | Validate a YAML rule | `ast_grep_test_match_code_rule` |
-| Multi-domain exploration | `parallel-exploration` skill + `hive_background_task` |
+| Multi-domain exploration | `parallel-exploration` skill + `task()` |

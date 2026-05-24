@@ -15,6 +15,10 @@ describe('tools template', () => {
     const toolsTemplate = readFileSync(toolsTemplatePath, 'utf-8');
 
     expect(toolsTemplate).toContain('In task mode, use task()');
+    expect(toolsTemplate).toContain('background-delegation');
+    expect(toolsTemplate).toContain('task_status');
+    expect(toolsTemplate).not.toContain('hive_background_task');
+    expect(toolsTemplate).not.toContain('hive_background_output');
   });
 
   it('documents the upstream ast-grep MCP tools', () => {

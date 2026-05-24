@@ -306,10 +306,11 @@ Do not provide `message` when using `hive_merge(..., strategy: 'rebase')`.
 The previous worker's progress is preserved. Include the user's decision in the `decision` parameter.
 
 **After task() Returns:**
-- task() is BLOCKING — when it returns, the worker is DONE
+- task() is BLOCKING by default — when it returns, the worker is DONE
 - Call `hive_status()` immediately to check the new task state and find next runnable tasks
-- No notifications or polling needed — the result is already available
 - Prefer structured worker-result envelopes over free-form completion interpretation when extending worker/orchestrator flows
+- When opencode is launched with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents may load and use the bundled `background-delegation` skill and call `task({ background: true, ... })` only for independent foreground work; use `task_status` to check background task results before dependent decisions
+- Subagents (including custom derived subagents) must not call `task()` recursively
 
 ### Sandbox Configuration
 

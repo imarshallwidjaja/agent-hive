@@ -122,7 +122,7 @@
 | `hive_agents_md` | Initialize or sync AGENTS.md from codebase or feature context |
 
 ### Skill Loading
-Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into `.hive/generated/opencode-skills/` and registered through `skills.paths`. No Hive plugin tool is used for skill loading.
+Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into `.hive/generated/opencode-skills/` and registered through `skills.paths`. No Hive plugin tool is used for skill loading. The `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` env flag only controls primary-agent prompt appendix text for the bundled `background-delegation` skill and does not add a Hive tool.
 
 ---
 

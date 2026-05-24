@@ -220,6 +220,7 @@ Create `.hive/agent-hive.json`:
 | `systematic-debugging` | Use when encountering any bug or test failure. Requires root cause investigation before proposing fixes. |
 | `code-reviewer` | Use when reviewing implementation changes against an approved plan or task to catch missing requirements, YAGNI, dead code, and risky patterns. |
 | `verification-before-completion` | Use before claiming work is complete. Requires running verification commands and confirming output before success claims. |
+| `background-delegation` | Use when opencode background subagents are available (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`). Enables primary agents to dispatch independent work with `task({ background: true, ... })` and `task_status`. Not loaded as a default `autoLoadSkills` entry; the env flag appends an on-demand reference only. |
 
 #### Available MCPs
 
@@ -245,6 +246,8 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 **User file skills** should be configured through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, or `skills.urls` discovery. They can be loaded with the native `skill` tool or injected at startup by adding the skill's frontmatter `name` to `autoLoadSkills`. Native/user skills take precedence over Hive bundled skills with the same name.
 
 **URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be injected; partially scanned URL skills are not injected.
+
+`background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are env-gated and compact. When the env flag is set, primary agent prompts include a short on-demand reference rather than the full skill body. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
 
 **Example:**
 
@@ -278,6 +281,8 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | `architect-planner` | `parallel-exploration` |
 | `swarm-orchestrator` | (none) |
 | `hygienic-reviewer` | (none) |
+
+`background-delegation` is not a default `autoLoadSkills` entry for any agent. The env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends an on-demand reference to primary agent prompts without adding it to the default autoload set.
 
 ### Per-Agent Model Variants
 
