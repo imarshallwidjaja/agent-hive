@@ -63,6 +63,7 @@ export interface ManualTaskMetadata {
   acceptanceCriteria?: string[];
   references?: string[];
   files?: string[];
+  repoIds?: string[];
   reason?: string;
   source?: 'review' | 'operator' | 'ad_hoc';
   dependsOn?: string[];
@@ -78,6 +79,8 @@ export interface TaskStatus {
   startedAt?: string;
   completedAt?: string;
   baseCommit?: string;
+  baseCommits?: Record<string, string>;
+  repoIds?: string[];
   subtasks?: Subtask[];
   /** Idempotency key for safe retries */
   idempotencyKey?: string;
@@ -132,6 +135,7 @@ export interface TaskInfo {
   origin: TaskOrigin;
   planTitle?: string;
   summary?: string;
+  repoIds?: string[];
 }
 
 export interface FeatureInfo {

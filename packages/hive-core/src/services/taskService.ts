@@ -24,6 +24,7 @@ import {
   LockOptions,
 } from '../utils/paths.js';
 import { TaskStatus, TaskStatusType, TaskOrigin, TasksSyncResult, TaskInfo, Subtask, SubtaskType, SubtaskStatus, WorkerSession, ManualTaskMetadata } from '../types.js';
+import { RepositoryService } from './repositoryService.js';
 
 /** Current schema version for TaskStatus */
 export const TASK_STATUS_SCHEMA_VERSION = 1;
@@ -48,6 +49,7 @@ interface ParsedTask {
   description: string;
   /** Raw dependency numbers parsed from plan. null = not specified (use implicit), [] = explicit none */
   dependsOnNumbers: number[] | null;
+  repoIds: string[] | null;
 }
 
 export interface SyncOptions {
@@ -152,7 +154,9 @@ export class TaskService {
     }
 
     const dependsOn = metadata?.dependsOn ?? [];
+    const repoIds = metadata?.repoIds;
     this.validateManualTaskDependsOn(featureName, dependsOn);
+    this.validateRepoIds(repoIds, 'manual task metadata');
 
     const resolvedOrder = order ?? nextOrder;
     const folder = `${String(resolvedOrder).padStart(2, '0')}-${name}`;
@@ -176,7 +180,8 @@ export class TaskService {
       origin: 'manual',
       planTitle: name,
       dependsOn,
-      ...(metadata ? { metadata: { ...metadata, dependsOn: undefined } } : {}),
+      ...(repoIds !== undefined ? { repoIds } : {}),
+      ...(metadata ? { metadata: { ...metadata, dependsOn: undefined, repoIds: undefined } } : {}),
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, folder), status);
 
@@ -198,6 +203,7 @@ export class TaskService {
       origin: 'plan',
       planTitle: task.name,
       dependsOn,
+      ...(task.repoIds !== null ? { repoIds: task.repoIds } : {}),
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
 
@@ -205,6 +211,7 @@ export class TaskService {
       featureName,
       task,
       dependsOn,
+      repoIds: task.repoIds ?? undefined,
       allTasks,
       planContent,
     });
@@ -222,6 +229,7 @@ export class TaskService {
         ...current,
         planTitle: task.name,
         dependsOn,
+        repoIds: task.repoIds ?? undefined,
       };
       writeJson(statusPath, updated);
     }
@@ -230,6 +238,7 @@ export class TaskService {
       featureName,
       task,
       dependsOn,
+      repoIds: task.repoIds ?? undefined,
       allTasks,
       planContent,
     });
@@ -241,12 +250,13 @@ export class TaskService {
     featureName: string;
     task: { folder: string; name: string; order: number; description?: string };
     dependsOn: string[];
+    repoIds?: string[];
     allTasks: Array<{ folder: string; name: string; order: number }>;
     planContent?: string | null;
     contextFiles?: Array<{ name: string; content: string }>;
     completedTasks?: Array<{ name: string; summary: string }>;
   }): string {
-    const { featureName, task, dependsOn, allTasks, planContent, contextFiles = [], completedTasks = [] } = params;
+    const { featureName, task, dependsOn, repoIds, allTasks, planContent, contextFiles = [], completedTasks = [] } = params;
 
     const getTaskType = (planSection: string | null, taskName: string): string | null => {
       if (!planSection) {
@@ -295,6 +305,13 @@ export class TaskService {
       }
     } else {
       specLines.push('_None_');
+    }
+
+    if (repoIds !== undefined) {
+      specLines.push('', '## Repositories', '');
+      for (const repoId of repoIds) {
+        specLines.push(`- ${repoId}`);
+      }
     }
 
     specLines.push('', '## Plan Section', '');
@@ -607,6 +624,7 @@ export class TaskService {
       origin: status.origin,
       planTitle: status.planTitle,
       summary: status.summary,
+      repoIds: status.repoIds,
     };
   }
 
@@ -670,6 +688,22 @@ export class TaskService {
     }
   }
 
+  private validateRepoIds(repoIds: string[] | undefined, context: string): void {
+    if (repoIds === undefined) {
+      return;
+    }
+
+    if (repoIds.length === 0) {
+      throw new Error(`Invalid repository ID in ${context}: repository list is empty.`);
+    }
+
+    for (const repoId of repoIds) {
+      if (!RepositoryService.isValidRepositoryId(repoId)) {
+        throw new Error(`Invalid repository ID "${repoId}" in ${context}. Repository IDs must use the Task 1 repository ID grammar.`);
+      }
+    }
+  }
+
   private parseTasksFromPlan(content: string): ParsedTask[] {
     const tasks: ParsedTask[] = [];
     const lines = content.split('\n');
@@ -680,6 +714,7 @@ export class TaskService {
     // Regex to match "Depends on:" or "**Depends on**:" with optional markdown
     // Strips markdown formatting (**, *, etc.) and captures the value
     const dependsOnRegex = /^\s*\*{0,2}Depends\s+on\*{0,2}\s*:\s*(.+)$/i;
+    const reposRegex = /^\s*\*{0,2}Repos\*{0,2}\s*:\s*(.*)$/i;
     
     for (const line of lines) {
       // Check for task header: ### N. Task Name
@@ -703,6 +738,7 @@ export class TaskService {
           name: rawName,
           description: '',
           dependsOnNumbers: null,  // null = not specified, use implicit
+          repoIds: null,
         };
         descriptionLines = [];
       } else if (currentTask) {
@@ -727,6 +763,15 @@ export class TaskService {
                 .filter(n => !isNaN(n));
               currentTask.dependsOnNumbers = numbers;
             }
+          }
+          const reposMatch = line.match(reposRegex);
+          if (reposMatch) {
+            const repoIds = reposMatch[1]
+              .split(',')
+              .map(repoId => repoId.trim())
+              .filter(repoId => repoId.length > 0);
+            this.validateRepoIds(repoIds, `plan.md task ${currentTask.order} ("${currentTask.name}")`);
+            currentTask.repoIds = repoIds;
           }
           descriptionLines.push(line);
         }
@@ -942,6 +987,14 @@ export class TaskService {
     }
 
     lines.push('');
+
+    if (metadata?.repoIds !== undefined) {
+      lines.push('## Repositories', '');
+      for (const repoId of metadata.repoIds) {
+        lines.push(`- ${repoId}`);
+      }
+      lines.push('');
+    }
 
     if (metadata?.goal) {
       lines.push('## Goal', '', metadata.goal, '');

@@ -595,6 +595,126 @@ Explicitly depends only on 1, not 2.
     });
   });
 
+  describe("sync() - repository metadata parsing", () => {
+    it("parses a single bold Repos annotation into status, info, and spec metadata", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+### 1. Build API
+
+**Repos**: api
+
+Build the API service.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      service.sync(featureName);
+
+      const status = service.getRawStatus(featureName, "01-build-api");
+      const info = service.get(featureName, "01-build-api");
+      const specContent = fs.readFileSync(path.join(featurePath, "tasks", "01-build-api", "spec.md"), "utf-8");
+
+      expect(status?.repoIds).toEqual(["api"]);
+      expect(info?.repoIds).toEqual(["api"]);
+      expect(specContent).toContain("## Repositories");
+      expect(specContent).toContain("- api");
+    });
+
+    it("parses comma-separated non-bold Repos annotations", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+### 1. Coordinate Apps
+
+Repos: api, web
+
+Coordinate both repos.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      service.sync(featureName);
+
+      const status = service.getRawStatus(featureName, "01-coordinate-apps");
+      const specContent = fs.readFileSync(path.join(featurePath, "tasks", "01-coordinate-apps", "spec.md"), "utf-8");
+
+      expect(status?.repoIds).toEqual(["api", "web"]);
+      expect(specContent).toContain("- api");
+      expect(specContent).toContain("- web");
+    });
+
+    it("rejects invalid repository IDs in Repos annotations", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+### 1. Invalid Repo Task
+
+**Repos**: api, Web_App
+
+Invalid repo annotation.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      expect(() => service.sync(featureName)).toThrow(/invalid repository id.*Web_App.*plan\.md/i);
+    });
+
+    it("leaves repoIds undefined when Repos is absent", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+      fs.writeFileSync(
+        path.join(TEST_DIR, ".hive", "agent-hive.json"),
+        JSON.stringify({ repositories: [{ id: "api", path: "api" }, { id: "web", path: "web" }] })
+      );
+
+      const planContent = `# Plan
+
+### 1. Rootless Task
+
+No repository annotation.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      service.sync(featureName);
+
+      const status = service.getRawStatus(featureName, "01-rootless-task");
+      const info = service.get(featureName, "01-rootless-task");
+      const specContent = fs.readFileSync(path.join(featurePath, "tasks", "01-rootless-task", "spec.md"), "utf-8");
+
+      expect(status?.repoIds).toBeUndefined();
+      expect(info?.repoIds).toBeUndefined();
+      expect(specContent).not.toContain("## Repositories");
+    });
+  });
+
   describe("sync() - dependency validation", () => {
     it("throws error for unknown task numbers in dependencies", () => {
       const featureName = "test-feature";
@@ -1356,6 +1476,30 @@ Align documentation wording.
       expect(specContent).toContain("swarm.ts");
     });
 
+    it("persists manual task repoIds and includes them in spec.md", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      const folder = service.create(featureName, "manual-repo-task", undefined, {
+        repoIds: ["api", "web"],
+        description: "Manual multi-repo follow-up",
+      });
+
+      const status = service.getRawStatus(featureName, folder);
+      const info = service.get(featureName, folder);
+      const specContent = fs.readFileSync(
+        path.join(TEST_DIR, ".hive", "features", featureName, "tasks", folder, "spec.md"),
+        "utf-8"
+      );
+
+      expect(status?.repoIds).toEqual(["api", "web"]);
+      expect((status as any).metadata?.repoIds).toBeUndefined();
+      expect(info?.repoIds).toEqual(["api", "web"]);
+      expect(specContent).toContain("## Repositories");
+      expect(specContent).toContain("- api");
+      expect(specContent).toContain("- web");
+    });
+
     it("accepts explicit dependsOn for manual tasks", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
@@ -1509,6 +1653,59 @@ Align documentation wording.
 
       const task2Status = service.getRawStatus(featureName, "02-build");
       expect(task2Status?.dependsOn).toEqual([]);
+    });
+
+    it("refreshes repoIds for pending plan tasks", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planV1 = `# Plan\n\n### 1. Build\n\n**Repos**: api\n\nBuild.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
+      service.sync(featureName);
+
+      const planV2 = `# Plan\n\n### 1. Build\n\n**Repos**: web\n\nBuild revised.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+
+      service.sync(featureName, { refreshPending: true });
+
+      const status = service.getRawStatus(featureName, "01-build");
+      const specContent = fs.readFileSync(path.join(featurePath, "tasks", "01-build", "spec.md"), "utf-8");
+
+      expect(status?.repoIds).toEqual(["web"]);
+      expect(specContent).toContain("- web");
+      expect(specContent).not.toContain("- api");
+    });
+
+    it("does not rewrite repoIds for tasks with execution history during refreshPending", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planV1 = `# Plan\n\n### 1. Build\n\n**Repos**: api\n\nBuild.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
+      service.sync(featureName);
+      service.update(featureName, "01-build", { status: "in_progress" });
+
+      const planV2 = `# Plan\n\n### 1. Build\n\n**Repos**: web\n\nBuild revised.\n`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+
+      service.sync(featureName, { refreshPending: true });
+
+      const status = service.getRawStatus(featureName, "01-build");
+
+      expect(status?.status).toBe("in_progress");
+      expect(status?.repoIds).toEqual(["api"]);
     });
 
     it("deletes pending plan tasks removed from plan when refreshPending is true", () => {
