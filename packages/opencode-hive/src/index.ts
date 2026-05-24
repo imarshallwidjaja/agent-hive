@@ -1977,8 +1977,8 @@ Expand your Discovery section and try again.`;
                 nextAction: 'Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.',
               });
             }
-            const workspacePath = info?.workspacePath ?? info?.path ?? null;
-            const branch = info?.branch ?? null;
+            const workspacePath = info.workspacePath ?? info.path;
+            const branch = info.branch;
             const result: AdhocCleanupResult = await adhocWorktreeService.cleanup(runId, deleteBranch ?? false);
             return respond({
               success: result.worktreeRemoved,
