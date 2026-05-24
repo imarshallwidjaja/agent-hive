@@ -278,21 +278,6 @@ async function createCompositeFixture(): Promise<CompositeFixture> {
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "hive-core-adhoc-composite-base-"));
   tempDirs.push(baseDir);
 
-  // Initialize a git repo at baseDir so SimpleGit() can run worktree-list etc.
-  const baseGit = simpleGit();
-  try {
-    await baseGit.raw(["init", "-b", "main", baseDir]);
-  } catch {
-    await baseGit.raw(["init", baseDir]);
-    await simpleGit(baseDir).raw(["branch", "-M", "main"]);
-  }
-  const baseRepoGit = simpleGit(baseDir);
-  await baseRepoGit.raw(["config", "user.email", "test@example.com"]);
-  await baseRepoGit.raw(["config", "user.name", "Test User"]);
-  await fs.writeFile(path.join(baseDir, "root.txt"), "root\n", "utf-8");
-  await baseRepoGit.add("root.txt");
-  await baseRepoGit.commit("chore: base root commit");
-
   const { repoPath: apiPath, repoGit: apiGit } = await createTempRepo();
   const { repoPath: webPath, repoGit: webGit } = await createTempRepo();
 
@@ -374,18 +359,47 @@ describe("AdhocWorktreeService composite create", () => {
     expect(await pathExists(path.join(fixture.hiveDir, "features"))).toBe(false);
   });
 
-  it("fails loud and rolls back when a requested repoId is missing from the resolver", async () => {
+  it("fails loud when a requested repoId is missing from the resolver", async () => {
     const fixture = await createCompositeFixture();
 
     await expect(
       fixture.service.create({ runId: "missing-repo", repoIds: ["api", "ghost"] }),
     ).rejects.toThrow(/ghost/);
 
-    // No partial state for the api repo: branch should not exist and workspace root removed.
+    // Missing repos are rejected before any partial workspace state is created.
     expect(await branchExists(fixture.apiGit, "hive/adhoc/api/missing-repo")).toBe(false);
     expect(
       await pathExists(path.join(fixture.hiveDir, ".worktrees", "adhoc", "missing-repo")),
     ).toBe(false);
+  });
+
+  it("returns an existing explicit composite run only when repo worktrees are registered", async () => {
+    const fixture = await createCompositeFixture();
+
+    const first = await fixture.service.create({
+      runId: "explicit-composite",
+      repoIds: ["web", "api"],
+    });
+    const second = await fixture.service.create({
+      runId: "explicit-composite",
+      repoIds: ["api", "web"],
+    });
+
+    expect(second.workspacePath).toBe(first.workspacePath);
+    expect(second.branch).toBe("hive/adhoc/api/explicit-composite");
+    expect(second.commit).toBe(first.repos!.api.commit);
+  });
+
+  it("does not return a composite workspace when a manifest repo worktree is missing", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "missing-composite-worktree",
+      repoIds: ["api", "web"],
+    });
+
+    await fixture.apiGit.raw(["worktree", "remove", created.repos!.api.path, "--force"]);
+
+    await expect(fixture.service.get(created.runId)).resolves.toBeNull();
   });
 });
 
@@ -407,6 +421,22 @@ describe("AdhocWorktreeService composite commit", () => {
     expect(result.repos!.api.sha).toBeTruthy();
     expect(result.repos!.web.committed).toBe(false);
     expect(result.repos!.web.message).toBe("No changes to commit");
+  });
+
+  it("refuses to commit when a manifest repo worktree is no longer registered", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "commit-missing-composite",
+      repoIds: ["api", "web"],
+    });
+
+    await fixture.apiGit.raw(["worktree", "remove", created.repos!.api.path, "--force"]);
+
+    const result = await fixture.service.commit(created.runId, "feat: should not commit");
+
+    expect(result.committed).toBe(false);
+    expect(result.error).toContain("api: Worktree not found");
+    expect(result.repos!.api.message).toBe("Worktree not found");
   });
 });
 

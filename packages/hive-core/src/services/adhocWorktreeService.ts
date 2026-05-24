@@ -196,9 +196,73 @@ export class AdhocWorktreeService {
     try {
       const raw = await fs.readFile(this.getWorkspaceManifestPath(runId), 'utf-8');
       return JSON.parse(raw) as AdhocCompositeManifest;
-    } catch {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  private async isRegisteredCompositeRepo(
+    runId: string,
+    entry: AdhocCompositeManifestEntry,
+  ): Promise<boolean> {
+    const repoRoot = entry.repoRoot || entry.repoPath;
+    if (!repoRoot) return false;
+    const repoWtPath = path.join(this.getCompositeRoot(runId), entry.path);
+    return this.isRegisteredWorktree(repoWtPath, entry.branch, repoRoot);
+  }
+
+  private async validateCompositeManifest(manifest: AdhocCompositeManifest): Promise<boolean> {
+    for (const entry of Object.values(manifest.repos)) {
+      if (!(await this.isRegisteredCompositeRepo(manifest.runId, entry))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private compositeInfoFromManifest(manifest: AdhocCompositeManifest): AdhocWorktreeInfo {
+    const compositeRoot = this.getCompositeRoot(manifest.runId);
+    const repos: Record<string, AdhocWorktreeRepoInfo> = {};
+    const repoIds = Object.keys(manifest.repos).sort();
+    for (const repoId of repoIds) {
+      const entry = manifest.repos[repoId];
+      repos[repoId] = {
+        path: path.join(compositeRoot, entry.path),
+        branch: entry.branch,
+        commit: entry.commit,
+      };
+    }
+
+    const first = repos[repoIds[0]];
+    return {
+      runId: manifest.runId,
+      path: compositeRoot,
+      branch: first.branch,
+      commit: first.commit,
+      mode: 'adhoc-composite',
+      workspacePath: compositeRoot,
+      repos,
+      baseCommits: { ...manifest.baseCommits },
+    };
+  }
+
+  private async refreshCompositeInfo(manifest: AdhocCompositeManifest): Promise<AdhocWorktreeInfo | null> {
+    if (!(await this.validateCompositeManifest(manifest))) {
       return null;
     }
+
+    const info = this.compositeInfoFromManifest(manifest);
+    const repoIds = Object.keys(info.repos ?? {}).sort();
+    for (const repoId of repoIds) {
+      const repo = info.repos![repoId];
+      repo.commit = (await this.getGit(repo.path).revparse(['HEAD'])).trim();
+    }
+    const first = info.repos![repoIds[0]];
+    info.branch = first.branch;
+    info.commit = first.commit;
+    return info;
   }
 
   private async isRegisteredWorktree(worktreePath: string, branchName: string, gitCwd?: string): Promise<boolean> {
@@ -338,12 +402,12 @@ export class AdhocWorktreeService {
   private async createComposite(
     runId: string,
     repoIds: string[],
-    _explicit: boolean,
+    explicit: boolean,
     baseBranch?: string,
   ): Promise<AdhocWorktreeInfo> {
-    void _explicit;
     // Validate inputs
     for (const repoId of repoIds) this.assertSafeRepoId(repoId);
+    const stableRepoIds = [...repoIds].sort();
 
     const resolved = this.resolveRepositories();
     if (!resolved) {
@@ -371,11 +435,14 @@ export class AdhocWorktreeService {
       if (err && err.code && err.code !== 'ENOENT') throw e;
     }
     if (rootExists) {
+      const manifest = explicit ? await this.readCompositeManifest(runId) : null;
+      const existing = manifest ? await this.refreshCompositeInfo(manifest) : null;
+      if (existing) return existing;
       throw new Error(`Composite ad-hoc workspace already exists at ${compositeRoot}`);
     }
 
     // Preflight: no branch collisions in any target source repo
-    for (const repoId of repoIds) {
+    for (const repoId of stableRepoIds) {
       const repo = byId.get(repoId)!;
       const branchName = this.getCompositeBranchName(repoId, runId);
       const repoGit = this.getGit(repo.path);
@@ -398,7 +465,6 @@ export class AdhocWorktreeService {
 
     const createdRepos: Array<{
       repoId: string;
-      repoPath: string;
       branchName: string;
       git: SimpleGit;
     }> = [];
@@ -406,7 +472,7 @@ export class AdhocWorktreeService {
     const baseCommits: Record<string, string> = {};
 
     try {
-      for (const repoId of repoIds) {
+      for (const repoId of stableRepoIds) {
         const repo = byId.get(repoId)!;
         const repoWtPath = this.getCompositeRepoPath(runId, repoId);
         const branchName = this.getCompositeBranchName(repoId, runId);
@@ -420,7 +486,7 @@ export class AdhocWorktreeService {
         } catch (createError) {
           throw new Error(`Failed to create ad-hoc worktree for repo ${repoId}: ${createError}`);
         }
-        createdRepos.push({ repoId, repoPath: repo.path, branchName, git: repoGit });
+        createdRepos.push({ repoId, branchName, git: repoGit });
 
         const wtGit = this.getGit(repoWtPath);
         const commit = (await wtGit.revparse(['HEAD'])).trim();
@@ -433,7 +499,7 @@ export class AdhocWorktreeService {
         mode: 'adhoc-composite',
         runId,
         repos: Object.fromEntries(
-          repoIds.map((id) => {
+          stableRepoIds.map((id) => {
             const repo = byId.get(id)!;
             return [
               id,
@@ -456,7 +522,7 @@ export class AdhocWorktreeService {
         'utf-8',
       );
 
-      const first = repoInfos[repoIds[0]];
+      const first = repoInfos[stableRepoIds[0]];
       return {
         runId,
         path: compositeRoot,
@@ -496,32 +562,7 @@ export class AdhocWorktreeService {
     this.assertSafeRunId(runId);
 
     const manifest = await this.readCompositeManifest(runId);
-    if (manifest) {
-      const compositeRoot = this.getCompositeRoot(runId);
-      const repos: Record<string, AdhocWorktreeRepoInfo> = {};
-      for (const [repoId, entry] of Object.entries(manifest.repos)) {
-        const repoWtPath = path.join(compositeRoot, entry.path);
-        let commit = entry.commit;
-        try {
-          commit = (await this.getGit(repoWtPath).revparse(['HEAD'])).trim();
-        } catch {
-          /* keep recorded commit */
-        }
-        repos[repoId] = { path: repoWtPath, branch: entry.branch, commit };
-      }
-      const repoIds = Object.keys(manifest.repos).sort();
-      const first = repos[repoIds[0]];
-      return {
-        runId,
-        path: compositeRoot,
-        branch: first.branch,
-        commit: first.commit,
-        mode: 'adhoc-composite',
-        workspacePath: compositeRoot,
-        repos,
-        baseCommits: { ...manifest.baseCommits },
-      };
-    }
+    if (manifest) return this.refreshCompositeInfo(manifest);
 
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
@@ -579,6 +620,12 @@ export class AdhocWorktreeService {
 
     for (const repoId of repoIds) {
       const entry = manifest.repos[repoId];
+      if (!(await this.isRegisteredCompositeRepo(runId, entry))) {
+        repos[repoId] = { committed: false, sha: '', message: 'Worktree not found' };
+        anyFailed = true;
+        if (!firstError) firstError = `${repoId}: Worktree not found`;
+        continue;
+      }
       const repoWtPath = path.join(compositeRoot, entry.path);
       const repoResult = await this.commitOneRepo(repoWtPath, message);
       repos[repoId] = repoResult;
@@ -751,6 +798,9 @@ export class AdhocWorktreeService {
     // Preflight: every source repo must have the branch, be clean, and have no active merge state
     for (const repoId of repoIds) {
       const entry = manifest.repos[repoId];
+      if (!(await this.isRegisteredCompositeRepo(runId, entry))) {
+        return preflightFailure(repoId, 'registered worktree not found');
+      }
       const repoRoot = entry.repoRoot || entry.repoPath;
       if (!repoRoot) {
         return preflightFailure(repoId, 'missing source repo root in workspace manifest');
@@ -862,6 +912,10 @@ export class AdhocWorktreeService {
       const perRepoCleanups: Array<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> = [];
       for (const repoId of repoIds) {
         const entry = manifest.repos[repoId];
+        if (!(await this.isRegisteredCompositeRepo(runId, entry))) {
+          perRepoCleanups.push({ worktreeRemoved: false, branchDeleted: false, pruned: false });
+          continue;
+        }
         const repoRoot = entry.repoRoot || entry.repoPath;
         const repoCleanup = await this.removeCompositeRepo(runId, entry, repoRoot, deleteBranch);
         repos[repoId].cleanup = repoCleanup;
@@ -1106,6 +1160,10 @@ export class AdhocWorktreeService {
       const perRepoCleanups: Array<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> = [];
       for (const repoId of repoIds) {
         const entry = manifest.repos[repoId];
+        if (!(await this.isRegisteredCompositeRepo(runId, entry))) {
+          perRepoCleanups.push({ worktreeRemoved: false, branchDeleted: false, pruned: false });
+          continue;
+        }
         const repoRoot = entry.repoRoot || entry.repoPath;
         const perRepo = await this.removeCompositeRepo(runId, entry, repoRoot, deleteBranch);
         perRepoCleanups.push(perRepo);
