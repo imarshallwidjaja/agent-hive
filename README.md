@@ -4,10 +4,9 @@ A plan-first development workflow for OpenCode. Features, tasks, and review gate
 
 Agent Hive is a workflow layer that sits on top of your AI coding tool. It imposes just enough structure to make multi-agent, multi-step work traceable and recoverable — without taking ownership of your editor, your model, or your coding style.
 
-This fork currently publishes the OpenCode runtime to npm as `oc-arkive`.
+This fork publishes the OpenCode runtime as `oc-arkive` and ships the VS Code review companion as a release VSIX named `vscode-arkive`.
 
 [![npm](https://img.shields.io/npm/v/oc-arkive.svg?label=oc-arkive)](https://www.npmjs.com/package/oc-arkive)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/tctinh.vscode-hive.svg?label=vscode-hive)](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](LICENSE)
 
 ---
@@ -97,10 +96,10 @@ The VS Code extension is a **companion**, not a runtime. It shows you the state 
 ### Install
 
 ```bash
-code --install-extension tctinh.vscode-hive
+code --install-extension ./vscode-arkive.vsix
 ```
 
-Or search **"Agent Hive"** in the Extensions panel.
+Download `vscode-arkive.vsix` from the GitHub Release first.
 
 ### What you get
 
@@ -250,7 +249,7 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full evolution log.
 | Package | Registry | Description |
 |---|---|---|
 | [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin — full runtime, 7 agents, 17 tools |
-| [`vscode-hive`](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive) | VS Code Marketplace | Sidebar, plan review, file watcher |
+| `vscode-arkive` | GitHub Release VSIX | Sidebar, plan review, file watcher |
 
 ---
 
@@ -259,4 +258,3 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full evolution log.
 MIT with Commons Clause — free for personal and non-commercial use. See [LICENSE](LICENSE).
 
 ---
-

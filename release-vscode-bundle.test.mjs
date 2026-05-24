@@ -26,4 +26,14 @@ describe('vscode release bundle drift', () => {
 
     assert.equal(after, before, 'packages/vscode-hive/dist/extension.js should not change after rebuild');
   });
+
+  it('keeps the packaged VSIX under the vscode-arkive name', () => {
+    run('bun', ['run', 'package'], vscodePackageDir);
+
+    assert.equal(
+      fs.existsSync(path.join(vscodePackageDir, 'vscode-arkive.vsix')),
+      true,
+      'packages/vscode-hive/vscode-arkive.vsix should exist after rebuild'
+    );
+  });
 });

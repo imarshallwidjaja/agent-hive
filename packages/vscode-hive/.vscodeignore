@@ -4,7 +4,6 @@ node_modules/**
 .gitignore
 tsconfig.json
 **/*.ts
-!**/*.d.ts
+**/*.d.ts
 **/*.map
-../../**
-../**
+scripts/**

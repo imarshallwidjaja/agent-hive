@@ -40,6 +40,10 @@ jobs:
         working-directory: packages/opencode-hive
         run: bun test
 
-      - name: Build vscode-hive
+      - name: Build vscode-arkive
         working-directory: packages/vscode-hive
         run: bun run build
+
+      - name: Test vscode-arkive
+        working-directory: packages/vscode-hive
+        run: bun test

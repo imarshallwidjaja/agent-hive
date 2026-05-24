@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.10] - 2026-05-24
+
+### Changed
+- `vscode-hive` is renamed to `vscode-arkive` for the release-attached VSIX, with the compatibility floor lowered to VS Code 1.64.0.
+- The release workflow now builds and tests `vscode-arkive`, publishes `oc-arkive`, and attaches the VSIX to the GitHub Release.
+
 ## [1.4.9] - 2026-05-23
 
 ### Changed

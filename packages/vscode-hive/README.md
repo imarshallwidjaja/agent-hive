@@ -1,22 +1,14 @@
-# vscode-hive
+# vscode-arkive
 
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/tctinh.vscode-hive)](https://marketplace.visualstudio.com/items?itemName=tctinh.vscode-hive)
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
 
-VS Code companion for reviewing and commenting on Hive `.hive/` output — sidebar, plan.md and overview.md review, and inline comments.
+VS Code companion for reviewing and commenting on Hive `.hive/` output: sidebar, `plan.md` and `overview.md` review, and inline comments.
 
 ## Why Hive?
 
 OpenCode runs the work. This extension keeps the plan, comments, overviews, and feature status close to your editor.
 
 ## Installation
-
-### From VS Code Marketplace
-
-1. Open VS Code
-2. Go to Extensions (Ctrl+Shift+X)
-3. Search for "Hive"
-4. Click Install
 
 ### From VSIX
 
@@ -37,7 +29,7 @@ Watches `.hive/` for changes and refreshes automatically.
 
 ### Review a Hive feature
 
-1. Create or open a repository that already has `.hive/` output from `opencode-hive`
+1. Create or open a repository that already has `.hive/` output from `oc-arkive`
 2. Click the Hive icon in the Activity Bar
 3. Open `plan.md` or `overview.md` from the sidebar and review
 4. Add comments directly on the document, then click **Done Review** when ready
@@ -72,11 +64,9 @@ For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc
 
 ## Requirements
 
-- VS Code 1.80.0 or higher
-- A project with `.hive/` folder (created by opencode-hive)
+- VS Code 1.64.0 or higher
+- A project with `.hive/` folder (created by `oc-arkive`)
 
 ## License
 
 MIT with Commons Clause — Free for personal and non-commercial use. See [LICENSE](../../LICENSE) for details.
-
-

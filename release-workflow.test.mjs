@@ -58,17 +58,20 @@ describe('release workflow recovery contract', () => {
     assert.match(workflow, /docs\/releases\/\$\{\{ needs\.prepare\.outputs\.release_tag \}\}\.md/);
   });
 
-  it('keeps the opencode-only release skip-tolerant and protects the workflow contract from release:check', () => {
+  it('publishes oc-arkive and attaches vscode-arkive VSIX to the GitHub Release', () => {
     const workflow = readText('.github/workflows/release.yml');
     const packageJson = readJson('package.json');
 
     assert.doesNotMatch(workflow, /publish-hive-mcp:/);
     assert.doesNotMatch(workflow, /publish-claude-code-hive:/);
-    assert.doesNotMatch(workflow, /publish-vscode:/);
-    assert.match(workflow, /release:\s+[\s\S]*needs:\s*\[prepare, build, publish-oc-arkive\]/s);
-    assert.match(workflow, /needs\.build\.result == 'success'/);
-    assert.match(workflow, /needs\.prepare\.outputs\.publish_oc_arkive == 'true' && needs\.publish-oc-arkive\.result == 'success'\)\s*\|\|\s*\(needs\.prepare\.outputs\.publish_oc_arkive != 'true' && needs\.publish-oc-arkive\.result == 'skipped'\)/);
-    assert.match(workflow, /tag_name:\s*\$\{\{ needs\.prepare\.outputs\.release_tag \}\}/);
+    assert.doesNotMatch(workflow, /recover_vscode_extension:/);
+    assert.doesNotMatch(workflow, /publish_vscode_extension:/);
+    assert.doesNotMatch(workflow, /publish-vscode-arkive:/);
+    assert.doesNotMatch(workflow, /VSCE_PAT/);
+    assert.match(workflow, /bun run package/);
+    assert.match(workflow, /actions\/upload-artifact@v4/);
+    assert.match(workflow, /vscode-arkive\.vsix/);
+    assert.match(workflow, /files:\s*packages\/vscode-hive\/vscode-arkive\.vsix/);
     assert.match(packageJson.scripts['release:check'], /node --test release-workflow\.test\.mjs/);
   });
 });
@@ -170,7 +173,7 @@ describe('npm publish access helper', () => {
 });
 
 describe('release recovery docs contract', () => {
-  it('documents rehearsal defaults, first-publish behavior, opencode-only scope, tag-only recovery, and operator-selected recovery targets', () => {
+  it('documents rehearsal defaults, release targets, tag-only recovery, and operator-selected recovery targets', () => {
     const releasing = readText('docs/RELEASING.md');
     const agents = readText('AGENTS.md');
 
@@ -179,11 +182,13 @@ describe('release recovery docs contract', () => {
     assert.match(releasing, /first publish/i);
     assert.match(releasing, /package does not exist yet|package is currently absent/i);
     assert.match(releasing, /Recovery mode is only for existing .*vX\.Y\.Z.* tags/i);
-    assert.match(releasing, /only publishes `oc-arkive` to npm/i);
+    assert.match(releasing, /publishes `oc-arkive` to npm/i);
+    assert.doesNotMatch(releasing, /VS Code Marketplace/i);
+    assert.match(releasing, /attaches `vscode-arkive\.vsix` to the GitHub Release/i);
     assert.match(releasing, /requires a recovery tag and at least one explicit target toggle/i);
     assert.match(releasing, /rerun only the unfinished targets/i);
-    assert.match(releasing, /`oc-arkive` npm publish and\/or GitHub Release/i);
+    assert.match(releasing, /`oc-arkive` and\/or GitHub Release/i);
     assert.match(releasing, /release-only recovery remains possible when npm was intentionally skipped/i);
-    assert.match(agents, /OpenCode-only release workflow/i);
+    assert.match(agents, /attaches `vscode-arkive\.vsix` to the GitHub Release/i);
   });
 });

@@ -89,6 +89,7 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       'package.json',
       'packages/hive-core/package.json',
       'packages/opencode-hive/package.json',
+      'packages/vscode-hive/package.json',
     ]) {
       assert.equal(readJson(file).version, releaseVersion, `${file} should be ${releaseVersion}`);
     }
@@ -105,11 +106,17 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     assert.equal(packageLock.packages['packages/opencode-hive'].version, releaseVersion, `package-lock.json oc-arkive version should be ${releaseVersion}`);
     assert.equal(packageLock.packages['node_modules/oc-arkive']?.resolved, 'packages/opencode-hive', 'package-lock.json should link oc-arkive to packages/opencode-hive');
     assert.equal(packageLock.packages['node_modules/opencode-hive'], undefined, 'package-lock.json should not keep the old opencode-hive workspace link');
+    assert.equal(packageLock.packages['packages/vscode-hive'].version, releaseVersion, `package-lock.json vscode-arkive version should be ${releaseVersion}`);
+    assert.equal(packageLock.packages['node_modules/vscode-arkive']?.resolved, 'packages/vscode-hive', 'package-lock.json should link vscode-arkive to packages/vscode-hive');
+    assert.equal(packageLock.packages['node_modules/vscode-hive'], undefined, 'package-lock.json should not keep the old vscode-hive workspace link');
 
     assert.match(bunLock, new RegExp(`"name": "hive-core",\\s+"version": "${escapedReleaseVersion}"`, 's'));
     assert.match(bunLock, new RegExp(`"name": "oc-arkive",\\s+"version": "${escapedReleaseVersion}"`, 's'));
+    assert.match(bunLock, new RegExp(`"name": "vscode-arkive",\\s+"version": "${escapedReleaseVersion}"`, 's'));
     assert.match(bunLock, /"oc-arkive": \["oc-arkive@workspace:packages\/opencode-hive"\]/);
+    assert.match(bunLock, /"vscode-arkive": \["vscode-arkive@workspace:packages\/vscode-hive"\]/);
     assert.doesNotMatch(bunLock, /"opencode-hive": \["opencode-hive@workspace:packages\/opencode-hive"\]/);
+    assert.doesNotMatch(bunLock, /"vscode-hive": \["vscode-hive@workspace:packages\/vscode-hive"\]/);
   });
 
   it(`refreshes the OpenCode plugin manifest to ${releaseVersion}`, () => {
@@ -172,4 +179,5 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     assertPackedFile(packedFiles, 'templates/mcp-servers.json', 'oc-arkive');
     assertPackedFile(packedFiles, 'templates/context/tools.md', 'oc-arkive');
   });
+
 });

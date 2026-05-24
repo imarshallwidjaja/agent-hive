@@ -82,12 +82,12 @@ var fs2 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 
 // ../hive-core/dist/index.js
-var import_node_module = require("node:module");
+var import_node_module = require("module");
 var path = __toESM(require("path"), 1);
 var fs = __toESM(require("fs"), 1);
-var import_node_buffer = require("node:buffer");
+var import_node_buffer = require("buffer");
 var import_child_process = require("child_process");
-var import_node_path = require("node:path");
+var import_node_path = require("path");
 var __create2 = Object.create;
 var __getProtoOf2 = Object.getPrototypeOf;
 var __defProp2 = Object.defineProperty;
@@ -101,7 +101,7 @@ var __toESMCache_esm;
 var __toESM2 = (mod, isNodeMode, target) => {
   var canCache = mod != null && typeof mod === "object";
   if (canCache) {
-    var cache2 = isNodeMode ? __toESMCache_node ??= /* @__PURE__ */ new WeakMap() : __toESMCache_esm ??= /* @__PURE__ */ new WeakMap();
+    var cache2 = isNodeMode ? __toESMCache_node ?? (__toESMCache_node = /* @__PURE__ */ new WeakMap()) : __toESMCache_esm ?? (__toESMCache_esm = /* @__PURE__ */ new WeakMap());
     var cached = cache2.get(mod);
     if (cached)
       return cached;
@@ -854,10 +854,10 @@ var require_src2 = __commonJS((exports2) => {
   var fs_1 = __require("fs");
   var debug_1 = __importDefault(require_src());
   var log = debug_1.default("@kwsites/file-exists");
-  function check(path42, isFile, isDirectory) {
-    log(`checking %s`, path42);
+  function check(path6, isFile, isDirectory) {
+    log(`checking %s`, path6);
     try {
-      const stat = fs_1.statSync(path42);
+      const stat = fs_1.statSync(path6);
       if (stat.isFile() && isFile) {
         log(`[OK] path represents a file`);
         return true;
@@ -877,8 +877,8 @@ var require_src2 = __commonJS((exports2) => {
       throw e;
     }
   }
-  function exists(path42, type = exports2.READABLE) {
-    return check(path42, (type & exports2.FILE) > 0, (type & exports2.FOLDER) > 0);
+  function exists(path6, type = exports2.READABLE) {
+    return check(path6, (type & exports2.FILE) > 0, (type & exports2.FOLDER) > 0);
   }
   exports2.exists = exists;
   exports2.FILE = 1;
@@ -1058,8 +1058,8 @@ function listFeatureDirectories(projectRoot) {
     const featureJson = readJson(featureJsonPath);
     return {
       directoryName,
-      logicalName: featureJson?.name || parsed?.logicalName || directoryName,
-      index: parsed?.index ?? null
+      logicalName: (featureJson == null ? void 0 : featureJson.name) || (parsed == null ? void 0 : parsed.logicalName) || directoryName,
+      index: (parsed == null ? void 0 : parsed.index) ?? null
     };
   }).sort((left, right) => {
     if (left.index !== null && right.index !== null) {
@@ -1080,7 +1080,7 @@ function resolveFeatureDirectoryName(projectRoot, featureName) {
     return featureName;
   }
   const match = listFeatureDirectories(projectRoot).find((entry) => entry.logicalName === featureName);
-  return match?.directoryName || featureName;
+  return (match == null ? void 0 : match.directoryName) || featureName;
 }
 function getFeaturePath(projectRoot, featureName) {
   return path.join(getFeaturesPath(projectRoot), resolveFeatureDirectoryName(projectRoot, featureName));
@@ -1123,8 +1123,8 @@ function pathspec(...paths) {
   cache.set(key, paths);
   return key;
 }
-function isPathSpec(path42) {
-  return path42 instanceof String && cache.has(path42);
+function isPathSpec(path6) {
+  return path6 instanceof String && cache.has(path6);
 }
 var cache;
 var init_pathspec = __esm({
@@ -1207,8 +1207,8 @@ function toLinesWithContent(input = "", trimmed2 = true, separator = `
 function forEachLineWithContent(input, callback) {
   return toLinesWithContent(input, true).map((line) => callback(line));
 }
-function folderExists(path42) {
-  return import_file_exists.exists(path42, import_file_exists.FOLDER);
+function folderExists(path6) {
+  return import_file_exists.exists(path6, import_file_exists.FOLDER);
 }
 function append(target, item) {
   if (Array.isArray(target)) {
@@ -1600,8 +1600,8 @@ function checkIsRepoRootTask() {
     commands: commands3,
     format: "utf-8",
     onError,
-    parser(path42) {
-      return /^\.(git)?$/.test(path42.trim());
+    parser(path6) {
+      return /^\.(git)?$/.test(path6.trim());
     }
   };
 }
@@ -2012,11 +2012,11 @@ function parseGrep(grep) {
   const paths = /* @__PURE__ */ new Set();
   const results = {};
   forEachLineWithContent(grep, (input) => {
-    const [path42, line, preview] = input.split(NULL);
-    paths.add(path42);
-    (results[path42] = results[path42] || []).push({
+    const [path6, line, preview] = input.split(NULL);
+    paths.add(path6);
+    (results[path6] = results[path6] || []).push({
       line: asNumber(line),
-      path: path42,
+      path: path6,
       preview
     });
   });
@@ -2187,9 +2187,10 @@ var init_git_logger = __esm({
 var TasksPendingQueue;
 var init_tasks_pending_queue = __esm({
   "src/lib/runners/tasks-pending-queue.ts"() {
+    var _a2;
     init_git_error();
     init_git_logger();
-    TasksPendingQueue = class _TasksPendingQueue {
+    TasksPendingQueue = (_a2 = class {
       constructor(logLabel = "GitExecutor") {
         this.logLabel = logLabel;
         this._queue = /* @__PURE__ */ new Map();
@@ -2198,7 +2199,7 @@ var init_tasks_pending_queue = __esm({
         return this._queue.get(task);
       }
       createProgress(task) {
-        const name = _TasksPendingQueue.getName(task.commands[0]);
+        const name = _a2.getName(task.commands[0]);
         const logger = createLogger(this.logLabel, name);
         return {
           task,
@@ -2241,12 +2242,9 @@ var init_tasks_pending_queue = __esm({
         return progress;
       }
       static getName(name = "empty") {
-        return `task:${name}:${++_TasksPendingQueue.counter}`;
+        return `task:${name}:${++_a2.counter}`;
       }
-      static {
-        this.counter = 0;
-      }
-    };
+    }, _a2.counter = 0, _a2);
   }
 });
 function pluginContext(task, commands3) {
@@ -2458,7 +2456,7 @@ function taskCallback(task, response, callback = NOOP) {
     callback(null, data);
   };
   const onError2 = (err) => {
-    if (err?.task === task) {
+    if ((err == null ? void 0 : err.task) === task) {
       callback(err instanceof GitResponseError ? addDeprecationNoticeToError(err) : err, void 0);
     }
   };
@@ -2682,14 +2680,14 @@ var init_hash_object = __esm({
     init_task();
   }
 });
-function parseInit(bare, path42, text) {
+function parseInit(bare, path6, text) {
   const response = String(text).trim();
   let result;
   if (result = initResponseRegex.exec(response)) {
-    return new InitSummary(bare, path42, false, result[1]);
+    return new InitSummary(bare, path6, false, result[1]);
   }
   if (result = reInitResponseRegex.exec(response)) {
-    return new InitSummary(bare, path42, true, result[1]);
+    return new InitSummary(bare, path6, true, result[1]);
   }
   let gitDir = "";
   const tokens = response.split(" ");
@@ -2700,7 +2698,7 @@ function parseInit(bare, path42, text) {
       break;
     }
   }
-  return new InitSummary(bare, path42, /^re/i.test(response), gitDir);
+  return new InitSummary(bare, path6, /^re/i.test(response), gitDir);
 }
 var InitSummary;
 var initResponseRegex;
@@ -2708,9 +2706,9 @@ var reInitResponseRegex;
 var init_InitSummary = __esm({
   "src/lib/responses/InitSummary.ts"() {
     InitSummary = class {
-      constructor(bare, path42, existing, gitDir) {
+      constructor(bare, path6, existing, gitDir) {
         this.bare = bare;
-        this.path = path42;
+        this.path = path6;
         this.existing = existing;
         this.gitDir = gitDir;
       }
@@ -2722,7 +2720,7 @@ var init_InitSummary = __esm({
 function hasBareCommand(command) {
   return command.includes(bareCommand);
 }
-function initTask(bare = false, path42, customArgs) {
+function initTask(bare = false, path6, customArgs) {
   const commands3 = ["init", ...customArgs];
   if (bare && !hasBareCommand(commands3)) {
     commands3.splice(1, 0, bareCommand);
@@ -2731,7 +2729,7 @@ function initTask(bare = false, path42, customArgs) {
     commands: commands3,
     format: "utf-8",
     parser(text) {
-      return parseInit(commands3.includes("--bare"), path42, text);
+      return parseInit(commands3.includes("--bare"), path6, text);
     }
   };
 }
@@ -2810,8 +2808,8 @@ var init_parse_diff_summary = __esm({
         const inserted = /(\d+) i/.exec(summary);
         const deleted = /(\d+) d/.exec(summary);
         result.changed = asNumber(changed);
-        result.insertions = asNumber(inserted?.[1]);
-        result.deletions = asNumber(deleted?.[1]);
+        result.insertions = asNumber(inserted == null ? void 0 : inserted[1]);
+        result.deletions = asNumber(deleted == null ? void 0 : deleted[1]);
       })
     ];
     numStatParser = [
@@ -3446,12 +3444,12 @@ var init_FileStatusSummary = __esm({
   "src/lib/responses/FileStatusSummary.ts"() {
     fromPathRegex = /^(.+)\0(.+)$/;
     FileStatusSummary = class {
-      constructor(path42, index, working_dir) {
-        this.path = path42;
+      constructor(path6, index, working_dir) {
+        this.path = path6;
         this.index = index;
         this.working_dir = working_dir;
         if (index === "R" || working_dir === "R") {
-          const detail = fromPathRegex.exec(path42) || [null, path42, path42];
+          const detail = fromPathRegex.exec(path6) || [null, path6, path6];
           this.from = detail[2] || "";
           this.path = detail[1] || "";
         }
@@ -3482,14 +3480,14 @@ function splitLine(result, lineStr) {
     default:
       return;
   }
-  function data(index, workingDir, path42) {
+  function data(index, workingDir, path6) {
     const raw = `${index}${workingDir}`;
     const handler = parsers6.get(raw);
     if (handler) {
-      handler(result, path42);
+      handler(result, path6);
     }
     if (raw !== "##" && raw !== "!!") {
-      result.files.push(new FileStatusSummary(path42, index, workingDir));
+      result.files.push(new FileStatusSummary(path6, index, workingDir));
     }
   }
 }
@@ -3558,12 +3556,12 @@ var init_StatusSummary = __esm({
           regexResult = behindReg.exec(line);
           result.behind = regexResult && +regexResult[1] || 0;
           regexResult = currentReg.exec(line);
-          result.current = filterType(regexResult?.[1], filterString, null);
+          result.current = filterType(regexResult == null ? void 0 : regexResult[1], filterString, null);
           regexResult = trackingReg.exec(line);
-          result.tracking = filterType(regexResult?.[1], filterString, null);
+          result.tracking = filterType(regexResult == null ? void 0 : regexResult[1], filterString, null);
           regexResult = onEmptyBranchReg.exec(line);
           if (regexResult) {
-            result.current = filterType(regexResult?.[1], filterString, result.current);
+            result.current = filterType(regexResult == null ? void 0 : regexResult[1], filterString, result.current);
           }
           result.detached = /\(no branch\)/.test(line);
         }
@@ -3716,13 +3714,13 @@ var init_simple_git_api = __esm({
         if (typeof directory === "string") {
           return this._runTask(changeWorkingDirectoryTask(directory, this._executor), next);
         }
-        if (typeof directory?.path === "string") {
+        if (typeof (directory == null ? void 0 : directory.path) === "string") {
           return this._runTask(changeWorkingDirectoryTask(directory.path, directory.root && this._executor || void 0), next);
         }
         return this._runTask(configurationErrorTask("Git.cwd: workingDirectory must be supplied as a string"), next);
       }
-      hashObject(path42, write) {
-        return this._runTask(hashObjectTask(path42, write === true), trailingFunctionArgument(arguments));
+      hashObject(path6, write) {
+        return this._runTask(hashObjectTask(path6, write === true), trailingFunctionArgument(arguments));
       }
       init(bare) {
         return this._runTask(initTask(bare === true, this._executor.cwd, getTrailingOptions(arguments)), trailingFunctionArgument(arguments));
@@ -4015,8 +4013,8 @@ var init_branch = __esm({
   }
 });
 function toPath(input) {
-  const path42 = input.trim().replace(/^["']|["']$/g, "");
-  return path42 && (0, import_node_path.normalize)(path42);
+  const path6 = input.trim().replace(/^["']|["']$/g, "");
+  return path6 && (0, import_node_path.normalize)(path6);
 }
 var parseCheckIgnore;
 var init_CheckIgnore = __esm({
@@ -4309,8 +4307,8 @@ __export2(sub_module_exports, {
   subModuleTask: () => subModuleTask,
   updateSubModuleTask: () => updateSubModuleTask
 });
-function addSubModuleTask(repo, path42) {
-  return subModuleTask(["add", repo, path42]);
+function addSubModuleTask(repo, path6) {
+  return subModuleTask(["add", repo, path6]);
 }
 function initSubModuleTask(customArgs) {
   return subModuleTask(["init", ...customArgs]);
@@ -4578,8 +4576,8 @@ var require_git = __commonJS2({
       }
       return this._runTask(straightThroughStringTask2(command, this._trimmed), next);
     };
-    Git2.prototype.submoduleAdd = function(repo, path42, then) {
-      return this._runTask(addSubModuleTask2(repo, path42), trailingFunctionArgument2(arguments));
+    Git2.prototype.submoduleAdd = function(repo, path6, then) {
+      return this._runTask(addSubModuleTask2(repo, path6), trailingFunctionArgument2(arguments));
     };
     Git2.prototype.submoduleUpdate = function(args, then) {
       return this._runTask(updateSubModuleTask2(getTrailingOptions2(arguments, true)), trailingFunctionArgument2(arguments));
@@ -5017,6 +5015,7 @@ var HiveSidebarProvider = class {
     return JSON.parse(fs2.readFileSync(featureJsonPath, "utf-8"));
   }
   getReviewCommentCount(featureName, document2) {
+    var _a2;
     const featurePath = getFeaturePath(this.workspaceRoot, featureName);
     const canonicalPath = path2.join(featurePath, "comments", `${document2}.json`);
     const legacyPlanPath = path2.join(featurePath, "comments.json");
@@ -5024,7 +5023,7 @@ var HiveSidebarProvider = class {
     if (!commentsPath || !fs2.existsSync(commentsPath)) return 0;
     try {
       const data = JSON.parse(fs2.readFileSync(commentsPath, "utf-8"));
-      return data.threads?.length || 0;
+      return ((_a2 = data.threads) == null ? void 0 : _a2.length) || 0;
     } catch {
       return 0;
     }
@@ -5250,10 +5249,11 @@ var PlanCommentController = class {
     if (!commentsPath) return;
     const threads = [];
     this.threads.forEach((thread, id) => {
+      var _a2;
       if (!this.isSamePath(thread.uri.fsPath, uri.fsPath)) return;
       if (thread.comments.length === 0) return;
       const [first2, ...rest] = thread.comments;
-      const line = thread.range?.start.line ?? 0;
+      const line = ((_a2 = thread.range) == null ? void 0 : _a2.start.line) ?? 0;
       const getBodyText = (body) => typeof body === "string" ? body : body.value;
       threads.push({
         id,
@@ -5345,9 +5345,13 @@ var HiveExtension = class {
     this.commentController.registerCommands(this.context);
     vscode5.commands.executeCommand("setContext", "hive.hasHiveRoot", true);
     this.hiveWatcher = new HiveWatcher(workspaceRoot, () => {
-      this.sidebarProvider?.refresh();
+      var _a2;
+      (_a2 = this.sidebarProvider) == null ? void 0 : _a2.refresh();
     });
-    this.context.subscriptions.push({ dispose: () => this.hiveWatcher?.dispose() });
+    this.context.subscriptions.push({ dispose: () => {
+      var _a2;
+      return (_a2 = this.hiveWatcher) == null ? void 0 : _a2.dispose();
+    } });
     if (this.creationWatcher) {
       this.creationWatcher.dispose();
       this.creationWatcher = null;
@@ -5372,6 +5376,7 @@ var HiveExtension = class {
     const workspaceFolder = this.workspaceFolder;
     this.context.subscriptions.push(
       vscode5.commands.registerCommand("hive.refresh", () => {
+        var _a2;
         if (!this.initialized) {
           const newRoot = findHiveRoot(workspaceFolder);
           if (newRoot) {
@@ -5382,11 +5387,12 @@ var HiveExtension = class {
             return;
           }
         }
-        this.sidebarProvider?.refresh();
+        (_a2 = this.sidebarProvider) == null ? void 0 : _a2.refresh();
       }),
       vscode5.commands.registerCommand("hive.openFile", (filePath) => {
+        var _a2;
         if (filePath) {
-          this.launcher?.openFile(filePath);
+          (_a2 = this.launcher) == null ? void 0 : _a2.openFile(filePath);
         }
       }),
       vscode5.commands.registerCommand("hive.plan.doneReview", async () => {
@@ -5438,7 +5444,8 @@ Additional feedback: ${userInput}`;
   }
 };
 function activate(context) {
-  const workspaceFolder = vscode5.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  var _a2, _b;
+  const workspaceFolder = (_b = (_a2 = vscode5.workspace.workspaceFolders) == null ? void 0 : _a2[0]) == null ? void 0 : _b.uri.fsPath;
   if (!workspaceFolder) return;
   const extension = new HiveExtension(context, workspaceFolder);
   extension.registerCommands();

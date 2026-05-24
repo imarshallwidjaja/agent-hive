@@ -1,6 +1,6 @@
 {
   "name": "hive",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "description": "Context-Driven Development",
   "dataPath": "../../.hive",
   "commands": [

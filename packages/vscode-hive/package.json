@@ -1,9 +1,9 @@
 {
-  "name": "vscode-hive",
-  "displayName": "Agent Hive",
-  "description": "From Vibe Coding to Hive Coding - Review and approve AI-generated plans",
-  "version": "1.4.8",
-  "publisher": "tctinh",
+  "name": "vscode-arkive",
+  "displayName": "Arkive",
+  "description": "View and review Agent Hive .hive workspaces",
+  "version": "1.4.10",
+  "publisher": "arkive",
   "license": "MIT WITH Commons-Clause",
   "icon": "icon.png",
   "repository": {
@@ -17,20 +17,28 @@
   },
   "keywords": [
     "ai",
+    "arkive",
     "hive",
-    "vibe-coding",
     "opencode",
     "planning",
     "workflow"
   ],
   "engines": {
-    "vscode": "^1.107.0"
+    "vscode": "^1.64.0"
   },
   "categories": [
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:hive.features",
+    "onCommand:hive.refresh",
+    "onCommand:hive.openFile",
+    "onCommand:hive.plan.doneReview",
+    "onCommand:hive.comment.create",
+    "onCommand:hive.comment.reply",
+    "onCommand:hive.comment.resolve",
+    "onCommand:hive.comment.delete"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -140,13 +148,14 @@
     }
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --define:import.meta.url=__importMetaUrl --banner:js=\"const __importMetaUrl = require('url').pathToFileURL(__filename).href;\" && vsce package --no-dependencies -o vscode-hive.vsix",
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node14 --sourcemap --define:import.meta.url=__importMetaUrl --banner:js=\"const __importMetaUrl = require('url').pathToFileURL(__filename).href;\"",
+    "package": "bun run build && vsce package --no-dependencies -o vscode-arkive.vsix",
     "watch": "npm run build -- --watch",
     "build:types": "tsc --emitDeclarationOnly",
     "test": "bun test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.100.0",
+    "@types/vscode": "1.64.0",
     "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.2",
     "typescript": "^5.0.0"

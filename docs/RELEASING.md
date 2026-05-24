@@ -1,10 +1,10 @@
-# Releasing oc-arkive
+# Releasing Arkive Packages
 
-This fork's release workflow is OpenCode-only. It builds the shared `hive-core` package, builds and tests `packages/opencode-hive`, only publishes `oc-arkive` to npm, and creates a GitHub Release from the matching release note file.
+This fork's release workflow builds the shared `hive-core` package, builds and tests `packages/opencode-hive` and `packages/vscode-hive`, publishes `oc-arkive` to npm, attaches `vscode-arkive.vsix` to the GitHub Release, and creates the GitHub Release from the matching release note file.
 
 The `Release` workflow publishes only on tags matching `v*`. Manual `workflow_dispatch` runs default to `rehearse`: they build and test the candidate without publishing to npm or creating a GitHub Release. Recovery mode is only for existing `vX.Y.Z` tags and reuses that tagged commit.
 
-## 1. One-time npm setup
+## 1. One-time release setup
 
 Create an npm automation token for the account that will own `oc-arkive`, then add it to the fork as a repository secret named `NPM_KEY`.
 
@@ -14,9 +14,10 @@ For the first publish, the package does not exist yet. The release helper treats
 
 Release preparation is manual. Update the release branch explicitly for `vX.Y.Z`:
 
-- bump the root version, `packages/hive-core/package.json`, and `packages/opencode-hive/package.json` to `X.Y.Z`
+- bump the root version, `packages/hive-core/package.json`, `packages/opencode-hive/package.json`, and `packages/vscode-hive/package.json` to `X.Y.Z`
 - refresh `bun.lock` and `package-lock.json`
 - regenerate `packages/opencode-hive/plugin.json` by running the package build
+- regenerate `packages/vscode-hive/dist/extension.js` and `packages/vscode-hive/vscode-arkive.vsix` by running the package build
 - add `docs/releases/vX.Y.Z.md`
 - add the `X.Y.Z` entry near the top of `CHANGELOG.md`
 - update OpenCode install or release docs if the package contract changed
@@ -37,7 +38,7 @@ These are preflight checks, not preparation shortcuts:
 
 - `npm whoami` confirms your local npm login works.
 - `node .github/scripts/verify-npm-publish-access.mjs opencode-hive` reads `packages/opencode-hive/package.json`, so it checks `oc-arkive` even though the package directory is still named `opencode-hive`.
-- `bun run release:check` installs dependencies, verifies the release artifacts and workflow contract, builds `hive-core` plus `oc-arkive`, and runs their test suites.
+- `bun run release:check` installs dependencies, verifies the release artifacts and workflow contract, builds `hive-core`, `oc-arkive`, and `vscode-arkive`, and runs their test suites.
 
 If any preflight fails, fix credentials, access, or branch content before creating a tag.
 
@@ -65,7 +66,7 @@ git tag -a vX.Y.Z -m "Release X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-That tag triggers `.github/workflows/release.yml` to build, test, publish `oc-arkive`, and create the GitHub Release.
+That tag triggers `.github/workflows/release.yml` to build, test, publish `oc-arkive`, attach `vscode-arkive.vsix`, and create the GitHub Release.
 
 Users can then install the forked OpenCode plugin with:
 
@@ -76,25 +77,31 @@ Users can then install the forked OpenCode plugin with:
 }
 ```
 
+VS Code users can download `vscode-arkive.vsix` from the GitHub Release and install it locally:
+
+```bash
+code --install-extension ./vscode-arkive.vsix
+```
+
 ## Missed-release recovery
 
 When a tag already exists but one or more release targets failed, recover by manually dispatching the `Release` workflow in `recover` mode for that existing tag.
 
 ### Recovery contract
 
-- Recovery is tag-only: set `release_mode=recover` and provide an existing `recovery_tag` such as `v1.4.9`.
+- Recovery is tag-only: set `release_mode=recover` and provide an existing `recovery_tag` such as `vX.Y.Z`.
 - Recovery requires a recovery tag and at least one explicit target toggle.
 - Recovery toggles are operator-selected: enable only `recover_oc_arkive` and/or `recover_github_release` for the unfinished target.
 - Rerun only the unfinished targets. If npm already published but the GitHub Release failed, enable only `recover_github_release`.
 
 ### Operator flow for a partially published version
 
-1. Check whether `oc-arkive@X.Y.Z` exists on npm and whether the GitHub Release exists for `vX.Y.Z`.
+1. Check whether `oc-arkive@X.Y.Z` exists on npm and whether the GitHub Release exists for `vX.Y.Z` with the `vscode-arkive.vsix` asset attached.
 2. Repair the credential or access issue that caused the partial failure.
 3. Open the `Release` workflow with `workflow_dispatch`.
 4. Set `release_mode` to `recover`.
 5. Set `recovery_tag` to the existing release tag.
-6. Enable only the unfinished target: `oc-arkive` npm publish and/or GitHub Release.
+6. Enable only the unfinished target: `oc-arkive` and/or GitHub Release.
 7. Run the workflow and verify only the selected targets executed.
 
 Release-only recovery remains possible when npm was intentionally skipped. Do not start the next patch release until the current tag is fully recovered from its tagged commit.

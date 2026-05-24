@@ -118,11 +118,25 @@ jobs:
         working-directory: packages/opencode-hive
         run: bun test
 
+      - name: Build vscode-arkive
+        working-directory: packages/vscode-hive
+        run: bun run package
+
+      - name: Test vscode-arkive
+        working-directory: packages/vscode-hive
+        run: bun test
+
       - name: Upload oc-arkive npm package artifact
         uses: actions/upload-artifact@v4
         with:
           name: npm-package-oc-arkive
           path: packages/opencode-hive/
+
+      - name: Upload vscode-arkive VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-arkive-vsix
+          path: packages/vscode-hive/vscode-arkive.vsix
 
       - name: Upload release notes artifact
         if: ${{ needs.prepare.outputs.release_tag != '' }}
@@ -200,10 +214,17 @@ jobs:
           name: release-notes
           path: docs/releases/
 
+      - name: Download vscode-arkive VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vscode-arkive-vsix
+          path: packages/vscode-hive
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           body_path: docs/releases/${{ needs.prepare.outputs.release_tag }}.md
+          files: packages/vscode-hive/vscode-arkive.vsix
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

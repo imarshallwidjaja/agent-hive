@@ -7,7 +7,7 @@
     },
     "packages/hive-core": {
       "name": "hive-core",
-      "version": "1.4.9",
+      "version": "1.4.10",
       "dependencies": {
         "simple-git": "^3.27.0",
       },
@@ -19,7 +19,7 @@
     },
     "packages/opencode-hive": {
       "name": "oc-arkive",
-      "version": "1.4.9",
+      "version": "1.4.10",
       "dependencies": {
         "@ast-grep/cli": "^0.42.0",
         "@manzt/uv": "^0.8.13",
@@ -44,13 +44,13 @@
       },
     },
     "packages/vscode-hive": {
-      "name": "vscode-hive",
-      "version": "1.4.8",
+      "name": "vscode-arkive",
+      "version": "1.4.10",
       "dependencies": {
         "hive-core": "workspace:*",
       },
       "devDependencies": {
-        "@types/vscode": "^1.100.0",
+        "@types/vscode": "1.64.0",
         "@vscode/vsce": "^3.7.1",
         "esbuild": "^0.27.2",
         "typescript": "^5.0.0",
@@ -278,7 +278,7 @@
 
     "@types/serve-static": ["@types/serve-static@2.2.0", "", { "dependencies": { "@types/http-errors": "*", "@types/node": "*" } }, "sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ=="],
 
-    "@types/vscode": ["@types/vscode@1.108.1", "", {}, "sha512-DerV0BbSzt87TbrqmZ7lRDIYaMiqvP8tmJTzW2p49ZBVtGUnGAu2RGQd1Wv4XMzEVUpaHbsemVM5nfuQJj7H6w=="],
+    "@types/vscode": ["@types/vscode@1.64.0", "", {}, "sha512-bSlAWz5WtcSL3cO9tAT/KpEH9rv5OBnm93OIIFwdCshaAiqr2bp1AUyEwW9MWeCvZBHEXc3V0fTYVdVyzDNwHA=="],
 
     "@typespec/ts-http-runtime": ["@typespec/ts-http-runtime@0.3.2", "", { "dependencies": { "http-proxy-agent": "^7.0.0", "https-proxy-agent": "^7.0.0", "tslib": "^2.6.2" } }, "sha512-IlqQ/Gv22xUC1r/WQm4StLkYQmaaTsXAhUVsNE0+xiyf0yRFiH5++q78U3bw6bLKDCTmh0uqKB9eG9+Bt75Dkg=="],
 
@@ -976,7 +976,7 @@
 
     "version-range": ["version-range@4.15.0", "", {}, "sha512-Ck0EJbAGxHwprkzFO966t4/5QkRuzh+/I1RxhLgUKKwEn+Cd8NwM60mE3AqBZg5gYODoXW0EFsQvbZjRlvdqbg=="],
 
-    "vscode-hive": ["vscode-hive@workspace:packages/vscode-hive"],
+    "vscode-arkive": ["vscode-arkive@workspace:packages/vscode-hive"],
 
     "whatwg-encoding": ["whatwg-encoding@3.1.1", "", { "dependencies": { "iconv-lite": "0.6.3" } }, "sha512-6qN4hJdMwfYBtE3YBTTHhoeuUrDBPZmbQaxWAqSALV/MeEnR5z1xd8UKud2RAkFoPkmB+hli1TZSnyi84xz1vQ=="],
 
