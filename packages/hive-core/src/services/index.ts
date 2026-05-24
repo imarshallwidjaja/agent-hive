@@ -4,7 +4,18 @@ export { TaskService } from './taskService.js';
 export type { SyncOptions } from './taskService.js';
 export { SubtaskService } from './subtaskService.js';
 export { WorktreeService, createWorktreeService } from './worktreeService.js';
-export type { WorktreeInfo, DiffResult, ApplyResult, CommitResult, MergeResult, WorktreeConfig } from './worktreeService.js';
+export type {
+  WorktreeInfo,
+  WorktreeRepoInfo,
+  WorktreeMode,
+  DiffResult,
+  ApplyResult,
+  CommitResult,
+  MergeResult,
+  WorktreeConfig,
+  RepositoryResolver,
+  TaskRepoResolver,
+} from './worktreeService.js';
 export { ContextService } from './contextService.js';
 export { NetworkService } from './networkService.js';
 export { ReviewService } from './reviewService.js';
