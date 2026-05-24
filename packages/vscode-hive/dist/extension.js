@@ -938,7 +938,8 @@ var BUILT_IN_AGENT_NAMES = [
   "scout-researcher",
   "forager-worker",
   "hive-helper",
-  "hygienic-reviewer"
+  "hygienic-reviewer",
+  "hive-builder"
 ];
 var CUSTOM_AGENT_RESERVED_NAMES = [
   ...BUILT_IN_AGENT_NAMES,
@@ -950,6 +951,7 @@ var CUSTOM_AGENT_RESERVED_NAMES = [
   "hygienic",
   "receiver",
   "build",
+  "builder",
   "plan",
   "code"
 ];
@@ -960,7 +962,8 @@ var DEFAULT_AGENT_MODELS = {
   "scout-researcher": "zai-coding-plan/glm-4.7",
   "forager-worker": "github-copilot/gpt-5.2-codex",
   "hive-helper": "github-copilot/gpt-5.2-codex",
-  "hygienic-reviewer": "github-copilot/gpt-5.2-codex"
+  "hygienic-reviewer": "github-copilot/gpt-5.2-codex",
+  "hive-builder": "github-copilot/gpt-5.2-codex"
 };
 var DEFAULT_HIVE_CONFIG = {
   $schema: "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
@@ -1024,6 +1027,11 @@ var DEFAULT_HIVE_CONFIG = {
       model: DEFAULT_AGENT_MODELS["hygienic-reviewer"],
       temperature: 0.3,
       autoLoadSkills: []
+    },
+    "hive-builder": {
+      model: DEFAULT_AGENT_MODELS["hive-builder"],
+      temperature: 0.4,
+      autoLoadSkills: ["verification-before-completion", "dispatching-parallel-agents", "parallel-exploration"]
     }
   }
 };
