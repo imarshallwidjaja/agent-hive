@@ -594,12 +594,7 @@ async function materializeSkills(
   const tempPath = path.join(generatedRoot, `${hash}.tmp-${process.pid}-${Date.now()}`);
   const skillsByName = new Map<string, PreparedHiveSkill>();
 
-  await fsp.rm(tempPath, { recursive: true, force: true });
-  await fsp.mkdir(tempPath, { recursive: true });
-
   for (const skill of bundledSkills) {
-    const destinationDir = path.join(tempPath, skill.directoryName);
-    await fsp.cp(skill.sourceDir, destinationDir, { recursive: true });
     skillsByName.set(skill.parsed.name, {
       name: skill.parsed.name,
       description: skill.parsed.description,
@@ -609,9 +604,31 @@ async function materializeSkills(
     });
   }
 
+  if (await isDirectory(materializedPath)) {
+    return {
+      materializedPath,
+      skillsByName,
+    };
+  }
+
+  await fsp.rm(tempPath, { recursive: true, force: true });
+  await fsp.mkdir(tempPath, { recursive: true });
+
+  for (const skill of bundledSkills) {
+    const destinationDir = path.join(tempPath, skill.directoryName);
+    await fsp.cp(skill.sourceDir, destinationDir, { recursive: true });
+  }
+
   await fsp.mkdir(generatedRoot, { recursive: true });
-  await fsp.rm(materializedPath, { recursive: true, force: true });
-  await fsp.rename(tempPath, materializedPath);
+  try {
+    await fsp.rename(tempPath, materializedPath);
+  } catch (error) {
+    if (await isDirectory(materializedPath)) {
+      await fsp.rm(tempPath, { recursive: true, force: true });
+    } else {
+      throw error;
+    }
+  }
 
   return {
     materializedPath,
@@ -619,14 +636,14 @@ async function materializeSkills(
   };
 }
 
-async function cleanupStaleMaterializations(generatedRoot: string, currentHash: string): Promise<void> {
+async function cleanupTempMaterializations(generatedRoot: string): Promise<void> {
   try {
     const entries = await fsp.readdir(generatedRoot, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) {
         continue;
       }
-      if (entry.name === currentHash || entry.name.startsWith(`${currentHash}.tmp-`)) {
+      if (!entry.name.includes('.tmp-')) {
         continue;
       }
       await fsp.rm(path.join(generatedRoot, entry.name), { recursive: true, force: true });
@@ -699,7 +716,7 @@ export async function prepareNativeHiveSkills(
   const hash = buildGeneratedHash(eligibleSkills, disabledSkills, allConflicts);
   const generatedRoot = generatedSkillsRoot(input.worktree, homeDir, env);
   const { materializedPath, skillsByName } = await materializeSkills(generatedRoot, hash, eligibleSkills);
-  await cleanupStaleMaterializations(generatedRoot, hash);
+  await cleanupTempMaterializations(generatedRoot);
 
   return {
     materializedPath,

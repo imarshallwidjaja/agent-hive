@@ -273,7 +273,7 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
     expect(fs.readdirSync(result.materializedPath!)).toEqual(['enabled-skill']);
   });
 
-  it('preserves user skill paths, removes stale Hive paths, and prepends the current generated path', async () => {
+  it('preserves user skill paths, removes stale Hive paths from config, and prepends the current generated path', async () => {
     const worktree = createTempDir();
     const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
     const userPathOne = path.join(worktree, 'user-path-one');
@@ -299,6 +299,62 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
 
     expect(result.materializedPath).toBeDefined();
     expect(result.skillPaths).toEqual([result.materializedPath!, userPathOne, userPathTwo]);
+  });
+
+  it('keeps old generated hash directories available for already-running sessions', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const oldHashPath = path.join(worktree, '.hive', 'generated', 'opencode-skills', 'old-hash');
+
+    createBundledSkillDir(bundledSkillsDir, 'current-skill');
+    createSkillFile(oldHashPath, 'old-skill/SKILL.md', `---
+name: old-skill
+description: Old generated skill
+---
+# Old Skill
+`);
+
+    const result = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+      opencodeConfig: {
+        skills: {
+          paths: [oldHashPath],
+        },
+      },
+    });
+
+    expect(result.materializedPath).toBeDefined();
+    expect(result.skillPaths).toEqual([result.materializedPath!]);
+    expect(fs.existsSync(path.join(oldHashPath, 'old-skill', 'SKILL.md'))).toBe(true);
+  });
+
+  it('reuses an existing generated hash directory without replacing it', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+
+    createBundledSkillDir(bundledSkillsDir, 'current-skill');
+
+    const firstResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+    const sessionMarker = path.join(firstResult.materializedPath!, 'session-marker');
+    fs.writeFileSync(sessionMarker, 'still in use', 'utf8');
+
+    const secondResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    expect(secondResult.materializedPath).toBe(firstResult.materializedPath);
+    expect(fs.existsSync(sessionMarker)).toBe(true);
   });
 
   it('uses the OpenCode config directory when the resolved worktree is the filesystem root', async () => {
