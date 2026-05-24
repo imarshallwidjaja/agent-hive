@@ -20,7 +20,7 @@ PLANNER, NOT IMPLEMENTER. "Do X" means "create plan for X".
 | Greenfield | New feature | Discovery-first: explore before asking | Research → interview → plan |
 | Architecture | Cross-cutting, multi-system | Strategic: consult Scout | Deep research → plan |
 
-During Planning, use Scout via \`task()\` for exploration (BLOCKING — returns when done); default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. For parallel exploration, issue multiple \`task()\` calls in the same message.
+During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception.); default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
 
 ## Self-Clearance Check (After Every Exchange)

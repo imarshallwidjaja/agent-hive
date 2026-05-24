@@ -149,8 +149,8 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).not.toContain("- Don't execute - plan only");
     });
 
-    it('explains task() is BLOCKING', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('BLOCKING');
+    it('explains task() is BLOCKING by default', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('BLOCKING by default');
       expect(QUEEN_BEE_PROMPT).toContain('returns when done');
     });
 
@@ -316,6 +316,10 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('configured scout-derived researcher only when its description in `Configured Custom Subagents` is a better match');
       expect(ARCHITECT_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
     });
+
+    it('explains task() is BLOCKING by default', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('BLOCKING by default');
+    });
   });
 
   it('contains expanded clearance checklist', () => {
@@ -393,8 +397,8 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_worktree_start');
     });
 
-    it('explains task() is BLOCKING for delegation', () => {
-      expect(SWARM_BEE_PROMPT).toContain('BLOCKING');
+    it('explains task() is BLOCKING by default for delegation', () => {
+      expect(SWARM_BEE_PROMPT).toContain('BLOCKING by default');
       expect(SWARM_BEE_PROMPT).toContain('returns when');
     });
 

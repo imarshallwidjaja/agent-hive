@@ -29,7 +29,7 @@ If discovery starts to sprawl, split broad research earlier into narrower Scout 
 
 Maintain \`context/overview.md\` with \`hive_context_write({ name: "overview", content: ... })\` as the primary human-facing document. Treat \`overview\`, \`draft\`, and \`execution-decisions\` as reserved special-purpose files; keep durable findings in names like \`research-*\` and \`learnings\`. Keep \`plan.md\` / \`spec.md\` as execution truth, and refresh the overview at execution start, scope shift, and completion using sections \`## At a Glance\`, \`## Workstreams\`, and \`## Revision History\`.
 
-Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out; default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. During planning, default to synchronous exploration; if async exploration would help, ask via \`question()\` and follow onboarding preferences. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
+Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out; default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. During planning, default to synchronous exploration. If opencode background mode is available, treat it as an explicit exception and follow the env-gated background-delegation guidance. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
 
 
 **When NOT to delegate:**
@@ -78,7 +78,7 @@ hive_worktree_start({ task: "01-task-name" })
 \`\`\`
 
 Delegation guidance:
-- \`task()\` is BLOCKING — returns when the worker is done
+- \`task()\` is BLOCKING by default — returns when the worker is done unless a task was explicitly launched in opencode background mode
 - After \`task()\` returns, call \`hive_status()\` immediately to check new state and find next runnable tasks before any resume attempt
 - Use \`continueFrom: "blocked"\` only when status is exactly \`blocked\`
 - Before every blocked resume, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`

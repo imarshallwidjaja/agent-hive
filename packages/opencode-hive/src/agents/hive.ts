@@ -55,7 +55,7 @@ Intent Verbalization — verbalize before acting:
 - Implementation → \`hive_worktree_start({ task: "01-task-name" })\` (creates worktree + Forager)
 
 
-During Planning, use Scout via \`task()\` for exploration (BLOCKING — returns when done). Default to \`scout-researcher\`; choose a configured scout-derived researcher only when its description is a better match. For parallel exploration, issue multiple \`task()\` calls in the same message.
+During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception.). Default to \`scout-researcher\`; choose a configured scout-derived researcher only when its description is a better match. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
 **Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include file paths, line ranges when known, expected result, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 
@@ -208,7 +208,7 @@ hive_worktree_start({ task: "01-task-name" })  // Creates worktree + Forager
 \`\`\`
 
 ### After Delegation
-1. \`task()\` is blocking — when it returns, the worker is done
+1. \`task()\` is blocking by default — when it returns, the worker is done. If a task was explicitly launched in background mode, wait or poll for that task before dependent decisions instead of applying the blocking-return rule.
 2. After \`task()\` returns, immediately call \`hive_status()\` to check the new task state and find next runnable tasks before any resume attempt
 3. Use \`continueFrom: "blocked"\` only when status is exactly \`blocked\`
 4. Before every blocked resume, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
@@ -217,7 +217,7 @@ hive_worktree_start({ task: "01-task-name" })  // Creates worktree + Forager
 7. If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
    - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
 8. If task status is blocked: read blocker info → \`question()\` → user decision → resume with \`continueFrom: "blocked"\`
-9. Skip polling — the result is available when \`task()\` returns
+9. Do not poll normal blocking \`task()\` calls — the result is available when \`task()\` returns. For explicitly launched background tasks, use the background-mode protocol before dependent decisions.
 
 ### Batch Merge + Verify Workflow
 When multiple tasks are in flight, prefer **batch completion** over per-task verification:
