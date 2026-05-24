@@ -16,6 +16,17 @@ export type {
   RepositoryResolver,
   TaskRepoResolver,
 } from './worktreeService.js';
+export { AdhocWorktreeService } from './adhocWorktreeService.js';
+export type {
+  AdhocWorktreeConfig,
+  AdhocCreateOptions,
+  AdhocWorktreeInfo,
+  AdhocCommitResult,
+  AdhocMergeStrategy,
+  AdhocMergeOptions,
+  AdhocMergeResult,
+  AdhocCleanupResult,
+} from './adhocWorktreeService.js';
 export { ContextService } from './contextService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService } from './sessionService.js';
