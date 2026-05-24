@@ -185,6 +185,7 @@ describe('config hook autoLoadSkills injection', () => {
 
     const opencodeConfig = await applyConfigHook(testRoot);
     const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const builderPrompt = getAgentPrompt(opencodeConfig, 'hive-builder');
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
     const foragerPrompt = getAgentPrompt(opencodeConfig, 'forager-worker');
     const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
@@ -197,6 +198,11 @@ describe('config hook autoLoadSkills injection', () => {
     expect(hiveMasterPrompt).toContain('skill({ name: "background-delegation" })');
     expect(hiveMasterPrompt).toContain('task({ background: true');
     expect(hiveMasterPrompt).toContain('task_status');
+    expect(builderPrompt).toContain('## Background Subagent Experiment');
+    expect(builderPrompt).not.toContain(backgroundSkill.template);
+    expect(builderPrompt).toContain('skill({ name: "background-delegation" })');
+    expect(builderPrompt).toContain('task({ background: true');
+    expect(builderPrompt).toContain('task_status');
     for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, hygienicPrompt, customPrompt]) {
       expect(prompt).not.toContain('skill({ name: "background-delegation" })');
       expect(prompt).not.toContain('task({ background: true');
@@ -211,13 +217,14 @@ describe('config hook autoLoadSkills injection', () => {
     const opencodeConfig = await applyConfigHook(testRoot);
     const architectPrompt = getAgentPrompt(opencodeConfig, 'architect-planner');
     const swarmPrompt = getAgentPrompt(opencodeConfig, 'swarm-orchestrator');
+    const builderPrompt = getAgentPrompt(opencodeConfig, 'hive-builder');
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
     const foragerPrompt = getAgentPrompt(opencodeConfig, 'forager-worker');
     const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
     const hygienicPrompt = getAgentPrompt(opencodeConfig, 'hygienic-reviewer');
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
-    for (const prompt of [architectPrompt, swarmPrompt]) {
+    for (const prompt of [architectPrompt, swarmPrompt, builderPrompt]) {
       expect(prompt).toContain('## Background Subagent Experiment');
       expect(prompt).toContain('skill({ name: "background-delegation" })');
       expect(prompt).toContain('task({ background: true');
@@ -237,10 +244,13 @@ describe('config hook autoLoadSkills injection', () => {
 
     const opencodeConfig = await applyConfigHook(testRoot);
     const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const builderPrompt = getAgentPrompt(opencodeConfig, 'hive-builder');
 
     expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
     expect(hiveMasterPrompt).not.toContain('task({ background: true');
+    expect(builderPrompt).not.toContain('## Background Subagent Experiment');
+    expect(builderPrompt).not.toContain('skill({ name: "background-delegation" })');
   });
 
   it('does not advertise background delegation guidance when env is enabled but the Hive bundle is disabled', async () => {
@@ -252,10 +262,13 @@ describe('config hook autoLoadSkills injection', () => {
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
     const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const builderPrompt = getAgentPrompt(opencodeConfig, 'hive-builder');
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
 
     expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
+    expect(builderPrompt).not.toContain('## Background Subagent Experiment');
+    expect(builderPrompt).not.toContain('skill({ name: "background-delegation" })');
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'background-delegation'))).toBe(false);
     expect(warnings).toContainEqual(

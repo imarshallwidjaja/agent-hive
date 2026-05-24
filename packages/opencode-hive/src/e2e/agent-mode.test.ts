@@ -67,6 +67,7 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["forager-worker"]).toBeDefined();
     expect(opencodeConfig.agent["hive-helper"]).toBeDefined();
     expect(opencodeConfig.agent["hygienic-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("hive-master");
   });
 
@@ -99,6 +100,7 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["forager-worker"]).toBeDefined();
     expect(opencodeConfig.agent["hive-helper"]).toBeDefined();
     expect(opencodeConfig.agent["hygienic-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("architect-planner");
   });
 
@@ -154,6 +156,11 @@ describe("agentMode gating", () => {
     expect(swarmPrompt).toContain("## Configured Custom Subagents");
     expect(swarmPrompt).toContain("scout-docs");
     expect(swarmPrompt).toContain("reviewer-security");
+
+    const builderPrompt = opencodeConfig.agent["hive-builder"]?.prompt as string;
+    expect(builderPrompt).toContain("## Configured Custom Subagents");
+    expect(builderPrompt).toContain("scout-docs");
+    expect(builderPrompt).toContain("forager-ui");
 
     expect(opencodeConfig.agent["hive-master"]).toBeUndefined();
   });

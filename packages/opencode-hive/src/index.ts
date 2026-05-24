@@ -10,6 +10,7 @@ import { SWARM_BEE_PROMPT } from './agents/swarm.js';
 import { SCOUT_BEE_PROMPT } from './agents/scout.js';
 import { FORAGER_BEE_PROMPT } from './agents/forager.js';
 import { HIVE_HELPER_PROMPT } from './agents/hive-helper.js';
+import { HIVE_BUILDER_PROMPT } from './agents/hive-builder.js';
 import { HYGIENIC_BEE_PROMPT } from './agents/hygienic.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
@@ -2547,6 +2548,40 @@ Expand your Discovery section and try again.`;
         },
       };
 
+      const builderUserConfig = configService.getAgentConfig('hive-builder');
+      const builderAutoLoadedSkills = await buildAutoLoadedSkillsContent(
+        'hive-builder',
+        configService,
+        preparedNativeHiveSkills.nativeSkillsByName,
+        preparedNativeHiveSkills.skillsByName,
+        skippedHiveSkills,
+      );
+      const builderBackgroundDelegationAppendix = buildBackgroundDelegationPromptAppendix(
+        'hive-builder',
+        preparedNativeHiveSkills.nativeSkillsByName,
+        preparedNativeHiveSkills.skillsByName,
+        skippedHiveSkills,
+      );
+      const builderConfig = {
+        model: builderUserConfig.model,
+        variant: builderUserConfig.variant,
+        temperature: builderUserConfig.temperature ?? 0.4,
+        description: 'Hive Builder - Hive-aware ad-hoc executor with lightweight worktree, verification, merge, and cleanup flow.',
+        prompt: HIVE_BUILDER_PROMPT + builderAutoLoadedSkills + builderBackgroundDelegationAppendix + customSubagentAppendix,
+        tools: agentTools([
+          'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
+          'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
+          'hive_context_write', 'hive_agents_md',
+        ]),
+        permission: {
+          task: 'allow',
+          question: 'allow',
+          skill: 'allow',
+          todowrite: 'allow',
+          todoread: 'allow',
+        },
+      };
+
       const builtInAgentConfigs = {
         'hive-master': hiveConfig,
         'architect-planner': architectConfig,
@@ -2555,6 +2590,7 @@ Expand your Discovery section and try again.`;
         'forager-worker': foragerConfig,
         'hive-helper': hiveHelperConfig,
         'hygienic-reviewer': hygienicConfig,
+        'hive-builder': builderConfig,
       };
 
       const customAutoLoadedSkills = Object.fromEntries(
@@ -2604,6 +2640,7 @@ Expand your Discovery section and try again.`;
         allAgents['forager-worker'] = builtInAgentConfigs['forager-worker'];
         allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
         allAgents['hygienic-reviewer'] = builtInAgentConfigs['hygienic-reviewer'];
+        allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
       } else {
         allAgents['architect-planner'] = builtInAgentConfigs['architect-planner'];
         allAgents['swarm-orchestrator'] = builtInAgentConfigs['swarm-orchestrator'];
@@ -2611,6 +2648,7 @@ Expand your Discovery section and try again.`;
         allAgents['forager-worker'] = builtInAgentConfigs['forager-worker'];
         allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
         allAgents['hygienic-reviewer'] = builtInAgentConfigs['hygienic-reviewer'];
+        allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
       }
 
       Object.assign(allAgents, customSubagents);
@@ -2636,6 +2674,7 @@ Expand your Discovery section and try again.`;
         delete (configAgent as Record<string, unknown>)['forager-worker'];
         delete (configAgent as Record<string, unknown>)['hive-helper'];
         delete (configAgent as Record<string, unknown>)['hygienic-reviewer'];
+        delete (configAgent as Record<string, unknown>)['hive-builder'];
         Object.assign(configAgent, allAgents);
       }
 
