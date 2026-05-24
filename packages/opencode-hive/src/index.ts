@@ -131,6 +131,7 @@ import {
   ContextService,
   NetworkService,
   ConfigService,
+  RepositoryService,
   CUSTOM_AGENT_BASES,
   AgentsMdService,
   DockerSandboxService,
@@ -208,9 +209,53 @@ const plugin: Plugin = async (ctx) => {
   }
   const builtinMcps = createBuiltinMcps(disabledMcps);
   const effectiveAutoLoadSkills = configService.getAgentConfig('hive-master').autoLoadSkills ?? [];
+  const repositoryService = new RepositoryService(directory, configService);
+  const hasRepositoryManifest = (): boolean => {
+    // Only treat the project as multi-repo when an explicit project-scoped
+    // `repositories` manifest exists. Without a manifest, RepositoryService
+    // would return an implicit `[{ id: 'root' }]` for any git project — but
+    // that would force every task to declare Repos and break legacy projects.
+    // Global manifests are intentionally ignored here for orchestration.
+    const projectConfig = configService.getProjectConfig();
+    return Array.isArray(projectConfig?.repositories) && projectConfig.repositories.length > 0;
+  };
+  const isProjectRootGitRepo = (): boolean => {
+    // `.git` may be a directory (normal repo) or a file (git worktree link).
+    return fs.existsSync(path.join(directory, '.git'));
+  };
   const worktreeService = new WorktreeService({
     baseDir: directory,
     hiveDir: path.join(directory, '.hive'),
+    repositoryResolver: {
+      // When a project repository manifest exists, resolve through
+      // RepositoryService and let its explicit errors (missing repo path,
+      // duplicate id, etc.) propagate so worktree creation fails loud before
+      // any filesystem changes. When no manifest is configured, preserve
+      // implicit legacy single-worktree behavior for git project roots by
+      // returning [] (WorktreeService then falls back to the legacy path).
+      // For non-git roots without a manifest, fail loud with explicit
+      // manifest-required wording instead of letting the legacy git path
+      // produce a cryptic git error. Global manifests are intentionally
+      // ignored for orchestration.
+      resolveRepositories: () => {
+        if (hasRepositoryManifest()) {
+          return repositoryService.resolveRepositories();
+        }
+        if (!isProjectRootGitRepo()) {
+          throw new Error(
+            `Repository manifest is required: project root is not a git repository (${directory}). ` +
+            `Add a project-scoped .hive/agent-hive.json with a "repositories" manifest before creating worktrees.`,
+          );
+        }
+        return [];
+      },
+    },
+    taskRepoResolver: {
+      resolveTaskRepoIds: (feature, step) => {
+        const status = taskService.getRawStatus(feature, step);
+        return status?.repoIds;
+      },
+    },
   });
 
   const customAgentConfigsForClassification = getCustomAgentConfigsCompat(configService);
@@ -553,11 +598,30 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       taskService.writeSpec(feature, task, specContent);
     }
 
+    const workspacePath = worktree.workspacePath ?? worktree.path;
+    const repoLaunchInfo = worktree.repos
+      ? Object.fromEntries(
+          Object.entries(worktree.repos).map(([id, info]) => [id, {
+            path: info.path,
+            branch: info.branch,
+            commit: info.commit,
+          }]),
+        )
+      : undefined;
+    const promptRepoInfo = worktree.repos
+      ? Object.fromEntries(
+          Object.entries(worktree.repos).map(([id, info]) => [id, {
+            path: info.path,
+            branch: info.branch,
+          }]),
+        )
+      : undefined;
+
     const workerPrompt = buildWorkerPrompt({
       feature,
       task,
       taskOrder,
-      worktreePath: worktree.path,
+      worktreePath: workspacePath,
       branch: worktree.branch,
       plan: planResult?.content || 'No plan available',
       contextFiles,
@@ -568,6 +632,8 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         previousSummary: (taskInfo as any).summary || 'No previous summary',
         decision: decision || 'No decision provided',
       } : undefined,
+      workspacePath: worktree.workspacePath,
+      repos: promptRepoInfo,
     });
 
     const customAgentConfigs = getCustomAgentConfigsCompat(configService);
@@ -641,9 +707,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     const responseBase = {
       success: true,
       terminal: false,
-      worktreePath: worktree.path,
+      worktreePath: workspacePath,
+      workspacePath,
       branch: worktree.branch,
       mode: 'delegate',
+      worktreeMode: worktree.mode ?? 'legacy',
+      baseCommits: worktree.baseCommits,
+      repos: repoLaunchInfo,
       agent,
       defaultAgent,
       eligibleAgents,
@@ -1269,8 +1339,9 @@ Expand your Discovery section and try again.`;
           dependsOn: tool.schema.array(tool.schema.string()).optional().describe('Task folder names this task depends on (default: [] for no dependencies). Explicit dependsOn is allowed only when every dependency already exists and is done; review-sourced tasks must omit it.'),
           reason: tool.schema.string().optional().describe('Why this task was created'),
           source: tool.schema.string().optional().describe('Origin: review, operator, or ad_hoc'),
+          repos: tool.schema.array(tool.schema.string()).optional().describe('Repository IDs this task targets (must match project-scoped repository manifest). Required for manifest-backed projects; omit for legacy single-root projects.'),
         },
-        async execute({ name, order, feature: explicitFeature, description, goal, acceptanceCriteria, references, files, dependsOn, reason, source }) {
+        async execute({ name, order, feature: explicitFeature, description, goal, acceptanceCriteria, references, files, dependsOn, reason, source, repos }) {
           const feature = resolveFeature(explicitFeature);
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
           const metadata: Record<string, unknown> = {};
@@ -1282,8 +1353,23 @@ Expand your Discovery section and try again.`;
           if (dependsOn) metadata.dependsOn = dependsOn;
           if (reason) metadata.reason = reason;
           if (source) metadata.source = source;
+          if (repos) metadata.repoIds = repos;
+          if (repos && hasRepositoryManifest()) {
+            // Only check manifest membership for grammar-valid IDs; grammar
+            // violations are surfaced by taskService.create() with the
+            // canonical "Invalid repository ID" wording.
+            const grammarValid = repos.filter(id => RepositoryService.isValidRepositoryId(id));
+            const knownIds = new Set(repositoryService.resolveRepositories().map(r => r.id));
+            const unknown = grammarValid.filter(id => !knownIds.has(id));
+            if (unknown.length > 0) {
+              throw new Error(
+                `Unknown repository ID(s) in repos: ${unknown.join(', ')}. ` +
+                `Allowed manifest IDs: ${[...knownIds].join(', ') || '(none)'}.`,
+              );
+            }
+          }
           const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata as any : undefined);
-          return `Manual task created: ${folder}\nDependencies: [${(dependsOn ?? []).join(', ')}]\nReminder: start work with hive_worktree_start to use its worktree, and ensure any subagents work in that worktree too.`;
+          return `Manual task created: ${folder}\nDependencies: [${(dependsOn ?? []).join(', ')}]${repos ? `\nRepos: [${repos.join(', ')}]` : ''}\nReminder: start work with hive_worktree_start to use its worktree, and ensure any subagents work in that worktree too.`;
         },
       }),
 
@@ -1718,6 +1804,7 @@ Expand your Discovery section and try again.`;
               status: t.status,
               origin: t.origin || 'plan',
               dependsOn: rawStatus?.dependsOn ?? null,
+              repoIds: t.repoIds ?? null,
               worktree: worktree ? {
                 branch: worktree.branch,
                 hasChanges,

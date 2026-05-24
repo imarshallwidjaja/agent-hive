@@ -19,6 +19,11 @@ export interface ContinueFromBlocked {
   decision: string;
 }
 
+export interface WorkerPromptRepo {
+  path: string;
+  branch: string;
+}
+
 export interface WorkerPromptParams {
   feature: string;
   task: string;
@@ -30,6 +35,15 @@ export interface WorkerPromptParams {
   spec: string;
   previousTasks?: CompletedTask[];
   continueFrom?: ContinueFromBlocked;
+  /**
+   * Optional composite workspace metadata. When provided, the worker prompt
+   * documents the per-repo declared boundaries instead of (or in addition to)
+   * the single worktree path. `worktreePath` should be the composite
+   * workspace root in that case; `repos` lists each repo by id with its
+   * worktree path and branch.
+   */
+  workspacePath?: string;
+  repos?: Record<string, WorkerPromptRepo>;
 }
 
 /**
@@ -55,7 +69,34 @@ export function buildWorkerPrompt(params: WorkerPromptParams): string {
     // plan, contextFiles, previousTasks - NOT used separately (embedded in spec)
     spec,
     continueFrom,
+    workspacePath,
+    repos,
   } = params;
+
+  const repoEntries = repos ? Object.entries(repos) : [];
+  const isComposite = !!workspacePath && repoEntries.length > 0;
+
+  const reposTable = isComposite
+    ? `
+## Declared Repositories
+
+This task operates on a composite workspace. Edits MUST stay within one of the declared repository paths below. Files outside these paths (including elsewhere in the orchestration root) are out of scope.
+
+| Repo ID | Worktree Path | Branch |
+|---------|---------------|--------|
+${repoEntries.map(([id, info]) => `| \`${id}\` | \`${info.path}\` | \`${info.branch}\` |`).join('\n')}
+
+If the task requires touching a repository that is not in this list, do NOT edit outside the declared paths. Stop and escalate via the blocker protocol with the missing repo id and why it is needed.
+`
+    : '';
+
+  const worktreeLabel = isComposite ? 'Workspace Root' : 'Worktree';
+  const boundaryLine = isComposite
+    ? `**CRITICAL**: All file operations MUST stay within the declared repository paths listed below under "Declared Repositories". Do NOT modify files elsewhere in the workspace root, and do NOT assume edits are allowed anywhere under the orchestration root.`
+    : `**CRITICAL**: All file operations MUST be within this worktree path:
+\`${worktreePath}\`
+
+Do NOT modify files outside this directory.`;
 
   // Build continuation section if resuming from blocked
   const continuationSection = continueFrom ? `
@@ -83,13 +124,10 @@ You are a worker agent executing a task in an isolated git worktree.
 | Task | ${task} |
 | Task # | ${taskOrder} |
 | Branch | ${branch} |
-| Worktree | ${worktreePath} |
+| ${worktreeLabel} | ${worktreePath} |
 
-**CRITICAL**: All file operations MUST be within this worktree path:
-\`${worktreePath}\`
-
-Do NOT modify files outside this directory.
-${continuationSection}
+${boundaryLine}
+${reposTable}${continuationSection}
 ---
 
 ## Your Mission

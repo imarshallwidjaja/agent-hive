@@ -8,6 +8,7 @@ import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
 import { HYGIENIC_BEE_PROMPT } from './hygienic';
+import { buildWorkerPrompt } from '../utils/worker-prompt';
 
 describe('Orchestrator synthesis-before-delegation', () => {
   it('Hive prompt contains synthesis-before-delegating reminder', () => {
@@ -814,5 +815,78 @@ describe('trimmed OpenCode runtime prompts', () => {
     expect(SWARM_BEE_PROMPT).not.toContain('todowrite');
     expect(SWARM_BEE_PROMPT).not.toContain('task checkpoints');
     expect(SWARM_BEE_PROMPT).not.toContain('worker return/block');
+  });
+});
+
+describe('Worker prompt composite workspace boundaries', () => {
+  const baseParams = {
+    feature: 'multi-repo-feature',
+    task: '01-multi-task',
+    taskOrder: 1,
+    branch: 'hive/api/multi-repo-feature/01-multi-task',
+    plan: '# Plan',
+    contextFiles: [],
+    spec: '# Task: 01-multi-task\n\n## Plan Section\n\nDo it.',
+  };
+
+  it('uses the composite workspace root as the worktree label and lists declared repos with paths and branches', () => {
+    const prompt = buildWorkerPrompt({
+      ...baseParams,
+      worktreePath: '/tmp/composite-root',
+      workspacePath: '/tmp/composite-root',
+      repos: {
+        api: { path: '/tmp/composite-root/repos/api', branch: 'hive/api/multi-repo-feature/01-multi-task' },
+        web: { path: '/tmp/composite-root/repos/web', branch: 'hive/web/multi-repo-feature/01-multi-task' },
+      },
+    });
+
+    expect(prompt).toContain('| Workspace Root | /tmp/composite-root |');
+    expect(prompt).toContain('## Declared Repositories');
+    expect(prompt).toContain('`api`');
+    expect(prompt).toContain('`/tmp/composite-root/repos/api`');
+    expect(prompt).toContain('`web`');
+    expect(prompt).toContain('`/tmp/composite-root/repos/web`');
+    expect(prompt).toContain('`hive/api/multi-repo-feature/01-multi-task`');
+    expect(prompt).toContain('`hive/web/multi-repo-feature/01-multi-task`');
+  });
+
+  it('forbids edits outside declared repository paths and points elsewhere in the orchestration root as out of scope', () => {
+    const prompt = buildWorkerPrompt({
+      ...baseParams,
+      worktreePath: '/tmp/composite-root',
+      workspacePath: '/tmp/composite-root',
+      repos: {
+        api: { path: '/tmp/composite-root/repos/api', branch: 'b1' },
+      },
+    });
+
+    expect(prompt).toContain('All file operations MUST stay within the declared repository paths');
+    expect(prompt).toContain('do NOT assume edits are allowed anywhere under the orchestration root');
+  });
+
+  it('directs the worker to escalate via the blocker protocol when an undeclared repo is needed', () => {
+    const prompt = buildWorkerPrompt({
+      ...baseParams,
+      worktreePath: '/tmp/composite-root',
+      workspacePath: '/tmp/composite-root',
+      repos: {
+        api: { path: '/tmp/composite-root/repos/api', branch: 'b1' },
+      },
+    });
+
+    expect(prompt).toContain('not in this list');
+    expect(prompt).toContain('blocker protocol');
+  });
+
+  it('keeps legacy single-worktree assignment text when no composite metadata is provided', () => {
+    const prompt = buildWorkerPrompt({
+      ...baseParams,
+      worktreePath: '/tmp/legacy-worktree',
+      branch: 'hive/legacy-feature/01-task',
+    });
+
+    expect(prompt).toContain('| Worktree | /tmp/legacy-worktree |');
+    expect(prompt).toContain('All file operations MUST be within this worktree path');
+    expect(prompt).not.toContain('## Declared Repositories');
   });
 });

@@ -3089,3 +3089,405 @@ Original plan task four content must stay isolated from any append-only manual f
     ]);
   });
 });
+
+// ============================================================================
+// Multi-repo / composite workspace e2e
+// ============================================================================
+
+function initBareRepo(p: string): void {
+  fs.mkdirSync(p, { recursive: true });
+  execSync('git init', { cwd: p });
+  execSync('git config user.email "test@example.com"', { cwd: p });
+  execSync('git config user.name "Test"', { cwd: p });
+  fs.writeFileSync(path.join(p, 'README.md'), `repo at ${path.basename(p)}\n`);
+  execSync('git add README.md', { cwd: p });
+  execSync('git commit -m "init"', { cwd: p });
+}
+
+describe('e2e: opencode-hive multi-repo composite workspaces', () => {
+  let testRoot: string;
+  let originalHome: string | undefined;
+
+  beforeEach(() => {
+    process.chdir(TEST_PROCESS_CWD);
+    originalHome = process.env.HOME;
+    fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
+    fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
+    testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'multi-repo-'));
+    process.env.HOME = testRoot;
+  });
+
+  afterEach(() => {
+    process.chdir(TEST_PROCESS_CWD);
+    fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+  });
+
+  function writeManifest(repoIds: string[]): void {
+    const hiveDir = path.join(testRoot, '.hive');
+    fs.mkdirSync(hiveDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(hiveDir, 'agent-hive.json'),
+      JSON.stringify({
+        repositories: repoIds.map((id) => ({ id, path: `./repos/${id}` })),
+      }, null, 2),
+    );
+  }
+
+  async function setupMultiRepoProject(repoIds: string[]): Promise<void> {
+    initBareRepo(testRoot);
+    for (const id of repoIds) {
+      initBareRepo(path.join(testRoot, 'repos', id));
+    }
+    writeManifest(repoIds);
+  }
+
+  it('accepts repos in hive_task_create and persists repoIds to status', async () => {
+    await setupMultiRepoProject(['api', 'web']);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_create');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'mr-create' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('MR Create', 'Yes, this regression test validates that hive_task_create accepts repos and persists repoIds to status.json for manifest-backed projects.'), feature: 'mr-create' },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'mr-create' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'mr-create' }, toolContext);
+
+    const manualResult = await hooks.tool!.hive_task_create.execute(
+      {
+        feature: 'mr-create',
+        name: 'multi-repo-manual',
+        repos: ['api', 'web'],
+      },
+      toolContext,
+    );
+    expect(String(manualResult)).toContain('Repos: [api, web]');
+
+    const featuresDir = path.join(testRoot, '.hive', 'features');
+    const featureDirName = fs.readdirSync(featuresDir).find((d) => d.endsWith('mr-create'))!;
+    const statusJson = JSON.parse(
+      fs.readFileSync(
+        path.join(featuresDir, featureDirName, 'tasks', '02-multi-repo-manual', 'status.json'),
+        'utf-8',
+      ),
+    );
+    expect(statusJson.repoIds).toEqual(['api', 'web']);
+  });
+
+  it('rejects hive_task_create with an unknown repository id', async () => {
+    await setupMultiRepoProject(['api']);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_bad');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'mr-bad' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('MR Bad', 'Yes, this regression test validates that hive_task_create rejects unknown or invalid repository IDs at creation time before any worktree is touched.'), feature: 'mr-bad' },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'mr-bad' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'mr-bad' }, toolContext);
+
+    // Invalid grammar (uppercase) -> validateRepoIds throws
+    await expect(
+      hooks.tool!.hive_task_create.execute(
+        { feature: 'mr-bad', name: 'bad-grammar', repos: ['NotValid'] },
+        toolContext,
+      ),
+    ).rejects.toThrow(/Invalid repository ID/);
+
+    // Valid grammar but not in the project manifest -> manifest-aware rejection
+    await expect(
+      hooks.tool!.hive_task_create.execute(
+        { feature: 'mr-bad', name: 'ghost-repo', repos: ['ghost'] },
+        toolContext,
+      ),
+    ).rejects.toThrow(/Unknown repository ID\(s\) in repos: ghost/);
+  });
+
+  it('exposes repoIds in hive_status task list entries', async () => {
+    await setupMultiRepoProject(['api', 'web']);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_status');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'mr-status' }, toolContext);
+    const plan = `# MR Status
+
+## Discovery
+
+**Q: ok?**
+A: Yes, this regression test validates that hive_status exposes the per-task repoIds field for manifest-backed projects so orchestrators and the VS Code viewer can render multi-repo task scope without re-reading status.json.
+
+## Tasks
+
+### 1. Multi Repo Task
+**Repos**: api, web
+Do it.
+`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature: 'mr-status' }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'mr-status' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'mr-status' }, toolContext);
+
+    const statusRaw = await hooks.tool!.hive_status.execute({ feature: 'mr-status' }, toolContext);
+    const status = JSON.parse(statusRaw as string) as {
+      tasks?: { list?: Array<{ folder: string; repoIds?: string[] | null }> };
+    };
+    const task = status.tasks?.list?.find((t) => t.folder === '01-multi-repo-task');
+    expect(task?.repoIds).toEqual(['api', 'web']);
+  });
+
+  it('exposes workspacePath, worktreePath (=workspace root), baseCommits, and repos in hive_worktree_start launch metadata', async () => {
+    await setupMultiRepoProject(['api', 'web']);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_launch');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'mr-launch' }, toolContext);
+    const plan = `# MR Launch
+
+## Discovery
+
+**Q: ok?**
+A: Yes, this regression test validates that hive_worktree_start returns composite launch metadata (workspacePath, baseCommits, repos) when the project has a repository manifest and the task declares its repos.
+
+## Tasks
+
+### 1. Multi Repo Task
+**Repos**: api, web
+Do it.
+`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature: 'mr-launch' }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'mr-launch' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'mr-launch' }, toolContext);
+
+    const startRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature: 'mr-launch', task: '01-multi-repo-task' },
+      toolContext,
+    );
+    const start = JSON.parse(startRaw as string) as {
+      success?: boolean;
+      worktreePath?: string;
+      workspacePath?: string;
+      worktreeMode?: string;
+      baseCommits?: Record<string, string>;
+      repos?: Record<string, { path: string; branch: string; commit: string }>;
+    };
+
+    expect(start.success).toBe(true);
+    expect(start.worktreeMode).toBe('composite');
+    expect(start.workspacePath).toBeDefined();
+    expect(start.worktreePath).toBe(start.workspacePath);
+    expect(start.workspacePath).toContain('.hive/.worktrees/mr-launch/01-multi-repo-task');
+    expect(start.baseCommits).toBeDefined();
+    expect(Object.keys(start.baseCommits!).sort()).toEqual(['api', 'web']);
+    expect(start.repos).toBeDefined();
+    expect(start.repos!.api.path).toContain('repos/api');
+    expect(start.repos!.web.path).toContain('repos/web');
+    expect(start.repos!.api.branch).toBe('hive/api/mr-launch/01-multi-repo-task');
+    expect(start.repos!.web.branch).toBe('hive/web/mr-launch/01-multi-repo-task');
+  });
+
+  it('fails hive_worktree_start when a manifest-backed task declares an unknown repo id', async () => {
+    await setupMultiRepoProject(['api']);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_missing');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'mr-missing' }, toolContext);
+    const plan = `# MR Missing
+
+## Discovery
+
+**Q: ok?**
+A: Yes, this regression test validates that hive_worktree_start fails fast when a task declares a repository id that is absent from the project repository manifest, before any worktree directories are created.
+
+## Tasks
+
+### 1. Bad Task
+**Repos**: api, ghost
+Do it.
+`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature: 'mr-missing' }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'mr-missing' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'mr-missing' }, toolContext);
+
+    await expect(
+      hooks.tool!.hive_worktree_start.execute(
+        { feature: 'mr-missing', task: '01-bad-task' },
+        toolContext,
+      ),
+    ).rejects.toThrow(/missing required repos/);
+  });
+
+  it('fails hive_worktree_start for a manifest-backed task that omits Repos metadata', async () => {
+    await setupMultiRepoProject(['api']);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_omitted');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'mr-omit' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('MR Omit', 'Yes, this regression test validates that manifest-backed projects fail hive_worktree_start when the task omits the Repos annotation entirely instead of silently picking a default repository.'), feature: 'mr-omit' },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'mr-omit' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'mr-omit' }, toolContext);
+
+    await expect(
+      hooks.tool!.hive_worktree_start.execute(
+        { feature: 'mr-omit', task: '01-first-task' },
+        toolContext,
+      ),
+    ).rejects.toThrow(/must declare Repos/);
+  });
+
+  it('preserves single-repo legacy launch metadata when no project repository manifest is present', async () => {
+    initBareRepo(testRoot);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_legacy');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'legacy-feature' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('Legacy', 'Yes, this regression test validates that projects without a repository manifest stay in legacy single-worktree mode and that hive_worktree_start does not surface composite-only launch fields.'), feature: 'legacy-feature' },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'legacy-feature' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'legacy-feature' }, toolContext);
+
+    const startRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature: 'legacy-feature', task: '01-first-task' },
+      toolContext,
+    );
+    const start = JSON.parse(startRaw as string) as {
+      success?: boolean;
+      worktreePath?: string;
+      workspacePath?: string;
+      worktreeMode?: string;
+      repos?: unknown;
+      baseCommits?: unknown;
+    };
+
+    expect(start.success).toBe(true);
+    expect(start.worktreeMode).toBe('legacy');
+    expect(start.repos).toBeUndefined();
+    expect(start.baseCommits).toBeUndefined();
+    expect(start.worktreePath).toContain('.hive/.worktrees/legacy-feature/01-first-task');
+    // For legacy, workspacePath falls back to the worktree path.
+    expect(start.workspacePath).toBe(start.worktreePath);
+  });
+
+  it('ignores ~/.config/opencode/agent_hive.json repositories: global manifests are not used for orchestration', async () => {
+    initBareRepo(testRoot);
+    // testRoot doubles as HOME during this suite; write a global manifest that
+    // would set up bogus repositories. RepositoryService must ignore it.
+    const globalDir = path.join(testRoot, '.config', 'opencode');
+    fs.mkdirSync(globalDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(globalDir, 'agent_hive.json'),
+      JSON.stringify({ repositories: [{ id: 'bogus', path: './does-not-exist' }] }, null, 2),
+    );
+
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_global_ignored');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'ignore-global' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('Ignore Global', 'Yes, this regression test validates that global ~/.config/opencode/agent_hive.json repositories are not used to drive orchestration: only project-scoped manifests enable composite worktrees.'), feature: 'ignore-global' },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'ignore-global' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'ignore-global' }, toolContext);
+
+    const startRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature: 'ignore-global', task: '01-first-task' },
+      toolContext,
+    );
+    const start = JSON.parse(startRaw as string) as { success?: boolean; worktreeMode?: string };
+    expect(start.success).toBe(true);
+    // Global manifest must NOT promote this project into composite mode.
+    expect(start.worktreeMode).toBe('legacy');
+  });
+
+  it('fails loud when a manifest-backed task targets a repo path that does not exist', async () => {
+    // Initialise project root and one valid repo; declare a second repo with a
+    // missing on-disk path so RepositoryService.resolveRepositories() throws.
+    initBareRepo(testRoot);
+    initBareRepo(path.join(testRoot, 'repos', 'api'));
+    const hiveDir = path.join(testRoot, '.hive');
+    fs.mkdirSync(hiveDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(hiveDir, 'agent-hive.json'),
+      JSON.stringify({
+        repositories: [
+          { id: 'api', path: './repos/api' },
+          { id: 'web', path: './repos/web-missing-on-disk' },
+        ],
+      }, null, 2),
+    );
+
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_resolver_fail_loud');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'mr-bad-path' }, toolContext);
+    const plan = `# MR Bad Path
+
+## Discovery
+
+**Q: ok?**
+A: Yes, this regression test validates that RepositoryService.resolveRepositories failures propagate from the OpenCode resolver instead of being silently swallowed into a legacy fallback before worktree creation.
+
+## Tasks
+
+### 1. Multi Repo Task
+**Repos**: api, web
+Do it.
+`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature: 'mr-bad-path' }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'mr-bad-path' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'mr-bad-path' }, toolContext);
+
+    await expect(
+      hooks.tool!.hive_worktree_start.execute(
+        { feature: 'mr-bad-path', task: '01-multi-repo-task' },
+        toolContext,
+      ),
+    ).rejects.toThrow(/Repository path does not exist/);
+
+    // Worktree must NOT have been created on the legacy fallback path.
+    const legacyWorktree = path.join(testRoot, '.hive', '.worktrees', 'mr-bad-path', '01-multi-repo-task');
+    expect(fs.existsSync(legacyWorktree)).toBe(false);
+  });
+
+  it('fails loud with manifest-required wording when project root is not a git repo and no manifest is configured', async () => {
+    // No initBareRepo, no manifest. The project root is just a plain directory.
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_no_manifest_non_git');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'no-manifest' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('No Manifest', 'Yes, this regression test validates that non-git project roots without a repository manifest fail with explicit manifest-required wording before the legacy git worktree path is attempted.'), feature: 'no-manifest' },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'no-manifest' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'no-manifest' }, toolContext);
+
+    await expect(
+      hooks.tool!.hive_worktree_start.execute(
+        { feature: 'no-manifest', task: '01-first-task' },
+        toolContext,
+      ),
+    ).rejects.toThrow(/Repository manifest is required/);
+  });
+
+  it('rejects hive_task_create({ repos: ["ghost"] }) when project repository manifest is configured', async () => {
+    await setupMultiRepoProject(['api']);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_manifest_unknown');
+
+    await hooks.tool!.hive_feature_create.execute({ name: 'mr-ghost' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('MR Ghost', 'Yes, this regression test validates that hive_task_create rejects valid-but-unknown repo IDs against the project manifest before any task files are written.'), feature: 'mr-ghost' },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'mr-ghost' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'mr-ghost' }, toolContext);
+
+    await expect(
+      hooks.tool!.hive_task_create.execute(
+        { feature: 'mr-ghost', name: 'ghost-task', repos: ['ghost'] },
+        toolContext,
+      ),
+    ).rejects.toThrow(/Unknown repository ID\(s\) in repos: ghost/);
+  });
+});
