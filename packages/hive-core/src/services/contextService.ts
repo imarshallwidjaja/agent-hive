@@ -9,23 +9,20 @@ export const OVERVIEW_CONTEXT_NAME = 'overview';
 const DEFAULT_CONTEXT_CLASSIFICATION = {
   role: 'durable',
   includeInExecution: true,
-  includeInAgentsMdSync: true,
   includeInNetwork: true,
 } satisfies {
   role: ContextRole;
   includeInExecution: boolean;
-  includeInAgentsMdSync: boolean;
   includeInNetwork: boolean;
 };
 
 const SPECIAL_CONTEXTS = {
-  draft: { role: 'scratchpad', includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false },
-  'execution-decisions': { role: 'operational', includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false },
-  overview: { role: 'operational', includeInExecution: false, includeInAgentsMdSync: false, includeInNetwork: false },
+  draft: { role: 'scratchpad', includeInExecution: false, includeInNetwork: false },
+  'execution-decisions': { role: 'operational', includeInExecution: false, includeInNetwork: false },
+  overview: { role: 'operational', includeInExecution: false, includeInNetwork: false },
 } as const satisfies Record<string, {
   role: ContextRole;
   includeInExecution: boolean;
-  includeInAgentsMdSync: boolean;
   includeInNetwork: boolean;
 }>;
 
@@ -85,10 +82,6 @@ export class ContextService {
 
   listExecutionContext(featureName: string): ContextFile[] {
     return this.list(featureName).filter(file => file.includeInExecution);
-  }
-
-  listAgentsMdSyncContext(featureName: string): ContextFile[] {
-    return this.list(featureName).filter(file => file.includeInAgentsMdSync);
   }
 
   listNetworkContext(featureName: string): ContextFile[] {
@@ -158,7 +151,7 @@ export class ContextService {
     return `${normalized}.md`;
   }
 
-  private classifyContextName(name: string): Pick<ContextFile, 'role' | 'includeInExecution' | 'includeInAgentsMdSync' | 'includeInNetwork'> {
+  private classifyContextName(name: string): Pick<ContextFile, 'role' | 'includeInExecution' | 'includeInNetwork'> {
     return SPECIAL_CONTEXTS[name as keyof typeof SPECIAL_CONTEXTS] ?? DEFAULT_CONTEXT_CLASSIFICATION;
   }
 }

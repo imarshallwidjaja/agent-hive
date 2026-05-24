@@ -31,7 +31,6 @@
     "hive_adhoc_merge",
     "hive_adhoc_cleanup",
     "hive_context_write",
-    "hive_status",
-    "hive_agents_md"
+    "hive_status"
   ]
 }

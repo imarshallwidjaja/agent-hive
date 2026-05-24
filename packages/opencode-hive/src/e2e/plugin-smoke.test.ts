@@ -1124,7 +1124,6 @@ Do it
           name: string;
           role: string;
           includeInExecution: boolean;
-          includeInAgentsMdSync: boolean;
           includeInNetwork: boolean;
         }>;
       };
@@ -1148,26 +1147,22 @@ Do it
           name: "draft",
           role: "scratchpad",
           includeInExecution: false,
-          includeInAgentsMdSync: false,
         }),
         expect.objectContaining({
           name: "execution-decisions",
           role: "operational",
           includeInExecution: false,
-          includeInAgentsMdSync: false,
         }),
         expect.objectContaining({
           name: "learnings",
           role: "durable",
           includeInExecution: true,
-          includeInAgentsMdSync: true,
           includeInNetwork: true,
         }),
         expect.objectContaining({
           name: "overview",
           role: "operational",
           includeInExecution: false,
-          includeInAgentsMdSync: false,
           includeInNetwork: false,
         }),
       ])

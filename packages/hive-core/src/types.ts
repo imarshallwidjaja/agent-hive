@@ -155,7 +155,6 @@ export interface ContextFile {
   updatedAt: string;
   role: ContextRole;
   includeInExecution: boolean;
-  includeInAgentsMdSync: boolean;
   includeInNetwork: boolean;
 }
 

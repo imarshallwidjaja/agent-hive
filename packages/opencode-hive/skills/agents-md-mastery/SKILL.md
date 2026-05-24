@@ -1,6 +1,6 @@
 ---
 name: agents-md-mastery
-description: "Agent Hive workflow skill for maintaining AGENTS.md memory. Use when bootstrapping, reviewing, or pruning Agent Hive agent instructions."
+description: "Use when bootstrapping, reviewing, or pruning AGENTS.md memory and other durable agent instructions."
 ---
 
 # AGENTS.md Mastery
@@ -33,7 +33,7 @@ If an entry doesn't:
 | Trigger | Action |
 |---------|--------|
 | New project bootstrap | Write initial AGENTS.md with build/test/style basics |
-| Feature completion | Sync new learnings via `hive_agents_md` tool |
+| Feature completion | Review the full feature record, then edit AGENTS.md directly for approved durable learnings |
 | Periodic review | Audit for stale/redundant entries (quarterly) |
 | Quality issues | Agent repeating mistakes? Check if AGENTS.md has the fix |
 
@@ -113,28 +113,36 @@ NEVER use `ensureDirSync` — doesn't exist
 
 **Keep total under 500 lines.** Beyond that, agents lose focus and miss critical entries.
 
-## The Sync Workflow
+## The Maintenance Workflow
 
-After completing a feature, sync learnings to AGENTS.md:
+After completing a feature, review the full feature record before editing AGENTS.md:
 
-1. **Trigger sync:**
-   ```typescript
-   hive_agents_md({ action: 'sync', feature: 'feature-name' })
-   ```
+1. **Read the whole source of truth:**
+   - Feature goals and plan
+   - Task reports
+   - Context files
+   - Existing AGENTS.md and relevant repo docs
 
-2. **Review each proposal:**
+2. **Draft only missing durable learnings:**
+   - Prefer the smallest direct edit to AGENTS.md or the owning repo document
+   - Do not add entries already covered by existing docs or visible code
+
+3. **Review each proposal:**
    - Read the proposed change
    - Ask: "Does this change agent behavior?"
    - Check: Is this already obvious from code/files?
 
-3. **Accept signal, reject noise:**
+4. **Accept signal, reject noise:**
    - ❌ "TypeScript is used" → Agent detects this
    - ✅ "Use `.js` extension for imports" → Prevents build failures
 
-4. **Apply approved changes:**
-   ```typescript
-   hive_agents_md({ action: 'apply' })
-   ```
+5. **Escalate conflicts:**
+   - If a proposed learning conflicts with existing docs or instructions, inform the operator
+   - Present the evidence and your recommendation before editing
+
+6. **Apply approved changes directly:**
+   - Edit AGENTS.md or the owning repo doc
+   - Review the diff before finalizing
 
 **Warning:** Don't auto-approve all proposals. One bad entry pollutes all future sessions.
 

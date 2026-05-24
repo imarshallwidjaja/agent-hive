@@ -787,29 +787,35 @@ describe('README.md documentation', () => {
 
 describe('AGENTS.md tool guidance', () => {
   describe('Hive (Hybrid) prompt', () => {
-    it('contains guidance to use hive_agents_md tool', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('hive_agents_md');
+    it('does not reference the removed hive_agents_md tool', () => {
+      expect(QUEEN_BEE_PROMPT).not.toContain('hive_agents_md');
     });
 
-    it('instructs to sync AGENTS.md after feature completion', () => {
+    it('instructs to review whole feature context before documentation updates', () => {
       expect(QUEEN_BEE_PROMPT).toContain('feature completion');
-      expect(QUEEN_BEE_PROMPT).toContain('sync');
+      expect(QUEEN_BEE_PROMPT).toContain('read the whole feature record');
+      expect(QUEEN_BEE_PROMPT).toContain('task reports');
+      expect(QUEEN_BEE_PROMPT).toContain('context files');
     });
 
-    it('explains the init action for bootstrapping AGENTS.md', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('init');
+    it('routes documentation conflicts to the operator with recommendations', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('conflicts');
+      expect(QUEEN_BEE_PROMPT).toContain('operator');
+      expect(QUEEN_BEE_PROMPT).toContain('recommendation');
       expect(QUEEN_BEE_PROMPT).toContain('AGENTS.md');
     });
   });
 
   describe('Swarm (Orchestrator) prompt', () => {
-    it('contains guidance to use hive_agents_md tool', () => {
-      expect(SWARM_BEE_PROMPT).toContain('hive_agents_md');
+    it('does not reference the removed hive_agents_md tool', () => {
+      expect(SWARM_BEE_PROMPT).not.toContain('hive_agents_md');
     });
 
-    it('instructs to sync AGENTS.md after batch completion', () => {
-      expect(SWARM_BEE_PROMPT).toContain('batch');
-      expect(SWARM_BEE_PROMPT).toContain('sync');
+    it('instructs to review whole feature context before documentation updates', () => {
+      expect(SWARM_BEE_PROMPT).toContain('feature completion');
+      expect(SWARM_BEE_PROMPT).toContain('read the whole feature record');
+      expect(SWARM_BEE_PROMPT).toContain('task reports');
+      expect(SWARM_BEE_PROMPT).toContain('context files');
     });
 
     it('contains agents-md-mastery skill reference', () => {

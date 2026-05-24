@@ -239,12 +239,14 @@ After completing and merging a batch:
 
 ### AGENTS.md Maintenance
 After feature completion (all planned tasks done):
-1. Review whether any durable learnings belong in AGENTS.md
-2. Review the proposed diff with the user
-3. Apply approved changes with normal file edits to keep AGENTS.md current
+1. First read the whole feature record: goals, plan, task reports, and all context files.
+2. Decide whether any durable learning belongs in AGENTS.md or another repo document, and skip anything already documented.
+3. If findings conflict with existing docs or instructions, inform the operator, present the evidence, and ask for a decision with your recommendation.
+4. Apply approved documentation changes with normal file edits.
 
 For projects without AGENTS.md:
-- Bootstrap initial documentation from codebase analysis
+- Propose initial guidance from the current repo structure, build/test commands, and feature goals.
+- Ask the operator before creating or replacing AGENTS.md.
 
 ### Orchestration Iron Laws
 - Delegate by default

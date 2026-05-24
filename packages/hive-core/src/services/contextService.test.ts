@@ -45,11 +45,10 @@ describe('ContextService overview as regular context', () => {
       file.name,
       file.role,
       file.includeInExecution,
-      file.includeInAgentsMdSync,
       file.includeInNetwork,
     ])).toEqual([
-      ['decisions', 'durable', true, true, true],
-      ['overview', 'operational', false, false, false],
+      ['decisions', 'durable', true, true],
+      ['overview', 'operational', false, false],
     ]);
   });
 
@@ -78,13 +77,12 @@ describe('ContextService overview as regular context', () => {
       file.name,
       file.role,
       file.includeInExecution,
-      file.includeInAgentsMdSync,
       file.includeInNetwork,
     ])).toEqual([
-      ['draft', 'scratchpad', false, false, false],
-      ['execution-decisions', 'operational', false, false, false],
-      ['learnings', 'durable', true, true, true],
-      ['overview', 'operational', false, false, false],
+      ['draft', 'scratchpad', false, false],
+      ['execution-decisions', 'operational', false, false],
+      ['learnings', 'durable', true, true],
+      ['overview', 'operational', false, false],
     ]);
   });
 

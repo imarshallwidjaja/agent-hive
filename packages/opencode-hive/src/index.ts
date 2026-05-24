@@ -176,7 +176,6 @@ import {
   RepositoryService,
   RepositoryManifestService,
   CUSTOM_AGENT_BASES,
-  AgentsMdService,
   DockerSandboxService,
   SessionService,
   buildEffectiveDependencies,
@@ -245,7 +244,6 @@ const plugin: Plugin = async (ctx) => {
   const planService = new PlanService(directory);
   const taskService = new TaskService(directory);
   const contextService = new ContextService(directory);
-  const agentsMdService = new AgentsMdService(directory, contextService);
   const configService = new ConfigService(directory);
   const sessionService = new SessionService(directory);
   const disabledMcps = configService.getDisabledMcps();
@@ -2118,7 +2116,6 @@ Expand your Discovery section and try again.`;
             updatedAt: c.updatedAt,
             role: c.role,
             includeInExecution: c.includeInExecution,
-            includeInAgentsMdSync: c.includeInAgentsMdSync,
             includeInNetwork: c.includeInNetwork,
           }));
 
@@ -2261,44 +2258,6 @@ Expand your Discovery section and try again.`;
             warning: configFallbackWarning ?? undefined,
             nextAction: getNextAction(planStatus, tasksSummary, runnable, !!plan, !!overview),
           });
-        },
-      }),
-
-      // AGENTS.md Tool
-      hive_agents_md: tool({
-        description: 'Initialize or sync AGENTS.md. init: scan codebase and generate (preview only). sync: propose updates from feature contexts. apply: write approved content to disk.',
-        args: {
-          action: tool.schema.enum(['init', 'sync', 'apply']).describe('Action to perform'),
-          feature: tool.schema.string().optional().describe('Feature name for sync action'),
-          content: tool.schema.string().optional().describe('Content to write (required for apply action)'),
-        },
-        async execute({ action, feature, content }) {
-          if (action === 'init') {
-            const result = await agentsMdService.init();
-            if (result.existed) {
-              return `AGENTS.md already exists (${result.content.length} chars). Use 'sync' to propose updates.`;
-            }
-            // P2 gate: Return content for review — ask user via question() before writing
-            return `Generated AGENTS.md from codebase scan (${result.content.length} chars):\n\n${result.content}\n\n⚠️ This has NOT been written to disk. Ask the user via question() whether to write it to AGENTS.md.`;
-          }
-
-          if (action === 'sync') {
-            if (!feature) return 'Error: feature name required for sync action';
-            const result = await agentsMdService.sync(feature);
-            if (result.proposals.length === 0) {
-              return 'No new findings to sync to AGENTS.md.';
-            }
-            // P2 gate: Return diff for review — never auto-apply
-            return `Proposed AGENTS.md updates from feature "${feature}":\n\n${result.diff}\n\n⚠️ These changes have NOT been applied. Ask the user via question() whether to apply them.`;
-          }
-
-          if (action === 'apply') {
-            if (!content) return 'Error: content required for apply action. Use init or sync first to get content, then apply with the approved content.';
-            const result = agentsMdService.apply(content);
-            return `AGENTS.md ${result.isNew ? 'created' : 'updated'} (${result.chars} chars) at ${result.path}`;
-          }
-
-          return 'Error: unknown action';
         },
       }),
 
@@ -2450,7 +2409,7 @@ Expand your Discovery section and try again.`;
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
-          'hive_context_write', 'hive_status', 'hive_agents_md',
+          'hive_context_write', 'hive_status',
         ]),
         permission: {
           question: "allow",
@@ -2571,7 +2530,7 @@ Expand your Discovery section and try again.`;
         tools: agentTools([
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
-          'hive_context_write', 'hive_agents_md',
+          'hive_context_write',
         ]),
         permission: {
           task: 'allow',

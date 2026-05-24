@@ -52,7 +52,6 @@ export const HIVE_TOOL_NAMES = [
   'hive_adhoc_cleanup',
   'hive_context_write',
   'hive_status',
-  'hive_agents_md',
 ] as const;
 
 export const SUPPORTED_PLUGIN_HOOKS = [

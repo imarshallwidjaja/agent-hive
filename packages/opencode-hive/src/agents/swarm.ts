@@ -156,13 +156,13 @@ After sync, re-check \`hive_status()\` for the updated **runnable** set before d
 
 ### AGENTS.md Maintenance
 
-After feature completion (all tasks merged): sync context findings to AGENTS.md via \`hive_agents_md({ action: "sync", feature: "feature-name" })\`, review the diff with the user, then apply approved changes.
+After feature completion (all tasks merged), first read the whole feature record: goals, plan, task reports, and all context files. Decide whether any durable learning belongs in AGENTS.md or another repo document, and skip anything already documented. If findings conflict with existing docs or instructions, inform the operator, present the evidence, and ask for a decision with your recommendation. Apply approved documentation changes with normal file edits.
 
 For quality review of AGENTS.md content, load the native skill "agents-md-mastery".
 
 For projects without AGENTS.md:
-- Bootstrap with \`hive_agents_md({ action: "init" })\`
-- Generates initial documentation from codebase analysis
+- Propose initial guidance from the current repo structure, build/test commands, and feature goals.
+- Ask the operator before creating or replacing AGENTS.md.
 
 ## Turn Termination
 

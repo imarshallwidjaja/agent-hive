@@ -461,6 +461,19 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
+  it('does not expose the removed AGENTS.md maintenance tool to any agent', async () => {
+    const removedAgentsMdTool = ['hive', 'agents', 'md'].join('_');
+    const unifiedAgents = await buildConfig('unified');
+    for (const agent of Object.values(unifiedAgents)) {
+      expect(agent.tools ?? {}).not.toHaveProperty(removedAgentsMdTool);
+    }
+
+    const dedicatedAgents = await buildConfig('dedicated');
+    for (const agent of Object.values(dedicatedAgents)) {
+      expect(agent.tools ?? {}).not.toHaveProperty(removedAgentsMdTool);
+    }
+  });
+
   it('hive-master has no tools filter (all tools allowed)', async () => {
     const agents = await buildConfig('unified');
     const hiveTools = agents['hive-master']?.tools;
@@ -482,7 +495,6 @@ describe('Per-agent tool filtering', () => {
     expect(tools['hive_repositories_discover']).toBeUndefined();
     expect(tools['hive_repositories_update']).toBeUndefined();
     expect(tools['hive_context_write']).toBeUndefined();
-    expect(tools['hive_agents_md']).toBeUndefined();
     // Disabled task-backed/plan/feature tools
     expect(tools['hive_worktree_start']).toBe(false);
     expect(tools['hive_worktree_create']).toBe(false);

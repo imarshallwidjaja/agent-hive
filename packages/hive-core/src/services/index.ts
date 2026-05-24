@@ -44,8 +44,6 @@ export type {
   RepositoryManifestStatus,
   RepositoryManifestUpdateResult,
 } from './repositoryManifestService.js';
-export { AgentsMdService } from './agentsMdService.js';
-export type { InitResult, SyncResult, ApplyResult as AgentsMdApplyResult } from './agentsMdService.js';
 export { DockerSandboxService } from './dockerSandboxService.js';
 export type { SandboxConfig } from './dockerSandboxService.js';
 export { buildEffectiveDependencies, computeRunnableAndBlocked } from './taskDependencyGraph.js';
