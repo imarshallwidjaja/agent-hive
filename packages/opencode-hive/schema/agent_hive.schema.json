@@ -110,6 +110,10 @@
         "hygienic-reviewer": {
           "$ref": "#/$defs/agentConfig",
           "description": "Hygienic Reviewer"
+        },
+        "hive-builder": {
+          "$ref": "#/$defs/agentConfig",
+          "description": "Hive Builder (ad-hoc executor)"
         }
       }
     },
@@ -126,6 +130,7 @@
             "forager-worker",
             "hive-helper",
             "hygienic-reviewer",
+            "hive-builder",
             "hive",
             "architect",
             "swarm",
@@ -134,6 +139,7 @@
             "hygienic",
             "receiver",
             "build",
+            "builder",
             "plan",
             "code"
           ]

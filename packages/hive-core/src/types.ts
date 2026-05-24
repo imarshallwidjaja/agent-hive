@@ -214,6 +214,7 @@ export const BUILT_IN_AGENT_NAMES = [
   'forager-worker',
   'hive-helper',
   'hygienic-reviewer',
+  'hive-builder',
 ] as const;
 
 export type BuiltInAgentName = (typeof BUILT_IN_AGENT_NAMES)[number];
@@ -232,6 +233,7 @@ export const CUSTOM_AGENT_RESERVED_NAMES = [
   'hygienic',
   'receiver',
   'build',
+  'builder',
   'plan',
   'code',
 ] as const;
@@ -291,6 +293,8 @@ export interface HiveConfig {
     'hive-helper'?: AgentModelConfig;
     /** Hygienic Reviewer */
     'hygienic-reviewer'?: AgentModelConfig;
+    /** Hive Builder (ad-hoc executor) */
+    'hive-builder'?: AgentModelConfig;
   };
   customAgents?: Record<string, CustomAgentConfig>;
   /** Sandbox mode for worker isolation */
@@ -314,6 +318,7 @@ export const DEFAULT_AGENT_MODELS = {
   'forager-worker': 'github-copilot/gpt-5.2-codex',
   'hive-helper': 'github-copilot/gpt-5.2-codex',
   'hygienic-reviewer': 'github-copilot/gpt-5.2-codex',
+  'hive-builder': 'github-copilot/gpt-5.2-codex',
 } as const;
 
 export const DEFAULT_HIVE_CONFIG: HiveConfig = {
@@ -378,6 +383,11 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
       model: DEFAULT_AGENT_MODELS['hygienic-reviewer'],
       temperature: 0.3,
       autoLoadSkills: [],
+    },
+    'hive-builder': {
+      model: DEFAULT_AGENT_MODELS['hive-builder'],
+      temperature: 0.4,
+      autoLoadSkills: ['verification-before-completion', 'dispatching-parallel-agents', 'parallel-exploration'],
     },
   },
 };

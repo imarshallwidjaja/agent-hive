@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { CUSTOM_AGENT_RESERVED_NAMES, getHivePath } from "./index";
+import { BUILT_IN_AGENT_NAMES, CUSTOM_AGENT_RESERVED_NAMES, DEFAULT_HIVE_CONFIG, getHivePath } from "./index";
 import { detectContext } from "./utils/detection";
 
 describe("hive-core", () => {
@@ -18,5 +18,25 @@ describe("hive-core", () => {
 
   it("keeps hive-helper reserved only once", () => {
     expect(CUSTOM_AGENT_RESERVED_NAMES.filter((name) => name === 'hive-helper')).toHaveLength(1);
+  });
+
+  it("includes hive-builder in BUILT_IN_AGENT_NAMES", () => {
+    expect(BUILT_IN_AGENT_NAMES).toContain('hive-builder');
+  });
+
+  it("includes hive-builder defaults in DEFAULT_HIVE_CONFIG", () => {
+    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']).toBeDefined();
+    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.temperature).toBe(0.4);
+    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.model).toBe('github-copilot/gpt-5.2-codex');
+    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.autoLoadSkills).toEqual([
+      'verification-before-completion',
+      'dispatching-parallel-agents',
+      'parallel-exploration',
+    ]);
+  });
+
+  it("includes hive-builder and builder in CUSTOM_AGENT_RESERVED_NAMES", () => {
+    expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('hive-builder');
+    expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('builder');
   });
 });

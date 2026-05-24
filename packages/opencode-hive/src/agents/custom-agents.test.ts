@@ -4,6 +4,7 @@ import { FORAGER_BEE_PROMPT } from './forager';
 import { HYGIENIC_BEE_PROMPT } from './hygienic';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { buildCustomSubagents } from './custom-agents';
+import { CUSTOM_AGENT_RESERVED_NAMES } from 'hive-core';
 
 describe('buildCustomSubagents', () => {
   it('builds derived subagents for scout, forager, and hygienic bases', () => {
@@ -129,5 +130,18 @@ describe('buildCustomSubagents', () => {
     expect(derived['reviewer-security'].tools).toEqual(baseAgents['hygienic-reviewer'].tools);
     expect(derived['reviewer-security'].description).toBe('Use for security-focused review passes.');
     expect(derived['reviewer-security'].model).toBe('base/hygienic-model');
+  });
+});
+
+describe('CUSTOM_AGENT_RESERVED_NAMES', () => {
+  it('includes hive-builder and builder as reserved names', () => {
+    expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('hive-builder');
+    expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('builder');
+  });
+
+  it('hive-builder and builder would be filtered by reserved-name check', () => {
+    const reservedSet = new Set<string>(CUSTOM_AGENT_RESERVED_NAMES as readonly string[]);
+    expect(reservedSet.has('hive-builder')).toBe(true);
+    expect(reservedSet.has('builder')).toBe(true);
   });
 });

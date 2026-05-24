@@ -34,6 +34,7 @@ describe("ConfigService defaults", () => {
     expect(Object.keys(config.agents ?? {}).sort()).toEqual([
       "architect-planner",
       "forager-worker",
+      "hive-builder",
       "hive-helper",
       "hive-master",
       "hygienic-reviewer",
@@ -376,6 +377,121 @@ describe("ConfigService defaults", () => {
       const agent = config.agents?.[agentKey as keyof typeof config.agents];
       expect(agent?.variant).toBeUndefined();
     }
+  });
+
+  it("getAgentConfig('hive-builder') returns default config", () => {
+    const service = new ConfigService();
+    const config = service.getAgentConfig("hive-builder");
+
+    expect(config.model).toBe("github-copilot/gpt-5.2-codex");
+    expect(config.temperature).toBe(0.4);
+    expect(config.autoLoadSkills).toEqual([
+      "verification-before-completion",
+      "dispatching-parallel-agents",
+      "parallel-exploration",
+    ]);
+  });
+
+  it("deep-merges hive-builder overrides with defaults", () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          agents: {
+            "hive-builder": { temperature: 0.6, variant: "high" },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const config = service.getAgentConfig("hive-builder");
+    expect(config.temperature).toBe(0.6);
+    expect(config.variant).toBe("high");
+    expect(config.model).toBe("github-copilot/gpt-5.2-codex");
+    expect(config.autoLoadSkills).toEqual([
+      "verification-before-completion",
+      "dispatching-parallel-agents",
+      "parallel-exploration",
+    ]);
+  });
+
+  it("hive-builder is not treated as planner-only for autoLoadSkills", () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          agents: {
+            "hive-builder": {
+              autoLoadSkills: ["custom-skill"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const config = service.getAgentConfig("hive-builder");
+    // Non-planner agents get their defaults merged with user overrides
+    expect(config.autoLoadSkills).toContain("verification-before-completion");
+    expect(config.autoLoadSkills).toContain("dispatching-parallel-agents");
+    expect(config.autoLoadSkills).toContain("parallel-exploration");
+    expect(config.autoLoadSkills).toContain("custom-skill");
+  });
+
+  it("skips hive-builder reserved custom agent name", () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          customAgents: {
+            "hive-builder": {
+              baseAgent: "forager-worker",
+              description: "Should be skipped as reserved.",
+            },
+            builder: {
+              baseAgent: "forager-worker",
+              description: "Should be skipped as reserved.",
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const custom = service.getCustomAgentConfigs();
+    expect(custom).not.toHaveProperty("hive-builder");
+    expect(custom).not.toHaveProperty("builder");
+
+    const warnedLines = warnSpy.mock.calls.map((call) => call.join(" "));
+    expect(
+      warnedLines.some(
+        (line) => line.includes("reserved") && line.includes('"hive-builder"'),
+      ),
+    ).toBe(true);
+    expect(
+      warnedLines.some(
+        (line) => line.includes("reserved") && line.includes('"builder"'),
+      ),
+    ).toBe(true);
+
+    warnSpy.mockRestore();
   });
 
   it("scout-researcher autoLoadSkills does NOT include parallel-exploration", () => {

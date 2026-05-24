@@ -29,6 +29,14 @@ describe('agent_hive schema customAgents contract', () => {
     ]);
   });
 
+  it('allows hive-builder as a built-in agent config key', () => {
+    expect(schema.properties.agents.properties).toHaveProperty('hive-builder');
+    expect(schema.properties.agents.properties['hive-builder']).toEqual({
+      $ref: '#/$defs/agentConfig',
+      description: 'Hive Builder (ad-hoc executor)',
+    });
+  });
+
   it('reserves built-in and plugin-managed agent names', () => {
     expectReservedNameToFail('hive-master');
     expectReservedNameToFail('architect-planner');
@@ -47,5 +55,7 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('build');
     expectReservedNameToFail('plan');
     expectReservedNameToFail('code');
+    expectReservedNameToFail('hive-builder');
+    expectReservedNameToFail('builder');
   });
 });
