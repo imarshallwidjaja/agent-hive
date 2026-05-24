@@ -48,6 +48,28 @@ describe('skill content', () => {
     );
   });
 
+  it('bundles background-delegation with env-gated task_status guidance', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation');
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toContain('Agent Hive');
+    expect(skill!.template).toContain('OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS');
+    expect(skill!.template).toContain('OPENCODE_EXPERIMENTAL');
+    expect(skill!.template).toContain('task({ background: true');
+    expect(skill!.template).toContain('task_status({ task_id');
+    expect(skill!.template).toContain('wait: false');
+    expect(skill!.template).toContain('wait: true');
+    expect(skill!.template).toContain('timeout_ms');
+    expect(skill!.template).toContain('normal blocking `task()` remains the default');
+    expect(skill!.template).toContain('Do not call `task()` from subagents');
+    expect(skill!.template).not.toContain('@explorer');
+    expect(skill!.template).not.toContain('subtask');
+    expect(skill!.template).not.toContain('tmux');
+    expect(skill!.template).not.toContain('zellij');
+    expect(skill!.template).not.toContain('hive_background_task');
+    expect(skill!.template).not.toContain('hive_background_output');
+  });
+
   it('bundled skill content does not contain removed Hive skill tool references', () => {
     const removedHiveSkillTool = ['hive', 'skill'].join('_');
 
