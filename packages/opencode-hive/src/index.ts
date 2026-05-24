@@ -14,6 +14,19 @@ import { HYGIENIC_BEE_PROMPT } from './agents/hygienic.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
 
+const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized !== '' && normalized !== '0' && normalized !== 'false' && normalized !== 'no';
+}
+
+function isBackgroundSubagentsExperimentEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return isTruthyEnv(env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
+    || isTruthyEnv(env.OPENCODE_EXPERIMENTAL);
+}
+
 /**
  * Build auto-loaded skill templates for an agent.
  * Returns a string containing all skill templates to append to the agent's prompt.
@@ -75,6 +88,34 @@ async function buildAutoLoadedSkillsContent(
   }
 
   return '\n\n' + skillTemplates.join('\n\n');
+}
+
+function buildBackgroundDelegationPromptAppendix(
+  agentName: string,
+  nativeSkillsByName: Map<string, PreparedNativeSkill>,
+  eligibleHiveSkills: Map<string, PreparedHiveSkill>,
+  skippedHiveSkills: Map<string, PreparedNativeHiveSkills['skipped'][number]>,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  if (!isBackgroundSubagentsExperimentEnabled(env)) return '';
+
+  if (nativeSkillsByName.has(BACKGROUND_DELEGATION_SKILL_ID) || eligibleHiveSkills.has(BACKGROUND_DELEGATION_SKILL_ID)) {
+    return `\n\n## Background Subagent Experiment\nOpenCode background subagents are enabled for this session. Normal blocking task() remains the default. If you are considering task({ background: true, ... }), first load/use skill({ name: "background-delegation" }). Use background mode only when you have useful foreground work that does not depend on the result, and call task_status before making dependent decisions.`;
+  }
+
+  const skippedSkill = skippedHiveSkills.get(BACKGROUND_DELEGATION_SKILL_ID);
+  if (skippedSkill?.reason === 'disabled') {
+    console.warn(`[hive] Background delegation guidance was not advertised for agent "${agentName}" because skill "${BACKGROUND_DELEGATION_SKILL_ID}" is disabled in Hive config.`);
+    return '';
+  }
+
+  if (skippedSkill?.reason === 'url-scan-incomplete') {
+    console.warn(`[hive] Background delegation guidance was not advertised for agent "${agentName}" because configured skills URLs could not be fully scanned for conflicts during this config-hook run.`);
+    return '';
+  }
+
+  console.warn(`[hive] Background delegation guidance was not advertised for agent "${agentName}" because skill "${BACKGROUND_DELEGATION_SKILL_ID}" was not found in OpenCode native skill discovery or eligible Hive bundled skills.`);
+  return '';
 }
 
 type CompatibleCustomAgentConfig = {
@@ -2106,12 +2147,18 @@ Expand your Discovery section and try again.`;
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
+      const hiveBackgroundDelegationAppendix = buildBackgroundDelegationPromptAppendix(
+        'hive-master',
+        preparedNativeHiveSkills.nativeSkillsByName,
+        preparedNativeHiveSkills.skillsByName,
+        skippedHiveSkills,
+      );
       const hiveConfig = {
         model: hiveUserConfig.model,
         variant: hiveUserConfig.variant,
         temperature: hiveUserConfig.temperature ?? 0.5,
         description: 'Hive (Hybrid) - Plans + orchestrates. Detects phase, loads skills on-demand.',
-        prompt: QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hiveAutoLoadedSkills + (agentMode === 'unified' ? customSubagentAppendix : ''),
+        prompt: QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hiveAutoLoadedSkills + hiveBackgroundDelegationAppendix + (agentMode === 'unified' ? customSubagentAppendix : ''),
         permission: {
           question: "allow",
           skill: "allow",
@@ -2128,12 +2175,18 @@ Expand your Discovery section and try again.`;
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
+      const architectBackgroundDelegationAppendix = buildBackgroundDelegationPromptAppendix(
+        'architect-planner',
+        preparedNativeHiveSkills.nativeSkillsByName,
+        preparedNativeHiveSkills.skillsByName,
+        skippedHiveSkills,
+      );
       const architectConfig = {
         model: architectUserConfig.model,
         variant: architectUserConfig.variant,
         temperature: architectUserConfig.temperature ?? 0.7,
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
-        prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadedSkills + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
+        prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadedSkills + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
         tools: agentTools([
           'hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
@@ -2157,12 +2210,18 @@ Expand your Discovery section and try again.`;
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
+      const swarmBackgroundDelegationAppendix = buildBackgroundDelegationPromptAppendix(
+        'swarm-orchestrator',
+        preparedNativeHiveSkills.nativeSkillsByName,
+        preparedNativeHiveSkills.skillsByName,
+        skippedHiveSkills,
+      );
       const swarmConfig = {
         model: swarmUserConfig.model,
         variant: swarmUserConfig.variant,
         temperature: swarmUserConfig.temperature ?? 0.5,
         description: 'Swarm (Orchestrator) - Orchestrates execution. Delegates, spawns workers, verifies, merges.',
-        prompt: SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadedSkills + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
+        prompt: SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadedSkills + swarmBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
         tools: agentTools([
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',

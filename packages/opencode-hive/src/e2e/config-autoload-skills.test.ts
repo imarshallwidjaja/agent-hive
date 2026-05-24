@@ -119,15 +119,21 @@ const PACKAGED_SKILLS_DIR = fileURLToPath(new URL('../../skills', import.meta.ur
 describe('config hook autoLoadSkills injection', () => {
   let testRoot: string;
   let originalHome: string | undefined;
+  let originalExperimentalBackgroundSubagents: string | undefined;
+  let originalExperimental: string | undefined;
   let originalFetch: typeof fetch;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalExperimentalBackgroundSubagents = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    originalExperimental = process.env.OPENCODE_EXPERIMENTAL;
     originalFetch = globalThis.fetch;
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'project-'));
     process.env.HOME = testRoot;
+    delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    delete process.env.OPENCODE_EXPERIMENTAL;
   });
 
   afterEach(() => {
@@ -135,9 +141,155 @@ describe('config hook autoLoadSkills injection', () => {
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     if (originalHome === undefined) {
       delete process.env.HOME;
-      return;
+    } else {
+      process.env.HOME = originalHome;
     }
-    process.env.HOME = originalHome;
+    if (originalExperimentalBackgroundSubagents === undefined) {
+      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    } else {
+      process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = originalExperimentalBackgroundSubagents;
+    }
+    if (originalExperimental === undefined) {
+      delete process.env.OPENCODE_EXPERIMENTAL;
+    } else {
+      process.env.OPENCODE_EXPERIMENTAL = originalExperimental;
+    }
+  });
+
+  it('does not advertise background delegation guidance when the experiment env is off in unified mode', async () => {
+    writeHiveConfig(testRoot, { agentMode: 'unified' });
+
+    const opencodeConfig = await applyConfigHook(testRoot);
+    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const backgroundSkill = requireBuiltinSkill('background-delegation');
+    const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
+
+    expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).not.toContain(backgroundSkill.template);
+    expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
+    expect(generatedPath).toBeDefined();
+    expect(fs.existsSync(path.join(generatedPath!, 'background-delegation', 'SKILL.md'))).toBe(true);
+  });
+
+  it('advertises compact background delegation guidance only to hive-master when the specific env is enabled in unified mode', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    writeHiveConfig(testRoot, {
+      agentMode: 'unified',
+      customAgents: {
+        'forager-background': {
+          baseAgent: 'forager-worker',
+          description: 'Custom worker must not inherit primary background guidance.',
+        },
+      },
+    });
+
+    const opencodeConfig = await applyConfigHook(testRoot);
+    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
+    const foragerPrompt = getAgentPrompt(opencodeConfig, 'forager-worker');
+    const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
+    const hygienicPrompt = getAgentPrompt(opencodeConfig, 'hygienic-reviewer');
+    const customPrompt = getAgentPrompt(opencodeConfig, 'forager-background');
+    const backgroundSkill = requireBuiltinSkill('background-delegation');
+
+    expect(hiveMasterPrompt).toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).not.toContain(backgroundSkill.template);
+    expect(hiveMasterPrompt).toContain('skill({ name: "background-delegation" })');
+    expect(hiveMasterPrompt).toContain('task({ background: true');
+    expect(hiveMasterPrompt).toContain('task_status');
+    for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, hygienicPrompt, customPrompt]) {
+      expect(prompt).not.toContain('skill({ name: "background-delegation" })');
+      expect(prompt).not.toContain('task({ background: true');
+      expect(prompt).not.toContain(backgroundSkill.template);
+    }
+  });
+
+  it('advertises compact background delegation guidance only to primary dedicated-mode agents when the umbrella env is enabled', async () => {
+    process.env.OPENCODE_EXPERIMENTAL = 'true';
+    writeHiveConfig(testRoot, { agentMode: 'dedicated' });
+
+    const opencodeConfig = await applyConfigHook(testRoot);
+    const architectPrompt = getAgentPrompt(opencodeConfig, 'architect-planner');
+    const swarmPrompt = getAgentPrompt(opencodeConfig, 'swarm-orchestrator');
+    const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
+    const foragerPrompt = getAgentPrompt(opencodeConfig, 'forager-worker');
+    const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
+    const hygienicPrompt = getAgentPrompt(opencodeConfig, 'hygienic-reviewer');
+    const backgroundSkill = requireBuiltinSkill('background-delegation');
+
+    for (const prompt of [architectPrompt, swarmPrompt]) {
+      expect(prompt).toContain('## Background Subagent Experiment');
+      expect(prompt).toContain('skill({ name: "background-delegation" })');
+      expect(prompt).toContain('task({ background: true');
+      expect(prompt).toContain('task_status');
+      expect(prompt).not.toContain(backgroundSkill.template);
+    }
+    for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, hygienicPrompt]) {
+      expect(prompt).not.toContain('skill({ name: "background-delegation" })');
+      expect(prompt).not.toContain('task({ background: true');
+      expect(prompt).not.toContain(backgroundSkill.template);
+    }
+  });
+
+  it.each(['', '0', 'false', 'no'])('does not advertise background delegation guidance for falsey env value %p', async (envValue) => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = envValue;
+    writeHiveConfig(testRoot, { agentMode: 'unified' });
+
+    const opencodeConfig = await applyConfigHook(testRoot);
+    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+
+    expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
+    expect(hiveMasterPrompt).not.toContain('task({ background: true');
+  });
+
+  it('does not advertise background delegation guidance when env is enabled but the Hive bundle is disabled', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    writeHiveConfig(testRoot, {
+      agentMode: 'unified',
+      disableSkills: ['background-delegation'],
+    });
+
+    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
+    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
+
+    expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
+    expect(generatedPath).toBeDefined();
+    expect(fs.existsSync(path.join(generatedPath!, 'background-delegation'))).toBe(false);
+    expect(warnings).toContainEqual(
+      expect.stringContaining('Background delegation guidance was not advertised'),
+    );
+    expect(warnings).toContainEqual(
+      expect.stringContaining('skill "background-delegation" is disabled'),
+    );
+  });
+
+  it('advertises background delegation guidance from a native skill even when the Hive bundle with the same name is disabled', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    createFileSkill(
+      path.join(testRoot, '.opencode', 'skills'),
+      'background-delegation',
+      'Native background delegation guidance',
+      '# Native Background Delegation\n\nNative guidance should not be injected into the primary prompt.',
+    );
+    writeHiveConfig(testRoot, {
+      agentMode: 'unified',
+      disableSkills: ['background-delegation'],
+    });
+
+    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
+    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
+
+    expect(hiveMasterPrompt).toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).toContain('skill({ name: "background-delegation" })');
+    expect(hiveMasterPrompt).not.toContain('# Native Background Delegation');
+    expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('background-delegation').template);
+    expect(generatedPath).toBeDefined();
+    expect(fs.existsSync(path.join(generatedPath!, 'background-delegation'))).toBe(false);
+    expect(warnings.some((message) => message.includes('background-delegation'))).toBe(false);
   });
 
   it('injects default autoLoadSkills and materializes Hive bundled skills in unified mode', async () => {
@@ -345,15 +497,21 @@ describe('config hook autoLoadSkills injection', () => {
 describe('config hook native skill registration', () => {
   let testRoot: string;
   let originalHome: string | undefined;
+  let originalExperimentalBackgroundSubagents: string | undefined;
+  let originalExperimental: string | undefined;
   let originalFetch: typeof fetch;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalExperimentalBackgroundSubagents = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    originalExperimental = process.env.OPENCODE_EXPERIMENTAL;
     originalFetch = globalThis.fetch;
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'project-'));
     process.env.HOME = testRoot;
+    delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    delete process.env.OPENCODE_EXPERIMENTAL;
   });
 
   afterEach(() => {
@@ -361,9 +519,19 @@ describe('config hook native skill registration', () => {
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     if (originalHome === undefined) {
       delete process.env.HOME;
-      return;
+    } else {
+      process.env.HOME = originalHome;
     }
-    process.env.HOME = originalHome;
+    if (originalExperimentalBackgroundSubagents === undefined) {
+      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    } else {
+      process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = originalExperimentalBackgroundSubagents;
+    }
+    if (originalExperimental === undefined) {
+      delete process.env.OPENCODE_EXPERIMENTAL;
+    } else {
+      process.env.OPENCODE_EXPERIMENTAL = originalExperimental;
+    }
   });
 
   it('preserves user skill paths after the Hive generated path when URL scans complete and preserves skills.urls exactly', async () => {
