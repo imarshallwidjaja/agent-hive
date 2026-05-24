@@ -85,6 +85,29 @@ export interface MergeResult {
     pruned: boolean;
   };
   error?: string;
+  /** Per-repo merge results when the workspace is a composite. Omitted for legacy single-root workspaces. */
+  repos?: Record<string, RepoMergeResult>;
+  /**
+   * True when at least one repo merged successfully and a later repo failed (conflict or mutation error).
+   * Explicit `false` when preflight rejected the merge before any repo was mutated.
+   * Undefined for legacy single-root merges and for clean composite success.
+   */
+  partial?: boolean;
+}
+
+export interface RepoMergeResult {
+  success: boolean;
+  merged: boolean;
+  sha?: string;
+  filesChanged: string[];
+  conflicts: string[];
+  conflictState: 'none' | 'aborted' | 'preserved';
+  cleanup: {
+    worktreeRemoved: boolean;
+    branchDeleted: boolean;
+    pruned: boolean;
+  };
+  error?: string;
 }
 
 export interface RepositoryResolver {
@@ -795,42 +818,20 @@ export class WorktreeService {
     let branchAttempts = 0;
 
     for (const [repoId, entry] of Object.entries(manifest.repos)) {
-      const repoWtPath = path.join(compositeRoot, entry.path);
-      // Prefer manifest-persisted source repo root; fall back to resolver if absent.
       const repoRoot = entry.repoRoot || reposById.get(repoId)?.path;
-      const repoGit = repoRoot ? this.getGit(repoRoot) : null;
-
-      let removedHere = false;
-      if (repoGit) {
-        try {
-          await repoGit.raw(["worktree", "remove", repoWtPath, "--force"]);
-          removedHere = true;
-        } catch {}
-        try {
-          await repoGit.raw(["worktree", "prune"]);
-          prunedAny = true;
-        } catch {}
-      }
-      if (!removedHere) {
-        try {
-          await fs.rm(repoWtPath, { recursive: true, force: true });
-          removedHere = true;
-        } catch {
-          allWorktreesRemoved = false;
-        }
-      }
-
+      const perRepo = await this.removeCompositeRepo(
+        feature,
+        step,
+        repoId,
+        entry,
+        repoRoot,
+        deleteBranch,
+      );
+      if (!perRepo.worktreeRemoved) allWorktreesRemoved = false;
+      if (perRepo.pruned) prunedAny = true;
       if (deleteBranch) {
         branchAttempts++;
-        if (repoGit) {
-          try {
-            await repoGit.deleteLocalBranch(entry.branch, true);
-          } catch {
-            allBranchesDeleted = false;
-          }
-        } else {
-          allBranchesDeleted = false;
-        }
+        if (!perRepo.branchDeleted) allBranchesDeleted = false;
       }
     }
 
@@ -1098,8 +1099,6 @@ export class WorktreeService {
     message?: string,
     options: MergeOptions = {},
   ): Promise<MergeResult> {
-    const branchName = this.getBranchName(feature, step);
-    const git = this.getGit();
     const cleanupMode = options.cleanup ?? 'none';
     const preserveConflicts = options.preserveConflicts ?? false;
 
@@ -1122,6 +1121,311 @@ export class WorktreeService {
       };
     }
 
+    const manifest = await this.readWorkspaceManifest(feature, step);
+    if (manifest) {
+      return this.mergeComposite(feature, step, manifest, strategy, message, {
+        cleanup: cleanupMode,
+        preserveConflicts,
+      });
+    }
+
+    const branchName = this.getLegacyBranchName(feature, step);
+    const repoResult = await this.mergeOneRepo({
+      git: this.getGit(),
+      branchName,
+      strategy,
+      message,
+      step,
+      preserveConflicts,
+      cleanupMode,
+      cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch),
+    });
+    return {
+      success: repoResult.success,
+      merged: repoResult.merged,
+      strategy,
+      sha: repoResult.sha,
+      filesChanged: repoResult.filesChanged,
+      conflicts: repoResult.conflicts,
+      conflictState: repoResult.conflictState,
+      cleanup: repoResult.cleanup,
+      ...(repoResult.error !== undefined ? { error: repoResult.error } : {}),
+    };
+  }
+
+  private async mergeComposite(
+    feature: string,
+    step: string,
+    manifest: WorkspaceManifest,
+    strategy: "merge" | "squash" | "rebase",
+    message: string | undefined,
+    options: { cleanup: 'none' | 'worktree' | 'worktree+branch'; preserveConflicts: boolean },
+  ): Promise<MergeResult> {
+    const repoIds = Object.keys(manifest.repos).sort();
+    const emptyCleanup = {
+      worktreeRemoved: false,
+      branchDeleted: false,
+      pruned: false,
+    };
+
+    const preflightFailure = (repoId: string, reason: string): MergeResult => ({
+      success: false,
+      merged: false,
+      strategy,
+      filesChanged: [],
+      conflicts: [],
+      conflictState: 'none',
+      cleanup: emptyCleanup,
+      error: `${repoId}: ${reason}`,
+      partial: false,
+    });
+
+    // Preflight all repos before any mutation
+    for (const repoId of repoIds) {
+      const entry = manifest.repos[repoId];
+      const repoRoot = entry.repoRoot || entry.repoPath;
+      if (!repoRoot) {
+        return preflightFailure(repoId, 'missing source repo root in workspace manifest');
+      }
+      const repoGit = this.getGit(repoRoot);
+
+      // Branch must exist in the source repo
+      try {
+        const branches = await repoGit.branch();
+        if (!branches.all.includes(entry.branch)) {
+          return preflightFailure(repoId, `branch ${entry.branch} not found`);
+        }
+      } catch (e: unknown) {
+        const msg = (e as { message?: string }).message ?? 'unable to list branches';
+        return preflightFailure(repoId, msg);
+      }
+
+      // Source repo target must be clean
+      try {
+        const status = await repoGit.status();
+        const dirty =
+          status.modified.length > 0 ||
+          status.not_added.length > 0 ||
+          status.staged.length > 0 ||
+          status.deleted.length > 0 ||
+          status.created.length > 0 ||
+          status.conflicted.length > 0;
+        if (dirty) {
+          return preflightFailure(repoId, 'target repo has uncommitted (dirty) changes');
+        }
+      } catch (e: unknown) {
+        const msg = (e as { message?: string }).message ?? 'unable to read status';
+        return preflightFailure(repoId, msg);
+      }
+
+      // No active merge/rebase/cherry-pick state. Resolve state paths via
+      // `git rev-parse --git-path` so linked worktrees (where .git is a file)
+      // and per-worktree state directories are handled correctly.
+      const stateChecks: Array<{ name: string; label: string }> = [
+        { name: 'MERGE_HEAD', label: 'merge' },
+        { name: 'REBASE_HEAD', label: 'rebase' },
+        { name: 'CHERRY_PICK_HEAD', label: 'cherry-pick' },
+        { name: 'rebase-merge', label: 'rebase' },
+        { name: 'rebase-apply', label: 'rebase' },
+      ];
+      for (const { name, label } of stateChecks) {
+        const statePath = await this.resolveGitPath(repoGit, repoRoot, name);
+        try {
+          await fs.access(statePath);
+          return preflightFailure(repoId, `active ${label} state in progress`);
+        } catch {
+          // not present -> ok
+        }
+      }
+    }
+
+    // Execute per-repo merges in stable order
+    const repos: Record<string, RepoMergeResult> = {};
+    const flattenedFiles: string[] = [];
+    const flattenedConflicts: string[] = [];
+    let anySuccess = false;
+    let stoppedRepoId: string | undefined;
+    let firstError: string | undefined;
+    let lastConflictState: 'none' | 'aborted' | 'preserved' = 'none';
+
+    for (const repoId of repoIds) {
+      const entry = manifest.repos[repoId];
+      const repoRoot = entry.repoRoot || entry.repoPath;
+      const repoGit = this.getGit(repoRoot);
+      const repoResult = await this.mergeOneRepo({
+        git: repoGit,
+        branchName: entry.branch,
+        strategy,
+        message,
+        step,
+        preserveConflicts: options.preserveConflicts,
+        cleanupMode: 'none', // defer cleanup until after all repos succeed
+        cleanupFn: async () => ({ worktreeRemoved: false, branchDeleted: false, pruned: false }),
+      });
+      repos[repoId] = repoResult;
+      for (const f of repoResult.filesChanged) flattenedFiles.push(`${repoId}:${f}`);
+      for (const c of repoResult.conflicts) flattenedConflicts.push(`${repoId}:${c}`);
+
+      // Stop immediately on per-repo failure (success=false) OR a "successful"
+      // call that did not actually merge (success=true, merged=false).
+      // The latter must not be silently aggregated as a clean composite merge.
+      if (!repoResult.success || !repoResult.merged) {
+        stoppedRepoId = repoId;
+        firstError = `${repoId}: ${repoResult.error ?? (repoResult.success ? 'repo reported merged=false' : 'merge failed')}`;
+        lastConflictState = repoResult.conflictState;
+        break;
+      }
+      anySuccess = true;
+    }
+
+    if (stoppedRepoId !== undefined) {
+      // Stop: do not rollback earlier successful repo merges
+      const partial = anySuccess;
+      return {
+        success: false,
+        merged: false,
+        strategy,
+        filesChanged: flattenedFiles,
+        conflicts: flattenedConflicts,
+        conflictState: lastConflictState,
+        cleanup: emptyCleanup,
+        error: firstError,
+        repos,
+        partial,
+      };
+    }
+
+    // All repos merged. Apply per-repo cleanup and populate each
+    // repos[repoId].cleanup field; aggregate top-level cleanup from per-repo
+    // results so the contract holds for both shapes.
+    let cleanup = { worktreeRemoved: false, branchDeleted: false, pruned: false };
+    if (options.cleanup !== 'none') {
+      const deleteBranch = options.cleanup === 'worktree+branch';
+      const perRepoCleanups: Array<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> = [];
+      for (const repoId of repoIds) {
+        const entry = manifest.repos[repoId];
+        const repoRoot = entry.repoRoot || entry.repoPath;
+        const repoCleanup = await this.removeCompositeRepo(
+          feature,
+          step,
+          repoId,
+          entry,
+          repoRoot,
+          deleteBranch,
+        );
+        repos[repoId].cleanup = repoCleanup;
+        perRepoCleanups.push(repoCleanup);
+      }
+      // Tear down the composite root after per-repo cleanup.
+      const compositeRoot = this.getCompositeRoot(feature, step);
+      let rootRemoved = true;
+      try {
+        await fs.rm(compositeRoot, { recursive: true, force: true });
+      } catch {
+        rootRemoved = false;
+      }
+      cleanup = {
+        worktreeRemoved: rootRemoved && perRepoCleanups.every(c => c.worktreeRemoved),
+        branchDeleted: deleteBranch && perRepoCleanups.length > 0 && perRepoCleanups.every(c => c.branchDeleted),
+        pruned: perRepoCleanups.some(c => c.pruned),
+      };
+    }
+
+    // Top-level sha = first repo (stable order) result sha
+    const firstSha = repos[repoIds[0]].sha;
+
+    return {
+      success: true,
+      merged: true,
+      strategy,
+      sha: firstSha,
+      filesChanged: flattenedFiles,
+      conflicts: flattenedConflicts,
+      conflictState: 'none',
+      cleanup,
+      repos,
+    };
+  }
+
+  private async resolveGitPath(git: SimpleGit, repoRoot: string, name: string): Promise<string> {
+    try {
+      const out = (await git.raw(['rev-parse', '--git-path', name])).trim();
+      if (!out) return path.join(repoRoot, '.git', name);
+      return path.isAbsolute(out) ? out : path.join(repoRoot, out);
+    } catch {
+      return path.join(repoRoot, '.git', name);
+    }
+  }
+
+  private async removeCompositeRepo(
+    feature: string,
+    step: string,
+    repoId: string,
+    entry: WorkspaceManifestEntry,
+    repoRoot: string | undefined,
+    deleteBranch: boolean,
+  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
+    const compositeRoot = this.getCompositeRoot(feature, step);
+    const repoWtPath = path.join(compositeRoot, entry.path);
+    const repoGit = repoRoot ? this.getGit(repoRoot) : null;
+    void repoId;
+
+    let worktreeRemoved = false;
+    let pruned = false;
+    let branchDeleted = false;
+
+    if (repoGit) {
+      try {
+        await repoGit.raw(['worktree', 'remove', repoWtPath, '--force']);
+        worktreeRemoved = true;
+      } catch {
+        // fall through to fs.rm fallback
+      }
+      try {
+        await repoGit.raw(['worktree', 'prune']);
+        pruned = true;
+      } catch {
+        /* intentional */
+      }
+    }
+    if (!worktreeRemoved) {
+      try {
+        await fs.rm(repoWtPath, { recursive: true, force: true });
+        worktreeRemoved = true;
+      } catch {
+        worktreeRemoved = false;
+      }
+    }
+
+    if (deleteBranch && repoGit) {
+      try {
+        await repoGit.deleteLocalBranch(entry.branch, true);
+        branchDeleted = true;
+      } catch {
+        branchDeleted = false;
+      }
+    }
+
+    return { worktreeRemoved, branchDeleted, pruned };
+  }
+
+  private async mergeOneRepo(opts: {
+    git: SimpleGit;
+    branchName: string;
+    strategy: 'merge' | 'squash' | 'rebase';
+    message: string | undefined;
+    step: string;
+    preserveConflicts: boolean;
+    cleanupMode: 'none' | 'worktree' | 'worktree+branch';
+    cleanupFn: (deleteBranch: boolean) => Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }>;
+  }): Promise<RepoMergeResult> {
+    const { git, branchName, strategy, message, step, preserveConflicts, cleanupMode, cleanupFn } = opts;
+    const emptyCleanup = {
+      worktreeRemoved: false,
+      branchDeleted: false,
+      pruned: false,
+    };
+
     let filesChanged: string[] = [];
 
     try {
@@ -1130,7 +1434,6 @@ export class WorktreeService {
         return {
           success: false,
           merged: false,
-          strategy,
           filesChanged: [],
           conflicts: [],
           conflictState: 'none',
@@ -1151,13 +1454,10 @@ export class WorktreeService {
         await git.raw(["merge", "--squash", branchName]);
         const squashMessage = message || `hive: merge ${step} (squashed)`;
         const result = await git.commit(squashMessage);
-        const cleanup = cleanupMode === 'none'
-          ? emptyCleanup
-          : await this.remove(feature, step, cleanupMode === 'worktree+branch');
+        const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
         return {
           success: true,
           merged: true,
-          strategy,
           sha: result.commit,
           filesChanged,
           conflicts: [],
@@ -1171,13 +1471,10 @@ export class WorktreeService {
           await git.raw(["cherry-pick", commit.hash]);
         }
         const head = (await git.revparse(["HEAD"])).trim();
-        const cleanup = cleanupMode === 'none'
-          ? emptyCleanup
-          : await this.remove(feature, step, cleanupMode === 'worktree+branch');
+        const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
         return {
           success: true,
           merged: true,
-          strategy,
           sha: head,
           filesChanged,
           conflicts: [],
@@ -1188,13 +1485,10 @@ export class WorktreeService {
         const mergeMessage = message || `hive: merge ${step}`;
         const result = await git.merge([branchName, "--no-ff", "-m", mergeMessage]);
         const head = (await git.revparse(["HEAD"])).trim();
-        const cleanup = cleanupMode === 'none'
-          ? emptyCleanup
-          : await this.remove(feature, step, cleanupMode === 'worktree+branch');
+        const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
         return {
           success: true,
           merged: !result.failed,
-          strategy,
           sha: head,
           filesChanged,
           conflicts: result.conflicts?.map(c => c.file || String(c)) || [],
@@ -1218,7 +1512,6 @@ export class WorktreeService {
         return {
           success: false,
           merged: false,
-          strategy,
           filesChanged,
           conflicts,
           conflictState,
@@ -1230,7 +1523,6 @@ export class WorktreeService {
       return {
         success: false,
         merged: false,
-        strategy,
         filesChanged,
         conflicts: [],
         conflictState: 'none',

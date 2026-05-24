@@ -819,3 +819,466 @@ describe("WorktreeService composite commit aggregation", () => {
     expect(result.partial).toBeUndefined();
   });
 });
+
+describe("WorktreeService composite merge aggregation", () => {
+  async function commitChangeInRepo(
+    fx: CompositeFixture,
+    repoId: string,
+    file: string,
+    content: string,
+  ): Promise<void> {
+    const wt = await fx.service.get(fx.feature, fx.task);
+    const repoWt = wt!.repos![repoId].path;
+    await fs.writeFile(path.join(repoWt, file), content, 'utf-8');
+    const g = simpleGit(repoWt);
+    await g.add('-A');
+    await g.commit(`chore: ${repoId} ${file}`);
+  }
+
+  it("merges a single-repo composite task into the source repo's current branch", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'task.txt', 'task\n');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(true);
+    expect(result.merged).toBe(true);
+    expect(result.partial).toBeUndefined();
+    expect(result.repos).toBeDefined();
+    expect(result.repos!['api'].success).toBe(true);
+    expect(result.repos!['api'].merged).toBe(true);
+    expect(result.filesChanged).toContain('api:task.txt');
+    expect(result.conflicts).toEqual([]);
+    expect(result.conflictState).toBe('none');
+    // Source repo HEAD on main now has the task.txt
+    const apiHeadBody = await readHeadBody(fx.repos['api'].path);
+    expect(apiHeadBody).toMatch(/merge|task/);
+  });
+
+  it("merges multiple composite repos in stable repo ID order with flattened files", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['web-ui', 'api'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(true);
+    expect(result.merged).toBe(true);
+    expect(result.partial).toBeUndefined();
+    expect(Object.keys(result.repos!)).toEqual(['api', 'web-ui']);
+    expect(result.repos!['api'].success).toBe(true);
+    expect(result.repos!['web-ui'].success).toBe(true);
+    expect(result.filesChanged.sort()).toEqual(['api:a.txt', 'web-ui:w.txt']);
+    expect(result.conflicts).toEqual([]);
+  });
+
+  it("uses a custom merge message verbatim in every composite repo", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    const message = 'feat(core): multi merge\n\nbody line';
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', message);
+
+    expect(result.success).toBe(true);
+    expect(await readHeadBody(fx.repos['api'].path)).toBe(message);
+    expect(await readHeadBody(fx.repos['web-ui'].path)).toBe(message);
+  });
+
+  it("uses a custom squash message verbatim in every composite repo", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    const message = 'feat(core): squash multi\n\nsquash body';
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', message);
+
+    expect(result.success).toBe(true);
+    expect(result.repos!['api'].success).toBe(true);
+    expect(result.repos!['web-ui'].success).toBe(true);
+    expect(await readHeadBody(fx.repos['api'].path)).toBe(message);
+    expect(await readHeadBody(fx.repos['web-ui'].path)).toBe(message);
+  });
+
+  it("rejects rebase plus custom message before mutating any repo", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    const before = {
+      api: (await fx.repos['api'].git.revparse(['HEAD'])).trim(),
+      web: (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim(),
+    };
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'rebase', 'feat: nope');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Custom merge message is not supported for rebase/);
+    expect(result.partial).toBeUndefined();
+    expect(result.repos).toBeUndefined();
+    // No repo mutated
+    expect((await fx.repos['api'].git.revparse(['HEAD'])).trim()).toBe(before.api);
+    expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(before.web);
+  });
+
+  it("fails preflight when a per-repo task branch is missing and does not mutate any repo", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    // Delete the web-ui task branch from source repo
+    const taskBranchWeb = `hive/web-ui/${fx.feature}/${fx.task}`;
+    // Cannot delete a checked-out branch; remove the per-repo worktree first
+    try { await fx.repos['web-ui'].git.raw(['worktree', 'remove', '--force', `.hive/.worktrees/${fx.feature}/${fx.task}/repos/web-ui`]); } catch {}
+    // Recreate path so source repo no longer has worktree mapping
+    await fx.repos['web-ui'].git.raw(['worktree', 'prune']);
+    await fx.repos['web-ui'].git.deleteLocalBranch(taskBranchWeb, true);
+
+    const before = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(false);
+    expect(result.partial).toBe(false);
+    expect(result.error).toMatch(/web-ui/);
+    expect(result.error).toMatch(/branch|not found/i);
+    // No mutation in api despite preflight failing in web-ui
+    expect((await fx.repos['api'].git.revparse(['HEAD'])).trim()).toBe(before);
+  });
+
+  it("fails preflight when a source repo's target branch is dirty and does not mutate any repo", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    // Dirty the api source repo working tree
+    await fs.writeFile(path.join(fx.repos['api'].path, 'README.md'), 'dirty\n', 'utf-8');
+
+    const beforeWeb = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(false);
+    expect(result.partial).toBe(false);
+    expect(result.error).toMatch(/dirty|uncommitted/i);
+    expect(result.error).toMatch(/api/);
+    // No mutation in web-ui
+    expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(beforeWeb);
+  });
+
+  it("fails preflight when a source repo has an active merge state and does not mutate any repo", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    // Simulate an active merge in api
+    await fs.writeFile(path.join(fx.repos['api'].path, '.git', 'MERGE_HEAD'), 'deadbeef\n', 'utf-8');
+
+    const beforeWeb = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(false);
+    expect(result.partial).toBe(false);
+    expect(result.error).toMatch(/active (merge|rebase|cherry-pick)/i);
+    expect(result.error).toMatch(/api/);
+    expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(beforeWeb);
+  });
+
+  it("aborts on conflict and returns partial=true when an earlier repo already merged successfully", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+
+    // Make a conflicting change in web-ui: change tracked file in worktree and in source
+    const wt = await fx.service.get(fx.feature, fx.task);
+    await fs.writeFile(path.join(wt!.repos!['web-ui'].path, 'README.md'), 'task-side\n', 'utf-8');
+    const wg = simpleGit(wt!.repos!['web-ui'].path);
+    await wg.add('-A');
+    await wg.commit('chore: task side');
+
+    // Diverge main of web-ui
+    await fs.writeFile(path.join(fx.repos['web-ui'].path, 'README.md'), 'main-side\n', 'utf-8');
+    await fx.repos['web-ui'].git.add('-A');
+    await fx.repos['web-ui'].git.commit('chore: main side');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(false);
+    expect(result.merged).toBe(false);
+    expect(result.partial).toBe(true);
+    expect(result.conflictState).toBe('aborted');
+    expect(result.conflicts).toContain('web-ui:README.md');
+    expect(result.repos!['api'].success).toBe(true);
+    expect(result.repos!['api'].merged).toBe(true);
+    expect(result.repos!['web-ui'].success).toBe(false);
+    expect(result.repos!['web-ui'].conflictState).toBe('aborted');
+    // web-ui aborted: no conflict markers left
+    const wstatus = await fx.repos['web-ui'].git.status();
+    expect(wstatus.conflicted).toEqual([]);
+  });
+
+  it("preserves conflicts when requested and does not roll back earlier successful repo merges", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+
+    const wt = await fx.service.get(fx.feature, fx.task);
+    await fs.writeFile(path.join(wt!.repos!['web-ui'].path, 'README.md'), 'task-side\n', 'utf-8');
+    const wg = simpleGit(wt!.repos!['web-ui'].path);
+    await wg.add('-A');
+    await wg.commit('chore: task side');
+
+    await fs.writeFile(path.join(fx.repos['web-ui'].path, 'README.md'), 'main-side\n', 'utf-8');
+    await fx.repos['web-ui'].git.add('-A');
+    await fx.repos['web-ui'].git.commit('chore: main side');
+
+    const apiHeadBefore = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', undefined, {
+      preserveConflicts: true,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.partial).toBe(true);
+    expect(result.conflictState).toBe('preserved');
+    expect(result.repos!['web-ui'].conflictState).toBe('preserved');
+    expect(result.conflicts).toContain('web-ui:README.md');
+    const wstatus = await fx.repos['web-ui'].git.status();
+    expect(wstatus.conflicted).toContain('README.md');
+    // api merge not rolled back
+    const apiHeadAfter = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
+    expect(apiHeadAfter).not.toBe(apiHeadBefore);
+  });
+
+  it("stops after mutation failure in a later repo and reports partial without rolling back earlier merges", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    // Sabotage web-ui via a pre-merge-commit hook that exits 1
+    const hookDir = path.join(fx.repos['web-ui'].path, '.git', 'hooks');
+    await fs.mkdir(hookDir, { recursive: true });
+    const hookPath = path.join(hookDir, 'pre-merge-commit');
+    await fs.writeFile(hookPath, '#!/bin/sh\nexit 1\n', 'utf-8');
+    await fs.chmod(hookPath, 0o755);
+
+    const apiHeadBefore = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(false);
+    expect(result.partial).toBe(true);
+    expect(result.repos!['api'].success).toBe(true);
+    expect(result.repos!['web-ui'].success).toBe(false);
+    expect(result.error).toMatch(/web-ui/);
+    // api merge not rolled back
+    const apiHeadAfter = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
+    expect(apiHeadAfter).not.toBe(apiHeadBefore);
+  });
+
+  it("cleanup=worktree+branch aggregates per-repo cleanup across composite repos", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', undefined, {
+      cleanup: 'worktree+branch',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.cleanup.worktreeRemoved).toBe(true);
+    expect(result.cleanup.branchDeleted).toBe(true);
+    expect(result.cleanup.pruned).toBe(true);
+    expect(await pathExists(wt.path)).toBe(false);
+    for (const id of ['api', 'web-ui']) {
+      expect(await branchExists(fx.repos[id].git, `hive/${id}/${fx.feature}/${fx.task}`)).toBe(false);
+    }
+  });
+
+  it("populates per-repo cleanup fields when cleanup=worktree+branch and aggregates them at top level", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', undefined, {
+      cleanup: 'worktree+branch',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.repos).toBeDefined();
+    for (const id of ['api', 'web-ui']) {
+      expect(result.repos![id].cleanup).toEqual({
+        worktreeRemoved: true,
+        branchDeleted: true,
+        pruned: true,
+      });
+    }
+    // Top-level cleanup is the aggregate of per-repo results.
+    expect(result.cleanup.worktreeRemoved).toBe(true);
+    expect(result.cleanup.branchDeleted).toBe(true);
+    expect(result.cleanup.pruned).toBe(true);
+  });
+
+  it("populates per-repo cleanup fields when cleanup=worktree and keeps branches across repos", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', undefined, {
+      cleanup: 'worktree',
+    });
+
+    expect(result.success).toBe(true);
+    for (const id of ['api', 'web-ui']) {
+      expect(result.repos![id].cleanup.worktreeRemoved).toBe(true);
+      expect(result.repos![id].cleanup.branchDeleted).toBe(false);
+      expect(result.repos![id].cleanup.pruned).toBe(true);
+      expect(await branchExists(fx.repos[id].git, `hive/${id}/${fx.feature}/${fx.task}`)).toBe(true);
+    }
+    expect(result.cleanup.worktreeRemoved).toBe(true);
+    expect(result.cleanup.branchDeleted).toBe(false);
+    expect(result.cleanup.pruned).toBe(true);
+  });
+
+  it("does not report aggregate merged=true when a per-repo result is success=true but merged=false", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    // Force the 'web-ui' merge to return success=true but merged=false by
+    // patching its mergeOneRepo invocation indirectly: we monkey-patch the
+    // service's mergeOneRepo via prototype to override behavior for web-ui.
+    const original = (fx.service as unknown as { mergeOneRepo: Function }).mergeOneRepo.bind(fx.service);
+    (fx.service as unknown as { mergeOneRepo: Function }).mergeOneRepo = async (opts: { branchName: string }) => {
+      const result = await original(opts);
+      if (opts.branchName.includes('/web-ui/')) {
+        return { ...result, success: true, merged: false, error: undefined };
+      }
+      return result;
+    };
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(false);
+    expect(result.merged).toBe(false);
+    // api already merged successfully, then web-ui returned merged=false -> partial.
+    expect(result.partial).toBe(true);
+    expect(result.repos!['api'].merged).toBe(true);
+    expect(result.repos!['web-ui'].success).toBe(true);
+    expect(result.repos!['web-ui'].merged).toBe(false);
+    expect(result.error).toMatch(/web-ui/);
+  });
+
+  it("detects active merge state in a linked worktree where .git is a file via git rev-parse --git-path", async () => {
+    // Build a custom composite where the 'api' source repo IS a linked git
+    // worktree of a separate host repo (so `api/.git` is a FILE, not a dir).
+    // Joining `repoRoot/.git/MERGE_HEAD` would miss the real state file which
+    // lives under the host's `.git/worktrees/<name>/MERGE_HEAD`.
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-composite-test-'));
+    tempDirs.push(projectRoot);
+
+    // Host repo for api (becomes the .git store for the linked worktree).
+    const hostApi = path.join(projectRoot, 'host-api');
+    await fs.mkdir(hostApi, { recursive: true });
+    const root = simpleGit();
+    try {
+      await root.raw(['init', '-b', 'main', hostApi]);
+    } catch {
+      await root.raw(['init', hostApi]);
+      await simpleGit(hostApi).raw(['branch', '-M', 'main']);
+    }
+    const hostApiGit = simpleGit(hostApi);
+    await hostApiGit.raw(['config', 'user.email', 'h@example.com']);
+    await hostApiGit.raw(['config', 'user.name', 'Host User']);
+    await fs.writeFile(path.join(hostApi, 'README.md'), '# host-api\n', 'utf-8');
+    await hostApiGit.add('README.md');
+    await hostApiGit.commit('chore: host-api base');
+
+    // The "api" source repo is a linked worktree off host-api on a non-main branch.
+    const apiPath = path.join(projectRoot, 'api');
+    await hostApiGit.raw(['worktree', 'add', '-b', 'api-target', apiPath, 'main']);
+    const apiGit = simpleGit(apiPath);
+    // Sanity: api/.git is a file in a linked worktree.
+    const apiGitStat = await fs.stat(path.join(apiPath, '.git'));
+    expect(apiGitStat.isFile()).toBe(true);
+
+    // Build a normal web-ui repo.
+    const webRepo = await makeRepo(projectRoot, 'web-ui');
+
+    const feature = 'lwt-feature';
+    const task = '01-lwt';
+    const featureDir = path.join(projectRoot, '.hive', 'features', `01_${feature}`, 'tasks', task);
+    await fs.mkdir(featureDir, { recursive: true });
+    await fs.writeFile(
+      path.join(featureDir, 'status.json'),
+      JSON.stringify({ status: 'pending', origin: 'plan', repoIds: ['api', 'web-ui'] }),
+      'utf-8',
+    );
+    const service = new WorktreeService({
+      baseDir: projectRoot,
+      hiveDir: path.join(projectRoot, '.hive'),
+      repositoryResolver: {
+        resolveRepositories: () => [
+          { id: 'api', path: apiPath, root: apiPath },
+          { id: 'web-ui', path: webRepo.path, root: webRepo.path },
+        ],
+      },
+      taskRepoResolver: { resolveTaskRepoIds: () => ['api', 'web-ui'] },
+    });
+
+    await service.create(feature, task);
+    // Commit a task change in each per-repo worktree.
+    const wt = await service.get(feature, task);
+    for (const id of ['api', 'web-ui']) {
+      await fs.writeFile(path.join(wt!.repos![id].path, `${id}.txt`), `${id}\n`, 'utf-8');
+      const g = simpleGit(wt!.repos![id].path);
+      await g.add('-A');
+      await g.commit(`chore: ${id} task change`);
+    }
+
+    // Simulate an "active merge" in the api source repo (which is itself a
+    // linked worktree). The real state file path comes from `rev-parse`.
+    const stateRel = (await apiGit.raw(['rev-parse', '--git-path', 'MERGE_HEAD'])).trim();
+    const stateAbs = path.isAbsolute(stateRel) ? stateRel : path.join(apiPath, stateRel);
+    await fs.mkdir(path.dirname(stateAbs), { recursive: true });
+    await fs.writeFile(stateAbs, 'deadbeef\n', 'utf-8');
+    // Sanity: legacy `<repoRoot>/.git/MERGE_HEAD` does NOT exist here.
+    expect(await pathExists(path.join(apiPath, '.git', 'MERGE_HEAD'))).toBe(false);
+
+    const webHeadBefore = (await webRepo.git.revparse(['HEAD'])).trim();
+
+    const result = await service.merge(feature, task, 'merge');
+
+    expect(result.success).toBe(false);
+    expect(result.partial).toBe(false);
+    expect(result.error).toMatch(/active (merge|rebase|cherry-pick)/i);
+    expect(result.error).toMatch(/api/);
+    // web-ui must not have been mutated.
+    expect((await webRepo.git.revparse(['HEAD'])).trim()).toBe(webHeadBefore);
+  });
+
+  it("preserves legacy single-repo merge shape when no manifest is configured", async () => {
+    const fixture = await createCommittedFixture();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge');
+
+    expect(result.success).toBe(true);
+    expect(result.merged).toBe(true);
+    expect(result.repos).toBeUndefined();
+    expect(result.partial).toBeUndefined();
+  });
+});
