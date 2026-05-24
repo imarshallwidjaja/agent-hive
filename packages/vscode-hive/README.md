@@ -62,6 +62,10 @@ Watches `.hive/` for changes and refreshes automatically.
 
 For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc-arkive) and use this extension as the review/sidebar companion.
 
+## Scope: viewer-only
+
+This extension is **viewer-only**. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments) and surfaces them in the sidebar and review flow. It does not start worktrees, commit changes, or merge branches, and it contributes no `languageModelTools`. Multi-repo orchestration (composite workspaces, per-repo base commits, aggregate diff/commit/merge) is owned by `hive-core` and exposed through `oc-arkive`; any per-repo metadata the sidebar shows is read-through from those files. Reintroducing agentic command surfaces here would change the security and review posture of this extension and is out of scope.
+
 ## Requirements
 
 - VS Code 1.64.0 or higher
