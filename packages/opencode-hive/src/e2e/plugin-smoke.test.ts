@@ -3823,4 +3823,230 @@ Do it.
     expect(apiLog.length).toBe(1);
     expect(webLog.length).toBe(1);
   });
+
+  // --- Task 10: final end-to-end smoke coverage ---
+
+  it('end-to-end smoke: non-git workspace with project manifest and two child repos runs start -> commit -> merge with per-repo results', async () => {
+    // Project root is a plain directory (no `git init`), declared composite via
+    // a project-scoped manifest that points to two real child git repos.
+    initBareRepo(path.join(testRoot, 'repos', 'api'));
+    initBareRepo(path.join(testRoot, 'repos', 'web'));
+    writeManifest(['api', 'web']);
+    expect(fs.existsSync(path.join(testRoot, '.git'))).toBe(false);
+
+    const feature = 'mr-e2e-non-git';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_mr_e2e_non_git');
+
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+    const plan = `# ${feature}
+
+## Discovery
+
+**Q: ok?**
+A: Yes, this regression test validates the full start -> commit -> merge composite path on a non-git project root that is declared multi-repo via a project-scoped manifest of two child repos.
+
+## Tasks
+
+### 1. Composite Task
+**Repos**: api, web
+Do it.
+`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+
+    // Start: composite mode, both repos resolved.
+    const startRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature, task: '01-composite-task' },
+      toolContext,
+    );
+    const start = JSON.parse(startRaw as string) as {
+      success: boolean;
+      worktreeMode: string;
+      workspacePath: string;
+      worktreePath: string;
+      baseCommits: Record<string, string>;
+      repos: Record<string, { path: string; branch: string; commit: string }>;
+    };
+    expect(start.success).toBe(true);
+    expect(start.worktreeMode).toBe('composite');
+    expect(start.workspacePath).toBe(start.worktreePath);
+    expect(start.workspacePath).toContain(`.hive/.worktrees/${feature}/01-composite-task`);
+    expect(Object.keys(start.repos).sort()).toEqual(['api', 'web']);
+    expect(start.repos.api.path).toBe(path.join(start.workspacePath, 'repos', 'api'));
+    expect(start.repos.web.path).toBe(path.join(start.workspacePath, 'repos', 'web'));
+    expect(Object.keys(start.baseCommits).sort()).toEqual(['api', 'web']);
+
+    // Stage changes in both composite repo worktrees.
+    fs.writeFileSync(path.join(start.repos.api.path, 'api-e2e.txt'), 'api e2e\n');
+    fs.writeFileSync(path.join(start.repos.web.path, 'web-e2e.txt'), 'web e2e\n');
+
+    // Commit: aggregate success with per-repo entries and repo-qualified report files.
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Non-git composite e2e. Tests pass.' },
+      toolContext,
+    );
+    const commit = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      taskState: string;
+      reportPath: string;
+      commit: { committed: boolean; partial?: boolean; repos: Record<string, { committed: boolean }> };
+      nextAction?: string;
+    };
+    expect(commit.ok).toBe(true);
+    expect(commit.terminal).toBe(true);
+    expect(commit.taskState).toBe('done');
+    expect(commit.commit.committed).toBe(true);
+    expect(commit.commit.partial).toBeFalsy();
+    expect(Object.keys(commit.commit.repos).sort()).toEqual(['api', 'web']);
+    expect(commit.commit.repos.api.committed).toBe(true);
+    expect(commit.commit.repos.web.committed).toBe(true);
+    const report = fs.readFileSync(commit.reportPath, 'utf-8');
+    expect(report).toContain('api:api-e2e.txt');
+    expect(report).toContain('web:web-e2e.txt');
+    expect(commit.nextAction).toContain('hive_merge');
+
+    // Merge: aggregate success with per-repo entries and repoId-qualified filesChanged.
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: '01-composite-task', strategy: 'merge' },
+      toolContext,
+    );
+    const merge = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      partial?: boolean;
+      filesChanged: string[];
+      repos: Record<string, { success: boolean; merged: boolean }>;
+      message: string;
+    };
+    expect(merge.success).toBe(true);
+    expect(merge.merged).toBe(true);
+    expect(merge.partial).toBeFalsy();
+    expect(Object.keys(merge.repos).sort()).toEqual(['api', 'web']);
+    expect(merge.repos.api.merged).toBe(true);
+    expect(merge.repos.web.merged).toBe(true);
+    expect(merge.filesChanged).toContain('api:api-e2e.txt');
+    expect(merge.filesChanged).toContain('web:web-e2e.txt');
+
+    // Confirm both source repos advanced (e2e file landed on disk after merge).
+    expect(fs.existsSync(path.join(testRoot, 'repos', 'api', 'api-e2e.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(testRoot, 'repos', 'web', 'web-e2e.txt'))).toBe(true);
+  });
+
+  it('end-to-end smoke: single-repo no-manifest legacy project completes start -> commit -> merge without composite fields', async () => {
+    // Legacy single-root: project root is a git repo and there is NO project manifest.
+    // Composite fields must NOT appear in any payload.
+    initBareRepo(testRoot);
+    const feature = 'legacy-e2e';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_legacy_e2e');
+
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('Legacy E2E', 'Yes, this regression test validates that legacy single-root projects (git project root, no repository manifest) keep the full start -> commit -> merge flow working without surfacing composite-only fields.'), feature },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+
+    const startRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature, task: FIRST_TASK },
+      toolContext,
+    );
+    const start = JSON.parse(startRaw as string) as {
+      success: boolean;
+      worktreeMode: string;
+      worktreePath: string;
+      workspacePath: string;
+      repos?: unknown;
+      baseCommits?: unknown;
+    };
+    expect(start.success).toBe(true);
+    expect(start.worktreeMode).toBe('legacy');
+    expect(start.repos).toBeUndefined();
+    expect(start.baseCommits).toBeUndefined();
+    expect(start.workspacePath).toBe(start.worktreePath);
+
+    fs.writeFileSync(path.join(start.worktreePath, 'legacy-note.txt'), 'legacy e2e\n');
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: FIRST_TASK, status: 'completed', summary: 'Legacy single-root e2e. Tests pass.' },
+      toolContext,
+    );
+    const commit = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      taskState: string;
+      commit?: { repos?: unknown; partial?: unknown };
+      nextAction?: string;
+    };
+    expect(commit.ok).toBe(true);
+    expect(commit.terminal).toBe(true);
+    expect(commit.taskState).toBe('done');
+    // Legacy commit result must not surface composite-only fields.
+    expect(commit.commit?.repos).toBeUndefined();
+    expect(commit.commit?.partial).toBeUndefined();
+    expect(commit.nextAction).toContain('hive_merge');
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: FIRST_TASK, strategy: 'merge' },
+      toolContext,
+    );
+    const merge = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      strategy: string;
+      filesChanged: string[];
+      partial?: unknown;
+      repos?: unknown;
+      message: string;
+    };
+    expect(merge.success).toBe(true);
+    expect(merge.merged).toBe(true);
+    expect(merge.strategy).toBe('merge');
+    // Legacy merge result must not surface composite-only fields.
+    expect(merge.partial).toBeUndefined();
+    expect(merge.repos).toBeUndefined();
+    // Files are plain repo-relative paths (no `repoId:` prefix) in legacy mode.
+    expect(merge.filesChanged).toContain('legacy-note.txt');
+    expect(merge.filesChanged.every((p) => !p.includes(':'))).toBe(true);
+
+    // Project root advanced (legacy single-root merge landed file on disk).
+    expect(fs.existsSync(path.join(testRoot, 'legacy-note.txt'))).toBe(true);
+  });
+
+  it('end-to-end smoke: non-git project with global config repositories but no project manifest fails manifest-required and never auto-selects', async () => {
+    // No `git init` on testRoot, no project-scoped manifest.
+    // testRoot doubles as HOME during this suite, so write a global config that
+    // declares repositories. RepositoryService must ignore global manifests for
+    // orchestration and the OpenCode resolver must fail loud with the explicit
+    // manifest-required wording.
+    expect(fs.existsSync(path.join(testRoot, '.git'))).toBe(false);
+    initBareRepo(path.join(testRoot, 'repos', 'api'));
+    const globalDir = path.join(testRoot, '.config', 'opencode');
+    fs.mkdirSync(globalDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(globalDir, 'agent_hive.json'),
+      JSON.stringify({ repositories: [{ id: 'api', path: path.join(testRoot, 'repos', 'api') }] }, null, 2),
+    );
+
+    const feature = 'no-manifest-global-ignored';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_no_manifest_global_ignored');
+
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('No Manifest Global Ignored', 'Yes, this regression test validates that non-git project roots without a project-scoped repository manifest fail with manifest-required wording even when a global ~/.config/opencode/agent_hive.json declares repositories, and that no fallback auto-selection of a global repo happens.'), feature },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+
+    await expect(
+      hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, toolContext),
+    ).rejects.toThrow(/Repository manifest is required/);
+
+    // No worktree directory created under either the legacy or composite path.
+    const worktreeRoot = path.join(testRoot, '.hive', '.worktrees', feature, FIRST_TASK);
+    expect(fs.existsSync(worktreeRoot)).toBe(false);
+  });
 });
