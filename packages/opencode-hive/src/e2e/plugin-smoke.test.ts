@@ -3490,4 +3490,337 @@ Do it.
       ),
     ).rejects.toThrow(/Unknown repository ID\(s\) in repos: ghost/);
   });
+
+  // --- Composite commit/merge contract tests (Task 07) ---
+
+  async function setupCompositeTaskWorktree(
+    repoIds: string[],
+    feature: string,
+    sessionID: string,
+  ): Promise<{
+    hooks: PluginHooks;
+    toolContext: ToolContext;
+    workspacePath: string;
+    repos: Record<string, { path: string; branch: string; commit: string }>;
+  }> {
+    await setupMultiRepoProject(repoIds);
+    const { hooks, toolContext } = await createHooksForTest(testRoot, sessionID);
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+    const reposLine = repoIds.join(', ');
+    const plan = `# ${feature}\n\n## Discovery\n\n**Q: ok?**\nA: Yes, this regression test validates composite commit/merge wrapper contracts for the multi-repo readiness feature.\n\n## Tasks\n\n### 1. Composite Task\n**Repos**: ${reposLine}\nDo it.\n`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+    const startRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature, task: '01-composite-task' },
+      toolContext,
+    );
+    const start = JSON.parse(startRaw as string) as {
+      workspacePath: string;
+      repos: Record<string, { path: string; branch: string; commit: string }>;
+    };
+    return { hooks, toolContext, workspacePath: start.workspacePath, repos: start.repos };
+  }
+
+  it('hive_worktree_commit (composite single-repo): success returns ok=true terminal done with commit.repos', async () => {
+    const feature = 'mr-commit-single';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api'], feature, 'sess_mr_commit_single');
+
+    fs.writeFileSync(path.join(repos.api.path, 'note.txt'), 'single-repo composite commit\n');
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite single-repo commit. Tests pass.' },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      taskState?: string;
+      commit?: { committed?: boolean; partial?: boolean; error?: string; repos?: Record<string, { committed: boolean }> };
+      nextAction?: string;
+    };
+
+    expect(commitResult.ok).toBe(true);
+    expect(commitResult.terminal).toBe(true);
+    expect(commitResult.taskState).toBe('done');
+    expect(commitResult.commit?.committed).toBe(true);
+    expect(commitResult.commit?.partial).toBeFalsy();
+    expect(commitResult.commit?.repos).toBeDefined();
+    expect(commitResult.commit?.repos!.api.committed).toBe(true);
+    expect(commitResult.nextAction).toContain('hive_merge');
+  });
+
+  it('hive_worktree_commit (composite multi-repo): all-success returns ok=true done with per-repo entries and repo-qualified report files', async () => {
+    const feature = 'mr-commit-multi';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_commit_multi');
+
+    fs.writeFileSync(path.join(repos.api.path, 'api-note.txt'), 'api change\n');
+    fs.writeFileSync(path.join(repos.web.path, 'web-note.txt'), 'web change\n');
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite multi-repo commit. Tests pass.' },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      taskState?: string;
+      reportPath?: string;
+      commit?: { committed?: boolean; partial?: boolean; repos?: Record<string, { committed: boolean }> };
+    };
+
+    expect(commitResult.ok).toBe(true);
+    expect(commitResult.terminal).toBe(true);
+    expect(commitResult.taskState).toBe('done');
+    expect(commitResult.commit?.committed).toBe(true);
+    expect(commitResult.commit?.partial).toBeFalsy();
+    expect(Object.keys(commitResult.commit?.repos ?? {}).sort()).toEqual(['api', 'web']);
+    expect(commitResult.commit?.repos!.api.committed).toBe(true);
+    expect(commitResult.commit?.repos!.web.committed).toBe(true);
+
+    // Report should list repo-qualified files (aggregate getDiff returns "repoId:path").
+    const reportPath = commitResult.reportPath!;
+    const report = fs.readFileSync(reportPath, 'utf-8');
+    expect(report).toContain('api:api-note.txt');
+    expect(report).toContain('web:web-note.txt');
+  });
+
+  it('hive_worktree_commit (composite multi-repo): all repos no changes returns ok=true done with explicit no-file-changes report', async () => {
+    const feature = 'mr-commit-noop';
+    const { hooks, toolContext } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_commit_noop');
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite no-change commit. Tests pass.' },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      taskState?: string;
+      reportPath?: string;
+      commit?: { committed?: boolean; partial?: boolean; repos?: Record<string, { committed: boolean }> };
+    };
+
+    expect(commitResult.ok).toBe(true);
+    expect(commitResult.terminal).toBe(true);
+    expect(commitResult.taskState).toBe('done');
+    expect(commitResult.commit?.committed).toBe(false);
+    expect(commitResult.commit?.partial).toBeFalsy();
+    expect(commitResult.commit?.repos!.api.committed).toBe(false);
+    expect(commitResult.commit?.repos!.web.committed).toBe(false);
+
+    const report = fs.readFileSync(commitResult.reportPath!, 'utf-8');
+    expect(report).toContain('No file changes detected');
+  });
+
+  it('hive_worktree_commit (composite): partial failure after earlier repo committed keeps task in_progress and surfaces commit.partial/repos/error', async () => {
+    const feature = 'mr-commit-partial';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_commit_partial');
+
+    // Stage a change in api (sorted first), then break web so its commit fails.
+    fs.writeFileSync(path.join(repos.api.path, 'api-note.txt'), 'api change\n');
+    fs.rmSync(repos.web.path, { recursive: true, force: true });
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite partial failure attempt. Tests pass.' },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      status?: string;
+      taskState?: string;
+      reportPath?: string;
+      commit?: { committed?: boolean; partial?: boolean; error?: string; repos?: Record<string, { committed: boolean }> };
+      nextAction?: string;
+      message?: string;
+    };
+
+    expect(commitResult.ok).toBe(false);
+    expect(commitResult.terminal).toBe(false);
+    expect(commitResult.taskState).toBe('in_progress');
+    expect(commitResult.commit?.committed).toBe(false);
+    expect(commitResult.commit?.partial).toBe(true);
+    expect(commitResult.commit?.repos).toBeDefined();
+    expect(commitResult.commit?.repos!.api.committed).toBe(true);
+    expect(commitResult.commit?.repos!.web.committed).toBe(false);
+    expect(commitResult.commit?.error).toContain('web');
+    expect(commitResult.reportPath).toBeUndefined();
+    expect(commitResult.nextAction ?? '').toMatch(/resolve|blocked|failed/i);
+  });
+
+  it('hive_merge (composite single-repo): returns aggregate repos and success', async () => {
+    const feature = 'mr-merge-single';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api'], feature, 'sess_mr_merge_single');
+
+    fs.writeFileSync(path.join(repos.api.path, 'merge-note.txt'), 'composite single merge\n');
+    await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite single merge. Tests pass.' },
+      toolContext,
+    );
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: '01-composite-task', strategy: 'merge' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      partial?: boolean;
+      filesChanged: string[];
+      repos?: Record<string, { success: boolean; merged: boolean }>;
+      message: string;
+    };
+
+    expect(mergeResult.success).toBe(true);
+    expect(mergeResult.merged).toBe(true);
+    expect(mergeResult.partial).toBeFalsy();
+    expect(mergeResult.repos).toBeDefined();
+    expect(mergeResult.repos!.api.success).toBe(true);
+    expect(mergeResult.repos!.api.merged).toBe(true);
+    expect(mergeResult.filesChanged).toContain('api:merge-note.txt');
+    expect(mergeResult.message).toContain('merged successfully');
+  });
+
+  it('hive_merge (composite multi-repo): all-success returns aggregate repos with flattened repoId:path filesChanged', async () => {
+    const feature = 'mr-merge-multi';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_merge_multi');
+
+    fs.writeFileSync(path.join(repos.api.path, 'api-merge.txt'), 'api merge\n');
+    fs.writeFileSync(path.join(repos.web.path, 'web-merge.txt'), 'web merge\n');
+    await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite multi merge. Tests pass.' },
+      toolContext,
+    );
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: '01-composite-task', strategy: 'merge' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      partial?: boolean;
+      filesChanged: string[];
+      repos?: Record<string, { success: boolean; merged: boolean }>;
+    };
+
+    expect(mergeResult.success).toBe(true);
+    expect(mergeResult.merged).toBe(true);
+    expect(mergeResult.partial).toBeFalsy();
+    expect(Object.keys(mergeResult.repos ?? {}).sort()).toEqual(['api', 'web']);
+    expect(mergeResult.repos!.api.merged).toBe(true);
+    expect(mergeResult.repos!.web.merged).toBe(true);
+    expect(mergeResult.filesChanged).toContain('api:api-merge.txt');
+    expect(mergeResult.filesChanged).toContain('web:web-merge.txt');
+  });
+
+  it('hive_merge (composite): preflight failure (target repo dirty) returns success=false partial=false before mutating any repo', async () => {
+    const feature = 'mr-merge-preflight';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_merge_preflight');
+
+    fs.writeFileSync(path.join(repos.api.path, 'api-pre.txt'), 'api pre\n');
+    fs.writeFileSync(path.join(repos.web.path, 'web-pre.txt'), 'web pre\n');
+    await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite preflight merge. Tests pass.' },
+      toolContext,
+    );
+
+    // Make web target repo dirty so preflight fails.
+    fs.writeFileSync(path.join(testRoot, 'repos', 'web', 'dirty.txt'), 'dirty target\n');
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: '01-composite-task', strategy: 'merge' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      partial?: boolean;
+      error?: string;
+      message: string;
+    };
+
+    expect(mergeResult.success).toBe(false);
+    expect(mergeResult.merged).toBe(false);
+    expect(mergeResult.partial).toBe(false);
+    expect(mergeResult.error ?? '').toMatch(/web/);
+    expect(mergeResult.message).toContain('Merge failed');
+
+    // Api source repo must not have been advanced.
+    const apiLog = execSync('git log --oneline', { cwd: path.join(testRoot, 'repos', 'api'), encoding: 'utf-8' }).trim().split('\n');
+    expect(apiLog.length).toBe(1);
+  });
+
+  it('hive_merge (composite): partial mutation conflict returns success=false partial=true with successful repo retained', async () => {
+    const feature = 'mr-merge-conflict';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_merge_conflict');
+
+    // Make a conflicting change in the web source repo on main (a file that the task will also touch).
+    fs.writeFileSync(path.join(testRoot, 'repos', 'web', 'conflict.txt'), 'main version\n');
+    execSync('git add conflict.txt && git commit -m "main-side conflict"', { cwd: path.join(testRoot, 'repos', 'web') });
+
+    fs.writeFileSync(path.join(repos.api.path, 'api-ok.txt'), 'api ok\n');
+    fs.writeFileSync(path.join(repos.web.path, 'conflict.txt'), 'task version\n');
+    await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite conflict merge. Tests pass.' },
+      toolContext,
+    );
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: '01-composite-task', strategy: 'merge' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      partial?: boolean;
+      conflicts: string[];
+      repos?: Record<string, { success: boolean; merged: boolean }>;
+    };
+
+    expect(mergeResult.success).toBe(false);
+    expect(mergeResult.merged).toBe(false);
+    expect(mergeResult.partial).toBe(true);
+    expect(mergeResult.repos).toBeDefined();
+    expect(mergeResult.repos!.api.merged).toBe(true);
+    expect(mergeResult.repos!.web.merged).toBe(false);
+    expect(mergeResult.conflicts.some((c) => c.startsWith('web:'))).toBe(true);
+  });
+
+  it('hive_merge (composite): rebase with custom message is rejected before mutating any repo', async () => {
+    const feature = 'mr-merge-rebase-reject';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_merge_rebase_reject');
+
+    fs.writeFileSync(path.join(repos.api.path, 'api-r.txt'), 'api r\n');
+    fs.writeFileSync(path.join(repos.web.path, 'web-r.txt'), 'web r\n');
+    await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite rebase rejection. Tests pass.' },
+      toolContext,
+    );
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: '01-composite-task', strategy: 'rebase', message: 'feat: custom\n\nbody' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      partial?: boolean;
+      error?: string;
+      message: string;
+    };
+
+    expect(mergeResult.success).toBe(false);
+    expect(mergeResult.merged).toBe(false);
+    // Rebase+message is rejected before composite/legacy split so `partial` is absent (not true).
+    expect(mergeResult.partial).toBeFalsy();
+    expect(mergeResult.error ?? '').toMatch(/Custom merge message is not supported for rebase/);
+
+    // Neither source repo should have advanced.
+    const apiLog = execSync('git log --oneline', { cwd: path.join(testRoot, 'repos', 'api'), encoding: 'utf-8' }).trim().split('\n');
+    const webLog = execSync('git log --oneline', { cwd: path.join(testRoot, 'repos', 'web'), encoding: 'utf-8' }).trim().split('\n');
+    expect(apiLog.length).toBe(1);
+    expect(webLog.length).toBe(1);
+  });
 });

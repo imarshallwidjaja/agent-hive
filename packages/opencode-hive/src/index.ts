@@ -1519,6 +1519,33 @@ Expand your Discovery section and try again.`;
           const commitMessage = message || `hive(${task}): ${summary.slice(0, 50)}`;
           const commitResult = await worktreeService.commitChanges(feature, task, commitMessage);
 
+          // Aggregate composite partial failure: at least one repo committed, at
+          // least one repo failed. Do not let this silently become `done`; keep
+          // task state and surface the per-repo breakdown so the worker can
+          // resolve, retry, or explicitly report blocked/failed.
+          if (status === 'completed' && commitResult.partial) {
+            return respond({
+              ok: false,
+              terminal: false,
+              status: 'rejected',
+              reason: 'commit_partial',
+              feature,
+              task,
+              taskState: taskInfo.status,
+              summary,
+              commit: {
+                committed: commitResult.committed,
+                sha: commitResult.sha,
+                message: commitResult.message,
+                partial: true,
+                ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
+                ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
+              },
+              message: `Partial commit failure: ${commitResult.error || 'one or more repos failed to commit after an earlier repo succeeded'}.`,
+              nextAction: 'Resolve the failed repo, then call hive_worktree_commit again. If unrecoverable, report blocked or failed.',
+            });
+          }
+
           if (status === 'completed' && !commitResult.committed && commitResult.message !== 'No changes to commit') {
             return respond({
               ok: false,
@@ -1533,6 +1560,7 @@ Expand your Discovery section and try again.`;
                 committed: commitResult.committed,
                 sha: commitResult.sha,
                 message: commitResult.message,
+                ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
               },
               message: `Commit failed: ${commitResult.message || 'unknown error'}`,
               nextAction: 'Resolve git/worktree issue, then call hive_worktree_commit again.',
@@ -1600,6 +1628,9 @@ Expand your Discovery section and try again.`;
               committed: commitResult.committed,
               sha: commitResult.sha,
               message: commitResult.message,
+              ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
+              ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
+              ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
             },
             worktreePath: worktree?.path,
             branch: worktree?.branch,
