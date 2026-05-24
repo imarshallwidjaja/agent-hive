@@ -26,6 +26,10 @@
     "hive_worktree_commit",
     "hive_worktree_discard",
     "hive_merge",
+    "hive_adhoc_worktree_create",
+    "hive_adhoc_worktree_commit",
+    "hive_adhoc_merge",
+    "hive_adhoc_cleanup",
     "hive_context_write",
     "hive_status",
     "hive_agents_md"
