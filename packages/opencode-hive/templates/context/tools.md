@@ -67,7 +67,7 @@ task({
 })
 ```
 
-When opencode background subagents are enabled (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), primary agents can use `task({ background: true, ... })` plus `task_status` through the `background-delegation` protocol. Load the bundled `background-delegation` skill for the full playbook.
+Subagents must not start background tasks. When opencode background subagents are enabled (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), `task({ background: true, ... })`, `task_status`, and the bundled `background-delegation` protocol are primary-agent-only guidance.
 
 ---
 
