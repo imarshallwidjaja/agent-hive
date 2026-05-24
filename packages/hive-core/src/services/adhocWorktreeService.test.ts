@@ -3,6 +3,7 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import simpleGit, { type SimpleGit } from "simple-git";
+import type { ResolvedRepository } from "../types";
 import { AdhocWorktreeService } from "./adhocWorktreeService";
 
 interface AdhocFixture {
@@ -259,5 +260,204 @@ describe("AdhocWorktreeService.merge", () => {
     expect(result.merged).toBe(false);
     expect(result.strategy).toBe("rebase");
     expect(result.error).toBeTruthy();
+  });
+});
+
+// ------------------------------ Composite (Task 02) ------------------------------
+
+interface CompositeFixture {
+  baseDir: string;
+  hiveDir: string;
+  repos: ResolvedRepository[];
+  apiGit: SimpleGit;
+  webGit: SimpleGit;
+  service: AdhocWorktreeService;
+}
+
+async function createCompositeFixture(): Promise<CompositeFixture> {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "hive-core-adhoc-composite-base-"));
+  tempDirs.push(baseDir);
+
+  // Initialize a git repo at baseDir so SimpleGit() can run worktree-list etc.
+  const baseGit = simpleGit();
+  try {
+    await baseGit.raw(["init", "-b", "main", baseDir]);
+  } catch {
+    await baseGit.raw(["init", baseDir]);
+    await simpleGit(baseDir).raw(["branch", "-M", "main"]);
+  }
+  const baseRepoGit = simpleGit(baseDir);
+  await baseRepoGit.raw(["config", "user.email", "test@example.com"]);
+  await baseRepoGit.raw(["config", "user.name", "Test User"]);
+  await fs.writeFile(path.join(baseDir, "root.txt"), "root\n", "utf-8");
+  await baseRepoGit.add("root.txt");
+  await baseRepoGit.commit("chore: base root commit");
+
+  const { repoPath: apiPath, repoGit: apiGit } = await createTempRepo();
+  const { repoPath: webPath, repoGit: webGit } = await createTempRepo();
+
+  const repos: ResolvedRepository[] = [
+    { id: "api", path: apiPath, root: apiPath },
+    { id: "web", path: webPath, root: webPath },
+  ];
+
+  const hiveDir = path.join(baseDir, ".hive");
+  const service = new AdhocWorktreeService({
+    baseDir,
+    hiveDir,
+    repositoryResolver: () => repos,
+  });
+
+  return { baseDir, hiveDir, repos, apiGit, webGit, service };
+}
+
+describe("AdhocWorktreeService composite create", () => {
+  it("creates per-repo worktrees and branches under .hive/.worktrees/adhoc/<runId>", async () => {
+    const fixture = await createCompositeFixture();
+
+    const result = await fixture.service.create({
+      runId: "composite-run",
+      repoIds: ["api", "web"],
+    });
+
+    expect(result.runId).toBe("composite-run");
+    expect(result.mode).toBe("adhoc-composite");
+    expect(result.workspacePath).toBe(
+      path.join(fixture.hiveDir, ".worktrees", "adhoc", "composite-run"),
+    );
+    expect(result.repos).toBeDefined();
+    expect(Object.keys(result.repos!).sort()).toEqual(["api", "web"]);
+
+    const apiWt = path.join(fixture.hiveDir, ".worktrees", "adhoc", "composite-run", "repos", "api");
+    const webWt = path.join(fixture.hiveDir, ".worktrees", "adhoc", "composite-run", "repos", "web");
+    expect(result.repos!.api.path).toBe(apiWt);
+    expect(result.repos!.web.path).toBe(webWt);
+    expect(result.repos!.api.branch).toBe("hive/adhoc/api/composite-run");
+    expect(result.repos!.web.branch).toBe("hive/adhoc/web/composite-run");
+    expect(await pathExists(apiWt)).toBe(true);
+    expect(await pathExists(webWt)).toBe(true);
+    expect(await branchExists(fixture.apiGit, "hive/adhoc/api/composite-run")).toBe(true);
+    expect(await branchExists(fixture.webGit, "hive/adhoc/web/composite-run")).toBe(true);
+  });
+
+  it("writes an operational workspace.json manifest at the workspace root", async () => {
+    const fixture = await createCompositeFixture();
+
+    const result = await fixture.service.create({
+      runId: "manifest-run",
+      repoIds: ["api", "web"],
+    });
+
+    const manifestPath = path.join(result.workspacePath!, "workspace.json");
+    expect(await pathExists(manifestPath)).toBe(true);
+
+    const raw = await fs.readFile(manifestPath, "utf-8");
+    const manifest = JSON.parse(raw);
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.mode).toBe("adhoc-composite");
+    expect(manifest.runId).toBe("manifest-run");
+    expect(Object.keys(manifest.repos).sort()).toEqual(["api", "web"]);
+    expect(manifest.repos.api.path).toBe("repos/api");
+    expect(manifest.repos.api.branch).toBe("hive/adhoc/api/manifest-run");
+    expect(manifest.repos.web.path).toBe("repos/web");
+    expect(manifest.repos.web.branch).toBe("hive/adhoc/web/manifest-run");
+    expect(Object.keys(manifest.baseCommits).sort()).toEqual(["api", "web"]);
+    expect(manifest.baseCommits.api).toBeTruthy();
+    expect(manifest.baseCommits.web).toBeTruthy();
+  });
+
+  it("does not create .hive/features for composite ad-hoc workspaces", async () => {
+    const fixture = await createCompositeFixture();
+
+    await fixture.service.create({ runId: "no-features-run", repoIds: ["api", "web"] });
+
+    expect(await pathExists(path.join(fixture.hiveDir, "features"))).toBe(false);
+  });
+
+  it("fails loud and rolls back when a requested repoId is missing from the resolver", async () => {
+    const fixture = await createCompositeFixture();
+
+    await expect(
+      fixture.service.create({ runId: "missing-repo", repoIds: ["api", "ghost"] }),
+    ).rejects.toThrow(/ghost/);
+
+    // No partial state for the api repo: branch should not exist and workspace root removed.
+    expect(await branchExists(fixture.apiGit, "hive/adhoc/api/missing-repo")).toBe(false);
+    expect(
+      await pathExists(path.join(fixture.hiveDir, ".worktrees", "adhoc", "missing-repo")),
+    ).toBe(false);
+  });
+});
+
+describe("AdhocWorktreeService composite commit", () => {
+  it("commits only repos with changes and reports per-repo results", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "commit-composite",
+      repoIds: ["api", "web"],
+    });
+
+    // Only mutate the api repo
+    await fs.writeFile(path.join(created.repos!.api.path, "new.txt"), "hello\n", "utf-8");
+
+    const result = await fixture.service.commit(created.runId, "feat: api change");
+
+    expect(result.repos).toBeDefined();
+    expect(result.repos!.api.committed).toBe(true);
+    expect(result.repos!.api.sha).toBeTruthy();
+    expect(result.repos!.web.committed).toBe(false);
+    expect(result.repos!.web.message).toBe("No changes to commit");
+  });
+});
+
+describe("AdhocWorktreeService composite merge", () => {
+  it("merges in stable repo ID order, returns per-repo results, and supports cleanup", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "merge-composite",
+      repoIds: ["api", "web"],
+    });
+
+    await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
+    await fs.writeFile(path.join(created.repos!.web.path, "web-new.txt"), "w\n", "utf-8");
+    await fixture.service.commit(created.runId, "feat: changes in both repos");
+
+    // Both source repos already on main and clean.
+    const result = await fixture.service.merge(created.runId, "merge", undefined, {
+      cleanup: "worktree+branch",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.merged).toBe(true);
+    expect(result.repos).toBeDefined();
+    expect(Object.keys(result.repos!).sort()).toEqual(["api", "web"]);
+    expect(result.repos!.api.success).toBe(true);
+    expect(result.repos!.web.success).toBe(true);
+
+    // Cleanup applied
+    expect(await pathExists(created.workspacePath!)).toBe(false);
+    expect(await branchExists(fixture.apiGit, "hive/adhoc/api/merge-composite")).toBe(false);
+    expect(await branchExists(fixture.webGit, "hive/adhoc/web/merge-composite")).toBe(false);
+  });
+
+  it("preflights clean target repos and refuses to merge when a source repo is dirty", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "merge-dirty",
+      repoIds: ["api", "web"],
+    });
+
+    await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
+    await fixture.service.commit(created.runId, "feat: api change only");
+
+    // Dirty the api source repo
+    await fs.writeFile(path.join(fixture.repos[0].path, "dirty.txt"), "dirty\n", "utf-8");
+
+    const result = await fixture.service.merge(created.runId);
+
+    expect(result.success).toBe(false);
+    expect(result.merged).toBe(false);
+    expect(result.error).toMatch(/api/);
+    expect(result.error?.toLowerCase()).toMatch(/dirty|uncommitted/);
   });
 });

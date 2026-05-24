@@ -21,10 +21,14 @@ export type {
   AdhocWorktreeConfig,
   AdhocCreateOptions,
   AdhocWorktreeInfo,
+  AdhocWorktreeRepoInfo,
+  AdhocWorktreeMode,
   AdhocCommitResult,
+  AdhocRepoCommitResult,
   AdhocMergeStrategy,
   AdhocMergeOptions,
   AdhocMergeResult,
+  AdhocRepoMergeResult,
   AdhocCleanupResult,
 } from './adhocWorktreeService.js';
 export { ContextService } from './contextService.js';
