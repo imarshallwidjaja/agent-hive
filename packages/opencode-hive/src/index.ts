@@ -2640,7 +2640,6 @@ Expand your Discovery section and try again.`;
         allAgents['forager-worker'] = builtInAgentConfigs['forager-worker'];
         allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
         allAgents['hygienic-reviewer'] = builtInAgentConfigs['hygienic-reviewer'];
-        allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
       } else {
         allAgents['architect-planner'] = builtInAgentConfigs['architect-planner'];
         allAgents['swarm-orchestrator'] = builtInAgentConfigs['swarm-orchestrator'];
@@ -2648,8 +2647,8 @@ Expand your Discovery section and try again.`;
         allAgents['forager-worker'] = builtInAgentConfigs['forager-worker'];
         allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
         allAgents['hygienic-reviewer'] = builtInAgentConfigs['hygienic-reviewer'];
-        allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
       }
+      allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
 
       Object.assign(allAgents, customSubagents);
 

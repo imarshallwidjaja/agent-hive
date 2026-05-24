@@ -468,38 +468,36 @@ describe('Per-agent tool filtering', () => {
   });
 
   it('hive-builder gets ad-hoc + repo manifest tools and disables task-backed worktree/plan tools by default', async () => {
-    for (const mode of ['unified', 'dedicated'] as const) {
-      const agents = await buildConfig(mode);
-      const builder = agents['hive-builder'];
-      expect(builder).toBeTruthy();
-      const tools = builder!.tools!;
-      expect(tools).toBeTruthy();
-      // Allowed (entries absent = allowed)
-      expect(tools['hive_adhoc_worktree_create']).toBeUndefined();
-      expect(tools['hive_adhoc_worktree_commit']).toBeUndefined();
-      expect(tools['hive_adhoc_merge']).toBeUndefined();
-      expect(tools['hive_adhoc_cleanup']).toBeUndefined();
-      expect(tools['hive_repositories_status']).toBeUndefined();
-      expect(tools['hive_repositories_discover']).toBeUndefined();
-      expect(tools['hive_repositories_update']).toBeUndefined();
-      expect(tools['hive_context_write']).toBeUndefined();
-      expect(tools['hive_agents_md']).toBeUndefined();
-      // Disabled task-backed/plan/feature tools
-      expect(tools['hive_worktree_start']).toBe(false);
-      expect(tools['hive_worktree_create']).toBe(false);
-      expect(tools['hive_worktree_commit']).toBe(false);
-      expect(tools['hive_merge']).toBe(false);
-      expect(tools['hive_status']).toBe(false);
-      expect(tools['hive_feature_create']).toBe(false);
-      expect(tools['hive_plan_write']).toBe(false);
-      expect(tools['hive_tasks_sync']).toBe(false);
-      // Permissions
-      expect(builder!.permission?.task).toBe('allow');
-      expect(builder!.permission?.question).toBe('allow');
-      expect(builder!.permission?.skill).toBe('allow');
-      expect(builder!.permission?.todowrite).toBe('allow');
-      expect(builder!.permission?.todoread).toBe('allow');
-    }
+    const agents = await buildConfig('unified');
+    const builder = agents['hive-builder'];
+    expect(builder).toBeTruthy();
+    const tools = builder!.tools!;
+    expect(tools).toBeTruthy();
+    // Allowed (entries absent = allowed)
+    expect(tools['hive_adhoc_worktree_create']).toBeUndefined();
+    expect(tools['hive_adhoc_worktree_commit']).toBeUndefined();
+    expect(tools['hive_adhoc_merge']).toBeUndefined();
+    expect(tools['hive_adhoc_cleanup']).toBeUndefined();
+    expect(tools['hive_repositories_status']).toBeUndefined();
+    expect(tools['hive_repositories_discover']).toBeUndefined();
+    expect(tools['hive_repositories_update']).toBeUndefined();
+    expect(tools['hive_context_write']).toBeUndefined();
+    expect(tools['hive_agents_md']).toBeUndefined();
+    // Disabled task-backed/plan/feature tools
+    expect(tools['hive_worktree_start']).toBe(false);
+    expect(tools['hive_worktree_create']).toBe(false);
+    expect(tools['hive_worktree_commit']).toBe(false);
+    expect(tools['hive_merge']).toBe(false);
+    expect(tools['hive_status']).toBe(false);
+    expect(tools['hive_feature_create']).toBe(false);
+    expect(tools['hive_plan_write']).toBe(false);
+    expect(tools['hive_tasks_sync']).toBe(false);
+    // Permissions
+    expect(builder!.permission?.task).toBe('allow');
+    expect(builder!.permission?.question).toBe('allow');
+    expect(builder!.permission?.skill).toBe('allow');
+    expect(builder!.permission?.todowrite).toBe('allow');
+    expect(builder!.permission?.todoread).toBe('allow');
   });
 
   it('hive-helper still has ad-hoc tools disabled', async () => {
