@@ -68,6 +68,8 @@ Workers do not inherit your context or your conversation context. Relevant durab
 
 ## Worker Spawning
 
+For multi-repo or non-git-root work, call \`hive_repositories_status\` before hive_tasks_sync, hive_task_create, or hive_worktree_start. If a needed repo is not declared, run \`hive_repositories_discover\`, then \`hive_repositories_update\` to add the discovered repo without asking the operator when the scope is clear. Add only repositories the current task or feature will touch.
+
 \`\`\`
 hive_worktree_start({ task: "01-task-name" })
 // If external system data is needed (parallel exploration):

@@ -1,12 +1,25 @@
 # Hive Tools Inventory
 
-## Tools (16 total)
+## Tools (19 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
 |------|---------|
 | `hive_feature_create` | Create new feature, set as active |
 | `hive_feature_complete` | Mark feature completed (irreversible) |
+
+### Repository Manifest (3 tools)
+| Tool | Purpose |
+|------|---------|
+| `hive_repositories_status` | Inspect project repository mode and current project-scoped repository manifest |
+| `hive_repositories_discover` | Discover in-workspace git repositories without mutating the manifest |
+| `hive_repositories_update` | Add project-relative repositories to `.hive/agent-hive.json` atomically while preserving existing config fields |
+
+#### Repository manifest notes
+
+- Agents should add only repositories they have decided to work in; discovery is not bulk registration.
+- Discovery is bounded to the project root, depth 4, and 50 candidates, and skips `.git`, `.hive`, `.opencode`, `node_modules`, build outputs, coverage, and temp folders.
+- Updates are add-only and accept project-relative paths only. If any requested repo is invalid, the manifest is not written.
 
 ### Plan Management (3 tools)
 | Tool | Purpose |
@@ -130,6 +143,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Category | Count | Tools |
 |----------|-------|-------|
 | Feature | 2 | create, complete |
+| Repository Manifest | 3 | status, discover, update |
 | Plan | 3 | write, read, approve |
 | Task | 3 | sync, create, update |
 | Worktree | 4 | start, create, commit, discard |
@@ -137,7 +151,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Context | 1 | write |
 | Status | 1 | status |
 | AGENTS.md | 1 | agents_md |
-| **Total** | **16** | |
+| **Total** | **19** | |
 
 ## Reserved Overview Convention
 

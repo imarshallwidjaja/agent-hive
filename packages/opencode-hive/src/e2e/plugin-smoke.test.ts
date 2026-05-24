@@ -3179,6 +3179,39 @@ describe('e2e: opencode-hive multi-repo composite workspaces', () => {
     expect(statusJson.repoIds).toEqual(['api', 'web']);
   });
 
+  it('lets agents inspect, discover, and add project repositories to the manifest', async () => {
+    initBareRepo(path.join(testRoot, 'api'));
+    initBareRepo(path.join(testRoot, 'apps', 'web-ui'));
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_tools');
+
+    const missingStatusRaw = await hooks.tool!.hive_repositories_status.execute({}, toolContext);
+    const missingStatus = JSON.parse(missingStatusRaw as string) as { mode: string; repositories: unknown[] };
+    expect(missingStatus.mode).toBe('missing-manifest');
+    expect(missingStatus.repositories).toEqual([]);
+
+    const discoverRaw = await hooks.tool!.hive_repositories_discover.execute({}, toolContext);
+    const discover = JSON.parse(discoverRaw as string) as {
+      candidates: Array<{ id: string; path: string }>;
+      truncated: boolean;
+    };
+    expect(discover.truncated).toBe(false);
+    expect(discover.candidates).toEqual([
+      expect.objectContaining({ id: 'api', path: './api' }),
+      expect.objectContaining({ id: 'web-ui', path: './apps/web-ui' }),
+    ]);
+
+    const updateRaw = await hooks.tool!.hive_repositories_update.execute(
+      { repositories: [{ id: 'api', path: './api' }] },
+      toolContext,
+    );
+    const update = JSON.parse(updateRaw as string) as { added: string[]; repositories: Array<{ id: string; path: string }> };
+    expect(update.added).toEqual(['api']);
+    expect(update.repositories).toEqual([expect.objectContaining({ id: 'api', path: './api' })]);
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'agent-hive.json'), 'utf-8'));
+    expect(manifest.repositories).toEqual([{ id: 'api', path: './api' }]);
+  });
+
   it('rejects hive_task_create with an unknown repository id', async () => {
     await setupMultiRepoProject(['api']);
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_bad');

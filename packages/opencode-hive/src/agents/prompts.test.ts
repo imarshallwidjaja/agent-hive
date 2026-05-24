@@ -271,6 +271,13 @@ describe('Multi-repo planning guidance', () => {
     expect(QUEEN_BEE_PROMPT).toContain('per-repo task');
     expect(QUEEN_BEE_PROMPT).toContain('coupled multi-repo');
   });
+
+  it('teaches hive hybrid planners to discover and update repository manifests before writing repo-scoped tasks', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('hive_repositories_status');
+    expect(QUEEN_BEE_PROMPT).toContain('hive_repositories_discover');
+    expect(QUEEN_BEE_PROMPT).toContain('hive_repositories_update');
+    expect(QUEEN_BEE_PROMPT).toContain('Add only repositories the feature or task will touch');
+  });
 });
 
 describe('Architect (Planner) prompt', () => {
@@ -360,6 +367,13 @@ describe('Architect (Planner) prompt', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Prefer one repo per task');
     expect(ARCHITECT_BEE_PROMPT).toContain('coupled multi-repo');
   });
+
+  it('instructs planners to inspect, discover, and update repository manifests before repo-scoped planning', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain('hive_repositories_status');
+    expect(ARCHITECT_BEE_PROMPT).toContain('hive_repositories_discover');
+    expect(ARCHITECT_BEE_PROMPT).toContain('hive_repositories_update');
+    expect(ARCHITECT_BEE_PROMPT).toContain('without asking the operator when the scope is clear');
+  });
 });
 
 describe('Swarm (Orchestrator) prompt', () => {
@@ -370,6 +384,13 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('contains the replacement cancel rule about stale tasks', () => {
       expect(SWARM_BEE_PROMPT).toContain('Cancel background tasks only when stale or no longer needed');
+    });
+
+    it('instructs orchestrators to manage repository manifests before starting repo-scoped tasks', () => {
+      expect(SWARM_BEE_PROMPT).toContain('hive_repositories_status');
+      expect(SWARM_BEE_PROMPT).toContain('hive_repositories_discover');
+      expect(SWARM_BEE_PROMPT).toContain('hive_repositories_update');
+      expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_worktree_start');
     });
 
     it('explains task() is BLOCKING for delegation', () => {

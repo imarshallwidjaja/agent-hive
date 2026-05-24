@@ -158,6 +158,8 @@ For manifest-backed projects (where \`.hive/agent-hive.json\` defines a \`reposi
 - **Repos**: api, web for coupled multi-repo tasks
 - Prefer per-repo task boundaries where practical; use coupled multi-repo tasks only when the change intrinsically spans repos (shared contracts, coordinated schema changes, cross-repo refactors). Do not co-locate independent single-repo changes into one task.
 
+Before planning multi-repo or non-git-root work, inspect repository scope with \`hive_repositories_status\`. If the needed repo is not declared, run \`hive_repositories_discover\`, then \`hive_repositories_update\` to add the discovered repo without asking the operator when the scope is clear. Add only repositories the feature or task will touch; do not bulk-register every discovered repo.
+
 Refresh \`context/overview.md\` as the primary human-facing review surface, while \`plan.md\` remains execution truth.
 - Keep a readable \`Design Summary\` before \`## Tasks\` in \`plan.md\`.
 - Optional Mermaid is allowed only in the pre-task summary.

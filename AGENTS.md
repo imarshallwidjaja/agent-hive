@@ -246,11 +246,12 @@ This is a **bun workspaces** monorepo:
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Hive Plugin Tools (16 total)
+### Hive Plugin Tools (19 total)
 
 | Domain | Tools |
 |--------|-------|
 | Feature | hive_feature_create, hive_feature_complete |
+| Repository Manifest | hive_repositories_status, hive_repositories_discover, hive_repositories_update |
 | Plan | hive_plan_write, hive_plan_read, hive_plan_approve |
 | Task | hive_tasks_sync, hive_task_create, hive_task_update |
 | Worktree | hive_worktree_start, hive_worktree_create, hive_worktree_commit, hive_worktree_discard |
@@ -260,9 +261,9 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 | Status | hive_status |
 
 **Tool access is filtered per agent role:**
-- **Hive** — all 16 tools (hybrid agent)
-- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_merge, hive_context_write, hive_status, hive_agents_md (14 tools — excludes hive_worktree_commit, hive_plan_write)
-- **Architect** — hive_feature_create, hive_plan_write, hive_plan_read, hive_context_write, hive_status (5 tools)
+- **Hive** — all 19 tools (hybrid agent)
+- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_merge, hive_context_write, hive_status, hive_agents_md (17 tools — excludes hive_worktree_commit, hive_plan_write)
+- **Architect** — hive_feature_create, hive_plan_write, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_context_write, hive_status (8 tools)
 - **Forager** — hive_plan_read, hive_worktree_commit, hive_context_write (3 tools)
 - **Scout** — hive_plan_read, hive_context_write, hive_status (3 tools)
 - **Hygienic** — hive_plan_read, hive_context_write, hive_status (3 tools)

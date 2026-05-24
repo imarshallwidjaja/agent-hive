@@ -366,6 +366,27 @@ describe('Per-agent tool filtering', () => {
     expect(scoutTools!['hive_context_write']).toBeUndefined();
   });
 
+  it('repository manifest tools are available to planners and orchestrators but not workers or read-only agents', async () => {
+    const agents = await buildConfig('dedicated');
+    const architectTools = agents['architect-planner']?.tools;
+    const swarmTools = agents['swarm-orchestrator']?.tools;
+    const scoutTools = agents['scout-researcher']?.tools;
+    const foragerTools = agents['forager-worker']?.tools;
+
+    expect(architectTools!['hive_repositories_status']).toBeUndefined();
+    expect(architectTools!['hive_repositories_discover']).toBeUndefined();
+    expect(architectTools!['hive_repositories_update']).toBeUndefined();
+    expect(swarmTools!['hive_repositories_status']).toBeUndefined();
+    expect(swarmTools!['hive_repositories_discover']).toBeUndefined();
+    expect(swarmTools!['hive_repositories_update']).toBeUndefined();
+    expect(scoutTools!['hive_repositories_status']).toBe(false);
+    expect(scoutTools!['hive_repositories_discover']).toBe(false);
+    expect(scoutTools!['hive_repositories_update']).toBe(false);
+    expect(foragerTools!['hive_repositories_status']).toBe(false);
+    expect(foragerTools!['hive_repositories_discover']).toBe(false);
+    expect(foragerTools!['hive_repositories_update']).toBe(false);
+  });
+
   it('hygienic has same tool set as scout', async () => {
     const agents = await buildConfig('unified');
     const hygienicTools = agents['hygienic-reviewer']?.tools;

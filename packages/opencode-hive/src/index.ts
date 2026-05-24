@@ -131,6 +131,7 @@ import {
   ContextService,
   ConfigService,
   RepositoryService,
+  RepositoryManifestService,
   CUSTOM_AGENT_BASES,
   AgentsMdService,
   DockerSandboxService,
@@ -208,6 +209,7 @@ const plugin: Plugin = async (ctx) => {
   const builtinMcps = createBuiltinMcps(disabledMcps);
   const effectiveAutoLoadSkills = configService.getAgentConfig('hive-master').autoLoadSkills ?? [];
   const repositoryService = new RepositoryService(directory, configService);
+  const repositoryManifestService = new RepositoryManifestService(directory);
   const hasRepositoryManifest = (): boolean => {
     // Only treat the project as multi-repo when an explicit project-scoped
     // `repositories` manifest exists. Without a manifest, RepositoryService
@@ -1164,6 +1166,35 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     mcp: builtinMcps,
 
     tool: {
+      hive_repositories_status: tool({
+        description: 'Inspect project repository mode and the current project-scoped repository manifest.',
+        args: {},
+        async execute() {
+          return JSON.stringify(repositoryManifestService.getStatus(), null, 2);
+        },
+      }),
+
+      hive_repositories_discover: tool({
+        description: 'Discover in-workspace git repositories that could be added to the project repository manifest. Read-only.',
+        args: {},
+        async execute() {
+          return JSON.stringify(repositoryManifestService.discover(), null, 2);
+        },
+      }),
+
+      hive_repositories_update: tool({
+        description: 'Add project-relative repositories to the project-scoped repository manifest. Add-only and atomic; preserves other project config fields.',
+        args: {
+          repositories: tool.schema.array(tool.schema.object({
+            id: tool.schema.string().describe('Stable repository ID, e.g. api or web-ui'),
+            path: tool.schema.string().describe('Project-relative repository path, such as ./api'),
+          })).describe('Repositories to add to .hive/agent-hive.json'),
+        },
+        async execute({ repositories }) {
+          return JSON.stringify(repositoryManifestService.add(repositories), null, 2);
+        },
+      }),
+
       hive_feature_create: tool({
         description: 'Create a new feature and set it as active',
         args: {
@@ -2103,7 +2134,10 @@ Expand your Discovery section and try again.`;
         temperature: architectUserConfig.temperature ?? 0.7,
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
         prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadedSkills + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
-        tools: agentTools(['hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status']),
+        tools: agentTools([
+          'hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status',
+          'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
+        ]),
         permission: {
           edit: "deny",  // Planners don't edit code
           task: "allow",
@@ -2131,6 +2165,7 @@ Expand your Discovery section and try again.`;
         prompt: SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadedSkills + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
         tools: agentTools([
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
+          'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
           'hive_context_write', 'hive_status', 'hive_agents_md',

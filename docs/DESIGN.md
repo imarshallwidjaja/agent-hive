@@ -214,6 +214,12 @@ When a project defines a `repositories` manifest in `.hive/agent-hive.json`, tas
 - Global `~/.config/opencode/agent_hive.json` `repositories` are ignored for project orchestration
 - Non-git project root without a project manifest fails worktree/commit/merge tools with a manifest-required error
 
+**Manifest management tools:**
+- `hive_repositories_status` reports whether the project is using a manifest, legacy single-root mode, or is missing a required manifest
+- `hive_repositories_discover` scans only inside the OpenCode project root for candidate git repositories; it is read-only, bounded to depth 4, capped at 50 candidates, and skips `.git`, `.hive`, `.opencode`, `node_modules`, build outputs, coverage, and temp folders
+- `hive_repositories_update` is add-only and atomic: it accepts project-relative paths only, validates all requested repositories, preserves existing project config fields, writes only `.hive/agent-hive.json`, and writes nothing if any requested repo is invalid
+- Agents add only repositories they have decided to work in; discovery does not bulk-register every candidate repo
+
 **Composite workspace layout:**
 
 ```

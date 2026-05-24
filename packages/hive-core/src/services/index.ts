@@ -21,6 +21,14 @@ export { ReviewService } from './reviewService.js';
 export { SessionService } from './sessionService.js';
 export { ConfigService } from './configService.js';
 export { RepositoryService } from './repositoryService.js';
+export { RepositoryManifestService } from './repositoryManifestService.js';
+export type {
+  RepositoryDiscoveryCandidate,
+  RepositoryDiscoveryResult,
+  RepositoryManifestEntry,
+  RepositoryManifestStatus,
+  RepositoryManifestUpdateResult,
+} from './repositoryManifestService.js';
 export { AgentsMdService } from './agentsMdService.js';
 export type { InitResult, SyncResult, ApplyResult as AgentsMdApplyResult } from './agentsMdService.js';
 export { DockerSandboxService } from './dockerSandboxService.js';

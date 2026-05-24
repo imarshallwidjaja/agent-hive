@@ -32,6 +32,9 @@ export const HIVE_COMMANDS: PluginCommandManifestEntry[] = [
 export const HIVE_TOOL_NAMES = [
   'hive_feature_create',
   'hive_feature_complete',
+  'hive_repositories_status',
+  'hive_repositories_discover',
+  'hive_repositories_update',
   'hive_plan_write',
   'hive_plan_read',
   'hive_plan_approve',
