@@ -304,31 +304,11 @@ const plugin: Plugin = async (ctx) => {
     },
   });
 
-  // Ad-hoc worktree service: short-lived runs without features/tasks.
-  // Mirrors the worktreeService manifest gating but reports a structured
-  // `repo_manifest_required` reason for non-git roots without a manifest so
-  // ad-hoc tools can return JSON instead of throwing.
-  type AdhocResolverError = Error & { code?: 'repo_manifest_required' };
   const adhocWorktreeService = new AdhocWorktreeService({
     baseDir: directory,
     hiveDir: path.join(directory, '.hive'),
     repositoryResolver: {
-      resolveRepositories: () => {
-        if (hasRepositoryManifest()) {
-          return repositoryService.resolveRepositories();
-        }
-        if (!isProjectRootGitRepo()) {
-          const err: AdhocResolverError = Object.assign(
-            new Error(
-              `Repository manifest is required: project root is not a git repository (${directory}). ` +
-              `Add a project-scoped .hive/agent-hive.json with a "repositories" manifest before creating ad-hoc worktrees.`,
-            ),
-            { code: 'repo_manifest_required' as const },
-          );
-          throw err;
-        }
-        return [];
-      },
+      resolveRepositories: () => hasRepositoryManifest() ? repositoryService.resolveRepositories() : [],
     },
   });
 
@@ -1814,7 +1794,6 @@ Expand your Discovery section and try again.`;
         },
       }),
 
-      // Ad-hoc worktree tools (Hive Builder): feature/task-independent, short-lived runs
       hive_adhoc_worktree_create: tool({
         description: 'Create a short-lived ad-hoc worktree (no feature/task required). For manifest-backed projects, pass repoIds to create a composite workspace. Returns structured JSON with workspacePath, branch, runId, and nextAction.',
         args: {
@@ -1824,9 +1803,6 @@ Expand your Discovery section and try again.`;
           repoIds: tool.schema.array(tool.schema.string()).optional().describe('Explicit repo IDs for composite ad-hoc workspaces. When omitted, single-root mode is used.'),
         },
         async execute({ runId, label, baseBranch, repoIds }) {
-          // Fail loud before any git commands when the project has no manifest
-          // and the root is not a git repo. Mirrors the worktreeService
-          // resolver gate so ad-hoc tools never produce cryptic git errors.
           if (!hasRepositoryManifest() && !isProjectRootGitRepo()) {
             return respond({
               success: false,
@@ -1854,18 +1830,10 @@ Expand your Discovery section and try again.`;
               mode: info.mode,
               ...(info.repos ? { repos: info.repos } : {}),
               ...(info.baseCommits ? { baseCommits: info.baseCommits } : {}),
-              nextAction: 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, message }) to commit changes.',
+              nextAction: 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, workspacePath, branch, message }) to commit changes.',
             });
           } catch (error: unknown) {
-            const err = error as { message?: string; code?: string };
-            if (err?.code === 'repo_manifest_required') {
-              return respond({
-                success: false,
-                reason: 'repo_manifest_required',
-                error: err.message ?? 'Repository manifest is required for ad-hoc worktrees in non-git project roots.',
-                nextAction: 'Add a project-scoped .hive/agent-hive.json with a "repositories" manifest, then retry hive_adhoc_worktree_create.',
-              });
-            }
+            const err = error as { message?: string };
             return respond({
               success: false,
               reason: 'adhoc_create_failed',
@@ -1880,9 +1848,11 @@ Expand your Discovery section and try again.`;
         description: 'Commit changes in an ad-hoc worktree. Returns structured JSON with workspacePath, branch, and nextAction.',
         args: {
           runId: tool.schema.string().describe('Ad-hoc run identifier returned from hive_adhoc_worktree_create.'),
+          workspacePath: tool.schema.string().describe('Workspace path returned from hive_adhoc_worktree_create.'),
+          branch: tool.schema.string().describe('Branch returned from hive_adhoc_worktree_create.'),
           message: tool.schema.string().describe('Git commit message.'),
         },
-        async execute({ runId, message }) {
+        async execute({ runId, workspacePath: expectedWorkspacePath, branch: expectedBranch, message }) {
           try {
             const info = await adhocWorktreeService.get(runId);
             if (!info) {
@@ -1895,6 +1865,17 @@ Expand your Discovery section and try again.`;
               });
             }
             const workspacePath = info.workspacePath ?? info.path;
+            if (path.resolve(workspacePath) !== path.resolve(expectedWorkspacePath) || info.branch !== expectedBranch) {
+              return respond({
+                success: false,
+                reason: 'adhoc_run_mismatch',
+                runId,
+                workspacePath,
+                branch: info.branch,
+                error: 'Provided workspacePath or branch does not match the ad-hoc run.',
+                nextAction: 'Use the workspacePath and branch returned by hive_adhoc_worktree_create, or create a new ad-hoc worktree.',
+              });
+            }
             const result: AdhocCommitResult = await adhocWorktreeService.commit(runId, message);
             return respond({
               success: result.committed || result.message === 'No changes to commit',
@@ -1987,6 +1968,15 @@ Expand your Discovery section and try again.`;
         async execute({ runId, deleteBranch }) {
           try {
             const info = await adhocWorktreeService.get(runId);
+            if (!info) {
+              return respond({
+                success: false,
+                reason: 'adhoc_run_not_found',
+                runId,
+                error: `Ad-hoc run "${runId}" not found.`,
+                nextAction: 'Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.',
+              });
+            }
             const workspacePath = info?.workspacePath ?? info?.path ?? null;
             const branch = info?.branch ?? null;
             const result: AdhocCleanupResult = await adhocWorktreeService.cleanup(runId, deleteBranch ?? false);

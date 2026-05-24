@@ -76,6 +76,20 @@ function initGitRoot(root: string): void {
   execSync('git commit -m "init"', { cwd: root });
 }
 
+function parseToolJson<T>(raw: unknown): T {
+  return JSON.parse(raw as string) as T;
+}
+
+function expectWorktreeResponseShape(result: {
+  workspacePath?: string;
+  branch?: string;
+  nextAction?: string;
+}): void {
+  expect(typeof result.workspacePath).toBe('string');
+  expect(typeof result.branch).toBe('string');
+  expect(typeof result.nextAction).toBe('string');
+}
+
 async function loadHooks(directory: string) {
   const ctx: PluginInput = {
     directory,
@@ -131,13 +145,13 @@ describe('ad-hoc worktree plugin tools', () => {
       { label: 'no-feature-run' },
       toolContext,
     );
-    const result = JSON.parse(raw as string) as {
+    const result = parseToolJson<{
       success?: boolean;
       runId?: string;
       workspacePath?: string;
       branch?: string;
       nextAction?: string;
-    };
+    }>(raw);
 
     expect(result.success).toBe(true);
     expect(typeof result.runId).toBe('string');
@@ -156,12 +170,12 @@ describe('ad-hoc worktree plugin tools', () => {
       {},
       toolContext,
     );
-    const result = JSON.parse(raw as string) as {
+    const result = parseToolJson<{
       success?: boolean;
       reason?: string;
       error?: string;
       nextAction?: string;
-    };
+    }>(raw);
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('repo_manifest_required');
@@ -178,7 +192,7 @@ describe('ad-hoc worktree plugin tools', () => {
       { task: '01-anything' },
       toolContext,
     );
-    const result = JSON.parse(raw as string) as { reason?: string };
+    const result = parseToolJson<{ reason?: string }>(raw);
     expect(result.reason).toBe('feature_required');
   });
 
@@ -191,7 +205,7 @@ describe('ad-hoc worktree plugin tools', () => {
       { task: '01-anything', summary: 'noop' },
       toolContext,
     );
-    const result = JSON.parse(raw as string) as { reason?: string };
+    const result = parseToolJson<{ reason?: string }>(raw);
     expect(result.reason).toBe('feature_required');
   });
 
@@ -204,7 +218,7 @@ describe('ad-hoc worktree plugin tools', () => {
       { task: '01-anything' },
       toolContext,
     );
-    const result = JSON.parse(raw as string) as { success?: boolean; error?: string };
+    const result = parseToolJson<{ success?: boolean; error?: string }>(raw);
     expect(result.success).toBe(false);
     expect(typeof result.error).toBe('string');
   });
@@ -218,26 +232,60 @@ describe('ad-hoc worktree plugin tools', () => {
       { label: 'commit-shape' },
       toolContext,
     );
-    const created = JSON.parse(createRaw as string) as {
+    const created = parseToolJson<{
       runId: string;
       workspacePath: string;
-    };
+      branch: string;
+    }>(createRaw);
 
     // create a file so commit has something to commit
     fs.writeFileSync(path.join(created.workspacePath, 'note.txt'), 'hello');
 
     const commitRaw = await hooks.tool!.hive_adhoc_worktree_commit.execute(
-      { runId: created.runId, message: 'feat: adhoc note' },
+      {
+        runId: created.runId,
+        workspacePath: created.workspacePath,
+        branch: created.branch,
+        message: 'feat: adhoc note',
+      },
       toolContext,
     );
-    const commit = JSON.parse(commitRaw as string) as {
+    const commit = parseToolJson<{
       workspacePath?: string;
       branch?: string;
       nextAction?: string;
-    };
-    expect(typeof commit.workspacePath).toBe('string');
-    expect(typeof commit.branch).toBe('string');
-    expect(typeof commit.nextAction).toBe('string');
+    }>(commitRaw);
+    expectWorktreeResponseShape(commit);
+  });
+
+  it('ad-hoc commit rejects mismatched workspacePath or branch', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_commit_mismatch');
+
+    const createRaw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { label: 'commit-mismatch' },
+      toolContext,
+    );
+    const created = parseToolJson<{
+      runId: string;
+      workspacePath: string;
+      branch: string;
+    }>(createRaw);
+
+    const commitRaw = await hooks.tool!.hive_adhoc_worktree_commit.execute(
+      {
+        runId: created.runId,
+        workspacePath: path.join(testRoot, 'wrong-workspace'),
+        branch: created.branch,
+        message: 'feat: should not commit',
+      },
+      toolContext,
+    );
+    const commit = parseToolJson<{ success?: boolean; reason?: string }>(commitRaw);
+
+    expect(commit.success).toBe(false);
+    expect(commit.reason).toBe('adhoc_run_mismatch');
   });
 
   it('ad-hoc merge response contains workspacePath, branch, and nextAction', async () => {
@@ -249,14 +297,20 @@ describe('ad-hoc worktree plugin tools', () => {
       { label: 'merge-shape' },
       toolContext,
     );
-    const created = JSON.parse(createRaw as string) as {
+    const created = parseToolJson<{
       runId: string;
       workspacePath: string;
-    };
+      branch: string;
+    }>(createRaw);
 
     fs.writeFileSync(path.join(created.workspacePath, 'note.txt'), 'hello');
     await hooks.tool!.hive_adhoc_worktree_commit.execute(
-      { runId: created.runId, message: 'feat: adhoc note' },
+      {
+        runId: created.runId,
+        workspacePath: created.workspacePath,
+        branch: created.branch,
+        message: 'feat: adhoc note',
+      },
       toolContext,
     );
 
@@ -264,14 +318,12 @@ describe('ad-hoc worktree plugin tools', () => {
       { runId: created.runId },
       toolContext,
     );
-    const merge = JSON.parse(mergeRaw as string) as {
+    const merge = parseToolJson<{
       workspacePath?: string;
       branch?: string;
       nextAction?: string;
-    };
-    expect(typeof merge.workspacePath).toBe('string');
-    expect(typeof merge.branch).toBe('string');
-    expect(typeof merge.nextAction).toBe('string');
+    }>(mergeRaw);
+    expectWorktreeResponseShape(merge);
   });
 
   it('ad-hoc cleanup response contains workspacePath, branch, and nextAction', async () => {
@@ -283,23 +335,43 @@ describe('ad-hoc worktree plugin tools', () => {
       { label: 'cleanup-shape' },
       toolContext,
     );
-    const created = JSON.parse(createRaw as string) as {
+    const created = parseToolJson<{
       runId: string;
       workspacePath: string;
       branch: string;
-    };
+    }>(createRaw);
 
     const cleanupRaw = await hooks.tool!.hive_adhoc_cleanup.execute(
       { runId: created.runId, deleteBranch: true },
       toolContext,
     );
-    const cleanup = JSON.parse(cleanupRaw as string) as {
+    const cleanup = parseToolJson<{
       workspacePath?: string;
       branch?: string;
       nextAction?: string;
-    };
-    expect(typeof cleanup.workspacePath).toBe('string');
-    expect(typeof cleanup.branch).toBe('string');
-    expect(typeof cleanup.nextAction).toBe('string');
+    }>(cleanupRaw);
+    expectWorktreeResponseShape(cleanup);
+  });
+
+  it('ad-hoc cleanup returns adhoc_run_not_found for unknown runs', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_cleanup_unknown');
+
+    const cleanupRaw = await hooks.tool!.hive_adhoc_cleanup.execute(
+      { runId: 'missing-run', deleteBranch: true },
+      toolContext,
+    );
+    const cleanup = parseToolJson<{
+      success?: boolean;
+      reason?: string;
+      workspacePath?: unknown;
+      branch?: unknown;
+    }>(cleanupRaw);
+
+    expect(cleanup.success).toBe(false);
+    expect(cleanup.reason).toBe('adhoc_run_not_found');
+    expect(cleanup.workspacePath).toBeUndefined();
+    expect(cleanup.branch).toBeUndefined();
   });
 });
