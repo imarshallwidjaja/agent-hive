@@ -6,6 +6,7 @@ import {
   CUSTOM_AGENT_RESERVED_NAMES,
   DEFAULT_HIVE_CONFIG,
 } from '../types.js';
+import { isValidRepositoryId } from '../utils/repositoryIds.js';
 import type {
   AgentModelConfig,
   BuiltInAgentName,
@@ -169,6 +170,20 @@ export class ConfigService {
     reason: 'parse_error' | 'validation_error' | 'read_error';
   } | null {
     return this.lastFallbackWarning;
+  }
+
+  getProjectConfig(): Partial<HiveConfig> | null {
+    if (this.projectConfigPath && fs.existsSync(this.projectConfigPath)) {
+      const projectStored = this.readStoredConfig(this.projectConfigPath);
+      return projectStored.ok ? projectStored.value : null;
+    }
+
+    if (this.legacyProjectConfigPath && fs.existsSync(this.legacyProjectConfigPath)) {
+      const projectStored = this.readStoredConfig(this.legacyProjectConfigPath);
+      return projectStored.ok ? projectStored.value : null;
+    }
+
+    return null;
   }
 
   /**
@@ -585,6 +600,13 @@ export class ConfigService {
       return false;
     }
 
+    if (
+      config.repositories !== undefined
+      && !this.isValidRepositoryConfigArray(config.repositories)
+    ) {
+      return false;
+    }
+
     return true;
   }
 
@@ -620,6 +642,27 @@ export class ConfigService {
     }
 
     return true;
+  }
+
+  private isValidRepositoryConfigArray(value: unknown): boolean {
+    if (!Array.isArray(value)) {
+      return false;
+    }
+
+    return value.every((entry) => {
+      if (!this.isObjectRecord(entry)) {
+        return false;
+      }
+
+      const keys = Object.keys(entry);
+      return keys.length === 2
+        && keys.includes('id')
+        && keys.includes('path')
+        && typeof entry.id === 'string'
+        && isValidRepositoryId(entry.id)
+        && typeof entry.path === 'string'
+        && entry.path.trim().length > 0;
+    });
   }
 
   private isHookCadenceRecord(value: unknown): value is Record<string, number> {

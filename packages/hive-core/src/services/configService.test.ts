@@ -1062,3 +1062,58 @@ describe('ConfigService project-aware read source selection', () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 });
+
+describe('ConfigService repository manifest validation', () => {
+  it('accepts repositories as an array of repository ID and path entries', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-repositories-'));
+    try {
+      const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
+      fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+      fs.writeFileSync(
+        projectConfigPath,
+        JSON.stringify({
+          repositories: [
+            { id: 'api', path: 'api' },
+            { id: 'web-ui', path: './web-ui' },
+            { id: 'data.v2', path: '/tmp/data-v2' },
+            { id: 'api_v2', path: '/tmp/api-v2' },
+          ],
+        }),
+      );
+
+      const config = new ConfigService(projectRoot).get();
+
+      expect(config.repositories).toEqual([
+        { id: 'api', path: 'api' },
+        { id: 'web-ui', path: './web-ui' },
+        { id: 'data.v2', path: '/tmp/data-v2' },
+        { id: 'api_v2', path: '/tmp/api-v2' },
+      ]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: 'a non-array value', repositories: { id: 'api', path: 'api' } },
+    { name: 'an invalid repository ID', repositories: [{ id: 'Api', path: 'api' }] },
+    { name: 'a double-dot repository ID', repositories: [{ id: 'api..v2', path: 'api' }] },
+    { name: 'a non-string repository path', repositories: [{ id: 'api', path: 123 }] },
+    { name: 'an empty repository path', repositories: [{ id: 'api', path: '' }] },
+    { name: 'a repository entry with extra fields', repositories: [{ id: 'api', path: 'api', branch: 'main' }] },
+  ])('falls back when repositories contains $name', ({ repositories }) => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-repositories-'));
+    try {
+      const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
+      fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+      fs.writeFileSync(projectConfigPath, JSON.stringify({ repositories }));
+
+      const service = new ConfigService(projectRoot);
+
+      expect(service.get()).toEqual(DEFAULT_HIVE_CONFIG);
+      expect(service.getLastFallbackWarning()?.reason).toBe('validation_error');
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+});

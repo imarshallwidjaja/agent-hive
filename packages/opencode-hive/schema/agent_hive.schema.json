@@ -25,6 +25,13 @@
       "default": true,
       "description": "Reuse Docker containers per worktree (docker exec) instead of creating new ones per command (docker run --rm). Default: true when sandbox is 'docker'."
     },
+    "repositories": {
+      "type": "array",
+      "description": "Project-scoped repository manifest. Entries identify git repositories by a safe lowercase ID and a project-relative or absolute path. Global manifests are ignored for orchestration.",
+      "items": {
+        "$ref": "#/$defs/repositoryConfig"
+      }
+    },
     "enableToolsFor": {
       "type": "array",
       "items": {
@@ -138,6 +145,27 @@
     }
   },
   "$defs": {
+    "repositoryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(?!.*\\.lock$)(?!.*\\.\\.)[a-z0-9][a-z0-9._-]*$",
+          "description": "Safe repository ID used as a path segment and branch component (for example, api, web-ui, data.v2)."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Project-relative or absolute path to a git repository."
+        }
+      }
+    },
     "agentConfig": {
       "type": "object",
       "additionalProperties": false,

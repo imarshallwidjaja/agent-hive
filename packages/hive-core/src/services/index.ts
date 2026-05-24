@@ -10,6 +10,7 @@ export { NetworkService } from './networkService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService } from './sessionService.js';
 export { ConfigService } from './configService.js';
+export { RepositoryService } from './repositoryService.js';
 export { AgentsMdService } from './agentsMdService.js';
 export type { InitResult, SyncResult, ApplyResult as AgentsMdApplyResult } from './agentsMdService.js';
 export { DockerSandboxService } from './dockerSandboxService.js';

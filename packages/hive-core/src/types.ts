@@ -247,6 +247,17 @@ export interface ResolvedCustomAgentConfig extends AgentModelConfig {
   description: string;
 }
 
+export interface RepositoryConfig {
+  id: string;
+  path: string;
+}
+
+export interface ResolvedRepository {
+  id: string;
+  path: string;
+  root: string;
+}
+
 export interface HiveConfig {
   /** Schema reference for config file */
   $schema?: string;
@@ -284,6 +295,8 @@ export interface HiveConfig {
   dockerImage?: string;
   /** Reuse Docker containers per worktree (default: true when sandbox is 'docker') */
   persistentContainers?: boolean;
+  /** Project-scoped repository manifest. Ignored when loaded only from global config for orchestration. */
+  repositories?: RepositoryConfig[];
   /** Hook execution cadence (number of turns between hook invocations). Key = hook name, Value = cadence (1 = every turn, 3 = every 3rd turn) */
   hook_cadence?: Record<string, number>;
 }
