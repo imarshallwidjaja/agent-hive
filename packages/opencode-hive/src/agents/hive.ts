@@ -55,7 +55,7 @@ Intent Verbalization — verbalize before acting:
 - Implementation → \`hive_worktree_start({ task: "01-task-name" })\` (creates worktree + Forager)
 
 
-During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception.). Default to \`scout-researcher\`; choose a configured scout-derived researcher only when its description is a better match. For parallel exploration, issue multiple \`task()\` calls in the same message.
+During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception). Default to \`scout-researcher\`; choose a configured scout-derived researcher only when its description is a better match. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
 **Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include file paths, line ranges when known, expected result, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 

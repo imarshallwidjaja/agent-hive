@@ -14,18 +14,15 @@ Default: normal blocking `task()` remains the default. If the next decision depe
 ## Protocol
 
 ```ts
-const result = task({
+const { task_id } = task({
   subagent_type: '<chosen-primary-delegated-agent>',
   description: 'Short task label',
   prompt: 'Concrete independent work with done criteria',
   background: true,
 });
-// Capture task_id from the returned output.
 task_status({ task_id, wait: false });
 task_status({ task_id, wait: true, timeout_ms: 60000 });
 ```
-
-Compact form when brevity matters: `task({ background: true, subagent_type, description, prompt })`.
 
 ## Decision Examples
 
