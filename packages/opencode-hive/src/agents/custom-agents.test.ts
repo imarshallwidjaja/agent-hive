@@ -35,7 +35,7 @@ describe('buildCustomSubagents', () => {
         description: 'Base Scout',
         prompt: SCOUT_BEE_PROMPT,
         tools: {
-          hive_network_query: false,
+          hive_merge: false,
         },
         permission: scoutPermission,
       },

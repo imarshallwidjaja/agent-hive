@@ -235,7 +235,6 @@ describe('Agent permissions', () => {
     expect(helper?.tools?.['hive_worktree_start']).toBe(false);
     expect(helper?.tools?.['hive_worktree_create']).toBe(false);
     expect(helper?.tools?.['hive_worktree_commit']).toBe(false);
-    expect(helper?.tools?.['hive_network_query']).toBe(false);
     expect(helper?.permission?.task).toBe('deny');
     expect(helper?.permission?.delegate).toBe('deny');
     expect(helper?.permission?.skill).toBe('allow');
@@ -355,7 +354,6 @@ describe('Per-agent tool filtering', () => {
     expect(helperTools!['hive_worktree_start']).toBe(false);
     expect(helperTools!['hive_worktree_create']).toBe(false);
     expect(helperTools!['hive_tasks_sync']).toBe(false);
-    expect(helperTools!['hive_network_query']).toBe(false);
   });
 
   it('scout has only read-only hive tools (no worktree_commit, no merge)', async () => {
@@ -374,8 +372,7 @@ describe('Per-agent tool filtering', () => {
     const scoutTools = agents['scout-researcher']?.tools;
     expect(hygienicTools).toBeTruthy();
     expect(scoutTools).toBeTruthy();
-    expect(hygienicTools!['hive_network_query']).toBeUndefined();
-    expect(scoutTools!['hive_network_query']).toBe(false);
+    expect(hygienicTools).toEqual(scoutTools);
   });
 
   it('architect has planning tools but no worktree tools', async () => {
@@ -383,7 +380,6 @@ describe('Per-agent tool filtering', () => {
     const architectTools = agents['architect-planner']?.tools;
     expect(architectTools).toBeTruthy();
     expect(architectTools!['hive_plan_write']).toBeUndefined();
-    expect(architectTools!['hive_network_query']).toBeUndefined();
     expect(architectTools!['hive_worktree_create']).toBe(false);
     expect(architectTools!['hive_worktree_start']).toBe(false);
     expect(architectTools!['hive_worktree_commit']).toBe(false);
@@ -396,7 +392,6 @@ describe('Per-agent tool filtering', () => {
     expect(swarmTools).toBeTruthy();
     expect(swarmTools!['hive_worktree_create']).toBeUndefined();
     expect(swarmTools!['hive_worktree_start']).toBeUndefined();
-    expect(swarmTools!['hive_network_query']).toBeUndefined();
     expect(swarmTools!['hive_plan_write']).toBe(false);
     expect(swarmTools!['hive_worktree_commit']).toBe(false);
     expect(swarmTools!['hive_plan_approve']).toBeUndefined();
@@ -430,21 +425,17 @@ describe('Per-agent tool filtering', () => {
     expect(dedicatedAgents['hygienic-reviewer']?.permission?.todowrite).toBeUndefined();
   });
 
-  it('limits hive_network_query to planning orchestration and review roles', async () => {
+  it('does not expose the removed historical lookup tool to any agent', async () => {
+    const removedNetworkTool = ['hive', 'network', 'query'].join('_');
     const unifiedAgents = await buildConfig('unified');
-    expect(unifiedAgents['hive-master']?.tools).toBeUndefined();
-    expect(unifiedAgents['hygienic-reviewer']?.tools?.['hive_network_query']).toBeUndefined();
-    expect(unifiedAgents['forager-worker']?.tools?.['hive_network_query']).toBe(false);
-    expect(unifiedAgents['scout-researcher']?.tools?.['hive_network_query']).toBe(false);
-    expect(unifiedAgents['hive-helper']?.tools?.['hive_network_query']).toBe(false);
+    for (const agent of Object.values(unifiedAgents)) {
+      expect(agent.tools ?? {}).not.toHaveProperty(removedNetworkTool);
+    }
 
     const dedicatedAgents = await buildConfig('dedicated');
-    expect(dedicatedAgents['architect-planner']?.tools?.['hive_network_query']).toBeUndefined();
-    expect(dedicatedAgents['swarm-orchestrator']?.tools?.['hive_network_query']).toBeUndefined();
-    expect(dedicatedAgents['hygienic-reviewer']?.tools?.['hive_network_query']).toBeUndefined();
-    expect(dedicatedAgents['forager-worker']?.tools?.['hive_network_query']).toBe(false);
-    expect(dedicatedAgents['scout-researcher']?.tools?.['hive_network_query']).toBe(false);
-    expect(dedicatedAgents['hive-helper']?.tools?.['hive_network_query']).toBe(false);
+    for (const agent of Object.values(dedicatedAgents)) {
+      expect(agent.tools ?? {}).not.toHaveProperty(removedNetworkTool);
+    }
   });
 
   it('hive-master has no tools filter (all tools allowed)', async () => {

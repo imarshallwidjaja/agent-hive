@@ -129,7 +129,6 @@ import {
   PlanService,
   TaskService,
   ContextService,
-  NetworkService,
   ConfigService,
   RepositoryService,
   CUSTOM_AGENT_BASES,
@@ -198,7 +197,6 @@ const plugin: Plugin = async (ctx) => {
   const planService = new PlanService(directory);
   const taskService = new TaskService(directory);
   const contextService = new ContextService(directory);
-  const networkService = new NetworkService(directory);
   const agentsMdService = new AgentsMdService(directory, contextService);
   const configService = new ConfigService(directory);
   const sessionService = new SessionService(directory);
@@ -1698,30 +1696,6 @@ Expand your Discovery section and try again.`;
         },
       }),
 
-      hive_network_query: tool({
-        description: 'Query prior features for deterministic plan/context snippets. Returns JSON with query, currentFeature, and snippet results only. Callers must opt in to using the returned snippets.',
-        args: {
-          feature: tool.schema.string().optional().describe('Current feature to exclude from results. Defaults to active feature when available.'),
-          query: tool.schema.string().describe('Case-insensitive substring query over plan.md and network-safe context'),
-        },
-        async execute({ feature: explicitFeature, query }) {
-          const currentFeature = resolveFeature(explicitFeature) ?? null;
-          const results = networkService.query({
-            currentFeature: currentFeature ?? undefined,
-            query,
-            maxFeatures: 10,
-            maxSnippetsPerFeature: 3,
-            maxSnippetChars: 240,
-          });
-
-          return respond({
-            query,
-            currentFeature,
-            results,
-          });
-        },
-      }),
-
       // Status Tool
       hive_status: tool({
         description: 'Get comprehensive status of a feature including plan, tasks, and context. Returns JSON with all relevant state for resuming work.',
@@ -2098,7 +2072,7 @@ Expand your Discovery section and try again.`;
         temperature: architectUserConfig.temperature ?? 0.7,
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
         prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadedSkills + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
-        tools: agentTools(['hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_network_query', 'hive_status']),
+        tools: agentTools(['hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status']),
         permission: {
           edit: "deny",  // Planners don't edit code
           task: "allow",
@@ -2128,7 +2102,7 @@ Expand your Discovery section and try again.`;
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
-          'hive_context_write', 'hive_network_query', 'hive_status', 'hive_agents_md',
+          'hive_context_write', 'hive_status', 'hive_agents_md',
         ]),
         permission: {
           question: "allow",
@@ -2217,7 +2191,7 @@ Expand your Discovery section and try again.`;
         mode: 'subagent' as const,
         description: 'Hygienic (Consultant/Reviewer/Debugger) - Reviews plan documentation quality. OKAY/REJECT verdict.',
         prompt: HYGIENIC_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hygienicAutoLoadedSkills,
-        tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_network_query', 'hive_status']),
+        tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status']),
         permission: {
           edit: "deny",  // Reviewers don't edit
           task: "deny",

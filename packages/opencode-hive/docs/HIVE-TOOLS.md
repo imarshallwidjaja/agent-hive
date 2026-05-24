@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Tools (17 total)
+## Tools (16 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -98,32 +98,6 @@
 |------|---------|
 | `hive_context_write` | Write context file, including reserved `context/overview.md` via `name: "overview"` |
 
-### Network (1 tool)
-| Tool | Purpose |
-|------|---------|
-| `hive_network_query` | Query prior features for deterministic `plan.md` + network-safe context snippets only |
-
-#### hive_network_query input
-
-- `feature?: string` — current feature to exclude from results; defaults to the active feature when available
-- `query: string` — case-insensitive substring query over `plan.md` and network-safe context files
-
-#### hive_network_query output
-
-- Always returns JSON with exactly these top-level fields:
-  - `query`
-  - `currentFeature` (`string | null`)
-  - `results`
-- `results` is an array of snippet records:
-  - `feature`
-  - `sourceType` (`plan` | `context`)
-  - `sourceName`
-  - `path`
-  - `updatedAt`
-  - `snippet`
-- No-match responses are explicit JSON with `results: []`.
-- The tool is read-only and callers must opt in to using returned snippets.
-
 ### Status (1 tool)
 | Tool | Purpose |
 |------|---------|
@@ -161,10 +135,9 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Worktree | 4 | start, create, commit, discard |
 | Merge | 1 | merge |
 | Context | 1 | write |
-| Network | 1 | query |
 | Status | 1 | status |
 | AGENTS.md | 1 | agents_md |
-| **Total** | **17** | |
+| **Total** | **16** | |
 
 ## Reserved Overview Convention
 

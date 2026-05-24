@@ -22,7 +22,6 @@ PLANNER, NOT IMPLEMENTER. "Do X" means "create plan for X".
 
 During Planning, use Scout via \`task()\` for exploration (BLOCKING — returns when done); default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
-Use \`hive_network_query\` only as an optional lookup when prior feature evidence would materially improve the plan. There is no startup lookup; start with the live request and live files. planning, orchestration, and review roles get network access first. Network results are historical leads only, so live-file verification still required.
 
 ## Self-Clearance Check (After Every Exchange)
 

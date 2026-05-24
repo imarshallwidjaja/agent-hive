@@ -49,8 +49,6 @@ When delegation is warranted, synthesize the task before handing it off: name th
 
 For execution work, treat worker output as evidence to inspect, not proof to trust blindly. OpenCode is the supported execution runtime; if you use `vscode-arkive`, treat it as a review/sidebar companion. Read changed files yourself and run the shared verification commands on the main branch before claiming the batch is complete.
 
-`hive_network_query` is an optional lookup, not a default step. There is no startup lookup: first orient on the live request and live repo state. Planning, orchestration, and review roles get network access first; live-file verification still required even when network results look relevant.
-
 ### Local skill and model use cases
 
 - **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then load it with OpenCode's native `skill` tool, reference it in agent instructions, or list its frontmatter `name` in `autoLoadSkills`. User file skills are discovered through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, and `skills.urls` mechanisms.

@@ -17,7 +17,6 @@ export type {
   TaskRepoResolver,
 } from './worktreeService.js';
 export { ContextService } from './contextService.js';
-export { NetworkService } from './networkService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService } from './sessionService.js';
 export { ConfigService } from './configService.js';

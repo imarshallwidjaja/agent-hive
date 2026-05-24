@@ -617,32 +617,20 @@ describe('Hygienic (Consultant/Reviewer) prompt', () => {
   });
 });
 
-describe('Hive Network selective usage guidance', () => {
-  it('teaches Hive to use hive_network_query only as an optional lookup with no startup lookup', () => {
-    expect(QUEEN_BEE_PROMPT).toContain('hive_network_query');
-    expect(QUEEN_BEE_PROMPT).toContain('optional lookup');
-    expect(QUEEN_BEE_PROMPT).toContain('no startup lookup');
-    expect(QUEEN_BEE_PROMPT).toContain('live-file verification still required');
-  });
+describe('removed historical lookup guidance', () => {
+  const removedTerms = [
+    ['hive', 'network', 'query'].join('_'),
+    ['Hive', 'Network'].join(' '),
+  ];
 
-  it('teaches Architect to use hive_network_query selectively for planning only', () => {
-    expect(ARCHITECT_BEE_PROMPT).toContain('hive_network_query');
-    expect(ARCHITECT_BEE_PROMPT).toContain('optional lookup');
-    expect(ARCHITECT_BEE_PROMPT).toContain('planning, orchestration, and review roles get network access first');
-    expect(ARCHITECT_BEE_PROMPT).toContain('live-file verification still required');
-  });
+  it('keeps historical lookup references out of agent prompts', () => {
+    const prompts = [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, HYGIENIC_BEE_PROMPT];
 
-  it('teaches Swarm to use hive_network_query selectively for orchestration decisions only', () => {
-    expect(SWARM_BEE_PROMPT).toContain('hive_network_query');
-    expect(SWARM_BEE_PROMPT).toContain('optional lookup');
-    expect(SWARM_BEE_PROMPT).toContain('no startup lookup');
-    expect(SWARM_BEE_PROMPT).toContain('planning, orchestration, and review roles get network access first');
-  });
-
-  it('teaches Hygienic to treat network results as historical contrast, never authority over live repository state', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('historical contrast');
-    expect(HYGIENIC_BEE_PROMPT).toContain('live repository state');
-    expect(HYGIENIC_BEE_PROMPT).toContain('citations');
+    for (const prompt of prompts) {
+      for (const term of removedTerms) {
+        expect(prompt).not.toContain(term);
+      }
+    }
   });
 });
 
@@ -711,27 +699,17 @@ describe('README.md documentation', () => {
     });
   });
 
-  describe('Hive Network docs alignment', () => {
-    it('documents network access as optional and role-scoped in package docs', () => {
-      expect(readmeContent).toContain('optional lookup');
-      expect(readmeContent).toContain('no startup lookup');
-      expect(readmeContent).toContain('planning, orchestration, and review roles get network access first');
-      expect(readmeContent).toContain('live-file verification still required');
-    });
+  describe('removed historical lookup docs', () => {
+    const removedNetworkTool = ['hive', 'network', 'query'].join('_');
+    const removedNetworkName = ['Hive', 'Network'].join(' ');
 
-    it('documents hive-helper as indirectly benefiting but not consuming network access', () => {
-      expect(readmeContent).toContain('hive-helper');
-      expect(readmeContent).toContain('not a network consumer');
-    });
+    it('keeps current docs free of historical lookup references', () => {
+      const docs = [readmeContent, hiveToolsContent, philosophyContent];
 
-    it('updates philosophy with the post-1.3.6 architecture narrative and network boundaries', () => {
-      expect(philosophyContent).toContain('v1.3.7');
-      expect(philosophyContent).toContain('#73');
-      expect(philosophyContent).toContain('#74');
-      expect(philosophyContent).toContain('#75');
-      expect(philosophyContent).toContain('#76');
-      expect(philosophyContent).toContain('read-only retrieval');
-      expect(philosophyContent).toContain('planning, orchestration, and review roles get network access first');
+      for (const doc of docs) {
+        expect(doc).not.toContain(removedNetworkTool);
+        expect(doc).not.toContain(removedNetworkName);
+      }
     });
   });
 });

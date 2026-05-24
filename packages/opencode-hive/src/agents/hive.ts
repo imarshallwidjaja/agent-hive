@@ -54,12 +54,6 @@ Intent Verbalization — verbalize before acting:
 - Parallel exploration → load the native skill "parallel-exploration" and follow the task mode delegation guidance.
 - Implementation → \`hive_worktree_start({ task: "01-task-name" })\` (creates worktree + Forager)
 
-### Hive Network Lookup
-- \`hive_network_query\` is an optional lookup. Use it only when prior feature evidence would materially improve planning, orchestration, or review-routing decisions.
-- There is no startup lookup. First orient on live files and the current feature state.
-- planning, orchestration, and review roles get network access first.
-- Treat retrieved snippets as historical leads, not execution truth. live-file verification still required.
-- Do not route worker execution through network retrieval. \`hive-helper\` is not a network consumer; it benefits indirectly from better upstream decisions.
 
 During Planning, use Scout via \`task()\` for exploration (BLOCKING — returns when done). Default to \`scout-researcher\`; choose a configured scout-derived researcher only when its description is a better match. For parallel exploration, issue multiple \`task()\` calls in the same message.
 

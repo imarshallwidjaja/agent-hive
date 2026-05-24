@@ -158,7 +158,7 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["hive-master"]).toBeUndefined();
   });
 
-  it("exposes hive_network_query only to planning orchestration and review roles", async () => {
+  it("does not expose the removed historical lookup tool to any agent", async () => {
     const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(
@@ -180,12 +180,10 @@ describe("agentMode gating", () => {
     const opencodeConfig: any = { agent: {} };
     await hooks.config!(opencodeConfig);
 
-    expect(opencodeConfig.agent["architect-planner"]?.tools?.["hive_network_query"]).toBeUndefined();
-    expect(opencodeConfig.agent["swarm-orchestrator"]?.tools?.["hive_network_query"]).toBeUndefined();
-    expect(opencodeConfig.agent["hygienic-reviewer"]?.tools?.["hive_network_query"]).toBeUndefined();
-    expect(opencodeConfig.agent["forager-worker"]?.tools?.["hive_network_query"]).toBe(false);
-    expect(opencodeConfig.agent["scout-researcher"]?.tools?.["hive_network_query"]).toBe(false);
-    expect(opencodeConfig.agent["hive-helper"]?.tools?.["hive_network_query"]).toBe(false);
+    const removedNetworkTool = ["hive", "network", "query"].join("_");
+    for (const agent of Object.values(opencodeConfig.agent)) {
+      expect((agent as any).tools ?? {}).not.toHaveProperty(removedNetworkTool);
+    }
   });
 
   it("keeps hive-helper bounded to merge recovery, state clarification, append-only manual follow-up, and no plugin-defined skill tool", async () => {
@@ -230,7 +228,6 @@ describe("agentMode gating", () => {
     expect(helper.tools?.["hive_worktree_start"]).toBe(false);
     expect(helper.tools?.["hive_worktree_create"]).toBe(false);
     expect(helper.tools?.["hive_worktree_commit"]).toBe(false);
-    expect(helper.tools?.["hive_network_query"]).toBe(false);
     expect(helper.permission?.task).toBe("deny");
     expect(helper.permission?.delegate).toBe("deny");
   });
