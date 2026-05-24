@@ -89,6 +89,19 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 | `hive_worktree_commit` | Complete task (applies changes) |
 | `hive_worktree_discard` | Abort task (discard changes) |
 
+### Ad-hoc Worktree
+
+These tools are for isolated executor work (Hive Builder). They do not create feature/task records and do not appear in `hive_status`. Ad-hoc worktrees live under `.hive/.worktrees/adhoc/<runId>`.
+
+| Tool | Description |
+|------|-------------|
+| `hive_adhoc_worktree_create` | Create an isolated ad-hoc worktree |
+| `hive_adhoc_worktree_commit` | Commit changes in the ad-hoc worktree |
+| `hive_adhoc_merge` | Merge the ad-hoc branch into the current branch |
+| `hive_adhoc_cleanup` | Remove the ad-hoc worktree and branch |
+
+`task_status` is not a Hive tool; it is opencode-native when the background subagent experiment is active.
+
 ### Troubleshooting
 
 #### Repeated blocked-resume errors / loop
@@ -276,13 +289,14 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 |-------|------------------------|
 | `hive-master` | `parallel-exploration` |
 | `forager-worker` | `test-driven-development`, `verification-before-completion` |
+| `hive-builder` | `verification-before-completion`, `dispatching-parallel-agents`, `parallel-exploration` |
 | `hive-helper` | (none) |
 | `scout-researcher` | (none) |
 | `architect-planner` | `parallel-exploration` |
 | `swarm-orchestrator` | (none) |
 | `hygienic-reviewer` | (none) |
 
-`background-delegation` is not a default `autoLoadSkills` entry for any agent. The env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends an on-demand reference to primary agent prompts without adding it to the default autoload set.
+`background-delegation` is not a default `autoLoadSkills` entry for any agent. For Hive Builder, it is advertised by env-gated compact appendix only — the env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends an on-demand reference to primary agent prompts without adding it to the default autoload set.
 
 ### Per-Agent Model Variants
 

@@ -147,6 +147,7 @@ feat!: change plan format to support subtasks
 | Hive (Hybrid) | Plans AND orchestrates; phase-aware |
 | Architect | Plans features, interviews, writes plans. NEVER executes |
 | Swarm | Orchestrates execution. Delegates, spawns workers, verifies |
+| Hive Builder | Ad-hoc executor. Isolates, executes, verifies, merges without feature/task overhead. Available in both modes, not default |
 | Scout | Researches codebase + external docs/data |
 | Forager | Executes tasks directly in isolated worktrees |
 | Hygienic | Reviews plan/code quality. OKAY/REJECT verdict |
@@ -246,7 +247,7 @@ This is a **bun workspaces** monorepo:
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Hive Plugin Tools (19 total)
+### Hive Plugin Tools (23 total)
 
 | Domain | Tools |
 |--------|-------|
@@ -254,16 +255,20 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 | Repository Manifest | hive_repositories_status, hive_repositories_discover, hive_repositories_update |
 | Plan | hive_plan_write, hive_plan_read, hive_plan_approve |
 | Task | hive_tasks_sync, hive_task_create, hive_task_update |
-| Worktree | hive_worktree_start, hive_worktree_create, hive_worktree_commit, hive_worktree_discard |
+| Worktree (task-backed) | hive_worktree_start, hive_worktree_create, hive_worktree_commit, hive_worktree_discard |
+| Ad-hoc Worktree | hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup |
 | Merge | hive_merge |
 | Context | hive_context_write |
 | AGENTS.md | hive_agents_md |
 | Status | hive_status |
 
+Task-backed worktree tools create feature/task records and appear in `hive_status`. Ad-hoc worktree tools are for isolated executor work (Hive Builder) and do not create feature/task records. `task_status` is not a Hive tool; it is opencode-native when the background subagent experiment is active.
+
 **Tool access is filtered per agent role:**
-- **Hive** — all 19 tools (hybrid agent)
-- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_merge, hive_context_write, hive_status, hive_agents_md (17 tools — excludes hive_worktree_commit, hive_plan_write)
+- **Hive** — all 23 tools (hybrid agent)
+- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_merge, hive_context_write, hive_status, hive_agents_md (17 tools — excludes hive_worktree_commit, hive_plan_write, and ad-hoc worktree tools)
 - **Architect** — hive_feature_create, hive_plan_write, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_context_write, hive_status (8 tools)
+- **Hive Builder** — hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_context_write, hive_agents_md (9 tools — ad-hoc worktree + repo manifest + context + AGENTS.md; denied task-backed worktree, plan, feature, and status tools)
 - **Forager** — hive_plan_read, hive_worktree_commit, hive_context_write (3 tools)
 - **Scout** — hive_plan_read, hive_context_write, hive_status (3 tools)
 - **Hygienic** — hive_plan_read, hive_context_write, hive_status (3 tools)

@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Tools (19 total)
+## Tools (23 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -76,6 +76,25 @@
 - `workerPromptPreview`: short preview of the prompt
 - `promptMeta`, `payloadMeta`, `budgetApplied`, `warnings`: size and budget observability
 
+### Ad-hoc Worktree (4 tools)
+
+These tools are for isolated executor work (Hive Builder). They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`. `task_status` is not a Hive tool; it is opencode-native when the background subagent experiment is active.
+
+| Tool | Purpose |
+|------|---------|
+| `hive_adhoc_worktree_create` | Create an isolated ad-hoc worktree; returns `runId`, `workspacePath`, and `branch` |
+| `hive_adhoc_worktree_commit` | Commit changes in the ad-hoc worktree for a given `runId` |
+| `hive_adhoc_merge` | Merge the ad-hoc branch into the current branch |
+| `hive_adhoc_cleanup` | Remove the ad-hoc worktree and branch |
+
+#### Ad-hoc worktree input/output notes
+
+- All tools carry `runId`, `workspacePath`, and `branch` between calls.
+- `hive_adhoc_worktree_create` accepts `message` (description) and `repos` (for manifest-backed composite projects); on manifest-backed projects where the root is non-git with no manifest, it returns a structured JSON requirement before any git command.
+- `hive_adhoc_worktree_commit` accepts `message` (commit message).
+- `hive_adhoc_merge` accepts `strategy` (`merge`, `squash`, `rebase`) and `message`.
+- `hive_adhoc_cleanup` accepts `repos` (composite-only) and `keepBranch` (`true` to delete the worktree but preserve the branch for later use).
+
 ### Merge (1 tool)
 | Tool | Purpose |
 |------|---------|
@@ -146,12 +165,13 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Repository Manifest | 3 | status, discover, update |
 | Plan | 3 | write, read, approve |
 | Task | 3 | sync, create, update |
-| Worktree | 4 | start, create, commit, discard |
+| Worktree (task-backed) | 4 | start, create, commit, discard |
+| Ad-hoc Worktree | 4 | create, commit, merge, cleanup |
 | Merge | 1 | merge |
 | Context | 1 | write |
 | Status | 1 | status |
 | AGENTS.md | 1 | agents_md |
-| **Total** | **19** | |
+| **Total** | **23** | |
 
 ## Reserved Overview Convention
 

@@ -26,7 +26,11 @@
                 └── report.md    # Execution summary and results
 
 .hive/.worktrees/              # Isolated git worktrees
-    └── {feature}/{task}/      # Full repo copy for safe execution
+    ├── {feature}/{task}/       # Task-backed: full repo copy for safe execution
+    └── adhoc/
+        └── {runId}/            # Ad-hoc (Hive Builder): isolated executor worktree
+                                #   No feature/task records, not in hive_status
+                                #   Composite: adhoc/{runId}/repos/{repoId}/
 ```
 
 ## Prompt Files
@@ -131,7 +135,7 @@ hive_tasks_sync({ refreshPending: true })
 - Deletes pending plan-backed tasks removed from `plan.md`
 - Preserves manual tasks and any task with execution history (`in_progress`, `done`, `blocked`, `failed`, `partial`)
 
-To make it simple: use manual tasks for isolated ad-hoc work, but route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
+To make it simple: Hive Builder uses ad-hoc worktree tools (`hive_adhoc_*`) for isolated executor work without feature/task overhead. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
 
 For the issue-72 `3b` / `3c` scenario, treat `helperStatus` and live worktree/task state as the bounded truth surface: ask for a locally testable state or interrupted-state wrap-up summary first, create a safe manual follow-up only when it can append after the approved DAG, and amend `plan.md` instead of inventing intermediate numbering.
 
