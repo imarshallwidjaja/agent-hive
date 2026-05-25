@@ -44,6 +44,22 @@ describe('Orchestrator synthesis-before-delegation', () => {
   });
 });
 
+describe('Primary agent subagent concurrency guidance', () => {
+  const primaryPrompts = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Architect', ARCHITECT_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+    ['Hive Builder', HIVE_BUILDER_PROMPT],
+  ] as const;
+
+  it('does not keep stale synchronous-exploration wording in primary prompts', () => {
+    for (const [name, prompt] of primaryPrompts) {
+      expect(prompt, name).not.toContain('default to synchronous exploration');
+      expect(prompt, name).not.toContain('synchronous exploration');
+    }
+  });
+});
+
 describe('Scout operating contract', () => {
   it('enforces a read-only contract', () => {
     expect(SCOUT_BEE_PROMPT).toContain('### Read-Only Contract');
@@ -153,6 +169,13 @@ describe('Hive (Hybrid) prompt', () => {
     it('explains task() is BLOCKING by default', () => {
       expect(QUEEN_BEE_PROMPT).toContain('BLOCKING by default');
       expect(QUEEN_BEE_PROMPT).toContain('returns when done');
+    });
+
+    it('separates subagent concurrency from foreground wait mode', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
+      expect(QUEEN_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
+      expect(QUEEN_BEE_PROMPT).toContain('Blocking does not mean serial');
+      expect(QUEEN_BEE_PROMPT).toContain('If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message');
     });
 
     it('includes internal codebase exploration in Research intent', () => {
@@ -321,6 +344,13 @@ describe('Architect (Planner) prompt', () => {
     it('explains task() is BLOCKING by default', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('BLOCKING by default');
     });
+
+    it('separates subagent concurrency from foreground wait mode', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Blocking does not mean serial');
+      expect(ARCHITECT_BEE_PROMPT).toContain('If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message');
+    });
   });
 
   it('contains expanded clearance checklist', () => {
@@ -401,6 +431,14 @@ describe('Swarm (Orchestrator) prompt', () => {
     it('explains task() is BLOCKING by default for delegation', () => {
       expect(SWARM_BEE_PROMPT).toContain('BLOCKING by default');
       expect(SWARM_BEE_PROMPT).toContain('returns when');
+    });
+
+    it('separates subagent concurrency from foreground wait mode', () => {
+      expect(SWARM_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
+      expect(SWARM_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
+      expect(SWARM_BEE_PROMPT).toContain('Blocking does not mean serial');
+      expect(SWARM_BEE_PROMPT).toContain('If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message');
+      expect(SWARM_BEE_PROMPT).not.toContain('During planning, default to synchronous exploration');
     });
 
     it('tells to check hive_status() after task() returns', () => {
@@ -930,6 +968,13 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('background-delegation');
     expect(HIVE_BUILDER_PROMPT).toContain('task_id');
     expect(HIVE_BUILDER_PROMPT).toContain('task_status');
+  });
+
+  it('separates subagent concurrency from foreground wait mode', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Dependency decides serial vs parallel');
+    expect(HIVE_BUILDER_PROMPT).toContain('Wait mode decides blocking foreground vs background');
+    expect(HIVE_BUILDER_PROMPT).toContain('Blocking does not mean serial');
+    expect(HIVE_BUILDER_PROMPT).toContain('If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message');
   });
 
   it('says subagents must not call task() recursively', () => {

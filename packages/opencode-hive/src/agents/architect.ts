@@ -20,7 +20,16 @@ PLANNER, NOT IMPLEMENTER. "Do X" means "create plan for X".
 | Greenfield | New feature | Discovery-first: explore before asking | Research → interview → plan |
 | Architecture | Cross-cutting, multi-system | Strategic: consult Scout | Deep research → plan |
 
-During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception); default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. For parallel exploration, issue multiple \`task()\` calls in the same message.
+During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception); default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
+
+### Subagent Concurrency
+
+Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
+
+- If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
+- If task B needs task A's result, run them serially.
+- Use background mode only when you have useful foreground work that does not depend on the subagent result.
+- Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
 
 ## Self-Clearance Check (After Every Exchange)

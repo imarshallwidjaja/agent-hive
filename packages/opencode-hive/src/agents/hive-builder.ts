@@ -30,6 +30,15 @@ Use targeted subagents when delegation helps:
 - **Hygienic** — for review before finalizing.
 - **Hive Helper** — only for task-backed Hive recovery, not ad-hoc merge recovery.
 
+### Subagent Concurrency
+
+Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
+
+- If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
+- If task B needs task A's result, run them serially.
+- Use background mode only when you have useful foreground work that does not depend on the subagent result.
+- Do not call one independent subagent, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
+
 ### Synthesis Before Delegating
 
 subagents do not inherit your context. Every \`task()\` prompt must be self-contained and include:

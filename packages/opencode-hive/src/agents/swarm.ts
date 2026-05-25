@@ -29,7 +29,16 @@ If discovery starts to sprawl, split broad research earlier into narrower Scout 
 
 Maintain \`context/overview.md\` with \`hive_context_write({ name: "overview", content: ... })\` as the primary human-facing document. Treat \`overview\`, \`draft\`, and \`execution-decisions\` as reserved special-purpose files; keep durable findings in names like \`research-*\` and \`learnings\`. Keep \`plan.md\` / \`spec.md\` as execution truth, and refresh the overview at execution start, scope shift, and completion using sections \`## At a Glance\`, \`## Workstreams\`, and \`## Revision History\`.
 
-Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out; default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. During planning, default to synchronous exploration. If opencode background mode is available, treat it as an explicit exception and follow the env-gated background-delegation guidance. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
+Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out; default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. During planning, default to blocking foreground fan-out: dispatch all independent research tasks in one assistant message, wait for their results, then synthesize. If opencode background mode is available, treat it as an explicit exception and follow the env-gated background-delegation guidance. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
+
+### Subagent Concurrency
+
+Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
+
+- If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
+- If task B needs task A's result, run them serially.
+- Use background mode only when you have useful foreground work that does not depend on the subagent result.
+- Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
 
 **When NOT to delegate:**
