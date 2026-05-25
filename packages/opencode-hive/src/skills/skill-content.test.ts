@@ -36,6 +36,10 @@ describe('skill content', () => {
     expect(skill!.template).toContain('fit in one context window');
     expect(skill!.template).toContain('return to Hive');
     expect(skill!.template).toContain('one more fan-out would broaden scope too far');
+    expect(skill!.template).toContain('Dependency decides serial vs parallel');
+    expect(skill!.template).toContain('Wait mode decides blocking foreground vs background');
+    expect(skill!.template).toContain('Blocking does not mean serial');
+    expect(skill!.template).toContain('If the only reason for serializing is `task()` is blocking, that is incorrect');
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
@@ -46,6 +50,16 @@ describe('skill content', () => {
     expect(skill!.template).toContain(
       'Parallelize by issuing multiple task() calls in the same assistant message.'
     );
+  });
+
+  it('does not keep stale synchronous-exploration wording in delegation skills', () => {
+    for (const name of ['parallel-exploration', 'background-delegation', 'dispatching-parallel-agents']) {
+      const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
+
+      expect(skill).toBeDefined();
+      expect(skill!.template, name).not.toContain('default to synchronous exploration');
+      expect(skill!.template, name).not.toContain('synchronous exploration');
+    }
   });
 
   it('bundles background-delegation with env-gated task_status guidance', () => {
@@ -61,6 +75,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('wait: true');
     expect(skill!.template).toContain('timeout_ms');
     expect(skill!.template).toContain('normal blocking `task()` remains the default');
+    expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Do not call `task()` from subagents');
     expect(skill!.template).not.toContain('@explorer');
     expect(skill!.template).not.toContain('subtask');

@@ -9,6 +9,8 @@ Background delegation is an optional opencode execution mode for independent age
 
 Core rule: independence first. Use `task({ background: true, ... })` only when useful foreground work does not depend on the result.
 
+Background is a wait mode, not the definition of parallelism. Independent subagent tasks can run in parallel with normal blocking `task()` when the primary agent emits all `task()` calls in the same assistant message. Use background only for the separate question: can the primary agent keep doing unrelated foreground work while those subagents run?
+
 Default: normal blocking `task()` remains the default. If the next decision depends on the result, use blocking `task()` or `task_status({ task_id, wait: true, timeout_ms: ... })`.
 
 ## Protocol

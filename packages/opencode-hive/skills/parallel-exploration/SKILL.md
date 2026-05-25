@@ -37,6 +37,18 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 ## The Pattern
 
+### 0. Separate Dependency From Wait Mode
+
+Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background.
+
+Blocking does not mean serial. Blocking only means the primary agent waits after dispatch. If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message, then wait for the batch results.
+
+- Serial: one `task()` call, wait for the result, then decide whether to call another. Use this only when a later prompt needs an earlier result.
+- Blocking parallel fan-out: multiple `task()` calls in one assistant message, then wait for all results before continuing.
+- Background parallel fan-out: background-mode task calls only when the primary agent can do unrelated foreground work. Follow the `background-delegation` skill before using background mode.
+
+If the only reason for serializing is `task()` is blocking, that is incorrect. Blocking applies after dispatch, not between independent dispatches.
+
 ### 1. Decompose Into Independent Questions
 
 Split your investigation into 2-4 independent sub-questions. Each sub-question should fit in one context window. If a request will not fit in one context window, narrow the slice, capture bounded findings, and return to Hive with recommended next steps instead of pushing toward an oversized final report. Good decomposition:
@@ -97,6 +109,8 @@ task({
 - Use `subagent_type: 'scout-researcher'` for read-only exploration unless a configured scout-derived custom subagent is a better match
 - Give each task a clear, focused `description`
 - Make prompts specific about what evidence to return
+- Dispatch dependency-independent slices together, even though normal `task()` is blocking
+- Use background mode only when the primary agent has independent foreground work to do while the scouts run
 
 ### 3. Collect Results
 
@@ -231,7 +245,7 @@ task({ ... });
 1. **Speed** - 3 investigations in time of 1
 2. **Focus** - Each Scout has narrow scope
 3. **Independence** - No interference between tasks
-4. **Flexibility** - Cancel unneeded tasks, add new ones
+4. **Flexibility** - Ignore irrelevant returned findings and dispatch follow-up tasks only after synthesis
 
 ## Verification
 
