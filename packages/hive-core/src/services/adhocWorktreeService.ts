@@ -691,7 +691,7 @@ export class AdhocWorktreeService {
 
   async merge(
     runId: string,
-    strategy: AdhocMergeStrategy = 'merge',
+    strategy: AdhocMergeStrategy = 'squash',
     message?: string,
     options: AdhocMergeOptions = {},
   ): Promise<AdhocMergeResult> {

@@ -207,7 +207,7 @@ describe("AdhocWorktreeService.commit", () => {
 });
 
 describe("AdhocWorktreeService.merge", () => {
-  it("supports default merge and returns cleanup flags=false when cleanup is not requested", async () => {
+  it("defaults to squash merge and returns cleanup flags=false when cleanup is not requested", async () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "merge-run" });
     await fs.writeFile(path.join(created.path, "merge-file.txt"), "hi\n", "utf-8");
@@ -219,7 +219,10 @@ describe("AdhocWorktreeService.merge", () => {
 
     expect(result.success).toBe(true);
     expect(result.merged).toBe(true);
-    expect(result.strategy).toBe("merge");
+    expect(result.strategy).toBe("squash");
+    expect(await readHeadBody(fixture.repoPath)).toBe(
+      "hive(adhoc/merge-run): merge (squashed)",
+    );
     expect(result.conflictState).toBe("none");
     expect(result.cleanup).toEqual({
       worktreeRemoved: false,

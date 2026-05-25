@@ -963,6 +963,15 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('branch');
   });
 
+  it('prefers squash merges while allowing explicit normal merges', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Prefer squash merges');
+    expect(HIVE_BUILDER_PROMPT).toContain('explicit normal merge');
+  });
+
+  it('tells agents to omit unused optional ad-hoc arguments', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('omit it instead of sending an empty string');
+  });
+
   it('contains background-delegation policy', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('BLOCKING by default');
     expect(HIVE_BUILDER_PROMPT).toContain('background-delegation');

@@ -161,6 +161,29 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(fs.existsSync(result.workspacePath!)).toBe(true);
   });
 
+  it('hive_adhoc_worktree_create treats blank optional fields as omitted', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_create_blank_optional');
+
+    const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { runId: '', label: '', baseBranch: '', repoIds: [] },
+      toolContext,
+    );
+    const result = parseToolJson<{
+      success?: boolean;
+      reason?: string;
+      runId?: string;
+      workspacePath?: string;
+    }>(raw);
+
+    expect(result.success).toBe(true);
+    expect(result.reason).toBeUndefined();
+    expect(typeof result.runId).toBe('string');
+    expect(result.runId).not.toBe('');
+    expect(fs.existsSync(result.workspacePath!)).toBe(true);
+  });
+
   it('returns structured repo_manifest_required for non-git root without manifest', async () => {
     // Intentionally do NOT initialize git in testRoot.
     const hooks = await loadHooks(testRoot);
@@ -321,8 +344,10 @@ describe('ad-hoc worktree plugin tools', () => {
     const merge = parseToolJson<{
       workspacePath?: string;
       branch?: string;
+      strategy?: string;
       nextAction?: string;
     }>(mergeRaw);
+    expect(merge.strategy).toBe('squash');
     expectWorktreeResponseShape(merge);
   });
 

@@ -28,6 +28,18 @@ function isBackgroundSubagentsExperimentEnabled(env: Record<string, string | und
     || isTruthyEnv(env.OPENCODE_EXPERIMENTAL);
 }
 
+function blankToUndefined(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeOptionalStringList(values: string[] | undefined): string[] | undefined {
+  const normalized = values
+    ?.map((value) => value.trim())
+    .filter(Boolean);
+  return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
 /**
  * Build auto-loaded skill templates for an agent.
  * Returns a string containing all skill templates to append to the agent's prompt.
@@ -1825,10 +1837,10 @@ Expand your Discovery section and try again.`;
       hive_adhoc_worktree_create: tool({
         description: 'Create a short-lived ad-hoc worktree (no feature/task required). For manifest-backed projects, pass repoIds to create a composite workspace. Returns structured JSON with workspacePath, branch, runId, and nextAction.',
         args: {
-          runId: tool.schema.string().optional().describe('Explicit run identifier. When omitted, a unique safe id is generated.'),
-          label: tool.schema.string().optional().describe('Optional slug label folded into the generated runId; ignored when runId is provided.'),
-          baseBranch: tool.schema.string().optional().describe('Optional base ref/commit; defaults to current HEAD.'),
-          repoIds: tool.schema.array(tool.schema.string()).optional().describe('Explicit repo IDs for composite ad-hoc workspaces. When omitted, single-root mode is used.'),
+          runId: tool.schema.string().optional().describe('Explicit run identifier. Omit or leave blank to generate a unique safe id.'),
+          label: tool.schema.string().optional().describe('Optional slug label folded into the generated runId; ignored when runId is provided. Omit or leave blank for no label.'),
+          baseBranch: tool.schema.string().optional().describe('Optional base ref/commit. Omit or leave blank to use current HEAD.'),
+          repoIds: tool.schema.array(tool.schema.string()).optional().describe('Explicit repo IDs for composite ad-hoc workspaces. Omit or pass an empty array for single-root mode.'),
         },
         async execute({ runId, label, baseBranch, repoIds }) {
           if (!hasRepositoryManifest() && !isProjectRootGitRepo()) {
@@ -1843,10 +1855,10 @@ Expand your Discovery section and try again.`;
           }
           try {
             const info: AdhocWorktreeInfo = await adhocWorktreeService.create({
-              runId,
-              label,
-              baseBranch,
-              repoIds,
+              runId: blankToUndefined(runId),
+              label: blankToUndefined(label),
+              baseBranch: blankToUndefined(baseBranch),
+              repoIds: normalizeOptionalStringList(repoIds),
             });
             const workspacePath = info.workspacePath ?? info.path;
             return respond({
@@ -1919,7 +1931,7 @@ Expand your Discovery section and try again.`;
                 ...(result.repos !== undefined ? { repos: result.repos } : {}),
               },
               nextAction: result.committed
-                ? 'Call hive_adhoc_merge({ runId }) to integrate the ad-hoc branch, or hive_adhoc_cleanup to discard.'
+                ? 'Call hive_adhoc_merge({ runId }) to squash-merge the ad-hoc branch by default, pass strategy: "merge" when needed, or call hive_adhoc_cleanup to discard.'
                 : (result.message === 'No changes to commit'
                   ? 'No changes were committed. Modify the worktree and retry hive_adhoc_worktree_commit.'
                   : 'Resolve the commit failure (per-repo error or git state) and retry hive_adhoc_worktree_commit.'),
@@ -1938,15 +1950,15 @@ Expand your Discovery section and try again.`;
       }),
 
       hive_adhoc_merge: tool({
-        description: 'Merge an ad-hoc worktree branch into the current branch. Returns structured JSON with workspacePath, branch, and nextAction.',
+        description: 'Merge an ad-hoc worktree branch into the current branch. Defaults to squash; pass strategy: "merge" for an explicit normal merge. Returns structured JSON with workspacePath, branch, and nextAction.',
         args: {
           runId: tool.schema.string().describe('Ad-hoc run identifier.'),
-          strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional().describe('Merge strategy (default: merge).'),
+          strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional().describe('Merge strategy (default: squash). Use merge explicitly when preserving branch topology is more important than minimizing commit churn.'),
           message: tool.schema.string().optional().describe('Optional merge message for merge/squash. Not supported for rebase.'),
           preserveConflicts: tool.schema.boolean().optional().describe('Keep merge conflict state intact instead of auto-aborting (default: false).'),
           cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional().describe('Cleanup mode after a successful merge (default: none).'),
         },
-        async execute({ runId, strategy = 'merge', message, preserveConflicts, cleanup }) {
+        async execute({ runId, strategy = 'squash', message, preserveConflicts, cleanup }) {
           try {
             const info = await adhocWorktreeService.get(runId);
             if (!info) {

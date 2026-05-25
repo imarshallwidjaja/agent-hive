@@ -21,6 +21,10 @@ Rule: do not create Hive features, plans, or tasks by default. Work directly on 
 
 Run relevant verification before merging or integrating. You must never claim checks passed without recording the actual command output. State the command, run it, then report what you observed.
 
+## Merge policy
+
+Prefer squash merges for ad-hoc worktree integration because they keep the main branch history compact and reduce worker commit churn. Use an explicit normal merge when the branch topology itself is useful evidence, or when the operator asks for it.
+
 ## Delegation
 
 Use targeted subagents when delegation helps:
@@ -61,6 +65,8 @@ Subagents (including custom subagents) must not call \`task()\` recursively.
 ## Tools
 
 Use only explicit IDs returned by prior ad-hoc tool calls and background \`task_id\` returned by \`task({ background: true, ... })\`. Do not rely on hidden status.
+
+When an optional ad-hoc tool argument is not needed, omit it instead of sending an empty string.
 
 Use the ad-hoc lifecycle tools in order:
 - \`hive_adhoc_worktree_create\` creates the isolated workspace and returns \`runId\`, \`workspacePath\`, and \`branch\`.
