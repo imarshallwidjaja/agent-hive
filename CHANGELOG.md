@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-05-26
+
+### Changed
+- Ad-hoc worktree merges now default to squash merges, keeping main-branch history compact unless an operator explicitly requests a normal merge or rebase.
+- OpenCode ad-hoc worktree tool inputs now treat blank optional strings and empty repository lists as omitted, avoiding invalid run IDs, labels, base refs, or accidental composite workspace selection.
+- Subagent planning guidance now separates dependency parallelism from background wait mode. Independent Scout research tasks can be dispatched together with normal blocking `task()` calls; background mode remains only for unrelated foreground work.
+
+### Fixed
+- Hive, Swarm, Architect, Hive Builder, and bundled delegation skills now carry the same concurrency guidance, reducing serial fan-out caused by treating blocking `task()` as inherently sequential.
+
 ## [1.5.0] - 2026-05-25
 
 ### Added
