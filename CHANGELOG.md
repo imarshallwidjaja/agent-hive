@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-25
+
+### Added
+- **Hive Builder is now a packaged OpenCode agent**: `oc-arkive` now ships a dedicated ad-hoc executor that can inspect, isolate, implement, verify, commit, merge, and clean up small changes without creating full Hive feature/task records.
+- **Ad-hoc worktree tools are part of the plugin contract**: `hive_adhoc_worktree_create`, `hive_adhoc_worktree_commit`, `hive_adhoc_merge`, and `hive_adhoc_cleanup` support isolated single-root and manifest-backed composite workspaces for release-safe executor work.
+- **Background delegation is available behind the OpenCode experiment flag**: Primary agents can load the bundled `background-delegation` protocol when background subagents are enabled, while subagents remain blocked from recursive delegation.
+
+### Changed
+- Runtime agents now inherit their base prompts before applying custom role docs, so custom agent definitions extend the shipped contract instead of replacing required safety and workflow guidance.
+- OpenCode docs and generated operator guidance now describe Hive Builder, ad-hoc worktree handoffs, and env-gated background delegation explicitly.
+
+### Fixed
+- Generated skill materializations are preserved when custom skill loading runs, preventing bundled skills from disappearing during OpenCode startup.
+- Ad-hoc worktree operations now validate run IDs, returned workspace paths, registered branches, and composite repository manifests before committing, merging, or cleaning up.
+
 ## [1.4.10] - 2026-05-24
 
 ### Changed

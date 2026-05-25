@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, expect, it, beforeAll, afterAll, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -27,18 +27,18 @@ function cleanup() {
 }
 
 describe("Atomic + Locked JSON Utilities", () => {
-  beforeEach(() => {
+  beforeAll(() => {
     cleanup();
     fs.mkdirSync(TEST_DIR, { recursive: true });
   });
 
-  afterEach(() => {
+  afterAll(() => {
     cleanup();
   });
 
   describe("acquireLock", () => {
     it("creates lock file and returns release function", async () => {
-      const filePath = path.join(TEST_DIR, "test.json");
+      const filePath = path.join(TEST_DIR, "lock-create.json");
       const lockPath = getLockPath(filePath);
 
       const release = await acquireLock(filePath);
@@ -51,7 +51,7 @@ describe("Atomic + Locked JSON Utilities", () => {
     });
 
     it("blocks second acquirer until lock is released", async () => {
-      const filePath = path.join(TEST_DIR, "test.json");
+      const filePath = path.join(TEST_DIR, "lock-blocking.json");
       const order: string[] = [];
 
       const release1 = await acquireLock(filePath);
@@ -86,7 +86,7 @@ describe("Atomic + Locked JSON Utilities", () => {
     });
 
     it("times out when lock cannot be acquired", async () => {
-      const filePath = path.join(TEST_DIR, "test.json");
+      const filePath = path.join(TEST_DIR, "lock-timeout.json");
 
       const release = await acquireLock(filePath);
 
@@ -98,7 +98,7 @@ describe("Atomic + Locked JSON Utilities", () => {
     });
 
     it("breaks stale lock after TTL", async () => {
-      const filePath = path.join(TEST_DIR, "test.json");
+      const filePath = path.join(TEST_DIR, "lock-stale.json");
       const lockPath = getLockPath(filePath);
 
       // Create a stale lock manually
@@ -122,7 +122,7 @@ describe("Atomic + Locked JSON Utilities", () => {
 
   describe("acquireLockSync", () => {
     it("creates lock file synchronously", () => {
-      const filePath = path.join(TEST_DIR, "test.json");
+      const filePath = path.join(TEST_DIR, "lock-sync-create.json");
       const lockPath = getLockPath(filePath);
 
       const release = acquireLockSync(filePath);
@@ -135,7 +135,7 @@ describe("Atomic + Locked JSON Utilities", () => {
     });
 
     it("times out synchronously when lock held", () => {
-      const filePath = path.join(TEST_DIR, "test.json");
+      const filePath = path.join(TEST_DIR, "lock-sync-timeout.json");
 
       const release = acquireLockSync(filePath);
 

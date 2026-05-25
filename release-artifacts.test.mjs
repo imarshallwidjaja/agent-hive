@@ -166,6 +166,21 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       /node --test release-artifacts\.test\.mjs/,
       'package.json should run the release artifact contract from release:check'
     );
+    const hiveCoreBuildIndex = packageJson.scripts['release:check'].indexOf('bun run --filter hive-core build');
+    const vscodeBuildIndex = packageJson.scripts['release:check'].indexOf('bun run --filter vscode-arkive build');
+    const vscodeBundleTestIndex = packageJson.scripts['release:check'].indexOf('node --test release-vscode-bundle.test.mjs');
+
+    assert.notEqual(hiveCoreBuildIndex, -1, 'package.json should build hive-core from release:check');
+    assert.notEqual(vscodeBuildIndex, -1, 'package.json should build vscode-arkive from release:check');
+    assert.notEqual(vscodeBundleTestIndex, -1, 'package.json should run release-vscode-bundle.test.mjs from release:check');
+    assert.ok(
+      hiveCoreBuildIndex < vscodeBundleTestIndex,
+      'package.json should build hive-core before release-vscode-bundle.test.mjs'
+    );
+    assert.ok(
+      vscodeBuildIndex < vscodeBundleTestIndex,
+      'package.json should build vscode-arkive before release-vscode-bundle.test.mjs'
+    );
   });
 
   it('packs every oc-arkive asset promised by the README install contract', () => {
