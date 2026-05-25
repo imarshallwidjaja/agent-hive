@@ -558,7 +558,7 @@ describe("e2e: Forager compaction loop mitigation (in-process)", () => {
     expect(compactionPrompt).not.toMatch(/use hive_status to check feature state/i);
   });
 
-  it("runtime contract excludes unsupported startup/compaction hooks", async () => {
+  it("runtime contract excludes unsupported compaction hooks", async () => {
     const { createOpencodeClient: mkClient } = await import("@opencode-ai/sdk");
     const OPENCODE_CLIENT = mkClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 
@@ -572,7 +572,6 @@ describe("e2e: Forager compaction loop mitigation (in-process)", () => {
     };
     const hooks = await plugin(ctx);
 
-    expect(hooks["experimental.chat.system.transform" as keyof typeof hooks]).toBeUndefined();
     expect(hooks["experimental.session.compacting" as keyof typeof hooks]).toBeUndefined();
   });
 

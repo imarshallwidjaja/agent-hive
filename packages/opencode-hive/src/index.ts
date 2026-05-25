@@ -209,6 +209,11 @@ type ToolContext = {
   abort: AbortSignal;
 };
 
+type SystemTransformHook = (
+  input: { sessionID?: string; agent?: string },
+  output: { system: string[] },
+) => Promise<void>;
+
 const plugin: Plugin = async (ctx) => {
   const { directory, client, worktree } = ctx;
 
@@ -246,6 +251,7 @@ const plugin: Plugin = async (ctx) => {
   const contextService = new ContextService(directory);
   const configService = new ConfigService(directory);
   const sessionService = new SessionService(directory);
+  const runtimeAgentPrompts = new Map<string, string>();
   const disabledMcps = configService.getDisabledMcps();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message ?? null;
   if (configFallbackWarning) {
@@ -1070,6 +1076,29 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     // for the hook's output parameter type. The hook only accesses output.message.variant
     // which exists on UserMessage.
     "chat.message": createVariantHook(configService, sessionService, customAgentConfigsForClassification, taskWorkerRecovery) as any,
+
+    "experimental.chat.system.transform": (async (
+      input: { sessionID?: string; agent?: string },
+      output: { system: string[] },
+    ) => {
+      if (!Array.isArray(output.system)) {
+        return;
+      }
+
+      const trackedAgent = input.sessionID ? sessionService.getGlobal(input.sessionID)?.agent : undefined;
+      const agentName = input.agent ?? trackedAgent;
+      const agentPrompt = agentName ? runtimeAgentPrompts.get(agentName) : undefined;
+      if (!agentPrompt) {
+        return;
+      }
+
+      if (output.system.length === 0) {
+        output.system.push(agentPrompt);
+        return;
+      }
+
+      output.system[0] = `${output.system[0]}\n\n${agentPrompt}`;
+    }) satisfies SystemTransformHook,
 
     "experimental.chat.messages.transform": async (
       _input: {},
@@ -2276,6 +2305,8 @@ Expand your Discovery section and try again.`;
 
     // Config hook - merge agents into opencodeConfig.agent
     config: async (opencodeConfig: Record<string, unknown>) => {
+      runtimeAgentPrompts.clear();
+
       function agentTools(allowed: string[]): Record<string, boolean> {
         const result: Record<string, boolean> = {};
         for (const tool of HIVE_TOOL_NAMES) {
@@ -2335,12 +2366,13 @@ Expand your Discovery section and try again.`;
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
+      const hivePrompt = QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hiveAutoLoadedSkills + hiveBackgroundDelegationAppendix + (agentMode === 'unified' ? customSubagentAppendix : '');
+      runtimeAgentPrompts.set('hive-master', hivePrompt);
       const hiveConfig = {
         model: hiveUserConfig.model,
         variant: hiveUserConfig.variant,
         temperature: hiveUserConfig.temperature ?? 0.5,
         description: 'Hive (Hybrid) - Plans + orchestrates. Detects phase, loads skills on-demand.',
-        prompt: QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hiveAutoLoadedSkills + hiveBackgroundDelegationAppendix + (agentMode === 'unified' ? customSubagentAppendix : ''),
         permission: {
           question: "allow",
           skill: "allow",
@@ -2398,12 +2430,13 @@ Expand your Discovery section and try again.`;
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
+      const swarmPrompt = SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadedSkills + swarmBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : '');
+      runtimeAgentPrompts.set('swarm-orchestrator', swarmPrompt);
       const swarmConfig = {
         model: swarmUserConfig.model,
         variant: swarmUserConfig.variant,
         temperature: swarmUserConfig.temperature ?? 0.5,
         description: 'Swarm (Orchestrator) - Orchestrates execution. Delegates, spawns workers, verifies, merges.',
-        prompt: SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadedSkills + swarmBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
         tools: agentTools([
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
@@ -2452,13 +2485,14 @@ Expand your Discovery section and try again.`;
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
+      const foragerPrompt = FORAGER_BEE_PROMPT + HIVE_SYSTEM_PROMPT + foragerAutoLoadedSkills;
+      runtimeAgentPrompts.set('forager-worker', foragerPrompt);
       const foragerConfig = {
         model: foragerUserConfig.model,
         variant: foragerUserConfig.variant,
         temperature: foragerUserConfig.temperature ?? 0.3,
         mode: 'subagent' as const,
         description: 'Forager (Worker/Coder) - Executes tasks directly in isolated worktrees. Never delegates.',
-        prompt: FORAGER_BEE_PROMPT + HIVE_SYSTEM_PROMPT + foragerAutoLoadedSkills,
         tools: agentTools(['hive_plan_read', 'hive_worktree_commit', 'hive_context_write']),
         permission: {
           task: "deny",
@@ -2521,12 +2555,13 @@ Expand your Discovery section and try again.`;
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
+      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadedSkills + builderBackgroundDelegationAppendix + customSubagentAppendix;
+      runtimeAgentPrompts.set('hive-builder', builderPrompt);
       const builderConfig = {
         model: builderUserConfig.model,
         variant: builderUserConfig.variant,
         temperature: builderUserConfig.temperature ?? 0.4,
         description: 'Hive Builder - Hive-aware ad-hoc executor with lightweight worktree, verification, merge, and cleanup flow.',
-        prompt: HIVE_BUILDER_PROMPT + builderAutoLoadedSkills + builderBackgroundDelegationAppendix + customSubagentAppendix,
         tools: agentTools([
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
@@ -2587,7 +2622,11 @@ Expand your Discovery section and try again.`;
           'forager-worker': foragerConfig,
           'hygienic-reviewer': hygienicConfig,
         },
+        baseRuntimePrompts: {
+          'forager-worker': foragerPrompt,
+        },
         autoLoadedSkills: customAutoLoadedSkills,
+        registerRuntimePrompt: (agentName, prompt) => runtimeAgentPrompts.set(agentName, prompt),
       });
 
       // Build agents map based on agentMode

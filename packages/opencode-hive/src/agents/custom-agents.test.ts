@@ -131,6 +131,56 @@ describe('buildCustomSubagents', () => {
     expect(derived['reviewer-security'].description).toBe('Use for security-focused review passes.');
     expect(derived['reviewer-security'].model).toBe('base/hygienic-model');
   });
+
+  it('registers custom forager runtime prompts when the base forager prompt is runtime-only', () => {
+    const registeredRuntimePrompts: Record<string, string> = {};
+    const baseAgents = {
+      'scout-researcher': {
+        mode: 'subagent' as const,
+        description: 'Base Scout',
+        prompt: SCOUT_BEE_PROMPT,
+      },
+      'forager-worker': {
+        mode: 'subagent' as const,
+        description: 'Base Forager',
+        tools: { hive_merge: false },
+        permission: { task: 'deny', delegate: 'deny', skill: 'allow' },
+      },
+      'hygienic-reviewer': {
+        mode: 'subagent' as const,
+        description: 'Base Hygienic',
+        prompt: HYGIENIC_BEE_PROMPT,
+      },
+    };
+
+    const derived = buildCustomSubagents({
+      customAgents: {
+        'forager-ui': {
+          baseAgent: 'forager-worker',
+          description: 'Use for UI-heavy implementation tasks.',
+          autoLoadSkills: ['test-driven-development'],
+        },
+      },
+      baseAgents: baseAgents as any,
+      baseRuntimePrompts: {
+        'forager-worker': `${FORAGER_BEE_PROMPT}\n\n# Base forager skills`,
+      },
+      autoLoadedSkills: {
+        'forager-ui': '\n\n# forager-ui auto skills',
+      },
+      registerRuntimePrompt: (agentName: string, prompt: string) => {
+        registeredRuntimePrompts[agentName] = prompt;
+      },
+    } as any);
+
+    expect(derived['forager-ui'].prompt).toBeUndefined();
+    expect(derived['forager-ui'].description).toBe('Use for UI-heavy implementation tasks.');
+    expect(derived['forager-ui'].permission).toEqual(baseAgents['forager-worker'].permission);
+    expect(registeredRuntimePrompts['forager-ui']).toContain(FORAGER_BEE_PROMPT);
+    expect(registeredRuntimePrompts['forager-ui']).toContain('# Base forager skills');
+    expect(registeredRuntimePrompts['forager-ui']).toContain('# forager-ui auto skills');
+    expect(registeredRuntimePrompts['forager-ui']).not.toContain('Use for UI-heavy implementation tasks.');
+  });
 });
 
 describe('CUSTOM_AGENT_RESERVED_NAMES', () => {

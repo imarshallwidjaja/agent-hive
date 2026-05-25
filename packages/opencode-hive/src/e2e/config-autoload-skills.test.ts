@@ -63,6 +63,31 @@ async function applyConfigHook(
   return opencodeConfig;
 }
 
+async function renderRuntimeSystemPrompt(
+  testRoot: string,
+  agentName: string,
+  options: { trackMessage?: boolean; opencodeConfig?: Record<string, unknown> } = {},
+): Promise<string> {
+  const hooks = await plugin(createCtx(testRoot));
+  await hooks.config!(options.opencodeConfig ?? { agent: {} });
+
+  const sessionID = `sess_${agentName.replace(/[^a-z0-9]/gi, '_')}`;
+  if (options.trackMessage ?? true) {
+    await hooks['chat.message']?.(
+      { sessionID, agent: agentName },
+      { message: {}, parts: [] } as any,
+    );
+  }
+
+  const output = { system: ['OpenCode provider base prompt'] };
+  const systemTransform = hooks['experimental.chat.system.transform' as keyof typeof hooks] as
+    | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
+    | undefined;
+  await systemTransform?.({ sessionID, agent: agentName }, output);
+
+  return output.system[0] ?? '';
+}
+
 async function captureWarnings<T>(run: () => Promise<T>): Promise<{ result: T; warnings: string[] }> {
   const warnings: string[] = [];
   const originalWarn = console.warn;
@@ -160,10 +185,12 @@ describe('config hook autoLoadSkills injection', () => {
     writeHiveConfig(testRoot, { agentMode: 'unified' });
 
     const opencodeConfig = await applyConfigHook(testRoot);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const backgroundSkill = requireBuiltinSkill('background-delegation');
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
 
+    expect((opencodeConfig.agent as Record<string, { prompt?: string }>)['hive-master']?.prompt).toBeUndefined();
+    expect(hiveMasterPrompt).toStartWith('OpenCode provider base prompt\n\n# Hive (Hybrid)');
     expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
     expect(hiveMasterPrompt).not.toContain(backgroundSkill.template);
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
@@ -184,13 +211,13 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const opencodeConfig = await applyConfigHook(testRoot);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
-    const builderPrompt = getAgentPrompt(opencodeConfig, 'hive-builder');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
-    const foragerPrompt = getAgentPrompt(opencodeConfig, 'forager-worker');
+    const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
     const hygienicPrompt = getAgentPrompt(opencodeConfig, 'hygienic-reviewer');
-    const customPrompt = getAgentPrompt(opencodeConfig, 'forager-background');
+    const customPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-background', { trackMessage: false });
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
     expect(hiveMasterPrompt).toContain('## Background Subagent Experiment');
@@ -216,10 +243,10 @@ describe('config hook autoLoadSkills injection', () => {
 
     const opencodeConfig = await applyConfigHook(testRoot);
     const architectPrompt = getAgentPrompt(opencodeConfig, 'architect-planner');
-    const swarmPrompt = getAgentPrompt(opencodeConfig, 'swarm-orchestrator');
-    const builderPrompt = getAgentPrompt(opencodeConfig, 'hive-builder');
+    const swarmPrompt = await renderRuntimeSystemPrompt(testRoot, 'swarm-orchestrator', { trackMessage: false });
+    const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
-    const foragerPrompt = getAgentPrompt(opencodeConfig, 'forager-worker');
+    const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
     const hygienicPrompt = getAgentPrompt(opencodeConfig, 'hygienic-reviewer');
     const backgroundSkill = requireBuiltinSkill('background-delegation');
@@ -243,8 +270,8 @@ describe('config hook autoLoadSkills injection', () => {
     writeHiveConfig(testRoot, { agentMode: 'unified' });
 
     const opencodeConfig = await applyConfigHook(testRoot);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
-    const builderPrompt = getAgentPrompt(opencodeConfig, 'hive-builder');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
 
     expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
@@ -261,8 +288,8 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
-    const builderPrompt = getAgentPrompt(opencodeConfig, 'hive-builder');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
 
     expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
@@ -293,7 +320,7 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
 
     expect(hiveMasterPrompt).toContain('## Background Subagent Experiment');
@@ -309,9 +336,9 @@ describe('config hook autoLoadSkills injection', () => {
     writeHiveConfig(testRoot, { agentMode: 'unified' });
 
     const opencodeConfig = await applyConfigHook(testRoot);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
-    const foragerPrompt = getAgentPrompt(opencodeConfig, 'forager-worker');
+    const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
     const tddSkill = requireBuiltinSkill('test-driven-development');
     const verificationSkill = requireBuiltinSkill('verification-before-completion');
@@ -365,9 +392,9 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
-    const hivePrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hivePrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const scoutDocsPrompt = getAgentPrompt(opencodeConfig, 'scout-docs');
-    const foragerUiPrompt = getAgentPrompt(opencodeConfig, 'forager-ui');
+    const foragerUiPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-ui', { trackMessage: false });
     const brainstormingSkill = requireBuiltinSkill('brainstorming');
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
     const tddSkill = requireBuiltinSkill('test-driven-development');
@@ -398,7 +425,7 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const opencodeConfig = await applyConfigHook(testRoot);
-    const foragerPrompt = getAgentPrompt(opencodeConfig, 'forager-worker');
+    const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const brainstormingSkill = requireBuiltinSkill('brainstorming');
     const tddSkill = requireBuiltinSkill('test-driven-development');
     const verificationSkill = requireBuiltinSkill('verification-before-completion');
@@ -415,7 +442,7 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
     const generatedPath = getSkillPaths(opencodeConfig)[0];
 
@@ -443,7 +470,7 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
 
     expect((opencodeConfig.agent as Record<string, unknown>)['hive-master']).toBeDefined();
@@ -458,14 +485,14 @@ describe('config hook autoLoadSkills injection', () => {
 
     const opencodeConfig = await applyConfigHook(testRoot);
     const architectPrompt = getAgentPrompt(opencodeConfig, 'architect-planner');
-    const swarmPrompt = getAgentPrompt(opencodeConfig, 'swarm-orchestrator');
+    const swarmPrompt = await renderRuntimeSystemPrompt(testRoot, 'swarm-orchestrator', { trackMessage: false });
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
 
     expect(architectPrompt).toContain(parallelExplorationSkill.template);
     expect(swarmPrompt).not.toContain(parallelExplorationSkill.template);
   });
 
-  it('injects bundled skill bodies directly into config-hook prompts', async () => {
+  it('injects bundled skill bodies directly into runtime prompts', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
       agents: {
@@ -476,7 +503,7 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const opencodeConfig = await applyConfigHook(testRoot);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const brainstormingSkill = requireBuiltinSkill('brainstorming');
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
 
@@ -484,7 +511,7 @@ describe('config hook autoLoadSkills injection', () => {
     expect(hiveMasterPrompt).toContain(parallelExplorationSkill.template);
   });
 
-  it('does not use the removed system.transform autoload path', async () => {
+  it('keeps hive-master autoloaded skills in the runtime prompt', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
       agents: {
@@ -495,11 +522,10 @@ describe('config hook autoLoadSkills injection', () => {
     });
 
     const hooks = await plugin(createCtx(testRoot));
-    expect(hooks['experimental.chat.system.transform' as keyof typeof hooks]).toBeUndefined();
 
     const opencodeConfig: Record<string, unknown> = { agent: {} };
     await hooks.config!(opencodeConfig);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
 
     expect(hiveMasterPrompt).toContain('## Hive — Active Session');
     expect(hiveMasterPrompt).toContain(requireBuiltinSkill('brainstorming').template);
@@ -594,7 +620,7 @@ describe('config hook native skill registration', () => {
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
 
     expect(generatedPath).toBeDefined();
@@ -617,7 +643,7 @@ describe('config hook native skill registration', () => {
     });
 
     const opencodeConfig = await applyConfigHook(testRoot);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
 
     expect(hiveMasterPrompt).toContain('# Native Parallel Exploration');
     expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('parallel-exploration').template);
@@ -640,14 +666,15 @@ describe('config hook native skill registration', () => {
       },
     });
 
-    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, {
+    const opencodeConfigInput = {
       agent: {},
       skills: {
         paths: [configuredSkillRoot],
       },
-    }));
+    };
+    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, opencodeConfigInput));
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false, opencodeConfig: opencodeConfigInput });
 
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'my-custom-skill'))).toBe(false);
@@ -685,14 +712,15 @@ description: URL conflict
       return new Response('not found', { status: 404 });
     }) as unknown as typeof fetch;
 
-    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, {
+    const opencodeConfigInput = {
       agent: {},
       skills: {
         urls: ['https://example.test/skills'],
       },
-    }));
+    };
+    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, opencodeConfigInput));
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false, opencodeConfig: opencodeConfigInput });
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
 
     expect(generatedPath).toBeDefined();
@@ -718,14 +746,15 @@ description: URL conflict
       throw new Error('network down');
     }) as unknown as typeof fetch;
 
-    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, {
+    const opencodeConfigInput = {
       agent: {},
       skills: {
         paths: [staleHivePath, userPath],
         urls: ['https://example.test/skills'],
       },
-    }));
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    };
+    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, opencodeConfigInput));
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false, opencodeConfig: opencodeConfigInput });
 
     expect(getHiveManagedPaths(getSkillPaths(opencodeConfig))).toHaveLength(0);
     expect(getSkillPaths(opencodeConfig)).toEqual([userPath]);
@@ -758,13 +787,14 @@ description: URL conflict
       throw new Error('network down');
     }) as unknown as typeof fetch;
 
-    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, {
+    const opencodeConfigInput = {
       agent: {},
       skills: {
         urls: ['https://example.test/skills'],
       },
-    }));
-    const hiveMasterPrompt = getAgentPrompt(opencodeConfig, 'hive-master');
+    };
+    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, opencodeConfigInput));
+    const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false, opencodeConfig: opencodeConfigInput });
 
     expect(getHiveManagedPaths(getSkillPaths(opencodeConfig))).toHaveLength(0);
     expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('parallel-exploration').template);

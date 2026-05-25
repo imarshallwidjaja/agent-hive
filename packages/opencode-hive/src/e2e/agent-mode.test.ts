@@ -152,15 +152,35 @@ describe("agentMode gating", () => {
     expect(architectPrompt).toContain("scout-docs");
     expect(architectPrompt).toContain("forager-ui");
 
-    const swarmPrompt = opencodeConfig.agent["swarm-orchestrator"]?.prompt as string;
+    expect(opencodeConfig.agent["swarm-orchestrator"]?.prompt).toBeUndefined();
+    const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
+      | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
+      | undefined;
+    const swarmOutput = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: "sess_swarm_custom_appendix", agent: "swarm-orchestrator" }, swarmOutput);
+    const swarmPrompt = swarmOutput.system[0];
     expect(swarmPrompt).toContain("## Configured Custom Subagents");
     expect(swarmPrompt).toContain("scout-docs");
     expect(swarmPrompt).toContain("reviewer-security");
 
-    const builderPrompt = opencodeConfig.agent["hive-builder"]?.prompt as string;
+    expect(opencodeConfig.agent["hive-builder"]?.prompt).toBeUndefined();
+    await hooks["chat.message"]?.(
+      { sessionID: "sess_builder_custom_appendix", agent: "hive-builder" },
+      { message: {}, parts: [] } as any,
+    );
+    const output = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: "sess_builder_custom_appendix" }, output);
+    const builderPrompt = output.system[0];
     expect(builderPrompt).toContain("## Configured Custom Subagents");
     expect(builderPrompt).toContain("scout-docs");
     expect(builderPrompt).toContain("forager-ui");
+
+    expect(opencodeConfig.agent["forager-ui"]?.prompt).toBeUndefined();
+    const foragerUiOutput = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: "sess_forager_ui_appendix", agent: "forager-ui" }, foragerUiOutput);
+    const foragerUiPrompt = foragerUiOutput.system[0];
+    expect(foragerUiPrompt).toContain("# Forager");
+    expect(foragerUiPrompt).not.toContain("Use for UI-heavy implementation tasks.");
 
     expect(opencodeConfig.agent["hive-master"]).toBeUndefined();
   });

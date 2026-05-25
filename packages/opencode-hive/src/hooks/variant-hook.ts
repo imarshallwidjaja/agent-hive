@@ -10,6 +10,7 @@ const BUILT_IN_AGENTS: Record<string, { sessionKind: SessionKind; baseAgent: str
   'hive-master': { sessionKind: 'primary', baseAgent: 'hive-master' },
   'architect-planner': { sessionKind: 'primary', baseAgent: 'architect-planner' },
   'swarm-orchestrator': { sessionKind: 'primary', baseAgent: 'swarm-orchestrator' },
+  'hive-builder': { sessionKind: 'primary', baseAgent: 'hive-builder' },
   'forager-worker': { sessionKind: 'task-worker', baseAgent: 'forager-worker' },
   'scout-researcher': { sessionKind: 'subagent', baseAgent: 'scout-researcher' },
   'hive-helper': { sessionKind: 'subagent', baseAgent: 'hive-helper' },

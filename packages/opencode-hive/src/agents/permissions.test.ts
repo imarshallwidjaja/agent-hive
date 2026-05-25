@@ -156,6 +156,7 @@ describe('Agent permissions', () => {
     const architectPerm = opencodeConfig.agent?.['architect-planner']?.permission;
 
     expect(swarmPerm).toBeTruthy();
+    expect(opencodeConfig.agent?.['swarm-orchestrator']?.prompt).toBeUndefined();
     expect(architectPerm).toBeTruthy();
 
     expect(architectPerm!.edit).toBe('deny');
@@ -321,6 +322,7 @@ describe('Per-agent tool filtering', () => {
 
   it('forager has hive_worktree_commit allowed and hive_merge disabled', async () => {
     const agents = await buildConfig('unified');
+    expect(agents['forager-worker']?.prompt).toBeUndefined();
     const foragerTools = agents['forager-worker']?.tools;
     expect(foragerTools).toBeTruthy();
     expect(foragerTools!['hive_worktree_commit']).toBeUndefined();
@@ -478,12 +480,14 @@ describe('Per-agent tool filtering', () => {
     const agents = await buildConfig('unified');
     const hiveTools = agents['hive-master']?.tools;
     expect(hiveTools).toBeUndefined();
+    expect(agents['hive-master']?.prompt).toBeUndefined();
   });
 
   it('hive-builder gets ad-hoc + repo manifest tools and disables task-backed worktree/plan tools by default', async () => {
     const agents = await buildConfig('unified');
     const builder = agents['hive-builder'];
     expect(builder).toBeTruthy();
+    expect(builder!.prompt).toBeUndefined();
     const tools = builder!.tools!;
     expect(tools).toBeTruthy();
     // Allowed (entries absent = allowed)

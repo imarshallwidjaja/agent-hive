@@ -105,7 +105,14 @@ describe('e2e: published custom-agent docs example', () => {
     expect(reviewerSecurity.variant).toBeUndefined();
     expect(reviewerSecurity.description).toBe('Use for security-focused review passes.');
 
-    const hivePrompt = opencodeConfig.agent['hive-master']?.prompt as string;
+    expect(opencodeConfig.agent['hive-master']?.prompt).toBeUndefined();
+    expect(foragerUi.prompt).toBeUndefined();
+    const systemTransform = hooks['experimental.chat.system.transform' as keyof typeof hooks] as
+      | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
+      | undefined;
+    const hiveOutput = { system: ['OpenCode provider base prompt'] };
+    await systemTransform?.({ sessionID: 'sess_docs_hive', agent: 'hive-master' }, hiveOutput);
+    const hivePrompt = hiveOutput.system[0];
     expect(hivePrompt).toContain('## Configured Custom Subagents');
     expect(hivePrompt).toContain('`scout-docs`');
     expect(hivePrompt).toContain('`forager-ui`');

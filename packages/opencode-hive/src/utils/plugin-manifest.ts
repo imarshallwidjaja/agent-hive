@@ -58,6 +58,7 @@ export const SUPPORTED_PLUGIN_HOOKS = [
   'event',
   'config',
   'chat.message',
+  'experimental.chat.system.transform',
   'experimental.chat.messages.transform',
   'tool.execute.before',
 ] as const;

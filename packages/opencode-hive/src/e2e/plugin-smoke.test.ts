@@ -6,6 +6,10 @@ import type { PluginInput } from "@opencode-ai/plugin";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import plugin from "../index";
 import { QUEEN_BEE_PROMPT } from "../agents/hive";
+import { SWARM_BEE_PROMPT } from "../agents/swarm";
+import { FORAGER_BEE_PROMPT } from "../agents/forager";
+import { HIVE_BUILDER_PROMPT } from "../agents/hive-builder";
+import { HIVE_SYSTEM_PROMPT } from "../hooks/system-hook";
 import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { buildPluginManifest, HIVE_COMMANDS, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 
@@ -25,7 +29,6 @@ const EXPECTED_COMMANDS = HIVE_COMMANDS.map(({ name, description }) => ({ name, 
 const removedHiveSkillTool = ['hive', 'skill'].join('_');
 
 const UNSUPPORTED_RUNTIME_HOOKS = [
-  "experimental.chat.system.transform",
   "experimental.session.compacting",
   'tool.execute' + '.after',
 ] as const;
@@ -1505,12 +1508,15 @@ Do it
 
     await hooks.tool!.hive_feature_create.execute({ name: "active" }, createToolContext("sess"));
 
-    expect(hooks["experimental.chat.system.transform" as keyof typeof hooks]).toBeUndefined();
-
     const opencodeConfig: Record<string, unknown> = { agent: {} };
     await hooks.config!(opencodeConfig);
     
-    const agentConfig = (opencodeConfig.agent as Record<string, { prompt?: string }>)["hive-master"];
+    const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
+      | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
+      | undefined;
+    const output = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: "sess", agent: "hive-master" }, output);
+    const agentConfig = { prompt: output.system[0] };
     expect(agentConfig).toBeDefined();
     expect(agentConfig.prompt).toBeDefined();
     expect(agentConfig.prompt).toContain("## Hive — Active Session");
@@ -1537,6 +1543,58 @@ Do it
     expect(agents["forager-ui"]).toBeDefined();
     expect(agents["reviewer-security"]).toBeDefined();
     
+  });
+
+  it("appends selected Hive runtime prompts after OpenCode provider base prompt", async () => {
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const opencodeConfig: Record<string, unknown> = { agent: {} };
+    await hooks.config!(opencodeConfig);
+
+    const agents = opencodeConfig.agent as Record<string, { prompt?: string }>;
+    const builderConfig = agents["hive-builder"];
+    expect(builderConfig).toBeDefined();
+    expect(builderConfig.prompt).toBeUndefined();
+    expect(agents["hive-master"]?.prompt).toBeUndefined();
+    expect(agents["forager-worker"]?.prompt).toBeUndefined();
+    expect(agents["architect-planner"]).toBeUndefined();
+    expect(agents["scout-researcher"]?.prompt).toBeDefined();
+    expect(agents["hive-helper"]?.prompt).toBeDefined();
+    expect(agents["hygienic-reviewer"]?.prompt).toBeDefined();
+
+    const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
+      | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
+      | undefined;
+
+    const cases = [
+      ['hive-master', QUEEN_BEE_PROMPT],
+      ['forager-worker', FORAGER_BEE_PROMPT],
+      ['hive-builder', HIVE_BUILDER_PROMPT],
+    ] as const;
+
+    for (const [agentName, prompt] of cases) {
+      const output = { system: ["OpenCode provider base prompt"] };
+      await systemTransform?.({ sessionID: `sess_${agentName}`, agent: agentName }, output);
+      expect(output.system[0]).toStartWith(`OpenCode provider base prompt\n\n${prompt.split('\n')[0]}`);
+      expect(output.system[0]).toContain(prompt);
+    }
+
+    const swarmOutput = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: 'sess_swarm', agent: 'swarm-orchestrator' }, swarmOutput);
+    expect(swarmOutput.system[0]).toContain(SWARM_BEE_PROMPT);
+    expect(swarmOutput.system[0]).toContain(HIVE_SYSTEM_PROMPT);
+
+    const scoutOutput = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: 'sess_scout', agent: 'scout-researcher' }, scoutOutput);
+    expect(scoutOutput.system).toEqual(["OpenCode provider base prompt"]);
   });
 
   it("system prompt hook omits trimmed projected-todo and checkpoint rituals for primary roles", async () => {
@@ -2192,18 +2250,25 @@ Do it
     );
     expect(parallelExplorationSkill).toBeDefined();
 
-    // Skills are now injected via config hook's prompt field, NOT system.transform
     // Default mode is 'unified' which includes hive-master, scout, forager, hygienic
     const opencodeConfig: Record<string, unknown> = { agent: {} };
     await hooks.config!(opencodeConfig);
     const agents = opencodeConfig.agent as Record<string, { prompt?: string }>;
+    const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
+      | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
+      | undefined;
+
+    const hiveOutput = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: 'sess_hive_autoload', agent: 'hive-master' }, hiveOutput);
+    const foragerOutput = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: 'sess_forager_autoload', agent: 'forager-worker' }, foragerOutput);
 
     // hive-master should have parallel-exploration in prompt (unified mode)
-    expect(agents["hive-master"]?.prompt).toBeDefined();
-    expect(agents["hive-master"]?.prompt).toContain(
+    expect(agents["hive-master"]?.prompt).toBeUndefined();
+    expect(hiveOutput.system[0]).toContain(
       parallelExplorationSkill!.template,
     );
-    expect(agents["hive-master"]?.prompt).not.toContain(onboardingSnippet);
+    expect(hiveOutput.system[0]).not.toContain(onboardingSnippet);
 
     // scout-researcher should NOT have parallel-exploration in prompt (unified mode)
     // (removed to prevent recursive delegation - scout cannot spawn scouts)
@@ -2214,11 +2279,11 @@ Do it
     expect(agents["scout-researcher"]?.prompt).not.toContain(onboardingSnippet);
 
     // forager-worker should NOT have parallel-exploration in prompt
-    expect(agents["forager-worker"]?.prompt).toBeDefined();
-    expect(agents["forager-worker"]?.prompt).not.toContain(
+    expect(agents["forager-worker"]?.prompt).toBeUndefined();
+    expect(foragerOutput.system[0]).not.toContain(
       parallelExplorationSkill!.template,
     );
-    expect(agents["forager-worker"]?.prompt).not.toContain(onboardingSnippet);
+    expect(foragerOutput.system[0]).not.toContain(onboardingSnippet);
   });
 
   it("includes task prompt mode", async () => {
@@ -3079,6 +3144,7 @@ Original plan task four content must stay isolated from any append-only manual f
       'event',
       'config',
       'chat.message',
+      'experimental.chat.system.transform',
       'experimental.chat.messages.transform',
       'tool.execute.before',
     ]);
