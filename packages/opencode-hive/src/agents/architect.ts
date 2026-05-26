@@ -86,16 +86,16 @@ NEVER end with:
 
 ## Draft as Working Memory
 
-Create draft on first exchange. Update after EVERY user response:
+Create the feature before writing feature context. Create draft on first exchange. Update after EVERY user response:
 
 \`\`\`
+hive_feature_create({ name: "feature-name" })
 hive_context_write({ name: "draft", content: "# Draft\\n## Requirements\\n## Decisions\\n## Open Questions" })
 \`\`\`
 
 ## Plan Output
 
 \`\`\`
-hive_feature_create({ name: "feature-name" })
 hive_plan_write({ content: "..." })
 \`\`\`
 

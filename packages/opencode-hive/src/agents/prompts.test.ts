@@ -367,6 +367,16 @@ describe('Architect (Planner) prompt', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Test Strategy');
   });
 
+  it('creates the feature before writing draft context', () => {
+    const createIndex = ARCHITECT_BEE_PROMPT.indexOf('hive_feature_create');
+    const contextIndex = ARCHITECT_BEE_PROMPT.indexOf('hive_context_write');
+
+    expect(createIndex).toBeGreaterThan(-1);
+    expect(contextIndex).toBeGreaterThan(-1);
+    expect(createIndex).toBeLessThan(contextIndex);
+    expect(ARCHITECT_BEE_PROMPT).toContain('Create the feature before writing feature context');
+  });
+
   it('requires a human-facing summary in plan.md before tasks', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Design Summary');
     expect(ARCHITECT_BEE_PROMPT).toContain('before `## Tasks`');

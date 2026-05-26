@@ -2054,6 +2054,7 @@ Expand your Discovery section and try again.`;
         async execute({ name, content, feature: explicitFeature }, toolContext) {
           const feature = resolveFeature(explicitFeature);
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+          if (!featureService.get(feature)) return `Error: Feature '${feature}' not found. Create it first with hive_feature_create.`;
 
           bindFeatureSession(feature, toolContext);
           const filePath = contextService.write(feature, name, content);

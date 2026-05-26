@@ -341,6 +341,18 @@ Do it
     expect(status.tasks?.list?.[0]?.folder).toBe("01-first-task");
   });
 
+  it('rejects context writes for explicit missing features', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_missing_context_feature');
+
+    const output = await hooks.tool!.hive_context_write.execute(
+      { feature: 'future-feature', name: 'draft', content: '# Draft' },
+      toolContext,
+    );
+
+    expect(output).toContain("Error: Feature 'future-feature' not found");
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'features', 'future-feature'))).toBe(false);
+  });
+
   it("keeps checked-in plugin.json aligned with the runtime contract", async () => {
     const packageJsonPath = path.resolve(import.meta.dir, '..', '..', 'package.json');
     const pluginJsonPath = path.resolve(import.meta.dir, '..', '..', 'plugin.json');
