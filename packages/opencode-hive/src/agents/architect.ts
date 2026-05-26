@@ -147,6 +147,7 @@ Refresh \`context/overview.md\` as the primary human-facing review surface, whil
 
 - Delegate to Scout when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
 - For single investigations, default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
+- For strategic approach questions before the plan is locked, ask whether to consult \`approach-advisor\`. If yes, default to built-in \`approach-advisor\`; choose a configured approach-advisor-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-advisor>", prompt: "Advise on approach..." })\`.
 - Local \`read/grep/glob\` is acceptable only for a single known file and a bounded question.
 - When running parallel exploration, align with the skill guidance.
 - If discovery keeps widening, split broad research earlier into narrower Scout slices. Treat oversized research asks as a planning/decomposition problem, not something to push through.

@@ -236,6 +236,12 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
 
+    it('documents approach-advisor routing fallback and custom advisor selection', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `approach-advisor`');
+      expect(QUEEN_BEE_PROMPT).toContain('configured approach-advisor-derived agent only when its description in `Configured Custom Subagents` is a better match');
+      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
+    });
+
     it('tells hybrid planners to split broad research earlier', () => {
       expect(QUEEN_BEE_PROMPT).toContain('split broad research earlier');
     });
@@ -342,6 +348,12 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('default to built-in `scout-researcher`');
       expect(ARCHITECT_BEE_PROMPT).toContain('configured scout-derived researcher only when its description in `Configured Custom Subagents` is a better match');
       expect(ARCHITECT_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
+    });
+
+    it('documents approach-advisor routing fallback and custom advisor selection', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('default to built-in `approach-advisor`');
+      expect(ARCHITECT_BEE_PROMPT).toContain('configured approach-advisor-derived agent only when its description in `Configured Custom Subagents` is a better match');
+      expect(ARCHITECT_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
     });
 
     it('explains task() is BLOCKING by default', () => {
@@ -504,6 +516,12 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('default to built-in `code-reviewer`');
       expect(SWARM_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
+    });
+
+    it('documents approach-advisor routing fallback and custom advisor selection', () => {
+      expect(SWARM_BEE_PROMPT).toContain('default to built-in `approach-advisor`');
+      expect(SWARM_BEE_PROMPT).toContain('configured approach-advisor-derived agent only when its description in `Configured Custom Subagents` is a better match');
+      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
     });
 
     it('tells orchestrators to split broad research earlier', () => {

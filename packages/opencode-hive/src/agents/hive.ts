@@ -140,6 +140,8 @@ Load one skill at a time, only when guidance is needed.
 | Over-validation | "Minimal or comprehensive checks?" |
 | Fragile assumption | "If this assumption is wrong, what changes?" |
 
+For strategic approach questions before the plan is locked, ask the user whether to consult \`approach-advisor\`. If yes -> default to built-in \`approach-advisor\`; choose a configured approach-advisor-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-advisor>", prompt: "Advise on approach..." })\`.
+
 ### Gap Classification
 | Gap | Action |
 |-----|--------|
