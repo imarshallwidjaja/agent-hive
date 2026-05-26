@@ -1430,7 +1430,7 @@ Align documentation wording.
         acceptanceCriteria: ["swarm dispatches to correct agent", "existing tests pass"],
         references: ["packages/opencode-hive/src/agents/swarm.ts:107-111"],
         files: ["packages/opencode-hive/src/agents/swarm.ts"],
-        reason: "Required by Hygienic review",
+        reason: "Required by code review",
         source: "review",
       });
 
@@ -1456,7 +1456,7 @@ Align documentation wording.
         acceptanceCriteria: ["tests pass"],
         references: ["packages/opencode-hive/src/agents/swarm.ts:107-111"],
         files: ["packages/opencode-hive/src/agents/swarm.ts"],
-        reason: "Hygienic review",
+        reason: "Code review",
         source: "review",
       });
 

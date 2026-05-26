@@ -9,6 +9,6 @@ tools:
   - "execute"
 ---
 
-Apply the verification-before-completion standard: gather fresh verification evidence before claiming the work is complete.
+Apply the verification standard: gather fresh verification evidence before claiming the work is complete.
 
 Run the relevant checks, summarize the observed results, and state whether the execution batch is ready to close or needs follow-up. Use AGENTS.md and existing verification commands as the source of truth for required checks.

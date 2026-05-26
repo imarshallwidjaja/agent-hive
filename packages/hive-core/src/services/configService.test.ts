@@ -32,12 +32,14 @@ describe("ConfigService defaults", () => {
 
     expect(config).toEqual(DEFAULT_HIVE_CONFIG);
     expect(Object.keys(config.agents ?? {}).sort()).toEqual([
+      "approach-advisor",
       "architect-planner",
+      "code-reviewer",
       "forager-worker",
       "hive-builder",
       "hive-helper",
       "hive-master",
-      "hygienic-reviewer",
+      "plan-reviewer",
       "scout-researcher",
       "swarm-orchestrator",
     ]);
@@ -69,10 +71,10 @@ describe("ConfigService defaults", () => {
         variant: 'high',
         autoLoadSkills: ['test-driven-development'],
       },
-      'hygienic-example-template': {
-        baseAgent: 'hygienic-reviewer',
+      'reviewer-example-template': {
+        baseAgent: 'code-reviewer',
         description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-        autoLoadSkills: ['code-reviewer'],
+        autoLoadSkills: [],
       },
     });
   });
@@ -151,10 +153,10 @@ describe("ConfigService defaults", () => {
         variant: 'high',
         autoLoadSkills: ['test-driven-development'],
       },
-      'hygienic-example-template': {
-        baseAgent: 'hygienic-reviewer',
+      'reviewer-example-template': {
+        baseAgent: 'code-reviewer',
         description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-        autoLoadSkills: ['code-reviewer'],
+        autoLoadSkills: [],
       },
     });
     expect(config.agents?.["forager-worker"]?.variant).toBe("high");
@@ -302,7 +304,7 @@ describe("ConfigService defaults", () => {
         {
           agents: {
             "forager-worker": {
-              autoLoadSkills: ["custom-skill", "verification-before-completion"],
+              autoLoadSkills: ["custom-skill", "verification"],
             },
           },
         },
@@ -314,7 +316,7 @@ describe("ConfigService defaults", () => {
     const config = service.getAgentConfig("forager-worker");
     expect(config.autoLoadSkills).toEqual([
       "test-driven-development",
-      "verification-before-completion",
+      "verification",
       "custom-skill",
     ]);
   });
@@ -386,7 +388,7 @@ describe("ConfigService defaults", () => {
     expect(config.model).toBe("github-copilot/gpt-5.2-codex");
     expect(config.temperature).toBe(0.4);
     expect(config.autoLoadSkills).toEqual([
-      "verification-before-completion",
+      "verification",
       "dispatching-parallel-agents",
       "parallel-exploration",
     ]);
@@ -415,7 +417,7 @@ describe("ConfigService defaults", () => {
     expect(config.variant).toBe("high");
     expect(config.model).toBe("github-copilot/gpt-5.2-codex");
     expect(config.autoLoadSkills).toEqual([
-      "verification-before-completion",
+      "verification",
       "dispatching-parallel-agents",
       "parallel-exploration",
     ]);
@@ -443,7 +445,7 @@ describe("ConfigService defaults", () => {
 
     const config = service.getAgentConfig("hive-builder");
     // Non-planner agents get their defaults merged with user overrides
-    expect(config.autoLoadSkills).toContain("verification-before-completion");
+    expect(config.autoLoadSkills).toContain("verification");
     expect(config.autoLoadSkills).toContain("dispatching-parallel-agents");
     expect(config.autoLoadSkills).toContain("parallel-exploration");
     expect(config.autoLoadSkills).toContain("custom-skill");
@@ -519,7 +521,7 @@ describe("ConfigService defaults", () => {
             },
             "forager-worker": {
               variant: "high",
-              autoLoadSkills: ["verification-before-completion", "onboarding", "ui-focus"],
+              autoLoadSkills: ["verification", "onboarding", "ui-focus"],
             },
           },
           customAgents: {
@@ -538,7 +540,7 @@ describe("ConfigService defaults", () => {
               autoLoadSkills: ["ui-focus"],
             },
             "reviewer-security": {
-              baseAgent: "hygienic-reviewer",
+              baseAgent: "code-reviewer",
               description: "Security-focused reviewer.",
               model: "anthropic/claude-sonnet-4-20250514",
               temperature: 0.1,
@@ -571,7 +573,7 @@ describe("ConfigService defaults", () => {
     expect(custom["forager-ui"]?.variant).toBe("high");
     expect(custom["forager-ui"]?.autoLoadSkills).toEqual([
       "test-driven-development",
-      "verification-before-completion",
+      "verification",
       "ui-focus",
     ]);
 

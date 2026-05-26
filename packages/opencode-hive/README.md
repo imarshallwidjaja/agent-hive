@@ -222,8 +222,8 @@ Create `.hive/agent-hive.json`:
 | `dispatching-parallel-agents` | Use when facing 2+ independent tasks. Dispatches multiple agents to work concurrently on unrelated problems. |
 | `test-driven-development` | Use when implementing any feature or bugfix. Enforces write-test-first, red-green-refactor cycle. |
 | `systematic-debugging` | Use when encountering any bug or test failure. Requires root cause investigation before proposing fixes. |
-| `code-reviewer` | Use when reviewing implementation changes against an approved plan or task to catch missing requirements, YAGNI, dead code, and risky patterns. |
-| `verification-before-completion` | Use before claiming work is complete. Requires running verification commands and confirming output before success claims. |
+| `code-reviewer` | Deprecated compatibility wrapper. Use the `code-reviewer` subagent for implementation review. |
+| `verification` | Use before claiming work is complete or when independently checking an implementation against a plan. Requires fresh command output before success claims. |
 | `background-delegation` | Use when opencode background subagents are available (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`). Enables primary agents to dispatch independent work with `task({ background: true, ... })` and `task_status`. Not loaded as a default `autoLoadSkills` entry; the env flag appends an on-demand reference only. |
 
 #### Available MCPs
@@ -279,13 +279,15 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | Agent | autoLoadSkills default |
 |-------|------------------------|
 | `hive-master` | `parallel-exploration` |
-| `forager-worker` | `test-driven-development`, `verification-before-completion` |
-| `hive-builder` | `verification-before-completion`, `dispatching-parallel-agents`, `parallel-exploration` |
+| `forager-worker` | `test-driven-development`, `verification` |
+| `hive-builder` | `verification`, `dispatching-parallel-agents`, `parallel-exploration` |
 | `hive-helper` | (none) |
 | `scout-researcher` | (none) |
 | `architect-planner` | `parallel-exploration` |
 | `swarm-orchestrator` | (none) |
-| `hygienic-reviewer` | (none) |
+| `plan-reviewer` | (none) |
+| `code-reviewer` | (none) |
+| `approach-advisor` | (none) |
 
 `background-delegation` is not a default `autoLoadSkills` entry for any agent. For Hive Builder, it is advertised by env-gated compact appendix only — the env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends an on-demand reference to primary agent prompts without adding it to the default autoload set.
 
@@ -339,7 +341,7 @@ The `variant` value must match a key in your OpenCode config at `provider.<provi
 
 Define plugin-only custom subagents with `customAgents`. Freshly initialized `agent_hive.json` files already include starter template entries under `customAgents`; those seeded `*-example-template` entries are placeholders only, should be renamed or deleted before real use, and are intentionally worded so planners/orchestrators are unlikely to select them as configured. Each custom agent must declare:
 
-- `baseAgent`: one of `scout-researcher`, `forager-worker`, or `hygienic-reviewer`
+- `baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, or `approach-advisor`
 - `description`: delegation guidance injected into primary planner/orchestrator prompts
 
 `hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/`.
@@ -357,7 +359,7 @@ Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
     "forager-worker": {
       "variant": "medium"
     },
-    "hygienic-reviewer": {
+    "code-reviewer": {
       "model": "github-copilot/gpt-5.2-codex"
     }
   },
@@ -374,7 +376,7 @@ Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
       "variant": "high"
     },
     "reviewer-security": {
-      "baseAgent": "hygienic-reviewer",
+      "baseAgent": "code-reviewer",
       "description": "Use for security-focused review passes."
     }
   }
@@ -393,14 +395,14 @@ Inheritance rules when a custom agent field is omitted:
 ID guardrails:
 
 - `customAgents` keys cannot reuse built-in Hive agent IDs
-- plugin-reserved aliases are blocked (`hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `receiver`)
+- plugin-reserved aliases are blocked (`hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `hygienic-reviewer`, `receiver`)
 - operational IDs are blocked (`build`, `plan`, `code`)
 
 Compaction classification follows the base agent:
 
 - `scout-researcher` derivatives are treated as `subagent`
 - `forager-worker` derivatives are treated as `task-worker`
-- `hygienic-reviewer` derivatives are treated as `subagent`
+- `plan-reviewer`, `code-reviewer`, and `approach-advisor` derivatives are treated as `subagent`
 
 This ensures custom workers recover with the same execution constraints as their base role.
 

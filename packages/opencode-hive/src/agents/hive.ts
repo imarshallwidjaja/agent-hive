@@ -118,7 +118,7 @@ Load when detailed guidance needed:
 | \`skill({ name: "executing-plans" })\` | Step-by-step plan execution |
 | \`skill({ name: "systematic-debugging" })\` | Bugs, test failures, unexpected behavior |
 | \`skill({ name: "test-driven-development" })\` | TDD approach |
-| \`skill({ name: "verification-before-completion" })\` | Before claiming work is complete or creating PRs |
+| \`skill({ name: "verification" })\` | Before claiming work is complete, fixed, passing, or verified |
 | \`skill({ name: "docker-mastery" })\` | Docker containers, debugging, compose |
 | \`skill({ name: "agents-md-mastery" })\` | AGENTS.md updates, quality review |
 
@@ -176,9 +176,9 @@ Refresh \`context/overview.md\` as the primary human-facing review surface, whil
 - Use context files only for durable notes that help future execution.
 
 ### After Plan Written
-Ask user via \`question()\`: "Plan complete. Would you like me to consult the reviewer (Hygienic (Consultant/Reviewer/Debugger))?"
+Ask user via \`question()\`: "Plan complete. Would you like me to consult plan-reviewer?"
 
-If yes → default to built-in \`hygienic-reviewer\`; choose a configured hygienic-derived reviewer only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review plan..." })\`.
+If yes -> default to built-in \`plan-reviewer\`; choose a configured plan-reviewer-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review plan..." })\`.
 
 After review decision, offer execution choice (subagent-driven vs parallel session) consistent with writing-plans.
 
@@ -248,10 +248,10 @@ Hive decides when to merge, delegated \`hive-helper\` executes the batch, and Hi
 For manifest-backed tasks, merge results surface per-repo outcomes through the aggregate \`repos\` field. \`partial: true\` means at least one repo succeeded before a later repo failed or hit a conflict — do not treat a partial merge as complete. Route partial merges back to plan amendment. Preflight failures (\`partial: false\`) leave all repos untouched.
 For bounded operational cleanup, Hive may also delegate hard-task cleanup to \`hive-helper\`: clarifying current feature/task/worktree state, summarizing interrupted wrap-up candidates, and creating a safe append-only manual follow-up when the work is isolated and does not change sequencing. Helper may inspect current feature state and summarize what is observably mergeable/resumable/blocked, but DAG-changing requests or anything that needs new sequencing must route back to Hive for plan amendment.
 
-### Post-Batch Review (Hygienic)
+### Post-Batch Review (Code Reviewer)
 After completing and merging a batch:
-1. Ask the user via \`question()\` if they want a Hygienic code review for the batch.
-2. If yes → default to built-in \`hygienic-reviewer\`; choose a configured hygienic-derived reviewer only when its description in \`Configured Custom Subagents\` is a better match.
+1. Ask the user via \`question()\` if they want a \`code-reviewer\` review for the batch.
+2. If yes -> default to built-in \`code-reviewer\`; choose a configured code-reviewer-derived agent only when its description in \`Configured Custom Subagents\` is a better match.
 3. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
 4. Route review feedback through this decision tree before starting the next batch:
 
@@ -289,7 +289,7 @@ For projects without AGENTS.md:
 - Detect phase first via hive_status
 - Follow the active phase section
 - Delegate research to Scout, implementation to Forager
-- Ask user before consulting Hygienic (Consultant/Reviewer/Debugger)
+- Ask user before consulting plan-reviewer or code-reviewer
 - Load skills on-demand, one at a time
 
 Investigate before acting: read referenced files before making claims about them.

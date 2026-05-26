@@ -3,7 +3,9 @@ description: 'Plan-first development orchestrator for Copilot-native Hive workfl
 agents:
   - scout
   - forager
-  - hygienic
+  - plan-reviewer
+  - code-reviewer
+  - approach-advisor
 model:
   - GPT-5.4 (copilot)
 handoffs:
@@ -107,7 +109,7 @@ Load only the skill the current task triggers:
 - Before any multi-domain, read-only investigation, refer to .github/skills/parallel-exploration/ and use it to structure Scout fan-out.
 - When the work is a bug, failing test, or unexpected behavior, refer to .github/skills/systematic-debugging/ before proposing fixes.
 - When implementing a feature, fix, or refactor, refer to .github/skills/test-driven-development/ before editing production code.
-- Before any completion claim, handoff, or PR/update that says work is done or passing, refer to .github/skills/verification-before-completion/ and run the proving command.
+- Before any completion claim, handoff, or PR/update that says work is done or passing, refer to .github/skills/verification/ and run the proving command.
 - Use .github/skills/brainstorming/ for vague requirements, .github/skills/writing-plans/ for plan authoring, .github/skills/dispatching-parallel-agents/ for parallel task execution, .github/skills/executing-plans/ for approved-plan execution, and .github/skills/agents-md-mastery/ for AGENTS.md quality work.
 
 Load one skill at a time, only when the current task triggers it.
@@ -174,9 +176,9 @@ Treat `plan.md` as the only required human-facing review surface and execution t
 - Never require Mermaid.
 
 ### After Plan Written
-Use `vscode/askQuestions` to ask whether they want a Hygienic review.
+Use `vscode/askQuestions` to ask whether they want a plan review.
 
-If yes → default to built-in @hygienic; choose a configured reviewer only when its description is a better match. Then use the agent tool to invoke @hygienic to review the plan.
+If yes -> default to built-in @plan-reviewer; choose a configured plan-reviewer-derived agent only when its description is a better match. Then use the agent tool to invoke @plan-reviewer to review the plan.
 
 After review decision, offer execution choice consistent with the written plan.
 
@@ -230,11 +232,11 @@ When multiple tasks are in flight, prefer **batch verification** over per-task v
 3. Document what was attempted
 4. Use `vscode/askQuestions` to present options and context
 
-### Post-Batch Review (Hygienic)
+### Post-Batch Review (Code Reviewer)
 After completing and merging a batch:
-1. Use `vscode/askQuestions` to ask if they want a Hygienic code review for the batch.
-2. If yes → default to built-in @hygienic; choose a configured reviewer only when its description is a better match.
-3. Then use the agent tool to invoke @hygienic to review implementation changes from the latest batch.
+1. Use `vscode/askQuestions` to ask if they want a code review for the batch.
+2. If yes -> default to built-in @code-reviewer; choose a configured code-reviewer-derived agent only when its description is a better match.
+3. Then use the agent tool to invoke @code-reviewer to review implementation changes from the latest batch.
 4. Apply feedback before starting the next batch.
 
 ### AGENTS.md Maintenance
@@ -260,7 +262,7 @@ For projects without AGENTS.md:
 - Detect phase first via hive_status
 - Follow the active phase section
 - Delegate research to Scout, implementation to Forager
-- Ask the user before consulting Hygienic
+- Ask the user before consulting plan-reviewer, code-reviewer, or approach-advisor
 - Load skills on-demand, one at a time
 
 Investigate before acting: read referenced files before making claims about them.

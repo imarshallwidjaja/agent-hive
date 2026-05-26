@@ -216,7 +216,7 @@ describe('config hook autoLoadSkills injection', () => {
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
     const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
-    const hygienicPrompt = getAgentPrompt(opencodeConfig, 'hygienic-reviewer');
+    const codeReviewerPrompt = getAgentPrompt(opencodeConfig, 'code-reviewer');
     const customPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-background', { trackMessage: false });
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
@@ -230,7 +230,7 @@ describe('config hook autoLoadSkills injection', () => {
     expect(builderPrompt).toContain('skill({ name: "background-delegation" })');
     expect(builderPrompt).toContain('task({ background: true');
     expect(builderPrompt).toContain('task_status');
-    for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, hygienicPrompt, customPrompt]) {
+    for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, codeReviewerPrompt, customPrompt]) {
       expect(prompt).not.toContain('skill({ name: "background-delegation" })');
       expect(prompt).not.toContain('task({ background: true');
       expect(prompt).not.toContain(backgroundSkill.template);
@@ -248,7 +248,7 @@ describe('config hook autoLoadSkills injection', () => {
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
     const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
-    const hygienicPrompt = getAgentPrompt(opencodeConfig, 'hygienic-reviewer');
+    const codeReviewerPrompt = getAgentPrompt(opencodeConfig, 'code-reviewer');
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
     for (const prompt of [architectPrompt, swarmPrompt, builderPrompt]) {
@@ -258,7 +258,7 @@ describe('config hook autoLoadSkills injection', () => {
       expect(prompt).toContain('task_status');
       expect(prompt).not.toContain(backgroundSkill.template);
     }
-    for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, hygienicPrompt]) {
+    for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, codeReviewerPrompt]) {
       expect(prompt).not.toContain('skill({ name: "background-delegation" })');
       expect(prompt).not.toContain('task({ background: true');
       expect(prompt).not.toContain(backgroundSkill.template);
@@ -341,7 +341,7 @@ describe('config hook autoLoadSkills injection', () => {
     const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
     const tddSkill = requireBuiltinSkill('test-driven-development');
-    const verificationSkill = requireBuiltinSkill('verification-before-completion');
+    const verificationSkill = requireBuiltinSkill('verification');
 
     expect(hiveMasterPrompt).toContain(parallelExplorationSkill.template);
     expect(scoutPrompt).not.toContain(parallelExplorationSkill.template);
@@ -384,7 +384,7 @@ describe('config hook autoLoadSkills injection', () => {
           autoLoadSkills: ['brainstorming', 'parallel-exploration', 'native-file-skill'],
         },
         'reviewer-security': {
-          baseAgent: 'hygienic-reviewer',
+          baseAgent: 'code-reviewer',
           description: 'Use for security-focused review passes.',
           autoLoadSkills: [],
         },
@@ -428,7 +428,7 @@ describe('config hook autoLoadSkills injection', () => {
     const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const brainstormingSkill = requireBuiltinSkill('brainstorming');
     const tddSkill = requireBuiltinSkill('test-driven-development');
-    const verificationSkill = requireBuiltinSkill('verification-before-completion');
+    const verificationSkill = requireBuiltinSkill('verification');
 
     expect(foragerPrompt).toContain(brainstormingSkill.template);
     expect(foragerPrompt).toContain(tddSkill.template);

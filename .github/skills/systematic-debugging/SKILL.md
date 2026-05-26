@@ -292,7 +292,7 @@ These techniques are part of systematic debugging and available in this director
 
 **Related skills:**
 - **Refer to the skill at .github/skills/test-driven-development/SKILL.md** - For creating a failing test case (Phase 4, Step 1)
-- **Refer to the skill at .github/skills/verification-before-completion/SKILL.md** - Verify the fix worked before claiming success
+- **Refer to the skill at .github/skills/verification/SKILL.md** - Verify the fix worked before claiming success
 
 ## Real-World Impact
 

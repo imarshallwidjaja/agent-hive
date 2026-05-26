@@ -107,9 +107,17 @@
           "$ref": "#/$defs/agentConfig",
           "description": "Hive Helper"
         },
-        "hygienic-reviewer": {
+        "plan-reviewer": {
           "$ref": "#/$defs/agentConfig",
-          "description": "Hygienic Reviewer"
+          "description": "Plan Reviewer"
+        },
+        "code-reviewer": {
+          "$ref": "#/$defs/agentConfig",
+          "description": "Code Reviewer"
+        },
+        "approach-advisor": {
+          "$ref": "#/$defs/agentConfig",
+          "description": "Approach Advisor"
         },
         "hive-builder": {
           "$ref": "#/$defs/agentConfig",
@@ -119,7 +127,7 @@
     },
     "customAgents": {
       "type": "object",
-      "description": "Custom Hive subagent definitions derived from scout-researcher, forager-worker, or hygienic-reviewer. IDs cannot reuse built-in or plugin-reserved names.",
+      "description": "Custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, or approach-advisor. IDs cannot reuse built-in or plugin-reserved names.",
       "propertyNames": {
         "not": {
           "enum": [
@@ -129,7 +137,9 @@
             "scout-researcher",
             "forager-worker",
             "hive-helper",
-            "hygienic-reviewer",
+            "plan-reviewer",
+            "code-reviewer",
+            "approach-advisor",
             "hive-builder",
             "hive",
             "architect",
@@ -137,6 +147,7 @@
             "scout",
             "forager",
             "hygienic",
+            "hygienic-reviewer",
             "receiver",
             "build",
             "builder",
@@ -219,7 +230,9 @@
           "enum": [
             "scout-researcher",
             "forager-worker",
-            "hygienic-reviewer"
+            "plan-reviewer",
+            "code-reviewer",
+            "approach-advisor"
           ],
           "description": "Built-in Hive agent to inherit prompt/tools/permissions from"
         },

@@ -145,10 +145,10 @@ For manifest-backed tasks, merge results surface per-repo outcomes through the a
 
 For bounded operational cleanup, Swarm may also delegate hard-task cleanup to \`hive-helper\`: clarifying current feature/task/worktree state, summarizing interrupted wrap-up candidates, and creating a safe append-only manual follow-up when the work is isolated and does not change sequencing. Helper may inspect current feature state and summarize what is observably mergeable/resumable/blocked, but DAG-changing requests or anything that needs new sequencing must route back to Swarm for plan amendment.
 
-### Post-Batch Review (Hygienic)
+### Post-Batch Review (Code Reviewer)
 
-After completing and merging a batch: ask via \`question()\` if they want a Hygienic review.
-If yes, default to built-in \`hygienic-reviewer\`; choose a configured hygienic-derived reviewer only when its description in \`Configured Custom Subagents\` is a better match.
+After completing and merging a batch: ask via \`question()\` if they want a \`code-reviewer\` review.
+If yes, default to built-in \`code-reviewer\`; choose a configured code-reviewer-derived agent only when its description in \`Configured Custom Subagents\` is a better match.
 Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
 Route review feedback through this decision tree before starting the next batch:
 

@@ -343,4 +343,4 @@ Before marking Docker work complete:
 
 - **Refer to the skill at .github/skills/systematic-debugging/SKILL.md** - When container behavior is unexpected
 - **Refer to the skill at .github/skills/test-driven-development/SKILL.md** - Write tests that run in containers
-- **Refer to the skill at .github/skills/verification-before-completion/SKILL.md** - Verify tests pass in container before claiming done
+- **Refer to the skill at .github/skills/verification/SKILL.md** - Verify tests pass in container before claiming done

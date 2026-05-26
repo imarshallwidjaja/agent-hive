@@ -12,7 +12,7 @@ const publishedExample = {
   agents: {
     'scout-researcher': { variant: 'low' },
     'forager-worker': { variant: 'medium' },
-    'hygienic-reviewer': { model: 'github-copilot/gpt-5.2-codex' },
+    'code-reviewer': { model: 'github-copilot/gpt-5.2-codex' },
   },
   customAgents: {
     'scout-docs': {
@@ -27,7 +27,7 @@ const publishedExample = {
       variant: 'high',
     },
     'reviewer-security': {
-      baseAgent: 'hygienic-reviewer',
+      baseAgent: 'code-reviewer',
       description: 'Use for security-focused review passes.',
     },
   },
@@ -81,7 +81,7 @@ describe('e2e: published custom-agent docs example', () => {
 
     expect(opencodeConfig.agent['forager-worker']?.variant).toBe('medium');
     expect(opencodeConfig.agent['scout-researcher']?.variant).toBe('low');
-    expect(opencodeConfig.agent['hygienic-reviewer']?.model).toBe('github-copilot/gpt-5.2-codex');
+    expect(opencodeConfig.agent['code-reviewer']?.model).toBe('github-copilot/gpt-5.2-codex');
 
     const scoutDocs = opencodeConfig.agent['scout-docs'];
     const foragerUi = opencodeConfig.agent['forager-ui'];

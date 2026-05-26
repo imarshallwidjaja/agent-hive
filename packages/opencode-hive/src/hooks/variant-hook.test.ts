@@ -65,7 +65,9 @@ describe('createVariantHook', () => {
         'scout-researcher': 'low',
         'forager-worker': 'high',
         'hive-helper': 'medium',
-        'hygienic-reviewer': 'medium',
+        'plan-reviewer': 'medium',
+        'code-reviewer': 'medium',
+        'approach-advisor': 'medium',
       };
 
       const hook = createVariantHook(createMockConfigService(agentVariants) as any);
@@ -101,7 +103,7 @@ describe('createVariantHook', () => {
       expect(output.message.variant).toBe('high');
     });
 
-    it('applies variant to accepted custom hygienic-derived agent', async () => {
+    it('applies variant to accepted custom reviewer-derived agent', async () => {
       const configService = createMockConfigService(
         {
           'reviewer-security': 'medium',
@@ -268,10 +270,22 @@ describe('classifySession', () => {
       expect(result.baseAgent).toBe('scout-researcher');
     });
 
-    it('classifies hygienic-reviewer as subagent', () => {
-      const result = classifySession('hygienic-reviewer', NO_CUSTOM_AGENTS);
+    it('classifies plan-reviewer as subagent', () => {
+      const result = classifySession('plan-reviewer', NO_CUSTOM_AGENTS);
       expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('hygienic-reviewer');
+      expect(result.baseAgent).toBe('plan-reviewer');
+    });
+
+    it('classifies code-reviewer as subagent', () => {
+      const result = classifySession('code-reviewer', NO_CUSTOM_AGENTS);
+      expect(result.sessionKind).toBe('subagent');
+      expect(result.baseAgent).toBe('code-reviewer');
+    });
+
+    it('classifies approach-advisor as subagent', () => {
+      const result = classifySession('approach-advisor', NO_CUSTOM_AGENTS);
+      expect(result.sessionKind).toBe('subagent');
+      expect(result.baseAgent).toBe('approach-advisor');
     });
 
     it('classifies hive-helper as subagent', () => {
@@ -285,7 +299,7 @@ describe('classifySession', () => {
     const customAgents: Record<string, { baseAgent: string }> = {
       'forager-ui': { baseAgent: 'forager-worker' },
       'scout-custom': { baseAgent: 'scout-researcher' },
-      'reviewer-security': { baseAgent: 'hygienic-reviewer' },
+      'reviewer-security': { baseAgent: 'code-reviewer' },
     };
 
     it('classifies custom forager-derived agent as task-worker', () => {
@@ -294,10 +308,10 @@ describe('classifySession', () => {
       expect(result.baseAgent).toBe('forager-worker');
     });
 
-    it('classifies custom hygienic-derived agent as subagent', () => {
+    it('classifies custom reviewer-derived agent as subagent', () => {
       const result = classifySession('reviewer-security', customAgents);
       expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('hygienic-reviewer');
+      expect(result.baseAgent).toBe('code-reviewer');
     });
 
     it('classifies custom scout-derived agent as subagent', () => {

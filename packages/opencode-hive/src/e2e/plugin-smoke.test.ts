@@ -678,7 +678,7 @@ Do it
             autoLoadSkills: [],
           },
           "reviewer-security": {
-            baseAgent: "hygienic-reviewer",
+            baseAgent: "code-reviewer",
             description: "Use for security-focused review passes.",
             autoLoadSkills: [],
           },
@@ -1500,7 +1500,7 @@ Do it
             autoLoadSkills: [],
           },
           "reviewer-security": {
-            baseAgent: "hygienic-reviewer",
+            baseAgent: "code-reviewer",
             description: "Use for security-focused review passes.",
             autoLoadSkills: [],
           },
@@ -1544,14 +1544,14 @@ Do it
     expect(agentConfig.prompt).toContain("default to built-in `scout-researcher`");
     expect(agentConfig.prompt).toContain("Configured Custom Subagents` is a better match");
     expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-researcher>\"");
-    expect(agentConfig.prompt).toContain("default to built-in `hygienic-reviewer`");
+    expect(agentConfig.prompt).toContain("default to built-in `code-reviewer`");
     expect(agentConfig.prompt).toContain("Configured Custom Subagents` is a better match");
     expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-reviewer>\"");
 
     const agents = opencodeConfig.agent as Record<string, unknown>;
     expect(agents["forager-worker"]).toBeDefined();
     expect(agents["scout-docs"]).toBeDefined();
-    expect(agents["hygienic-reviewer"]).toBeDefined();
+    expect(agents["code-reviewer"]).toBeDefined();
     expect(agents["forager-ui"]).toBeDefined();
     expect(agents["reviewer-security"]).toBeDefined();
     
@@ -1580,7 +1580,7 @@ Do it
     expect(agents["architect-planner"]).toBeUndefined();
     expect(agents["scout-researcher"]?.prompt).toBeDefined();
     expect(agents["hive-helper"]?.prompt).toBeDefined();
-    expect(agents["hygienic-reviewer"]?.prompt).toBeDefined();
+    expect(agents["code-reviewer"]?.prompt).toBeDefined();
 
     const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
       | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
@@ -2555,7 +2555,7 @@ Do the first thing.
         acceptanceCriteria: ["swarm dispatches to correct agent", "existing tests pass"],
         references: ["packages/opencode-hive/src/agents/swarm.ts:107-111"],
         files: ["packages/opencode-hive/src/agents/swarm.ts"],
-        reason: "Required by Hygienic review",
+        reason: "Required by code review",
         source: "review",
       },
       toolContext

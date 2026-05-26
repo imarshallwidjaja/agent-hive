@@ -14,13 +14,17 @@ const BUILT_IN_AGENTS: Record<string, { sessionKind: SessionKind; baseAgent: str
   'forager-worker': { sessionKind: 'task-worker', baseAgent: 'forager-worker' },
   'scout-researcher': { sessionKind: 'subagent', baseAgent: 'scout-researcher' },
   'hive-helper': { sessionKind: 'subagent', baseAgent: 'hive-helper' },
-  'hygienic-reviewer': { sessionKind: 'subagent', baseAgent: 'hygienic-reviewer' },
+  'plan-reviewer': { sessionKind: 'subagent', baseAgent: 'plan-reviewer' },
+  'code-reviewer': { sessionKind: 'subagent', baseAgent: 'code-reviewer' },
+  'approach-advisor': { sessionKind: 'subagent', baseAgent: 'approach-advisor' },
 };
 
 const BASE_AGENT_KIND: Record<string, SessionKind> = {
   'scout-researcher': 'subagent',
   'forager-worker': 'task-worker',
-  'hygienic-reviewer': 'subagent',
+  'plan-reviewer': 'subagent',
+  'code-reviewer': 'subagent',
+  'approach-advisor': 'subagent',
 };
 
 export function classifySession(

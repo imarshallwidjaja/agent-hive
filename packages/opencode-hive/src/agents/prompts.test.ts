@@ -8,7 +8,9 @@ import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
 import { HIVE_BUILDER_PROMPT } from './hive-builder';
-import { HYGIENIC_BEE_PROMPT } from './hygienic';
+import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
+import { CODE_REVIEWER_PROMPT } from './code-reviewer';
+import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { buildWorkerPrompt } from '../utils/worker-prompt';
 
 describe('Orchestrator synthesis-before-delegation', () => {
@@ -127,24 +129,25 @@ describe('Scout ast-grep references', () => {
   });
 });
 
-describe('Hygienic verification routing', () => {
-  it('routes verification requests to verification-reviewer skill via native skill tool', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('verification-reviewer');
-    expect(HYGIENIC_BEE_PROMPT).toContain('native skill');
+describe('Specialized reviewer prompts', () => {
+  it('keeps plan-reviewer focused on executable plans, not approach review', () => {
+    expect(PLAN_REVIEWER_PROMPT).toContain('Can a capable Hive worker execute this plan without getting stuck?');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Do not judge whether the architecture or approach is optimal');
+    expect(PLAN_REVIEWER_PROMPT).toContain('OKAY');
+    expect(PLAN_REVIEWER_PROMPT).toContain('REJECT');
   });
 
-  it('requires falsification-first protocol for verification', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('falsification-first');
+  it('keeps code-reviewer focused on implementation diffs and verification boundaries', () => {
+    expect(CODE_REVIEWER_PROMPT).toContain('Reviews implementation changes against a task or plan');
+    expect(CODE_REVIEWER_PROMPT).toContain('REQUEST_CHANGES');
+    expect(CODE_REVIEWER_PROMPT).toContain('canonical `verification` skill');
   });
 
-  it('rejects rationalizations as evidence', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('Do NOT accept rationalizations as evidence');
-  });
-
-  it('preserves existing plan-review and code-reviewer paths via native skill tool', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('code-reviewer');
-    expect(HYGIENIC_BEE_PROMPT).toContain('native skill');
-    expect(HYGIENIC_BEE_PROMPT).toContain('Review plan WITHIN the stated approach');
+  it('keeps approach-advisor advisory rather than a gate', () => {
+    expect(APPROACH_ADVISOR_PROMPT).toContain('Is this the right path, given the constraints?');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('Do not return `OKAY` or `REJECT`');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('Effort');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('Confidence');
   });
 });
 
@@ -227,8 +230,8 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('hive_worktree_start({ feature, task })');
     });
 
-    it('documents hygienic reviewer routing fallback and custom reviewer selection', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `hygienic-reviewer`');
+    it('documents plan-reviewer routing fallback and custom reviewer selection', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `plan-reviewer`');
       expect(QUEEN_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
@@ -311,7 +314,7 @@ describe('Architect (Planner) prompt', () => {
     });
 
     it('permits research and review delegation via task()', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('You may use task() to delegate read-only research to Scout and plan review to Hygienic.');
+      expect(ARCHITECT_BEE_PROMPT).toContain('You may use task() to delegate read-only research to Scout and plan review to plan-reviewer.');
       expect(ARCHITECT_BEE_PROMPT).toContain('Never use task() to delegate implementation or coding work.');
     });
 
@@ -497,8 +500,8 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
     });
 
-    it('documents hygienic reviewer routing fallback and custom reviewer selection', () => {
-      expect(SWARM_BEE_PROMPT).toContain('default to built-in `hygienic-reviewer`');
+    it('documents code-reviewer routing fallback and custom reviewer selection', () => {
+      expect(SWARM_BEE_PROMPT).toContain('default to built-in `code-reviewer`');
       expect(SWARM_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
@@ -699,25 +702,13 @@ describe('Scout (Explorer/Researcher) prompt', () => {
   });
 });
 
-describe('Hygienic (Consultant/Reviewer) prompt', () => {
+describe('Plan reviewer prompt', () => {
   it('contains agent-executable verification guidance', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('agent-executable');
+    expect(PLAN_REVIEWER_PROMPT).toContain('agent-executable');
   });
 
-  it('contains verification examples', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('without human judgment');
-  });
-
-  it('routes implementation verification to verification-reviewer', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('verification-reviewer');
-    expect(HYGIENIC_BEE_PROMPT).toContain('native skill');
-    expect(HYGIENIC_BEE_PROMPT).toContain('evidence-backed report format');
-  });
-
-  it('rejects rationalizations as verification evidence', () => {
-    expect(HYGIENIC_BEE_PROMPT).toContain('rationalizations');
-    expect(HYGIENIC_BEE_PROMPT).toContain('command output');
-    expect(HYGIENIC_BEE_PROMPT).toContain('observable results');
+  it('keeps verification routed to the canonical skill', () => {
+    expect(PLAN_REVIEWER_PROMPT).toContain('verification` skill');
   });
 });
 
@@ -728,7 +719,7 @@ describe('removed historical lookup guidance', () => {
   ];
 
   it('keeps historical lookup references out of agent prompts', () => {
-    const prompts = [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, HYGIENIC_BEE_PROMPT];
+    const prompts = [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, PLAN_REVIEWER_PROMPT, CODE_REVIEWER_PROMPT, APPROACH_ADVISOR_PROMPT];
 
     for (const prompt of prompts) {
       for (const term of removedTerms) {
@@ -747,6 +738,12 @@ describe('README.md documentation', () => {
   const hiveToolsContent = readFileSync(HIVE_TOOLS_PATH, 'utf-8');
   const PHILOSOPHY_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'PHILOSOPHY.md');
   const philosophyContent = readFileSync(PHILOSOPHY_PATH, 'utf-8');
+  const GITHUB_HIVE_AGENT_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', '.github', 'agents', 'hive.agent.md');
+  const githubHiveAgentContent = readFileSync(GITHUB_HIVE_AGENT_PATH, 'utf-8');
+  const GITHUB_EXECUTING_PLANS_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', '.github', 'skills', 'executing-plans', 'SKILL.md');
+  const githubExecutingPlansContent = readFileSync(GITHUB_EXECUTING_PLANS_PATH, 'utf-8');
+  const GITHUB_VERIFY_COMPLETION_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', '.github', 'prompts', 'verify-completion.prompt.md');
+  const githubVerifyCompletionContent = readFileSync(GITHUB_VERIFY_COMPLETION_PATH, 'utf-8');
 
   describe('delegation planning alignment', () => {
     it('contains the heading "### Planning-mode delegation"', () => {
@@ -799,8 +796,8 @@ describe('README.md documentation', () => {
     it('keeps hive-helper out of custom derived subagent docs', () => {
       expect(readmeContent).toContain('does not appear in `.github/agents/`');
       expect(readmeContent).toContain('### Custom Derived Subagents');
-      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, or `hygienic-reviewer`');
-      expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `hygienic-reviewer`, or `hive-helper`');
+      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, or `approach-advisor`');
+      expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `code-reviewer`, or `hive-helper`');
     });
 
     it('mentions hive-helper in the top-level README so users know the agent exists', () => {
@@ -828,6 +825,22 @@ describe('README.md documentation', () => {
       for (const doc of docs) {
         expect(doc).not.toContain(removedNetworkTool);
         expect(doc).not.toContain(removedNetworkName);
+      }
+    });
+  });
+
+  describe('github workflow reviewer guidance', () => {
+    it('does not route current GitHub guidance to retired hygienic or verification-before-completion flows', () => {
+      const currentGuidance = [
+        githubHiveAgentContent,
+        githubExecutingPlansContent,
+        githubVerifyCompletionContent,
+      ];
+
+      for (const doc of currentGuidance) {
+        expect(doc).not.toContain('@hygienic');
+        expect(doc).not.toContain('Hygienic');
+        expect(doc).not.toContain('verification-before-completion');
       }
     });
   });
@@ -887,8 +900,10 @@ describe('no removed Hive skill tool references in agent prompts', () => {
     expect(FORAGER_BEE_PROMPT).not.toContain(removedHiveSkillCall);
   });
 
-  it('Hygienic prompt does not contain the removed tool call', () => {
-    expect(HYGIENIC_BEE_PROMPT).not.toContain(removedHiveSkillCall);
+  it('reviewer prompts do not contain the removed tool call', () => {
+    expect(PLAN_REVIEWER_PROMPT).not.toContain(removedHiveSkillCall);
+    expect(CODE_REVIEWER_PROMPT).not.toContain(removedHiveSkillCall);
+    expect(APPROACH_ADVISOR_PROMPT).not.toContain(removedHiveSkillCall);
   });
 });
 

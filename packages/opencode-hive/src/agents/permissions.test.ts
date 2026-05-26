@@ -105,7 +105,9 @@ describe('Agent permissions', () => {
     expect(opencodeConfig.agent?.['scout-researcher']).toBeTruthy();
     expect(opencodeConfig.agent?.['forager-worker']).toBeTruthy();
     expect(opencodeConfig.agent?.['hive-helper']).toBeTruthy();
-    expect(opencodeConfig.agent?.['hygienic-reviewer']).toBeTruthy();
+    expect(opencodeConfig.agent?.['plan-reviewer']).toBeTruthy();
+    expect(opencodeConfig.agent?.['code-reviewer']).toBeTruthy();
+    expect(opencodeConfig.agent?.['approach-advisor']).toBeTruthy();
     expect(opencodeConfig.agent?.['hive-builder']).toBeTruthy();
     expect(opencodeConfig.default_agent).toBe('hive-master');
 
@@ -148,7 +150,9 @@ describe('Agent permissions', () => {
     expect(opencodeConfig.agent?.['scout-researcher']).toBeTruthy();
     expect(opencodeConfig.agent?.['forager-worker']).toBeTruthy();
     expect(opencodeConfig.agent?.['hive-helper']).toBeTruthy();
-    expect(opencodeConfig.agent?.['hygienic-reviewer']).toBeTruthy();
+    expect(opencodeConfig.agent?.['plan-reviewer']).toBeTruthy();
+    expect(opencodeConfig.agent?.['code-reviewer']).toBeTruthy();
+    expect(opencodeConfig.agent?.['approach-advisor']).toBeTruthy();
     expect(opencodeConfig.agent?.['hive-builder']).toBeTruthy();
     expect(opencodeConfig.default_agent).toBe('architect-planner');
 
@@ -189,7 +193,7 @@ describe('Agent permissions', () => {
     } = {};
     await hooks.config?.(opencodeConfig);
 
-    const subagentNames = ['scout-researcher', 'forager-worker', 'hive-helper', 'hygienic-reviewer'] as const;
+    const subagentNames = ['scout-researcher', 'forager-worker', 'hive-helper', 'plan-reviewer', 'code-reviewer', 'approach-advisor'] as const;
     for (const name of subagentNames) {
       const perm = opencodeConfig.agent?.[name]?.permission;
       expect(perm).toBeTruthy();
@@ -244,7 +248,7 @@ describe('Agent permissions', () => {
     expect(helper?.prompt).not.toContain('## Hive Skill:');
   });
 
-  it('inherits subagent safety restrictions for custom forager and hygienic families', async () => {
+  it('inherits subagent safety restrictions for custom forager and reviewer families', async () => {
     spyOn(ConfigService.prototype, 'get').mockReturnValue({
       agentMode: 'unified',
       agents: {
@@ -257,7 +261,7 @@ describe('Agent permissions', () => {
           variant: 'high',
         },
         'reviewer-security': {
-          baseAgent: 'hygienic-reviewer',
+          baseAgent: 'code-reviewer',
           description: 'Security-focused reviewer',
           variant: 'medium',
         },
@@ -289,7 +293,7 @@ describe('Agent permissions', () => {
     expect(opencodeConfig.agent?.['forager-ui']?.permission?.delegate).toBe('deny');
     expect(opencodeConfig.agent?.['reviewer-security']?.permission?.edit).toBe('deny');
     expect(opencodeConfig.agent?.['reviewer-security']?.tools).toEqual(
-      opencodeConfig.agent?.['hygienic-reviewer']?.tools,
+      opencodeConfig.agent?.['code-reviewer']?.tools,
     );
   });
 });
@@ -391,13 +395,14 @@ describe('Per-agent tool filtering', () => {
     expect(foragerTools!['hive_repositories_update']).toBe(false);
   });
 
-  it('hygienic has same tool set as scout', async () => {
+  it('reviewer agents have same tool set as scout', async () => {
     const agents = await buildConfig('unified');
-    const hygienicTools = agents['hygienic-reviewer']?.tools;
     const scoutTools = agents['scout-researcher']?.tools;
-    expect(hygienicTools).toBeTruthy();
     expect(scoutTools).toBeTruthy();
-    expect(hygienicTools).toEqual(scoutTools);
+    for (const name of ['plan-reviewer', 'code-reviewer', 'approach-advisor'] as const) {
+      expect(agents[name]?.tools).toBeTruthy();
+      expect(agents[name]?.tools).toEqual(scoutTools);
+    }
   });
 
   it('architect has planning tools but no worktree tools', async () => {
@@ -432,8 +437,10 @@ describe('Per-agent tool filtering', () => {
     expect(unifiedAgents['forager-worker']?.permission?.todowrite).toBeUndefined();
     expect(unifiedAgents['hive-helper']?.permission?.todoread).toBeUndefined();
     expect(unifiedAgents['hive-helper']?.permission?.todowrite).toBeUndefined();
-    expect(unifiedAgents['hygienic-reviewer']?.permission?.todoread).toBeUndefined();
-    expect(unifiedAgents['hygienic-reviewer']?.permission?.todowrite).toBeUndefined();
+    for (const name of ['plan-reviewer', 'code-reviewer', 'approach-advisor'] as const) {
+      expect(unifiedAgents[name]?.permission?.todoread).toBeUndefined();
+      expect(unifiedAgents[name]?.permission?.todowrite).toBeUndefined();
+    }
 
     const dedicatedAgents = await buildConfig('dedicated');
     expect(dedicatedAgents['architect-planner']?.permission?.todoread).toBe('allow');
@@ -446,8 +453,10 @@ describe('Per-agent tool filtering', () => {
     expect(dedicatedAgents['forager-worker']?.permission?.todowrite).toBeUndefined();
     expect(dedicatedAgents['hive-helper']?.permission?.todoread).toBeUndefined();
     expect(dedicatedAgents['hive-helper']?.permission?.todowrite).toBeUndefined();
-    expect(dedicatedAgents['hygienic-reviewer']?.permission?.todoread).toBeUndefined();
-    expect(dedicatedAgents['hygienic-reviewer']?.permission?.todowrite).toBeUndefined();
+    for (const name of ['plan-reviewer', 'code-reviewer', 'approach-advisor'] as const) {
+      expect(dedicatedAgents[name]?.permission?.todoread).toBeUndefined();
+      expect(dedicatedAgents[name]?.permission?.todowrite).toBeUndefined();
+    }
   });
 
   it('does not expose the removed historical lookup tool to any agent', async () => {

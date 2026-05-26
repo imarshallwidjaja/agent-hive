@@ -79,9 +79,9 @@ Chat with OpenCode. Ask it to "create a feature for user authentication" and Hiv
 
 ### What you get
 
-- **7 agents** — Unified mode: `hive-master` handles planning + orchestration. Dedicated mode: `architect-planner` + `swarm-orchestrator`. Plus `scout-researcher`, `forager-worker`, `hygienic-reviewer`, `hive-helper`.
+- **9 agents** — Unified mode: `hive-master` handles planning + orchestration. Dedicated mode: `architect-planner` + `swarm-orchestrator`. Plus `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `approach-advisor`, and `hive-helper`.
 - **17 MCP tools** — Full lifecycle: feature, plan, tasks, worktrees, context, merge, status, agents-md, research.
-- **11 skills** — Loaded via OpenCode's native `skill` tool.
+- **15 skills** — Loaded via OpenCode's native `skill` tool.
 - **Compaction recovery** — OpenCode sessions compact on long runs; Hive stores durable session metadata in `.hive/sessions.json` so agents re-anchor with the correct role after compaction.
 - **Optional research MCPs** — Exa web search, Context7 docs, grep.app, ast-grep. Disable individually via `disableMcps`.
 
@@ -216,8 +216,8 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full evolution log.
 | `parallel-exploration` | Multi-domain research |
 | `systematic-debugging` | Diagnosing a failing test or regression |
 | `test-driven-development` | Implementing new behaviour with tests |
-| `verification-before-completion` | Checking work before declaring done |
-| `code-reviewer` | Reviewing changes against plan and quality bar |
+| `verification` | Checking work before declaring done |
+| `code-reviewer` | Deprecated compatibility wrapper; use the `code-reviewer` subagent for implementation review |
 | `brainstorming` | Exploring options before committing |
 | `docker-mastery` | Docker / docker-compose / container debugging |
 | `agents-md-mastery` | Reviewing agent instruction files |

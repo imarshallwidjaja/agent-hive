@@ -25,7 +25,9 @@ describe('agent_hive schema customAgents contract', () => {
     expect(schema.$defs.customAgentConfig.properties.baseAgent.enum).toEqual([
       'scout-researcher',
       'forager-worker',
-      'hygienic-reviewer',
+      'plan-reviewer',
+      'code-reviewer',
+      'approach-advisor',
     ]);
   });
 
@@ -44,13 +46,16 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('scout-researcher');
     expectReservedNameToFail('forager-worker');
     expectReservedNameToFail('hive-helper');
-    expectReservedNameToFail('hygienic-reviewer');
+    expectReservedNameToFail('plan-reviewer');
+    expectReservedNameToFail('code-reviewer');
+    expectReservedNameToFail('approach-advisor');
     expectReservedNameToFail('hive');
     expectReservedNameToFail('architect');
     expectReservedNameToFail('swarm');
     expectReservedNameToFail('scout');
     expectReservedNameToFail('forager');
     expectReservedNameToFail('hygienic');
+    expectReservedNameToFail('hygienic-reviewer');
     expectReservedNameToFail('receiver');
     expectReservedNameToFail('build');
     expectReservedNameToFail('plan');

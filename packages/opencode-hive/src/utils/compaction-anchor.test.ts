@@ -106,12 +106,12 @@ describe('buildCompactionReanchor', () => {
       expect(anchor.prompt).toContain('Role: Scout');
     });
 
-    it('anchors hygienic-reviewer with Role: Hygienic', () => {
+    it('anchors code-reviewer with Role: Code Reviewer', () => {
       const anchor = buildCompactionReanchor({
-        agent: 'hygienic-reviewer',
+        agent: 'code-reviewer',
         sessionKind: 'subagent',
       });
-      expect(anchor.prompt).toContain('Role: Hygienic');
+      expect(anchor.prompt).toContain('Role: Code Reviewer');
     });
 
     it('anchors hive-helper with Role: Hive Helper', () => {
@@ -122,13 +122,13 @@ describe('buildCompactionReanchor', () => {
       expect(anchor.prompt).toContain('Role: Hive Helper');
     });
 
-    it('anchors custom hygienic-reviewer derivative with Role: Hygienic', () => {
+    it('anchors custom code-reviewer derivative with Role: Code Reviewer', () => {
       const anchor = buildCompactionReanchor({
         agent: 'my-custom-reviewer',
-        baseAgent: 'hygienic-reviewer',
+        baseAgent: 'code-reviewer',
         sessionKind: 'subagent',
       });
-      expect(anchor.prompt).toContain('Role: Hygienic');
+      expect(anchor.prompt).toContain('Role: Code Reviewer');
     });
 
     it('does not mention worker-prompt.md for subagents', () => {
@@ -241,7 +241,7 @@ describe('buildCompactionReanchor', () => {
 
     it('subagents do not mention worker-prompt.md', () => {
       const anchor = buildCompactionReanchor({
-        agent: 'hygienic-reviewer',
+        agent: 'code-reviewer',
         sessionKind: 'subagent',
       });
       expect(anchor.prompt).not.toContain('worker-prompt.md');

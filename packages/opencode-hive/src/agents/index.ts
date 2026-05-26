@@ -7,7 +7,9 @@
  * - Swarm (Orchestrator): Delegates, spawns workers, verifies, merges
  * - Scout (Research/Collector): Explores codebase and external docs
  * - Forager (Worker/Coder): Executes tasks in isolation
- * - Hygienic (Consultant/Reviewer): Reviews plan quality
+ * - Plan Reviewer: Reviews plan readiness
+ * - Code Reviewer: Reviews implementation changes
+ * - Approach Advisor: Reviews technical direction
  * - Hive Builder: Ad-hoc executor for direct work
  */
 
@@ -19,7 +21,9 @@ export { scoutBeeAgent, SCOUT_BEE_PROMPT } from './scout';
 export { foragerBeeAgent, FORAGER_BEE_PROMPT } from './forager';
 export { hiveHelperAgent, HIVE_HELPER_PROMPT } from './hive-helper';
 export { hiveBuilderAgent, HIVE_BUILDER_PROMPT } from './hive-builder';
-export { hygienicBeeAgent, HYGIENIC_BEE_PROMPT } from './hygienic';
+export { planReviewerAgent, PLAN_REVIEWER_PROMPT } from './plan-reviewer';
+export { codeReviewerAgent, CODE_REVIEWER_PROMPT } from './code-reviewer';
+export { approachAdvisorAgent, APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 
 
 /**
@@ -31,7 +35,9 @@ export { hygienicBeeAgent, HYGIENIC_BEE_PROMPT } from './hygienic';
  * - swarm: Orchestration (delegates, verifies, merges)
  * - scout: Research/collection (codebase + external docs/data)
  * - forager: Worker/coder (executes tasks in worktrees)
- * - hygienic: Consultant/reviewer (plan quality)
+ * - plan-reviewer: Reviews plan readiness
+ * - code-reviewer: Reviews implementation changes
+ * - approach-advisor: Reviews technical direction
  * - hive-builder: Primary general-purpose Hive-aware executor for ad-hoc work
  */
 export const hiveAgents = {
@@ -66,9 +72,19 @@ export const hiveAgents = {
     description: 'Runtime-only bounded hard-task operational assistant for merge recovery, state clarification, and safe manual follow-up assistance.',
     mode: 'subagent' as const,
   },
-  hygienic: {
-    name: 'Hygienic (Consultant/Reviewer/Debugger)',
-    description: 'Reviews plan documentation quality. OKAY/REJECT verdict.',
+  'plan-reviewer': {
+    name: 'Plan Reviewer',
+    description: 'Reviews plan readiness. OKAY/REJECT verdict.',
+    mode: 'subagent' as const,
+  },
+  'code-reviewer': {
+    name: 'Code Reviewer',
+    description: 'Reviews implementation diffs against task or plan requirements.',
+    mode: 'subagent' as const,
+  },
+  'approach-advisor': {
+    name: 'Approach Advisor',
+    description: 'Read-only technical advisor for approach, architecture, and tradeoffs.',
     mode: 'subagent' as const,
   },
   'hive-builder': {

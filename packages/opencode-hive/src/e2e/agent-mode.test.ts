@@ -38,7 +38,7 @@ describe("agentMode gating", () => {
     }
   });
 
-  it("registers hive-master, scout, forager, and hygienic in unified mode", async () => {
+  it("registers hive-master, scout, forager, and reviewer agents in unified mode", async () => {
     const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(
@@ -66,7 +66,9 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["scout-researcher"]).toBeDefined();
     expect(opencodeConfig.agent["forager-worker"]).toBeDefined();
     expect(opencodeConfig.agent["hive-helper"]).toBeDefined();
-    expect(opencodeConfig.agent["hygienic-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["plan-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["code-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["approach-advisor"]).toBeDefined();
     expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("hive-master");
   });
@@ -99,7 +101,9 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["scout-researcher"]).toBeDefined();
     expect(opencodeConfig.agent["forager-worker"]).toBeDefined();
     expect(opencodeConfig.agent["hive-helper"]).toBeDefined();
-    expect(opencodeConfig.agent["hygienic-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["plan-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["code-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["approach-advisor"]).toBeDefined();
     expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("architect-planner");
   });
@@ -123,7 +127,7 @@ describe("agentMode gating", () => {
             autoLoadSkills: [],
           },
           "reviewer-security": {
-            baseAgent: "hygienic-reviewer",
+            baseAgent: "code-reviewer",
             description: "Use for security-focused review passes.",
             autoLoadSkills: [],
           },

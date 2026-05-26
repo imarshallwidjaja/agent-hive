@@ -11,7 +11,9 @@ import { SCOUT_BEE_PROMPT } from './agents/scout.js';
 import { FORAGER_BEE_PROMPT } from './agents/forager.js';
 import { HIVE_HELPER_PROMPT } from './agents/hive-helper.js';
 import { HIVE_BUILDER_PROMPT } from './agents/hive-builder.js';
-import { HYGIENIC_BEE_PROMPT } from './agents/hygienic.js';
+import { PLAN_REVIEWER_PROMPT } from './agents/plan-reviewer.js';
+import { CODE_REVIEWER_PROMPT } from './agents/code-reviewer.js';
+import { APPROACH_ADVISOR_PROMPT } from './agents/approach-advisor.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
 
@@ -432,8 +434,12 @@ const plugin: Plugin = async (ctx) => {
       ? 'Scout'
       : session.agent === 'hive-helper' || session.baseAgent === 'hive-helper'
         ? 'Hive Helper'
-      : session.agent === 'hygienic-reviewer' || session.baseAgent === 'hygienic-reviewer'
-        ? 'Hygienic'
+      : session.agent === 'plan-reviewer' || session.baseAgent === 'plan-reviewer'
+        ? 'Plan Reviewer'
+        : session.agent === 'code-reviewer' || session.baseAgent === 'code-reviewer'
+          ? 'Code Reviewer'
+          : session.agent === 'approach-advisor' || session.baseAgent === 'approach-advisor'
+            ? 'Approach Advisor'
         : session.agent === 'architect-planner' || session.baseAgent === 'architect-planner'
           ? 'Architect'
           : session.agent === 'swarm-orchestrator' || session.baseAgent === 'swarm-orchestrator'
@@ -2530,29 +2536,56 @@ Expand your Discovery section and try again.`;
         },
       };
 
-      const hygienicUserConfig = configService.getAgentConfig('hygienic-reviewer');
-      const hygienicAutoLoadedSkills = await buildAutoLoadedSkillsContent(
-        'hygienic-reviewer',
-        configService,
-        preparedNativeHiveSkills.nativeSkillsByName,
-        preparedNativeHiveSkills.skillsByName,
-        skippedHiveSkills,
-      );
-      const hygienicConfig = {
-        model: hygienicUserConfig.model,
-        variant: hygienicUserConfig.variant,
-        temperature: hygienicUserConfig.temperature ?? 0.3,
-        mode: 'subagent' as const,
-        description: 'Hygienic (Consultant/Reviewer/Debugger) - Reviews plan documentation quality. OKAY/REJECT verdict.',
-        prompt: HYGIENIC_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hygienicAutoLoadedSkills,
-        tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status']),
-        permission: {
-          edit: "deny",  // Reviewers don't edit
-          task: "deny",
-          delegate: "deny",
-          skill: "allow",
-        },
+      const reviewerPermissions = {
+        edit: 'deny',
+        task: 'deny',
+        delegate: 'deny',
+        skill: 'allow',
       };
+
+      async function buildReviewerConfig(
+        agentName: 'plan-reviewer' | 'code-reviewer' | 'approach-advisor',
+        prompt: string,
+        description: string,
+      ) {
+        const userConfig = configService.getAgentConfig(agentName);
+        const autoLoadedSkills = await buildAutoLoadedSkillsContent(
+          agentName,
+          configService,
+          preparedNativeHiveSkills.nativeSkillsByName,
+          preparedNativeHiveSkills.skillsByName,
+          skippedHiveSkills,
+        );
+        return {
+          model: userConfig.model,
+          variant: userConfig.variant,
+          temperature: userConfig.temperature ?? 0.3,
+          mode: 'subagent' as const,
+          description,
+          prompt: prompt + HIVE_SYSTEM_PROMPT + autoLoadedSkills,
+          tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status']),
+          permission: reviewerPermissions,
+        };
+      }
+
+      const planReviewerUserConfig = configService.getAgentConfig('plan-reviewer');
+      const codeReviewerUserConfig = configService.getAgentConfig('code-reviewer');
+      const approachAdvisorUserConfig = configService.getAgentConfig('approach-advisor');
+      const planReviewerConfig = await buildReviewerConfig(
+        'plan-reviewer',
+        PLAN_REVIEWER_PROMPT,
+        'Plan Reviewer - Reviews Hive plans for worker readiness, references, dependencies, and executable verification. OKAY/REJECT verdict.',
+      );
+      const codeReviewerConfig = await buildReviewerConfig(
+        'code-reviewer',
+        CODE_REVIEWER_PROMPT,
+        'Code Reviewer - Reviews implementation diffs against task or plan requirements for correctness, tests, risk, scope creep, YAGNI, and dead code.',
+      );
+      const approachAdvisorConfig = await buildReviewerConfig(
+        'approach-advisor',
+        APPROACH_ADVISOR_PROMPT,
+        'Approach Advisor - Read-only technical advisor for approach, architecture, hard debugging direction, and tradeoffs.',
+      );
 
       const builderUserConfig = configService.getAgentConfig('hive-builder');
       const builderAutoLoadedSkills = await buildAutoLoadedSkillsContent(
@@ -2596,7 +2629,9 @@ Expand your Discovery section and try again.`;
         'scout-researcher': scoutConfig,
         'forager-worker': foragerConfig,
         'hive-helper': hiveHelperConfig,
-        'hygienic-reviewer': hygienicConfig,
+        'plan-reviewer': planReviewerConfig,
+        'code-reviewer': codeReviewerConfig,
+        'approach-advisor': approachAdvisorConfig,
         'hive-builder': builderConfig,
       };
 
@@ -2606,7 +2641,9 @@ Expand your Discovery section and try again.`;
             const inheritedBaseSkillsByAgent: Record<CustomAgentBase, string[]> = {
               'scout-researcher': scoutUserConfig.autoLoadSkills ?? [],
               'forager-worker': foragerUserConfig.autoLoadSkills ?? [],
-              'hygienic-reviewer': hygienicUserConfig.autoLoadSkills ?? [],
+              'plan-reviewer': planReviewerUserConfig.autoLoadSkills ?? [],
+              'code-reviewer': codeReviewerUserConfig.autoLoadSkills ?? [],
+              'approach-advisor': approachAdvisorUserConfig.autoLoadSkills ?? [],
             };
             const inheritedBaseSkills = inheritedBaseSkillsByAgent[customAgentConfig.baseAgent];
             const deltaAutoLoadSkills = (customAgentConfig.autoLoadSkills ?? []).filter(
@@ -2633,7 +2670,9 @@ Expand your Discovery section and try again.`;
         baseAgents: {
           'scout-researcher': scoutConfig,
           'forager-worker': foragerConfig,
-          'hygienic-reviewer': hygienicConfig,
+          'plan-reviewer': planReviewerConfig,
+          'code-reviewer': codeReviewerConfig,
+          'approach-advisor': approachAdvisorConfig,
         },
         baseRuntimePrompts: {
           'forager-worker': foragerPrompt,
@@ -2650,14 +2689,18 @@ Expand your Discovery section and try again.`;
         allAgents['scout-researcher'] = builtInAgentConfigs['scout-researcher'];
         allAgents['forager-worker'] = builtInAgentConfigs['forager-worker'];
         allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
-        allAgents['hygienic-reviewer'] = builtInAgentConfigs['hygienic-reviewer'];
+        allAgents['plan-reviewer'] = builtInAgentConfigs['plan-reviewer'];
+        allAgents['code-reviewer'] = builtInAgentConfigs['code-reviewer'];
+        allAgents['approach-advisor'] = builtInAgentConfigs['approach-advisor'];
       } else {
         allAgents['architect-planner'] = builtInAgentConfigs['architect-planner'];
         allAgents['swarm-orchestrator'] = builtInAgentConfigs['swarm-orchestrator'];
         allAgents['scout-researcher'] = builtInAgentConfigs['scout-researcher'];
         allAgents['forager-worker'] = builtInAgentConfigs['forager-worker'];
         allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
-        allAgents['hygienic-reviewer'] = builtInAgentConfigs['hygienic-reviewer'];
+        allAgents['plan-reviewer'] = builtInAgentConfigs['plan-reviewer'];
+        allAgents['code-reviewer'] = builtInAgentConfigs['code-reviewer'];
+        allAgents['approach-advisor'] = builtInAgentConfigs['approach-advisor'];
       }
       allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
 
@@ -2675,6 +2718,9 @@ Expand your Discovery section and try again.`;
         delete (configAgent as Record<string, unknown>).scout;
         delete (configAgent as Record<string, unknown>).forager;
         delete (configAgent as Record<string, unknown>).hygienic;
+        delete (configAgent as Record<string, unknown>)['plan-reviewer'];
+        delete (configAgent as Record<string, unknown>)['code-reviewer'];
+        delete (configAgent as Record<string, unknown>)['approach-advisor'];
         delete (configAgent as Record<string, unknown>).receiver;
         // Clean up old kebab-case names (in case they exist)
         delete (configAgent as Record<string, unknown>)['hive-master'];

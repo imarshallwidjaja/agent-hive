@@ -20,12 +20,16 @@ const AGENT_ROLE_MAP: Record<string, string> = {
   'forager-worker': 'Forager',
   'scout-researcher': 'Scout',
   'hive-helper': 'Hive Helper',
-  'hygienic-reviewer': 'Hygienic',
+  'plan-reviewer': 'Plan Reviewer',
+  'code-reviewer': 'Code Reviewer',
+  'approach-advisor': 'Approach Advisor',
 };
 
 const BASE_AGENT_ROLE_MAP: Record<string, string> = {
   'forager-worker': 'Forager',
-  'hygienic-reviewer': 'Hygienic',
+  'plan-reviewer': 'Plan Reviewer',
+  'code-reviewer': 'Code Reviewer',
+  'approach-advisor': 'Approach Advisor',
   'scout-researcher': 'Scout',
   'hive-helper': 'Hive Helper',
 };

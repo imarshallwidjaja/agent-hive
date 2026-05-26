@@ -31,7 +31,7 @@ Use targeted subagents when delegation helps:
 
 - **Scout** — for read-only discovery and research.
 - **Forager or custom workers** — for execution in isolated worktrees, with explicit worktree path instructions where appropriate.
-- **Hygienic** — for review before finalizing.
+- **code-reviewer** — for implementation review before finalizing.
 - **Hive Helper** — only for task-backed Hive recovery, not ad-hoc merge recovery.
 
 ### Subagent Concurrency

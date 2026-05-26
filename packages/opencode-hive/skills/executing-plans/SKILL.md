@@ -47,10 +47,10 @@ When batch complete:
 - Show verification output
 - Say: "Ready for feedback."
 
-### Step 4.5: Post-Batch Hygienic Review
+### Step 4.5: Post-Batch Code Review
 
-After the batch report, ask the operator if they want a Hygienic code review for the batch.
-If yes, run `task({ subagent_type: "hygienic", prompt: "Review implementation changes from the latest batch." })`.
+After the batch report, ask the operator if they want a `code-reviewer` review for the batch.
+If yes, run `task({ subagent_type: "code-reviewer", prompt: "Review implementation changes from the latest batch." })`.
 Route review feedback through this decision tree before continuing:
 
 | Feedback type | Action |
@@ -71,8 +71,8 @@ After applying review feedback (or if none):
 ### Step 6: Complete Development
 
 After all tasks complete and verified:
-- Announce: "I'm using the verification-before-completion skill to complete this work."
-- **REQUIRED SUB-SKILL:** Use \`skill({ name: "verification-before-completion" })\`
+- Announce: "I'm using the verification skill to complete this work."
+- **REQUIRED SUB-SKILL:** Use \`skill({ name: "verification" })\`
 - Follow that skill to verify tests, present options, execute choice
 
 ## When to Stop and Ask for Help

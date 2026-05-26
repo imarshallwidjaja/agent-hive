@@ -13,7 +13,7 @@ Plan-first development with bee roles.
 Architect (Planner) -> Swarm (Orchestrator)
                            \-> Scout (Explorer/Researcher/Retrieval)
 Swarm -> Forager (Worker/Coder)
-Swarm -> Hygienic (Consultant/Reviewer/Debugger)
+Review -> Plan Reviewer / Code Reviewer / Approach Advisor
 ```
 
 ---
@@ -26,7 +26,9 @@ Swarm -> Hygienic (Consultant/Reviewer/Debugger)
 | `@swarm` | Primary | Orchestration |
 | `@scout` | Subagent | Exploration/research/retrieval |
 | `@forager` | Subagent | Executes tasks in worktrees |
-| `@hygienic` | Subagent | Plan quality review |
+| `@plan-reviewer` | Subagent | Plan readiness review |
+| `@code-reviewer` | Subagent | Implementation review against plan |
+| `@approach-advisor` | Subagent | Read-only strategic approach advice |
 
 ---
 

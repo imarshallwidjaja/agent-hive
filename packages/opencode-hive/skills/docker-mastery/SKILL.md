@@ -345,4 +345,4 @@ Before marking Docker work complete:
 
 - **skill({ name: "systematic-debugging" })** - When container behavior is unexpected
 - **skill({ name: "test-driven-development" })** - Write tests that run in containers
-- **skill({ name: "verification-before-completion" })** - Verify tests pass in container before claiming done
+- **skill({ name: "verification" })** - Verify tests pass in container before claiming done

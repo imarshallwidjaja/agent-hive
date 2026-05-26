@@ -145,7 +145,7 @@ All verification MUST be agent-executable (no human intervention):
 
 ## Execution Handoff
 
-After saving the plan, ask whether to consult Hygienic (Consultant/Reviewer/Debugger) before offering execution choice.
+After saving the plan, ask whether to consult @plan-reviewer before offering execution choice.
 
 Plan complete and saved to `.hive/features/<feature>/plan.md`.
 

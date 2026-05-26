@@ -50,11 +50,11 @@ When batch complete:
 - Show verification output
 - Say: "Ready for feedback."
 
-### Step 4.5: Post-Batch Hygienic Review
+### Step 4.5: Post-Batch Code Review
 
-After the batch report, prefer `vscode/askQuestions` to ask whether the user wants a Hygienic code review for the batch.
+After the batch report, prefer `vscode/askQuestions` to ask whether the user wants a code review for the batch.
 Fall back to asking directly in chat only when `vscode/askQuestions` is unavailable or a lightweight follow-up is enough.
-If yes, invoke the @hygienic agent via the agent tool to review implementation changes from the latest batch, then apply feedback before starting the next batch.
+If yes, invoke the @code-reviewer agent via the agent tool to review implementation changes from the latest batch, then apply feedback before starting the next batch.
 
 ### Step 5: Continue
 Based on feedback:
@@ -65,8 +65,8 @@ Based on feedback:
 ### Step 6: Complete Development
 
 After all tasks complete and verified:
-- Announce: "I'm using the verification-before-completion skill to complete this work."
-- **REQUIRED SUB-SKILL:** Refer to the skill at .github/skills/verification-before-completion/SKILL.md
+- Announce: "I'm using the verification skill to complete this work."
+- **REQUIRED SUB-SKILL:** Refer to the skill at .github/skills/verification/SKILL.md
 - Follow that skill to verify tests, present options, execute choice
 
 ## When to Stop and Ask for Help

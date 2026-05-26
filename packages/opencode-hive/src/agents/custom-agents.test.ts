@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'bun:test';
 import type { ResolvedCustomAgentConfig } from 'hive-core';
 import { FORAGER_BEE_PROMPT } from './forager';
-import { HYGIENIC_BEE_PROMPT } from './hygienic';
+import { CODE_REVIEWER_PROMPT } from './code-reviewer';
+import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
+import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { buildCustomSubagents } from './custom-agents';
 import { CUSTOM_AGENT_RESERVED_NAMES } from 'hive-core';
 
 describe('buildCustomSubagents', () => {
-  it('builds derived subagents for scout, forager, and hygienic bases', () => {
+  it('builds derived subagents for scout, forager, and reviewer bases', () => {
     const scoutPermission = {
       edit: 'deny',
       task: 'deny',
@@ -20,7 +22,7 @@ describe('buildCustomSubagents', () => {
       delegate: 'deny',
       skill: 'allow',
     };
-    const hygienicPermission = {
+    const reviewerPermission = {
       edit: 'deny',
       task: 'deny',
       delegate: 'deny',
@@ -53,18 +55,44 @@ describe('buildCustomSubagents', () => {
         },
         permission: foragerPermission,
       },
-      'hygienic-reviewer': {
-        model: 'base/hygienic-model',
+      'plan-reviewer': {
+        model: 'base/plan-model',
         temperature: 0.3,
         variant: 'low',
         mode: 'subagent' as const,
-        description: 'Base Hygienic',
-        prompt: HYGIENIC_BEE_PROMPT,
+        description: 'Base Plan Reviewer',
+        prompt: PLAN_REVIEWER_PROMPT,
         tools: {
           hive_merge: false,
           hive_status: false,
         },
-        permission: hygienicPermission,
+        permission: reviewerPermission,
+      },
+      'code-reviewer': {
+        model: 'base/code-model',
+        temperature: 0.3,
+        variant: 'low',
+        mode: 'subagent' as const,
+        description: 'Base Code Reviewer',
+        prompt: CODE_REVIEWER_PROMPT,
+        tools: {
+          hive_merge: false,
+          hive_status: false,
+        },
+        permission: reviewerPermission,
+      },
+      'approach-advisor': {
+        model: 'base/advisor-model',
+        temperature: 0.3,
+        variant: 'low',
+        mode: 'subagent' as const,
+        description: 'Base Approach Advisor',
+        prompt: APPROACH_ADVISOR_PROMPT,
+        tools: {
+          hive_merge: false,
+          hive_status: false,
+        },
+        permission: reviewerPermission,
       },
     };
 
@@ -86,9 +114,9 @@ describe('buildCustomSubagents', () => {
         autoLoadSkills: ['test-driven-development'],
       },
       'reviewer-security': {
-        baseAgent: 'hygienic-reviewer',
+        baseAgent: 'code-reviewer',
         description: 'Use for security-focused review passes.',
-        model: 'base/hygienic-model',
+        model: 'base/code-model',
         temperature: 0.3,
         variant: 'low',
         autoLoadSkills: [],
@@ -125,11 +153,11 @@ describe('buildCustomSubagents', () => {
     expect(derived['forager-ui'].variant).toBe('high');
 
     expect(derived['reviewer-security'].mode).toBe('subagent');
-    expect(derived['reviewer-security'].prompt).toContain(HYGIENIC_BEE_PROMPT);
-    expect(derived['reviewer-security'].permission).toEqual(baseAgents['hygienic-reviewer'].permission);
-    expect(derived['reviewer-security'].tools).toEqual(baseAgents['hygienic-reviewer'].tools);
+    expect(derived['reviewer-security'].prompt).toContain(CODE_REVIEWER_PROMPT);
+    expect(derived['reviewer-security'].permission).toEqual(baseAgents['code-reviewer'].permission);
+    expect(derived['reviewer-security'].tools).toEqual(baseAgents['code-reviewer'].tools);
     expect(derived['reviewer-security'].description).toBe('Use for security-focused review passes.');
-    expect(derived['reviewer-security'].model).toBe('base/hygienic-model');
+    expect(derived['reviewer-security'].model).toBe('base/code-model');
   });
 
   it('registers custom forager runtime prompts when the base forager prompt is runtime-only', () => {
@@ -146,10 +174,20 @@ describe('buildCustomSubagents', () => {
         tools: { hive_merge: false },
         permission: { task: 'deny', delegate: 'deny', skill: 'allow' },
       },
-      'hygienic-reviewer': {
+      'plan-reviewer': {
         mode: 'subagent' as const,
-        description: 'Base Hygienic',
-        prompt: HYGIENIC_BEE_PROMPT,
+        description: 'Base Plan Reviewer',
+        prompt: PLAN_REVIEWER_PROMPT,
+      },
+      'code-reviewer': {
+        mode: 'subagent' as const,
+        description: 'Base Code Reviewer',
+        prompt: CODE_REVIEWER_PROMPT,
+      },
+      'approach-advisor': {
+        mode: 'subagent' as const,
+        description: 'Base Approach Advisor',
+        prompt: APPROACH_ADVISOR_PROMPT,
       },
     };
 
