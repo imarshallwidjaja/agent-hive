@@ -24,6 +24,8 @@ Release preparation is manual. Update the release branch explicitly for `vX.Y.Z`
 
 The release workflow publishes `docs/releases/${github.ref_name}.md` as the GitHub Release body, so the matching release note file must exist before tagging.
 
+The pushed tag must also match the root package version. A `v1.2.3` tag on a commit whose `package.json` version is still `1.2.2` is invalid and fails before publish jobs run.
+
 ## 3. Run local release preflight
 
 Before tagging, confirm local package state and npm access:
@@ -68,6 +70,8 @@ git push origin vX.Y.Z
 
 That tag triggers `.github/workflows/release.yml` to build, test, publish `oc-arkive`, attach `vscode-arkive.vsix`, and create the GitHub Release.
 
+If you push the wrong tag before release prep is complete, do not use recovery mode to publish from that bad tag. Prepare the correct release commit first, then decide explicitly whether to recreate the tag or move to the next patch version.
+
 Users can then install the forked OpenCode plugin with:
 
 ```json
@@ -93,6 +97,7 @@ When a tag already exists but one or more release targets failed, recover by man
 - Recovery requires a recovery tag and at least one explicit target toggle.
 - Recovery toggles are operator-selected: enable only `recover_oc_arkive` and/or `recover_github_release` for the unfinished target.
 - Rerun only the unfinished targets. If npm already published but the GitHub Release failed, enable only `recover_github_release`.
+- Recovery does not repair a tag that points at the wrong package version or lacks the matching release note file. Fix the release commit/tag relationship first.
 
 ### Operator flow for a partially published version
 

@@ -58,6 +58,15 @@ describe('release workflow recovery contract', () => {
     assert.match(workflow, /docs\/releases\/\$\{\{ needs\.prepare\.outputs\.release_tag \}\}\.md/);
   });
 
+  it('validates the tagged release package version and release notes before publishing', () => {
+    const workflow = readText('.github/workflows/release.yml');
+
+    assert.match(workflow, /name:\s*Validate release inputs/);
+    assert.match(workflow, /Release tag \$\{release_tag\} does not match package version \$\{expected_release_tag\}/);
+    assert.match(workflow, /release notes file missing: docs\/releases\/\$\{release_tag\}\.md/);
+    assert.match(workflow, /if-no-files-found:\s*error/);
+  });
+
   it('publishes oc-arkive and attaches vscode-arkive VSIX to the GitHub Release', () => {
     const workflow = readText('.github/workflows/release.yml');
     const packageJson = readJson('package.json');

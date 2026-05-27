@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-05-27
+
+### Changed
+- Custom subagent routing guidance now makes derived agents explicit exception routes. Primary agents keep using built-in base agents unless a custom agent description names the concrete condition, or the operator names the custom agent directly.
+- The published custom-agent example now has runtime coverage for inherited model, temperature, variant, and description behavior.
+- Version-bearing release surfaces are refreshed to `1.6.2`.
+
+### Fixed
+- The release workflow now validates that a `vX.Y.Z` tag matches the package version and that `docs/releases/vX.Y.Z.md` exists before publish or release steps can run. Missing release notes now fail at upload time instead of surfacing later as a missing artifact.
+
 ## [1.6.1] - 2026-05-27
 
 ### Added

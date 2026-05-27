@@ -91,6 +91,24 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Validate release inputs
+        if: ${{ needs.prepare.outputs.release_tag != '' }}
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          release_tag="${RELEASE_TAG}"
+          expected_release_tag="v$(node -p "require('./package.json').version")"
+
+          if [[ "${release_tag}" != "${expected_release_tag}" ]]; then
+            echo "Release tag ${release_tag} does not match package version ${expected_release_tag}" >&2
+            exit 1
+          fi
+
+          if [[ ! -f "docs/releases/${release_tag}.md" ]]; then
+            echo "release notes file missing: docs/releases/${release_tag}.md" >&2
+            exit 1
+          fi
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -144,6 +162,7 @@ jobs:
         with:
           name: release-notes
           path: docs/releases/${{ needs.prepare.outputs.release_tag }}.md
+          if-no-files-found: error
 
   publish-oc-arkive:
     needs: [prepare, build]
