@@ -346,6 +346,8 @@ Define plugin-only custom subagents with `customAgents`. Freshly initialized `ag
 - `baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, or `approach-advisor`
 - `description`: delegation guidance injected into primary planner/orchestrator prompts
 
+Custom subagents are exception routes, not capability upgrades. Primary agents default to the built-in base agent unless a custom agent description matches a concrete named condition, or the operator explicitly names the custom agent to use. If no custom route clearly matches, the base agent remains the safe default.
+
 `hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/`.
 
 `simplicity-reviewer` is also not a custom base agent. It is a built-in direct reviewer for final post-implementation cleanup, so operators can invoke it without defining a custom OpenCode agent.

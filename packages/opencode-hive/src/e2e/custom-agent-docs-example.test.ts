@@ -114,6 +114,10 @@ describe('e2e: published custom-agent docs example', () => {
     await systemTransform?.({ sessionID: 'sess_docs_hive', agent: 'hive-master' }, hiveOutput);
     const hivePrompt = hiveOutput.system[0];
     expect(hivePrompt).toContain('## Configured Custom Subagents');
+    expect(hivePrompt).toContain('Custom subagents are exception routes, not capability upgrades.');
+    expect(hivePrompt).toContain('Default to the built-in base agent unless a custom agent description matches a concrete named condition, or the operator explicitly names that custom agent.');
+    expect(hivePrompt).toContain('Do not choose a custom agent just because the task is important, complex, or quality-sensitive.');
+    expect(hivePrompt).toContain('If no custom route clearly matches, use the base agent.');
     expect(hivePrompt).toContain('`scout-docs`');
     expect(hivePrompt).toContain('`forager-ui`');
     expect(hivePrompt).toContain('`reviewer-security`');
