@@ -115,6 +115,10 @@
           "$ref": "#/$defs/agentConfig",
           "description": "Code Reviewer"
         },
+        "simplicity-reviewer": {
+          "$ref": "#/$defs/agentConfig",
+          "description": "Simplicity Reviewer"
+        },
         "approach-advisor": {
           "$ref": "#/$defs/agentConfig",
           "description": "Approach Advisor"
@@ -139,6 +143,7 @@
             "hive-helper",
             "plan-reviewer",
             "code-reviewer",
+            "simplicity-reviewer",
             "approach-advisor",
             "hive-builder",
             "hive",

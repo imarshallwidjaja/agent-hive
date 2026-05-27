@@ -10,6 +10,7 @@ import { HIVE_HELPER_PROMPT } from './hive-helper';
 import { HIVE_BUILDER_PROMPT } from './hive-builder';
 import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
 import { CODE_REVIEWER_PROMPT } from './code-reviewer';
+import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { buildWorkerPrompt } from '../utils/worker-prompt';
 
@@ -143,6 +144,15 @@ describe('Specialized reviewer prompts', () => {
     expect(CODE_REVIEWER_PROMPT).toContain('canonical `verification` skill');
   });
 
+  it('keeps simplicity-reviewer focused on diff-scoped deletion-biased cleanup', () => {
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('final post-implementation simplicity reviewer');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('diff first');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('SIMPLIFY');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('ALREADY_MINIMAL');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('Do not perform plan readiness review');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('Do not claim builds, tests, or behavior pass');
+  });
+
   it('keeps approach-advisor advisory rather than a gate', () => {
     expect(APPROACH_ADVISOR_PROMPT).toContain('Is this the right path, given the constraints?');
     expect(APPROACH_ADVISOR_PROMPT).toContain('Do not return `OKAY` or `REJECT`');
@@ -242,6 +252,13 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
     });
 
+    it('documents simplicity-reviewer as a built-in post-implementation cleanup reviewer', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `simplicity-reviewer`');
+      expect(QUEEN_BEE_PROMPT).toContain('Do not choose custom agents for simplicity review');
+      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "simplicity-reviewer"');
+      expect(QUEEN_BEE_PROMPT).toContain('post-implementation cleanup pass');
+    });
+
     it('tells hybrid planners to split broad research earlier', () => {
       expect(QUEEN_BEE_PROMPT).toContain('split broad research earlier');
     });
@@ -291,6 +308,12 @@ describe('Hive (Hybrid) prompt', () => {
 
   it('contains docker-mastery skill reference', () => {
     expect(QUEEN_BEE_PROMPT).toContain('docker-mastery');
+  });
+
+  it('teaches Hive Builder about the built-in simplicity-reviewer', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('simplicity-reviewer');
+    expect(HIVE_BUILDER_PROMPT).toContain('final post-implementation simplicity pass');
+    expect(HIVE_BUILDER_PROMPT).toContain('Do not choose custom agents for simplicity review');
   });
 
   it('contains agents-md-mastery skill reference', () => {
@@ -354,6 +377,12 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('default to built-in `approach-advisor`');
       expect(ARCHITECT_BEE_PROMPT).toContain('configured approach-advisor-derived agent only when its description in `Configured Custom Subagents` is a better match');
       expect(ARCHITECT_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
+    });
+
+    it('documents simplicity-reviewer boundaries for planner awareness', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('simplicity-reviewer');
+      expect(ARCHITECT_BEE_PROMPT).toContain('post-implementation cleanup pass');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Architect should not invoke it during planning');
     });
 
     it('explains task() is BLOCKING by default', () => {
@@ -522,6 +551,13 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('default to built-in `approach-advisor`');
       expect(SWARM_BEE_PROMPT).toContain('configured approach-advisor-derived agent only when its description in `Configured Custom Subagents` is a better match');
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
+    });
+
+    it('documents simplicity-reviewer as a built-in post-implementation cleanup reviewer', () => {
+      expect(SWARM_BEE_PROMPT).toContain('default to built-in `simplicity-reviewer`');
+      expect(SWARM_BEE_PROMPT).toContain('Do not choose custom agents for simplicity review');
+      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "simplicity-reviewer"');
+      expect(SWARM_BEE_PROMPT).toContain('post-implementation cleanup pass');
     });
 
     it('tells orchestrators to split broad research earlier', () => {
@@ -737,7 +773,7 @@ describe('removed historical lookup guidance', () => {
   ];
 
   it('keeps historical lookup references out of agent prompts', () => {
-    const prompts = [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, PLAN_REVIEWER_PROMPT, CODE_REVIEWER_PROMPT, APPROACH_ADVISOR_PROMPT];
+    const prompts = [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, PLAN_REVIEWER_PROMPT, CODE_REVIEWER_PROMPT, SIMPLICITY_REVIEWER_PROMPT, APPROACH_ADVISOR_PROMPT];
 
     for (const prompt of prompts) {
       for (const term of removedTerms) {
@@ -811,15 +847,18 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain('| `hive-helper` | (none) |');
     });
 
-    it('keeps hive-helper out of custom derived subagent docs', () => {
+    it('keeps hive-helper and simplicity-reviewer out of custom derived subagent docs', () => {
       expect(readmeContent).toContain('does not appear in `.github/agents/`');
       expect(readmeContent).toContain('### Custom Derived Subagents');
       expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, or `approach-advisor`');
+      expect(readmeContent).toContain('`simplicity-reviewer` is also not a custom base agent');
       expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `code-reviewer`, or `hive-helper`');
+      expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `code-reviewer`, or `simplicity-reviewer`');
     });
 
-    it('mentions hive-helper in the top-level README so users know the agent exists', () => {
+    it('mentions hive-helper and simplicity-reviewer in the top-level README so users know the agents exist', () => {
       expect(rootReadmeContent).toContain('hive-helper');
+      expect(readmeContent).toContain('simplicity-reviewer');
     });
 
     it('documents the expanded hive_merge contract', () => {

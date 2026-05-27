@@ -114,6 +114,14 @@ describe('buildCompactionReanchor', () => {
       expect(anchor.prompt).toContain('Role: Code Reviewer');
     });
 
+    it('anchors simplicity-reviewer with Role: Simplicity Reviewer', () => {
+      const anchor = buildCompactionReanchor({
+        agent: 'simplicity-reviewer',
+        sessionKind: 'subagent',
+      });
+      expect(anchor.prompt).toContain('Role: Simplicity Reviewer');
+    });
+
     it('anchors hive-helper with Role: Hive Helper', () => {
       const anchor = buildCompactionReanchor({
         agent: 'hive-helper',

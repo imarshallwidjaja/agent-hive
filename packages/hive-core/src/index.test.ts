@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { BUILT_IN_AGENT_NAMES, CUSTOM_AGENT_RESERVED_NAMES, DEFAULT_HIVE_CONFIG, getHivePath } from "./index";
+import { BUILT_IN_AGENT_NAMES, CUSTOM_AGENT_BASES, CUSTOM_AGENT_RESERVED_NAMES, DEFAULT_HIVE_CONFIG, getHivePath } from "./index";
 import { detectContext } from "./utils/detection";
 
 describe("hive-core", () => {
@@ -22,6 +22,12 @@ describe("hive-core", () => {
 
   it("includes hive-builder in BUILT_IN_AGENT_NAMES", () => {
     expect(BUILT_IN_AGENT_NAMES).toContain('hive-builder');
+  });
+
+  it("includes simplicity-reviewer as built-in but not as a custom-agent base", () => {
+    expect(BUILT_IN_AGENT_NAMES).toContain('simplicity-reviewer');
+    expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('simplicity-reviewer');
+    expect(CUSTOM_AGENT_BASES).not.toContain('simplicity-reviewer');
   });
 
   it("includes hive-builder defaults in DEFAULT_HIVE_CONFIG", () => {

@@ -22,6 +22,7 @@ const AGENT_ROLE_MAP: Record<string, string> = {
   'hive-helper': 'Hive Helper',
   'plan-reviewer': 'Plan Reviewer',
   'code-reviewer': 'Code Reviewer',
+  'simplicity-reviewer': 'Simplicity Reviewer',
   'approach-advisor': 'Approach Advisor',
 };
 

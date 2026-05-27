@@ -41,6 +41,7 @@ describe("ConfigService defaults", () => {
       "hive-master",
       "plan-reviewer",
       "scout-researcher",
+      "simplicity-reviewer",
       "swarm-orchestrator",
     ]);
     expect(config.agents?.["architect-planner"]?.model).toBe(

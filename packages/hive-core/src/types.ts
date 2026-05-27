@@ -214,6 +214,7 @@ export const BUILT_IN_AGENT_NAMES = [
   'hive-helper',
   'plan-reviewer',
   'code-reviewer',
+  'simplicity-reviewer',
   'approach-advisor',
   'hive-builder',
 ] as const;
@@ -235,6 +236,7 @@ export const CUSTOM_AGENT_RESERVED_NAMES = [
   'hygienic-reviewer',
   'plan-reviewer',
   'code-reviewer',
+  'simplicity-reviewer',
   'approach-advisor',
   'receiver',
   'build',
@@ -300,6 +302,8 @@ export interface HiveConfig {
     'plan-reviewer'?: AgentModelConfig;
     /** Code Reviewer */
     'code-reviewer'?: AgentModelConfig;
+    /** Simplicity Reviewer */
+    'simplicity-reviewer'?: AgentModelConfig;
     /** Approach Advisor */
     'approach-advisor'?: AgentModelConfig;
     /** Hive Builder (ad-hoc executor) */
@@ -328,6 +332,7 @@ export const DEFAULT_AGENT_MODELS = {
   'hive-helper': 'github-copilot/gpt-5.2-codex',
   'plan-reviewer': 'github-copilot/gpt-5.2-codex',
   'code-reviewer': 'github-copilot/gpt-5.2-codex',
+  'simplicity-reviewer': 'github-copilot/gpt-5.2-codex',
   'approach-advisor': 'github-copilot/gpt-5.2-codex',
   'hive-builder': 'github-copilot/gpt-5.2-codex',
 } as const;
@@ -398,6 +403,11 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
     'code-reviewer': {
       model: DEFAULT_AGENT_MODELS['code-reviewer'],
       temperature: 0.3,
+      autoLoadSkills: [],
+    },
+    'simplicity-reviewer': {
+      model: DEFAULT_AGENT_MODELS['simplicity-reviewer'],
+      temperature: 0.1,
       autoLoadSkills: [],
     },
     'approach-advisor': {

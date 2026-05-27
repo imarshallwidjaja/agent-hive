@@ -9,6 +9,7 @@
  * - Forager (Worker/Coder): Executes tasks in isolation
  * - Plan Reviewer: Reviews plan readiness
  * - Code Reviewer: Reviews implementation changes
+ * - Simplicity Reviewer: Reviews implementation changes for deletion-biased cleanup
  * - Approach Advisor: Reviews technical direction
  * - Hive Builder: Ad-hoc executor for direct work
  */
@@ -23,6 +24,7 @@ export { hiveHelperAgent, HIVE_HELPER_PROMPT } from './hive-helper';
 export { hiveBuilderAgent, HIVE_BUILDER_PROMPT } from './hive-builder';
 export { planReviewerAgent, PLAN_REVIEWER_PROMPT } from './plan-reviewer';
 export { codeReviewerAgent, CODE_REVIEWER_PROMPT } from './code-reviewer';
+export { simplicityReviewerAgent, SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 export { approachAdvisorAgent, APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 
 
@@ -37,6 +39,7 @@ export { approachAdvisorAgent, APPROACH_ADVISOR_PROMPT } from './approach-adviso
  * - forager: Worker/coder (executes tasks in worktrees)
  * - plan-reviewer: Reviews plan readiness
  * - code-reviewer: Reviews implementation changes
+ * - simplicity-reviewer: Reviews implementation changes for deletion-biased cleanup
  * - approach-advisor: Reviews technical direction
  * - hive-builder: Primary general-purpose Hive-aware executor for ad-hoc work
  */
@@ -80,6 +83,11 @@ export const hiveAgents = {
   'code-reviewer': {
     name: 'Code Reviewer',
     description: 'Reviews implementation diffs against task or plan requirements.',
+    mode: 'subagent' as const,
+  },
+  'simplicity-reviewer': {
+    name: 'Simplicity Reviewer',
+    description: 'Reviews implementation diffs for YAGNI, dead code, duplication, unnecessary abstractions, and safe deletion-biased cleanup.',
     mode: 'subagent' as const,
   },
   'approach-advisor': {

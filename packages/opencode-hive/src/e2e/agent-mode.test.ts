@@ -68,6 +68,7 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["hive-helper"]).toBeDefined();
     expect(opencodeConfig.agent["plan-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["code-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["simplicity-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["approach-advisor"]).toBeDefined();
     expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("hive-master");
@@ -103,6 +104,7 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["hive-helper"]).toBeDefined();
     expect(opencodeConfig.agent["plan-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["code-reviewer"]).toBeDefined();
+    expect(opencodeConfig.agent["simplicity-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["approach-advisor"]).toBeDefined();
     expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("architect-planner");

@@ -147,11 +147,12 @@ For bounded operational cleanup, Swarm may also delegate hard-task cleanup to \`
 
 When execution exposes a strategic approach question that could change the plan, ask whether to consult \`approach-advisor\` before amending tasks. If yes, default to built-in \`approach-advisor\`; choose a configured approach-advisor-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-advisor>", prompt: "Advise on approach..." })\`.
 
-### Post-Batch Review (Code Reviewer)
+### Post-Batch Review
 
-After completing and merging a batch: ask via \`question()\` if they want a \`code-reviewer\` review.
-If yes, default to built-in \`code-reviewer\`; choose a configured code-reviewer-derived agent only when its description in \`Configured Custom Subagents\` is a better match.
-Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
+After completing and merging a batch: ask via \`question()\` if they want implementation correctness review, simplicity review, both, or skip.
+For implementation correctness review, default to built-in \`code-reviewer\`; choose a configured code-reviewer-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
+For simplicity review, default to built-in \`simplicity-reviewer\`. Do not choose custom agents for simplicity review. Then run \`task({ subagent_type: "simplicity-reviewer", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
+Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
 Route review feedback through this decision tree before starting the next batch:
 
 #### Review Follow-Up Routing

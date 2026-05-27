@@ -5,6 +5,7 @@ agents:
   - forager
   - plan-reviewer
   - code-reviewer
+  - simplicity-reviewer
   - approach-advisor
 model:
   - GPT-5.4 (copilot)
@@ -232,11 +233,11 @@ When multiple tasks are in flight, prefer **batch verification** over per-task v
 3. Document what was attempted
 4. Use `vscode/askQuestions` to present options and context
 
-### Post-Batch Review (Code Reviewer)
+### Post-Batch Review
 After completing and merging a batch:
-1. Use `vscode/askQuestions` to ask if they want a code review for the batch.
-2. If yes -> default to built-in @code-reviewer; choose a configured code-reviewer-derived agent only when its description is a better match.
-3. Then use the agent tool to invoke @code-reviewer to review implementation changes from the latest batch.
+1. Use `vscode/askQuestions` to ask if they want implementation correctness review, simplicity review, both, or skip.
+2. For implementation correctness review -> default to built-in @code-reviewer; choose a configured code-reviewer-derived agent only when its description is a better match. Then use the agent tool to invoke @code-reviewer to review implementation changes from the latest batch.
+3. For simplicity review -> default to built-in @simplicity-reviewer. Do not choose custom agents for simplicity review. Then use the agent tool to invoke @simplicity-reviewer as a final post-implementation cleanup pass focused on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification.
 4. Apply feedback before starting the next batch.
 
 ### AGENTS.md Maintenance

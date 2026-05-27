@@ -13,6 +13,7 @@ import { HIVE_HELPER_PROMPT } from './agents/hive-helper.js';
 import { HIVE_BUILDER_PROMPT } from './agents/hive-builder.js';
 import { PLAN_REVIEWER_PROMPT } from './agents/plan-reviewer.js';
 import { CODE_REVIEWER_PROMPT } from './agents/code-reviewer.js';
+import { SIMPLICITY_REVIEWER_PROMPT } from './agents/simplicity-reviewer.js';
 import { APPROACH_ADVISOR_PROMPT } from './agents/approach-advisor.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
@@ -430,23 +431,19 @@ const plugin: Plugin = async (ctx) => {
 
   const buildDirectiveReplayText = (session: { agent?: string; baseAgent?: string; directivePrompt?: string; sessionKind?: string }): string | null => {
     if (!session.directivePrompt) return null;
-    const role = session.agent === 'scout-researcher' || session.baseAgent === 'scout-researcher'
-      ? 'Scout'
-      : session.agent === 'hive-helper' || session.baseAgent === 'hive-helper'
-        ? 'Hive Helper'
-      : session.agent === 'plan-reviewer' || session.baseAgent === 'plan-reviewer'
-        ? 'Plan Reviewer'
-        : session.agent === 'code-reviewer' || session.baseAgent === 'code-reviewer'
-          ? 'Code Reviewer'
-          : session.agent === 'approach-advisor' || session.baseAgent === 'approach-advisor'
-            ? 'Approach Advisor'
-        : session.agent === 'architect-planner' || session.baseAgent === 'architect-planner'
-          ? 'Architect'
-          : session.agent === 'swarm-orchestrator' || session.baseAgent === 'swarm-orchestrator'
-            ? 'Swarm'
-            : session.agent === 'hive-master' || session.baseAgent === 'hive-master'
-              ? 'Hive'
-              : 'current role';
+    const agentName = session.agent ?? session.baseAgent;
+    const roleByAgent: Record<string, string> = {
+      'scout-researcher': 'Scout',
+      'hive-helper': 'Hive Helper',
+      'plan-reviewer': 'Plan Reviewer',
+      'code-reviewer': 'Code Reviewer',
+      'simplicity-reviewer': 'Simplicity Reviewer',
+      'approach-advisor': 'Approach Advisor',
+      'architect-planner': 'Architect',
+      'swarm-orchestrator': 'Swarm',
+      'hive-master': 'Hive',
+    };
+    const role = agentName ? roleByAgent[agentName] ?? 'current role' : 'current role';
 
     return [
       `Post-compaction recovery: You are still ${role}.`,
@@ -2544,7 +2541,7 @@ Expand your Discovery section and try again.`;
       };
 
       async function buildReviewerConfig(
-        agentName: 'plan-reviewer' | 'code-reviewer' | 'approach-advisor',
+        agentName: 'plan-reviewer' | 'code-reviewer' | 'simplicity-reviewer' | 'approach-advisor',
         prompt: string,
         description: string,
       ) {
@@ -2580,6 +2577,11 @@ Expand your Discovery section and try again.`;
         'code-reviewer',
         CODE_REVIEWER_PROMPT,
         'Code Reviewer - Reviews implementation diffs against task or plan requirements for correctness, tests, risk, scope creep, YAGNI, and dead code.',
+      );
+      const simplicityReviewerConfig = await buildReviewerConfig(
+        'simplicity-reviewer',
+        SIMPLICITY_REVIEWER_PROMPT,
+        'Simplicity Reviewer - Final post-implementation cleanup reviewer for YAGNI, dead code, duplication, unnecessary abstractions, and safe deletion-biased simplification.',
       );
       const approachAdvisorConfig = await buildReviewerConfig(
         'approach-advisor',
@@ -2631,6 +2633,7 @@ Expand your Discovery section and try again.`;
         'hive-helper': hiveHelperConfig,
         'plan-reviewer': planReviewerConfig,
         'code-reviewer': codeReviewerConfig,
+        'simplicity-reviewer': simplicityReviewerConfig,
         'approach-advisor': approachAdvisorConfig,
         'hive-builder': builderConfig,
       };
@@ -2691,6 +2694,7 @@ Expand your Discovery section and try again.`;
         allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
         allAgents['plan-reviewer'] = builtInAgentConfigs['plan-reviewer'];
         allAgents['code-reviewer'] = builtInAgentConfigs['code-reviewer'];
+        allAgents['simplicity-reviewer'] = builtInAgentConfigs['simplicity-reviewer'];
         allAgents['approach-advisor'] = builtInAgentConfigs['approach-advisor'];
       } else {
         allAgents['architect-planner'] = builtInAgentConfigs['architect-planner'];
@@ -2700,6 +2704,7 @@ Expand your Discovery section and try again.`;
         allAgents['hive-helper'] = builtInAgentConfigs['hive-helper'];
         allAgents['plan-reviewer'] = builtInAgentConfigs['plan-reviewer'];
         allAgents['code-reviewer'] = builtInAgentConfigs['code-reviewer'];
+        allAgents['simplicity-reviewer'] = builtInAgentConfigs['simplicity-reviewer'];
         allAgents['approach-advisor'] = builtInAgentConfigs['approach-advisor'];
       }
       allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
@@ -2720,6 +2725,7 @@ Expand your Discovery section and try again.`;
         delete (configAgent as Record<string, unknown>).hygienic;
         delete (configAgent as Record<string, unknown>)['plan-reviewer'];
         delete (configAgent as Record<string, unknown>)['code-reviewer'];
+        delete (configAgent as Record<string, unknown>)['simplicity-reviewer'];
         delete (configAgent as Record<string, unknown>)['approach-advisor'];
         delete (configAgent as Record<string, unknown>).receiver;
         // Clean up old kebab-case names (in case they exist)

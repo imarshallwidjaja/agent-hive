@@ -131,6 +131,8 @@ Manual tasks created with `hive_task_create()` follow the same DAG model as plan
 
 `hive-helper` is a runtime-only bounded assistant for merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance. It stays within the current approved DAG boundary and does not appear in `.github/agents/`.
 
+`simplicity-reviewer` is a built-in read-only reviewer for final post-implementation cleanup. It reviews completed diffs for YAGNI, dead code, duplication, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification. It is not a custom-agent base; use it directly when a simplicity pass is needed.
+
 ## Prompt Budgeting & Observability
 
 Hive automatically bounds worker prompt sizes to prevent context overflow and tool output truncation.
@@ -346,7 +348,9 @@ Define plugin-only custom subagents with `customAgents`. Freshly initialized `ag
 
 `hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/`.
 
-It is also not a network consumer; planning, orchestration, and review roles get network access first.
+`simplicity-reviewer` is also not a custom base agent. It is a built-in direct reviewer for final post-implementation cleanup, so operators can invoke it without defining a custom OpenCode agent.
+
+`hive-helper` is also not a network consumer; planning, orchestration, and review roles get network access first.
 
 Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
 
