@@ -1,6 +1,6 @@
 {
   "name": "hive-core",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "type": "module",
   "description": "Core services and types for Agent Hive - shared by opencode-hive and vscode-hive",
   "license": "MIT WITH Commons-Clause",

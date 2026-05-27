@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-05-27
+
+### Added
+- **Reviewer roles are now split by decision type**: `plan-reviewer`, `code-reviewer`, and `approach-advisor` now handle plan readiness, implementation review, and technical direction separately across OpenCode and generated GitHub artifacts.
+- **Verification guidance is now a canonical reusable skill**: The new `verification` skill replaces the older completion/reviewer split with explicit completion-gate and independent-report modes.
+
+### Changed
+- Hive and generated guidance now route strategic approach questions to `approach-advisor`, keeping plan review, code review, and architecture/tradeoff advice separate.
+- Deprecated reviewer compatibility skills now point agents to the correct reviewer subagent or `verification` mode instead of carrying duplicate review protocols.
+- Custom subagent configuration now supports `approach-advisor` derivatives alongside Scout, Forager, Plan Reviewer, and Code Reviewer bases.
+
+### Fixed
+- `hive_context_write` now fails cleanly when the selected feature no longer exists instead of writing context into a missing feature directory.
+
 ## [1.5.1] - 2026-05-26
 
 ### Changed

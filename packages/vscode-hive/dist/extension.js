@@ -938,7 +938,9 @@ var BUILT_IN_AGENT_NAMES = [
   "scout-researcher",
   "forager-worker",
   "hive-helper",
-  "hygienic-reviewer",
+  "plan-reviewer",
+  "code-reviewer",
+  "approach-advisor",
   "hive-builder"
 ];
 var CUSTOM_AGENT_RESERVED_NAMES = [
@@ -949,6 +951,10 @@ var CUSTOM_AGENT_RESERVED_NAMES = [
   "scout",
   "forager",
   "hygienic",
+  "hygienic-reviewer",
+  "plan-reviewer",
+  "code-reviewer",
+  "approach-advisor",
   "receiver",
   "build",
   "builder",
@@ -962,7 +968,9 @@ var DEFAULT_AGENT_MODELS = {
   "scout-researcher": "zai-coding-plan/glm-4.7",
   "forager-worker": "github-copilot/gpt-5.2-codex",
   "hive-helper": "github-copilot/gpt-5.2-codex",
-  "hygienic-reviewer": "github-copilot/gpt-5.2-codex",
+  "plan-reviewer": "github-copilot/gpt-5.2-codex",
+  "code-reviewer": "github-copilot/gpt-5.2-codex",
+  "approach-advisor": "github-copilot/gpt-5.2-codex",
   "hive-builder": "github-copilot/gpt-5.2-codex"
 };
 var DEFAULT_HIVE_CONFIG = {
@@ -986,10 +994,10 @@ var DEFAULT_HIVE_CONFIG = {
       variant: "high",
       autoLoadSkills: ["test-driven-development"]
     },
-    "hygienic-example-template": {
-      baseAgent: "hygienic-reviewer",
+    "reviewer-example-template": {
+      baseAgent: "code-reviewer",
       description: "Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.",
-      autoLoadSkills: ["code-reviewer"]
+      autoLoadSkills: []
     }
   },
   agents: {
@@ -1016,22 +1024,32 @@ var DEFAULT_HIVE_CONFIG = {
     "forager-worker": {
       model: DEFAULT_AGENT_MODELS["forager-worker"],
       temperature: 0.3,
-      autoLoadSkills: ["test-driven-development", "verification-before-completion"]
+      autoLoadSkills: ["test-driven-development", "verification"]
     },
     "hive-helper": {
       model: DEFAULT_AGENT_MODELS["hive-helper"],
       temperature: 0.3,
       autoLoadSkills: []
     },
-    "hygienic-reviewer": {
-      model: DEFAULT_AGENT_MODELS["hygienic-reviewer"],
+    "plan-reviewer": {
+      model: DEFAULT_AGENT_MODELS["plan-reviewer"],
+      temperature: 0.3,
+      autoLoadSkills: []
+    },
+    "code-reviewer": {
+      model: DEFAULT_AGENT_MODELS["code-reviewer"],
+      temperature: 0.3,
+      autoLoadSkills: []
+    },
+    "approach-advisor": {
+      model: DEFAULT_AGENT_MODELS["approach-advisor"],
       temperature: 0.3,
       autoLoadSkills: []
     },
     "hive-builder": {
       model: DEFAULT_AGENT_MODELS["hive-builder"],
       temperature: 0.4,
-      autoLoadSkills: ["verification-before-completion", "dispatching-parallel-agents", "parallel-exploration"]
+      autoLoadSkills: ["verification", "dispatching-parallel-agents", "parallel-exploration"]
     }
   }
 };
