@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-05-27
+
+### Added
+- **Simplicity review is now built into Hive**: `simplicity-reviewer` ships as a first-class read-only reviewer for final post-implementation cleanup, covering YAGNI, dead code, duplication, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification without requiring a custom OpenCode agent.
+
+### Changed
+- Hive, Swarm, Architect, Hive Builder, generated GitHub agents, and review prompts now describe when to use `simplicity-reviewer` separately from implementation correctness review, plan review, approach advice, and verification.
+- Version-bearing release surfaces are refreshed to `1.6.1` for the OpenCode package, Hive core, VS Code extension, lockfiles, changelog, and dedicated release notes.
+
 ## [1.6.0] - 2026-05-27
 
 ### Added
