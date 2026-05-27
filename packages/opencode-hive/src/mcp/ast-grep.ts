@@ -25,7 +25,7 @@ function resolveAstGrepBinary(): string {
   return path.join(resolveDependencyRoot(packageName), process.platform === 'win32' ? 'ast-grep.exe' : 'ast-grep');
 }
 
-const uvPath = path.join(resolveDependencyRoot('@manzt/uv'), process.platform === 'win32' ? 'uv.exe' : 'uv');
+const uvPath = path.join(resolveDependencyRoot('@manzt/uv'), 'bin.cjs');
 const astGrepBinary = resolveAstGrepBinary();
 const astGrepDir = path.dirname(astGrepBinary);
 const inheritedPath = process.env.PATH ?? process.env.Path ?? '';

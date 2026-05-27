@@ -2,9 +2,9 @@ import { describe, expect, it } from 'bun:test';
 import { astGrepMcp } from './ast-grep.js';
 
 describe('ast-grep MCP config', () => {
-  it('launches the official ast-grep MCP via bundled uv', () => {
+  it('launches the official ast-grep MCP via the bundled uv wrapper', () => {
     expect(astGrepMcp.type).toBe('local');
-    expect(astGrepMcp.command[0]).toContain('@manzt/uv');
+    expect(astGrepMcp.command[0].replace(/\\/g, '/')).toEndWith('@manzt/uv/bin.cjs');
     expect(astGrepMcp.command[1]).toBe('tool');
     expect(astGrepMcp.command[2]).toBe('run');
     expect(astGrepMcp.command[3]).toBe('--from');
