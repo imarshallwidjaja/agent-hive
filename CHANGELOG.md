@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Custom subagent routing guidance now treats configured custom agents as scoped specialists selected by task fit, while keeping the guard against choosing them only as stronger model upgrades.
+
 ## [1.6.2] - 2026-05-27
 
 ### Changed

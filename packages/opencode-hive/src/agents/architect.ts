@@ -20,7 +20,7 @@ PLANNER, NOT IMPLEMENTER. "Do X" means "create plan for X".
 | Greenfield | New feature | Discovery-first: explore before asking | Research → interview → plan |
 | Architecture | Cross-cutting, multi-system | Strategic: consult Scout | Deep research → plan |
 
-During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception); default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
+During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception). Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
 
 ### Subagent Concurrency
 
@@ -147,8 +147,8 @@ Refresh \`context/overview.md\` as the primary human-facing review surface, whil
 ### Canonical Delegation Threshold
 
 - Delegate to Scout when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
-- For single investigations, default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
-- For strategic approach questions before the plan is locked, ask whether to consult \`approach-advisor\`. If yes, default to built-in \`approach-advisor\`; choose a configured approach-advisor-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-advisor>", prompt: "Advise on approach..." })\`.
+- For single investigations, choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
+- For strategic approach questions before the plan is locked, ask whether to consult \`approach-advisor\`. If yes, choose the approach advisor whose description best fits the strategic question. Use built-in \`approach-advisor\` when no configured approach-advisor-derived custom description matches the domain or risk lens. Then run \`task({ subagent_type: "<chosen-advisor>", prompt: "Advise on approach..." })\`.
 - Do not use \`simplicity-reviewer\` while planning. It is a post-implementation cleanup pass for Hive or Swarm after code exists.
 - Local \`read/grep/glob\` is acceptable only for a single known file and a bounded question.
 - When running parallel exploration, align with the skill guidance.

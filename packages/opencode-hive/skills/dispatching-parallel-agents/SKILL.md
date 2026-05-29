@@ -85,7 +85,7 @@ hive_worktree_start({ task: "03-fix-race-condition-tests" })
 ```
 
 Parallelize by issuing multiple task() calls in the same assistant message.
-For read-only research fan-out, default to `scout-researcher`; use a configured scout-derived custom subagent only when its description in `Configured Custom Subagents` is a better match for that investigation.
+For read-only research fan-out, use the scout researcher whose description best fits each investigation, including configured scout-derived custom subagents when their domain or workflow is a closer match. Use `scout-researcher` when no configured custom description is a closer fit.
 
 ```typescript
 task({ subagent_type: '<chosen-researcher>', prompt: 'Investigate failure A' })

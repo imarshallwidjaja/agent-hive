@@ -45,12 +45,12 @@ Intent Verbalization — verbalize before acting:
 
 ### Canonical Delegation Threshold
 - Delegate to Scout when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
-- For research delegation, default to built-in \`scout-researcher\`; choose a configured scout-derived researcher only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
+- For research delegation, choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
 - Local \`read/grep/glob\` is acceptable only for a single known file and a bounded question.
 - If discovery grows too broad, split broad research earlier into narrower Scout slices. Treat oversized research asks as a planning/decomposition problem, not something to push through.
 
 ### Delegation
-- Single-scout research → default to \`task({ subagent_type: "scout-researcher", prompt: "..." })\`; override with a configured scout-derived researcher only when its description is a better match.
+- Single-scout research → Choose the scout researcher whose description best fits the research slice; use \`task({ subagent_type: "scout-researcher", prompt: "..." })\` when no configured scout-derived custom description is a closer domain/workflow match.
 - Parallel exploration → load the native skill "parallel-exploration" and follow the task mode delegation guidance.
 - Implementation → \`hive_worktree_start({ task: "01-task-name" })\` (creates worktree + Forager)
 
@@ -64,7 +64,7 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 - Use background mode only when you have useful foreground work that does not depend on the subagent result.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
-During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception). Default to \`scout-researcher\`; choose a configured scout-derived researcher only when its description is a better match. For parallel exploration, issue multiple \`task()\` calls in the same message.
+During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception). Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
 **Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include file paths, line ranges when known, expected result, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 
@@ -140,7 +140,7 @@ Load one skill at a time, only when guidance is needed.
 | Over-validation | "Minimal or comprehensive checks?" |
 | Fragile assumption | "If this assumption is wrong, what changes?" |
 
-For strategic approach questions before the plan is locked, ask the user whether to consult \`approach-advisor\`. If yes -> default to built-in \`approach-advisor\`; choose a configured approach-advisor-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-advisor>", prompt: "Advise on approach..." })\`.
+For strategic approach questions before the plan is locked, ask the user whether to consult \`approach-advisor\`. If yes -> Choose the approach advisor whose description best fits the strategic question. Use built-in \`approach-advisor\` when no configured approach-advisor-derived custom description matches the domain or risk lens. Then run \`task({ subagent_type: "<chosen-advisor>", prompt: "Advise on approach..." })\`.
 
 ### Gap Classification
 | Gap | Action |
@@ -180,7 +180,7 @@ Refresh \`context/overview.md\` as the primary human-facing review surface, whil
 ### After Plan Written
 Ask user via \`question()\`: "Plan complete. Would you like me to consult plan-reviewer?"
 
-If yes -> default to built-in \`plan-reviewer\`; choose a configured plan-reviewer-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review plan..." })\`.
+If yes -> Choose the plan reviewer whose description best fits the plan review lens. Use built-in \`plan-reviewer\` when no configured plan-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review plan..." })\`.
 
 After review decision, offer execution choice (subagent-driven vs parallel session) consistent with writing-plans.
 
@@ -253,7 +253,7 @@ For bounded operational cleanup, Hive may also delegate hard-task cleanup to \`h
 ### Post-Batch Review
 After completing and merging a batch:
 1. Ask the user via \`question()\` if they want review for the batch: implementation correctness review, simplicity review, both, or skip.
-2. For implementation correctness review -> default to built-in \`code-reviewer\`; choose a configured code-reviewer-derived agent only when its description in \`Configured Custom Subagents\` is a better match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
+2. For implementation correctness review -> Choose the code reviewer whose description best fits the review lens. Use built-in \`code-reviewer\` when no configured code-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
 3. For simplicity review -> default to built-in \`simplicity-reviewer\`. Do not choose custom agents for simplicity review. Then run \`task({ subagent_type: "simplicity-reviewer", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
 4. Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
 5. Route review feedback through this decision tree before starting the next batch:

@@ -1541,11 +1541,11 @@ Do it
     expect(agentConfig.prompt).toContain("Configured Custom Subagents");
     expect(agentConfig.prompt).toContain("`scout-docs`");
     expect(agentConfig.prompt).toContain("`reviewer-security`");
-    expect(agentConfig.prompt).toContain("default to built-in `scout-researcher`");
-    expect(agentConfig.prompt).toContain("Configured Custom Subagents` is a better match");
+    expect(agentConfig.prompt).toContain("the scout researcher whose description best fits the research slice");
+    expect(agentConfig.prompt).toContain("Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match");
     expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-researcher>\"");
-    expect(agentConfig.prompt).toContain("default to built-in `code-reviewer`");
-    expect(agentConfig.prompt).toContain("Configured Custom Subagents` is a better match");
+    expect(agentConfig.prompt).toContain("the code reviewer whose description best fits the review lens");
+    expect(agentConfig.prompt).toContain("Use built-in `code-reviewer` when no configured code-reviewer-derived custom description is a closer match");
     expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-reviewer>\"");
 
     const agents = opencodeConfig.agent as Record<string, unknown>;

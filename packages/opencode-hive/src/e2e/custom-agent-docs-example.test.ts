@@ -17,18 +17,18 @@ const publishedExample = {
   customAgents: {
     'scout-docs': {
       baseAgent: 'scout-researcher',
-      description: 'Use for documentation-heavy research tasks.',
+      description: 'Use for research centered on documentation, release notes, READMEs, or external docs synthesis.',
     },
     'forager-ui': {
       baseAgent: 'forager-worker',
-      description: 'Use for UI-heavy implementation tasks.',
+      description: 'Use for UI implementation tasks touching React/Next components, styling, accessibility, or browser-visible behavior.',
       model: 'anthropic/claude-sonnet-4-20250514',
       temperature: 0.2,
       variant: 'high',
     },
     'reviewer-security': {
       baseAgent: 'code-reviewer',
-      description: 'Use for security-focused review passes.',
+      description: 'Use for review passes focused on auth, permissions, secret handling, injection risk, or other security-sensitive changes.',
     },
   },
 };
@@ -93,17 +93,17 @@ describe('e2e: published custom-agent docs example', () => {
     expect(scoutDocs.model).toBe('zai-coding-plan/glm-4.7');
     expect(scoutDocs.temperature).toBe(0.5);
     expect(scoutDocs.variant).toBe('low');
-    expect(scoutDocs.description).toBe('Use for documentation-heavy research tasks.');
+    expect(scoutDocs.description).toBe('Use for research centered on documentation, release notes, READMEs, or external docs synthesis.');
 
     expect(foragerUi.model).toBe('anthropic/claude-sonnet-4-20250514');
     expect(foragerUi.temperature).toBe(0.2);
     expect(foragerUi.variant).toBe('high');
-    expect(foragerUi.description).toBe('Use for UI-heavy implementation tasks.');
+    expect(foragerUi.description).toBe('Use for UI implementation tasks touching React/Next components, styling, accessibility, or browser-visible behavior.');
 
     expect(reviewerSecurity.model).toBe('github-copilot/gpt-5.2-codex');
     expect(reviewerSecurity.temperature).toBe(0.3);
     expect(reviewerSecurity.variant).toBeUndefined();
-    expect(reviewerSecurity.description).toBe('Use for security-focused review passes.');
+    expect(reviewerSecurity.description).toBe('Use for review passes focused on auth, permissions, secret handling, injection risk, or other security-sensitive changes.');
 
     expect(opencodeConfig.agent['hive-master']?.prompt).toBeUndefined();
     expect(foragerUi.prompt).toBeUndefined();
@@ -114,10 +114,11 @@ describe('e2e: published custom-agent docs example', () => {
     await systemTransform?.({ sessionID: 'sess_docs_hive', agent: 'hive-master' }, hiveOutput);
     const hivePrompt = hiveOutput.system[0];
     expect(hivePrompt).toContain('## Configured Custom Subagents');
-    expect(hivePrompt).toContain('Custom subagents are exception routes, not capability upgrades.');
-    expect(hivePrompt).toContain('Default to the built-in base agent unless a custom agent description matches a concrete named condition, or the operator explicitly names that custom agent.');
-    expect(hivePrompt).toContain('Do not choose a custom agent just because the task is important, complex, or quality-sensitive.');
-    expect(hivePrompt).toContain('If no custom route clearly matches, use the base agent.');
+    expect(hivePrompt).toContain('Custom subagents are scoped specialists, not automatic model upgrades.');
+    expect(hivePrompt).toContain("Choose a custom subagent when its description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names it.");
+    expect(hivePrompt).toContain('Use the built-in base agent when no configured custom description is a closer task fit.');
+    expect(hivePrompt).toContain('Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.');
+    expect(hivePrompt).not.toContain('exception routes, not capability upgrades');
     expect(hivePrompt).toContain('`scout-docs`');
     expect(hivePrompt).toContain('`forager-ui`');
     expect(hivePrompt).toContain('`reviewer-security`');

@@ -2362,10 +2362,10 @@ Expand your Discovery section and try again.`;
       const customAgentConfigs = getCustomAgentConfigsCompat(configService);
       const customSubagentAppendix = Object.keys(customAgentConfigs).length === 0
         ? ''
-        : `\n\n## Configured Custom Subagents\nCustom subagents are exception routes, not capability upgrades.
-Default to the built-in base agent unless a custom agent description matches a concrete named condition, or the operator explicitly names that custom agent.
-Do not choose a custom agent just because the task is important, complex, or quality-sensitive.
-If no custom route clearly matches, use the base agent.\n${Object.entries(customAgentConfigs)
+        : `\n\n## Configured Custom Subagents\nCustom subagents are scoped specialists, not automatic model upgrades.
+Choose a custom subagent when its description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names it.
+Use the built-in base agent when no configured custom description is a closer task fit.
+Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.\n${Object.entries(customAgentConfigs)
           .sort(([left], [right]) => left.localeCompare(right))
           .map(([name, config]) => `- \`${name}\` — derived from \`${config.baseAgent}\`; ${config.description}`)
           .join('\n')}`;

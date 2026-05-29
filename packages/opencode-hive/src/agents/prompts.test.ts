@@ -200,9 +200,9 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('scout-researcher');
     });
 
-    it('documents scout researcher routing fallback and custom researcher selection', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `scout-researcher`');
-      expect(QUEEN_BEE_PROMPT).toContain('configured scout-derived researcher only when its description in `Configured Custom Subagents` is a better match');
+    it('documents scout researcher routing by closest task fit', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('the scout researcher whose description best fits the research slice');
+      expect(QUEEN_BEE_PROMPT).toContain('Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match');
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
     });
 
@@ -240,15 +240,15 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('hive_worktree_start({ feature, task })');
     });
 
-    it('documents plan-reviewer routing fallback and custom reviewer selection', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `plan-reviewer`');
-      expect(QUEEN_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
+    it('documents plan-reviewer routing by closest task fit', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('the plan reviewer whose description best fits the plan review lens');
+      expect(QUEEN_BEE_PROMPT).toContain('Use built-in `plan-reviewer` when no configured plan-reviewer-derived custom description is a closer match');
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
 
-    it('documents approach-advisor routing fallback and custom advisor selection', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `approach-advisor`');
-      expect(QUEEN_BEE_PROMPT).toContain('configured approach-advisor-derived agent only when its description in `Configured Custom Subagents` is a better match');
+    it('documents approach-advisor routing by closest strategic fit', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('the approach advisor whose description best fits the strategic question');
+      expect(QUEEN_BEE_PROMPT).toContain('Use built-in `approach-advisor` when no configured approach-advisor-derived custom description matches the domain or risk lens');
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
     });
 
@@ -367,15 +367,15 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('split broad research earlier');
     });
 
-    it('documents scout researcher routing fallback and custom researcher selection', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('default to built-in `scout-researcher`');
-      expect(ARCHITECT_BEE_PROMPT).toContain('configured scout-derived researcher only when its description in `Configured Custom Subagents` is a better match');
+    it('documents scout researcher routing by closest task fit', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('the scout researcher whose description best fits the research slice');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match');
       expect(ARCHITECT_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
     });
 
-    it('documents approach-advisor routing fallback and custom advisor selection', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('default to built-in `approach-advisor`');
-      expect(ARCHITECT_BEE_PROMPT).toContain('configured approach-advisor-derived agent only when its description in `Configured Custom Subagents` is a better match');
+    it('documents approach-advisor routing by closest strategic fit', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('the approach advisor whose description best fits the strategic question');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Use built-in `approach-advisor` when no configured approach-advisor-derived custom description matches the domain or risk lens');
       expect(ARCHITECT_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
     });
 
@@ -535,21 +535,21 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('task() for research fan-out');
     });
 
-    it('documents scout researcher routing fallback and custom researcher selection', () => {
-      expect(SWARM_BEE_PROMPT).toContain('default to built-in `scout-researcher`');
-      expect(SWARM_BEE_PROMPT).toContain('configured scout-derived researcher only when its description in `Configured Custom Subagents` is a better match');
+    it('documents scout researcher routing by closest task fit', () => {
+      expect(SWARM_BEE_PROMPT).toContain('the scout researcher whose description best fits the research slice');
+      expect(SWARM_BEE_PROMPT).toContain('Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match');
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
     });
 
-    it('documents code-reviewer routing fallback and custom reviewer selection', () => {
-      expect(SWARM_BEE_PROMPT).toContain('default to built-in `code-reviewer`');
-      expect(SWARM_BEE_PROMPT).toContain('its description in `Configured Custom Subagents` is a better match');
+    it('documents code-reviewer routing by closest review lens', () => {
+      expect(SWARM_BEE_PROMPT).toContain('the code reviewer whose description best fits the review lens');
+      expect(SWARM_BEE_PROMPT).toContain('Use built-in `code-reviewer` when no configured code-reviewer-derived custom description is a closer match');
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
 
-    it('documents approach-advisor routing fallback and custom advisor selection', () => {
-      expect(SWARM_BEE_PROMPT).toContain('default to built-in `approach-advisor`');
-      expect(SWARM_BEE_PROMPT).toContain('configured approach-advisor-derived agent only when its description in `Configured Custom Subagents` is a better match');
+    it('documents approach-advisor routing by closest strategic fit', () => {
+      expect(SWARM_BEE_PROMPT).toContain('the approach advisor whose description best fits the strategic question');
+      expect(SWARM_BEE_PROMPT).toContain('Use built-in `approach-advisor` when no configured approach-advisor-derived custom description matches the domain or risk lens');
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
     });
 

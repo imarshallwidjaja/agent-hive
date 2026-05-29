@@ -346,7 +346,7 @@ Define plugin-only custom subagents with `customAgents`. Freshly initialized `ag
 - `baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, or `approach-advisor`
 - `description`: delegation guidance injected into primary planner/orchestrator prompts
 
-Custom subagents are exception routes, not capability upgrades. Primary agents default to the built-in base agent unless a custom agent description matches a concrete named condition, or the operator explicitly names the custom agent to use. If no custom route clearly matches, the base agent remains the safe default.
+Custom subagents are scoped routing specialists, not model-upgrade switches. Primary agents choose them when their description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names them. They keep the built-in base agent when no configured description is a closer fit. A stronger model alone is not a routing reason.
 
 `hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/`.
 
@@ -372,18 +372,18 @@ Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
   "customAgents": {
     "scout-docs": {
       "baseAgent": "scout-researcher",
-      "description": "Use for documentation-heavy research tasks."
+      "description": "Use for research centered on documentation, release notes, READMEs, or external docs synthesis."
     },
     "forager-ui": {
       "baseAgent": "forager-worker",
-      "description": "Use for UI-heavy implementation tasks.",
+      "description": "Use for UI implementation tasks touching React/Next components, styling, accessibility, or browser-visible behavior.",
       "model": "anthropic/claude-sonnet-4-20250514",
       "temperature": 0.2,
       "variant": "high"
     },
     "reviewer-security": {
       "baseAgent": "code-reviewer",
-      "description": "Use for security-focused review passes."
+      "description": "Use for review passes focused on auth, permissions, secret handling, injection risk, or other security-sensitive changes."
     }
   }
 }

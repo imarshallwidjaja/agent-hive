@@ -73,7 +73,7 @@ Split your investigation into 2-4 independent sub-questions. Each sub-question s
 
 Launch all tasks before waiting for any results:
 
-Choose the researcher per slice. Default to `scout-researcher`; use a configured scout-derived custom subagent only when its description in `Configured Custom Subagents` is a better match for that slice.
+Choose the researcher per slice. Use the scout researcher whose description best fits the research slice, including configured scout-derived custom subagents when their domain or workflow is a closer match. Use `scout-researcher` when no configured custom description is a closer fit.
 
 ```typescript
 // Parallelize by issuing multiple task() calls in the same assistant message.
