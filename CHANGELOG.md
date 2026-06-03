@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-06-03
+
 ### Changed
 - Custom subagent routing guidance now treats configured custom agents as scoped specialists selected by task fit, while keeping the guard against choosing them only as stronger model upgrades.
+- Version-bearing package, lockfile, plugin manifest, changelog, and release-note surfaces are refreshed to `1.6.3`.
+
+### Fixed
+- Project `.hive/agent-hive.json` and legacy `.opencode/agent_hive.json` configs now overlay only project-scoped fields: `sandbox`, `dockerImage`, `persistentContainers`, and `repositories`. Global user/session policy stays sourced from `~/.config/opencode/agent_hive.json`, so project repository manifests no longer suppress global `agentMode`, disabled MCPs, agent overrides, or custom agents.
+- Config schema and operator docs now describe the global-vs-project split, including hook cadence and MCP settings as global-only controls.
 
 ## [1.6.2] - 2026-05-27
 
