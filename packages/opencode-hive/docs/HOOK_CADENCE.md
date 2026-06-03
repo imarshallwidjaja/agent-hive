@@ -12,7 +12,7 @@ Some supported hooks can be useful on every turn, but not all of them need to ru
 
 ## Configuration
 
-Add a `hook_cadence` field to config. Hive reads from `<project>/.hive/agent-hive.json` first, then legacy `<project>/.opencode/agent_hive.json` if the new file is missing, then falls back to `~/.config/opencode/agent_hive.json`:
+Add a `hook_cadence` field to the global user config at `~/.config/opencode/agent_hive.json`. Project `.hive/agent-hive.json` files are reserved for sandbox and repository-manifest settings, so project-local hook cadence values are ignored by runtime config resolution:
 
 ```json
 {
@@ -162,8 +162,8 @@ bun test src/__tests__/hook-cadence.test.ts
 
 ### Hook not firing as expected
 
-1. Check project config file syntax first: `cat .hive/agent-hive.json`
-2. If project config is missing/invalid, check global fallback: `cat ~/.config/opencode/agent_hive.json`
+1. Check global config first: `cat ~/.config/opencode/agent_hive.json`
+2. If Hive reports a general project config warning, check project overlay syntax separately: `cat .hive/agent-hive.json`
 3. Verify the hook name is spelled correctly (case-sensitive)
 4. Check console logs for validation warnings: `[hive:cadence]`
 5. Ensure cadence value is an integer >= 1

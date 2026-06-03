@@ -18,9 +18,9 @@ import type { SandboxConfig } from './dockerSandboxService.js';
 
 /**
  * ConfigService manages Agent Hive config with read precedence:
- * 1. <project>/.hive/agent-hive.json (preferred when present and valid)
- * 2. <project>/.opencode/agent_hive.json (legacy fallback during migration)
- * 3. ~/.config/opencode/agent_hive.json (fallback)
+ * 1. ~/.config/opencode/agent_hive.json for user/session policy
+ * 2. <project>/.hive/agent-hive.json for project-scoped overlays
+ * 3. <project>/.opencode/agent_hive.json for legacy project-scoped overlays
  *
  * Writes remain global-only at ~/.config/opencode/agent_hive.json.
  */
@@ -70,10 +70,12 @@ export class ConfigService {
     if (this.projectConfigPath && fs.existsSync(this.projectConfigPath)) {
       const projectStored = this.readStoredConfig(this.projectConfigPath);
       if (projectStored.ok) {
+        const globalConfig = this.readGlobalConfigForProjectOverlay();
         this.activeReadSourceType = 'project';
         this.activeReadPath = this.projectConfigPath;
-        this.lastFallbackWarning = null;
-        this.cachedConfig = this.mergeWithDefaults(projectStored.value);
+        this.lastFallbackWarning = globalConfig.warning;
+        this.cachedConfig = this.mergeProjectScopedConfig(globalConfig.config, projectStored.value);
+        this.cachedCustomAgentConfigs = null;
         return this.cachedConfig;
       }
 
@@ -82,10 +84,12 @@ export class ConfigService {
     } else if (this.legacyProjectConfigPath && fs.existsSync(this.legacyProjectConfigPath)) {
       const projectStored = this.readStoredConfig(this.legacyProjectConfigPath);
       if (projectStored.ok) {
+        const globalConfig = this.readGlobalConfigForProjectOverlay();
         this.activeReadSourceType = 'project';
         this.activeReadPath = this.legacyProjectConfigPath;
-        this.lastFallbackWarning = null;
-        this.cachedConfig = this.mergeWithDefaults(projectStored.value);
+        this.lastFallbackWarning = globalConfig.warning;
+        this.cachedConfig = this.mergeProjectScopedConfig(globalConfig.config, projectStored.value);
+        this.cachedCustomAgentConfigs = null;
         return this.cachedConfig;
       }
 
@@ -517,6 +521,51 @@ export class ConfigService {
         ...DEFAULT_HIVE_CONFIG.customAgents,
         ...storedCustomAgents,
       },
+    };
+  }
+
+  private readGlobalConfigForProjectOverlay(): { config: HiveConfig; warning: ConfigService['lastFallbackWarning'] } {
+    if (!fs.existsSync(this.configPath)) {
+      return { config: this.mergeWithDefaults({}), warning: null };
+    }
+
+    const globalStored = this.readStoredConfig(this.configPath);
+    if (globalStored.ok) {
+      return { config: this.mergeWithDefaults(globalStored.value), warning: null };
+    }
+
+    const fallbackReason = 'reason' in globalStored ? globalStored.reason : 'read_error';
+    return {
+      config: this.mergeWithDefaults({}),
+      warning: {
+        message: `Failed to read global config at ${this.configPath}; using defaults with project config overlay`,
+        sourceType: 'global',
+        sourcePath: this.configPath,
+        fallbackType: 'defaults',
+        reason: fallbackReason,
+      },
+    };
+  }
+
+  private mergeProjectScopedConfig(base: HiveConfig, stored: Partial<HiveConfig>): HiveConfig {
+    const projectScopedConfig: Partial<HiveConfig> = {};
+
+    if (stored.sandbox !== undefined) {
+      projectScopedConfig.sandbox = stored.sandbox;
+    }
+    if (stored.dockerImage !== undefined) {
+      projectScopedConfig.dockerImage = stored.dockerImage;
+    }
+    if (stored.persistentContainers !== undefined) {
+      projectScopedConfig.persistentContainers = stored.persistentContainers;
+    }
+    if (stored.repositories !== undefined) {
+      projectScopedConfig.repositories = stored.repositories;
+    }
+
+    return {
+      ...base,
+      ...projectScopedConfig,
     };
   }
 

@@ -52,7 +52,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 ### Local skill and model use cases
 
 - **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then load it with OpenCode's native `skill` tool, reference it in agent instructions, or list its frontmatter `name` in `autoLoadSkills`. User file skills are discovered through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, and `skills.urls` mechanisms.
-- **Local model tuning:** set per-agent models or variants in `<project>/.hive/agent-hive.json` when you want a repository-specific routing setup without changing your global OpenCode defaults.
+- **Local model tuning:** set per-agent models or variants in `~/.config/opencode/agent_hive.json`. Project `.hive/agent-hive.json` is reserved for project-scoped sandbox and repository-manifest settings.
 
 #### Canonical Delegation Threshold
 
@@ -182,15 +182,15 @@ Description.
 
 ## Configuration
 
-Hive reads config from these locations, in order:
+Hive reads user/session policy from `~/.config/opencode/agent_hive.json`, then overlays project-scoped fields from the first project config file that exists:
 
-1. `<project>/.hive/agent-hive.json` (preferred)
+1. `<project>/.hive/agent-hive.json` (preferred project overlay)
 2. `<project>/.opencode/agent_hive.json` (legacy fallback, used only when the new file is missing)
-3. `~/.config/opencode/agent_hive.json` (global fallback)
+3. defaults for anything not set globally or by the project overlay
 
-If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Hive warns, skips the legacy project file, and falls back to the global config and defaults.
+Project config only affects `sandbox`, `dockerImage`, `persistentContainers`, and `repositories`. Agent routing, custom agents, disabled MCPs, disabled skills, and hook cadence are global user settings. If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Hive warns, skips the legacy project file, and uses the global config and defaults.
 
-You can customize agent models, variants, disable skills, and disable MCP servers.
+You can customize agent models, variants, disabled skills, and disabled MCP servers in the global config.
 
 ### Project-local config example
 
@@ -199,8 +199,10 @@ Create `.hive/agent-hive.json`:
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
-  "agentMode": "unified",
-  "disableSkills": []
+  "sandbox": "docker",
+  "repositories": [
+    { "id": "api", "path": "./api" }
+  ]
 }
 ```
 

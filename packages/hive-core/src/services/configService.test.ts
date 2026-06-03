@@ -917,6 +917,65 @@ describe('ConfigService project-aware read source selection', () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  it('keeps global-only settings from global config when project config exists', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
+    const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
+    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
+
+    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+    fs.writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        agentMode: 'unified',
+        disableMcps: ['project-mcp'],
+        agents: {
+          'forager-worker': { variant: 'low' },
+        },
+        sandbox: 'docker',
+        repositories: [{ id: 'api', path: './api' }],
+      }),
+    );
+
+    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+    fs.writeFileSync(
+      globalConfigPath,
+      JSON.stringify({
+        agentMode: 'dedicated',
+        disableMcps: ['global-mcp'],
+        agents: {
+          'forager-worker': { variant: 'high' },
+        },
+        customAgents: {
+          'forager-ui': {
+            baseAgent: 'forager-worker',
+            description: 'Use for UI-heavy implementation tasks.',
+            autoLoadSkills: ['react-best-practices'],
+          },
+        },
+        sandbox: 'none',
+      }),
+    );
+
+    const service = new ConfigService(projectRoot);
+    const config = service.get();
+
+    expect(config.agentMode).toBe('dedicated');
+    expect(config.disableMcps).toEqual(['global-mcp']);
+    expect(config.agents?.['forager-worker']?.variant).toBe('high');
+    expect(config.customAgents?.['forager-ui']).toEqual({
+      baseAgent: 'forager-worker',
+      description: 'Use for UI-heavy implementation tasks.',
+      autoLoadSkills: ['react-best-practices'],
+    });
+    expect(config.sandbox).toBe('docker');
+    expect(config.repositories).toEqual([{ id: 'api', path: './api' }]);
+    expect(service.getActiveReadSourceType()).toBe('project');
+    expect(service.getActiveReadPath()).toBe(projectConfigPath);
+    expect(service.getLastFallbackWarning()).toBeNull();
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
   it('falls back to legacy project config when the new project config is missing', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
     const legacyProjectConfigPath = path.join(projectRoot, '.opencode', 'agent_hive.json');

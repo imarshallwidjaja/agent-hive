@@ -287,7 +287,7 @@ Hive detects runtime from project files:
 - `Dockerfile` → Builds from project Dockerfile
 - Fallback → `ubuntu:24.04`
 
-**Override:** Set `dockerImage` in config (`<project>/.hive/agent-hive.json` preferred, legacy `<project>/.opencode/agent_hive.json`, `~/.config/opencode/agent_hive.json` fallback).
+**Override:** Set project-specific `dockerImage` in `<project>/.hive/agent-hive.json` or legacy `<project>/.opencode/agent_hive.json`. If no project overlay sets it, Hive uses `~/.config/opencode/agent_hive.json` and then defaults.
 
 If project config is missing, invalid JSON, or invalid shape, Hive reads global config next and then falls back to defaults, surfacing a runtime warning when the project config is invalid.
 

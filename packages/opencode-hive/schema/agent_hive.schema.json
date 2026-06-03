@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "title": "Agent Hive Configuration",
-  "description": "Configuration schema for Agent Hive config files. Read precedence: <project>/.hive/agent-hive.json (preferred), legacy <project>/.opencode/agent_hive.json during migration, then ~/.config/opencode/agent_hive.json (fallback), then defaults. If the project config is invalid, Hive surfaces a runtime warning.",
+  "description": "Configuration schema for Agent Hive config files. User/session policy is read from ~/.config/opencode/agent_hive.json. Project files at <project>/.hive/agent-hive.json, or legacy <project>/.opencode/agent_hive.json, are overlays for project-scoped fields only: sandbox, dockerImage, persistentContainers, and repositories. If the project config is invalid, Hive surfaces a runtime warning and uses the global config/defaults.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -14,11 +14,11 @@
       "type": "string",
       "enum": ["none", "docker"],
       "default": "none",
-      "description": "Sandbox isolation mode. 'none' runs commands directly; 'docker' wraps bash commands in Docker containers."
+      "description": "Project-scoped sandbox isolation mode. 'none' runs commands directly; 'docker' wraps bash commands in Docker containers."
     },
     "dockerImage": {
       "type": "string",
-      "description": "Docker image to use for sandbox. Auto-detected from project files if omitted (e.g., node:22-slim for Node.js projects)."
+      "description": "Project-scoped Docker image to use for sandbox. Auto-detected from project files if omitted (e.g., node:22-slim for Node.js projects)."
     },
     "persistentContainers": {
       "type": "boolean",
@@ -37,21 +37,21 @@
       "items": {
         "type": "string"
       },
-      "description": "Enable hive tools for specific features"
+      "description": "Globally enable hive tools for specific features. Read from the global user config; project-local values are ignored by runtime config resolution."
     },
     "disableSkills": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "Globally disable specific Hive bundled skills (e.g., ['brainstorming', 'writing-plans']). Disabled skills are excluded from Hive materialization and Hive bundled autoload. Does not block user or native skills with the same name."
+      "description": "Globally disable specific Hive bundled skills (e.g., ['brainstorming', 'writing-plans']). Read from the global user config; project-local values are ignored by runtime config resolution. Disabled skills are excluded from Hive materialization and Hive bundled autoload. Does not block user or native skills with the same name."
     },
     "disableMcps": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "Globally disable specific MCP servers (e.g., ['websearch', 'ast_grep']). Available: websearch, context7, grep_app, ast_grep"
+      "description": "Globally disable specific MCP servers (e.g., ['websearch', 'ast_grep']). Read from the global user config; project-local values are ignored by runtime config resolution. Available: websearch, context7, grep_app, ast_grep"
     },
     "agentMode": {
       "type": "string",
@@ -60,11 +60,11 @@
         "dedicated"
       ],
       "default": "unified",
-      "description": "Agent specialization mode. 'unified' (default) uses a single hybrid agent for all roles; 'dedicated' uses specialized agents for each role."
+      "description": "Agent specialization mode. Read from the global user config; project-local values are ignored by runtime config resolution. 'unified' (default) uses a single hybrid agent for all roles; 'dedicated' uses specialized agents for each role."
     },
     "hook_cadence": {
       "type": "object",
-      "description": "Hook execution cadence configuration. Key = hook name, Value = number of turns between invocations (1 = every turn, 3 = every 3rd turn). All hooks default to 1.",
+      "description": "Global hook execution cadence configuration. Read from the global user config; project-local values are ignored by runtime config resolution. Key = hook name, Value = number of turns between invocations (1 = every turn, 3 = every 3rd turn). All hooks default to 1.",
       "additionalProperties": {
         "type": "integer",
         "minimum": 1,
@@ -80,7 +80,7 @@
     },
     "agents": {
       "type": "object",
-      "description": "Agent model configuration overrides",
+      "description": "Global agent model configuration overrides. Project-local values are ignored by runtime config resolution.",
       "additionalProperties": false,
       "properties": {
         "hive-master": {
@@ -131,7 +131,7 @@
     },
     "customAgents": {
       "type": "object",
-      "description": "Custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, or approach-advisor. IDs cannot reuse built-in or plugin-reserved names.",
+      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, or approach-advisor. Project-local values are ignored by runtime config resolution. IDs cannot reuse built-in or plugin-reserved names.",
       "propertyNames": {
         "not": {
           "enum": [

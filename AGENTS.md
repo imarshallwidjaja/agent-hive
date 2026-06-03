@@ -320,14 +320,13 @@ The previous worker's progress is preserved. Include the user's decision in the 
 
 **Docker sandbox** provides isolated test environments for workers:
 
-- **Config read precedence**:
-  1. `<project>/.hive/agent-hive.json` (preferred)
-  2. `<project>/.opencode/agent_hive.json` (legacy fallback during migration)
-  3. `~/.config/opencode/agent_hive.json` (fallback)
-- **Invalid project config behavior**: Falls back to global config and surfaces a runtime warning.
-- **Fields**:
+- **Config read precedence**: user/session policy comes from `~/.config/opencode/agent_hive.json`; project `.hive/agent-hive.json` and legacy `.opencode/agent_hive.json` only overlay project-scoped fields.
+- **Invalid project config behavior**: Uses global config/defaults and surfaces a runtime warning.
+- **Project-scoped fields**:
   - `sandbox: 'none' | 'docker'` — Isolation mode (default: 'none')
   - `dockerImage?: string` — Custom Docker image (optional, auto-detects if omitted)
+  - `persistentContainers?: boolean` — Reuse Docker containers per worktree
+  - `repositories?: { id: string; path: string }[]` — Project repository manifest
 - **Auto-detection**: Detects runtime from project files:
   - `package.json` → `node:22-slim`
   - `requirements.txt` / `pyproject.toml` → `python:3.12-slim`
