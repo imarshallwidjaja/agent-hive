@@ -34,6 +34,13 @@ export type {
 export { ContextService } from './contextService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService } from './sessionService.js';
+export { BackgroundJobService } from './backgroundJobService.js';
+export type {
+  BackgroundJobScopeFilter,
+  ReconcilePatch,
+  RegisterBackgroundJobInput,
+  RuntimeStatePatch,
+} from './backgroundJobService.js';
 export { ConfigService } from './configService.js';
 export { RepositoryService } from './repositoryService.js';
 export { RepositoryManifestService } from './repositoryManifestService.js';

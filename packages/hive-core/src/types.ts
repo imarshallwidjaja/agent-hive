@@ -183,6 +183,62 @@ export interface SessionsJson {
   sessions: SessionInfo[];
 }
 
+export type BackgroundJobRuntimeState = 'running' | 'completed' | 'error' | 'cancelled' | 'unknown';
+
+export interface BackgroundJobScope {
+  feature?: string;
+  task?: string;
+  adHocRunId?: string;
+  workflow?: string;
+  parentSessionId?: string;
+  primaryAgent?: string;
+  projectRoot?: string;
+}
+
+export interface BackgroundJobOwnership {
+  worktreePath?: string;
+  branch?: string;
+  workerPromptPath?: string;
+  files?: string[];
+  repoIds?: string[];
+}
+
+export interface BackgroundJobRecord {
+  taskId: string;
+  sessionId: string;
+  agentName: string;
+  customAgentBase?: string;
+  description?: string;
+  objective?: string;
+  createdAt: string;
+  updatedAt: string;
+  runtimeState: BackgroundJobRuntimeState;
+  terminalUnreconciled?: boolean;
+  statusUncertain?: boolean;
+  resultSummary?: string;
+  lastStatusError?: string;
+  runtimeCompletedAt?: string;
+  cancelRequestedAt?: string;
+  cancelReason?: string;
+  reconciledAt?: string;
+  reconciledBy?: string;
+  reconciliationSummary?: string;
+  ignoredAt?: string;
+  ignoreReason?: string;
+  staleAt?: string;
+  retryOf?: string;
+  supersedes?: string;
+  alias: string;
+  scope?: BackgroundJobScope;
+  ownership?: BackgroundJobOwnership;
+}
+
+export interface BackgroundJobsJson {
+  schemaVersion: 1;
+  jobs: BackgroundJobRecord[];
+  updatedAt?: string;
+}
+
 export interface TaskSpec {
   taskFolder: string;
   featureName: string;
