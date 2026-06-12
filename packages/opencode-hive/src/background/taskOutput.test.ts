@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  createTaskLifecycleHook,
   parseTaskLifecycleEvent,
   parseTaskLaunchOutput,
   parseTaskStatusOutput,
+  type ParsedTaskLifecycleEvent,
 } from './taskOutput.js';
 
 describe('background task output parsing', () => {
@@ -79,6 +81,10 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
     expect(parsed).toEqual({
       tool: 'task',
       taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      args: {
+        background: true,
+        description: 'Run worker',
+      },
       parentSessionId: 'sess_parent',
       messageId: 'msg_parent',
       agentName: 'hive',
@@ -102,6 +108,9 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
     expect(parsed).toEqual({
       tool: 'task_status',
       taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      args: {
+        task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      },
       parentSessionId: 'sess_parent',
       agentName: 'hive',
       callId: 'call_status_1',
@@ -110,6 +119,36 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
         runtimeState: 'completed',
         result: 'done',
       },
+    });
+  });
+
+  it('routes parsed lifecycle events to a hook handler', async () => {
+    const observed: ParsedTaskLifecycleEvent[] = [];
+    const hook = createTaskLifecycleHook((event) => {
+      observed.push(event);
+    });
+
+    await hook({
+      tool: 'task',
+      args: { description: 'Run worker', background: true },
+      sessionID: 'sess_parent',
+      agent: 'hive',
+      callID: 'call_task_1',
+    }, {
+      output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+    });
+
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({
+      tool: 'task',
+      taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      args: {
+        background: true,
+        description: 'Run worker',
+      },
+      parentSessionId: 'sess_parent',
+      agentName: 'hive',
+      callId: 'call_task_1',
     });
   });
 });

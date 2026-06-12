@@ -18,12 +18,28 @@ export interface ParsedTaskStatusOutput {
 export interface ParsedTaskLifecycleEvent {
   tool: 'task' | 'task_status';
   taskId: string;
+  args: {
+    background?: boolean;
+    description?: string;
+    task_id?: string;
+  };
   parentSessionId: string;
   agentName?: string;
   callId?: string;
   messageId?: string;
   launch?: ParsedTaskLaunchOutput;
   status?: ParsedTaskStatusOutput;
+}
+
+export type TaskLifecycleEventHandler = (event: ParsedTaskLifecycleEvent) => void | Promise<void>;
+
+export function createTaskLifecycleHook(handleEvent: TaskLifecycleEventHandler): (input: unknown, output: unknown) => Promise<void> {
+  return async (input, output) => {
+    const event = parseTaskLifecycleEvent(input, output);
+    if (event) {
+      await handleEvent(event);
+    }
+  };
 }
 
 const TASK_ID_PATTERN = /\btask[_-]id\b\s*[":=]?\s*["']?([A-Za-z0-9_-]+)/i;
@@ -87,6 +103,7 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown): Parsed
   const toolName = readString(input, 'tool');
   const outputText = readString(output, 'output');
   const parentSessionId = readString(input, 'sessionID');
+  const args = isRecord(input.args) ? input.args : undefined;
   if (!outputText || !parentSessionId) {
     return undefined;
   }
@@ -100,6 +117,10 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown): Parsed
     return pruneUndefined({
       tool: 'task' as const,
       taskId: launch.task_id,
+      args: pruneUndefined({
+        background: args ? readBoolean(args, 'background') : undefined,
+        description: args ? readString(args, 'description') : undefined,
+      }),
       parentSessionId,
       agentName: readString(input, 'agent'),
       callId: readString(input, 'callID'),
@@ -117,6 +138,9 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown): Parsed
     return pruneUndefined({
       tool: 'task_status' as const,
       taskId: status.task_id,
+      args: pruneUndefined({
+        task_id: args ? readString(args, 'task_id') : status.task_id,
+      }),
       parentSessionId,
       agentName: readString(input, 'agent'),
       callId: readString(input, 'callID'),

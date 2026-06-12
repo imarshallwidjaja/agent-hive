@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import plugin from '../index.js';
-import { parseTaskLifecycleEvent } from './taskOutput.js';
+import { createTaskLifecycleHook, type ParsedTaskLifecycleEvent } from './taskOutput.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
 
@@ -65,11 +65,20 @@ describe('background task lifecycle hook support', () => {
       output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
     };
 
+    const observed: ParsedTaskLifecycleEvent[] = [];
+    const lifecycleHook = createTaskLifecycleHook((event) => {
+      observed.push(event);
+    });
+
     expect(hooks['tool.execute.after']).toBeDefined();
-    await hooks['tool.execute.after']?.(input as never, output as never);
-    expect(parseTaskLifecycleEvent(input, output)).toEqual({
+    await lifecycleHook(input, output);
+    expect(observed[0]).toEqual({
       tool: 'task',
       taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      args: {
+        background: true,
+        description: 'Run worker',
+      },
       parentSessionId: 'sess_parent',
       messageId: 'msg_parent',
       agentName: 'hive',
@@ -89,10 +98,13 @@ describe('background task lifecycle hook support', () => {
       output: '{"task_id":"task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2","status":"completed","result":"done"}',
     };
 
-    await hooks['tool.execute.after']?.(statusInput as never, statusOutput as never);
-    expect(parseTaskLifecycleEvent(statusInput, statusOutput)).toEqual({
+    await lifecycleHook(statusInput, statusOutput);
+    expect(observed[1]).toEqual({
       tool: 'task_status',
       taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      args: {
+        task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      },
       parentSessionId: 'sess_parent',
       agentName: 'hive',
       callId: 'call_status_1',
