@@ -2,6 +2,45 @@ import { describe, it, expect } from 'bun:test';
 import { BUILTIN_SKILLS } from './registry.generated.js';
 
 describe('skill content', () => {
+  it('bundles adversarial-review with explicit read-only multi-pass constraints', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review');
+
+    expect(skill).toBeDefined();
+    expect(skill!.template).toContain('neverinfamous/memory-journal-mcp');
+    expect(skill!.template).toContain('dementev-dev/adversarial-review');
+    expect(skill!.template).toContain('poteto/noodle');
+    expect(skill!.description).toContain('explicitly asked');
+    expect(skill!.description).toContain('adversarial');
+    expect(skill!.template).toContain('Stay read-only. Do not edit files');
+    expect(skill!.template).toContain('State scope and intent before reviewing');
+    expect(skill!.template).toContain('Separate baseline from attack');
+    expect(skill!.template).toContain('If any review step mutates the artifact under review, stop and report the mutation');
+    expect(skill!.template).toContain('Report missing, empty, stale, or invalid review inputs');
+    expect(skill!.template).toContain('Host output format wins');
+  });
+
+  it('bundles adversarial-review mode detection and lens coverage', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review');
+
+    expect(skill).toBeDefined();
+    for (const mode of ['plan', 'code', 'code-vs-plan', 'approach', 'simplicity', 'file']) {
+      expect(skill!.template).toContain(mode);
+    }
+    for (const lens of ['Skeptic', 'Architect', 'Minimalist', 'Boundary Breaker', 'Stress Tester']) {
+      expect(skill!.template).toContain(lens);
+    }
+  });
+
+  it('bundles adversarial-review external validation as optional and failure-reporting', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review');
+
+    expect(skill).toBeDefined();
+    expect(skill!.template).toContain('External or cross-model validation is useful but not required');
+    expect(skill!.template).toContain('Confirm the output exists and is non-empty before using it');
+    expect(skill!.template).toContain('Report missing, failed, timed out, or empty output as a validation failure');
+    expect(skill!.template).toContain('Do not let external tools mutate the artifact under review');
+  });
+
   it('bundles the ast-grep skill with the upstream tool surface', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'ast-grep');
 
