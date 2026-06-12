@@ -21,6 +21,7 @@ describe('viewer-only VS Code manifest', () => {
     expect(pkg.contributes[lmKey]).toBeUndefined();
     const commands = (pkg.contributes.commands ?? []).map((entry: { command: string }) => entry.command).sort();
     expect(commands).toEqual([
+      'hive.copyToClipboard',
       'hive.comment.create',
       'hive.comment.delete',
       'hive.comment.reply',
@@ -28,6 +29,17 @@ describe('viewer-only VS Code manifest', () => {
       'hive.openFile',
       'hive.plan.doneReview',
       'hive.refresh',
+    ].sort());
+  });
+
+  it('contributes the minimal Hive viewer views', () => {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    const views = (pkg.contributes.views?.hive ?? []).map((entry: { id: string }) => entry.id).sort();
+
+    expect(views).toEqual([
+      'hive.backgroundJobs',
+      'hive.features',
+      'hive.repositories',
     ].sort());
   });
 });

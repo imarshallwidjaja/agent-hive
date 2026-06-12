@@ -50,7 +50,7 @@ describe('viewer-only VS Code package under multi-repo readiness', () => {
   it('does not contribute agentic start, create, commit, or merge commands', () => {
     const pkg = readPkg();
     const commands: string[] = (pkg.contributes?.commands ?? []).map((c: { command: string }) => c.command);
-    const forbiddenSuffixes = ['worktree.start', 'worktree.create', 'worktree.commit', 'merge', 'task.start', 'task.merge'];
+    const forbiddenSuffixes = ['worktree.start', 'worktree.create', 'worktree.commit', 'merge', 'task.start', 'task.merge', 'cancel', 'reconcile', 'ignore', 'retry'];
     const matches = commands.filter((cmd) =>
       forbiddenSuffixes.some((suffix) => cmd.toLowerCase().endsWith(suffix.toLowerCase()))
     );

@@ -2,7 +2,7 @@ import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
 import { HiveWatcher, Launcher } from './services'
-import { HiveSidebarProvider, PlanCommentController } from './providers'
+import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, TrackedRepositoriesProvider } from './providers'
 
 type ReviewDocument = 'plan' | 'overview'
 
@@ -55,6 +55,8 @@ function findHiveRoot(startPath: string): string | null {
 
 class HiveExtension {
   private sidebarProvider: HiveSidebarProvider | null = null
+  private backgroundJobsProvider: BackgroundJobsProvider | null = null
+  private trackedRepositoriesProvider: TrackedRepositoriesProvider | null = null
   private launcher: Launcher | null = null
   private commentController: PlanCommentController | null = null
   private hiveWatcher: HiveWatcher | null = null
@@ -82,15 +84,21 @@ class HiveExtension {
     this.initialized = true
 
     this.sidebarProvider = new HiveSidebarProvider(workspaceRoot)
+    this.backgroundJobsProvider = new BackgroundJobsProvider(workspaceRoot)
+    this.trackedRepositoriesProvider = new TrackedRepositoriesProvider(workspaceRoot)
     this.launcher = new Launcher()
     this.commentController = new PlanCommentController(workspaceRoot)
 
     vscode.window.registerTreeDataProvider('hive.features', this.sidebarProvider)
+    vscode.window.registerTreeDataProvider('hive.backgroundJobs', this.backgroundJobsProvider)
+    vscode.window.registerTreeDataProvider('hive.repositories', this.trackedRepositoriesProvider)
     this.commentController.registerCommands(this.context)
     vscode.commands.executeCommand('setContext', 'hive.hasHiveRoot', true)
 
     this.hiveWatcher = new HiveWatcher(workspaceRoot, () => {
       this.sidebarProvider?.refresh()
+      this.backgroundJobsProvider?.refresh()
+      this.trackedRepositoriesProvider?.refresh()
     })
     this.context.subscriptions.push({ dispose: () => this.hiveWatcher?.dispose() })
 
@@ -135,11 +143,26 @@ class HiveExtension {
           }
         }
         this.sidebarProvider?.refresh()
+        this.backgroundJobsProvider?.refresh()
+        this.trackedRepositoriesProvider?.refresh()
       }),
 
-      vscode.commands.registerCommand('hive.openFile', (filePath: string) => {
+      vscode.commands.registerCommand('hive.openFile', (filePathOrItem: string | { command?: { arguments?: string[] } }) => {
+        const filePath = typeof filePathOrItem === 'string'
+          ? filePathOrItem
+          : filePathOrItem?.command?.arguments?.[0]
         if (filePath) {
           this.launcher?.openFile(filePath)
+        }
+      }),
+
+      vscode.commands.registerCommand('hive.copyToClipboard', async (valueOrItem: string | { copyCommand?: { arguments?: string[] } }) => {
+        const value = typeof valueOrItem === 'string'
+          ? valueOrItem
+          : valueOrItem?.copyCommand?.arguments?.[0]
+        if (value) {
+          await vscode.env.clipboard.writeText(value)
+          vscode.window.showInformationMessage('Hive: copied to clipboard.')
         }
       }),
 

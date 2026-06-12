@@ -32,8 +32,11 @@
   "activationEvents": [
     "onStartupFinished",
     "onView:hive.features",
+    "onView:hive.backgroundJobs",
+    "onView:hive.repositories",
     "onCommand:hive.refresh",
     "onCommand:hive.openFile",
+    "onCommand:hive.copyToClipboard",
     "onCommand:hive.plan.doneReview",
     "onCommand:hive.comment.create",
     "onCommand:hive.comment.reply",
@@ -56,6 +59,14 @@
         {
           "id": "hive.features",
           "name": "Features"
+        },
+        {
+          "id": "hive.backgroundJobs",
+          "name": "Background Jobs"
+        },
+        {
+          "id": "hive.repositories",
+          "name": "Tracked Repositories"
         }
       ]
     },
@@ -63,6 +74,16 @@
       {
         "view": "hive.features",
         "contents": "No Hive workspace found.\n\nCreate or open a workspace containing `.hive`, then refresh this view.\n\n[Refresh](command:hive.refresh)",
+        "when": "!hive.hasHiveRoot"
+      },
+      {
+        "view": "hive.backgroundJobs",
+        "contents": "No Hive workspace found.\n\nOpen a Hive workspace to view background jobs.\n\n[Refresh](command:hive.refresh)",
+        "when": "!hive.hasHiveRoot"
+      },
+      {
+        "view": "hive.repositories",
+        "contents": "No Hive workspace found.\n\nOpen a Hive workspace to view tracked repositories.\n\n[Refresh](command:hive.refresh)",
         "when": "!hive.hasHiveRoot"
       }
     ],
@@ -75,6 +96,10 @@
       {
         "command": "hive.openFile",
         "title": "Open File"
+      },
+      {
+        "command": "hive.copyToClipboard",
+        "title": "Copy ID"
       },
       {
         "command": "hive.plan.doneReview",
@@ -106,12 +131,30 @@
           "command": "hive.refresh",
           "when": "view == hive.features",
           "group": "navigation"
+        },
+        {
+          "command": "hive.refresh",
+          "when": "view == hive.backgroundJobs",
+          "group": "navigation"
+        },
+        {
+          "command": "hive.refresh",
+          "when": "view == hive.repositories",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
         {
           "command": "hive.openFile",
           "when": "viewItem == file"
+        },
+        {
+          "command": "hive.openFile",
+          "when": "viewItem == background-job || viewItem == tracked-repository || viewItem == background-jobs-state || viewItem == tracked-repositories-state"
+        },
+        {
+          "command": "hive.copyToClipboard",
+          "when": "viewItem == background-job || viewItem == tracked-repository"
         }
       ],
       "editor/title": [

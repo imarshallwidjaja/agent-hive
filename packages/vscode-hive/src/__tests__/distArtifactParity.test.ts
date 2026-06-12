@@ -17,4 +17,11 @@ describe('shipped extension artifact parity', () => {
     const registrationApi = ['register', 'Tool'].join('');
     expect(bundle).not.toContain(registrationApi);
   });
+
+  it('includes the background jobs and tracked repositories viewers in dist', () => {
+    expect(bundle).toContain('background-jobs.json');
+    expect(bundle).toContain('agent-hive.json');
+    expect(bundle).toContain('hive.backgroundJobs');
+    expect(bundle).toContain('hive.repositories');
+  });
 });

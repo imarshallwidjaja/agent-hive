@@ -34,9 +34,9 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode5 = __toESM(require("vscode"));
-var fs4 = __toESM(require("fs"));
-var path4 = __toESM(require("path"));
+var vscode7 = __toESM(require("vscode"));
+var fs6 = __toESM(require("fs"));
+var path6 = __toESM(require("path"));
 
 // src/services/watcher.ts
 var vscode = __toESM(require("vscode"));
@@ -81,7 +81,7 @@ var vscode3 = __toESM(require("vscode"));
 var fs2 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 
-// ../hive-core/dist/index.js
+// ../../../../../../packages/hive-core/dist/index.js
 var import_node_module = require("module");
 var path = __toESM(require("path"), 1);
 var fs = __toESM(require("fs"), 1);
@@ -854,10 +854,10 @@ var require_src2 = __commonJS((exports2) => {
   var fs_1 = __require("fs");
   var debug_1 = __importDefault(require_src());
   var log = debug_1.default("@kwsites/file-exists");
-  function check(path6, isFile, isDirectory) {
-    log(`checking %s`, path6);
+  function check(path62, isFile, isDirectory) {
+    log(`checking %s`, path62);
     try {
-      const stat = fs_1.statSync(path6);
+      const stat = fs_1.statSync(path62);
       if (stat.isFile() && isFile) {
         log(`[OK] path represents a file`);
         return true;
@@ -877,8 +877,8 @@ var require_src2 = __commonJS((exports2) => {
       throw e;
     }
   }
-  function exists(path6, type = exports2.READABLE) {
-    return check(path6, (type & exports2.FILE) > 0, (type & exports2.FOLDER) > 0);
+  function exists(path62, type = exports2.READABLE) {
+    return check(path62, (type & exports2.FILE) > 0, (type & exports2.FOLDER) > 0);
   }
   exports2.exists = exists;
   exports2.FILE = 1;
@@ -1157,8 +1157,8 @@ function pathspec(...paths) {
   cache.set(key, paths);
   return key;
 }
-function isPathSpec(path6) {
-  return path6 instanceof String && cache.has(path6);
+function isPathSpec(path62) {
+  return path62 instanceof String && cache.has(path62);
 }
 var cache;
 var init_pathspec = __esm({
@@ -1241,8 +1241,8 @@ function toLinesWithContent(input = "", trimmed2 = true, separator = `
 function forEachLineWithContent(input, callback) {
   return toLinesWithContent(input, true).map((line) => callback(line));
 }
-function folderExists(path6) {
-  return import_file_exists.exists(path6, import_file_exists.FOLDER);
+function folderExists(path62) {
+  return import_file_exists.exists(path62, import_file_exists.FOLDER);
 }
 function append(target, item) {
   if (Array.isArray(target)) {
@@ -1634,8 +1634,8 @@ function checkIsRepoRootTask() {
     commands: commands3,
     format: "utf-8",
     onError,
-    parser(path6) {
-      return /^\.(git)?$/.test(path6.trim());
+    parser(path62) {
+      return /^\.(git)?$/.test(path62.trim());
     }
   };
 }
@@ -2046,11 +2046,11 @@ function parseGrep(grep) {
   const paths = /* @__PURE__ */ new Set();
   const results = {};
   forEachLineWithContent(grep, (input) => {
-    const [path6, line, preview] = input.split(NULL);
-    paths.add(path6);
-    (results[path6] = results[path6] || []).push({
+    const [path62, line, preview] = input.split(NULL);
+    paths.add(path62);
+    (results[path62] = results[path62] || []).push({
       line: asNumber(line),
-      path: path6,
+      path: path62,
       preview
     });
   });
@@ -2714,14 +2714,14 @@ var init_hash_object = __esm({
     init_task();
   }
 });
-function parseInit(bare, path6, text) {
+function parseInit(bare, path62, text) {
   const response = String(text).trim();
   let result;
   if (result = initResponseRegex.exec(response)) {
-    return new InitSummary(bare, path6, false, result[1]);
+    return new InitSummary(bare, path62, false, result[1]);
   }
   if (result = reInitResponseRegex.exec(response)) {
-    return new InitSummary(bare, path6, true, result[1]);
+    return new InitSummary(bare, path62, true, result[1]);
   }
   let gitDir = "";
   const tokens = response.split(" ");
@@ -2732,7 +2732,7 @@ function parseInit(bare, path6, text) {
       break;
     }
   }
-  return new InitSummary(bare, path6, /^re/i.test(response), gitDir);
+  return new InitSummary(bare, path62, /^re/i.test(response), gitDir);
 }
 var InitSummary;
 var initResponseRegex;
@@ -2740,9 +2740,9 @@ var reInitResponseRegex;
 var init_InitSummary = __esm({
   "src/lib/responses/InitSummary.ts"() {
     InitSummary = class {
-      constructor(bare, path6, existing, gitDir) {
+      constructor(bare, path62, existing, gitDir) {
         this.bare = bare;
-        this.path = path6;
+        this.path = path62;
         this.existing = existing;
         this.gitDir = gitDir;
       }
@@ -2754,7 +2754,7 @@ var init_InitSummary = __esm({
 function hasBareCommand(command) {
   return command.includes(bareCommand);
 }
-function initTask(bare = false, path6, customArgs) {
+function initTask(bare = false, path62, customArgs) {
   const commands3 = ["init", ...customArgs];
   if (bare && !hasBareCommand(commands3)) {
     commands3.splice(1, 0, bareCommand);
@@ -2763,7 +2763,7 @@ function initTask(bare = false, path6, customArgs) {
     commands: commands3,
     format: "utf-8",
     parser(text) {
-      return parseInit(commands3.includes("--bare"), path6, text);
+      return parseInit(commands3.includes("--bare"), path62, text);
     }
   };
 }
@@ -3478,12 +3478,12 @@ var init_FileStatusSummary = __esm({
   "src/lib/responses/FileStatusSummary.ts"() {
     fromPathRegex = /^(.+)\0(.+)$/;
     FileStatusSummary = class {
-      constructor(path6, index, working_dir) {
-        this.path = path6;
+      constructor(path62, index, working_dir) {
+        this.path = path62;
         this.index = index;
         this.working_dir = working_dir;
         if (index === "R" || working_dir === "R") {
-          const detail = fromPathRegex.exec(path6) || [null, path6, path6];
+          const detail = fromPathRegex.exec(path62) || [null, path62, path62];
           this.from = detail[2] || "";
           this.path = detail[1] || "";
         }
@@ -3514,14 +3514,14 @@ function splitLine(result, lineStr) {
     default:
       return;
   }
-  function data(index, workingDir, path6) {
+  function data(index, workingDir, path62) {
     const raw = `${index}${workingDir}`;
     const handler = parsers6.get(raw);
     if (handler) {
-      handler(result, path6);
+      handler(result, path62);
     }
     if (raw !== "##" && raw !== "!!") {
-      result.files.push(new FileStatusSummary(path6, index, workingDir));
+      result.files.push(new FileStatusSummary(path62, index, workingDir));
     }
   }
 }
@@ -3753,8 +3753,8 @@ var init_simple_git_api = __esm({
         }
         return this._runTask(configurationErrorTask("Git.cwd: workingDirectory must be supplied as a string"), next);
       }
-      hashObject(path6, write) {
-        return this._runTask(hashObjectTask(path6, write === true), trailingFunctionArgument(arguments));
+      hashObject(path62, write) {
+        return this._runTask(hashObjectTask(path62, write === true), trailingFunctionArgument(arguments));
       }
       init(bare) {
         return this._runTask(initTask(bare === true, this._executor.cwd, getTrailingOptions(arguments)), trailingFunctionArgument(arguments));
@@ -4047,8 +4047,8 @@ var init_branch = __esm({
   }
 });
 function toPath(input) {
-  const path6 = input.trim().replace(/^["']|["']$/g, "");
-  return path6 && (0, import_node_path.normalize)(path6);
+  const path62 = input.trim().replace(/^["']|["']$/g, "");
+  return path62 && (0, import_node_path.normalize)(path62);
 }
 var parseCheckIgnore;
 var init_CheckIgnore = __esm({
@@ -4341,8 +4341,8 @@ __export2(sub_module_exports, {
   subModuleTask: () => subModuleTask,
   updateSubModuleTask: () => updateSubModuleTask
 });
-function addSubModuleTask(repo, path6) {
-  return subModuleTask(["add", repo, path6]);
+function addSubModuleTask(repo, path62) {
+  return subModuleTask(["add", repo, path62]);
 }
 function initSubModuleTask(customArgs) {
   return subModuleTask(["init", ...customArgs]);
@@ -4610,8 +4610,8 @@ var require_git = __commonJS2({
       }
       return this._runTask(straightThroughStringTask2(command, this._trimmed), next);
     };
-    Git2.prototype.submoduleAdd = function(repo, path6, then) {
-      return this._runTask(addSubModuleTask2(repo, path6), trailingFunctionArgument2(arguments));
+    Git2.prototype.submoduleAdd = function(repo, path62, then) {
+      return this._runTask(addSubModuleTask2(repo, path62), trailingFunctionArgument2(arguments));
     };
     Git2.prototype.submoduleUpdate = function(args, then) {
       return this._runTask(updateSubModuleTask2(getTrailingOptions2(arguments, true)), trailingFunctionArgument2(arguments));
@@ -5310,6 +5310,228 @@ var PlanCommentController = class {
   }
 };
 
+// src/providers/backgroundJobsProvider.ts
+var vscode5 = __toESM(require("vscode"));
+var fs4 = __toESM(require("fs"));
+var path4 = __toESM(require("path"));
+var BackgroundJobGroupItem = class extends vscode5.TreeItem {
+  constructor(groupName, jobs, collapsed = false) {
+    super(groupName, collapsed ? vscode5.TreeItemCollapsibleState.Collapsed : vscode5.TreeItemCollapsibleState.Expanded);
+    this.groupName = groupName;
+    this.jobs = jobs;
+    this.description = `${jobs.length} job(s)`;
+    this.contextValue = "background-job-group";
+    this.iconPath = new vscode5.ThemeIcon("list-tree");
+  }
+};
+var BackgroundJobItem = class extends vscode5.TreeItem {
+  constructor(job, workspaceRoot, boardPath) {
+    super(job.alias || job.taskId, vscode5.TreeItemCollapsibleState.None);
+    this.boardPath = boardPath;
+    this.description = [job.agentName, job.runtimeState, getCoordinationStatus(job) || job.objective || job.description].filter(Boolean).join(" \xB7 ");
+    this.tooltip = getJobTooltip(job);
+    this.contextValue = "background-job";
+    this.iconPath = new vscode5.ThemeIcon(getJobIcon(job));
+    this.command = {
+      command: "hive.openFile",
+      title: "Open Background Job Context",
+      arguments: [getRelatedPath(job, workspaceRoot) ?? this.boardPath]
+    };
+    this.copyCommand = {
+      command: "hive.copyToClipboard",
+      title: "Copy Background Job ID",
+      arguments: [job.taskId]
+    };
+  }
+  copyCommand;
+};
+var BackgroundJobsStateItem = class extends vscode5.TreeItem {
+  constructor(label, description, boardPath) {
+    super(label, vscode5.TreeItemCollapsibleState.None);
+    this.description = description;
+    this.contextValue = "background-jobs-state";
+    this.iconPath = new vscode5.ThemeIcon("info");
+    this.command = {
+      command: "hive.openFile",
+      title: "Open Background Jobs File",
+      arguments: [boardPath]
+    };
+  }
+};
+var BackgroundJobsProvider = class {
+  constructor(workspaceRoot) {
+    this.workspaceRoot = workspaceRoot;
+  }
+  _onDidChangeTreeData = new vscode5.EventEmitter();
+  onDidChangeTreeData = this._onDidChangeTreeData.event;
+  refresh() {
+    this._onDidChangeTreeData.fire(void 0);
+  }
+  getTreeItem(element) {
+    return element;
+  }
+  async getChildren(element) {
+    if (element instanceof BackgroundJobGroupItem) {
+      return element.jobs.map((job) => new BackgroundJobItem(job, this.workspaceRoot, this.boardPath()));
+    }
+    if (element) {
+      return [];
+    }
+    const boardPath = this.boardPath();
+    if (!fs4.existsSync(boardPath)) {
+      return [new BackgroundJobsStateItem("No background jobs", "Missing .hive/background-jobs.json", boardPath)];
+    }
+    let board;
+    try {
+      board = JSON.parse(fs4.readFileSync(boardPath, "utf-8"));
+    } catch {
+      return [new BackgroundJobsStateItem("Unable to read background jobs", "Invalid .hive/background-jobs.json", boardPath)];
+    }
+    const jobs = Array.isArray(board.jobs) ? board.jobs : [];
+    if (jobs.length === 0) {
+      return [new BackgroundJobsStateItem("No background jobs", "0 jobs", boardPath)];
+    }
+    return this.getGroups(jobs);
+  }
+  getGroups(jobs) {
+    const groups = [
+      { label: "Running", jobs: [] },
+      { label: "Needs Reconciliation", jobs: [] },
+      { label: "Cancel Requested", jobs: [] },
+      { label: "Stale / Ignored / Completed", jobs: [], collapsed: true }
+    ];
+    for (const job of jobs) {
+      if (job.cancelRequestedAt) {
+        groups[2].jobs.push(job);
+      } else if (job.terminalUnreconciled) {
+        groups[1].jobs.push(job);
+      } else if (job.runtimeState === "running") {
+        groups[0].jobs.push(job);
+      } else {
+        groups[3].jobs.push(job);
+      }
+    }
+    return groups.filter((group) => group.jobs.length > 0).map((group) => new BackgroundJobGroupItem(group.label, group.jobs, group.collapsed));
+  }
+  boardPath() {
+    return path4.join(this.workspaceRoot, ".hive", "background-jobs.json");
+  }
+};
+function getRelatedPath(job, workspaceRoot) {
+  var _a2, _b;
+  const relatedPath = ((_a2 = job.ownership) == null ? void 0 : _a2.workerPromptPath) ?? ((_b = job.ownership) == null ? void 0 : _b.worktreePath);
+  if (!relatedPath) return null;
+  return path4.isAbsolute(relatedPath) ? relatedPath : path4.resolve(workspaceRoot, relatedPath);
+}
+function getCoordinationStatus(job) {
+  if (job.cancelRequestedAt) return "cancel requested";
+  if (job.terminalUnreconciled) return "terminal unreconciled";
+  if (job.ignoredAt) return "ignored";
+  if (job.staleAt || job.statusUncertain) return "stale/uncertain";
+  if (job.reconciledAt) return "reconciled";
+  return void 0;
+}
+function getJobIcon(job) {
+  if (job.cancelRequestedAt) return "debug-stop";
+  if (job.terminalUnreconciled) return "warning";
+  if (job.runtimeState === "running") return "sync~spin";
+  return "check";
+}
+function getJobTooltip(job) {
+  var _a2, _b, _c, _d;
+  const lines = [
+    `Task ID: ${job.taskId}`,
+    `Alias: ${job.alias}`,
+    `Agent: ${job.agentName}`,
+    `Runtime: ${job.runtimeState}`,
+    job.objective ? `Objective: ${job.objective}` : void 0,
+    job.description ? `Description: ${job.description}` : void 0,
+    job.cancelReason ? `Cancel reason: ${job.cancelReason}` : void 0,
+    job.resultSummary ? `Result: ${job.resultSummary}` : void 0,
+    ((_a2 = job.scope) == null ? void 0 : _a2.feature) ? `Feature: ${job.scope.feature}` : void 0,
+    ((_b = job.scope) == null ? void 0 : _b.task) ? `Task: ${job.scope.task}` : void 0,
+    ((_c = job.ownership) == null ? void 0 : _c.worktreePath) ? `Worktree: ${job.ownership.worktreePath}` : void 0,
+    ((_d = job.ownership) == null ? void 0 : _d.workerPromptPath) ? `Worker prompt: ${job.ownership.workerPromptPath}` : void 0
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+// src/providers/trackedRepositoriesProvider.ts
+var vscode6 = __toESM(require("vscode"));
+var fs5 = __toESM(require("fs"));
+var path5 = __toESM(require("path"));
+var TrackedRepositoryItem = class extends vscode6.TreeItem {
+  copyCommand;
+  constructor(repo, workspaceRoot) {
+    const resolvedPath = path5.isAbsolute(repo.path) ? repo.path : path5.resolve(workspaceRoot, repo.path);
+    super(repo.id, vscode6.TreeItemCollapsibleState.None);
+    this.description = repo.path;
+    this.tooltip = `Configured path: ${repo.path}
+Resolved path: ${resolvedPath}`;
+    this.contextValue = "tracked-repository";
+    this.iconPath = new vscode6.ThemeIcon(fs5.existsSync(resolvedPath) ? "repo" : "warning");
+    this.command = {
+      command: "hive.openFile",
+      title: "Open Repository Path",
+      arguments: [resolvedPath]
+    };
+    this.copyCommand = {
+      command: "hive.copyToClipboard",
+      title: "Copy Repository ID",
+      arguments: [repo.id]
+    };
+  }
+};
+var TrackedRepositoriesStateItem = class extends vscode6.TreeItem {
+  constructor(label, description, manifestPath) {
+    super(label, vscode6.TreeItemCollapsibleState.None);
+    this.description = description;
+    this.contextValue = "tracked-repositories-state";
+    this.iconPath = new vscode6.ThemeIcon("info");
+    this.command = {
+      command: "hive.openFile",
+      title: "Open Repository Manifest",
+      arguments: [manifestPath]
+    };
+  }
+};
+var TrackedRepositoriesProvider = class {
+  constructor(workspaceRoot) {
+    this.workspaceRoot = workspaceRoot;
+  }
+  _onDidChangeTreeData = new vscode6.EventEmitter();
+  onDidChangeTreeData = this._onDidChangeTreeData.event;
+  refresh() {
+    this._onDidChangeTreeData.fire(void 0);
+  }
+  getTreeItem(element) {
+    return element;
+  }
+  async getChildren(element) {
+    if (element) {
+      return [];
+    }
+    const manifestPath = this.manifestPath();
+    if (!fs5.existsSync(manifestPath)) {
+      return [new TrackedRepositoriesStateItem("Legacy single-root workspace", "Missing .hive/agent-hive.json", manifestPath)];
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(fs5.readFileSync(manifestPath, "utf-8"));
+    } catch {
+      return [new TrackedRepositoriesStateItem("Unable to read tracked repositories", "Invalid .hive/agent-hive.json", manifestPath)];
+    }
+    const repositories = Array.isArray(manifest.repositories) ? manifest.repositories : [];
+    if (repositories.length === 0) {
+      return [new TrackedRepositoriesStateItem("Legacy single-root workspace", "No tracked repositories configured", manifestPath)];
+    }
+    return repositories.map((repo) => new TrackedRepositoryItem(repo, this.workspaceRoot));
+  }
+  manifestPath() {
+    return path5.join(this.workspaceRoot, ".hive", "agent-hive.json");
+  }
+};
+
 // src/extension.ts
 function getReviewTarget(workspaceRoot, filePath) {
   const normalizedWorkspace = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -5330,22 +5552,22 @@ function getReviewTarget(workspaceRoot, filePath) {
   return null;
 }
 function getReviewCommentsPath(workspaceRoot, featureName, document2) {
-  const canonicalPath = path4.join(workspaceRoot, ".hive", "features", featureName, "comments", `${document2}.json`);
-  if (fs4.existsSync(canonicalPath)) {
+  const canonicalPath = path6.join(workspaceRoot, ".hive", "features", featureName, "comments", `${document2}.json`);
+  if (fs6.existsSync(canonicalPath)) {
     return canonicalPath;
   }
   if (document2 === "plan") {
-    return path4.join(workspaceRoot, ".hive", "features", featureName, "comments.json");
+    return path6.join(workspaceRoot, ".hive", "features", featureName, "comments.json");
   }
   return canonicalPath;
 }
 function findHiveRoot(startPath) {
   let current = startPath;
-  while (current !== path4.dirname(current)) {
-    if (fs4.existsSync(path4.join(current, ".hive"))) {
+  while (current !== path6.dirname(current)) {
+    if (fs6.existsSync(path6.join(current, ".hive"))) {
       return current;
     }
-    current = path4.dirname(current);
+    current = path6.dirname(current);
   }
   return null;
 }
@@ -5355,6 +5577,8 @@ var HiveExtension = class {
     this.workspaceFolder = workspaceFolder;
   }
   sidebarProvider = null;
+  backgroundJobsProvider = null;
+  trackedRepositoriesProvider = null;
   launcher = null;
   commentController = null;
   hiveWatcher = null;
@@ -5373,14 +5597,20 @@ var HiveExtension = class {
     if (this.initialized) return;
     this.initialized = true;
     this.sidebarProvider = new HiveSidebarProvider(workspaceRoot);
+    this.backgroundJobsProvider = new BackgroundJobsProvider(workspaceRoot);
+    this.trackedRepositoriesProvider = new TrackedRepositoriesProvider(workspaceRoot);
     this.launcher = new Launcher();
     this.commentController = new PlanCommentController(workspaceRoot);
-    vscode5.window.registerTreeDataProvider("hive.features", this.sidebarProvider);
+    vscode7.window.registerTreeDataProvider("hive.features", this.sidebarProvider);
+    vscode7.window.registerTreeDataProvider("hive.backgroundJobs", this.backgroundJobsProvider);
+    vscode7.window.registerTreeDataProvider("hive.repositories", this.trackedRepositoriesProvider);
     this.commentController.registerCommands(this.context);
-    vscode5.commands.executeCommand("setContext", "hive.hasHiveRoot", true);
+    vscode7.commands.executeCommand("setContext", "hive.hasHiveRoot", true);
     this.hiveWatcher = new HiveWatcher(workspaceRoot, () => {
-      var _a2;
+      var _a2, _b, _c;
       (_a2 = this.sidebarProvider) == null ? void 0 : _a2.refresh();
+      (_b = this.backgroundJobsProvider) == null ? void 0 : _b.refresh();
+      (_c = this.trackedRepositoriesProvider) == null ? void 0 : _c.refresh();
     });
     this.context.subscriptions.push({ dispose: () => {
       var _a2;
@@ -5392,9 +5622,9 @@ var HiveExtension = class {
     }
   }
   initializeWithoutHive() {
-    vscode5.commands.executeCommand("setContext", "hive.hasHiveRoot", false);
-    this.creationWatcher = vscode5.workspace.createFileSystemWatcher(
-      new vscode5.RelativePattern(this.workspaceFolder, ".hive/**")
+    vscode7.commands.executeCommand("setContext", "hive.hasHiveRoot", false);
+    this.creationWatcher = vscode7.workspace.createFileSystemWatcher(
+      new vscode7.RelativePattern(this.workspaceFolder, ".hive/**")
     );
     const onHiveCreated = () => {
       const newRoot = findHiveRoot(this.workspaceFolder);
@@ -5409,50 +5639,61 @@ var HiveExtension = class {
   registerCommands() {
     const workspaceFolder = this.workspaceFolder;
     this.context.subscriptions.push(
-      vscode5.commands.registerCommand("hive.refresh", () => {
-        var _a2;
+      vscode7.commands.registerCommand("hive.refresh", () => {
+        var _a2, _b, _c;
         if (!this.initialized) {
           const newRoot = findHiveRoot(workspaceFolder);
           if (newRoot) {
             this.workspaceRoot = newRoot;
             this.initializeWithHive(newRoot);
           } else {
-            vscode5.window.showWarningMessage("Hive: No .hive directory found. Open a Hive workspace, then refresh this view.");
+            vscode7.window.showWarningMessage("Hive: No .hive directory found. Open a Hive workspace, then refresh this view.");
             return;
           }
         }
         (_a2 = this.sidebarProvider) == null ? void 0 : _a2.refresh();
+        (_b = this.backgroundJobsProvider) == null ? void 0 : _b.refresh();
+        (_c = this.trackedRepositoriesProvider) == null ? void 0 : _c.refresh();
       }),
-      vscode5.commands.registerCommand("hive.openFile", (filePath) => {
-        var _a2;
+      vscode7.commands.registerCommand("hive.openFile", (filePathOrItem) => {
+        var _a2, _b, _c;
+        const filePath = typeof filePathOrItem === "string" ? filePathOrItem : (_b = (_a2 = filePathOrItem == null ? void 0 : filePathOrItem.command) == null ? void 0 : _a2.arguments) == null ? void 0 : _b[0];
         if (filePath) {
-          (_a2 = this.launcher) == null ? void 0 : _a2.openFile(filePath);
+          (_c = this.launcher) == null ? void 0 : _c.openFile(filePath);
         }
       }),
-      vscode5.commands.registerCommand("hive.plan.doneReview", async () => {
-        const editor = vscode5.window.activeTextEditor;
+      vscode7.commands.registerCommand("hive.copyToClipboard", async (valueOrItem) => {
+        var _a2, _b;
+        const value = typeof valueOrItem === "string" ? valueOrItem : (_b = (_a2 = valueOrItem == null ? void 0 : valueOrItem.copyCommand) == null ? void 0 : _a2.arguments) == null ? void 0 : _b[0];
+        if (value) {
+          await vscode7.env.clipboard.writeText(value);
+          vscode7.window.showInformationMessage("Hive: copied to clipboard.");
+        }
+      }),
+      vscode7.commands.registerCommand("hive.plan.doneReview", async () => {
+        const editor = vscode7.window.activeTextEditor;
         if (!editor) return;
         if (!this.workspaceRoot) {
-          vscode5.window.showErrorMessage("Hive: No .hive directory found");
+          vscode7.window.showErrorMessage("Hive: No .hive directory found");
           return;
         }
         const filePath = editor.document.uri.fsPath;
         const target = getReviewTarget(this.workspaceRoot, filePath);
         if (!target) {
-          vscode5.window.showErrorMessage("Not a reviewable plan.md or overview.md file");
+          vscode7.window.showErrorMessage("Not a reviewable plan.md or overview.md file");
           return;
         }
         const commentsPath = getReviewCommentsPath(this.workspaceRoot, target.featureName, target.document);
         let comments2 = [];
         try {
-          const commentsData = JSON.parse(fs4.readFileSync(commentsPath, "utf-8"));
+          const commentsData = JSON.parse(fs6.readFileSync(commentsPath, "utf-8"));
           comments2 = commentsData.threads || [];
         } catch (error) {
         }
         const docLabel = target.document === "overview" ? "Overview" : "Plan";
         const hasComments = comments2.length > 0;
         const inputPrompt = hasComments ? `${docLabel}: ${comments2.length} comment(s) found. Add feedback or leave empty to submit comments only` : `Enter your ${docLabel.toLowerCase()} review feedback (or leave empty to approve)`;
-        const userInput = await vscode5.window.showInputBox({
+        const userInput = await vscode7.window.showInputBox({
           prompt: inputPrompt,
           placeHolder: hasComments ? "Additional feedback (optional)" : 'e.g., "looks good" to approve, or describe changes needed'
         });
@@ -5468,18 +5709,18 @@ Additional feedback: ${userInput}`;
         } else {
           feedback = userInput === "" ? `${docLabel} approved` : `${docLabel} review feedback: ${userInput}`;
         }
-        vscode5.window.showInformationMessage(
+        vscode7.window.showInformationMessage(
           `Hive: ${hasComments ? "Comments submitted" : "Review submitted"}. The review summary has been copied to your clipboard.`
         );
-        await vscode5.env.clipboard.writeText(feedback);
-        vscode5.window.showInformationMessage("Hive: Feedback copied to clipboard for your next planning step.");
+        await vscode7.env.clipboard.writeText(feedback);
+        vscode7.window.showInformationMessage("Hive: Feedback copied to clipboard for your next planning step.");
       })
     );
   }
 };
 function activate(context) {
   var _a2, _b;
-  const workspaceFolder = (_b = (_a2 = vscode5.workspace.workspaceFolders) == null ? void 0 : _a2[0]) == null ? void 0 : _b.uri.fsPath;
+  const workspaceFolder = (_b = (_a2 = vscode7.workspace.workspaceFolders) == null ? void 0 : _a2[0]) == null ? void 0 : _b.uri.fsPath;
   if (!workspaceFolder) return;
   const extension = new HiveExtension(context, workspaceFolder);
   extension.registerCommands();
