@@ -214,7 +214,7 @@ import { formatRelativeTime } from "./utils/format";
 import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_COMMANDS, HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
-import { createTaskLifecycleHook, type ParsedTaskLifecycleEvent } from './background/taskOutput.js';
+import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
 
 /**
  * Core plugin implementation.
@@ -337,7 +337,6 @@ const plugin: Plugin = async (ctx) => {
 
   const customAgentConfigsForClassification = getCustomAgentConfigsCompat(configService);
   const runtimeContext = detectContext(worktree || directory);
-  const toolArgsByCall = new Map<string, Record<string, unknown>>();
   const taskWorkerRecovery = runtimeContext.isWorktree && runtimeContext.feature && runtimeContext.task
     ? {
         featureName: runtimeContext.feature,
@@ -353,71 +352,13 @@ const plugin: Plugin = async (ctx) => {
       }
     : undefined;
 
-  const toolCallKey = (input: { sessionID: string; callID: string }): string => `${input.sessionID}:${input.callID}`;
-
-  const handleBackgroundTaskLifecycleEvent = async (event: ParsedTaskLifecycleEvent): Promise<void> => {
-    if (event.tool === 'task') {
-      if (event.args.background !== true) {
-        return;
-      }
-
-      try {
-        backgroundJobService.registerLaunch({
-          taskId: event.taskId,
-          sessionId: `${event.parentSessionId}:${event.taskId}`,
-          agentName: event.args.subagent_type ?? 'unknown',
-          description: event.args.description,
-          scope: {
-            projectRoot: directory,
-            parentSessionId: event.parentSessionId,
-            primaryAgent: event.agentName,
-          },
-        });
-      } catch (error) {
-        if (!(error instanceof Error) || !/already registered/.test(error.message)) {
-          console.warn(`[hive:background] failed to register background task ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      return;
-    }
-
-    const status = event.status;
-    if (!status) {
-      return;
-    }
-
-    const state = normalizeBackgroundRuntimeState(status.runtimeState, status.error?.kind);
-    try {
-      if (state === 'completed' || state === 'error' || state === 'cancelled') {
-        backgroundJobService.markTerminal(event.taskId, state, {
-          resultSummary: status.result,
-          lastStatusError: status.error?.message,
-          statusUncertain: status.timedOut,
-        });
-      } else {
-        backgroundJobService.updateRuntimeState(event.taskId, state, {
-          resultSummary: status.result,
-          lastStatusError: status.error?.message,
-          statusUncertain: status.timedOut ?? status.error?.kind === 'transient',
-        });
-      }
-    } catch (error) {
-      console.warn(`[hive:background] failed to update background task ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
-  const normalizeBackgroundRuntimeState = (
-    runtimeState: string | undefined,
-    errorKind: 'transient' | 'terminal' | undefined,
-  ): 'running' | 'completed' | 'error' | 'cancelled' | 'unknown' => {
-    const normalized = runtimeState?.trim().toLowerCase();
-    if (normalized === 'completed' || normalized === 'complete' || normalized === 'success') return 'completed';
-    if (normalized === 'error' || normalized === 'failed' || normalized === 'failure') return 'error';
-    if (normalized === 'cancelled' || normalized === 'canceled') return 'cancelled';
-    if (normalized === 'running' || normalized === 'pending' || normalized === 'queued') return 'running';
-    if (errorKind === 'terminal') return 'error';
-    return 'unknown';
-  };
+  const backgroundJobAdapter = createBackgroundJobAdapter({
+    projectRoot: directory,
+    service: backgroundJobService,
+    isEnabled: () => isBackgroundSubagentsExperimentEnabled(),
+    getSession: (sessionId) => sessionService.getGlobal(sessionId),
+    isPrimaryAgent: (_agentName, session) => session?.sessionKind === 'primary',
+  });
 
   /**
    * Check if OMO-Slim delegation is enabled via user config.
@@ -1218,6 +1159,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       const refreshed = sessionService.getGlobal(sessionID);
+      await backgroundJobAdapter['experimental.chat.messages.transform'](_input, output);
       if (!refreshed?.replayDirectivePending) {
         return;
       }
@@ -1293,9 +1235,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     },
 
     "tool.execute.before": async (input, output) => {
-      if ((input.tool === 'task' || input.tool === 'task_status') && output.args && typeof output.args === 'object') {
-        toolArgsByCall.set(toolCallKey(input), { ...output.args });
-      }
+      await backgroundJobAdapter['tool.execute.before'](input, output);
 
       // Cadence gate: check if this hook should execute this turn
       // SAFETY-CRITICAL: This hook wraps commands for Docker sandbox isolation.
@@ -1334,24 +1274,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       output.args.workdir = undefined; // docker command runs on host
     },
 
-    "tool.execute.after": createTaskLifecycleHook(handleBackgroundTaskLifecycleEvent, (input) => {
-      if (!input || typeof input !== 'object') {
-        return undefined;
-      }
-
-      const record = input as { sessionID?: string; callID?: string };
-      const key = record.sessionID && record.callID ? `${record.sessionID}:${record.callID}` : undefined;
-      const args = key ? toolArgsByCall.get(key) : undefined;
-      if (key) {
-        toolArgsByCall.delete(key);
-      }
-
-      const session = record.sessionID ? sessionService.getGlobal(record.sessionID) : undefined;
-      return {
-        args,
-        agentName: typeof session?.agent === 'string' ? session.agent : undefined,
-      };
-    }),
+    "tool.execute.after": backgroundJobAdapter['tool.execute.after'],
 
     mcp: builtinMcps,
 
