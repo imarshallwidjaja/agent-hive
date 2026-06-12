@@ -42,7 +42,9 @@ function createStubShell(): PluginInput['$'] {
 describe('background task lifecycle hook support', () => {
   it('captures task args before execution and persists post-tool lifecycle events', async () => {
     const testRoot = `/tmp/hive-background-hook-test-${process.pid}`;
+    const originalBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     fs.rmSync(testRoot, { recursive: true, force: true });
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
 
     const hooks = await plugin({
       directory: testRoot,
@@ -116,6 +118,11 @@ describe('background task lifecycle hook support', () => {
       expect(board.jobs.map((job) => job.taskId)).not.toContain('task_foreground');
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
+      if (originalBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = originalBackgroundEnv;
+      }
     }
   });
 });

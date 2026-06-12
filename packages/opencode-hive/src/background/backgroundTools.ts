@@ -1,4 +1,4 @@
-import { tool } from '@opencode-ai/plugin';
+import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import type { BackgroundJobRecord, BackgroundJobService } from 'hive-core';
 
 type ToolContext = {
@@ -20,7 +20,7 @@ export interface CreateBackgroundToolsOptions {
 
 type ReconcileDecision = 'reconciled' | 'ignored';
 
-export function createBackgroundTools(options: CreateBackgroundToolsOptions) {
+export function createBackgroundTools(options: CreateBackgroundToolsOptions): Record<string, ToolDefinition> {
   const cancelRuntimeTask = options.cancelRuntimeTask ?? (async () => ({
     cancelled: false,
     message: 'Runtime cancellation is not available through this plugin context.',
