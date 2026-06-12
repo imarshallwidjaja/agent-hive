@@ -50,6 +50,9 @@ export const HIVE_TOOL_NAMES = [
   'hive_adhoc_worktree_commit',
   'hive_adhoc_merge',
   'hive_adhoc_cleanup',
+  'hive_background_status',
+  'hive_background_reconcile',
+  'hive_background_cancel',
   'hive_context_write',
   'hive_status',
 ] as const;

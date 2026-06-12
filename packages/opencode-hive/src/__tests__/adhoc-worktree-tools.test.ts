@@ -136,6 +136,12 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(HIVE_TOOL_NAMES).not.toContain('task_status');
   });
 
+  it('registers Hive background board management tools in HIVE_TOOL_NAMES', () => {
+    expect(HIVE_TOOL_NAMES).toContain('hive_background_status');
+    expect(HIVE_TOOL_NAMES).toContain('hive_background_reconcile');
+    expect(HIVE_TOOL_NAMES).toContain('hive_background_cancel');
+  });
+
   it('hive_adhoc_worktree_create succeeds without an active feature or task', async () => {
     initGitRoot(testRoot);
     const hooks = await loadHooks(testRoot);

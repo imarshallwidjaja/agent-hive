@@ -395,6 +395,25 @@ describe('Per-agent tool filtering', () => {
     expect(foragerTools!['hive_repositories_update']).toBe(false);
   });
 
+  it('background management tools are available only to primary orchestration agents', async () => {
+    const agents = await buildConfig('dedicated');
+    const architectTools = agents['architect-planner']?.tools;
+    const swarmTools = agents['swarm-orchestrator']?.tools;
+    const builderTools = agents['hive-builder']?.tools;
+    const scoutTools = agents['scout-researcher']?.tools;
+    const foragerTools = agents['forager-worker']?.tools;
+    const helperTools = agents['hive-helper']?.tools;
+
+    for (const toolName of ['hive_background_status', 'hive_background_reconcile', 'hive_background_cancel']) {
+      expect(architectTools![toolName]).toBeUndefined();
+      expect(swarmTools![toolName]).toBeUndefined();
+      expect(builderTools![toolName]).toBeUndefined();
+      expect(scoutTools![toolName]).toBe(false);
+      expect(foragerTools![toolName]).toBe(false);
+      expect(helperTools![toolName]).toBe(false);
+    }
+  });
+
   it('reviewer agents have same tool set as scout', async () => {
     const agents = await buildConfig('unified');
     const scoutTools = agents['scout-researcher']?.tools;
@@ -507,6 +526,9 @@ describe('Per-agent tool filtering', () => {
     expect(tools['hive_repositories_status']).toBeUndefined();
     expect(tools['hive_repositories_discover']).toBeUndefined();
     expect(tools['hive_repositories_update']).toBeUndefined();
+    expect(tools['hive_background_status']).toBeUndefined();
+    expect(tools['hive_background_reconcile']).toBeUndefined();
+    expect(tools['hive_background_cancel']).toBeUndefined();
     expect(tools['hive_context_write']).toBeUndefined();
     // Disabled task-backed/plan/feature tools
     expect(tools['hive_worktree_start']).toBe(false);

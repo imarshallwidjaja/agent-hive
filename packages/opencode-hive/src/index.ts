@@ -215,6 +215,7 @@ import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_COMMANDS, HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
+import { createBackgroundTools } from './background/backgroundTools.js';
 
 /**
  * Core plugin implementation.
@@ -1279,6 +1280,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     mcp: builtinMcps,
 
     tool: {
+      ...createBackgroundTools({
+        backgroundJobService,
+        projectRoot: directory,
+        isEnabled: isBackgroundSubagentsExperimentEnabled,
+      }),
+
       hive_repositories_status: tool({
         description: 'Inspect project repository mode and the current project-scoped repository manifest.',
         args: {},
@@ -2439,6 +2446,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         tools: agentTools([
           'hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
+          'hive_background_status', 'hive_background_reconcile', 'hive_background_cancel',
         ]),
         permission: {
           edit: "deny",  // Planners don't edit code
@@ -2478,6 +2486,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
           'hive_context_write', 'hive_status',
+          'hive_background_status', 'hive_background_reconcile', 'hive_background_cancel',
         ]),
         permission: {
           question: "allow",
@@ -2632,6 +2641,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         tools: agentTools([
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
+          'hive_background_status', 'hive_background_reconcile', 'hive_background_cancel',
           'hive_context_write',
         ]),
         permission: {
