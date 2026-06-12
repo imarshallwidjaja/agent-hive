@@ -62,7 +62,7 @@ describe('skill content', () => {
     }
   });
 
-  it('bundles background-delegation with env-gated task_status guidance', () => {
+  it('bundles background-delegation with env-gated scheduler-first guidance', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation');
 
     expect(skill).toBeDefined();
@@ -71,12 +71,18 @@ describe('skill content', () => {
     expect(skill!.template).toContain('OPENCODE_EXPERIMENTAL');
     expect(skill!.template).toContain('task({ background: true');
     expect(skill!.template).toContain('task_status({ task_id');
+    expect(skill!.template).toContain('hive_background_status');
+    expect(skill!.template).toContain('hive_background_reconcile');
+    expect(skill!.template).toContain('hive_background_cancel');
     expect(skill!.template).toContain('wait: false');
     expect(skill!.template).toContain('wait: true');
     expect(skill!.template).toContain('timeout_ms');
-    expect(skill!.template).toContain('normal blocking `task()` remains the default');
+    expect(skill!.template).toContain('Background-first is the scheduler default');
+    expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
+    expect(skill!.template).not.toContain('normal blocking `task()` remains the default');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Do not call `task()` from subagents');
+    expect(skill!.template).toContain('forgotten terminal jobs');
     expect(skill!.template).not.toContain('@explorer');
     expect(skill!.template).not.toContain('subtask');
     expect(skill!.template).not.toContain('tmux');

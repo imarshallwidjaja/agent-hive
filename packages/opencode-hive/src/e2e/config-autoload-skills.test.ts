@@ -191,14 +191,14 @@ describe('config hook autoLoadSkills injection', () => {
 
     expect((opencodeConfig.agent as Record<string, { prompt?: string }>)['hive-master']?.prompt).toBeUndefined();
     expect(hiveMasterPrompt).toStartWith('OpenCode provider base prompt\n\n# Hive (Hybrid)');
-    expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).not.toContain('## Background-First Orchestration');
     expect(hiveMasterPrompt).not.toContain(backgroundSkill.template);
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'background-delegation', 'SKILL.md'))).toBe(true);
   });
 
-  it('advertises compact background delegation guidance only to hive-master when the specific env is enabled in unified mode', async () => {
+  it('advertises background-first scheduler guidance only to hive-master when the specific env is enabled in unified mode', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
@@ -220,14 +220,24 @@ describe('config hook autoLoadSkills injection', () => {
     const customPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-background', { trackMessage: false });
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
-    expect(hiveMasterPrompt).toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).toContain('## Background-First Orchestration');
     expect(hiveMasterPrompt).not.toContain(backgroundSkill.template);
     expect(hiveMasterPrompt).toContain('skill({ name: "background-delegation" })');
+    expect(hiveMasterPrompt).toContain('look for independent background lanes');
+    expect(hiveMasterPrompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
+    expect(hiveMasterPrompt).toContain('hive_background_status');
+    expect(hiveMasterPrompt).toContain('hive_background_reconcile');
+    expect(hiveMasterPrompt).toContain('hive_background_cancel');
     expect(hiveMasterPrompt).toContain('task({ background: true');
     expect(hiveMasterPrompt).toContain('task_status');
-    expect(builderPrompt).toContain('## Background Subagent Experiment');
+    expect(builderPrompt).toContain('## Background-First Orchestration');
     expect(builderPrompt).not.toContain(backgroundSkill.template);
     expect(builderPrompt).toContain('skill({ name: "background-delegation" })');
+    expect(builderPrompt).toContain('look for independent background lanes');
+    expect(builderPrompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
+    expect(builderPrompt).toContain('hive_background_status');
+    expect(builderPrompt).toContain('hive_background_reconcile');
+    expect(builderPrompt).toContain('hive_background_cancel');
     expect(builderPrompt).toContain('task({ background: true');
     expect(builderPrompt).toContain('task_status');
     for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, codeReviewerPrompt, customPrompt]) {
@@ -237,7 +247,7 @@ describe('config hook autoLoadSkills injection', () => {
     }
   });
 
-  it('advertises compact background delegation guidance only to primary dedicated-mode agents when the umbrella env is enabled', async () => {
+  it('advertises background-first scheduler guidance only to primary dedicated-mode agents when the umbrella env is enabled', async () => {
     process.env.OPENCODE_EXPERIMENTAL = 'true';
     writeHiveConfig(testRoot, { agentMode: 'dedicated' });
 
@@ -252,8 +262,13 @@ describe('config hook autoLoadSkills injection', () => {
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
     for (const prompt of [architectPrompt, swarmPrompt, builderPrompt]) {
-      expect(prompt).toContain('## Background Subagent Experiment');
+      expect(prompt).toContain('## Background-First Orchestration');
       expect(prompt).toContain('skill({ name: "background-delegation" })');
+      expect(prompt).toContain('look for independent background lanes');
+      expect(prompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
+      expect(prompt).toContain('hive_background_status');
+      expect(prompt).toContain('hive_background_reconcile');
+      expect(prompt).toContain('hive_background_cancel');
       expect(prompt).toContain('task({ background: true');
       expect(prompt).toContain('task_status');
       expect(prompt).not.toContain(backgroundSkill.template);
@@ -273,10 +288,10 @@ describe('config hook autoLoadSkills injection', () => {
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
 
-    expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).not.toContain('## Background-First Orchestration');
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
     expect(hiveMasterPrompt).not.toContain('task({ background: true');
-    expect(builderPrompt).not.toContain('## Background Subagent Experiment');
+    expect(builderPrompt).not.toContain('## Background-First Orchestration');
     expect(builderPrompt).not.toContain('skill({ name: "background-delegation" })');
   });
 
@@ -292,9 +307,9 @@ describe('config hook autoLoadSkills injection', () => {
     const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
 
-    expect(hiveMasterPrompt).not.toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).not.toContain('## Background-First Orchestration');
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
-    expect(builderPrompt).not.toContain('## Background Subagent Experiment');
+    expect(builderPrompt).not.toContain('## Background-First Orchestration');
     expect(builderPrompt).not.toContain('skill({ name: "background-delegation" })');
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'background-delegation'))).toBe(false);
@@ -323,7 +338,7 @@ describe('config hook autoLoadSkills injection', () => {
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
 
-    expect(hiveMasterPrompt).toContain('## Background Subagent Experiment');
+    expect(hiveMasterPrompt).toContain('## Background-First Orchestration');
     expect(hiveMasterPrompt).toContain('skill({ name: "background-delegation" })');
     expect(hiveMasterPrompt).not.toContain('# Native Background Delegation');
     expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('background-delegation').template);

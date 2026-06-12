@@ -116,7 +116,7 @@ function buildBackgroundDelegationPromptAppendix(
   if (!isBackgroundSubagentsExperimentEnabled(env)) return '';
 
   if (nativeSkillsByName.has(BACKGROUND_DELEGATION_SKILL_ID) || eligibleHiveSkills.has(BACKGROUND_DELEGATION_SKILL_ID)) {
-    return `\n\n## Background Subagent Experiment\nOpenCode background subagents are enabled for this session. Normal blocking task() remains the default. If you are considering task({ background: true, ... }), first load/use skill({ name: "background-delegation" }). Use background mode only when you have useful foreground work that does not depend on the result, and call task_status before making dependent decisions.`;
+    return `\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. On non-trivial work, operate in background-first scheduler mode: first look for independent background lanes that can run through native task({ background: true, ... }) while you continue safe foreground work. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Track work with hive_background_status, reconcile terminal native jobs with hive_background_reconcile, request cancellation with hive_background_cancel, and use native task_status before making dependent decisions. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.`;
   }
 
   const skippedSkill = skippedHiveSkills.get(BACKGROUND_DELEGATION_SKILL_ID);

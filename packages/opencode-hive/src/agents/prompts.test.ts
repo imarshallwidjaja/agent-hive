@@ -179,9 +179,10 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).not.toContain("- Don't execute - plan only");
     });
 
-    it('explains task() is BLOCKING by default', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('BLOCKING by default');
-      expect(QUEEN_BEE_PROMPT).toContain('returns when done');
+    it('explains background-first scheduler mode when the env-gated appendix is present', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('background-first scheduler mode');
+      expect(QUEEN_BEE_PROMPT).toContain('look for independent background lanes');
+      expect(QUEEN_BEE_PROMPT).toContain('foreground/blocking escape');
     });
 
     it('separates subagent concurrency from foreground wait mode', () => {
@@ -385,8 +386,10 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('Architect should not invoke it during planning');
     });
 
-    it('explains task() is BLOCKING by default', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('BLOCKING by default');
+    it('explains env-gated background-first scheduling', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('background-first scheduler mode');
+      expect(ARCHITECT_BEE_PROMPT).toContain('look for independent background lanes');
+      expect(ARCHITECT_BEE_PROMPT).toContain('foreground/blocking escape');
     });
 
     it('separates subagent concurrency from foreground wait mode', () => {
@@ -482,9 +485,10 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_worktree_start');
     });
 
-    it('explains task() is BLOCKING by default for delegation', () => {
-      expect(SWARM_BEE_PROMPT).toContain('BLOCKING by default');
-      expect(SWARM_BEE_PROMPT).toContain('returns when');
+    it('explains env-gated background-first scheduling for delegation', () => {
+      expect(SWARM_BEE_PROMPT).toContain('background-first scheduler mode');
+      expect(SWARM_BEE_PROMPT).toContain('look for independent background lanes');
+      expect(SWARM_BEE_PROMPT).toContain('foreground/blocking escape');
     });
 
     it('separates subagent concurrency from foreground wait mode', () => {
@@ -1054,11 +1058,20 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('omit it instead of sending an empty string');
   });
 
-  it('contains background-delegation policy', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('BLOCKING by default');
+  it('contains background-first scheduler policy', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('background-first scheduler mode');
     expect(HIVE_BUILDER_PROMPT).toContain('background-delegation');
+    expect(HIVE_BUILDER_PROMPT).toContain('look for independent background lanes');
+    expect(HIVE_BUILDER_PROMPT).toContain('foreground/blocking escape');
     expect(HIVE_BUILDER_PROMPT).toContain('task_id');
     expect(HIVE_BUILDER_PROMPT).toContain('task_status');
+  });
+
+  it('keeps primary prompts aligned on scheduler-first escape reasons', () => {
+    for (const prompt of [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, HIVE_BUILDER_PROMPT]) {
+      expect(prompt).toContain('background-first scheduler mode');
+      expect(prompt).toContain('dependency, risk, simplicity, user interaction, or ownership conflict');
+    }
   });
 
   it('separates subagent concurrency from foreground wait mode', () => {

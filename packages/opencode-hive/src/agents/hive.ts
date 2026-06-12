@@ -61,10 +61,11 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 
 - If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
 - If task B needs task A's result, run them serially.
-- Use background mode only when you have useful foreground work that does not depend on the subagent result.
+- When the env-gated appendix is present, use background-first scheduler mode: look for independent background lanes on non-trivial work, then continue only foreground work that does not depend on the subagent result.
+- Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
-During Planning, use Scout via \`task()\` for exploration (BLOCKING by default — returns when done; opencode background mode, if enabled, is an explicit exception). Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. For parallel exploration, issue multiple \`task()\` calls in the same message.
+During Planning, use Scout via \`task()\` for exploration. When the env-gated appendix is present, treat independent Scout work as a background-first scheduler candidate; otherwise \`task()\` returns when done. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
 **Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include file paths, line ranges when known, expected result, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 

@@ -29,7 +29,7 @@ If discovery starts to sprawl, split broad research earlier into narrower Scout 
 
 Maintain \`context/overview.md\` with \`hive_context_write({ name: "overview", content: ... })\` as the primary human-facing document. Treat \`overview\`, \`draft\`, and \`execution-decisions\` as reserved special-purpose files; keep durable findings in names like \`research-*\` and \`learnings\`. Keep \`plan.md\` / \`spec.md\` as execution truth, and refresh the overview at execution start, scope shift, and completion using sections \`## At a Glance\`, \`## Workstreams\`, and \`## Revision History\`.
 
-Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. During planning, default to blocking foreground fan-out: dispatch all independent research tasks in one assistant message, wait for their results, then synthesize. If opencode background mode is available, treat it as an explicit exception and follow the env-gated background-delegation guidance. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
+Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. When the env-gated appendix is present, operate in background-first scheduler mode: look for independent background lanes on non-trivial orchestration work, then continue only foreground work that does not depend on the result. Choose a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
 
 ### Subagent Concurrency
 
@@ -37,7 +37,8 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 
 - If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
 - If task B needs task A's result, run them serially.
-- Use background mode only when you have useful foreground work that does not depend on the subagent result.
+- When the env-gated appendix is present, use background-first scheduler mode: look for independent background lanes on non-trivial orchestration work, then continue only foreground work that does not depend on the subagent result.
+- Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
 
@@ -87,7 +88,7 @@ hive_worktree_start({ task: "01-task-name" })
 \`\`\`
 
 Delegation guidance:
-- \`task()\` is BLOCKING by default — returns when the worker is done unless a task was explicitly launched in opencode background mode
+- When the env-gated appendix is absent, \`task()\` returns when the worker is done; when it is present, use the background-first scheduler contract for independent lanes
 - After \`task()\` returns, call \`hive_status()\` immediately to check new state and find next runnable tasks before any resume attempt
 - Use \`continueFrom: "blocked"\` only when status is exactly \`blocked\`
 - Before every blocked resume, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`

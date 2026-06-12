@@ -41,7 +41,8 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 
 - If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
 - If task B needs task A's result, run them serially.
-- Use background mode only when you have useful foreground work that does not depend on the subagent result.
+- When the env-gated appendix is present, use background-first scheduler mode: look for independent background lanes on non-trivial ad-hoc work, then continue only foreground work that does not depend on the subagent result.
+- Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
 - Do not call one independent subagent, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
 ### Synthesis Before Delegating
@@ -54,12 +55,15 @@ subagents do not inherit your context. Every \`task()\` prompt must be self-cont
 
 ## Background Delegation
 
-Normal \`task()\` is BLOCKING by default and returns when the subagent is done. This is the default model.
+When the environment-gated appendix says background subagents are enabled, operate in background-first scheduler mode on non-trivial work. First look for independent background lanes, then continue only foreground work that does not depend on the subagent result.
 
-If the environment-gated appendix says background subagents are enabled, use background mode only for independent foreground work. When using background mode:
+Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.
+
+When using background mode:
 - load and use the \`background-delegation\` skill
 - capture the \`task_id\` returned by \`task({ background: true, ... })\`
 - call \`task_status\` before making dependent decisions
+- use \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\` to manage the scoped background board
 
 Subagents (including custom subagents) must not call \`task()\` recursively.
 
