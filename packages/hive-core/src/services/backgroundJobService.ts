@@ -155,7 +155,9 @@ export class BackgroundJobService {
       let changed = false;
 
       changed = this.applyIfChanged(record, 'runtimeState', runtimeState) || changed;
-      changed = this.applyIfChanged(record, 'terminalUnreconciled', true) || changed;
+      if (!record.reconciledAt && !record.ignoredAt) {
+        changed = this.applyIfChanged(record, 'terminalUnreconciled', true) || changed;
+      }
       if (!record.runtimeCompletedAt) {
         record.runtimeCompletedAt = new Date().toISOString();
         changed = true;

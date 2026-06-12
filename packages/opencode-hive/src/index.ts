@@ -1284,6 +1284,16 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         backgroundJobService,
         projectRoot: directory,
         isEnabled: isBackgroundSubagentsExperimentEnabled,
+        cancelRuntimeTask: async (taskId) => {
+          const result = await client.session.abort({ path: { id: taskId }, query: { directory } });
+          if (result.error) {
+            return { cancelled: false, message: `Runtime cancellation failed: ${String(result.error)}` };
+          }
+          return {
+            cancelled: result.data === true,
+            message: result.data === true ? 'Runtime task abort requested.' : 'Runtime task abort was not confirmed.',
+          };
+        },
       }),
 
       hive_repositories_status: tool({

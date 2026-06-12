@@ -122,6 +122,10 @@ describe('BackgroundJobService', () => {
     expect(reconciled.reconciledAt).toBeDefined();
     expect(reconciled.reconciledBy).toBe('parent-1');
     expect(reconciled.reconciliationSummary).toBe('Task report and status were updated.');
+
+    const lateStatus = service.markTerminal('task-1', 'completed', { resultSummary: 'worker finished cleanly' });
+    expect(lateStatus.terminalUnreconciled).toBe(false);
+    expect(lateStatus.reconciledAt).toBe(reconciled.reconciledAt);
   });
 
   it('ignores stale terminal jobs without pretending they completed successfully', () => {

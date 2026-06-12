@@ -116,6 +116,37 @@ describe('background task lifecycle hook support', () => {
 
       board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf-8')) as BackgroundJobsJson;
       expect(board.jobs.map((job) => job.taskId)).not.toContain('task_foreground');
+
+      const abortCalls: unknown[] = [];
+      const cancelHooks = await plugin({
+        directory: testRoot,
+        worktree: testRoot,
+        serverUrl: new URL('http://localhost:1'),
+        project: {
+          id: 'test',
+          worktree: testRoot,
+          time: { created: Date.now() },
+        },
+        client: {
+          session: {
+            abort: async (options: unknown) => {
+              abortCalls.push(options);
+              return { data: true, error: undefined };
+            },
+          },
+        } as unknown as PluginInput['client'],
+        $: createStubShell(),
+      });
+
+      const cancelRaw = await cancelHooks.tool!.hive_background_cancel.execute(
+        { identifier: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2', reason: 'No longer needed' },
+        { sessionID: 'sess_parent', messageID: 'msg_cancel', agent: 'hive-master', abort: new AbortController().signal },
+      );
+      const cancelResult = JSON.parse(cancelRaw as string) as { success: boolean; runtimeCancelled: boolean; job: { runtime: { state: string } } };
+      expect(cancelResult.success).toBe(true);
+      expect(cancelResult.runtimeCancelled).toBe(true);
+      expect(cancelResult.job.runtime.state).toBe('cancelled');
+      expect(abortCalls).toEqual([{ path: { id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' }, query: { directory: testRoot } }]);
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
       if (originalBackgroundEnv === undefined) {
