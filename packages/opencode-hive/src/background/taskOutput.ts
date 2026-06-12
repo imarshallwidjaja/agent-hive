@@ -15,6 +15,17 @@ export interface ParsedTaskStatusOutput {
   error?: ParsedTaskOutputError;
 }
 
+export interface ParsedTaskLifecycleEvent {
+  tool: 'task' | 'task_status';
+  taskId: string;
+  parentSessionId: string;
+  agentName?: string;
+  callId?: string;
+  messageId?: string;
+  launch?: ParsedTaskLaunchOutput;
+  status?: ParsedTaskStatusOutput;
+}
+
 const TASK_ID_PATTERN = /\btask[_-]id\b\s*[":=]?\s*["']?([A-Za-z0-9_-]+)/i;
 const TRANSIENT_ERROR_PATTERN = /\b(not found|unknown task|no task|missing task|expired|process)\b/i;
 
@@ -68,10 +79,59 @@ export function parseTaskStatusOutput(output: string): ParsedTaskStatusOutput | 
   });
 }
 
+export function parseTaskLifecycleEvent(input: unknown, output: unknown): ParsedTaskLifecycleEvent | undefined {
+  if (!isRecord(input) || !isRecord(output)) {
+    return undefined;
+  }
+
+  const toolName = readString(input, 'tool');
+  const outputText = readString(output, 'output');
+  const parentSessionId = readString(input, 'sessionID');
+  if (!outputText || !parentSessionId) {
+    return undefined;
+  }
+
+  if (toolName === 'task') {
+    const launch = parseTaskLaunchOutput(outputText);
+    if (!launch) {
+      return undefined;
+    }
+
+    return pruneUndefined({
+      tool: 'task' as const,
+      taskId: launch.task_id,
+      parentSessionId,
+      agentName: readString(input, 'agent'),
+      callId: readString(input, 'callID'),
+      messageId: readString(input, 'messageID'),
+      launch,
+    });
+  }
+
+  if (toolName === 'task_status') {
+    const status = parseTaskStatusOutput(outputText);
+    if (!status) {
+      return undefined;
+    }
+
+    return pruneUndefined({
+      tool: 'task_status' as const,
+      taskId: status.task_id,
+      parentSessionId,
+      agentName: readString(input, 'agent'),
+      callId: readString(input, 'callID'),
+      messageId: readString(input, 'messageID'),
+      status,
+    });
+  }
+
+  return undefined;
+}
+
 function parseJsonObject(output: string): Record<string, unknown> | undefined {
   try {
     const parsed = JSON.parse(output);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if (isRecord(parsed)) {
       return parsed as Record<string, unknown>;
     }
   } catch {
@@ -79,6 +139,10 @@ function parseJsonObject(output: string): Record<string, unknown> | undefined {
   }
 
   return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function extractTaskId(output: string): string | undefined {

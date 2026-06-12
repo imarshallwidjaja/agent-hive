@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  parseTaskLifecycleEvent,
   parseTaskLaunchOutput,
   parseTaskStatusOutput,
 } from './taskOutput.js';
@@ -60,5 +61,55 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
   it('returns undefined for malformed status output without throwing', () => {
     expect(parseTaskStatusOutput('status unavailable')).toBeUndefined();
     expect(parseTaskStatusOutput('{"task_id":')).toBeUndefined();
+  });
+
+  it('extracts lifecycle context from post-tool task payloads', () => {
+    const parsed = parseTaskLifecycleEvent({
+      tool: 'task',
+      args: { description: 'Run worker', background: true },
+      sessionID: 'sess_parent',
+      messageID: 'msg_parent',
+      agent: 'hive',
+      callID: 'call_task_1',
+    }, {
+      title: 'task',
+      output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+    });
+
+    expect(parsed).toEqual({
+      tool: 'task',
+      taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      parentSessionId: 'sess_parent',
+      messageId: 'msg_parent',
+      agentName: 'hive',
+      callId: 'call_task_1',
+      launch: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' },
+    });
+  });
+
+  it('extracts lifecycle context from post-tool task_status payloads', () => {
+    const parsed = parseTaskLifecycleEvent({
+      tool: 'task_status',
+      args: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' },
+      sessionID: 'sess_parent',
+      agent: 'hive',
+      callID: 'call_status_1',
+    }, {
+      title: 'task_status',
+      output: '{"task_id":"task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2","status":"completed","result":"done"}',
+    });
+
+    expect(parsed).toEqual({
+      tool: 'task_status',
+      taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      parentSessionId: 'sess_parent',
+      agentName: 'hive',
+      callId: 'call_status_1',
+      status: {
+        task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+        runtimeState: 'completed',
+        result: 'done',
+      },
+    });
   });
 });

@@ -213,6 +213,7 @@ import { formatRelativeTime } from "./utils/format";
 import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_COMMANDS, HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
+import { parseTaskLifecycleEvent } from './background/taskOutput.js';
 
 /**
  * Core plugin implementation.
@@ -1260,7 +1261,9 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       output.args.workdir = undefined; // docker command runs on host
     },
 
-    "tool.execute.after": async () => {},
+    "tool.execute.after": async (input, output) => {
+      parseTaskLifecycleEvent(input, output);
+    },
 
     mcp: builtinMcps,
 

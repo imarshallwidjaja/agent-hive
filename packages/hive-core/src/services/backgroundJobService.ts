@@ -149,7 +149,7 @@ export class BackgroundJobService {
     });
   }
 
-  markTerminal(identifier: string, runtimeState: Exclude<BackgroundJobRuntimeState, 'running'>, patch: RuntimeStatePatch = {}): BackgroundJobRecord {
+  markTerminal(identifier: string, runtimeState: 'completed' | 'error' | 'cancelled', patch: RuntimeStatePatch = {}): BackgroundJobRecord {
     return this.updateBoard((board) => {
       const record = this.findRecord(board, identifier);
       let changed = false;

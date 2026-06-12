@@ -669,7 +669,7 @@ Test compaction resume flow.
     expect(commitResult.status).toBe("completed");
   });
 
-  it('plugin does not expose the removed post-tool hook', async () => {
+  it('plugin exposes the supported post-tool hook', async () => {
     const { createOpencodeClient: mkClient } = await import('@opencode-ai/sdk');
     const OPENCODE_CLIENT = mkClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
 
@@ -684,8 +684,8 @@ Test compaction resume flow.
 
     const hooks = await plugin(ctx);
 
-    const removedPostToolHook = 'tool.execute' + '.after';
-    expect(hooks[removedPostToolHook as keyof typeof hooks]).toBeUndefined();
+    const postToolHook = 'tool.execute' + '.after';
+    expect(hooks[postToolHook as keyof typeof hooks]).toBeDefined();
   });
 
 });

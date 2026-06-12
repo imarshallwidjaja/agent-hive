@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import plugin from '../index.js';
+import { parseTaskLifecycleEvent } from './taskOutput.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
 
@@ -37,7 +38,7 @@ function createStubShell(): PluginInput['$'] {
 }
 
 describe('background task lifecycle hook support', () => {
-  it('exposes a post-tool hook that can receive native task lifecycle context', async () => {
+  it('exposes a post-tool hook that can receive parseable native task lifecycle context', async () => {
     const hooks = await plugin({
       directory: '/tmp/hive-background-hook-test',
       worktree: '/tmp/hive-background-hook-test',
@@ -66,12 +67,15 @@ describe('background task lifecycle hook support', () => {
 
     expect(hooks['tool.execute.after']).toBeDefined();
     await hooks['tool.execute.after']?.(input as never, output as never);
-    expect(input.tool).toBe('task');
-    expect(input.args.background).toBe(true);
-    expect(input.sessionID).toBe('sess_parent');
-    expect(input.agent).toBe('hive');
-    expect(input.callID).toBe('call_task_1');
-    expect(output.output).toContain('task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2');
+    expect(parseTaskLifecycleEvent(input, output)).toEqual({
+      tool: 'task',
+      taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      parentSessionId: 'sess_parent',
+      messageId: 'msg_parent',
+      agentName: 'hive',
+      callId: 'call_task_1',
+      launch: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' },
+    });
 
     const statusInput = {
       tool: 'task_status',
@@ -86,8 +90,17 @@ describe('background task lifecycle hook support', () => {
     };
 
     await hooks['tool.execute.after']?.(statusInput as never, statusOutput as never);
-    expect(statusInput.tool).toBe('task_status');
-    expect(statusInput.args.task_id).toBe('task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2');
-    expect(statusOutput.output).toContain('completed');
+    expect(parseTaskLifecycleEvent(statusInput, statusOutput)).toEqual({
+      tool: 'task_status',
+      taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      parentSessionId: 'sess_parent',
+      agentName: 'hive',
+      callId: 'call_status_1',
+      status: {
+        task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+        runtimeState: 'completed',
+        result: 'done',
+      },
+    });
   });
 });
