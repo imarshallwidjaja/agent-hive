@@ -30,10 +30,14 @@ const { task_id } = task({
   prompt: 'Concrete independent work with done criteria',
   background: true,
 });
-hive_background_status({ scope: 'current' });
+hive_background_status({ includeStale: false });
 task_status({ task_id, wait: false });
 task_status({ task_id, wait: true, timeout_ms: 60000 });
-hive_background_reconcile({ task_id });
+hive_background_reconcile({
+  identifier: task_id,
+  decision: 'reconciled',
+  summary: 'Background job result was applied to the task state.',
+});
 ```
 
 ## Decision Examples

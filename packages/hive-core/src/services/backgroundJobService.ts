@@ -180,8 +180,8 @@ export class BackgroundJobService {
       const pendingLaunches = board.pendingLaunches ?? [];
       const index = pendingLaunches.findIndex((candidate) =>
         candidate.parentSessionId === input.parentSessionId
-        && (candidate.expectedDescription === undefined || candidate.expectedDescription === input.expectedDescription)
-        && (candidate.expectedPrompt === undefined || candidate.expectedPrompt === input.expectedPrompt)
+        && candidate.expectedDescription === input.expectedDescription
+        && candidate.expectedPrompt === input.expectedPrompt
       );
 
       if (index < 0) {

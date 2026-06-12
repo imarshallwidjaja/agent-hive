@@ -819,7 +819,7 @@ task({
 })
 \`\`\`
 
-${backgroundEnabled ? 'Use blocking foreground `task()` only when dependency, risk, or simplicity makes waiting the safer path. Keep the same `subagent_type`, `description`, and `prompt` if you use that escape path.\n\n' : ''}
+${backgroundEnabled ? 'Use blocking foreground `task()` only when dependency, risk, simplicity, user interaction, or ownership conflict makes waiting the safer path. Keep the same `subagent_type`, `description`, and `prompt` if you use that escape path.\n\n' : ''}
 
 Use the \`@path\` attachment syntax in the prompt to reference the file. Do not inline the file contents.
 
@@ -1954,14 +1954,6 @@ Expand your Discovery section and try again.`;
                   repoIds: normalizedRepoIds ?? [],
                 }
               : undefined;
-            if (backgroundScope) {
-              backgroundJobService.registerPendingLaunch({
-                parentSessionId: backgroundScope.parentSessionId,
-                agentName: 'unknown',
-                scope: backgroundScope,
-                ownership: backgroundOwnership,
-              });
-            }
             return respond({
               success: true,
               runId: info.runId,

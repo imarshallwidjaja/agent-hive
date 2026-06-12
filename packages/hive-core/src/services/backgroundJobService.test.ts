@@ -92,6 +92,37 @@ describe('BackgroundJobService', () => {
     expect(new Set([first.alias, second.alias, otherParent.alias]).size).toBe(3);
   });
 
+  it('consumes pending launches only on exact description and prompt match', () => {
+    service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      agentName: 'unknown',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-1' },
+    });
+    const exact = service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Hive: 01-task',
+      expectedPrompt: 'Follow instructions in @worker-prompt.md',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
+    });
+
+    const consumed = service.consumePendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Hive: 01-task',
+      expectedPrompt: 'Follow instructions in @worker-prompt.md',
+    });
+
+    expect(consumed).toMatchObject({
+      parentSessionId: exact.parentSessionId,
+      expectedDescription: exact.expectedDescription,
+      expectedPrompt: exact.expectedPrompt,
+      agentName: exact.agentName,
+      scope: exact.scope,
+    });
+    expect(readBoard().pendingLaunches).toHaveLength(1);
+    expect(readBoard().pendingLaunches?.[0].scope?.adHocRunId).toBe('adhoc-1');
+  });
+
   it('updates last-known runtime state idempotently', () => {
     registerJob(service);
 

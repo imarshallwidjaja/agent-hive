@@ -571,7 +571,7 @@ Do it
         prompt: result.taskToolCall?.prompt,
       });
       expect(result.instructions).toContain("background: true");
-      expect(result.instructions).toContain("Use blocking foreground `task()` only when dependency, risk, or simplicity makes waiting the safer path.");
+      expect(result.instructions).toContain("Use blocking foreground `task()` only when dependency, risk, simplicity, user interaction, or ownership conflict makes waiting the safer path.");
 
       const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
       const board = JSON.parse(fs.readFileSync(boardPath, "utf-8")) as {

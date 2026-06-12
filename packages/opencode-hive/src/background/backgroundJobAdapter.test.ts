@@ -127,6 +127,34 @@ describe('createBackgroundJobAdapter', () => {
     });
   });
 
+  it('discards matching pending launch metadata when a foreground task escape is used', async () => {
+    const { adapter, service, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1'));
+    service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Hive: 01-task',
+      expectedPrompt: 'Follow instructions in @worker-prompt.md',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
+    });
+
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-foreground' }, {
+      args: {
+        background: false,
+        description: 'Hive: 01-task',
+        prompt: 'Follow instructions in @worker-prompt.md',
+        subagent_type: 'forager-worker',
+      },
+    });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'call-foreground' }, {
+      output: 'task_id: task-foreground',
+    });
+
+    const board = readBoard();
+    expect(board.jobs).toHaveLength(0);
+    expect(board.pendingLaunches).toBeUndefined();
+  });
+
   it('updates last-known runtime state and terminal metadata from native task_status', async () => {
     const { adapter, sessions } = createHarness();
     sessions.set('parent-1', session('parent-1'));

@@ -129,6 +129,11 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
   async function handleLifecycleEvent(event: ParsedTaskLifecycleEvent): Promise<void> {
     if (event.tool === 'task') {
       if (event.args.background !== true) {
+        options.service.consumePendingLaunch({
+          parentSessionId: event.parentSessionId,
+          expectedDescription: event.args.description,
+          expectedPrompt: event.args.prompt,
+        });
         return;
       }
 
