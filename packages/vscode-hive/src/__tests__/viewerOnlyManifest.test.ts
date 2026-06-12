@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const packageJsonPath = path.resolve(import.meta.dir, '../../package.json');
+const readmePath = path.resolve(import.meta.dir, '../../README.md');
 
 describe('viewer-only VS Code manifest', () => {
   it('uses the forked vscode-arkive extension identity and broad VS Code floor', () => {
@@ -30,6 +31,9 @@ describe('viewer-only VS Code manifest', () => {
       'hive.plan.doneReview',
       'hive.refresh',
     ].sort());
+    expect(commands).not.toContain('hive.background.cancel');
+    expect(commands).not.toContain('hive.background.reconcile');
+    expect(commands).not.toContain('hive.background.ignore');
   });
 
   it('contributes the minimal Hive viewer views', () => {
@@ -41,5 +45,15 @@ describe('viewer-only VS Code manifest', () => {
       'hive.features',
       'hive.repositories',
     ].sort());
+  });
+
+  it('documents background and repository views as viewer-only surfaces', () => {
+    const readme = fs.readFileSync(readmePath, 'utf8');
+
+    expect(readme).toContain('Background Jobs');
+    expect(readme).toContain('Tracked Repositories');
+    expect(readme).toContain('Open File');
+    expect(readme).toContain('Copy to Clipboard');
+    expect(readme).toContain('does not cancel, reconcile, or ignore jobs');
   });
 });

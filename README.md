@@ -79,8 +79,8 @@ Chat with OpenCode. Ask it to "create a feature for user authentication" and Hiv
 
 ### What you get
 
-- **9 agents** — Unified mode: `hive-master` handles planning + orchestration. Dedicated mode: `architect-planner` + `swarm-orchestrator`. Plus `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `approach-advisor`, and `hive-helper`.
-- **17 MCP tools** — Full lifecycle: feature, plan, tasks, worktrees, context, merge, status, agents-md, research.
+- **9 agents** - Unified mode: `hive-master` handles planning + orchestration. Dedicated mode: `architect-planner` + `swarm-orchestrator`. Plus `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `approach-advisor`, and `hive-helper`. Background-first orchestration adds no new agents; custom derived agents keep their configured base-agent inheritance.
+- **25 Hive tools** - Full lifecycle: feature, plan, tasks, worktrees, ad-hoc worktrees, background status/reconcile/cancel, context, merge, and status.
 - **15 skills** — Loaded via OpenCode's native `skill` tool.
 - **Compaction recovery** — OpenCode sessions compact on long runs; Hive stores durable session metadata in `.hive/sessions.json` so agents re-anchor with the correct role after compaction.
 - **Optional research MCPs** — Exa web search, Context7 docs, grep.app, ast-grep. Disable individually via `disableMcps`.
@@ -104,6 +104,7 @@ Download `vscode-arkive.vsix` from the GitHub Release first.
 ### What you get
 
 - **Hive sidebar** (activity-bar view) — features tree, per-task status, inline comments on `plan.md` and `overview.md`.
+- **Background Jobs and Tracked Repositories views** - viewer-only state for `.hive/background-jobs.json` and `.hive/agent-hive.json`.
 - **Plan and overview review** — opens docs from the sidebar, lets you add/resolve inline comments, Done Review button marks the review as complete.
 - **Task detail** — open `spec.md` (what the worker was told) and `report.md` (what it did).
 - **File watching** — tracks changes to `.hive/` and refreshes the sidebar in real time.
@@ -160,6 +161,8 @@ Orchestrator
 ```
 
 Independent tasks run concurrently. Dependent tasks wait. Each worker runs in its own worktree, verifies its own work, and commits. The orchestrator merges batch-by-batch and runs the full suite after each merge.
+
+When OpenCode's background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents use background-first scheduler mode for independent work. They launch native background tasks when safe foreground work can continue, inspect the scoped board with `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile`, and request cancellation with `hive_background_cancel`. With the env gate unset, the current blocking task/worktree behavior remains in place. Native `task_status` remains OpenCode-native, not a Hive tool.
 
 ### 4. Audit Trail
 

@@ -24,4 +24,10 @@ describe('shipped extension artifact parity', () => {
     expect(bundle).toContain('hive.backgroundJobs');
     expect(bundle).toContain('hive.repositories');
   });
+
+  it('does not ship operational background job commands in dist', () => {
+    expect(bundle).not.toContain('hive.background.cancel');
+    expect(bundle).not.toContain('hive.background.reconcile');
+    expect(bundle).not.toContain('hive.background.ignore');
+  });
 });

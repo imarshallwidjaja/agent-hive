@@ -794,6 +794,8 @@ describe('README.md documentation', () => {
   const rootReadmeContent = readFileSync(ROOT_README_PATH, 'utf-8');
   const HIVE_TOOLS_PATH = path.resolve(import.meta.dir, '..', '..', 'docs', 'HIVE-TOOLS.md');
   const hiveToolsContent = readFileSync(HIVE_TOOLS_PATH, 'utf-8');
+  const VSCODE_README_PATH = path.resolve(import.meta.dir, '..', '..', '..', 'vscode-hive', 'README.md');
+  const vscodeReadmeContent = readFileSync(VSCODE_README_PATH, 'utf-8');
   const PHILOSOPHY_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'PHILOSOPHY.md');
   const philosophyContent = readFileSync(PHILOSOPHY_PATH, 'utf-8');
   const GITHUB_HIVE_AGENT_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', '.github', 'agents', 'hive.agent.md');
@@ -835,6 +837,32 @@ describe('README.md documentation', () => {
     it('clarifies background-delegation is not a default autoLoadSkills entry', () => {
       expect(readmeContent).toContain('is not a default');
       expect(readmeContent).toContain('autoLoadSkills');
+    });
+
+    it('documents background-first env gate behavior without treating task_status as a Hive tool', () => {
+      expect(readmeContent).toContain('background-first scheduler');
+      expect(readmeContent).toContain('hive_background_status');
+      expect(readmeContent).toContain('hive_background_reconcile');
+      expect(readmeContent).toContain('hive_background_cancel');
+      expect(hiveToolsContent).toContain('Background Orchestration');
+      expect(hiveToolsContent).toContain('task_status` is not a Hive tool');
+      expect(hiveToolsContent).toContain('Cancellation is not rollback');
+      expect(hiveToolsContent).toContain('no-resume retry/escalation');
+    });
+
+    it('documents current env-gate false behavior and env-gate true scheduler behavior', () => {
+      expect(readmeContent).toContain('With the env gate unset');
+      expect(readmeContent).toContain('With the env gate set');
+      expect(readmeContent).not.toContain('prompt appendix text only');
+      expect(hiveToolsContent).not.toContain('only controls primary-agent prompt appendix text');
+    });
+
+    it('documents VS Code background views as viewer-only surfaces', () => {
+      expect(vscodeReadmeContent).toContain('Background Jobs');
+      expect(vscodeReadmeContent).toContain('Tracked Repositories');
+      expect(vscodeReadmeContent).toContain('does not cancel, reconcile, or ignore jobs');
+      expect(vscodeReadmeContent).toContain('Open File');
+      expect(vscodeReadmeContent).toContain('Copy to Clipboard');
     });
   });
 

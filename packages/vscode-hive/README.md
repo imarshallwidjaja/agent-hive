@@ -25,6 +25,12 @@ Add comments on plan.md and overview.md.
 ### File Watching
 Watches `.hive/` for changes and refreshes automatically.
 
+### Background Jobs
+Viewer-only tree for `.hive/background-jobs.json`. It shows scoped background job state written by `oc-arkive`, including runtime state and coordination metadata.
+
+### Tracked Repositories
+Viewer-only tree for `.hive/agent-hive.json` repository manifests. It shows the project-relative repositories that `oc-arkive` uses for manifest-backed workspaces.
+
 ## Usage
 
 ### Review a Hive feature
@@ -38,6 +44,7 @@ Watches `.hive/` for changes and refreshes automatically.
 
 - **Document review**: inspect `plan.md` and `overview.md` as the required review documents
 - **Sidebar visibility**: features, tasks, status, and reports in one place
+- **Background visibility**: Background Jobs and Tracked Repositories views read Hive state without controlling it
 - **Inline comments**: discuss changes directly in `plan.md` and `overview.md`
 - **File watching**: tracks `.hive/` changes and refreshes in real time
 
@@ -47,6 +54,7 @@ Watches `.hive/` for changes and refreshes automatically.
 |---------|-------------|
 | Hive: Refresh | Refresh the feature tree |
 | Hive: Open File | Open a file from the sidebar |
+| Hive: Copy to Clipboard | Copy a background job ID or repository ID from the sidebar |
 | Hive: Done Review | Complete review of plan.md or overview.md |
 | Hive: Add Comment | Add an inline comment on plan.md or overview.md |
 | Hive: Reply Comment | Reply to an existing comment |
@@ -64,7 +72,7 @@ For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc
 
 ## Scope: viewer-only
 
-This extension is **viewer-only**. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments) and surfaces them in the sidebar and review flow. It does not start worktrees, commit changes, or merge branches, and it contributes no `languageModelTools`. Multi-repo orchestration (composite workspaces, per-repo base commits, aggregate diff/commit/merge) is owned by `hive-core` and exposed through `oc-arkive`; any per-repo metadata the sidebar shows is read-through from those files. Reintroducing agentic command surfaces here would change the security and review posture of this extension and is out of scope.
+This extension is **viewer-only**. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, background jobs, and repository manifests) and surfaces them in the sidebar and review flow. Safe actions are limited to Refresh, Open File, Copy to Clipboard, Done Review, and inline comment actions. It does not start worktrees, commit changes, merge branches, cancel jobs, reconcile jobs, or ignore jobs, and it contributes no `languageModelTools`. VS Code does not cancel, reconcile, or ignore jobs; use `oc-arkive` in OpenCode for those operations. Multi-repo orchestration (composite workspaces, per-repo base commits, aggregate diff/commit/merge) is owned by `hive-core` and exposed through `oc-arkive`; any per-repo metadata the sidebar shows is read-through from those files. Reintroducing agentic command surfaces here would change the security and review posture of this extension and is out of scope.
 
 ## Requirements
 

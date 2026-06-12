@@ -93,6 +93,14 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 
 Hive Builder uses `hive_adhoc_*` tools for isolated executor work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. See `docs/HIVE-TOOLS.md` for the tool contracts.
 
+### Background Orchestration
+
+When `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set, primary agents run the background-first scheduler contract for independent work. This does not add agents and does not change custom-agent preservation: configured custom subagents still extend their base agents, and primary agents select them only when their descriptions fit the lane.
+
+With the env gate unset, Hive keeps the current blocking task/worktree behavior and the background management tools report `background_tools_disabled`. With the env gate set, primary agents can launch independent native background tasks, keep safe foreground work moving, inspect the scoped board with `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile`, and request cancellation with `hive_background_cancel`. Native `task_status` remains the source for polling or waiting on OpenCode task results; it is not a Hive tool.
+
+Cancellation is not rollback. A cancellation request does not revert files, branches, worktrees, commits, or reports. If a stale lane cannot be resumed safely, use no-resume retry/escalation: start a fresh scoped attempt when safe, ignore the stale terminal entry with a reason, or escalate the blocker.
+
 ### Troubleshooting
 
 #### Repeated blocked-resume errors / loop
@@ -228,7 +236,7 @@ Create `.hive/agent-hive.json`:
 | `systematic-debugging` | Use when encountering any bug or test failure. Requires root cause investigation before proposing fixes. |
 | `code-reviewer` | Deprecated compatibility wrapper. Use the `code-reviewer` subagent for implementation review. |
 | `verification` | Use before claiming work is complete or when independently checking an implementation against a plan. Requires fresh command output before success claims. |
-| `background-delegation` | Use when opencode background subagents are available (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`). Enables primary agents to dispatch independent work with `task({ background: true, ... })` and `task_status`. Not loaded as a default `autoLoadSkills` entry; the env flag appends an on-demand reference only. |
+| `background-delegation` | Use when opencode background subagents are available (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`). Enables primary agents to run the background-first scheduler contract with native `task({ background: true, ... })`, native `task_status`, `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`. Not loaded as a default `autoLoadSkills` entry; the env flag appends an on-demand reference only. |
 
 #### Available MCPs
 
@@ -255,7 +263,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 
 **URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be injected; partially scanned URL skills are not injected.
 
-`background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are env-gated and compact. When the env flag is set, primary agent prompts include a short on-demand reference rather than the full skill body. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
+`background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are env-gated and compact. When the env flag is set, primary agent prompts include the background-first scheduler contract and point to the skill for the full protocol instead of treating background delegation as appendix-only text. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
 
 **Example:**
 
@@ -293,7 +301,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | `code-reviewer` | (none) |
 | `approach-advisor` | (none) |
 
-`background-delegation` is not a default `autoLoadSkills` entry for any agent. For Hive Builder, it is advertised by env-gated compact appendix only — the env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends an on-demand reference to primary agent prompts without adding it to the default autoload set.
+`background-delegation` is not a default `autoLoadSkills` entry for any agent. For Hive Builder, it is advertised by env-gated compact scheduler guidance only - the env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends an on-demand reference to primary agent prompts without adding it to the default autoload set.
 
 ### Per-Agent Model Variants
 

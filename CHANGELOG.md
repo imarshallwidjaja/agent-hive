@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Background-first orchestration is now documented for OpenCode sessions that enable `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, including `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`.
+- `vscode-arkive` docs now cover the viewer-only Background Jobs and Tracked Repositories views.
+
+### Changed
+- Operator docs now distinguish env-gate false/current blocking behavior from env-gate true/background-first scheduler behavior.
+- Background orchestration docs now state that native `task_status` is not a Hive tool, cancellation is not rollback, and stale lanes require no-resume retry/escalation rather than unsafe resume.
+- Root docs now clarify that background-first orchestration adds no new agents and preserves custom derived agent inheritance.
+
 ## [1.6.3] - 2026-06-03
 
 ### Changed
