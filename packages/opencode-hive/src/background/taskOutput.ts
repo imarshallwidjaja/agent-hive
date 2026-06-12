@@ -21,6 +21,7 @@ export interface ParsedTaskLifecycleEvent {
   args: {
     background?: boolean;
     description?: string;
+    subagent_type?: string;
     task_id?: string;
   };
   parentSessionId: string;
@@ -131,6 +132,7 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown, context
       args: pruneUndefined({
         background: args ? readBoolean(args, 'background') : undefined,
         description: args ? readString(args, 'description') : undefined,
+        subagent_type: args ? readString(args, 'subagent_type') : undefined,
       }),
       parentSessionId,
       agentName,

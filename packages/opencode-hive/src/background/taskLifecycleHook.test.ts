@@ -66,7 +66,7 @@ describe('background task lifecycle hook support', () => {
       );
       await hooks['tool.execute.before']?.(
         { tool: 'task', sessionID: 'sess_parent', callID: 'call_task_1' } as never,
-        { args: { description: 'Run worker', background: true } } as never,
+        { args: { description: 'Run worker', background: true, subagent_type: 'scout-researcher' } } as never,
       );
       await hooks['tool.execute.after']?.(
         { tool: 'task', sessionID: 'sess_parent', callID: 'call_task_1' } as never,
@@ -76,7 +76,7 @@ describe('background task lifecycle hook support', () => {
       let board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf-8')) as BackgroundJobsJson;
       expect(board.jobs[0]).toMatchObject({
         taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
-        agentName: 'hive-master',
+        agentName: 'scout-researcher',
         description: 'Run worker',
         runtimeState: 'running',
         scope: {
@@ -102,6 +102,18 @@ describe('background task lifecycle hook support', () => {
         resultSummary: 'done',
         terminalUnreconciled: true,
       });
+
+      await hooks['tool.execute.before']?.(
+        { tool: 'task', sessionID: 'sess_parent', callID: 'call_foreground' } as never,
+        { args: { description: 'Run foreground worker', background: false, subagent_type: 'forager-worker' } } as never,
+      );
+      await hooks['tool.execute.after']?.(
+        { tool: 'task', sessionID: 'sess_parent', callID: 'call_foreground' } as never,
+        { title: 'task', output: 'task_id: task_foreground', metadata: {} } as never,
+      );
+
+      board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf-8')) as BackgroundJobsJson;
+      expect(board.jobs.map((job) => job.taskId)).not.toContain('task_foreground');
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
     }

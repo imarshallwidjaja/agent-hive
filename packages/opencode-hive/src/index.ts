@@ -357,11 +357,15 @@ const plugin: Plugin = async (ctx) => {
 
   const handleBackgroundTaskLifecycleEvent = async (event: ParsedTaskLifecycleEvent): Promise<void> => {
     if (event.tool === 'task') {
+      if (event.args.background !== true) {
+        return;
+      }
+
       try {
         backgroundJobService.registerLaunch({
           taskId: event.taskId,
           sessionId: `${event.parentSessionId}:${event.taskId}`,
-          agentName: event.agentName ?? 'unknown',
+          agentName: event.args.subagent_type ?? 'unknown',
           description: event.args.description,
           scope: {
             projectRoot: directory,

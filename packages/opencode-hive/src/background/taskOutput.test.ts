@@ -68,7 +68,7 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
   it('extracts lifecycle context from post-tool task payloads', () => {
     const parsed = parseTaskLifecycleEvent({
       tool: 'task',
-      args: { description: 'Run worker', background: true },
+      args: { description: 'Run worker', background: true, subagent_type: 'scout-researcher' },
       sessionID: 'sess_parent',
       messageID: 'msg_parent',
       agent: 'hive',
@@ -84,6 +84,7 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
       args: {
         background: true,
         description: 'Run worker',
+        subagent_type: 'scout-researcher',
       },
       parentSessionId: 'sess_parent',
       messageId: 'msg_parent',
@@ -134,7 +135,7 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
       };
     });
 
-    capturedArgs.set('sess_parent:call_task_1', { description: 'Run worker', background: true });
+    capturedArgs.set('sess_parent:call_task_1', { description: 'Run worker', background: true, subagent_type: 'scout-researcher' });
     await hook({
       tool: 'task',
       sessionID: 'sess_parent',
@@ -150,6 +151,7 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
       args: {
         background: true,
         description: 'Run worker',
+        subagent_type: 'scout-researcher',
       },
       parentSessionId: 'sess_parent',
       agentName: 'hive',
