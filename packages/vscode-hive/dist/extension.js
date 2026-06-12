@@ -35,7 +35,7 @@ __export(extension_exports, {
 });
 module.exports = __toCommonJS(extension_exports);
 var vscode7 = __toESM(require("vscode"));
-var fs6 = __toESM(require("fs"));
+var fs7 = __toESM(require("fs"));
 var path6 = __toESM(require("path"));
 
 // src/services/watcher.ts
@@ -57,6 +57,7 @@ var HiveWatcher = class {
 
 // src/services/launcher.ts
 var vscode2 = __toESM(require("vscode"));
+var fs = __toESM(require("fs"));
 var Launcher = class {
   /**
    * Open a file in VS Code
@@ -68,6 +69,11 @@ var Launcher = class {
     }
     try {
       const uri = vscode2.Uri.file(filePath);
+      const stat = fs.statSync(filePath);
+      if (stat.isDirectory()) {
+        await vscode2.commands.executeCommand("revealFileInOS", uri);
+        return;
+      }
       await vscode2.workspace.openTextDocument(uri);
       await vscode2.window.showTextDocument(uri);
     } catch (error) {
@@ -78,13 +84,13 @@ var Launcher = class {
 
 // src/providers/sidebarProvider.ts
 var vscode3 = __toESM(require("vscode"));
-var fs2 = __toESM(require("fs"));
+var fs3 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 
 // ../hive-core/dist/index.js
 var import_node_module = require("module");
 var path = __toESM(require("path"), 1);
-var fs = __toESM(require("fs"), 1);
+var fs2 = __toESM(require("fs"), 1);
 var import_node_buffer = require("buffer");
 var import_child_process = require("child_process");
 var import_node_path = require("path");
@@ -1082,10 +1088,10 @@ function parseIndexedFeatureDirectoryName(directoryName) {
 }
 function listFeatureDirectories(projectRoot) {
   const featuresPath = getFeaturesPath(projectRoot);
-  if (!fs.existsSync(featuresPath)) {
+  if (!fs2.existsSync(featuresPath)) {
     return [];
   }
-  return fs.readdirSync(featuresPath, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
+  return fs2.readdirSync(featuresPath, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
     const directoryName = entry.name;
     const parsed = parseIndexedFeatureDirectoryName(directoryName);
     const featureJsonPath = path.join(featuresPath, directoryName, FEATURE_FILE);
@@ -1110,7 +1116,7 @@ function listFeatureDirectories(projectRoot) {
 }
 function resolveFeatureDirectoryName(projectRoot, featureName) {
   const directPath = path.join(getFeaturesPath(projectRoot), featureName);
-  if (fs.existsSync(directPath)) {
+  if (fs2.existsSync(directPath)) {
     return featureName;
   }
   const match = listFeatureDirectories(projectRoot).find((entry) => entry.logicalName === featureName);
@@ -1120,9 +1126,9 @@ function getFeaturePath(projectRoot, featureName) {
   return path.join(getFeaturesPath(projectRoot), resolveFeatureDirectoryName(projectRoot, featureName));
 }
 function readJson(filePath) {
-  if (!fs.existsSync(filePath))
+  if (!fs2.existsSync(filePath))
     return null;
-  const content = fs.readFileSync(filePath, "utf-8");
+  const content = fs2.readFileSync(filePath, "utf-8");
   return JSON.parse(content);
 }
 var import_file_exists = __toESM2(require_dist(), 1);
@@ -1472,9 +1478,9 @@ var init_simple_git_options = __esm({
     };
   }
 });
-function appendTaskOptions(options, commands3 = []) {
+function appendTaskOptions(options, commands4 = []) {
   if (!filterPlainObject(options)) {
-    return commands3;
+    return commands4;
   }
   return Object.keys(options).reduce((commands22, key) => {
     const value = options[key];
@@ -1492,7 +1498,7 @@ function appendTaskOptions(options, commands3 = []) {
       commands22.push(key);
     }
     return commands22;
-  }, commands3);
+  }, commands4);
 }
 function getTrailingOptions(args, initialPrimitive = 0, objectOnly = false) {
   const command = [];
@@ -1620,18 +1626,18 @@ function checkIsRepoTask(action) {
     case "root":
       return checkIsRepoRootTask();
   }
-  const commands3 = ["rev-parse", "--is-inside-work-tree"];
+  const commands4 = ["rev-parse", "--is-inside-work-tree"];
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     onError,
     parser
   };
 }
 function checkIsRepoRootTask() {
-  const commands3 = ["rev-parse", "--git-dir"];
+  const commands4 = ["rev-parse", "--git-dir"];
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     onError,
     parser(path62) {
@@ -1640,9 +1646,9 @@ function checkIsRepoRootTask() {
   };
 }
 function checkIsBareRepoTask() {
-  const commands3 = ["rev-parse", "--is-bare-repository"];
+  const commands4 = ["rev-parse", "--is-bare-repository"];
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     onError,
     parser
@@ -1730,18 +1736,18 @@ function configurationErrorTask(error) {
     }
   };
 }
-function straightThroughStringTask(commands3, trimmed2 = false) {
+function straightThroughStringTask(commands4, trimmed2 = false) {
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser(text) {
       return trimmed2 ? String(text).trim() : text;
     }
   };
 }
-function straightThroughBufferTask(commands3) {
+function straightThroughBufferTask(commands4) {
   return {
-    commands: commands3,
+    commands: commands4,
     format: "buffer",
     parser(buffer) {
       return buffer;
@@ -1786,9 +1792,9 @@ function cleanWithOptionsTask(mode, customArgs) {
   return cleanTask(cleanMode, options);
 }
 function cleanTask(mode, customArgs) {
-  const commands3 = ["clean", `-${mode}`, ...customArgs];
+  const commands4 = ["clean", `-${mode}`, ...customArgs];
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser(text) {
       return cleanSummaryParser(mode === "n", text);
@@ -1951,13 +1957,13 @@ function asConfigScope(scope, fallback) {
   return fallback;
 }
 function addConfigTask(key, value, append2, scope) {
-  const commands3 = ["config", `--${scope}`];
+  const commands4 = ["config", `--${scope}`];
   if (append2) {
-    commands3.push("--add");
+    commands4.push("--add");
   }
-  commands3.push(key, value);
+  commands4.push(key, value);
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser(text) {
       return text;
@@ -1965,12 +1971,12 @@ function addConfigTask(key, value, append2, scope) {
   };
 }
 function getConfigTask(key, scope) {
-  const commands3 = ["config", "--null", "--show-origin", "--get-all", key];
+  const commands4 = ["config", "--null", "--show-origin", "--get-all", key];
   if (scope) {
-    commands3.splice(1, 0, `--${scope}`);
+    commands4.splice(1, 0, `--${scope}`);
   }
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser(text) {
       return configGetParser(text, key);
@@ -1978,12 +1984,12 @@ function getConfigTask(key, scope) {
   };
 }
 function listConfigTask(scope) {
-  const commands3 = ["config", "--list", "--show-origin", "--null"];
+  const commands4 = ["config", "--list", "--show-origin", "--null"];
   if (scope) {
-    commands3.push(`--${scope}`);
+    commands4.push(`--${scope}`);
   }
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser(text) {
       return configListParser(text);
@@ -2072,9 +2078,9 @@ function grep_default() {
       if (typeof searchTerm === "string") {
         searchTerm = grepQueryBuilder().param(searchTerm);
       }
-      const commands3 = ["grep", "--null", "-n", "--full-name", ...options, ...searchTerm];
+      const commands4 = ["grep", "--null", "-n", "--full-name", ...options, ...searchTerm];
       return this._runTask({
-        commands: commands3,
+        commands: commands4,
         format: "utf-8",
         parser(stdOut) {
           return parseGrep(stdOut);
@@ -2120,12 +2126,12 @@ __export2(reset_exports, {
   resetTask: () => resetTask
 });
 function resetTask(mode, customArgs) {
-  const commands3 = ["reset"];
+  const commands4 = ["reset"];
   if (isValidResetMode(mode)) {
-    commands3.push(`--${mode}`);
+    commands4.push(`--${mode}`);
   }
-  commands3.push(...customArgs);
-  return straightThroughStringTask(commands3);
+  commands4.push(...customArgs);
+  return straightThroughStringTask(commands4);
 }
 function getResetMode(mode) {
   if (isValidResetMode(mode)) {
@@ -2281,10 +2287,10 @@ var init_tasks_pending_queue = __esm({
     }, _a2.counter = 0, _a2);
   }
 });
-function pluginContext(task, commands3) {
+function pluginContext(task, commands4) {
   return {
     method: first(task.commands) || "",
-    commands: commands3
+    commands: commands4
   };
 }
 function onErrorReceived(target, logger) {
@@ -2538,11 +2544,11 @@ var init_change_working_directory = __esm({
   }
 });
 function checkoutTask(args) {
-  const commands3 = ["checkout", ...args];
-  if (commands3[1] === "-b" && commands3.includes("-B")) {
-    commands3[1] = remove(commands3, "-B");
+  const commands4 = ["checkout", ...args];
+  if (commands4[1] === "-b" && commands4.includes("-B")) {
+    commands4[1] = remove(commands4, "-B");
   }
-  return straightThroughStringTask(commands3);
+  return straightThroughStringTask(commands4);
 }
 function checkout_default() {
   return {
@@ -2653,7 +2659,7 @@ var init_parse_commit = __esm({
   }
 });
 function commitTask(message, files, customArgs) {
-  const commands3 = [
+  const commands4 = [
     "-c",
     "core.abbrev=40",
     "commit",
@@ -2662,7 +2668,7 @@ function commitTask(message, files, customArgs) {
     ...customArgs
   ];
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser: parseCommitResult
   };
@@ -2703,11 +2709,11 @@ var init_first_commit = __esm({
   }
 });
 function hashObjectTask(filePath, write) {
-  const commands3 = ["hash-object", filePath];
+  const commands4 = ["hash-object", filePath];
   if (write) {
-    commands3.push("-w");
+    commands4.push("-w");
   }
-  return straightThroughStringTask(commands3, true);
+  return straightThroughStringTask(commands4, true);
 }
 var init_hash_object = __esm({
   "src/lib/tasks/hash-object.ts"() {
@@ -2755,15 +2761,15 @@ function hasBareCommand(command) {
   return command.includes(bareCommand);
 }
 function initTask(bare = false, path62, customArgs) {
-  const commands3 = ["init", ...customArgs];
-  if (bare && !hasBareCommand(commands3)) {
-    commands3.splice(1, 0, bareCommand);
+  const commands4 = ["init", ...customArgs];
+  if (bare && !hasBareCommand(commands4)) {
+    commands4.splice(1, 0, bareCommand);
   }
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser(text) {
-      return parseInit(commands3.includes("--bare"), path62, text);
+      return parseInit(commands4.includes("--bare"), path62, text);
     }
   };
 }
@@ -2953,14 +2959,14 @@ __export2(diff_exports, {
 });
 function diffSummaryTask(customArgs) {
   let logFormat = logFormatFromCommand(customArgs);
-  const commands3 = ["diff"];
+  const commands4 = ["diff"];
   if (logFormat === "") {
     logFormat = "--stat";
-    commands3.push("--stat=4096");
+    commands4.push("--stat=4096");
   }
-  commands3.push(...customArgs);
-  return validateLogFormatConfig(commands3) || {
-    commands: commands3,
+  commands4.push(...customArgs);
+  return validateLogFormatConfig(commands4) || {
+    commands: commands4,
     format: "utf-8",
     parser: getDiffParser(logFormat)
   };
@@ -3429,18 +3435,18 @@ function pushTagsTask(ref = {}, customArgs) {
   return pushTask(ref, customArgs);
 }
 function pushTask(ref = {}, customArgs) {
-  const commands3 = ["push", ...customArgs];
+  const commands4 = ["push", ...customArgs];
   if (ref.branch) {
-    commands3.splice(1, 0, ref.branch);
+    commands4.splice(1, 0, ref.branch);
   }
   if (ref.remote) {
-    commands3.splice(1, 0, ref.remote);
+    commands4.splice(1, 0, ref.remote);
   }
-  remove(commands3, "-v");
-  append(commands3, "--verbose");
-  append(commands3, "--porcelain");
+  remove(commands4, "-v");
+  append(commands4, "--verbose");
+  append(commands4, "--porcelain");
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser: parsePushResult
   };
@@ -3454,15 +3460,15 @@ var init_push = __esm({
 function show_default() {
   return {
     showBuffer() {
-      const commands3 = ["show", ...getTrailingOptions(arguments, 1)];
-      if (!commands3.includes("--binary")) {
-        commands3.splice(1, 0, "--binary");
+      const commands4 = ["show", ...getTrailingOptions(arguments, 1)];
+      if (!commands4.includes("--binary")) {
+        commands4.splice(1, 0, "--binary");
       }
-      return this._runTask(straightThroughBufferTask(commands3), trailingFunctionArgument(arguments));
+      return this._runTask(straightThroughBufferTask(commands4), trailingFunctionArgument(arguments));
     },
     show() {
-      const commands3 = ["show", ...getTrailingOptions(arguments, 1)];
-      return this._runTask(straightThroughStringTask(commands3), trailingFunctionArgument(arguments));
+      const commands4 = ["show", ...getTrailingOptions(arguments, 1)];
+      return this._runTask(straightThroughStringTask(commands4), trailingFunctionArgument(arguments));
     }
   };
 }
@@ -3619,7 +3625,7 @@ var init_StatusSummary = __esm({
   }
 });
 function statusTask(customArgs) {
-  const commands3 = [
+  const commands4 = [
     "status",
     "--porcelain",
     "-b",
@@ -3629,7 +3635,7 @@ function statusTask(customArgs) {
   ];
   return {
     format: "utf-8",
-    commands: commands3,
+    commands: commands4,
     parser(text) {
       return parseStatusSummary(text);
     }
@@ -3973,23 +3979,23 @@ __export2(branch_exports, {
   deleteBranchTask: () => deleteBranchTask,
   deleteBranchesTask: () => deleteBranchesTask
 });
-function containsDeleteBranchCommand(commands3) {
+function containsDeleteBranchCommand(commands4) {
   const deleteCommands = ["-d", "-D", "--delete"];
-  return commands3.some((command) => deleteCommands.includes(command));
+  return commands4.some((command) => deleteCommands.includes(command));
 }
 function branchTask(customArgs) {
   const isDelete = containsDeleteBranchCommand(customArgs);
   const isCurrentOnly = customArgs.includes("--show-current");
-  const commands3 = ["branch", ...customArgs];
-  if (commands3.length === 1) {
-    commands3.push("-a");
+  const commands4 = ["branch", ...customArgs];
+  if (commands4.length === 1) {
+    commands4.push("-a");
   }
-  if (!commands3.includes("-v")) {
-    commands3.splice(1, 0, "-v");
+  if (!commands4.includes("-v")) {
+    commands4.splice(1, 0, "-v");
   }
   return {
     format: "utf-8",
-    commands: commands3,
+    commands: commands4,
     parser(stdOut, stdErr) {
       if (isDelete) {
         return parseBranchDeletions(stdOut, stdErr).all[0];
@@ -4083,14 +4089,14 @@ function disallowedCommand(command) {
   return /^--upload-pack(=|$)/.test(command);
 }
 function cloneTask(repo, directory, customArgs) {
-  const commands3 = ["clone", ...customArgs];
-  filterString(repo) && commands3.push(repo);
-  filterString(directory) && commands3.push(directory);
-  const banned = commands3.find(disallowedCommand);
+  const commands4 = ["clone", ...customArgs];
+  filterString(repo) && commands4.push(repo);
+  filterString(directory) && commands4.push(directory);
+  const banned = commands4.find(disallowedCommand);
   if (banned) {
     return configurationErrorTask(`git.fetch: potential exploit argument blocked.`);
   }
-  return straightThroughStringTask(commands3);
+  return straightThroughStringTask(commands4);
 }
 function cloneMirrorTask(repo, directory, customArgs) {
   append(customArgs, "--mirror");
@@ -4157,16 +4163,16 @@ function disallowedCommand2(command) {
   return /^--upload-pack(=|$)/.test(command);
 }
 function fetchTask(remote, branch, customArgs) {
-  const commands3 = ["fetch", ...customArgs];
+  const commands4 = ["fetch", ...customArgs];
   if (remote && branch) {
-    commands3.push(remote, branch);
+    commands4.push(remote, branch);
   }
-  const banned = commands3.find(disallowedCommand2);
+  const banned = commands4.find(disallowedCommand2);
   if (banned) {
     return configurationErrorTask(`git.fetch: potential exploit argument blocked.`);
   }
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser: parseFetchResult
   };
@@ -4213,12 +4219,12 @@ __export2(pull_exports, {
   pullTask: () => pullTask
 });
 function pullTask(remote, branch, customArgs) {
-  const commands3 = ["pull", ...customArgs];
+  const commands4 = ["pull", ...customArgs];
   if (remote && branch) {
-    commands3.splice(1, 0, remote, branch);
+    commands4.splice(1, 0, remote, branch);
   }
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser(stdOut, stdErr) {
       return parsePullResult(stdOut, stdErr);
@@ -4279,29 +4285,29 @@ function addRemoteTask(remoteName, remoteRepo, customArgs) {
   return straightThroughStringTask(["remote", "add", ...customArgs, remoteName, remoteRepo]);
 }
 function getRemotesTask(verbose) {
-  const commands3 = ["remote"];
+  const commands4 = ["remote"];
   if (verbose) {
-    commands3.push("-v");
+    commands4.push("-v");
   }
   return {
-    commands: commands3,
+    commands: commands4,
     format: "utf-8",
     parser: verbose ? parseGetRemotesVerbose : parseGetRemotes
   };
 }
 function listRemotesTask(customArgs) {
-  const commands3 = [...customArgs];
-  if (commands3[0] !== "ls-remote") {
-    commands3.unshift("ls-remote");
+  const commands4 = [...customArgs];
+  if (commands4[0] !== "ls-remote") {
+    commands4.unshift("ls-remote");
   }
-  return straightThroughStringTask(commands3);
+  return straightThroughStringTask(commands4);
 }
 function remoteTask(customArgs) {
-  const commands3 = [...customArgs];
-  if (commands3[0] !== "remote") {
-    commands3.unshift("remote");
+  const commands4 = [...customArgs];
+  if (commands4[0] !== "remote") {
+    commands4.unshift("remote");
   }
-  return straightThroughStringTask(commands3);
+  return straightThroughStringTask(commands4);
 }
 function removeRemoteTask(remoteName) {
   return straightThroughStringTask(["remote", "remove", remoteName]);
@@ -4318,10 +4324,10 @@ __export2(stash_list_exports, {
 });
 function stashListTask(opt = {}, customArgs) {
   const options = parseLogOptions(opt);
-  const commands3 = ["stash", "list", ...options.commands, ...customArgs];
-  const parser4 = createListLogSummaryParser(options.splitter, options.fields, logFormatFromCommand(commands3));
-  return validateLogFormatConfig(commands3) || {
-    commands: commands3,
+  const commands4 = ["stash", "list", ...options.commands, ...customArgs];
+  const parser4 = createListLogSummaryParser(options.splitter, options.fields, logFormatFromCommand(commands4));
+  return validateLogFormatConfig(commands4) || {
+    commands: commands4,
     format: "utf-8",
     parser: parser4
   };
@@ -4348,11 +4354,11 @@ function initSubModuleTask(customArgs) {
   return subModuleTask(["init", ...customArgs]);
 }
 function subModuleTask(customArgs) {
-  const commands3 = [...customArgs];
-  if (commands3[0] !== "submodule") {
-    commands3.unshift("submodule");
+  const commands4 = [...customArgs];
+  if (commands4[0] !== "submodule") {
+    commands4.unshift("submodule");
   }
-  return straightThroughStringTask(commands3);
+  return straightThroughStringTask(commands4);
 }
 function updateSubModuleTask(customArgs) {
   return subModuleTask(["update", ...customArgs]);
@@ -4594,9 +4600,9 @@ var require_git = __commonJS2({
     Git2.prototype.branchLocal = function(then) {
       return this._runTask(branchLocalTask2(), trailingFunctionArgument2(arguments));
     };
-    Git2.prototype.raw = function(commands3) {
-      const createRestCommands = !Array.isArray(commands3);
-      const command = [].slice.call(createRestCommands ? arguments : commands3, 0);
+    Git2.prototype.raw = function(commands4) {
+      const createRestCommands = !Array.isArray(commands4);
+      const command = [].slice.call(createRestCommands ? arguments : commands4, 0);
       for (let i = 0; i < command.length && createRestCommands; i++) {
         if (!filterPrimitives2(command[i])) {
           command.splice(i, command.length - i);
@@ -4688,8 +4694,8 @@ var require_git = __commonJS2({
       return this._runTask(task, trailingFunctionArgument2(arguments));
     };
     Git2.prototype.revparse = function() {
-      const commands3 = ["rev-parse", ...getTrailingOptions2(arguments, true)];
-      return this._runTask(straightThroughStringTask2(commands3, true), trailingFunctionArgument2(arguments));
+      const commands4 = ["rev-parse", ...getTrailingOptions2(arguments, true)];
+      return this._runTask(straightThroughStringTask2(commands4, true), trailingFunctionArgument2(arguments));
     };
     Git2.prototype.clean = function(mode, options, then) {
       const usingCleanOptionsArray = isCleanOptionsArray2(mode);
@@ -4953,8 +4959,8 @@ var HiveSidebarProvider = class {
     const dirs = listFeatureDirectories(this.workspaceRoot);
     for (const dir of dirs) {
       const featureJsonPath = path2.join(getFeaturePath(this.workspaceRoot, dir.logicalName), "feature.json");
-      if (!fs2.existsSync(featureJsonPath)) continue;
-      const feature = JSON.parse(fs2.readFileSync(featureJsonPath, "utf-8"));
+      if (!fs3.existsSync(featureJsonPath)) continue;
+      const feature = JSON.parse(fs3.readFileSync(featureJsonPath, "utf-8"));
       const taskStats = this.getTaskStats(dir.logicalName);
       const isActive = dir.logicalName === activeFeature;
       features.push(new FeatureItem(dir.logicalName, feature, taskStats, isActive));
@@ -4970,22 +4976,22 @@ var HiveSidebarProvider = class {
     const featurePath = getFeaturePath(this.workspaceRoot, featureName);
     const items = [];
     const featureJsonPath = path2.join(featurePath, "feature.json");
-    const feature = JSON.parse(fs2.readFileSync(featureJsonPath, "utf-8"));
+    const feature = JSON.parse(fs3.readFileSync(featureJsonPath, "utf-8"));
     const planPath = path2.join(featurePath, "plan.md");
-    if (fs2.existsSync(planPath)) {
+    if (fs3.existsSync(planPath)) {
       const commentCount = this.getReviewCommentCount(featureName, "plan");
       items.push(new PlanItem(featureName, planPath, feature.status, commentCount));
     }
     const contextPath = path2.join(featurePath, "context");
-    const contextFiles = fs2.existsSync(contextPath) ? fs2.readdirSync(contextPath).filter((f) => !f.startsWith(".")) : [];
+    const contextFiles = fs3.existsSync(contextPath) ? fs3.readdirSync(contextPath).filter((f) => !f.startsWith(".")) : [];
     items.push(new ContextFolderItem(featureName, contextPath, contextFiles.length));
     const tasks = this.getTaskList(featureName);
     items.push(new TasksGroupItem(featureName, tasks));
     return items;
   }
   getContextFiles(featureName, contextPath) {
-    if (!fs2.existsSync(contextPath)) return [];
-    return fs2.readdirSync(contextPath).filter((f) => !f.startsWith(".")).map((f) => {
+    if (!fs3.existsSync(contextPath)) return [];
+    return fs3.readdirSync(contextPath).filter((f) => !f.startsWith(".")).map((f) => {
       const commentCount = f === "overview.md" ? this.getReviewCommentCount(featureName, "overview") : 0;
       return new ContextFileItem(f, path2.join(contextPath, f), commentCount);
     });
@@ -4996,8 +5002,8 @@ var HiveSidebarProvider = class {
       const taskDir = path2.join(featurePath, "tasks", t.folder);
       const specPath = path2.join(taskDir, "spec.md");
       const reportPath = path2.join(taskDir, "report.md");
-      const hasSpec = fs2.existsSync(specPath);
-      const hasReport = fs2.existsSync(reportPath);
+      const hasSpec = fs3.existsSync(specPath);
+      const hasReport = fs3.existsSync(reportPath);
       return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null);
     });
   }
@@ -5013,11 +5019,11 @@ var HiveSidebarProvider = class {
   }
   getTaskList(featureName) {
     const tasksPath = path2.join(getFeaturePath(this.workspaceRoot, featureName), "tasks");
-    if (!fs2.existsSync(tasksPath)) return [];
-    const folders = fs2.readdirSync(tasksPath, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+    if (!fs3.existsSync(tasksPath)) return [];
+    const folders = fs3.readdirSync(tasksPath, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
     return folders.map((folder) => {
       const statusPath = path2.join(tasksPath, folder, "status.json");
-      const status = fs2.existsSync(statusPath) ? JSON.parse(fs2.readFileSync(statusPath, "utf-8")) : { status: "pending", origin: "plan" };
+      const status = fs3.existsSync(statusPath) ? JSON.parse(fs3.readFileSync(statusPath, "utf-8")) : { status: "pending", origin: "plan" };
       return { folder, status };
     });
   }
@@ -5030,7 +5036,7 @@ var HiveSidebarProvider = class {
   }
   getActiveFeature() {
     const activePath = path2.join(this.workspaceRoot, ".hive", "active-feature");
-    const configuredActive = fs2.existsSync(activePath) ? fs2.readFileSync(activePath, "utf-8").trim() : null;
+    const configuredActive = fs3.existsSync(activePath) ? fs3.readFileSync(activePath, "utf-8").trim() : null;
     if (configuredActive) {
       const feature = this.readFeature(configuredActive);
       if (feature && feature.status !== "completed") {
@@ -5045,18 +5051,18 @@ var HiveSidebarProvider = class {
   }
   readFeature(featureName) {
     const featureJsonPath = path2.join(getFeaturePath(this.workspaceRoot, featureName), "feature.json");
-    if (!fs2.existsSync(featureJsonPath)) return null;
-    return JSON.parse(fs2.readFileSync(featureJsonPath, "utf-8"));
+    if (!fs3.existsSync(featureJsonPath)) return null;
+    return JSON.parse(fs3.readFileSync(featureJsonPath, "utf-8"));
   }
   getReviewCommentCount(featureName, document2) {
     var _a2;
     const featurePath = getFeaturePath(this.workspaceRoot, featureName);
     const canonicalPath = path2.join(featurePath, "comments", `${document2}.json`);
     const legacyPlanPath = path2.join(featurePath, "comments.json");
-    const commentsPath = fs2.existsSync(canonicalPath) ? canonicalPath : document2 === "plan" ? legacyPlanPath : null;
-    if (!commentsPath || !fs2.existsSync(commentsPath)) return 0;
+    const commentsPath = fs3.existsSync(canonicalPath) ? canonicalPath : document2 === "plan" ? legacyPlanPath : null;
+    if (!commentsPath || !fs3.existsSync(commentsPath)) return 0;
     try {
-      const data = JSON.parse(fs2.readFileSync(commentsPath, "utf-8"));
+      const data = JSON.parse(fs3.readFileSync(commentsPath, "utf-8"));
       return ((_a2 = data.threads) == null ? void 0 : _a2.length) || 0;
     } catch {
       return 0;
@@ -5066,7 +5072,7 @@ var HiveSidebarProvider = class {
 
 // src/providers/planCommentController.ts
 var vscode4 = __toESM(require("vscode"));
-var fs3 = __toESM(require("fs"));
+var fs4 = __toESM(require("fs"));
 var path3 = __toESM(require("path"));
 var PlanCommentController = class {
   constructor(workspaceRoot) {
@@ -5228,7 +5234,7 @@ var PlanCommentController = class {
     if (!target) return null;
     const doc = target.document === "overview" ? "overview" : "plan";
     const canonicalPath = path3.join(this.workspaceRoot, ".hive", "features", target.featureName, "comments", `${doc}.json`);
-    if (fs3.existsSync(canonicalPath)) {
+    if (fs4.existsSync(canonicalPath)) {
       return canonicalPath;
     }
     if (target.document === "plan") {
@@ -5249,9 +5255,9 @@ var PlanCommentController = class {
         this.threads.delete(id);
       }
     });
-    if (!commentsPath || !fs3.existsSync(commentsPath)) return;
+    if (!commentsPath || !fs4.existsSync(commentsPath)) return;
     try {
-      const data = JSON.parse(fs3.readFileSync(commentsPath, "utf-8"));
+      const data = JSON.parse(fs4.readFileSync(commentsPath, "utf-8"));
       for (const stored of data.threads) {
         const comments2 = [
           {
@@ -5298,8 +5304,8 @@ var PlanCommentController = class {
     });
     const data = { threads };
     try {
-      fs3.mkdirSync(path3.dirname(commentsPath), { recursive: true });
-      fs3.writeFileSync(commentsPath, JSON.stringify(data, null, 2));
+      fs4.mkdirSync(path3.dirname(commentsPath), { recursive: true });
+      fs4.writeFileSync(commentsPath, JSON.stringify(data, null, 2));
     } catch (error) {
       console.error("Failed to save comments:", error);
     }
@@ -5312,7 +5318,7 @@ var PlanCommentController = class {
 
 // src/providers/backgroundJobsProvider.ts
 var vscode5 = __toESM(require("vscode"));
-var fs4 = __toESM(require("fs"));
+var fs5 = __toESM(require("fs"));
 var path4 = __toESM(require("path"));
 var BackgroundJobGroupItem = class extends vscode5.TreeItem {
   constructor(groupName, jobs, collapsed = false) {
@@ -5325,9 +5331,9 @@ var BackgroundJobGroupItem = class extends vscode5.TreeItem {
   }
 };
 var BackgroundJobItem = class extends vscode5.TreeItem {
+  copyCommand;
   constructor(job, workspaceRoot, boardPath) {
     super(job.alias || job.taskId, vscode5.TreeItemCollapsibleState.None);
-    this.boardPath = boardPath;
     this.description = [job.agentName, job.runtimeState, getCoordinationStatus(job) || job.objective || job.description].filter(Boolean).join(" \xB7 ");
     this.tooltip = getJobTooltip(job);
     this.contextValue = "background-job";
@@ -5335,7 +5341,7 @@ var BackgroundJobItem = class extends vscode5.TreeItem {
     this.command = {
       command: "hive.openFile",
       title: "Open Background Job Context",
-      arguments: [getRelatedPath(job, workspaceRoot) ?? this.boardPath]
+      arguments: [getRelatedPath(job, workspaceRoot) ?? boardPath]
     };
     this.copyCommand = {
       command: "hive.copyToClipboard",
@@ -5343,7 +5349,6 @@ var BackgroundJobItem = class extends vscode5.TreeItem {
       arguments: [job.taskId]
     };
   }
-  copyCommand;
 };
 var BackgroundJobsStateItem = class extends vscode5.TreeItem {
   constructor(label, description, boardPath) {
@@ -5351,11 +5356,13 @@ var BackgroundJobsStateItem = class extends vscode5.TreeItem {
     this.description = description;
     this.contextValue = "background-jobs-state";
     this.iconPath = new vscode5.ThemeIcon("info");
-    this.command = {
-      command: "hive.openFile",
-      title: "Open Background Jobs File",
-      arguments: [boardPath]
-    };
+    if (boardPath) {
+      this.command = {
+        command: "hive.openFile",
+        title: "Open Background Jobs File",
+        arguments: [boardPath]
+      };
+    }
   }
 };
 var BackgroundJobsProvider = class {
@@ -5378,12 +5385,12 @@ var BackgroundJobsProvider = class {
       return [];
     }
     const boardPath = this.boardPath();
-    if (!fs4.existsSync(boardPath)) {
-      return [new BackgroundJobsStateItem("No background jobs", "Missing .hive/background-jobs.json", boardPath)];
+    if (!fs5.existsSync(boardPath)) {
+      return [new BackgroundJobsStateItem("No background jobs", "Missing .hive/background-jobs.json")];
     }
     let board;
     try {
-      board = JSON.parse(fs4.readFileSync(boardPath, "utf-8"));
+      board = JSON.parse(fs5.readFileSync(boardPath, "utf-8"));
     } catch {
       return [new BackgroundJobsStateItem("Unable to read background jobs", "Invalid .hive/background-jobs.json", boardPath)];
     }
@@ -5458,7 +5465,7 @@ function getJobTooltip(job) {
 
 // src/providers/trackedRepositoriesProvider.ts
 var vscode6 = __toESM(require("vscode"));
-var fs5 = __toESM(require("fs"));
+var fs6 = __toESM(require("fs"));
 var path5 = __toESM(require("path"));
 var TrackedRepositoryItem = class extends vscode6.TreeItem {
   copyCommand;
@@ -5469,7 +5476,7 @@ var TrackedRepositoryItem = class extends vscode6.TreeItem {
     this.tooltip = `Configured path: ${repo.path}
 Resolved path: ${resolvedPath}`;
     this.contextValue = "tracked-repository";
-    this.iconPath = new vscode6.ThemeIcon(fs5.existsSync(resolvedPath) ? "repo" : "warning");
+    this.iconPath = new vscode6.ThemeIcon(fs6.existsSync(resolvedPath) ? "repo" : "warning");
     this.command = {
       command: "hive.openFile",
       title: "Open Repository Path",
@@ -5488,11 +5495,13 @@ var TrackedRepositoriesStateItem = class extends vscode6.TreeItem {
     this.description = description;
     this.contextValue = "tracked-repositories-state";
     this.iconPath = new vscode6.ThemeIcon("info");
-    this.command = {
-      command: "hive.openFile",
-      title: "Open Repository Manifest",
-      arguments: [manifestPath]
-    };
+    if (manifestPath) {
+      this.command = {
+        command: "hive.openFile",
+        title: "Open Repository Manifest",
+        arguments: [manifestPath]
+      };
+    }
   }
 };
 var TrackedRepositoriesProvider = class {
@@ -5512,12 +5521,12 @@ var TrackedRepositoriesProvider = class {
       return [];
     }
     const manifestPath = this.manifestPath();
-    if (!fs5.existsSync(manifestPath)) {
-      return [new TrackedRepositoriesStateItem("Legacy single-root workspace", "Missing .hive/agent-hive.json", manifestPath)];
+    if (!fs6.existsSync(manifestPath)) {
+      return [new TrackedRepositoriesStateItem("Legacy single-root workspace", "Missing .hive/agent-hive.json")];
     }
     let manifest;
     try {
-      manifest = JSON.parse(fs5.readFileSync(manifestPath, "utf-8"));
+      manifest = JSON.parse(fs6.readFileSync(manifestPath, "utf-8"));
     } catch {
       return [new TrackedRepositoriesStateItem("Unable to read tracked repositories", "Invalid .hive/agent-hive.json", manifestPath)];
     }
@@ -5553,7 +5562,7 @@ function getReviewTarget(workspaceRoot, filePath) {
 }
 function getReviewCommentsPath(workspaceRoot, featureName, document2) {
   const canonicalPath = path6.join(workspaceRoot, ".hive", "features", featureName, "comments", `${document2}.json`);
-  if (fs6.existsSync(canonicalPath)) {
+  if (fs7.existsSync(canonicalPath)) {
     return canonicalPath;
   }
   if (document2 === "plan") {
@@ -5564,7 +5573,7 @@ function getReviewCommentsPath(workspaceRoot, featureName, document2) {
 function findHiveRoot(startPath) {
   let current = startPath;
   while (current !== path6.dirname(current)) {
-    if (fs6.existsSync(path6.join(current, ".hive"))) {
+    if (fs7.existsSync(path6.join(current, ".hive"))) {
       return current;
     }
     current = path6.dirname(current);
@@ -5686,7 +5695,7 @@ var HiveExtension = class {
         const commentsPath = getReviewCommentsPath(this.workspaceRoot, target.featureName, target.document);
         let comments2 = [];
         try {
-          const commentsData = JSON.parse(fs6.readFileSync(commentsPath, "utf-8"));
+          const commentsData = JSON.parse(fs7.readFileSync(commentsPath, "utf-8"));
           comments2 = commentsData.threads || [];
         } catch (error) {
         }

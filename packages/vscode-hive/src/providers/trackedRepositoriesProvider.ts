@@ -33,15 +33,17 @@ class TrackedRepositoryItem extends vscode.TreeItem {
 }
 
 class TrackedRepositoriesStateItem extends vscode.TreeItem {
-  constructor(label: string, description: string, manifestPath: string) {
+  constructor(label: string, description: string, manifestPath?: string) {
     super(label, vscode.TreeItemCollapsibleState.None)
     this.description = description
     this.contextValue = 'tracked-repositories-state'
     this.iconPath = new vscode.ThemeIcon('info')
-    this.command = {
-      command: 'hive.openFile',
-      title: 'Open Repository Manifest',
-      arguments: [manifestPath],
+    if (manifestPath) {
+      this.command = {
+        command: 'hive.openFile',
+        title: 'Open Repository Manifest',
+        arguments: [manifestPath],
+      }
     }
   }
 }
@@ -67,7 +69,7 @@ export class TrackedRepositoriesProvider implements vscode.TreeDataProvider<Trac
 
     const manifestPath = this.manifestPath()
     if (!fs.existsSync(manifestPath)) {
-      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'Missing .hive/agent-hive.json', manifestPath)]
+      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'Missing .hive/agent-hive.json')]
     }
 
     let manifest: { repositories?: RepositoryConfig[] }

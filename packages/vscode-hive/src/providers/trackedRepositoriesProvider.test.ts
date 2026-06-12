@@ -71,6 +71,7 @@ describe('TrackedRepositoriesProvider', () => {
 
     expect(children.map(item => item.label)).toEqual(['Legacy single-root workspace']);
     expect((children[0] as any).description).toBe('Missing .hive/agent-hive.json');
+    expect((children[0] as any).command).toBeUndefined();
   });
 
   it('shows a legacy root state when no repositories are configured', async () => {

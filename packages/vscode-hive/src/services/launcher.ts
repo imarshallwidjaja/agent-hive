@@ -1,4 +1,5 @@
 import * as vscode from 'vscode'
+import * as fs from 'fs'
 
 export class Launcher {
   /**
@@ -12,6 +13,12 @@ export class Launcher {
 
     try {
       const uri = vscode.Uri.file(filePath)
+      const stat = fs.statSync(filePath)
+      if (stat.isDirectory()) {
+        await vscode.commands.executeCommand('revealFileInOS', uri)
+        return
+      }
+
       await vscode.workspace.openTextDocument(uri)
       await vscode.window.showTextDocument(uri)
     } catch (error: any) {

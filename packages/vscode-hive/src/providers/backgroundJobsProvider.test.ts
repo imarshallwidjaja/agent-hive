@@ -71,6 +71,7 @@ describe('BackgroundJobsProvider', () => {
 
     expect(children.map(item => item.label)).toEqual(['No background jobs']);
     expect((children[0] as any).description).toBe('Missing .hive/background-jobs.json');
+    expect((children[0] as any).command).toBeUndefined();
   });
 
   it('shows an empty background job board state', async () => {
@@ -164,6 +165,23 @@ describe('BackgroundJobsProvider', () => {
     expect((jobs[0] as any).command).toMatchObject({
       command: 'hive.openFile',
       arguments: [path.join(testRoot, '.hive', 'features', 'feature-a', 'tasks', 'task-a', 'worker-prompt.md')],
+    });
+  });
+
+  it('uses related worktree path when no worker prompt is present', async () => {
+    const worktreePath = path.join(testRoot, '.hive', '.worktrees', 'feature-a', 'task-a');
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [job({ alias: 'task-a', ownership: { worktreePath } })],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+    const jobs = await provider.getChildren(groups[0]);
+
+    expect((jobs[0] as any).command).toMatchObject({
+      command: 'hive.openFile',
+      arguments: [worktreePath],
     });
   });
 

@@ -12,4 +12,9 @@ describe('Launcher', () => {
   it('shows warning for invalid file path', () => {
     expect(source).toContain('Invalid file path');
   });
+
+  it('reveals directories instead of opening them as text documents', () => {
+    expect(source).toContain('stat.isDirectory()');
+    expect(source).toContain("executeCommand('revealFileInOS', uri)");
+  });
 });

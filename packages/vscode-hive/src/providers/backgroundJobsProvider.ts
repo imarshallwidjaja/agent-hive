@@ -21,7 +21,7 @@ class BackgroundJobGroupItem extends vscode.TreeItem {
 class BackgroundJobItem extends vscode.TreeItem {
   public readonly copyCommand: vscode.Command
 
-  constructor(job: BackgroundJobRecord, workspaceRoot: string, private readonly boardPath: string) {
+  constructor(job: BackgroundJobRecord, workspaceRoot: string, boardPath: string) {
     super(job.alias || job.taskId, vscode.TreeItemCollapsibleState.None)
     this.description = [job.agentName, job.runtimeState, getCoordinationStatus(job) || job.objective || job.description]
       .filter(Boolean)
@@ -32,7 +32,7 @@ class BackgroundJobItem extends vscode.TreeItem {
     this.command = {
       command: 'hive.openFile',
       title: 'Open Background Job Context',
-      arguments: [getRelatedPath(job, workspaceRoot) ?? this.boardPath],
+      arguments: [getRelatedPath(job, workspaceRoot) ?? boardPath],
     }
     this.copyCommand = {
       command: 'hive.copyToClipboard',
@@ -43,15 +43,17 @@ class BackgroundJobItem extends vscode.TreeItem {
 }
 
 class BackgroundJobsStateItem extends vscode.TreeItem {
-  constructor(label: string, description: string, boardPath: string) {
+  constructor(label: string, description: string, boardPath?: string) {
     super(label, vscode.TreeItemCollapsibleState.None)
     this.description = description
     this.contextValue = 'background-jobs-state'
     this.iconPath = new vscode.ThemeIcon('info')
-    this.command = {
-      command: 'hive.openFile',
-      title: 'Open Background Jobs File',
-      arguments: [boardPath],
+    if (boardPath) {
+      this.command = {
+        command: 'hive.openFile',
+        title: 'Open Background Jobs File',
+        arguments: [boardPath],
+      }
     }
   }
 }
@@ -81,7 +83,7 @@ export class BackgroundJobsProvider implements vscode.TreeDataProvider<Backgroun
 
     const boardPath = this.boardPath()
     if (!fs.existsSync(boardPath)) {
-      return [new BackgroundJobsStateItem('No background jobs', 'Missing .hive/background-jobs.json', boardPath)]
+      return [new BackgroundJobsStateItem('No background jobs', 'Missing .hive/background-jobs.json')]
     }
 
     let board: BackgroundJobsJson
