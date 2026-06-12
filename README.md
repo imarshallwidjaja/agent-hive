@@ -79,8 +79,8 @@ Chat with OpenCode. Ask it to "create a feature for user authentication" and Hiv
 
 ### What you get
 
-- **9 agents** - Unified mode: `hive-master` handles planning + orchestration. Dedicated mode: `architect-planner` + `swarm-orchestrator`. Plus `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `approach-advisor`, and `hive-helper`. Background-first orchestration adds no new agents; custom derived agents keep their configured base-agent inheritance.
-- **25 Hive tools** - Full lifecycle: feature, plan, tasks, worktrees, ad-hoc worktrees, background status/reconcile/cancel, context, merge, and status.
+- **Runtime agents** - Unified mode: `hive-master` handles planning + orchestration. Dedicated mode uses `architect-planner` + `swarm-orchestrator`; specialist agents handle research, implementation, review, approach advice, helper recovery, ad-hoc execution, and simplicity review. Background-first orchestration adds no new agents; custom derived agents keep their configured base-agent inheritance.
+- **Hive tools** - Full lifecycle: feature, plan, tasks, worktrees, ad-hoc worktrees, background status/reconcile/cancel, context, merge, and status.
 - **15 skills** — Loaded via OpenCode's native `skill` tool.
 - **Compaction recovery** — OpenCode sessions compact on long runs; Hive stores durable session metadata in `.hive/sessions.json` so agents re-anchor with the correct role after compaction.
 - **Optional research MCPs** — Exa web search, Context7 docs, grep.app, ast-grep. Disable individually via `disableMcps`.
@@ -251,7 +251,7 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for the full evolution log.
 
 | Package | Registry | Description |
 |---|---|---|
-| [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin — full runtime, 7 agents, 17 tools |
+| [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin — full Hive runtime, tools, agents, skills, and background board support |
 | `vscode-arkive` | GitHub Release VSIX | Sidebar, plan review, file watcher |
 
 ---

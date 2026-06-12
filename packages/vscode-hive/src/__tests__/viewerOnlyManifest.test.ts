@@ -52,8 +52,6 @@ describe('viewer-only VS Code manifest', () => {
 
     expect(readme).toContain('Background Jobs');
     expect(readme).toContain('Tracked Repositories');
-    expect(readme).toContain('Open File');
-    expect(readme).toContain('Copy to Clipboard');
-    expect(readme).toContain('does not cancel, reconcile, or ignore jobs');
+    expect(readme).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, reconcile jobs, or ignore jobs');
   });
 });

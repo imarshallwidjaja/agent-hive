@@ -857,12 +857,16 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).not.toContain('only controls primary-agent prompt appendix text');
     });
 
+    it('does not keep stale root README runtime counts', () => {
+      expect(rootReadmeContent).not.toContain('7 agents, 17 tools');
+      expect(rootReadmeContent).not.toContain('9 agents');
+      expect(rootReadmeContent).not.toContain('25 Hive tools');
+    });
+
     it('documents VS Code background views as viewer-only surfaces', () => {
       expect(vscodeReadmeContent).toContain('Background Jobs');
       expect(vscodeReadmeContent).toContain('Tracked Repositories');
-      expect(vscodeReadmeContent).toContain('does not cancel, reconcile, or ignore jobs');
-      expect(vscodeReadmeContent).toContain('Open File');
-      expect(vscodeReadmeContent).toContain('Copy to Clipboard');
+      expect(vscodeReadmeContent).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, reconcile jobs, or ignore jobs');
     });
   });
 
@@ -889,7 +893,8 @@ describe('README.md documentation', () => {
     });
 
     it('mentions hive-helper and simplicity-reviewer in the top-level README so users know the agents exist', () => {
-      expect(rootReadmeContent).toContain('hive-helper');
+      expect(rootReadmeContent).toContain('helper recovery');
+      expect(rootReadmeContent).toContain('simplicity review');
       expect(readmeContent).toContain('simplicity-reviewer');
     });
 
