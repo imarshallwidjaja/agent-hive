@@ -192,6 +192,7 @@ import {
   RepositoryManifestService,
   CUSTOM_AGENT_BASES,
   DockerSandboxService,
+  BackgroundJobService,
   SessionService,
   buildEffectiveDependencies,
   computeRunnableAndBlocked,
@@ -213,7 +214,7 @@ import { formatRelativeTime } from "./utils/format";
 import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_COMMANDS, HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
-import { createTaskLifecycleHook } from './background/taskOutput.js';
+import { createTaskLifecycleHook, type ParsedTaskLifecycleEvent } from './background/taskOutput.js';
 
 /**
  * Core plugin implementation.
@@ -267,6 +268,7 @@ const plugin: Plugin = async (ctx) => {
   const contextService = new ContextService(directory);
   const configService = new ConfigService(directory);
   const sessionService = new SessionService(directory);
+  const backgroundJobService = new BackgroundJobService(directory);
   const runtimeAgentPrompts = new Map<string, string>();
   const disabledMcps = configService.getDisabledMcps();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message ?? null;
@@ -335,6 +337,7 @@ const plugin: Plugin = async (ctx) => {
 
   const customAgentConfigsForClassification = getCustomAgentConfigsCompat(configService);
   const runtimeContext = detectContext(worktree || directory);
+  const toolArgsByCall = new Map<string, Record<string, unknown>>();
   const taskWorkerRecovery = runtimeContext.isWorktree && runtimeContext.feature && runtimeContext.task
     ? {
         featureName: runtimeContext.feature,
@@ -349,6 +352,68 @@ const plugin: Plugin = async (ctx) => {
         ),
       }
     : undefined;
+
+  const toolCallKey = (input: { sessionID: string; callID: string }): string => `${input.sessionID}:${input.callID}`;
+
+  const handleBackgroundTaskLifecycleEvent = async (event: ParsedTaskLifecycleEvent): Promise<void> => {
+    if (event.tool === 'task') {
+      try {
+        backgroundJobService.registerLaunch({
+          taskId: event.taskId,
+          sessionId: `${event.parentSessionId}:${event.taskId}`,
+          agentName: event.agentName ?? 'unknown',
+          description: event.args.description,
+          scope: {
+            projectRoot: directory,
+            parentSessionId: event.parentSessionId,
+            primaryAgent: event.agentName,
+          },
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || !/already registered/.test(error.message)) {
+          console.warn(`[hive:background] failed to register background task ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      return;
+    }
+
+    const status = event.status;
+    if (!status) {
+      return;
+    }
+
+    const state = normalizeBackgroundRuntimeState(status.runtimeState, status.error?.kind);
+    try {
+      if (state === 'completed' || state === 'error' || state === 'cancelled') {
+        backgroundJobService.markTerminal(event.taskId, state, {
+          resultSummary: status.result,
+          lastStatusError: status.error?.message,
+          statusUncertain: status.timedOut,
+        });
+      } else {
+        backgroundJobService.updateRuntimeState(event.taskId, state, {
+          resultSummary: status.result,
+          lastStatusError: status.error?.message,
+          statusUncertain: status.timedOut ?? status.error?.kind === 'transient',
+        });
+      }
+    } catch (error) {
+      console.warn(`[hive:background] failed to update background task ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const normalizeBackgroundRuntimeState = (
+    runtimeState: string | undefined,
+    errorKind: 'transient' | 'terminal' | undefined,
+  ): 'running' | 'completed' | 'error' | 'cancelled' | 'unknown' => {
+    const normalized = runtimeState?.trim().toLowerCase();
+    if (normalized === 'completed' || normalized === 'complete' || normalized === 'success') return 'completed';
+    if (normalized === 'error' || normalized === 'failed' || normalized === 'failure') return 'error';
+    if (normalized === 'cancelled' || normalized === 'canceled') return 'cancelled';
+    if (normalized === 'running' || normalized === 'pending' || normalized === 'queued') return 'running';
+    if (errorKind === 'terminal') return 'error';
+    return 'unknown';
+  };
 
   /**
    * Check if OMO-Slim delegation is enabled via user config.
@@ -1224,6 +1289,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     },
 
     "tool.execute.before": async (input, output) => {
+      if ((input.tool === 'task' || input.tool === 'task_status') && output.args && typeof output.args === 'object') {
+        toolArgsByCall.set(toolCallKey(input), { ...output.args });
+      }
+
       // Cadence gate: check if this hook should execute this turn
       // SAFETY-CRITICAL: This hook wraps commands for Docker sandbox isolation.
       // Setting cadence > 1 could allow unsafe commands through.
@@ -1261,7 +1330,24 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       output.args.workdir = undefined; // docker command runs on host
     },
 
-    "tool.execute.after": createTaskLifecycleHook(async () => {}),
+    "tool.execute.after": createTaskLifecycleHook(handleBackgroundTaskLifecycleEvent, (input) => {
+      if (!input || typeof input !== 'object') {
+        return undefined;
+      }
+
+      const record = input as { sessionID?: string; callID?: string };
+      const key = record.sessionID && record.callID ? `${record.sessionID}:${record.callID}` : undefined;
+      const args = key ? toolArgsByCall.get(key) : undefined;
+      if (key) {
+        toolArgsByCall.delete(key);
+      }
+
+      const session = record.sessionID ? sessionService.getGlobal(record.sessionID) : undefined;
+      return {
+        args,
+        agentName: typeof session?.agent === 'string' ? session.agent : undefined,
+      };
+    }),
 
     mcp: builtinMcps,
 

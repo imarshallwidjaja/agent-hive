@@ -27,15 +27,24 @@ export interface ParsedTaskLifecycleEvent {
   agentName?: string;
   callId?: string;
   messageId?: string;
-  launch?: ParsedTaskLaunchOutput;
   status?: ParsedTaskStatusOutput;
 }
 
 export type TaskLifecycleEventHandler = (event: ParsedTaskLifecycleEvent) => void | Promise<void>;
+export type TaskLifecycleContextResolver = (input: unknown) => TaskLifecycleContext | undefined;
 
-export function createTaskLifecycleHook(handleEvent: TaskLifecycleEventHandler): (input: unknown, output: unknown) => Promise<void> {
+export interface TaskLifecycleContext {
+  args?: Record<string, unknown>;
+  agentName?: string;
+  messageId?: string;
+}
+
+export function createTaskLifecycleHook(
+  handleEvent: TaskLifecycleEventHandler,
+  resolveContext?: TaskLifecycleContextResolver,
+): (input: unknown, output: unknown) => Promise<void> {
   return async (input, output) => {
-    const event = parseTaskLifecycleEvent(input, output);
+    const event = parseTaskLifecycleEvent(input, output, resolveContext?.(input));
     if (event) {
       await handleEvent(event);
     }
@@ -95,7 +104,7 @@ export function parseTaskStatusOutput(output: string): ParsedTaskStatusOutput | 
   });
 }
 
-export function parseTaskLifecycleEvent(input: unknown, output: unknown): ParsedTaskLifecycleEvent | undefined {
+export function parseTaskLifecycleEvent(input: unknown, output: unknown, context: TaskLifecycleContext = {}): ParsedTaskLifecycleEvent | undefined {
   if (!isRecord(input) || !isRecord(output)) {
     return undefined;
   }
@@ -103,7 +112,9 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown): Parsed
   const toolName = readString(input, 'tool');
   const outputText = readString(output, 'output');
   const parentSessionId = readString(input, 'sessionID');
-  const args = isRecord(input.args) ? input.args : undefined;
+  const args = context.args ?? (isRecord(input.args) ? input.args : undefined);
+  const agentName = context.agentName ?? readString(input, 'agent');
+  const messageId = context.messageId ?? readString(input, 'messageID');
   if (!outputText || !parentSessionId) {
     return undefined;
   }
@@ -122,10 +133,9 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown): Parsed
         description: args ? readString(args, 'description') : undefined,
       }),
       parentSessionId,
-      agentName: readString(input, 'agent'),
+      agentName,
       callId: readString(input, 'callID'),
-      messageId: readString(input, 'messageID'),
-      launch,
+      messageId,
     });
   }
 
@@ -142,9 +152,9 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown): Parsed
         task_id: args ? readString(args, 'task_id') : status.task_id,
       }),
       parentSessionId,
-      agentName: readString(input, 'agent'),
+      agentName,
       callId: readString(input, 'callID'),
-      messageId: readString(input, 'messageID'),
+      messageId,
       status,
     });
   }

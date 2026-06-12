@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import plugin from '../index.js';
-import { createTaskLifecycleHook, type ParsedTaskLifecycleEvent } from './taskOutput.js';
+import type { BackgroundJobsJson } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
 
@@ -38,81 +40,70 @@ function createStubShell(): PluginInput['$'] {
 }
 
 describe('background task lifecycle hook support', () => {
-  it('exposes a post-tool hook that can receive parseable native task lifecycle context', async () => {
+  it('captures task args before execution and persists post-tool lifecycle events', async () => {
+    const testRoot = `/tmp/hive-background-hook-test-${process.pid}`;
+    fs.rmSync(testRoot, { recursive: true, force: true });
+
     const hooks = await plugin({
-      directory: '/tmp/hive-background-hook-test',
-      worktree: '/tmp/hive-background-hook-test',
+      directory: testRoot,
+      worktree: testRoot,
       serverUrl: new URL('http://localhost:1'),
       project: {
         id: 'test',
-        worktree: '/tmp/hive-background-hook-test',
+        worktree: testRoot,
         time: { created: Date.now() },
       },
       client: OPENCODE_CLIENT,
       $: createStubShell(),
     });
 
-    const input = {
-      tool: 'task',
-      args: { description: 'Run worker', background: true },
-      sessionID: 'sess_parent',
-      messageID: 'msg_parent',
-      agent: 'hive',
-      callID: 'call_task_1',
-    };
-    const output = {
-      title: 'task',
-      output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
-    };
-
-    const observed: ParsedTaskLifecycleEvent[] = [];
-    const lifecycleHook = createTaskLifecycleHook((event) => {
-      observed.push(event);
-    });
-
     expect(hooks['tool.execute.after']).toBeDefined();
-    await lifecycleHook(input, output);
-    expect(observed[0]).toEqual({
-      tool: 'task',
-      taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
-      args: {
-        background: true,
+
+    try {
+      await hooks['chat.message']?.(
+        { sessionID: 'sess_parent', agent: 'hive-master' } as never,
+        { message: {}, parts: [] } as never,
+      );
+      await hooks['tool.execute.before']?.(
+        { tool: 'task', sessionID: 'sess_parent', callID: 'call_task_1' } as never,
+        { args: { description: 'Run worker', background: true } } as never,
+      );
+      await hooks['tool.execute.after']?.(
+        { tool: 'task', sessionID: 'sess_parent', callID: 'call_task_1' } as never,
+        { title: 'task', output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2', metadata: {} } as never,
+      );
+
+      let board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf-8')) as BackgroundJobsJson;
+      expect(board.jobs[0]).toMatchObject({
+        taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+        agentName: 'hive-master',
         description: 'Run worker',
-      },
-      parentSessionId: 'sess_parent',
-      messageId: 'msg_parent',
-      agentName: 'hive',
-      callId: 'call_task_1',
-      launch: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' },
-    });
+        runtimeState: 'running',
+        scope: {
+          projectRoot: testRoot,
+          parentSessionId: 'sess_parent',
+          primaryAgent: 'hive-master',
+        },
+      });
 
-    const statusInput = {
-      tool: 'task_status',
-      args: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' },
-      sessionID: 'sess_parent',
-      agent: 'hive',
-      callID: 'call_status_1',
-    };
-    const statusOutput = {
-      title: 'task_status',
-      output: '{"task_id":"task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2","status":"completed","result":"done"}',
-    };
+      await hooks['tool.execute.before']?.(
+        { tool: 'task_status', sessionID: 'sess_parent', callID: 'call_status_1' } as never,
+        { args: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' } } as never,
+      );
+      await hooks['tool.execute.after']?.(
+        { tool: 'task_status', sessionID: 'sess_parent', callID: 'call_status_1' } as never,
+        { title: 'task_status', output: '{"task_id":"task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2","status":"completed","result":"done"}', metadata: {} } as never,
+      );
 
-    await lifecycleHook(statusInput, statusOutput);
-    expect(observed[1]).toEqual({
-      tool: 'task_status',
-      taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
-      args: {
-        task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
-      },
-      parentSessionId: 'sess_parent',
-      agentName: 'hive',
-      callId: 'call_status_1',
-      status: {
-        task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+      board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf-8')) as BackgroundJobsJson;
+      expect(board.jobs[0]).toMatchObject({
+        taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
         runtimeState: 'completed',
-        result: 'done',
-      },
-    });
+        resultSummary: 'done',
+        terminalUnreconciled: true,
+      });
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    }
   });
 });

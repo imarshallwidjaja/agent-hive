@@ -89,7 +89,6 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
       messageId: 'msg_parent',
       agentName: 'hive',
       callId: 'call_task_1',
-      launch: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' },
     });
   });
 
@@ -122,17 +121,23 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
     });
   });
 
-  it('routes parsed lifecycle events to a hook handler', async () => {
+  it('routes parsed lifecycle events to a hook handler with captured args', async () => {
     const observed: ParsedTaskLifecycleEvent[] = [];
+    const capturedArgs = new Map<string, Record<string, unknown>>();
     const hook = createTaskLifecycleHook((event) => {
       observed.push(event);
+    }, (input) => {
+      const record = input as { sessionID: string; callID: string };
+      return {
+        args: capturedArgs.get(`${record.sessionID}:${record.callID}`),
+        agentName: 'hive',
+      };
     });
 
+    capturedArgs.set('sess_parent:call_task_1', { description: 'Run worker', background: true });
     await hook({
       tool: 'task',
-      args: { description: 'Run worker', background: true },
       sessionID: 'sess_parent',
-      agent: 'hive',
       callID: 'call_task_1',
     }, {
       output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
