@@ -30,7 +30,6 @@ const removedHiveSkillTool = ['hive', 'skill'].join('_');
 
 const UNSUPPORTED_RUNTIME_HOOKS = [
   "experimental.session.compacting",
-  'tool.execute' + '.after',
 ] as const;
 
 const REMOVED_PROJECTED_TODO_FIELD = ['todo', 'Projection'].join('');
@@ -3151,7 +3150,7 @@ Original plan task four content must stay isolated from any append-only manual f
     expect(workerSession.workerPromptPath).toContain("worker-prompt.md");
   });
 
-  it('does not declare the removed post-tool hook in the supported hook source of truth', () => {
+  it('declares only the runtime hooks needed by the plugin', () => {
     expect([...SUPPORTED_PLUGIN_HOOKS]).toEqual([
       'event',
       'config',
@@ -3159,6 +3158,7 @@ Original plan task four content must stay isolated from any append-only manual f
       'experimental.chat.system.transform',
       'experimental.chat.messages.transform',
       'tool.execute.before',
+      'tool.execute.after',
     ]);
   });
 });

@@ -1260,6 +1260,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       output.args.workdir = undefined; // docker command runs on host
     },
 
+    "tool.execute.after": async () => {},
+
     mcp: builtinMcps,
 
     tool: {
