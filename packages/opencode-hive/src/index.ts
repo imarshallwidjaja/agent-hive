@@ -44,19 +44,17 @@ function normalizeOptionalStringList(values: string[] | undefined): string[] | u
 }
 
 /**
- * Build auto-loaded skill templates for an agent.
- * Returns a string containing all skill templates to append to the agent's prompt.
- * 
+ * Build compact auto-load skill guidance for an agent.
  * Native discovered skills win over Hive bundled skills so user/native definitions can shadow Hive bundles.
  */
-async function buildAutoLoadedSkillsContent(
+function buildAutoLoadSkillsPromptAppendix(
   agentName: string,
   configService: ConfigService,
   nativeSkillsByName: Map<string, PreparedNativeSkill>,
   eligibleHiveSkills: Map<string, PreparedHiveSkill>,
   skippedHiveSkills: Map<string, PreparedNativeHiveSkills['skipped'][number]>,
   autoLoadSkillsOverride?: string[],
-): Promise<string> {
+): string {
   const autoLoadSkills = autoLoadSkillsOverride
     ?? (configService.getAgentConfig(agentName).autoLoadSkills ?? []);
 
@@ -64,46 +62,52 @@ async function buildAutoLoadedSkillsContent(
     return '';
   }
 
-  const skillTemplates: string[] = [];
-  
+  const skillNames: string[] = [];
+
   for (const skillId of autoLoadSkills) {
     const nativeSkill = nativeSkillsByName.get(skillId);
     if (nativeSkill) {
-      skillTemplates.push(nativeSkill.content);
+      skillNames.push(nativeSkill.name);
       continue;
     }
 
     const bundledSkill = eligibleHiveSkills.get(skillId);
     if (bundledSkill) {
-      skillTemplates.push(bundledSkill.content);
+      skillNames.push(bundledSkill.name);
       continue;
     }
 
     const skippedSkill = skippedHiveSkills.get(skillId);
     if (skippedSkill?.reason === 'disabled') {
       console.warn(
-        `[hive] Auto-load skill "${skillId}" was not injected for agent "${agentName}" because it is disabled in Hive config.`,
+        `[hive] Auto-load skill "${skillId}" was not added to guidance for agent "${agentName}" because it is disabled in Hive config.`,
       );
       continue;
     }
 
     if (skippedSkill?.reason === 'url-scan-incomplete') {
       console.warn(
-        `[hive] Auto-load skill "${skillId}" was not injected for agent "${agentName}" because configured skills URLs could not be fully scanned for conflicts during this config-hook run.`,
+        `[hive] Auto-load skill "${skillId}" was not added to guidance for agent "${agentName}" because configured skills URLs could not be fully scanned for conflicts during this config-hook run.`,
       );
       continue;
     }
 
     console.warn(
-      `[hive] Auto-load skill "${skillId}" was not injected for agent "${agentName}" because it was not found in OpenCode native skill discovery or eligible Hive bundled skills.`,
+      `[hive] Auto-load skill "${skillId}" was not added to guidance for agent "${agentName}" because it was not found in OpenCode native skill discovery or eligible Hive bundled skills.`,
     );
   }
 
-  if (skillTemplates.length === 0) {
+  if (skillNames.length === 0) {
     return '';
   }
 
-  return '\n\n' + skillTemplates.join('\n\n');
+  const skillCalls = skillNames
+    .map((skillName) => `- \`skill({ name: ${JSON.stringify(skillName)} })\``)
+    .join('\n');
+  return `\n\n## Configured Auto-Load Skills
+High-priority instruction: load these OpenCode native skills with the \`skill\` tool before work covered by them.
+${skillCalls}
+Follow the loaded skill output. Skill bodies are not preloaded.`;
 }
 
 function buildBackgroundDelegationPromptAppendix(
@@ -277,7 +281,6 @@ const plugin: Plugin = async (ctx) => {
     emitConfigWarning(configFallbackWarning);
   }
   const builtinMcps = createBuiltinMcps(disabledMcps);
-  const effectiveAutoLoadSkills = configService.getAgentConfig('hive-master').autoLoadSkills ?? [];
   const repositoryService = new RepositoryService(directory, configService);
   const repositoryManifestService = new RepositoryManifestService(directory);
   const hasRepositoryManifest = (): boolean => {
@@ -2462,9 +2465,9 @@ Do not choose a custom subagent only because the task is important, complex, or 
           .map(([name, config]) => `- \`${name}\` — derived from \`${config.baseAgent}\`; ${config.description}`)
           .join('\n')}`;
 
-      // Build auto-loaded skill content for each agent
+      // Build auto-load skill guidance for each agent
       const hiveUserConfig = configService.getAgentConfig('hive-master');
-      const hiveAutoLoadedSkills = await buildAutoLoadedSkillsContent(
+      const hiveAutoLoadSkillsAppendix = buildAutoLoadSkillsPromptAppendix(
         'hive-master',
         configService,
         preparedNativeHiveSkills.nativeSkillsByName,
@@ -2477,7 +2480,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const hivePrompt = QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hiveAutoLoadedSkills + hiveBackgroundDelegationAppendix + (agentMode === 'unified' ? customSubagentAppendix : '');
+      const hivePrompt = QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hiveAutoLoadSkillsAppendix + hiveBackgroundDelegationAppendix + (agentMode === 'unified' ? customSubagentAppendix : '');
       runtimeAgentPrompts.set('hive-master', hivePrompt);
       const hiveConfig = {
         model: hiveUserConfig.model,
@@ -2493,7 +2496,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
       };
 
       const architectUserConfig = configService.getAgentConfig('architect-planner');
-      const architectAutoLoadedSkills = await buildAutoLoadedSkillsContent(
+      const architectAutoLoadSkillsAppendix = buildAutoLoadSkillsPromptAppendix(
         'architect-planner',
         configService,
         preparedNativeHiveSkills.nativeSkillsByName,
@@ -2511,7 +2514,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         variant: architectUserConfig.variant,
         temperature: architectUserConfig.temperature ?? 0.7,
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
-        prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadedSkills + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
+        prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadSkillsAppendix + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
         tools: agentTools([
           'hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
@@ -2529,7 +2532,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
       };
 
       const swarmUserConfig = configService.getAgentConfig('swarm-orchestrator');
-      const swarmAutoLoadedSkills = await buildAutoLoadedSkillsContent(
+      const swarmAutoLoadSkillsAppendix = buildAutoLoadSkillsPromptAppendix(
         'swarm-orchestrator',
         configService,
         preparedNativeHiveSkills.nativeSkillsByName,
@@ -2542,7 +2545,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const swarmPrompt = SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadedSkills + swarmBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : '');
+      const swarmPrompt = SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadSkillsAppendix + swarmBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : '');
       runtimeAgentPrompts.set('swarm-orchestrator', swarmPrompt);
       const swarmConfig = {
         model: swarmUserConfig.model,
@@ -2566,7 +2569,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
       };
 
       const scoutUserConfig = configService.getAgentConfig('scout-researcher');
-      const scoutAutoLoadedSkills = await buildAutoLoadedSkillsContent(
+      const scoutAutoLoadSkillsAppendix = buildAutoLoadSkillsPromptAppendix(
         'scout-researcher',
         configService,
         preparedNativeHiveSkills.nativeSkillsByName,
@@ -2579,7 +2582,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         temperature: scoutUserConfig.temperature ?? 0.5,
         mode: 'subagent' as const,
         description: 'Scout (Explorer/Researcher/Retrieval) - Researches codebase + external docs/data.',
-        prompt: SCOUT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + scoutAutoLoadedSkills,
+        prompt: SCOUT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + scoutAutoLoadSkillsAppendix,
         tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status']),
         permission: {
           edit: "deny",  // Researchers don't edit code
@@ -2591,14 +2594,14 @@ Do not choose a custom subagent only because the task is important, complex, or 
       };
 
       const foragerUserConfig = configService.getAgentConfig('forager-worker');
-      const foragerAutoLoadedSkills = await buildAutoLoadedSkillsContent(
+      const foragerAutoLoadSkillsAppendix = buildAutoLoadSkillsPromptAppendix(
         'forager-worker',
         configService,
         preparedNativeHiveSkills.nativeSkillsByName,
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const foragerPrompt = FORAGER_BEE_PROMPT + HIVE_SYSTEM_PROMPT + foragerAutoLoadedSkills;
+      const foragerPrompt = FORAGER_BEE_PROMPT + HIVE_SYSTEM_PROMPT + foragerAutoLoadSkillsAppendix;
       runtimeAgentPrompts.set('forager-worker', foragerPrompt);
       const foragerConfig = {
         model: foragerUserConfig.model,
@@ -2637,13 +2640,13 @@ Do not choose a custom subagent only because the task is important, complex, or 
         skill: 'allow',
       };
 
-      async function buildReviewerConfig(
+      function buildReviewerConfig(
         agentName: 'plan-reviewer' | 'code-reviewer' | 'simplicity-reviewer' | 'approach-advisor',
         prompt: string,
         description: string,
       ) {
         const userConfig = configService.getAgentConfig(agentName);
-        const autoLoadedSkills = await buildAutoLoadedSkillsContent(
+        const autoLoadSkillsAppendix = buildAutoLoadSkillsPromptAppendix(
           agentName,
           configService,
           preparedNativeHiveSkills.nativeSkillsByName,
@@ -2656,7 +2659,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
           temperature: userConfig.temperature ?? 0.3,
           mode: 'subagent' as const,
           description,
-          prompt: prompt + HIVE_SYSTEM_PROMPT + autoLoadedSkills,
+          prompt: prompt + HIVE_SYSTEM_PROMPT + autoLoadSkillsAppendix,
           tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status']),
           permission: reviewerPermissions,
         };
@@ -2665,29 +2668,29 @@ Do not choose a custom subagent only because the task is important, complex, or 
       const planReviewerUserConfig = configService.getAgentConfig('plan-reviewer');
       const codeReviewerUserConfig = configService.getAgentConfig('code-reviewer');
       const approachAdvisorUserConfig = configService.getAgentConfig('approach-advisor');
-      const planReviewerConfig = await buildReviewerConfig(
+      const planReviewerConfig = buildReviewerConfig(
         'plan-reviewer',
         PLAN_REVIEWER_PROMPT,
         'Plan Reviewer - Reviews Hive plans for worker readiness, references, dependencies, and executable verification. OKAY/REJECT verdict.',
       );
-      const codeReviewerConfig = await buildReviewerConfig(
+      const codeReviewerConfig = buildReviewerConfig(
         'code-reviewer',
         CODE_REVIEWER_PROMPT,
         'Code Reviewer - Reviews implementation diffs against task or plan requirements for correctness, tests, risk, scope creep, YAGNI, and dead code.',
       );
-      const simplicityReviewerConfig = await buildReviewerConfig(
+      const simplicityReviewerConfig = buildReviewerConfig(
         'simplicity-reviewer',
         SIMPLICITY_REVIEWER_PROMPT,
         'Simplicity Reviewer - Final post-implementation cleanup reviewer for YAGNI, dead code, duplication, unnecessary abstractions, and safe deletion-biased simplification.',
       );
-      const approachAdvisorConfig = await buildReviewerConfig(
+      const approachAdvisorConfig = buildReviewerConfig(
         'approach-advisor',
         APPROACH_ADVISOR_PROMPT,
         'Approach Advisor - Read-only technical advisor for approach, architecture, hard debugging direction, and tradeoffs.',
       );
 
       const builderUserConfig = configService.getAgentConfig('hive-builder');
-      const builderAutoLoadedSkills = await buildAutoLoadedSkillsContent(
+      const builderAutoLoadSkillsAppendix = buildAutoLoadSkillsPromptAppendix(
         'hive-builder',
         configService,
         preparedNativeHiveSkills.nativeSkillsByName,
@@ -2700,7 +2703,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadedSkills + builderBackgroundDelegationAppendix + customSubagentAppendix;
+      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadSkillsAppendix + builderBackgroundDelegationAppendix + customSubagentAppendix;
       runtimeAgentPrompts.set('hive-builder', builderPrompt);
       const builderConfig = {
         model: builderUserConfig.model,
@@ -2736,9 +2739,8 @@ Do not choose a custom subagent only because the task is important, complex, or 
         'hive-builder': builderConfig,
       };
 
-      const customAutoLoadedSkills = Object.fromEntries(
-        await Promise.all(
-          Object.entries(customAgentConfigs).map(async ([customAgentName, customAgentConfig]) => {
+      const customAutoLoadSkillsAppendices = Object.fromEntries(
+        Object.entries(customAgentConfigs).map(([customAgentName, customAgentConfig]) => {
             const inheritedBaseSkillsByAgent: Record<CustomAgentBase, string[]> = {
               'scout-researcher': scoutUserConfig.autoLoadSkills ?? [],
               'forager-worker': foragerUserConfig.autoLoadSkills ?? [],
@@ -2753,17 +2755,16 @@ Do not choose a custom subagent only because the task is important, complex, or 
 
             return [
               customAgentName,
-                await buildAutoLoadedSkillsContent(
-                  customAgentName,
-                  configService,
-                  preparedNativeHiveSkills.nativeSkillsByName,
-                  preparedNativeHiveSkills.skillsByName,
-                  skippedHiveSkills,
-                  deltaAutoLoadSkills,
-                ),
+              buildAutoLoadSkillsPromptAppendix(
+                customAgentName,
+                configService,
+                preparedNativeHiveSkills.nativeSkillsByName,
+                preparedNativeHiveSkills.skillsByName,
+                skippedHiveSkills,
+                deltaAutoLoadSkills,
+              ),
             ];
-          }),
-        ),
+        }),
       );
 
       const customSubagents = buildCustomSubagents({
@@ -2778,7 +2779,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         baseRuntimePrompts: {
           'forager-worker': foragerPrompt,
         },
-        autoLoadedSkills: customAutoLoadedSkills,
+        autoLoadSkillAppendices: customAutoLoadSkillsAppendices,
         registerRuntimePrompt: (agentName, prompt) => runtimeAgentPrompts.set(agentName, prompt),
       });
 

@@ -1665,7 +1665,9 @@ Do it
     
     const brainstormingSkill = BUILTIN_SKILLS.find((skill) => skill.name === "brainstorming");
     expect(brainstormingSkill).toBeDefined();
-    expect(agentConfig.prompt).toContain(brainstormingSkill!.template);
+    expect(agentConfig.prompt).toContain("## Configured Auto-Load Skills");
+    expect(agentConfig.prompt).toContain('skill({ name: "brainstorming" })');
+    expect(agentConfig.prompt).not.toContain(brainstormingSkill!.template);
     expect(agentConfig.prompt).toContain("Configured Custom Subagents");
     expect(agentConfig.prompt).toContain("`scout-docs`");
     expect(agentConfig.prompt).toContain("`reviewer-security`");
@@ -2385,6 +2387,7 @@ Do it
     const hooks = await plugin(ctx);
 
     const onboardingSnippet = "# Onboarding Preferences";
+    const parallelExplorationToolCall = 'skill({ name: "parallel-exploration" })';
     const parallelExplorationSkill = BUILTIN_SKILLS.find(
       (skill) => skill.name === "parallel-exploration",
     );
@@ -2403,16 +2406,16 @@ Do it
     const foragerOutput = { system: ["OpenCode provider base prompt"] };
     await systemTransform?.({ sessionID: 'sess_forager_autoload', agent: 'forager-worker' }, foragerOutput);
 
-    // hive-master should have parallel-exploration in prompt (unified mode)
+    // hive-master should have parallel-exploration load guidance in prompt (unified mode)
     expect(agents["hive-master"]?.prompt).toBeUndefined();
-    expect(hiveOutput.system[0]).toContain(
-      parallelExplorationSkill!.template,
-    );
+    expect(hiveOutput.system[0]).toContain(parallelExplorationToolCall);
+    expect(hiveOutput.system[0]).not.toContain(parallelExplorationSkill!.template);
     expect(hiveOutput.system[0]).not.toContain(onboardingSnippet);
 
-    // scout-researcher should NOT have parallel-exploration in prompt (unified mode)
+    // scout-researcher should NOT have parallel-exploration guidance in prompt (unified mode)
     // (removed to prevent recursive delegation - scout cannot spawn scouts)
     expect(agents["scout-researcher"]?.prompt).toBeDefined();
+    expect(agents["scout-researcher"]?.prompt).not.toContain(parallelExplorationToolCall);
     expect(agents["scout-researcher"]?.prompt).not.toContain(
       parallelExplorationSkill!.template,
     );
@@ -2420,6 +2423,7 @@ Do it
 
     // forager-worker should NOT have parallel-exploration in prompt
     expect(agents["forager-worker"]?.prompt).toBeUndefined();
+    expect(foragerOutput.system[0]).not.toContain(parallelExplorationToolCall);
     expect(foragerOutput.system[0]).not.toContain(
       parallelExplorationSkill!.template,
     );

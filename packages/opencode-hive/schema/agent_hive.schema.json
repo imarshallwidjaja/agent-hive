@@ -214,7 +214,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Native discovered or Hive bundled skill names to inject into this agent prompt at startup. Native/user skills are resolved by frontmatter name and take precedence over Hive bundles."
+          "description": "Native discovered or Hive bundled skill names to advertise in this agent prompt as high-priority skill tool load guidance. Native/user skills are resolved by frontmatter name and take precedence over Hive bundles."
         },
         "variant": {
           "type": "string",
@@ -265,7 +265,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Additional native discovered or Hive bundled skill names to inject into this custom agent prompt at startup. Merged with inherited base autoLoadSkills; disableSkills only suppresses Hive bundled content, not native/user skills with the same name."
+          "description": "Additional native discovered or Hive bundled skill names to advertise in this custom agent prompt as high-priority skill tool load guidance. Merged with inherited base autoLoadSkills; disableSkills only suppresses Hive bundled guidance/materialization, not native/user skills with the same name."
         }
       }
     }

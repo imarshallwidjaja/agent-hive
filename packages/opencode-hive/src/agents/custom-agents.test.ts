@@ -126,15 +126,15 @@ describe('buildCustomSubagents', () => {
     const derived = buildCustomSubagents({
       customAgents,
       baseAgents,
-      autoLoadedSkills: {
-        'scout-docs': '\n\n# scout-docs auto skills',
-        'forager-ui': '\n\n# forager-ui auto skills',
+      autoLoadSkillAppendices: {
+        'scout-docs': '\n\n# scout-docs auto-load guidance',
+        'forager-ui': '\n\n# forager-ui auto-load guidance',
       },
     });
 
     expect(derived['scout-docs'].mode).toBe('subagent');
     expect(derived['scout-docs'].prompt).toContain(SCOUT_BEE_PROMPT);
-    expect(derived['scout-docs'].prompt).toContain('# scout-docs auto skills');
+    expect(derived['scout-docs'].prompt).toContain('# scout-docs auto-load guidance');
     expect(derived['scout-docs'].permission).toEqual(baseAgents['scout-researcher'].permission);
     expect(derived['scout-docs'].tools).toEqual(baseAgents['scout-researcher'].tools);
     expect(derived['scout-docs'].description).toBe('Use for documentation-heavy research tasks.');
@@ -144,7 +144,7 @@ describe('buildCustomSubagents', () => {
 
     expect(derived['forager-ui'].mode).toBe('subagent');
     expect(derived['forager-ui'].prompt).toContain(FORAGER_BEE_PROMPT);
-    expect(derived['forager-ui'].prompt).toContain('# forager-ui auto skills');
+    expect(derived['forager-ui'].prompt).toContain('# forager-ui auto-load guidance');
     expect(derived['forager-ui'].permission).toEqual(baseAgents['forager-worker'].permission);
     expect(derived['forager-ui'].tools).toEqual(baseAgents['forager-worker'].tools);
     expect(derived['forager-ui'].description).toBe('Use for UI-heavy implementation tasks.');
@@ -203,8 +203,8 @@ describe('buildCustomSubagents', () => {
       baseRuntimePrompts: {
         'forager-worker': `${FORAGER_BEE_PROMPT}\n\n# Base forager skills`,
       },
-      autoLoadedSkills: {
-        'forager-ui': '\n\n# forager-ui auto skills',
+      autoLoadSkillAppendices: {
+        'forager-ui': '\n\n# forager-ui auto-load guidance',
       },
       registerRuntimePrompt: (agentName: string, prompt: string) => {
         registeredRuntimePrompts[agentName] = prompt;
@@ -216,7 +216,7 @@ describe('buildCustomSubagents', () => {
     expect(derived['forager-ui'].permission).toEqual(baseAgents['forager-worker'].permission);
     expect(registeredRuntimePrompts['forager-ui']).toContain(FORAGER_BEE_PROMPT);
     expect(registeredRuntimePrompts['forager-ui']).toContain('# Base forager skills');
-    expect(registeredRuntimePrompts['forager-ui']).toContain('# forager-ui auto skills');
+    expect(registeredRuntimePrompts['forager-ui']).toContain('# forager-ui auto-load guidance');
     expect(registeredRuntimePrompts['forager-ui']).not.toContain('Use for UI-heavy implementation tasks.');
   });
 });

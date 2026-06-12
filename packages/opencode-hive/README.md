@@ -256,12 +256,12 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | Field | Behavior |
 |-------|----------|
 | `skills` | Legacy field kept for config compatibility. Native skill visibility is controlled by OpenCode registration and `disableSkills`, not by per-agent allowlists. |
-| `autoLoadSkills` | Injects OpenCode-discovered native skill bodies or eligible Hive bundled skill bodies into the agent's system prompt at session start. |
+| `autoLoadSkills` | Adds high-priority prompt guidance telling the agent to load named OpenCode-native skills with the `skill` tool before work covered by them. |
 | `disableSkills` (global) | Disables Hive bundled materialization and Hive bundled autoload only. User or native skills with the same name are not blocked. |
 
-**User file skills** should be configured through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, or `skills.urls` discovery. They can be loaded with the native `skill` tool or injected at startup by adding the skill's frontmatter `name` to `autoLoadSkills`. Native/user skills take precedence over Hive bundled skills with the same name.
+**User file skills** should be configured through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, or `skills.urls` discovery. They can be loaded manually with the native `skill` tool or advertised to an agent by adding the skill's frontmatter `name` to `autoLoadSkills`. Native/user skills take precedence over Hive bundled skills with the same name.
 
-**URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be injected; partially scanned URL skills are not injected.
+**URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload guidance for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be advertised in guidance; partially scanned URL skills are not advertised.
 
 `background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are env-gated and compact. When the env flag is set, primary agent prompts include the background-first scheduler contract and point to the skill for the full protocol instead of treating background delegation as appendix-only text. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
 
@@ -282,8 +282,8 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 **How `skills` and `autoLoadSkills` interact:**
 
 - `skills` is a legacy field kept for config compatibility. In the native skill slice, skill visibility is controlled by OpenCode's native `skills.paths` registration and `disableSkills`, not by per-agent `skills` allowlists.
-- `autoLoadSkills` injects OpenCode-discovered native skill bodies or eligible Hive bundled skill bodies into the agent's system prompt at session start - no manual loading needed
-- These are **independent**: a skill's body can be auto-loaded even if it is not in the agent's `skills` list
+- `autoLoadSkills` adds a compact system-prompt directive to load OpenCode-discovered native skills or eligible Hive bundled skills with `skill({ name: "..." })` before matching work; it does not preload full skill bodies
+- These are **independent**: a skill can be advertised for native loading even if it is not in the agent's legacy `skills` list
 - User `autoLoadSkills` are **merged** with defaults (use global `disableSkills` to remove defaults from autoload)
 
 **Default auto-load skills by agent:**
@@ -406,7 +406,7 @@ Inheritance rules when a custom agent field is omitted:
 | `model` | Inherits resolved base agent model (including user overrides in `agents`) |
 | `temperature` | Inherits resolved base agent temperature |
 | `variant` | Inherits resolved base agent variant |
-| `autoLoadSkills` | Merges with base agent auto-load defaults/overrides and de-duplicates. `disableSkills` only suppresses Hive bundled content, not native/user skills with the same name. |
+| `autoLoadSkills` | Merges with base agent auto-load defaults/overrides and de-duplicates. `disableSkills` only suppresses Hive bundled guidance/materialization, not native/user skills with the same name. |
 
 ID guardrails:
 

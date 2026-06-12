@@ -30,6 +30,21 @@ function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+function skillToolCall(skillName: string): string {
+  return `skill({ name: ${JSON.stringify(skillName)} })`;
+}
+
+function getAutoLoadSkillsGuidance(prompt: string): string {
+  const heading = '## Configured Auto-Load Skills';
+  const start = prompt.indexOf(heading);
+  if (start === -1) {
+    return '';
+  }
+
+  const nextHeading = prompt.indexOf('\n\n## ', start + heading.length);
+  return nextHeading === -1 ? prompt.slice(start) : prompt.slice(start, nextHeading);
+}
+
 function createProject(worktree: string) {
   return {
     id: 'test',
@@ -141,7 +156,7 @@ const TEST_ROOT_BASE = '/tmp/hive-config-autoload-skills-test';
 const HIVE_GENERATED_SEGMENT = path.join('.hive', 'generated', 'opencode-skills');
 const PACKAGED_SKILLS_DIR = fileURLToPath(new URL('../../skills', import.meta.url));
 
-describe('config hook autoLoadSkills injection', () => {
+describe('config hook autoLoadSkills guidance', () => {
   let testRoot: string;
   let originalHome: string | undefined;
   let originalExperimentalBackgroundSubagents: string | undefined;
@@ -284,7 +299,6 @@ describe('config hook autoLoadSkills injection', () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = envValue;
     writeHiveConfig(testRoot, { agentMode: 'unified' });
 
-    const opencodeConfig = await applyConfigHook(testRoot);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
 
@@ -347,21 +361,30 @@ describe('config hook autoLoadSkills injection', () => {
     expect(warnings.some((message) => message.includes('background-delegation'))).toBe(false);
   });
 
-  it('injects default autoLoadSkills and materializes Hive bundled skills in unified mode', async () => {
+  it('adds default autoLoadSkills guidance and materializes Hive bundled skills in unified mode', async () => {
     writeHiveConfig(testRoot, { agentMode: 'unified' });
 
     const opencodeConfig = await applyConfigHook(testRoot);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
     const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
+    const scoutGuidance = getAutoLoadSkillsGuidance(scoutPrompt);
+    const foragerGuidance = getAutoLoadSkillsGuidance(foragerPrompt);
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
     const tddSkill = requireBuiltinSkill('test-driven-development');
     const verificationSkill = requireBuiltinSkill('verification');
 
-    expect(hiveMasterPrompt).toContain(parallelExplorationSkill.template);
+    expect(hiveMasterPrompt).toContain('## Configured Auto-Load Skills');
+    expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
+    expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
+    expect(scoutGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(scoutPrompt).not.toContain(parallelExplorationSkill.template);
-    expect(foragerPrompt).toContain(tddSkill.template);
-    expect(foragerPrompt).toContain(verificationSkill.template);
+    expect(foragerGuidance).toContain(skillToolCall('test-driven-development'));
+    expect(foragerGuidance).toContain(skillToolCall('verification'));
+    expect(foragerPrompt).not.toContain(tddSkill.template);
+    expect(foragerPrompt).not.toContain(verificationSkill.template);
+    expect(foragerGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(foragerPrompt).not.toContain(parallelExplorationSkill.template);
 
     const skillPaths = getSkillPaths(opencodeConfig);
@@ -372,7 +395,7 @@ describe('config hook autoLoadSkills injection', () => {
     expect(skillPaths).not.toContain(PACKAGED_SKILLS_DIR);
   });
 
-  it('registers custom subagents and injects only eligible delta autoload skills without duplicating inherited base skills', async () => {
+  it('registers custom subagents and adds only eligible delta autoload guidance without duplicating inherited base skills', async () => {
     createFileSkill(
       path.join(testRoot, '.opencode', 'skills'),
       'native-file-skill',
@@ -410,6 +433,7 @@ describe('config hook autoLoadSkills injection', () => {
     const hivePrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const scoutDocsPrompt = getAgentPrompt(opencodeConfig, 'scout-docs');
     const foragerUiPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-ui', { trackMessage: false });
+    const scoutDocsGuidance = getAutoLoadSkillsGuidance(scoutDocsPrompt);
     const brainstormingSkill = requireBuiltinSkill('brainstorming');
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
     const tddSkill = requireBuiltinSkill('test-driven-development');
@@ -421,15 +445,20 @@ describe('config hook autoLoadSkills injection', () => {
     expect(hivePrompt).toContain('scout-docs');
     expect(hivePrompt).toContain('forager-ui');
     expect(hivePrompt).toContain('reviewer-security');
+    expect(scoutDocsGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(scoutDocsPrompt).not.toContain(parallelExplorationSkill.template);
-    expect(countOccurrences(foragerUiPrompt, brainstormingSkill.template)).toBe(1);
-    expect(countOccurrences(foragerUiPrompt, parallelExplorationSkill.template)).toBe(1);
-    expect(countOccurrences(foragerUiPrompt, tddSkill.template)).toBe(1);
-    expect(countOccurrences(foragerUiPrompt, '# Native File Skill')).toBe(1);
+    expect(countOccurrences(foragerUiPrompt, skillToolCall('brainstorming'))).toBe(1);
+    expect(countOccurrences(foragerUiPrompt, skillToolCall('parallel-exploration'))).toBe(1);
+    expect(countOccurrences(foragerUiPrompt, skillToolCall('test-driven-development'))).toBe(1);
+    expect(countOccurrences(foragerUiPrompt, skillToolCall('native-file-skill'))).toBe(1);
+    expect(foragerUiPrompt).not.toContain(brainstormingSkill.template);
+    expect(foragerUiPrompt).not.toContain(parallelExplorationSkill.template);
+    expect(foragerUiPrompt).not.toContain(tddSkill.template);
+    expect(foragerUiPrompt).not.toContain('# Native File Skill');
     expect(warnings.some((message) => message.includes('native-file-skill'))).toBe(false);
   });
 
-  it('injects user-configured bundled autoLoadSkills on top of defaults', async () => {
+  it('adds user-configured bundled autoLoadSkills guidance on top of defaults', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
       agents: {
@@ -439,18 +468,21 @@ describe('config hook autoLoadSkills injection', () => {
       },
     });
 
-    const opencodeConfig = await applyConfigHook(testRoot);
     const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
+    const foragerGuidance = getAutoLoadSkillsGuidance(foragerPrompt);
     const brainstormingSkill = requireBuiltinSkill('brainstorming');
     const tddSkill = requireBuiltinSkill('test-driven-development');
     const verificationSkill = requireBuiltinSkill('verification');
 
-    expect(foragerPrompt).toContain(brainstormingSkill.template);
-    expect(foragerPrompt).toContain(tddSkill.template);
-    expect(foragerPrompt).toContain(verificationSkill.template);
+    expect(foragerGuidance).toContain(skillToolCall('brainstorming'));
+    expect(foragerGuidance).toContain(skillToolCall('test-driven-development'));
+    expect(foragerGuidance).toContain(skillToolCall('verification'));
+    expect(foragerPrompt).not.toContain(brainstormingSkill.template);
+    expect(foragerPrompt).not.toContain(tddSkill.template);
+    expect(foragerPrompt).not.toContain(verificationSkill.template);
   });
 
-  it('respects disableSkills for prompt injection and generated skill directories', async () => {
+  it('respects disableSkills for prompt guidance and generated skill directories', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
       disableSkills: ['parallel-exploration'],
@@ -458,13 +490,15 @@ describe('config hook autoLoadSkills injection', () => {
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
     const generatedPath = getSkillPaths(opencodeConfig)[0];
 
+    expect(hiveMasterGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
     expect(fs.existsSync(path.join(generatedPath, 'parallel-exploration'))).toBe(false);
     expect(warnings).toContainEqual(
-      expect.stringContaining('Auto-load skill "parallel-exploration" was not injected'),
+      expect.stringContaining('Auto-load skill "parallel-exploration" was not added to guidance'),
     );
   });
 
@@ -486,28 +520,34 @@ describe('config hook autoLoadSkills injection', () => {
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
 
     expect((opencodeConfig.agent as Record<string, unknown>)['hive-master']).toBeDefined();
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'my-custom-skill'))).toBe(false);
-    expect(hiveMasterPrompt).toContain('# Native Skill');
+    expect(hiveMasterGuidance).toContain(skillToolCall('my-custom-skill'));
+    expect(hiveMasterPrompt).not.toContain('# Native Skill');
     expect(warnings.some((message) => message.includes('my-custom-skill'))).toBe(false);
   });
 
-  it('injects autoLoadSkills for dedicated-mode agents', async () => {
+  it('adds autoLoadSkills guidance for dedicated-mode agents', async () => {
     writeHiveConfig(testRoot, { agentMode: 'dedicated' });
 
     const opencodeConfig = await applyConfigHook(testRoot);
     const architectPrompt = getAgentPrompt(opencodeConfig, 'architect-planner');
     const swarmPrompt = await renderRuntimeSystemPrompt(testRoot, 'swarm-orchestrator', { trackMessage: false });
+    const architectGuidance = getAutoLoadSkillsGuidance(architectPrompt);
+    const swarmGuidance = getAutoLoadSkillsGuidance(swarmPrompt);
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
 
-    expect(architectPrompt).toContain(parallelExplorationSkill.template);
+    expect(architectGuidance).toContain(skillToolCall('parallel-exploration'));
+    expect(architectPrompt).not.toContain(parallelExplorationSkill.template);
+    expect(swarmGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(swarmPrompt).not.toContain(parallelExplorationSkill.template);
   });
 
-  it('injects bundled skill bodies directly into runtime prompts', async () => {
+  it('adds bundled skill load guidance without injecting skill bodies into runtime prompts', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
       agents: {
@@ -517,16 +557,18 @@ describe('config hook autoLoadSkills injection', () => {
       },
     });
 
-    const opencodeConfig = await applyConfigHook(testRoot);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
     const brainstormingSkill = requireBuiltinSkill('brainstorming');
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
 
-    expect(hiveMasterPrompt).toContain(brainstormingSkill.template);
-    expect(hiveMasterPrompt).toContain(parallelExplorationSkill.template);
+    expect(hiveMasterGuidance).toContain(skillToolCall('brainstorming'));
+    expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
+    expect(hiveMasterPrompt).not.toContain(brainstormingSkill.template);
+    expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
   });
 
-  it('keeps hive-master autoloaded skills in the runtime prompt', async () => {
+  it('keeps hive-master autoload skill guidance in the runtime prompt', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
       agents: {
@@ -536,15 +578,14 @@ describe('config hook autoLoadSkills injection', () => {
       },
     });
 
-    const hooks = await plugin(createCtx(testRoot));
-
-    const opencodeConfig: Record<string, unknown> = { agent: {} };
-    await hooks.config!(opencodeConfig);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
 
     expect(hiveMasterPrompt).toContain('## Hive — Active Session');
-    expect(hiveMasterPrompt).toContain(requireBuiltinSkill('brainstorming').template);
-    expect(hiveMasterPrompt).toContain(requireBuiltinSkill('parallel-exploration').template);
+    expect(hiveMasterGuidance).toContain(skillToolCall('brainstorming'));
+    expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
+    expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('brainstorming').template);
+    expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('parallel-exploration').template);
   });
 });
 
@@ -636,16 +677,18 @@ describe('config hook native skill registration', () => {
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
 
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'parallel-exploration'))).toBe(false);
+    expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
-    expect(hiveMasterPrompt).toContain('# Native Parallel Exploration');
+    expect(hiveMasterPrompt).not.toContain('# Native Parallel Exploration');
     expect(warnings.some((message) => message.includes('parallel-exploration'))).toBe(false);
   });
 
-  it('autoloads a native skill even when disableSkills disables a Hive bundle with the same name', async () => {
+  it('adds guidance for a native skill even when disableSkills disables a Hive bundle with the same name', async () => {
     createFileSkill(
       path.join(testRoot, '.opencode', 'skills'),
       'parallel-exploration',
@@ -657,14 +700,15 @@ describe('config hook native skill registration', () => {
       disableSkills: ['parallel-exploration'],
     });
 
-    const opencodeConfig = await applyConfigHook(testRoot);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
 
-    expect(hiveMasterPrompt).toContain('# Native Parallel Exploration');
+    expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
+    expect(hiveMasterPrompt).not.toContain('# Native Parallel Exploration');
     expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('parallel-exploration').template);
   });
 
-  it('autoloads native skills from configured skills.paths', async () => {
+  it('adds guidance for native skills from configured skills.paths', async () => {
     const configuredSkillRoot = path.join(testRoot, 'configured-skills');
     createFileSkill(
       configuredSkillRoot,
@@ -690,10 +734,12 @@ describe('config hook native skill registration', () => {
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, opencodeConfigInput));
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false, opencodeConfig: opencodeConfigInput });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
 
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'my-custom-skill'))).toBe(false);
-    expect(hiveMasterPrompt).toContain('# My Custom Skill');
+    expect(hiveMasterGuidance).toContain(skillToolCall('my-custom-skill'));
+    expect(hiveMasterPrompt).not.toContain('# My Custom Skill');
     expect(hiveMasterPrompt).not.toContain('description: A native configured-path skill');
     expect(warnings.some((message) => message.includes('my-custom-skill'))).toBe(false);
   });
@@ -736,12 +782,14 @@ description: URL conflict
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, opencodeConfigInput));
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false, opencodeConfig: opencodeConfigInput });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
 
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'parallel-exploration'))).toBe(false);
+    expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
-    expect(hiveMasterPrompt).toContain('# URL conflict');
+    expect(hiveMasterPrompt).not.toContain('# URL conflict');
     expect(warnings.some((message) => message.includes('parallel-exploration'))).toBe(false);
   });
 
@@ -770,10 +818,12 @@ description: URL conflict
     };
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, opencodeConfigInput));
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false, opencodeConfig: opencodeConfigInput });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
 
     expect(getHiveManagedPaths(getSkillPaths(opencodeConfig))).toHaveLength(0);
     expect(getSkillPaths(opencodeConfig)).toEqual([userPath]);
     expect(getSkillUrls(opencodeConfig)).toEqual(['https://example.test/skills']);
+    expect(hiveMasterGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('parallel-exploration').template);
     expect(hiveMasterPrompt).not.toContain('# Local Native Skill');
     expect(warnings).toContainEqual(
@@ -783,7 +833,7 @@ description: URL conflict
     );
   });
 
-  it('autoloads local native skills while URL scan failure suppresses Hive bundled autoload', async () => {
+  it('adds guidance for local native skills while URL scan failure suppresses Hive bundled autoload', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
       agents: {
@@ -810,10 +860,13 @@ description: URL conflict
     };
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot, opencodeConfigInput));
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false, opencodeConfig: opencodeConfigInput });
+    const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
 
     expect(getHiveManagedPaths(getSkillPaths(opencodeConfig))).toHaveLength(0);
+    expect(hiveMasterGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('parallel-exploration').template);
-    expect(hiveMasterPrompt).toContain('# Local Native Skill');
+    expect(hiveMasterGuidance).toContain(skillToolCall('local-native-skill'));
+    expect(hiveMasterPrompt).not.toContain('# Local Native Skill');
     expect(warnings).toContainEqual(
       expect.stringContaining(
         '[hive] Skipping Hive bundled native skill materialization because configured skills URL could not be scanned for conflicts:',

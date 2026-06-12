@@ -15,7 +15,7 @@ type BuildCustomSubagentsInput = {
   customAgents: Record<string, ResolvedCustomAgentConfig>;
   baseAgents: Record<CustomAgentBase, RuntimeSubagentConfig>;
   baseRuntimePrompts?: Partial<Record<CustomAgentBase, string>>;
-  autoLoadedSkills?: Record<string, string>;
+  autoLoadSkillAppendices?: Record<string, string>;
   registerRuntimePrompt?: (agentName: string, prompt: string) => void;
 };
 
@@ -23,7 +23,7 @@ export function buildCustomSubagents({
   customAgents,
   baseAgents,
   baseRuntimePrompts = {},
-  autoLoadedSkills = {},
+  autoLoadSkillAppendices = {},
   registerRuntimePrompt,
 }: BuildCustomSubagentsInput): Record<string, RuntimeSubagentConfig> {
   const derived: Record<string, RuntimeSubagentConfig> = {};
@@ -34,13 +34,13 @@ export function buildCustomSubagents({
       continue;
     }
 
-    const autoLoadedSkillsContent = autoLoadedSkills[agentName] ?? '';
+    const autoLoadSkillAppendix = autoLoadSkillAppendices[agentName] ?? '';
     const baseRuntimePrompt = baseRuntimePrompts[customConfig.baseAgent];
     const prompt = baseRuntimePrompt === undefined && baseAgent.prompt !== undefined
-      ? baseAgent.prompt + autoLoadedSkillsContent
+      ? baseAgent.prompt + autoLoadSkillAppendix
       : undefined;
     if (baseRuntimePrompt !== undefined) {
-      registerRuntimePrompt?.(agentName, baseRuntimePrompt + autoLoadedSkillsContent);
+      registerRuntimePrompt?.(agentName, baseRuntimePrompt + autoLoadSkillAppendix);
     }
 
     derived[agentName] = {
