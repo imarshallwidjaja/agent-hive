@@ -131,7 +131,7 @@
     },
     "customAgents": {
       "type": "object",
-      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, or approach-advisor. Project-local values are ignored by runtime config resolution. IDs cannot reuse built-in or plugin-reserved names.",
+      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, or approach-advisor. Project-local values are ignored by runtime config resolution. IDs cannot reuse built-in or plugin-reserved names.",
       "propertyNames": {
         "not": {
           "enum": [
@@ -237,6 +237,7 @@
             "forager-worker",
             "plan-reviewer",
             "code-reviewer",
+            "simplicity-reviewer",
             "approach-advisor"
           ],
           "description": "Built-in Hive agent to inherit prompt/tools/permissions from"

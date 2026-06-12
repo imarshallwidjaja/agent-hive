@@ -27,6 +27,7 @@ describe('agent_hive schema customAgents contract', () => {
       'forager-worker',
       'plan-reviewer',
       'code-reviewer',
+      'simplicity-reviewer',
       'approach-advisor',
     ]);
   });
@@ -48,6 +49,7 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('hive-helper');
     expectReservedNameToFail('plan-reviewer');
     expectReservedNameToFail('code-reviewer');
+    expectReservedNameToFail('simplicity-reviewer');
     expectReservedNameToFail('approach-advisor');
     expectReservedNameToFail('hive');
     expectReservedNameToFail('architect');

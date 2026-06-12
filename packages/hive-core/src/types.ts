@@ -288,7 +288,7 @@ export const BUILT_IN_AGENT_NAMES = [
 
 export type BuiltInAgentName = (typeof BUILT_IN_AGENT_NAMES)[number];
 
-export const CUSTOM_AGENT_BASES = ['scout-researcher', 'forager-worker', 'plan-reviewer', 'code-reviewer', 'approach-advisor'] as const;
+export const CUSTOM_AGENT_BASES = ['scout-researcher', 'forager-worker', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor'] as const;
 
 export type CustomAgentBase = (typeof CUSTOM_AGENT_BASES)[number];
 

@@ -253,10 +253,10 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
     });
 
-    it('documents simplicity-reviewer as a built-in post-implementation cleanup reviewer', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('default to built-in `simplicity-reviewer`');
-      expect(QUEEN_BEE_PROMPT).toContain('Do not choose custom agents for simplicity review');
-      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "simplicity-reviewer"');
+    it('documents simplicity-reviewer routing by closest cleanup fit', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('simplicity reviewer whose description best fits the cleanup lens');
+      expect(QUEEN_BEE_PROMPT).toContain('Use built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match');
+      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
       expect(QUEEN_BEE_PROMPT).toContain('post-implementation cleanup pass');
     });
 
@@ -314,7 +314,7 @@ describe('Hive (Hybrid) prompt', () => {
   it('teaches Hive Builder about the built-in simplicity-reviewer', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('simplicity-reviewer');
     expect(HIVE_BUILDER_PROMPT).toContain('final post-implementation simplicity pass');
-    expect(HIVE_BUILDER_PROMPT).toContain('Do not choose custom agents for simplicity review');
+    expect(HIVE_BUILDER_PROMPT).toContain('simplicity reviewer whose description best fits the cleanup lens');
   });
 
   it('contains agents-md-mastery skill reference', () => {
@@ -557,10 +557,10 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
     });
 
-    it('documents simplicity-reviewer as a built-in post-implementation cleanup reviewer', () => {
-      expect(SWARM_BEE_PROMPT).toContain('default to built-in `simplicity-reviewer`');
-      expect(SWARM_BEE_PROMPT).toContain('Do not choose custom agents for simplicity review');
-      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "simplicity-reviewer"');
+    it('documents simplicity-reviewer routing by closest cleanup fit', () => {
+      expect(SWARM_BEE_PROMPT).toContain('simplicity reviewer whose description best fits the cleanup lens');
+      expect(SWARM_BEE_PROMPT).toContain('Use built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match');
+      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
       expect(SWARM_BEE_PROMPT).toContain('post-implementation cleanup pass');
     });
 
@@ -883,13 +883,12 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain('| `hive-helper` | (none) |');
     });
 
-    it('keeps hive-helper and simplicity-reviewer out of custom derived subagent docs', () => {
+    it('keeps hive-helper out of custom derived subagent docs while documenting simplicity-reviewer as a custom base', () => {
       expect(readmeContent).toContain('does not appear in `.github/agents/`');
       expect(readmeContent).toContain('### Custom Derived Subagents');
-      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, or `approach-advisor`');
-      expect(readmeContent).toContain('`simplicity-reviewer` is also not a custom base agent');
+      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, or `approach-advisor`');
+      expect(readmeContent).not.toContain('`simplicity-reviewer` is also not a custom base agent');
       expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `code-reviewer`, or `hive-helper`');
-      expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `code-reviewer`, or `simplicity-reviewer`');
     });
 
     it('mentions hive-helper and simplicity-reviewer in the top-level README so users know the agents exist', () => {

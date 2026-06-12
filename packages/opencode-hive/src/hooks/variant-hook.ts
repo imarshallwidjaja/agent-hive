@@ -16,6 +16,7 @@ const BUILT_IN_AGENTS: Record<string, { sessionKind: SessionKind; baseAgent: str
   'hive-helper': { sessionKind: 'subagent', baseAgent: 'hive-helper' },
   'plan-reviewer': { sessionKind: 'subagent', baseAgent: 'plan-reviewer' },
   'code-reviewer': { sessionKind: 'subagent', baseAgent: 'code-reviewer' },
+  'simplicity-reviewer': { sessionKind: 'subagent', baseAgent: 'simplicity-reviewer' },
   'approach-advisor': { sessionKind: 'subagent', baseAgent: 'approach-advisor' },
 };
 
@@ -24,6 +25,7 @@ const BASE_AGENT_KIND: Record<string, SessionKind> = {
   'forager-worker': 'task-worker',
   'plan-reviewer': 'subagent',
   'code-reviewer': 'subagent',
+  'simplicity-reviewer': 'subagent',
   'approach-advisor': 'subagent',
 };
 

@@ -2665,9 +2665,6 @@ Do not choose a custom subagent only because the task is important, complex, or 
         };
       }
 
-      const planReviewerUserConfig = configService.getAgentConfig('plan-reviewer');
-      const codeReviewerUserConfig = configService.getAgentConfig('code-reviewer');
-      const approachAdvisorUserConfig = configService.getAgentConfig('approach-advisor');
       const planReviewerConfig = buildReviewerConfig(
         'plan-reviewer',
         PLAN_REVIEWER_PROMPT,
@@ -2741,14 +2738,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
 
       const customAutoLoadSkillsAppendices = Object.fromEntries(
         Object.entries(customAgentConfigs).map(([customAgentName, customAgentConfig]) => {
-            const inheritedBaseSkillsByAgent: Record<CustomAgentBase, string[]> = {
-              'scout-researcher': scoutUserConfig.autoLoadSkills ?? [],
-              'forager-worker': foragerUserConfig.autoLoadSkills ?? [],
-              'plan-reviewer': planReviewerUserConfig.autoLoadSkills ?? [],
-              'code-reviewer': codeReviewerUserConfig.autoLoadSkills ?? [],
-              'approach-advisor': approachAdvisorUserConfig.autoLoadSkills ?? [],
-            };
-            const inheritedBaseSkills = inheritedBaseSkillsByAgent[customAgentConfig.baseAgent];
+            const inheritedBaseSkills = configService.getAgentConfig(customAgentConfig.baseAgent).autoLoadSkills ?? [];
             const deltaAutoLoadSkills = (customAgentConfig.autoLoadSkills ?? []).filter(
               (skill) => !inheritedBaseSkills.includes(skill),
             );
@@ -2774,6 +2764,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
           'forager-worker': foragerConfig,
           'plan-reviewer': planReviewerConfig,
           'code-reviewer': codeReviewerConfig,
+          'simplicity-reviewer': simplicityReviewerConfig,
           'approach-advisor': approachAdvisorConfig,
         },
         baseRuntimePrompts: {

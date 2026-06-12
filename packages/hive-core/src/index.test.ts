@@ -24,10 +24,10 @@ describe("hive-core", () => {
     expect(BUILT_IN_AGENT_NAMES).toContain('hive-builder');
   });
 
-  it("includes simplicity-reviewer as built-in but not as a custom-agent base", () => {
+  it("includes simplicity-reviewer as built-in and as a custom-agent base", () => {
     expect(BUILT_IN_AGENT_NAMES).toContain('simplicity-reviewer');
     expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('simplicity-reviewer');
-    expect(CUSTOM_AGENT_BASES).not.toContain('simplicity-reviewer');
+    expect(CUSTOM_AGENT_BASES).toContain('simplicity-reviewer');
   });
 
   it("includes hive-builder defaults in DEFAULT_HIVE_CONFIG", () => {

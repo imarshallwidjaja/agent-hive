@@ -32,7 +32,7 @@ Use targeted subagents when delegation helps:
 - **Scout** — for read-only discovery and research.
 - **Forager or custom workers** — for execution in isolated worktrees, with explicit worktree path instructions where appropriate.
 - **code-reviewer** — for implementation correctness review before finalizing.
-- **simplicity-reviewer** — for a final post-implementation simplicity pass before finalizing. Do not choose custom agents for simplicity review.
+- **simplicity-reviewer** — for a final post-implementation simplicity pass before finalizing. Choose the simplicity reviewer whose description best fits the cleanup lens; use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match.
 - **Hive Helper** — only for task-backed Hive recovery, not ad-hoc merge recovery.
 
 ### Subagent Concurrency

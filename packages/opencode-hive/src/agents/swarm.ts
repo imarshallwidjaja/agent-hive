@@ -152,7 +152,7 @@ When execution exposes a strategic approach question that could change the plan,
 
 After completing and merging a batch: ask via \`question()\` if they want implementation correctness review, simplicity review, both, or skip.
 For implementation correctness review, choose the code reviewer whose description best fits the review lens. Use built-in \`code-reviewer\` when no configured code-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
-For simplicity review, default to built-in \`simplicity-reviewer\`. Do not choose custom agents for simplicity review. Then run \`task({ subagent_type: "simplicity-reviewer", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
+For simplicity review, choose the simplicity reviewer whose description best fits the cleanup lens. Use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
 Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
 Route review feedback through this decision tree before starting the next batch:
 

@@ -353,14 +353,14 @@ The `variant` value must match a key in your OpenCode config at `provider.<provi
 
 Define plugin-only custom subagents with `customAgents`. Freshly initialized `agent_hive.json` files already include starter template entries under `customAgents`; those seeded `*-example-template` entries are placeholders only, should be renamed or deleted before real use, and are intentionally worded so planners/orchestrators are unlikely to select them as configured. Each custom agent must declare:
 
-- `baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, or `approach-advisor`
+- `baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, or `approach-advisor`
 - `description`: delegation guidance injected into primary planner/orchestrator prompts
 
 Custom subagents are scoped routing specialists, not model-upgrade switches. Primary agents choose them when their description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names them. They keep the built-in base agent when no configured description is a closer fit. A stronger model alone is not a routing reason.
 
 `hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/`.
 
-`simplicity-reviewer` is also not a custom base agent. It is a built-in direct reviewer for final post-implementation cleanup, so operators can invoke it without defining a custom OpenCode agent.
+`simplicity-reviewer` is a custom base agent for specialized cleanup passes. Primary agents still use the built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match.
 
 `hive-helper` is also not a network consumer; planning, orchestration, and review roles get network access first.
 

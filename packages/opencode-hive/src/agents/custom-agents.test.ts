@@ -3,6 +3,7 @@ import type { ResolvedCustomAgentConfig } from 'hive-core';
 import { FORAGER_BEE_PROMPT } from './forager';
 import { CODE_REVIEWER_PROMPT } from './code-reviewer';
 import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
+import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { buildCustomSubagents } from './custom-agents';
@@ -81,6 +82,19 @@ describe('buildCustomSubagents', () => {
         },
         permission: reviewerPermission,
       },
+      'simplicity-reviewer': {
+        model: 'base/simplicity-model',
+        temperature: 0.3,
+        variant: 'low',
+        mode: 'subagent' as const,
+        description: 'Base Simplicity Reviewer',
+        prompt: SIMPLICITY_REVIEWER_PROMPT,
+        tools: {
+          hive_merge: false,
+          hive_status: false,
+        },
+        permission: reviewerPermission,
+      },
       'approach-advisor': {
         model: 'base/advisor-model',
         temperature: 0.3,
@@ -121,6 +135,11 @@ describe('buildCustomSubagents', () => {
         variant: 'low',
         autoLoadSkills: [],
       },
+      'reviewer-minimalist': {
+        baseAgent: 'simplicity-reviewer',
+        description: 'Use for adversarial deletion-biased cleanup passes.',
+        autoLoadSkills: ['adversarial-review'],
+      },
     };
 
     const derived = buildCustomSubagents({
@@ -129,6 +148,7 @@ describe('buildCustomSubagents', () => {
       autoLoadSkillAppendices: {
         'scout-docs': '\n\n# scout-docs auto-load guidance',
         'forager-ui': '\n\n# forager-ui auto-load guidance',
+        'reviewer-minimalist': '\n\n# reviewer-minimalist auto-load guidance',
       },
     });
 
@@ -158,6 +178,14 @@ describe('buildCustomSubagents', () => {
     expect(derived['reviewer-security'].tools).toEqual(baseAgents['code-reviewer'].tools);
     expect(derived['reviewer-security'].description).toBe('Use for security-focused review passes.');
     expect(derived['reviewer-security'].model).toBe('base/code-model');
+
+    expect(derived['reviewer-minimalist'].mode).toBe('subagent');
+    expect(derived['reviewer-minimalist'].prompt).toContain(SIMPLICITY_REVIEWER_PROMPT);
+    expect(derived['reviewer-minimalist'].prompt).toContain('# reviewer-minimalist auto-load guidance');
+    expect(derived['reviewer-minimalist'].permission).toEqual(baseAgents['simplicity-reviewer'].permission);
+    expect(derived['reviewer-minimalist'].tools).toEqual(baseAgents['simplicity-reviewer'].tools);
+    expect(derived['reviewer-minimalist'].description).toBe('Use for adversarial deletion-biased cleanup passes.');
+    expect(derived['reviewer-minimalist'].model).toBe('base/simplicity-model');
   });
 
   it('registers custom forager runtime prompts when the base forager prompt is runtime-only', () => {
@@ -183,6 +211,11 @@ describe('buildCustomSubagents', () => {
         mode: 'subagent' as const,
         description: 'Base Code Reviewer',
         prompt: CODE_REVIEWER_PROMPT,
+      },
+      'simplicity-reviewer': {
+        mode: 'subagent' as const,
+        description: 'Base Simplicity Reviewer',
+        prompt: SIMPLICITY_REVIEWER_PROMPT,
       },
       'approach-advisor': {
         mode: 'subagent' as const,
