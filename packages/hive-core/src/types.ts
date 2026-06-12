@@ -203,6 +203,16 @@ export interface BackgroundJobOwnership {
   repoIds?: string[];
 }
 
+export interface BackgroundPendingLaunch {
+  parentSessionId: string;
+  expectedDescription?: string;
+  expectedPrompt?: string;
+  agentName: string;
+  scope?: BackgroundJobScope;
+  ownership?: BackgroundJobOwnership;
+  createdAt: string;
+}
+
 export interface BackgroundJobRecord {
   taskId: string;
   sessionId: string;
@@ -236,6 +246,7 @@ export interface BackgroundJobRecord {
 export interface BackgroundJobsJson {
   schemaVersion: 1;
   jobs: BackgroundJobRecord[];
+  pendingLaunches?: BackgroundPendingLaunch[];
   updatedAt?: string;
 }
 

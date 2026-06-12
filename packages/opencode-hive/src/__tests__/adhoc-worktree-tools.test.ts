@@ -167,6 +167,56 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(fs.existsSync(result.workspacePath!)).toBe(true);
   });
 
+  it('hive_adhoc_worktree_create returns background scope metadata without an active feature', async () => {
+    const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+
+    try {
+      initGitRoot(testRoot);
+      const hooks = await loadHooks(testRoot);
+      const toolContext = createToolContext('sess_adhoc_background_scope');
+
+      const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+        { label: 'background-run' },
+        toolContext,
+      );
+      const result = parseToolJson<{
+        success?: boolean;
+        runId?: string;
+        workspacePath?: string;
+        branch?: string;
+        backgroundScope?: {
+          adHocRunId?: string;
+          projectRoot?: string;
+          parentSessionId?: string;
+        };
+        backgroundOwnership?: {
+          worktreePath?: string;
+          branch?: string;
+          repoIds?: string[];
+        };
+      }>(raw);
+
+      expect(result.success).toBe(true);
+      expect(result.backgroundScope).toEqual({
+        adHocRunId: result.runId,
+        projectRoot: testRoot,
+        parentSessionId: 'sess_adhoc_background_scope',
+      });
+      expect(result.backgroundOwnership).toEqual({
+        worktreePath: result.workspacePath,
+        branch: result.branch,
+        repoIds: [],
+      });
+    } finally {
+      if (previousBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+      }
+    }
+  });
+
   it('hive_adhoc_worktree_create treats blank optional fields as omitted', async () => {
     initGitRoot(testRoot);
     const hooks = await loadHooks(testRoot);

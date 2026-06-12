@@ -133,19 +133,25 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       }
 
       const parentSession = options.getSession?.(event.parentSessionId);
+      const pendingLaunch = options.service.consumePendingLaunch({
+        parentSessionId: event.parentSessionId,
+        expectedDescription: event.args.description,
+        expectedPrompt: event.args.prompt,
+      });
       try {
         options.service.registerLaunch({
           taskId: event.taskId,
           sessionId: `${event.parentSessionId}:${event.taskId}`,
-          agentName: event.args.subagent_type ?? 'unknown',
+          agentName: event.args.subagent_type ?? pendingLaunch?.agentName ?? 'unknown',
           description: event.args.description,
-          scope: {
+          scope: pendingLaunch?.scope ?? {
             projectRoot: options.projectRoot,
             parentSessionId: event.parentSessionId,
             primaryAgent: event.agentName,
             feature: parentSession?.featureName,
             task: parentSession?.taskFolder,
           },
+          ownership: pendingLaunch?.ownership,
         });
       } catch (error) {
         if (!(error instanceof Error) || !/already registered/.test(error.message)) {

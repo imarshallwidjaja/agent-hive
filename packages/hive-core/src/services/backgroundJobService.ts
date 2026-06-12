@@ -2,6 +2,7 @@ import * as path from 'path';
 import { acquireLockSync, getHivePath, readJson, writeJsonAtomic } from '../utils/paths.js';
 import type {
   BackgroundJobOwnership,
+  BackgroundPendingLaunch,
   BackgroundJobRecord,
   BackgroundJobRuntimeState,
   BackgroundJobsJson,
@@ -17,6 +18,21 @@ export interface RegisterBackgroundJobInput {
   objective?: string;
   scope?: BackgroundJobScope;
   ownership?: BackgroundJobOwnership;
+}
+
+export interface RegisterBackgroundPendingLaunchInput {
+  parentSessionId: string;
+  expectedDescription?: string;
+  expectedPrompt?: string;
+  agentName: string;
+  scope?: BackgroundJobScope;
+  ownership?: BackgroundJobOwnership;
+}
+
+export interface ConsumeBackgroundPendingLaunchInput {
+  parentSessionId: string;
+  expectedDescription?: string;
+  expectedPrompt?: string;
 }
 
 export interface RuntimeStatePatch {
@@ -48,7 +64,7 @@ export class BackgroundJobService {
     writeJsonAtomic(this.getBoardPath(), board);
   }
 
-  private updateBoard(mutator: (board: BackgroundJobsJson) => BackgroundJobRecord): BackgroundJobRecord {
+  private updateBoard<T>(mutator: (board: BackgroundJobsJson) => T): T {
     const boardPath = this.getBoardPath();
     const release = acquireLockSync(boardPath);
 
@@ -125,6 +141,56 @@ export class BackgroundJobService {
 
       board.jobs.push(record);
       return record;
+    });
+  }
+
+  registerPendingLaunch(input: RegisterBackgroundPendingLaunchInput): BackgroundPendingLaunch {
+    return this.updateBoard((board) => {
+      const now = new Date().toISOString();
+      const pending: BackgroundPendingLaunch = {
+        parentSessionId: input.parentSessionId,
+        expectedDescription: input.expectedDescription,
+        expectedPrompt: input.expectedPrompt,
+        agentName: input.agentName,
+        scope: input.scope,
+        ownership: input.ownership,
+        createdAt: now,
+      };
+
+      const pendingLaunches = board.pendingLaunches ?? [];
+      const existingIndex = pendingLaunches.findIndex((candidate) =>
+        candidate.parentSessionId === input.parentSessionId
+        && candidate.expectedDescription === input.expectedDescription
+        && candidate.expectedPrompt === input.expectedPrompt
+      );
+
+      if (existingIndex >= 0) {
+        pendingLaunches[existingIndex] = pending;
+      } else {
+        pendingLaunches.push(pending);
+      }
+
+      board.pendingLaunches = pendingLaunches;
+      return pending;
+    });
+  }
+
+  consumePendingLaunch(input: ConsumeBackgroundPendingLaunchInput): BackgroundPendingLaunch | undefined {
+    return this.updateBoard((board) => {
+      const pendingLaunches = board.pendingLaunches ?? [];
+      const index = pendingLaunches.findIndex((candidate) =>
+        candidate.parentSessionId === input.parentSessionId
+        && (candidate.expectedDescription === undefined || candidate.expectedDescription === input.expectedDescription)
+        && (candidate.expectedPrompt === undefined || candidate.expectedPrompt === input.expectedPrompt)
+      );
+
+      if (index < 0) {
+        return undefined;
+      }
+
+      const [pending] = pendingLaunches.splice(index, 1);
+      board.pendingLaunches = pendingLaunches.length > 0 ? pendingLaunches : undefined;
+      return pending;
     });
   }
 

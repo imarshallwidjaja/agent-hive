@@ -604,6 +604,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     worktree,
     continueFrom,
     decision,
+    toolContext,
   }: {
     feature: string;
     task: string;
@@ -611,6 +612,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     worktree: WorktreeInfo;
     continueFrom?: 'blocked';
     decision?: string;
+    toolContext?: unknown;
   }) => {
     taskService.update(feature, task, {
       status: 'in_progress',
@@ -767,6 +769,37 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       : workerPrompt;
 
     const taskToolPrompt = `Follow instructions in @${relativePromptPath}`;
+    const backgroundTaskCall = {
+      background: true,
+      subagent_type: agent,
+      description: `Hive: ${task}`,
+      prompt: taskToolPrompt,
+    };
+    const backgroundEnabled = isBackgroundSubagentsExperimentEnabled();
+    const parentSessionId = (toolContext as ToolContext | undefined)?.sessionID;
+
+    if (backgroundEnabled && parentSessionId) {
+      bindFeatureSession(feature, toolContext, { taskFolder: task, workerPromptPath: relativePromptPath });
+      backgroundJobService.registerPendingLaunch({
+        parentSessionId,
+        expectedDescription: backgroundTaskCall.description,
+        expectedPrompt: backgroundTaskCall.prompt,
+        agentName: agent,
+        scope: {
+          projectRoot: directory,
+          parentSessionId,
+          primaryAgent: (toolContext as ToolContext | undefined)?.agent,
+          feature,
+          task,
+        },
+        ownership: {
+          worktreePath: workspacePath,
+          branch: worktree.branch,
+          workerPromptPath: relativePromptPath,
+          repoIds: status?.repoIds ?? [],
+        },
+      });
+    }
 
     const taskToolInstructions = `## Delegation Required
 
@@ -775,16 +808,18 @@ Default to \`${defaultAgent}\` if no specialist is a better match.
 
 ${eligibleAgents.map((candidate) => `- \`${candidate.name}\` — ${candidate.description}`).join('\n')}
 
-Use OpenCode's built-in \`task\` tool with the chosen \`subagent_type\` and the provided \`taskToolCall.prompt\` value.
+Use OpenCode's built-in \`task\` tool with the chosen \`subagent_type\` and the provided ${backgroundEnabled ? '\`backgroundTaskCall.prompt\` value. Prefer \`backgroundTaskCall\` so this task runs in the background and remains visible on the Hive background board.' : '\`taskToolCall.prompt\` value.'}
 \`taskToolCall.subagent_type\` is prefilled with the default for convenience; override it when a specialist in \`eligibleAgents\` is a better match.
 
 \`\`\`
 task({
   subagent_type: "<chosen-agent>",
   description: "Hive: ${task}",
-  prompt: "${taskToolPrompt}"
+  prompt: "${taskToolPrompt}"${backgroundEnabled ? ',\n  background: true' : ''}
 })
 \`\`\`
+
+${backgroundEnabled ? 'Use blocking foreground `task()` only when dependency, risk, or simplicity makes waiting the safer path. Keep the same `subagent_type`, `description`, and `prompt` if you use that escape path.\n\n' : ''}
 
 Use the \`@path\` attachment syntax in the prompt to reference the file. Do not inline the file contents.
 
@@ -812,6 +847,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         description: `Hive: ${task}`,
         prompt: taskToolPrompt,
       },
+      ...(backgroundEnabled ? { backgroundTaskCall } : {}),
       instructions: taskToolInstructions,
     };
 
@@ -852,9 +888,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
   const executeWorktreeStart = async ({
     task,
     feature: explicitFeature,
+    toolContext,
   }: {
     task: string;
     feature?: string;
+    toolContext?: unknown;
   }) => {
     const feature = resolveFeature(explicitFeature);
     if (!feature) {
@@ -948,7 +986,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     }
 
     const worktree = await worktreeService.create(feature, task);
-    return buildWorktreeLaunchResponse({ feature, task, taskInfo, worktree });
+    return buildWorktreeLaunchResponse({ feature, task, taskInfo, worktree, toolContext });
   };
 
   const executeBlockedResume = async ({
@@ -956,11 +994,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     feature: explicitFeature,
     continueFrom,
     decision,
+    toolContext,
   }: {
     task: string;
     feature?: string;
     continueFrom?: 'blocked';
     decision?: string;
+    toolContext?: unknown;
   }) => {
     const feature = resolveFeature(explicitFeature);
     if (!feature) {
@@ -1076,6 +1116,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       worktree,
       continueFrom,
       decision,
+      toolContext,
     });
   };
 
@@ -1557,8 +1598,8 @@ Expand your Discovery section and try again.`;
           task: tool.schema.string().describe('Task folder name'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
         },
-        async execute({ task, feature: explicitFeature }) {
-          return executeWorktreeStart({ task, feature: explicitFeature });
+        async execute({ task, feature: explicitFeature }, toolContext) {
+          return executeWorktreeStart({ task, feature: explicitFeature, toolContext });
         },
       }),
 
@@ -1570,8 +1611,8 @@ Expand your Discovery section and try again.`;
           continueFrom: tool.schema.enum(['blocked']).optional().describe('Resume a blocked task'),
           decision: tool.schema.string().optional().describe('Answer to blocker question when continuing'),
         },
-        async execute({ task, feature: explicitFeature, continueFrom, decision }) {
-          return executeBlockedResume({ task, feature: explicitFeature, continueFrom, decision });
+        async execute({ task, feature: explicitFeature, continueFrom, decision }, toolContext) {
+          return executeBlockedResume({ task, feature: explicitFeature, continueFrom, decision, toolContext });
         },
       }),
 
@@ -1878,7 +1919,7 @@ Expand your Discovery section and try again.`;
           baseBranch: tool.schema.string().optional().describe('Optional base ref/commit. Omit or leave blank to use current HEAD.'),
           repoIds: tool.schema.array(tool.schema.string()).optional().describe('Explicit repo IDs for composite ad-hoc workspaces. Omit or pass an empty array for single-root mode.'),
         },
-        async execute({ runId, label, baseBranch, repoIds }) {
+        async execute({ runId, label, baseBranch, repoIds }, toolContext) {
           if (!hasRepositoryManifest() && !isProjectRootGitRepo()) {
             return respond({
               success: false,
@@ -1890,13 +1931,37 @@ Expand your Discovery section and try again.`;
             });
           }
           try {
+            const normalizedRepoIds = normalizeOptionalStringList(repoIds);
             const info: AdhocWorktreeInfo = await adhocWorktreeService.create({
               runId: blankToUndefined(runId),
               label: blankToUndefined(label),
               baseBranch: blankToUndefined(baseBranch),
-              repoIds: normalizeOptionalStringList(repoIds),
+              repoIds: normalizedRepoIds,
             });
             const workspacePath = info.workspacePath ?? info.path;
+            const parentSessionId = (toolContext as ToolContext | undefined)?.sessionID;
+            const backgroundScope = isBackgroundSubagentsExperimentEnabled() && parentSessionId
+              ? {
+                  adHocRunId: info.runId,
+                  projectRoot: directory,
+                  parentSessionId,
+                }
+              : undefined;
+            const backgroundOwnership = isBackgroundSubagentsExperimentEnabled()
+              ? {
+                  worktreePath: workspacePath,
+                  branch: info.branch,
+                  repoIds: normalizedRepoIds ?? [],
+                }
+              : undefined;
+            if (backgroundScope) {
+              backgroundJobService.registerPendingLaunch({
+                parentSessionId: backgroundScope.parentSessionId,
+                agentName: 'unknown',
+                scope: backgroundScope,
+                ownership: backgroundOwnership,
+              });
+            }
             return respond({
               success: true,
               runId: info.runId,
@@ -1906,6 +1971,8 @@ Expand your Discovery section and try again.`;
               mode: info.mode,
               ...(info.repos ? { repos: info.repos } : {}),
               ...(info.baseCommits ? { baseCommits: info.baseCommits } : {}),
+              ...(backgroundScope ? { backgroundScope } : {}),
+              ...(backgroundOwnership ? { backgroundOwnership } : {}),
               nextAction: 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, workspacePath, branch, message }) to commit changes.',
             });
           } catch (error: unknown) {

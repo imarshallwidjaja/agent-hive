@@ -525,6 +525,135 @@ Do it
     expect(execStart.instructions).not.toContain("Read the prompt file");
   });
 
+  it("returns env-gated background task call metadata for feature worktree launches", async () => {
+    const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "1";
+
+    try {
+      const { hooks, toolContext } = await createHooksForTest(testRoot, "sess_background_feature_launch");
+
+      await hooks.tool!.hive_feature_create.execute(
+        { name: "background-feature" },
+        toolContext,
+      );
+      await hooks.tool!.hive_plan_write.execute(
+        { content: createSingleTaskPlan("Background", "Yes, this integration test validates background feature launch metadata for background-capable task delegation responses."), feature: "background-feature" },
+        toolContext,
+      );
+      await hooks.tool!.hive_plan_approve.execute(
+        { feature: "background-feature" },
+        toolContext,
+      );
+      await hooks.tool!.hive_tasks_sync.execute(
+        { feature: "background-feature" },
+        toolContext,
+      );
+
+      const raw = await hooks.tool!.hive_worktree_start.execute(
+        { feature: "background-feature", task: FIRST_TASK },
+        toolContext,
+      );
+      const result = JSON.parse(raw as string) as {
+        backgroundTaskCall?: {
+          background?: boolean;
+          subagent_type?: string;
+          description?: string;
+          prompt?: string;
+        };
+        taskToolCall?: { prompt?: string };
+        instructions?: string;
+      };
+
+      expect(result.backgroundTaskCall).toEqual({
+        background: true,
+        subagent_type: "forager-worker",
+        description: "Hive: 01-first-task",
+        prompt: result.taskToolCall?.prompt,
+      });
+      expect(result.instructions).toContain("background: true");
+      expect(result.instructions).toContain("Use blocking foreground `task()` only when dependency, risk, or simplicity makes waiting the safer path.");
+
+      const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
+      const board = JSON.parse(fs.readFileSync(boardPath, "utf-8")) as {
+        pendingLaunches?: Array<{
+          parentSessionId?: string;
+          expectedDescription?: string;
+          expectedPrompt?: string;
+          scope?: { feature?: string; task?: string; projectRoot?: string };
+          ownership?: { worktreePath?: string; workerPromptPath?: string; branch?: string };
+        }>;
+      };
+
+      expect(board.pendingLaunches).toHaveLength(1);
+      expect(board.pendingLaunches?.[0]).toMatchObject({
+        parentSessionId: "sess_background_feature_launch",
+        expectedDescription: "Hive: 01-first-task",
+        expectedPrompt: result.taskToolCall?.prompt,
+        scope: {
+          feature: "background-feature",
+          task: FIRST_TASK,
+          projectRoot: testRoot,
+        },
+        ownership: {
+          workerPromptPath: ".hive/features/01_background-feature/tasks/01-first-task/worker-prompt.md",
+        },
+      });
+      expect(board.pendingLaunches?.[0]?.ownership?.worktreePath).toContain(FIRST_TASK);
+      expect(board.pendingLaunches?.[0]?.ownership?.branch).toContain(FIRST_TASK);
+    } finally {
+      if (previousBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+      }
+    }
+  });
+
+  it("does not treat task status workerSession as live before observed background launch", async () => {
+    const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "1";
+
+    try {
+      const { hooks, toolContext } = await createHooksForTest(testRoot, "sess_background_no_worker_session");
+
+      await hooks.tool!.hive_feature_create.execute({ name: "no-worker-session" }, toolContext);
+      await hooks.tool!.hive_plan_write.execute(
+        { content: createSingleTaskPlan("No Worker Session", "Yes, this integration test validates workerSession is not generic background board state before launch observation."), feature: "no-worker-session" },
+        toolContext,
+      );
+      await hooks.tool!.hive_plan_approve.execute({ feature: "no-worker-session" }, toolContext);
+      await hooks.tool!.hive_tasks_sync.execute({ feature: "no-worker-session" }, toolContext);
+
+      await hooks.tool!.hive_worktree_start.execute(
+        { feature: "no-worker-session", task: FIRST_TASK },
+        toolContext,
+      );
+
+      const statusPath = path.join(
+        testRoot,
+        ".hive",
+        "features",
+        "01_no-worker-session",
+        "tasks",
+        FIRST_TASK,
+        "status.json",
+      );
+      const status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as {
+        workerSession?: unknown;
+        idempotencyKey?: string;
+      };
+
+      expect(status.idempotencyKey).toBe("hive-no-worker-session-01-first-task-1");
+      expect(status.workerSession).toBeUndefined();
+    } finally {
+      if (previousBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+      }
+    }
+  });
+
   it("excludes non-execution context from worker prompt payloads", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
