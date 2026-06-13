@@ -112,6 +112,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('task_status({ task_id');
     expect(skill!.template).toContain('hive_background_status');
     expect(skill!.template).toContain('hive_background_reconcile');
+    expect(skill!.template).toContain('hive_background_reconcile_batch');
     expect(skill!.template).toContain('hive_background_cancel');
     expect(skill!.template).toContain('wait: false');
     expect(skill!.template).toContain('wait: true');
@@ -121,7 +122,8 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('normal blocking `task()` remains the default');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Do not call `task()` from subagents');
-    expect(skill!.template).toContain('forgotten terminal jobs');
+    expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
+    expect(skill!.template).toContain('Forgotten terminal jobs');
     expect(skill!.template).not.toContain('@explorer');
     expect(skill!.template).not.toContain('subtask');
     expect(skill!.template).not.toContain('tmux');

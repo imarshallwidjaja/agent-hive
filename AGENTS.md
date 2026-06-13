@@ -247,7 +247,7 @@ This is a **bun workspaces** monorepo:
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Hive Plugin Tools (25 total)
+### Hive Plugin Tools (26 total)
 
 | Domain | Tools |
 |--------|-------|
@@ -257,7 +257,7 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 | Task | hive_tasks_sync, hive_task_create, hive_task_update |
 | Worktree (task-backed) | hive_worktree_start, hive_worktree_create, hive_worktree_commit, hive_worktree_discard |
 | Ad-hoc Worktree | hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup |
-| Background Orchestration | hive_background_status, hive_background_reconcile, hive_background_cancel |
+| Background Orchestration | hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel |
 | Merge | hive_merge |
 | Context | hive_context_write |
 | Status | hive_status |
@@ -265,10 +265,10 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 Task-backed worktree tools create feature/task records and appear in `hive_status`. Ad-hoc worktree tools are for isolated executor work (Hive Builder) and do not create feature/task records. `task_status` is not a Hive tool; it is opencode-native when the background subagent experiment is active. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task`/`task_status` and do not roll back files, branches, worktrees, commits, or reports.
 
 **Tool access is filtered per agent role:**
-- **Hive** — all 25 tools (hybrid agent)
-- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_background_status, hive_background_reconcile, hive_background_cancel, hive_merge, hive_context_write, hive_status (19 tools — excludes hive_worktree_commit, hive_plan_write, and ad-hoc worktree tools)
-- **Architect** — hive_feature_create, hive_plan_write, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_cancel, hive_context_write, hive_status (11 tools)
-- **Hive Builder** — hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_cancel, hive_context_write (11 tools — ad-hoc worktree + repo manifest + background board + context; denied task-backed worktree, plan, feature, and status tools)
+- **Hive** — all 26 tools (hybrid agent)
+- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_merge, hive_context_write, hive_status (20 tools — excludes hive_worktree_commit, hive_plan_write, and ad-hoc worktree tools)
+- **Architect** — hive_feature_create, hive_plan_write, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write, hive_status (12 tools)
+- **Hive Builder** — hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write (12 tools — ad-hoc worktree + repo manifest + background board + context; denied task-backed worktree, plan, feature, and status tools)
 - **Forager** — hive_plan_read, hive_worktree_commit, hive_context_write (3 tools)
 - **Scout** — hive_plan_read, hive_context_write, hive_status (3 tools)
 - **Hygienic** — hive_plan_read, hive_context_write, hive_status (3 tools)

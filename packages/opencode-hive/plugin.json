@@ -32,6 +32,7 @@
     "hive_adhoc_cleanup",
     "hive_background_status",
     "hive_background_reconcile",
+    "hive_background_reconcile_batch",
     "hive_background_cancel",
     "hive_context_write",
     "hive_status"

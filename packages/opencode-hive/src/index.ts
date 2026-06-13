@@ -120,7 +120,7 @@ function buildBackgroundDelegationPromptAppendix(
   if (!isBackgroundSubagentsExperimentEnabled(env)) return '';
 
   if (nativeSkillsByName.has(BACKGROUND_DELEGATION_SKILL_ID) || eligibleHiveSkills.has(BACKGROUND_DELEGATION_SKILL_ID)) {
-    return `\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. On non-trivial work, operate in background-first scheduler mode: first look for independent background lanes that can run through native task({ background: true, ... }) while you continue safe foreground work. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Track work with hive_background_status, reconcile terminal native jobs with hive_background_reconcile, request cancellation with hive_background_cancel, and use native task_status before making dependent decisions. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.`;
+    return `\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. On non-trivial work, operate in background-first scheduler mode: first look for independent background lanes that can run through native task({ background: true, ... }) while you continue safe foreground work. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Track work with hive_background_status, reconcile terminal native jobs with hive_background_reconcile or hive_background_reconcile_batch, request cancellation with hive_background_cancel, and use native task_status before making dependent decisions. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.`;
   }
 
   const skippedSkill = skippedHiveSkills.get(BACKGROUND_DELEGATION_SKILL_ID);
@@ -1125,6 +1125,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
   return {
     event: async (input) => {
+      await backgroundJobAdapter.event(input);
       if (input.event.type !== 'session.compacted') {
         return;
       }
@@ -2538,7 +2539,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         tools: agentTools([
           'hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
-          'hive_background_status', 'hive_background_reconcile', 'hive_background_cancel',
+          'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
         ]),
         permission: {
           edit: "deny",  // Planners don't edit code
@@ -2578,7 +2579,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
           'hive_context_write', 'hive_status',
-          'hive_background_status', 'hive_background_reconcile', 'hive_background_cancel',
+          'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
         ]),
         permission: {
           question: "allow",
@@ -2730,7 +2731,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         tools: agentTools([
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
-          'hive_background_status', 'hive_background_reconcile', 'hive_background_cancel',
+          'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_context_write',
         ]),
         permission: {

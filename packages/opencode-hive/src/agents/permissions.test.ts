@@ -404,7 +404,7 @@ describe('Per-agent tool filtering', () => {
     const foragerTools = agents['forager-worker']?.tools;
     const helperTools = agents['hive-helper']?.tools;
 
-    for (const toolName of ['hive_background_status', 'hive_background_reconcile', 'hive_background_cancel']) {
+    for (const toolName of ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel']) {
       expect(architectTools![toolName]).toBeUndefined();
       expect(swarmTools![toolName]).toBeUndefined();
       expect(builderTools![toolName]).toBeUndefined();
@@ -528,6 +528,7 @@ describe('Per-agent tool filtering', () => {
     expect(tools['hive_repositories_update']).toBeUndefined();
     expect(tools['hive_background_status']).toBeUndefined();
     expect(tools['hive_background_reconcile']).toBeUndefined();
+    expect(tools['hive_background_reconcile_batch']).toBeUndefined();
     expect(tools['hive_background_cancel']).toBeUndefined();
     expect(tools['hive_context_write']).toBeUndefined();
     // Disabled task-backed/plan/feature tools

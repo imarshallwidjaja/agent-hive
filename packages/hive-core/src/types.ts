@@ -223,6 +223,7 @@ export interface BackgroundJobRecord {
   createdAt: string;
   updatedAt: string;
   runtimeState: BackgroundJobRuntimeState;
+  scopeSource?: 'pending-launch' | 'native-fallback' | 'retry';
   terminalUnreconciled?: boolean;
   statusUncertain?: boolean;
   resultSummary?: string;
@@ -236,6 +237,9 @@ export interface BackgroundJobRecord {
   ignoredAt?: string;
   ignoreReason?: string;
   staleAt?: string;
+  promptNotifiedAt?: string;
+  promptNotifiedInSessionId?: string;
+  promptAcknowledgedAt?: string;
   retryOf?: string;
   supersedes?: string;
   alias: string;

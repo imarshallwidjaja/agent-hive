@@ -17,4 +17,11 @@ describe('Launcher', () => {
     expect(source).toContain('stat.isDirectory()');
     expect(source).toContain("executeCommand('revealFileInOS', uri)");
   });
+
+  it('can open a background job board at the matching taskId line', () => {
+    expect(source).toContain('async openBackgroundJobInBoard(boardPath: string, taskId: string)');
+    expect(source).toContain('`"taskId": "${taskId}"`');
+    expect(source).toContain('new vscode.Position');
+    expect(source).toContain('selection');
+  });
 });

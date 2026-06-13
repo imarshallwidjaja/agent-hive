@@ -242,6 +242,7 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(hiveMasterPrompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
     expect(hiveMasterPrompt).toContain('hive_background_status');
     expect(hiveMasterPrompt).toContain('hive_background_reconcile');
+    expect(hiveMasterPrompt).toContain('hive_background_reconcile_batch');
     expect(hiveMasterPrompt).toContain('hive_background_cancel');
     expect(hiveMasterPrompt).toContain('task({ background: true');
     expect(hiveMasterPrompt).toContain('task_status');
@@ -252,6 +253,7 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(builderPrompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
     expect(builderPrompt).toContain('hive_background_status');
     expect(builderPrompt).toContain('hive_background_reconcile');
+    expect(builderPrompt).toContain('hive_background_reconcile_batch');
     expect(builderPrompt).toContain('hive_background_cancel');
     expect(builderPrompt).toContain('task({ background: true');
     expect(builderPrompt).toContain('task_status');
@@ -283,6 +285,7 @@ describe('config hook autoLoadSkills guidance', () => {
       expect(prompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
       expect(prompt).toContain('hive_background_status');
       expect(prompt).toContain('hive_background_reconcile');
+      expect(prompt).toContain('hive_background_reconcile_batch');
       expect(prompt).toContain('hive_background_cancel');
       expect(prompt).toContain('task({ background: true');
       expect(prompt).toContain('task_status');

@@ -100,8 +100,8 @@ describe('BackgroundJobsProvider', () => {
     expect((jobs[0] as any).description).toBe('forager-worker · running · Build viewers');
     expect((jobs[0] as any).tooltip).toContain('task-native-1');
     expect((jobs[0] as any).command).toMatchObject({
-      command: 'hive.openFile',
-      arguments: [path.join(testRoot, '.hive', 'background-jobs.json')],
+      command: 'hive.openBackgroundJobInBoard',
+      arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'task-native-1'],
     });
   });
 

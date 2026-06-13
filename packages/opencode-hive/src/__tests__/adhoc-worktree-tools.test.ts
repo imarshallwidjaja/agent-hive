@@ -139,6 +139,7 @@ describe('ad-hoc worktree plugin tools', () => {
   it('registers Hive background board management tools in HIVE_TOOL_NAMES', () => {
     expect(HIVE_TOOL_NAMES).toContain('hive_background_status');
     expect(HIVE_TOOL_NAMES).toContain('hive_background_reconcile');
+    expect(HIVE_TOOL_NAMES).toContain('hive_background_reconcile_batch');
     expect(HIVE_TOOL_NAMES).toContain('hive_background_cancel');
   });
 

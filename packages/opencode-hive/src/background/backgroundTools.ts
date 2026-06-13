@@ -74,34 +74,34 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           return json(disabledResponse());
         }
 
-        const trimmedSummary = summary.trim();
-        if (!trimmedSummary) {
-          return json(failure('summary_required', 'A non-empty summary is required to reconcile or ignore a background job.'));
+        const result = reconcileVisibleJob(options.backgroundJobService, options.projectRoot, toolContext as ToolContext, { identifier, decision: decision as ReconcileDecision, summary });
+        return json(result);
+      },
+    }),
+
+    hive_background_reconcile_batch: tool({
+      description: 'Mark multiple terminal background jobs reconciled or ignored without changing runtime results.',
+      args: {
+        items: tool.schema.array(tool.schema.object({
+          identifier: tool.schema.string().describe('Task ID, session ID, or scoped alias to reconcile.'),
+          decision: tool.schema.enum(['reconciled', 'ignored']).describe('Whether the terminal job was reconciled into task state or intentionally ignored.'),
+          summary: tool.schema.string().describe('Required reconciliation summary or ignore reason.'),
+        })).describe('Terminal background jobs to reconcile or ignore.'),
+      },
+      async execute({ items }, toolContext) {
+        if (!options.isEnabled()) {
+          return json(disabledResponse());
+        }
+        if (!Array.isArray(items) || items.length === 0) {
+          return json(failure('items_required', 'At least one background job item is required.'));
         }
 
-        const resolved = resolveVisibleJob(options.backgroundJobService, identifier, options.projectRoot, toolContext as ToolContext);
-        if (!resolved.success) {
-          return json(resolved);
-        }
-
-        if (!isTerminalRuntimeState(resolved.job.runtimeState)) {
-          return json({
-            ...failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`),
-            nextAction: statusRequiredAction(resolved.job),
-          });
-        }
-
-        const reconciled = decision === 'reconciled'
-          ? options.backgroundJobService.markReconciled(resolved.job.taskId, {
-              reconciledBy: (toolContext as ToolContext).sessionID,
-              reconciliationSummary: trimmedSummary,
-            })
-          : options.backgroundJobService.markIgnored(resolved.job.taskId, trimmedSummary);
+        const results = items.map((item: { identifier: string; decision: ReconcileDecision; summary: string }) =>
+          reconcileVisibleJob(options.backgroundJobService, options.projectRoot, toolContext as ToolContext, item));
 
         return json({
-          success: true,
-          decision: decision as ReconcileDecision,
-          job: formatJob(reconciled),
+          success: results.every(result => result.success === true),
+          results,
         });
       },
     }),
@@ -173,6 +173,45 @@ function resolveVisibleJob(
   }
 
   return { success: true, job };
+}
+
+function reconcileVisibleJob(
+  backgroundJobService: BackgroundJobService,
+  projectRoot: string,
+  toolContext: ToolContext,
+  item: { identifier: string; decision: ReconcileDecision; summary: string },
+): Record<string, unknown> {
+  const trimmedSummary = item.summary.trim();
+  if (!trimmedSummary) {
+    return { identifier: item.identifier, ...failure('summary_required', 'A non-empty summary is required to reconcile or ignore a background job.') };
+  }
+
+  const resolved = resolveVisibleJob(backgroundJobService, item.identifier, projectRoot, toolContext);
+  if (!resolved.success) {
+    return { identifier: item.identifier, ...resolved };
+  }
+
+  if (!isTerminalRuntimeState(resolved.job.runtimeState)) {
+    return {
+      identifier: item.identifier,
+      ...failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`),
+      nextAction: statusRequiredAction(resolved.job),
+    };
+  }
+
+  const reconciled = item.decision === 'reconciled'
+    ? backgroundJobService.markReconciled(resolved.job.taskId, {
+        reconciledBy: toolContext.sessionID,
+        reconciliationSummary: trimmedSummary,
+      })
+    : backgroundJobService.markIgnored(resolved.job.taskId, trimmedSummary);
+
+  return {
+    identifier: item.identifier,
+    success: true,
+    decision: item.decision,
+    job: formatJob(reconciled),
+  };
 }
 
 function isJobVisible(job: BackgroundJobRecord, toolContext: ToolContext): boolean {
@@ -264,6 +303,10 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
     }),
     coordination: pruneUndefined({
       terminalUnreconciled: job.terminalUnreconciled,
+      promptNotifiedAt: job.promptNotifiedAt,
+      promptNotifiedInSessionId: job.promptNotifiedInSessionId,
+      promptAcknowledgedAt: job.promptAcknowledgedAt,
+      scopeSource: job.scopeSource,
       cancelRequestedAt: job.cancelRequestedAt,
       cancelReason: job.cancelReason,
       reconciledAt: job.reconciledAt,

@@ -77,9 +77,10 @@ Primary-agent-only board tools:
 |------|-----|
 | `hive_background_status` | Inspect the scoped board before deciding what is still running, terminal, stale, or unreconciled |
 | `hive_background_reconcile` | Mark a terminal native background job reconciled or ignored after inspecting the result |
+| `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or ignored after inspecting their results |
 | `hive_background_cancel` | Request cancellation for a visible job when it is stale, wrong, or no longer needed |
 
-Cancellation is not rollback. Cancelling a background job does not revert files, branches, worktrees, commits, or task reports. Use native `task_status` before dependent decisions; use the board tools to keep scheduler state explicit.
+Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. Cancellation is not rollback. Cancelling a background job does not revert files, branches, worktrees, commits, or task reports. Use native `task_status` before dependent decisions; use the board tools to keep scheduler state explicit.
 
 ---
 

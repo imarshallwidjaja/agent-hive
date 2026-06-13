@@ -29,11 +29,18 @@ class BackgroundJobItem extends vscode.TreeItem {
     this.tooltip = getJobTooltip(job)
     this.contextValue = 'background-job'
     this.iconPath = new vscode.ThemeIcon(getJobIcon(job))
-    this.command = {
-      command: 'hive.openFile',
-      title: 'Open Background Job Context',
-      arguments: [getRelatedPath(job, workspaceRoot) ?? boardPath],
-    }
+    const relatedPath = getRelatedPath(job, workspaceRoot)
+    this.command = relatedPath
+      ? {
+          command: 'hive.openFile',
+          title: 'Open Background Job Context',
+          arguments: [relatedPath],
+        }
+      : {
+          command: 'hive.openBackgroundJobInBoard',
+          title: 'Open Background Job Record',
+          arguments: [boardPath, job.taskId],
+        }
     this.copyCommand = {
       command: 'hive.copyToClipboard',
       title: 'Copy Background Job ID',

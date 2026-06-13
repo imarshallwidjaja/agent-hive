@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Tools (25 total)
+## Tools (26 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -94,7 +94,7 @@ These tools are for isolated executor work (Hive Builder). They operate on `.hiv
 - `hive_adhoc_merge` accepts `runId`, optional `strategy` (`merge`, `squash`, `rebase`), optional `message`, optional `preserveConflicts`, and optional `cleanup` (`none`, `worktree`, `worktree+branch`).
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID.
 
-### Background Orchestration (3 tools)
+### Background Orchestration (4 tools)
 
 These tools are primary-agent-only and are available when the OpenCode background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`. They manage Hive's scoped background job board around native OpenCode `task({ background: true, ... })` and `task_status`; they do not replace native `task_status` and do not make `task_status` a Hive tool.
 
@@ -102,12 +102,14 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 |------|---------|
 | `hive_background_status` | List background jobs visible to the current primary session scope, optionally including stale entries or filtering by feature, task, ad-hoc run, or workflow |
 | `hive_background_reconcile` | Mark a terminal native background job as reconciled or intentionally ignored with a required summary |
+| `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or intentionally ignored in one scoped operation |
 | `hive_background_cancel` | Request cancellation for a visible background job and record runtime cancellation only after OpenCode confirms it |
 
 #### Background orchestration notes
 
 - With the env gate unset, the background management tools return `background_tools_disabled` and the normal blocking task/worktree flow remains current behavior.
-- With the env gate set, primary agents operate in background-first scheduler mode for independent work: launch native background tasks, inspect the scoped board with `hive_background_status`, use native `task_status` before dependent decisions, and reconcile terminal jobs with `hive_background_reconcile`.
+- With the env gate set, primary agents operate in background-first scheduler mode for independent work: launch native background tasks, inspect the scoped board with `hive_background_status`, use native `task_status` before dependent decisions, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
+- Prompt acknowledgment only means Hive showed the terminal result to the parent session. It does not clear `terminalUnreconciled`; the agent still needs explicit reconciliation after consuming or ignoring the result.
 - Subagents must not start background tasks or manage the background board.
 - Cancellation is not rollback. `hive_background_cancel` does not revert files, branches, worktrees, commits, or task reports; it only records a cancellation request and any confirmed runtime cancellation.
 - If a background lane cannot be resumed safely, use no-resume retry/escalation: start a fresh scoped attempt when safe, ignore the stale terminal entry with a reason, or escalate the concrete blocker to the operator.
@@ -180,11 +182,11 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Task | 3 | sync, create, update |
 | Worktree (task-backed) | 4 | start, create, commit, discard |
 | Ad-hoc Worktree | 4 | create, commit, merge, cleanup |
-| Background Orchestration | 3 | status, reconcile, cancel |
+| Background Orchestration | 4 | status, reconcile, batch reconcile, cancel |
 | Merge | 1 | merge |
 | Context | 1 | write |
 | Status | 1 | status |
-| **Total** | **25** | |
+| **Total** | **26** | |
 
 ## Reserved Overview Convention
 

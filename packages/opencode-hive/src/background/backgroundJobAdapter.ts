@@ -91,7 +91,10 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       }
 
       const scope = options.resolvePromptScope?.(input, session) ?? defaultPromptScope(options.projectRoot, session);
-      const jobs = options.service.listScoped(scope).filter(shouldShowJobInPrompt);
+      const jobs = options.service
+        .listScoped({ projectRoot: options.projectRoot })
+        .filter(job => isJobVisibleInPrompt(job, scope, sessionID))
+        .filter(job => shouldShowJobInPrompt(job, sessionID));
       if (jobs.length === 0) {
         return;
       }
@@ -111,6 +114,18 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         text: `\n\n${board}`,
         synthetic: true,
       });
+      options.service.markPromptNotified(jobs.map(job => job.taskId), sessionID);
+    },
+
+    event: async (input: unknown): Promise<void> => {
+      if (!options.isEnabled()) {
+        return;
+      }
+
+      const sessionID = extractIdleSessionId(input);
+      if (sessionID) {
+        options.service.markPromptAcknowledgedForSession(sessionID);
+      }
     },
   };
 
@@ -151,17 +166,18 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         expectedPrompt: event.args.prompt,
       });
       try {
+        const scopeSource = pendingLaunch ? 'pending-launch' : 'native-fallback';
         options.service.registerLaunch({
           taskId: event.taskId,
           sessionId: `${event.parentSessionId}:${event.taskId}`,
           agentName: event.args.subagent_type ?? pendingLaunch?.agentName ?? 'unknown',
           description: event.args.description,
+          scopeSource,
           scope: pendingLaunch?.scope ?? {
             projectRoot: options.projectRoot,
             parentSessionId: event.parentSessionId,
             primaryAgent: event.agentName,
             feature: parentSession?.featureName,
-            task: parentSession?.taskFolder,
           },
           ownership: pendingLaunch?.ownership,
         });
@@ -261,12 +277,58 @@ function defaultPromptScope(projectRoot: string, session: SessionInfo | undefine
   };
 }
 
+function extractIdleSessionId(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const event = (input as { event?: { type?: string; properties?: { sessionID?: string; sessionId?: string } } }).event;
+  if (event?.type !== 'session.idle' && event?.type !== 'session.status') {
+    return undefined;
+  }
+  if (event.type === 'session.status' && (event.properties as { status?: string } | undefined)?.status !== 'idle') {
+    return undefined;
+  }
+
+  return event.properties?.sessionID ?? event.properties?.sessionId;
+}
+
 function findTargetUserMessage(messages: ReplayMessageEntry[]): ReplayMessageEntry | undefined {
   return [...messages].reverse().find(message => message.info.role === 'user' && !!message.info.sessionID)
     ?? messages.find(message => !!message.info.sessionID);
 }
 
-function shouldShowJobInPrompt(job: BackgroundJobRecord): boolean {
+function isJobVisibleInPrompt(job: BackgroundJobRecord, scope: BackgroundJobScope, sessionID: string): boolean {
+  const jobScope = job.scope ?? {};
+  if (jobScope.projectRoot && jobScope.projectRoot !== scope.projectRoot) {
+    return false;
+  }
+  if (jobScope.parentSessionId && jobScope.parentSessionId !== sessionID) {
+    return false;
+  }
+  if (scope.primaryAgent && jobScope.primaryAgent && jobScope.primaryAgent !== scope.primaryAgent) {
+    return false;
+  }
+  if (scope.feature && jobScope.feature && jobScope.feature !== scope.feature) {
+    return false;
+  }
+  if (scope.task && jobScope.task && jobScope.task !== scope.task) {
+    return false;
+  }
+  if (scope.adHocRunId && jobScope.adHocRunId && jobScope.adHocRunId !== scope.adHocRunId) {
+    return false;
+  }
+  if (scope.workflow && jobScope.workflow && jobScope.workflow !== scope.workflow) {
+    return false;
+  }
+  return true;
+}
+
+function shouldShowJobInPrompt(job: BackgroundJobRecord, sessionID: string): boolean {
+  if (job.promptAcknowledgedAt && job.promptNotifiedInSessionId === sessionID && isTerminalRuntimeState(job.runtimeState)) {
+    return false;
+  }
+
   return job.runtimeState === 'running'
     || job.terminalUnreconciled === true
     || !!job.cancelRequestedAt

@@ -80,6 +80,25 @@ var Launcher = class {
       vscode2.window.showErrorMessage(`Hive: Could not open file "${filePath}" - ${error}`);
     }
   }
+  async openBackgroundJobInBoard(boardPath, taskId) {
+    if (!boardPath || !taskId) {
+      vscode2.window.showWarningMessage("Hive: Invalid background job reference");
+      return;
+    }
+    try {
+      const uri = vscode2.Uri.file(boardPath);
+      const content = fs.readFileSync(boardPath, "utf-8");
+      const lineIndex = content.split(/\r?\n/).findIndex((line) => line.includes(`"taskId": "${taskId}"`));
+      const document2 = await vscode2.workspace.openTextDocument(uri);
+      const selection = lineIndex >= 0 ? new vscode2.Selection(new vscode2.Position(lineIndex, 0), new vscode2.Position(lineIndex, 0)) : void 0;
+      await vscode2.window.showTextDocument(document2, selection ? { selection } : void 0);
+      if (lineIndex < 0) {
+        vscode2.window.showWarningMessage(`Hive: Background job "${taskId}" was not found in the board file`);
+      }
+    } catch (error) {
+      vscode2.window.showErrorMessage(`Hive: Could not open background job "${taskId}" - ${error}`);
+    }
+  }
 };
 
 // src/providers/sidebarProvider.ts
@@ -87,7 +106,7 @@ var vscode3 = __toESM(require("vscode"));
 var fs3 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 
-// ../hive-core/dist/index.js
+// ../../../../../../packages/hive-core/dist/index.js
 var import_node_module = require("module");
 var path = __toESM(require("path"), 1);
 var fs2 = __toESM(require("fs"), 1);
@@ -5338,10 +5357,15 @@ var BackgroundJobItem = class extends vscode5.TreeItem {
     this.tooltip = getJobTooltip(job);
     this.contextValue = "background-job";
     this.iconPath = new vscode5.ThemeIcon(getJobIcon(job));
-    this.command = {
+    const relatedPath = getRelatedPath(job, workspaceRoot);
+    this.command = relatedPath ? {
       command: "hive.openFile",
       title: "Open Background Job Context",
-      arguments: [getRelatedPath(job, workspaceRoot) ?? boardPath]
+      arguments: [relatedPath]
+    } : {
+      command: "hive.openBackgroundJobInBoard",
+      title: "Open Background Job Record",
+      arguments: [boardPath, job.taskId]
     };
     this.copyCommand = {
       command: "hive.copyToClipboard",
@@ -5665,11 +5689,22 @@ var HiveExtension = class {
         (_c = this.trackedRepositoriesProvider) == null ? void 0 : _c.refresh();
       }),
       vscode7.commands.registerCommand("hive.openFile", (filePathOrItem) => {
-        var _a2, _b, _c;
-        const filePath = typeof filePathOrItem === "string" ? filePathOrItem : (_b = (_a2 = filePathOrItem == null ? void 0 : filePathOrItem.command) == null ? void 0 : _a2.arguments) == null ? void 0 : _b[0];
-        if (filePath) {
-          (_c = this.launcher) == null ? void 0 : _c.openFile(filePath);
+        var _a2, _b, _c, _d, _e;
+        if (typeof filePathOrItem !== "string" && ((_a2 = filePathOrItem == null ? void 0 : filePathOrItem.command) == null ? void 0 : _a2.command) === "hive.openBackgroundJobInBoard") {
+          const [boardPath, taskId] = filePathOrItem.command.arguments ?? [];
+          if (boardPath && taskId) {
+            (_b = this.launcher) == null ? void 0 : _b.openBackgroundJobInBoard(boardPath, taskId);
+          }
+          return;
         }
+        const filePath = typeof filePathOrItem === "string" ? filePathOrItem : (_d = (_c = filePathOrItem == null ? void 0 : filePathOrItem.command) == null ? void 0 : _c.arguments) == null ? void 0 : _d[0];
+        if (filePath) {
+          (_e = this.launcher) == null ? void 0 : _e.openFile(filePath);
+        }
+      }),
+      vscode7.commands.registerCommand("hive.openBackgroundJobInBoard", (boardPath, taskId) => {
+        var _a2;
+        (_a2 = this.launcher) == null ? void 0 : _a2.openBackgroundJobInBoard(boardPath, taskId);
       }),
       vscode7.commands.registerCommand("hive.copyToClipboard", async (valueOrItem) => {
         var _a2, _b;

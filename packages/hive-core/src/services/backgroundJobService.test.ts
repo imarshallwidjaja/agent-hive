@@ -22,6 +22,7 @@ function registerJob(service: BackgroundJobService, taskId = 'task-1', sessionId
     taskId,
     sessionId,
     agentName: 'forager-worker',
+    scopeSource: 'pending-launch',
     description: 'Implement the worker task',
     objective: 'Add the service contract',
     scope: {
@@ -66,6 +67,7 @@ describe('BackgroundJobService', () => {
       sessionId: 'sess-1',
       agentName: 'forager-worker',
       runtimeState: 'running',
+      scopeSource: 'pending-launch',
       scope: {
         projectRoot: TEST_DIR,
         parentSessionId: 'parent-1',
@@ -223,6 +225,38 @@ describe('BackgroundJobService', () => {
     const lateStatus = service.markTerminal('task-1', 'completed', { resultSummary: 'worker finished cleanly' });
     expect(lateStatus.terminalUnreconciled).toBe(false);
     expect(lateStatus.reconciledAt).toBe(reconciled.reconciledAt);
+  });
+
+  it('marks prompt notification and acknowledgment separately from reconciliation', () => {
+    registerJob(service, 'task-terminal', 'sess-terminal');
+    registerJob(service, 'task-running', 'sess-running');
+    service.markTerminal('task-terminal', 'completed', { resultSummary: 'done' });
+
+    const notified = service.markPromptNotified(['task-terminal', 'task-running'], 'parent-1');
+    expect(notified.map(job => job.taskId)).toEqual(['task-terminal']);
+    expect(notified[0].promptNotifiedAt).toBeDefined();
+    expect(notified[0].promptNotifiedInSessionId).toBe('parent-1');
+    expect(notified[0].terminalUnreconciled).toBe(true);
+    expect(service.resolve('task-running')?.promptNotifiedAt).toBeUndefined();
+    const notifiedUpdatedAt = notified[0].updatedAt;
+    expect(service.markPromptNotified(['task-terminal'], 'parent-1')).toEqual([]);
+    expect(service.resolve('task-terminal')?.updatedAt).toBe(notifiedUpdatedAt);
+
+    const acknowledged = service.markPromptAcknowledgedForSession('parent-1');
+    expect(acknowledged.map(job => job.taskId)).toEqual(['task-terminal']);
+    expect(acknowledged[0].promptAcknowledgedAt).toBeDefined();
+    expect(acknowledged[0].terminalUnreconciled).toBe(true);
+    expect(acknowledged[0].reconciledAt).toBeUndefined();
+    const acknowledgedUpdatedAt = acknowledged[0].updatedAt;
+    expect(service.markPromptAcknowledgedForSession('parent-1')).toEqual([]);
+    expect(service.resolve('task-terminal')?.updatedAt).toBe(acknowledgedUpdatedAt);
+  });
+
+  it('does not create or rewrite the board when prompt acknowledgment has no matching terminal job', () => {
+    const acknowledged = service.markPromptAcknowledgedForSession('parent-1');
+
+    expect(acknowledged).toEqual([]);
+    expect(fs.existsSync(BOARD_PATH)).toBe(false);
   });
 
   it('ignores stale terminal jobs without pretending they completed successfully', () => {

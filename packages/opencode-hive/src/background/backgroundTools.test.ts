@@ -85,6 +85,8 @@ describe('background management tools', () => {
   it('hive_background_status returns scoped jobs with runtime state separate from coordination metadata', async () => {
     const visible = registerScopedJob(service, { taskId: 'visible-task', sessionId: 'visible-session' });
     service.markTerminal('visible-task', 'completed', { resultSummary: 'worker finished' });
+    service.markPromptNotified(['visible-task'], 'parent-1');
+    service.markPromptAcknowledgedForSession('parent-1');
     registerScopedJob(service, { taskId: 'other-parent-task', sessionId: 'other-parent-session', parentSessionId: 'parent-2' });
     registerScopedJob(service, { taskId: 'stale-task', sessionId: 'stale-session' });
     service.markStale('stale-task');
@@ -102,7 +104,7 @@ describe('background management tools', () => {
         taskId: string;
         alias: string;
         runtime: { state: string; resultSummary?: string };
-        coordination: { terminalUnreconciled?: boolean; staleAt?: string };
+        coordination: { terminalUnreconciled?: boolean; staleAt?: string; promptAcknowledgedAt?: string };
       }>;
     }>(rawDefault);
 
@@ -114,6 +116,7 @@ describe('background management tools', () => {
       runtime: { state: 'completed', resultSummary: 'worker finished' },
       coordination: { terminalUnreconciled: true },
     });
+    expect(defaultResult.jobs?.[0].coordination.promptAcknowledgedAt).toBeDefined();
     expect(defaultResult.jobs?.[0].coordination.staleAt).toBeUndefined();
 
     const rawWithStale = await tools.hive_background_status.execute({ includeStale: true }, createToolContext());
@@ -237,6 +240,49 @@ describe('background management tools', () => {
       command: 'task_status({ task_id: "running-task" })',
     }));
     expect(service.resolve('running-task')?.runtimeState).toBe('running');
+  });
+
+  it('hive_background_reconcile_batch reconciles terminal jobs and reports per-item failures', async () => {
+    registerScopedJob(service, { taskId: 'completed-task', sessionId: 'completed-session' });
+    service.markTerminal('completed-task', 'completed', { resultSummary: 'runtime result stays' });
+    registerScopedJob(service, { taskId: 'running-task', sessionId: 'running-session' });
+    registerScopedJob(service, { taskId: 'other-parent-task', sessionId: 'other-parent-session', parentSessionId: 'parent-2' });
+    service.markTerminal('other-parent-task', 'completed', { resultSummary: 'not visible' });
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{
+      success?: boolean;
+      results?: Array<{ identifier: string; success: boolean; reason?: string; job?: { taskId: string; coordination: { terminalUnreconciled?: boolean; reconciliationSummary?: string } } }>;
+    }>(await tools.hive_background_reconcile_batch.execute({
+      items: [
+        { identifier: 'completed-task', decision: 'reconciled', summary: 'Consumed worker output.' },
+        { identifier: 'running-task', decision: 'ignored', summary: 'Too early.' },
+        { identifier: 'other-parent-task', decision: 'ignored', summary: 'Wrong scope.' },
+      ],
+    }, createToolContext()));
+
+    expect(result.success).toBe(false);
+    expect(result.results).toHaveLength(3);
+    expect(result.results?.[0]).toMatchObject({
+      identifier: 'completed-task',
+      success: true,
+      job: {
+        taskId: 'completed-task',
+        coordination: {
+          terminalUnreconciled: false,
+          reconciliationSummary: 'Consumed worker output.',
+        },
+      },
+    });
+    expect(result.results?.[1]).toMatchObject({ identifier: 'running-task', success: false, reason: 'job_not_terminal' });
+    expect(result.results?.[2]).toMatchObject({ identifier: 'other-parent-task', success: false, reason: 'job_not_in_scope' });
+    expect(service.resolve('running-task')?.runtimeState).toBe('running');
+    expect(service.resolve('other-parent-task')?.terminalUnreconciled).toBe(true);
   });
 
   it('hive_background_cancel validates scope before runtime cancellation and records runtime cancelled only after confirmation', async () => {

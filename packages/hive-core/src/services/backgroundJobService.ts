@@ -16,6 +16,7 @@ export interface RegisterBackgroundJobInput {
   customAgentBase?: string;
   description?: string;
   objective?: string;
+  scopeSource?: BackgroundJobRecord['scopeSource'];
   scope?: BackgroundJobScope;
   ownership?: BackgroundJobOwnership;
 }
@@ -134,6 +135,7 @@ export class BackgroundJobService {
         createdAt: now,
         updatedAt: now,
         runtimeState: 'running',
+        scopeSource: input.scopeSource,
         alias: this.nextAlias(board, input.scope?.parentSessionId),
         scope: input.scope,
         ownership: input.ownership,
@@ -313,6 +315,57 @@ export class BackgroundJobService {
     });
   }
 
+  markPromptNotified(taskIds: string[], parentSessionId: string): BackgroundJobRecord[] {
+    const uniqueIds = new Set(taskIds);
+    if (uniqueIds.size === 0) {
+      return [];
+    }
+    if (!this.readBoard().jobs.some(record => isPromptNotificationCandidate(record, uniqueIds, parentSessionId))) {
+      return [];
+    }
+
+    return this.updateBoard((board) => {
+      const now = new Date().toISOString();
+      const changedRecords: BackgroundJobRecord[] = [];
+
+      for (const record of board.jobs) {
+        if (!isPromptNotificationCandidate(record, uniqueIds, parentSessionId)) {
+          continue;
+        }
+
+        record.promptNotifiedAt = record.promptNotifiedAt ?? now;
+        record.promptNotifiedInSessionId = parentSessionId;
+        this.updateTimestamp(record, true);
+        changedRecords.push(record);
+      }
+
+      return changedRecords;
+    });
+  }
+
+  markPromptAcknowledgedForSession(parentSessionId: string): BackgroundJobRecord[] {
+    if (!this.readBoard().jobs.some(record => isPromptAcknowledgmentCandidate(record, parentSessionId))) {
+      return [];
+    }
+
+    return this.updateBoard((board) => {
+      const now = new Date().toISOString();
+      const changedRecords: BackgroundJobRecord[] = [];
+
+      for (const record of board.jobs) {
+        if (!isPromptAcknowledgmentCandidate(record, parentSessionId)) {
+          continue;
+        }
+
+        record.promptAcknowledgedAt = now;
+        this.updateTimestamp(record, true);
+        changedRecords.push(record);
+      }
+
+      return changedRecords;
+    });
+  }
+
   listScoped(filter: BackgroundJobScopeFilter = {}): BackgroundJobRecord[] {
     return this.readBoard().jobs.filter((job) => {
       const scope = job.scope || {};
@@ -366,6 +419,7 @@ export class BackgroundJobService {
         createdAt: now,
         updatedAt: now,
         runtimeState: 'running',
+        scopeSource: 'retry',
         retryOf: original.taskId,
         alias: this.nextAlias(board, input.scope?.parentSessionId),
         scope: input.scope,
@@ -409,4 +463,23 @@ function findPendingLaunchIndex(pendingLaunches: BackgroundPendingLaunch[], inpu
     pending.parentSessionId === input.parentSessionId
     && pending.expectedPrompt === input.expectedPrompt
   );
+}
+
+function isTerminalRuntimeState(state: BackgroundJobRecord['runtimeState']): boolean {
+  return state === 'completed' || state === 'error' || state === 'cancelled';
+}
+
+function isPromptNotificationCandidate(record: BackgroundJobRecord, taskIds: Set<string>, parentSessionId: string): boolean {
+  return taskIds.has(record.taskId)
+    && isTerminalRuntimeState(record.runtimeState)
+    && record.terminalUnreconciled === true
+    && (!record.promptNotifiedAt || record.promptNotifiedInSessionId !== parentSessionId);
+}
+
+function isPromptAcknowledgmentCandidate(record: BackgroundJobRecord, parentSessionId: string): boolean {
+  return isTerminalRuntimeState(record.runtimeState)
+    && record.terminalUnreconciled === true
+    && record.promptNotifiedInSessionId === parentSessionId
+    && !!record.promptNotifiedAt
+    && !record.promptAcknowledgedAt;
 }

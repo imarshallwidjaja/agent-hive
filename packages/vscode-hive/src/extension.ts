@@ -147,13 +147,24 @@ class HiveExtension {
         this.trackedRepositoriesProvider?.refresh()
       }),
 
-      vscode.commands.registerCommand('hive.openFile', (filePathOrItem: string | { command?: { arguments?: string[] } }) => {
+      vscode.commands.registerCommand('hive.openFile', (filePathOrItem: string | { command?: { command?: string; arguments?: string[] } }) => {
+        if (typeof filePathOrItem !== 'string' && filePathOrItem?.command?.command === 'hive.openBackgroundJobInBoard') {
+          const [boardPath, taskId] = filePathOrItem.command.arguments ?? []
+          if (boardPath && taskId) {
+            this.launcher?.openBackgroundJobInBoard(boardPath, taskId)
+          }
+          return
+        }
         const filePath = typeof filePathOrItem === 'string'
           ? filePathOrItem
           : filePathOrItem?.command?.arguments?.[0]
         if (filePath) {
           this.launcher?.openFile(filePath)
         }
+      }),
+
+      vscode.commands.registerCommand('hive.openBackgroundJobInBoard', (boardPath: string, taskId: string) => {
+        this.launcher?.openBackgroundJobInBoard(boardPath, taskId)
       }),
 
       vscode.commands.registerCommand('hive.copyToClipboard', async (valueOrItem: string | { copyCommand?: { arguments?: string[] } }) => {

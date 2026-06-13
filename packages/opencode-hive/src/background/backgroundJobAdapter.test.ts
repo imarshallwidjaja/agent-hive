@@ -119,6 +119,7 @@ describe('createBackgroundJobAdapter', () => {
       runtimeState: 'running',
       agentName: 'scout-researcher',
       description: 'Explore implementation',
+      scopeSource: 'native-fallback',
       scope: {
         projectRoot: TEST_DIR,
         parentSessionId: 'parent-1',
@@ -158,6 +159,7 @@ describe('createBackgroundJobAdapter', () => {
       taskId: 'ses_141cefb43ffeGAlDdBIqeETGNH',
       agentName: 'forager-documents',
       description: 'Hive: smoke docs',
+      scopeSource: 'pending-launch',
       scope: {
         projectRoot: TEST_DIR,
         parentSessionId: 'parent-1',
@@ -300,6 +302,30 @@ No correctness findings.
     expect(readBoard().jobs[0].ownership?.workerPromptPath).toBeUndefined();
   });
 
+  it('does not inherit task scope for native fallback reviewer launches from task-bound parents', async () => {
+    const { adapter, sessions } = createHarness();
+    sessions.set('parent-1', { ...session('parent-1', 'swarm-orchestrator'), featureName: 'feature-a', taskFolder: '02-worker-task' });
+
+    await launchTask(adapter, 'parent-1', 'review-task', {
+      description: 'Review smoke setup',
+      prompt: 'Review the completed worker output.',
+      subagent_type: 'code-reviewer',
+    });
+
+    expect(readBoard().jobs[0]).toMatchObject({
+      taskId: 'review-task',
+      agentName: 'code-reviewer',
+      scopeSource: 'native-fallback',
+      scope: {
+        projectRoot: TEST_DIR,
+        parentSessionId: 'parent-1',
+        primaryAgent: 'swarm-orchestrator',
+        feature: 'feature-a',
+      },
+    });
+    expect(readBoard().jobs[0].scope?.task).toBeUndefined();
+  });
+
   it('ignores completion notifications without a known registered task id', async () => {
     const { adapter, sessions } = createHarness();
     sessions.set('parent-1', session('parent-1'));
@@ -399,6 +425,47 @@ No correctness findings.
     expect(text).toContain('runtime: running');
     expect(text).toContain('coordination: cancel requested: operator requested stop');
     expect(text).not.toContain('task-hidden');
+  });
+
+  it('shows feature-scoped fallback jobs in task-bound parent prompts', async () => {
+    const { adapter, service, sessions } = createHarness();
+    sessions.set('parent-1', { ...session('parent-1', 'swarm-orchestrator'), featureName: 'feature-a', taskFolder: '02-worker-task' });
+    service.registerLaunch({
+      taskId: 'feature-review',
+      sessionId: 'feature-review-session',
+      agentName: 'code-reviewer',
+      scopeSource: 'native-fallback',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'swarm-orchestrator', feature: 'feature-a' },
+    });
+
+    const output = messagesFor('parent-1');
+    await adapter['experimental.chat.messages.transform']({}, output);
+
+    const text = injectedText(output);
+    expect(text).toContain('feature-review');
+    expect(text).toContain('feature-a');
+  });
+
+  it('prompt-acknowledges injected terminal jobs on parent idle without reconciling them', async () => {
+    const { adapter, service, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1'));
+    await launchTask(adapter, 'parent-1', 'terminal-task');
+    service.markTerminal('terminal-task', 'completed', { resultSummary: 'Worker complete.' });
+
+    const firstOutput = messagesFor('parent-1');
+    await adapter['experimental.chat.messages.transform']({}, firstOutput);
+    expect(injectedText(firstOutput)).toContain('terminal-task');
+    expect(readBoard().jobs[0].promptNotifiedInSessionId).toBe('parent-1');
+
+    await (adapter as any).event({ event: { type: 'session.idle', properties: { sessionID: 'parent-1' } } });
+    const acknowledged = readBoard().jobs[0];
+    expect(acknowledged.promptAcknowledgedAt).toBeDefined();
+    expect(acknowledged.terminalUnreconciled).toBe(true);
+    expect(acknowledged.reconciledAt).toBeUndefined();
+
+    const secondOutput = messagesFor('parent-1');
+    await adapter['experimental.chat.messages.transform']({}, secondOutput);
+    expect(injectedText(secondOutput)).not.toContain('terminal-task');
   });
 
   it('does not inject board text into subagent or reviewer sessions', async () => {

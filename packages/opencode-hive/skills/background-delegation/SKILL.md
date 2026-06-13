@@ -22,8 +22,9 @@ Default: Background-first is the scheduler default when the env-gated appendix i
 5. Continue only foreground work that does not depend on the background result.
 6. Use native `task_status` to poll or wait before dependent decisions when that tool is exposed in the current environment.
 7. If native `task_status` is not exposed, wait for the native background completion notification, then call `hive_background_status` again so Hive can refresh from the observed native terminal state.
-8. Use `hive_background_reconcile` after native jobs reach terminal state so the board does not keep forgotten terminal jobs.
-9. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
+8. Treat prompt acknowledgment as notification only: a terminal job may stop repeating in prompt detail after Hive showed it once, but it is not reconciled until you consume or intentionally ignore the result.
+9. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results.
+10. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
 
 ```ts
 const { task_id } = task({
@@ -43,6 +44,12 @@ hive_background_reconcile({
   identifier: task_id,
   decision: 'reconciled',
   summary: 'Background job result was applied to the task state.',
+});
+// For multiple terminal lanes, prefer one batch cleanup after consuming results.
+hive_background_reconcile_batch({
+  items: [
+    { identifier: task_id, decision: 'reconciled', summary: 'Background job result was applied to the task state.' },
+  ],
 });
 ```
 
@@ -85,6 +92,6 @@ Result: wait for final native task evidence, then refresh `hive_background_statu
 - Using background when the next step depends on the result.
 - Launching speculative work without a clear decision point.
 - Nested delegation. Do not call `task()` from subagents.
-- Forgotten terminal jobs: forgetting to poll when available, wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
+- Forgotten terminal jobs: treating a prompt-acknowledged terminal result as reconciled, or forgetting to poll when available, wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
 - Empty-board false negatives: treating `jobs: []` as final when `pendingLaunches` or `nextActions` are present.
 - Launching background work just because the feature exists.
