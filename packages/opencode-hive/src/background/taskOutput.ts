@@ -54,6 +54,7 @@ export function createTaskLifecycleHook(
 }
 
 const TASK_ID_PATTERN = /\btask[_-]id\b\s*[":=]?\s*["']?([A-Za-z0-9_-]+)/i;
+const TASK_XML_ID_PATTERN = /<task\b[^>]*\bid=["']([A-Za-z0-9_-]+)["']/i;
 const TRANSIENT_ERROR_PATTERN = /\b(not found|unknown task|no task|missing task|expired|process)\b/i;
 
 export function parseTaskLaunchOutput(output: string): ParsedTaskLaunchOutput | undefined {
@@ -184,7 +185,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function extractTaskId(output: string): string | undefined {
-  return output.match(TASK_ID_PATTERN)?.[1];
+  return output.match(TASK_ID_PATTERN)?.[1] ?? output.match(TASK_XML_ID_PATTERN)?.[1];
 }
 
 function readString(source: Record<string, unknown>, key: string): string | undefined {

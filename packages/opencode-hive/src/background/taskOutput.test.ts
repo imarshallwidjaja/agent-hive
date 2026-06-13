@@ -20,6 +20,19 @@ Use task_status with this task_id to check progress.`);
     });
   });
 
+  it('extracts the task id from OpenCode task XML output', () => {
+    const parsed = parseTaskLaunchOutput(`<task id="ses_141cedfabffengXkzcL0HvknGn" state="running">
+<summary>Background task started</summary>
+<task_result>
+The task is working in the background.
+</task_result>
+</task>`);
+
+    expect(parsed).toEqual({
+      task_id: 'ses_141cedfabffengXkzcL0HvknGn',
+    });
+  });
+
   it('returns undefined for unknown launch output without throwing', () => {
     expect(parseTaskLaunchOutput('worker launched successfully')).toBeUndefined();
     expect(parseTaskLaunchOutput('{not json')).toBeUndefined();
