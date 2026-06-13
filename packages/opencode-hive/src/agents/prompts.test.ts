@@ -1112,6 +1112,43 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('task_status');
   });
 
+  it('scopes Hive Builder behavior to gate-closed ad-hoc execution and gate-open non-feature orchestration', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Gate closed');
+    expect(HIVE_BUILDER_PROMPT).toContain('Gate open');
+    expect(HIVE_BUILDER_PROMPT).toContain('delegate-first non-feature orchestration');
+    expect(HIVE_BUILDER_PROMPT).toContain('not the default implementation worker');
+  });
+
+  it('requires complete context packets and delegation-kind classification for ad-hoc delegation', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('context packet');
+    expect(HIVE_BUILDER_PROMPT).toContain('prior failures');
+    expect(HIVE_BUILDER_PROMPT).toContain('run IDs');
+    expect(HIVE_BUILDER_PROMPT).toContain('verification requirements');
+    expect(HIVE_BUILDER_PROMPT).toContain('Exploratory/read-only');
+    expect(HIVE_BUILDER_PROMPT).toContain('Writing/change');
+    expect(HIVE_BUILDER_PROMPT).toContain('- **Review**: lightweight background lane');
+    expect(HIVE_BUILDER_PROMPT).toContain('- **Execution**: managed ad-hoc lifecycle');
+  });
+
+  it('requires lane tracking, unresolved-lane checks, and prompt-level write-conflict boundaries', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('todowrite');
+    expect(HIVE_BUILDER_PROMPT).toContain('task ID/state');
+    expect(HIVE_BUILDER_PROMPT).toContain('unresolved lanes');
+    expect(HIVE_BUILDER_PROMPT).toContain('Before merge, cleanup, final reporting');
+    expect(HIVE_BUILDER_PROMPT).toContain('one active writing/change lane per owned path/module');
+    expect(HIVE_BUILDER_PROMPT).toContain('Assign file/path boundaries');
+    expect(HIVE_BUILDER_PROMPT).toContain('auto-abort conflicts by default');
+  });
+
+  it('routes verification and durable execution decisions through the gate-open orchestrator contract', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Workers verify their own changes before commit');
+    expect(HIVE_BUILDER_PROMPT).toContain('delegates diff/deep verification');
+    expect(HIVE_BUILDER_PROMPT).toContain('cheap integration checks');
+    expect(HIVE_BUILDER_PROMPT).toContain("hive_context_write({ name: 'execution-decisions'");
+    expect(HIVE_BUILDER_PROMPT).toContain('non-trivial orchestration');
+    expect(HIVE_BUILDER_PROMPT).toContain('Skip durable context for trivial single-lane ad-hoc work');
+  });
+
   it('keeps primary prompts aligned on scheduler-first escape reasons', () => {
     for (const prompt of [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, HIVE_BUILDER_PROMPT]) {
       expect(prompt).toContain('background-first scheduler mode');
