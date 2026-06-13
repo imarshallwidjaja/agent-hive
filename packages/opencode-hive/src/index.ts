@@ -1916,14 +1916,15 @@ Expand your Discovery section and try again.`;
       }),
 
       hive_adhoc_worktree_create: tool({
-        description: 'Create a short-lived ad-hoc worktree (no feature/task required). For manifest-backed projects, pass repoIds to create a composite workspace. Returns structured JSON with workspacePath, branch, runId, and nextAction.',
+        description: 'Create a short-lived ad-hoc worktree (no feature/task required). For manifest-backed projects, pass repoIds to create a composite workspace. Set autoSpawnWorker to false for inspection, routing, or setup-only worktrees that should not register a pending background worker launch. Returns structured JSON with workspacePath, branch, runId, and nextAction.',
         args: {
           runId: tool.schema.string().optional().describe('Explicit run identifier. Omit or leave blank to generate a unique safe id.'),
           label: tool.schema.string().optional().describe('Optional slug label folded into the generated runId; ignored when runId is provided. Omit or leave blank for no label.'),
           baseBranch: tool.schema.string().optional().describe('Optional base ref/commit. Omit or leave blank to use current HEAD.'),
           repoIds: tool.schema.array(tool.schema.string()).optional().describe('Explicit repo IDs for composite ad-hoc workspaces. Omit or pass an empty array for single-root mode.'),
+          autoSpawnWorker: tool.schema.boolean().optional().describe('When false, create the worktree without registering a pending background worker launch (inspection/routing/setup only). Default true when omitted.'),
         },
-        async execute({ runId, label, baseBranch, repoIds }, toolContext) {
+        async execute({ runId, label, baseBranch, repoIds, autoSpawnWorker }, toolContext) {
           if (!hasRepositoryManifest() && !isProjectRootGitRepo()) {
             return respond({
               success: false,
@@ -1959,7 +1960,8 @@ Expand your Discovery section and try again.`;
                   repoIds: normalizedRepoIds ?? [],
                 }
               : undefined;
-            const backgroundTaskCall = backgroundScope
+            const shouldAutoSpawnWorker = autoSpawnWorker !== false;
+            const backgroundTaskCall = backgroundScope && shouldAutoSpawnWorker
               ? {
                   background: true,
                   subagent_type: 'forager-worker',
@@ -1977,6 +1979,7 @@ Expand your Discovery section and try again.`;
                 ownership: backgroundOwnership,
               });
             }
+            const workerLaunchSuppressed = backgroundScope && !shouldAutoSpawnWorker;
             return respond({
               success: true,
               runId: info.runId,
@@ -1989,7 +1992,10 @@ Expand your Discovery section and try again.`;
               ...(backgroundScope ? { backgroundScope } : {}),
               ...(backgroundOwnership ? { backgroundOwnership } : {}),
               ...(backgroundTaskCall ? { backgroundTaskCall } : {}),
-              nextAction: 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, workspacePath, branch, message }) to commit changes.',
+              ...(workerLaunchSuppressed ? { workerLaunch: 'suppressed' as const } : {}),
+              nextAction: workerLaunchSuppressed
+                ? 'Use this worktree for inspection, routing, or setup. Delegate execution lanes explicitly when needed; call hive_adhoc_worktree_commit only after changes are ready to commit.'
+                : 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, workspacePath, branch, message }) to commit changes.',
             });
           } catch (error: unknown) {
             const err = error as { message?: string };

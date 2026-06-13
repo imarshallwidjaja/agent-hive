@@ -249,6 +249,51 @@ describe('ad-hoc worktree plugin tools', () => {
     }
   });
 
+  it('hive_adhoc_worktree_create with autoSpawnWorker false suppresses pending launch and backgroundTaskCall', async () => {
+    const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+
+    try {
+      initGitRoot(testRoot);
+      const hooks = await loadHooks(testRoot);
+      const toolContext = createToolContext('sess_adhoc_inspection_only');
+
+      const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+        { label: 'inspection-run', autoSpawnWorker: false },
+        toolContext,
+      );
+      const result = parseToolJson<{
+        success?: boolean;
+        workerLaunch?: string;
+        backgroundScope?: unknown;
+        backgroundOwnership?: unknown;
+        backgroundTaskCall?: unknown;
+        nextAction?: string;
+      }>(raw);
+
+      expect(result.success).toBe(true);
+      expect(result.workerLaunch).toBe('suppressed');
+      expect(result.backgroundScope).toBeDefined();
+      expect(result.backgroundOwnership).toBeDefined();
+      expect(result.backgroundTaskCall).toBeUndefined();
+      expect(result.nextAction).toMatch(/inspection|routing|setup/i);
+
+      const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+      if (fs.existsSync(boardPath)) {
+        const board = JSON.parse(fs.readFileSync(boardPath, 'utf-8')) as {
+          pendingLaunches?: unknown[];
+        };
+        expect(board.pendingLaunches ?? []).toHaveLength(0);
+      }
+    } finally {
+      if (previousBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+      }
+    }
+  });
+
   it('hive_adhoc_worktree_create treats blank optional fields as omitted', async () => {
     initGitRoot(testRoot);
     const hooks = await loadHooks(testRoot);
