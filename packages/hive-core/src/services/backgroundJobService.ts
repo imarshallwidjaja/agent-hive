@@ -335,6 +335,7 @@ export class BackgroundJobService {
 
         record.promptNotifiedAt = record.promptNotifiedAt ?? now;
         record.promptNotifiedInSessionId = parentSessionId;
+        record.promptBoardInjectionCount = (record.promptBoardInjectionCount ?? 0) + 1;
         this.updateTimestamp(record, true);
         changedRecords.push(record);
       }

@@ -18,12 +18,12 @@ Default: Background-first is the scheduler default when the env-gated appendix i
 1. Identify independent lanes and the foreground work that can continue safely.
 2. Launch each independent lane with native `task({ background: true, ... })`.
 3. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
-4. Follow every `nextActions` entry returned by `hive_background_status`. Treat `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
+4. Follow every `nextActions` entry returned by `hive_background_status`, including `reconcile_required` after consuming or intentionally ignoring terminal results. Treat `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
 5. Continue only foreground work that does not depend on the background result.
 6. Use native `task_status` to poll or wait before dependent decisions when that tool is exposed in the current environment.
 7. If native `task_status` is not exposed, wait for the native background completion notification, then call `hive_background_status` again so Hive can refresh from the observed native terminal state.
 8. Treat prompt acknowledgment as notification only: a terminal job may stop repeating in prompt detail after Hive showed it once, but it is not reconciled until you consume or intentionally ignore the result.
-9. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results.
+9. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results. Use `orchestrationBurden` from `hive_background_status` to report status calls and reconcile items per visible and actionable lane.
 10. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
 
 ```ts

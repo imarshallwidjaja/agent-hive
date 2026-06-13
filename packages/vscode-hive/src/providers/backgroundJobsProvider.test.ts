@@ -185,6 +185,22 @@ describe('BackgroundJobsProvider', () => {
     });
   });
 
+  it('opens non-worker background jobs at their board record when no related path exists', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [job({ taskId: 'review-task', alias: 'review-job', agentName: 'code-reviewer', runtimeState: 'completed', ownership: undefined })],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+    const jobs = await provider.getChildren(groups[0]);
+
+    expect((jobs[0] as any).command).toMatchObject({
+      command: 'hive.openBackgroundJobInBoard',
+      arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'review-task'],
+    });
+  });
+
   function writeJobs(data: unknown): void {
     fs.mkdirSync(path.join(testRoot, '.hive'), { recursive: true });
     fs.writeFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), JSON.stringify(data, null, 2));

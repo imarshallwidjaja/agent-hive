@@ -266,7 +266,7 @@ describe('createBackgroundJobAdapter', () => {
     });
   });
 
-  it('terminalizes registered non-worker jobs from native completion notifications', async () => {
+  it('terminalizes registered non-worker jobs from native completion notifications without task_status', async () => {
     const { adapter, sessions } = createHarness();
     sessions.set('parent-1', session('parent-1', 'hive-master'));
 
@@ -456,16 +456,25 @@ No correctness findings.
     await adapter['experimental.chat.messages.transform']({}, firstOutput);
     expect(injectedText(firstOutput)).toContain('terminal-task');
     expect(readBoard().jobs[0].promptNotifiedInSessionId).toBe('parent-1');
+    expect(readBoard().jobs[0].promptBoardInjectionCount).toBe(1);
+
+    const repeatedBeforeIdle = messagesFor('parent-1');
+    await adapter['experimental.chat.messages.transform']({}, repeatedBeforeIdle);
+    expect(injectedText(repeatedBeforeIdle)).not.toContain('terminal-task');
+    expect(readBoard().jobs[0].promptAcknowledgedAt).toBeUndefined();
+    expect(readBoard().jobs[0].promptBoardInjectionCount).toBe(1);
 
     await (adapter as any).event({ event: { type: 'session.idle', properties: { sessionID: 'parent-1' } } });
     const acknowledged = readBoard().jobs[0];
     expect(acknowledged.promptAcknowledgedAt).toBeDefined();
     expect(acknowledged.terminalUnreconciled).toBe(true);
     expect(acknowledged.reconciledAt).toBeUndefined();
+    expect(acknowledged.promptBoardInjectionCount).toBe(1);
 
     const secondOutput = messagesFor('parent-1');
     await adapter['experimental.chat.messages.transform']({}, secondOutput);
     expect(injectedText(secondOutput)).not.toContain('terminal-task');
+    expect(readBoard().jobs[0].promptBoardInjectionCount).toBe(1);
   });
 
   it('does not inject board text into subagent or reviewer sessions', async () => {

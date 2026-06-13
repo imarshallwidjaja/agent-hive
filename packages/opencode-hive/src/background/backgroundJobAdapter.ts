@@ -325,7 +325,7 @@ function isJobVisibleInPrompt(job: BackgroundJobRecord, scope: BackgroundJobScop
 }
 
 function shouldShowJobInPrompt(job: BackgroundJobRecord, sessionID: string): boolean {
-  if (job.promptAcknowledgedAt && job.promptNotifiedInSessionId === sessionID && isTerminalRuntimeState(job.runtimeState)) {
+  if (job.promptNotifiedAt && job.promptNotifiedInSessionId === sessionID && isTerminalRuntimeState(job.runtimeState)) {
     return false;
   }
 

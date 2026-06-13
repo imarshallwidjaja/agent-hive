@@ -104,8 +104,9 @@ describe('background management tools', () => {
         taskId: string;
         alias: string;
         runtime: { state: string; resultSummary?: string };
-        coordination: { terminalUnreconciled?: boolean; staleAt?: string; promptAcknowledgedAt?: string };
+        coordination: { terminalUnreconciled?: boolean; staleAt?: string; promptAcknowledgedAt?: string; promptBoardInjectionCount?: number };
       }>;
+      orchestrationBurden?: { visibleLanes: number; actionableLanes: number; pendingLaunches: number; statusCallsRequired: number; reconcileItemsRequired: number; recommendedReconcileToolCalls: number };
     }>(rawDefault);
 
     expect(defaultResult.success).toBe(true);
@@ -117,15 +118,26 @@ describe('background management tools', () => {
       coordination: { terminalUnreconciled: true },
     });
     expect(defaultResult.jobs?.[0].coordination.promptAcknowledgedAt).toBeDefined();
+    expect(defaultResult.jobs?.[0].coordination.promptBoardInjectionCount).toBe(1);
     expect(defaultResult.jobs?.[0].coordination.staleAt).toBeUndefined();
+    expect(defaultResult.orchestrationBurden).toEqual({
+      visibleLanes: 1,
+      actionableLanes: 1,
+      pendingLaunches: 0,
+      statusCallsRequired: 0,
+      reconcileItemsRequired: 1,
+      recommendedReconcileToolCalls: 1,
+    });
 
     const rawWithStale = await tools.hive_background_status.execute({ includeStale: true }, createToolContext());
     const staleResult = parseToolJson<{ jobs?: Array<{ taskId: string }> }>(rawWithStale);
     expect(staleResult.jobs?.map(job => job.taskId)).toEqual(['visible-task', 'stale-task']);
   });
 
-  it('hive_background_status nudges agents to poll native task_status for running jobs', async () => {
+  it('hive_background_status reports runtime polling, reconciliation, and burden next actions', async () => {
     registerScopedJob(service, { taskId: 'running-task', sessionId: 'running-session' });
+    registerScopedJob(service, { taskId: 'terminal-task', sessionId: 'terminal-session' });
+    service.markTerminal('terminal-task', 'completed', { resultSummary: 'done' });
 
     const tools = createBackgroundTools({
       backgroundJobService: service,
@@ -135,15 +147,30 @@ describe('background management tools', () => {
 
     const result = parseToolJson<{
       jobs?: Array<{ taskId: string }>;
-      nextActions?: Array<{ reason: string; taskId?: string; command?: string }>;
+      nextActions?: Array<{ reason: string; taskId?: string; precondition?: string; command?: string }>;
+      orchestrationBurden?: { visibleLanes: number; actionableLanes: number; pendingLaunches: number; statusCallsRequired: number; reconcileItemsRequired: number; recommendedReconcileToolCalls: number };
     }>(await tools.hive_background_status.execute({}, createToolContext()));
 
-    expect(result.jobs?.map(job => job.taskId)).toEqual(['running-task']);
+    expect(result.jobs?.map(job => job.taskId)).toEqual(['running-task', 'terminal-task']);
     expect(result.nextActions).toContainEqual(expect.objectContaining({
       reason: 'runtime_status_required',
       taskId: 'running-task',
       command: 'task_status({ task_id: "running-task" })',
     }));
+    expect(result.nextActions).toContainEqual(expect.objectContaining({
+      reason: 'reconcile_required',
+      taskId: 'terminal-task',
+      precondition: 'Consume or intentionally ignore the terminal result before running this command.',
+      command: 'hive_background_reconcile({ identifier: "terminal-task", decision: "reconciled", summary: "<what was done with the result>" })',
+    }));
+    expect(result.orchestrationBurden).toEqual({
+      visibleLanes: 2,
+      actionableLanes: 2,
+      pendingLaunches: 0,
+      statusCallsRequired: 1,
+      reconcileItemsRequired: 1,
+      recommendedReconcileToolCalls: 1,
+    });
   });
 
   it('hive_background_status surfaces pending launches instead of silently returning an empty board', async () => {
@@ -262,12 +289,13 @@ describe('background management tools', () => {
       items: [
         { identifier: 'completed-task', decision: 'reconciled', summary: 'Consumed worker output.' },
         { identifier: 'running-task', decision: 'ignored', summary: 'Too early.' },
+        { identifier: 'missing-task', decision: 'ignored', summary: 'Missing task.' },
         { identifier: 'other-parent-task', decision: 'ignored', summary: 'Wrong scope.' },
       ],
     }, createToolContext()));
 
     expect(result.success).toBe(false);
-    expect(result.results).toHaveLength(3);
+    expect(result.results).toHaveLength(4);
     expect(result.results?.[0]).toMatchObject({
       identifier: 'completed-task',
       success: true,
@@ -280,7 +308,8 @@ describe('background management tools', () => {
       },
     });
     expect(result.results?.[1]).toMatchObject({ identifier: 'running-task', success: false, reason: 'job_not_terminal' });
-    expect(result.results?.[2]).toMatchObject({ identifier: 'other-parent-task', success: false, reason: 'job_not_in_scope' });
+    expect(result.results?.[2]).toMatchObject({ identifier: 'missing-task', success: false, reason: 'job_not_found' });
+    expect(result.results?.[3]).toMatchObject({ identifier: 'other-parent-task', success: false, reason: 'job_not_in_scope' });
     expect(service.resolve('running-task')?.runtimeState).toBe('running');
     expect(service.resolve('other-parent-task')?.terminalUnreconciled).toBe(true);
   });

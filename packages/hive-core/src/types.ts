@@ -240,6 +240,7 @@ export interface BackgroundJobRecord {
   promptNotifiedAt?: string;
   promptNotifiedInSessionId?: string;
   promptAcknowledgedAt?: string;
+  promptBoardInjectionCount?: number;
   retryOf?: string;
   supersedes?: string;
   alias: string;

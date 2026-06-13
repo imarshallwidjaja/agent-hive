@@ -236,17 +236,20 @@ describe('BackgroundJobService', () => {
     expect(notified.map(job => job.taskId)).toEqual(['task-terminal']);
     expect(notified[0].promptNotifiedAt).toBeDefined();
     expect(notified[0].promptNotifiedInSessionId).toBe('parent-1');
+    expect(notified[0].promptBoardInjectionCount).toBe(1);
     expect(notified[0].terminalUnreconciled).toBe(true);
     expect(service.resolve('task-running')?.promptNotifiedAt).toBeUndefined();
     const notifiedUpdatedAt = notified[0].updatedAt;
     expect(service.markPromptNotified(['task-terminal'], 'parent-1')).toEqual([]);
     expect(service.resolve('task-terminal')?.updatedAt).toBe(notifiedUpdatedAt);
+    expect(service.resolve('task-terminal')?.promptBoardInjectionCount).toBe(1);
 
     const acknowledged = service.markPromptAcknowledgedForSession('parent-1');
     expect(acknowledged.map(job => job.taskId)).toEqual(['task-terminal']);
     expect(acknowledged[0].promptAcknowledgedAt).toBeDefined();
     expect(acknowledged[0].terminalUnreconciled).toBe(true);
     expect(acknowledged[0].reconciledAt).toBeUndefined();
+    expect(acknowledged[0].promptBoardInjectionCount).toBe(1);
     const acknowledgedUpdatedAt = acknowledged[0].updatedAt;
     expect(service.markPromptAcknowledgedForSession('parent-1')).toEqual([]);
     expect(service.resolve('task-terminal')?.updatedAt).toBe(acknowledgedUpdatedAt);

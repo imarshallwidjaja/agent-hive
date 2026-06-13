@@ -51,6 +51,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           .filter(pending => isPendingLaunchVisible(pending, toolContext as ToolContext))
           .filter(pending => matchesOptionalScope(pending, { feature, task, adHocRunId, workflow }));
         const nextActions = buildNextActions(jobs, pendingLaunches);
+        const orchestrationBurden = buildOrchestrationBurden(jobs, pendingLaunches);
 
         return json({
           success: true,
@@ -58,6 +59,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           jobs: jobs.map(formatJob),
           pendingLaunches: pendingLaunches.length > 0 ? pendingLaunches.map(formatPendingLaunch) : undefined,
           nextActions: nextActions.length > 0 ? nextActions : undefined,
+          orchestrationBurden,
         });
       },
     }),
@@ -252,6 +254,10 @@ function buildNextActions(jobs: BackgroundJobRecord[], pendingLaunches: Backgrou
     .filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown')
     .map(statusRequiredAction);
 
+  actions.push(...jobs
+    .filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true)
+    .map(reconcileRequiredAction));
+
   if (pendingLaunches.length > 0) {
     actions.push({
       reason: 'pending_launch_without_registered_job',
@@ -263,12 +269,37 @@ function buildNextActions(jobs: BackgroundJobRecord[], pendingLaunches: Backgrou
   return actions;
 }
 
+function buildOrchestrationBurden(jobs: BackgroundJobRecord[], pendingLaunches: BackgroundPendingLaunch[]): Record<string, number> {
+  const statusCallsRequired = jobs.filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown').length;
+  const reconcileItemsRequired = jobs.filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true).length;
+  const actionableLanes = statusCallsRequired + reconcileItemsRequired + pendingLaunches.length;
+
+  return {
+    visibleLanes: jobs.length,
+    actionableLanes,
+    pendingLaunches: pendingLaunches.length,
+    statusCallsRequired,
+    reconcileItemsRequired,
+    recommendedReconcileToolCalls: reconcileItemsRequired > 0 ? 1 : 0,
+  };
+}
+
 function statusRequiredAction(job: BackgroundJobRecord): Record<string, string> {
   return {
     reason: 'runtime_status_required',
     taskId: job.taskId,
     command: `task_status({ task_id: "${job.taskId}" })`,
     message: 'When native task_status is available, call it before reconciling, merging dependent work, or reporting the background lane complete. If it is not exposed, wait for the native completion notification and call hive_background_status again.',
+  };
+}
+
+function reconcileRequiredAction(job: BackgroundJobRecord): Record<string, string> {
+  return {
+    reason: 'reconcile_required',
+    taskId: job.taskId,
+    precondition: 'Consume or intentionally ignore the terminal result before running this command.',
+    command: `hive_background_reconcile({ identifier: "${job.taskId}", decision: "reconciled", summary: "<what was done with the result>" })`,
+    message: 'This background job is terminal but unreconciled. Consume or intentionally ignore the result, then reconcile or ignore it explicitly.',
   };
 }
 
@@ -306,6 +337,7 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
       promptNotifiedAt: job.promptNotifiedAt,
       promptNotifiedInSessionId: job.promptNotifiedInSessionId,
       promptAcknowledgedAt: job.promptAcknowledgedAt,
+      promptBoardInjectionCount: job.promptBoardInjectionCount,
       scopeSource: job.scopeSource,
       cancelRequestedAt: job.cancelRequestedAt,
       cancelReason: job.cancelReason,
