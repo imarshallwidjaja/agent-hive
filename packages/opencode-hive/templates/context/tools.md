@@ -69,7 +69,7 @@ task({
 
 ### Background-First Scheduling
 
-Subagents must not start background tasks. When opencode background subagents are enabled (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), `task({ background: true, ... })`, native `task_status`, and the bundled `background-delegation` protocol are primary-agent-only guidance.
+Subagents must not start background tasks. When opencode background subagents are enabled (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), `task({ background: true, ... })` and the bundled `background-delegation` protocol are primary-agent-only guidance.
 
 Primary-agent-only board tools:
 
@@ -80,7 +80,7 @@ Primary-agent-only board tools:
 | `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or ignored after inspecting their results |
 | `hive_background_cancel` | Request cancellation for a visible job when it is stale, wrong, or no longer needed |
 
-Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. Cancellation is not rollback. Cancelling a background job does not revert files, branches, worktrees, commits, or task reports. Use native `task_status` before dependent decisions; use the board tools to keep scheduler state explicit.
+Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. Cancellation is not rollback. Cancelling a background job does not revert files, branches, worktrees, commits, or task reports. Wait for OpenCode's native completion notification before dependent decisions; use `hive_background_status` to refresh the board and keep scheduler state explicit.
 
 ---
 

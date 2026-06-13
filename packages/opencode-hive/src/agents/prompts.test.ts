@@ -839,15 +839,16 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain('autoLoadSkills');
     });
 
-    it('documents background-first env gate behavior without treating task_status as a Hive tool', () => {
+    it('documents background-first env gate behavior with native completion notifications', () => {
       expect(readmeContent).toContain('background-first scheduler');
       expect(readmeContent).toContain('hive_background_status');
       expect(readmeContent).toContain('hive_background_reconcile');
       expect(readmeContent).toContain('hive_background_cancel');
       expect(hiveToolsContent).toContain('Background Orchestration');
-      expect(hiveToolsContent).toContain('task_status` is not a Hive tool');
+      expect(hiveToolsContent).toContain('native completion notifications');
       expect(hiveToolsContent).toContain('Cancellation is not rollback');
       expect(hiveToolsContent).toContain('no-resume retry/escalation');
+      expect(hiveToolsContent).not.toContain('task_status');
     });
 
     it('documents current env-gate false behavior and env-gate true scheduler behavior', () => {
@@ -1096,7 +1097,8 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('look for independent background lanes');
     expect(HIVE_BUILDER_PROMPT).toContain('foreground/blocking escape');
     expect(HIVE_BUILDER_PROMPT).toContain('task_id');
-    expect(HIVE_BUILDER_PROMPT).toContain('task_status');
+    expect(HIVE_BUILDER_PROMPT).toContain('native completion notification');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('task_status');
   });
 
   it('keeps primary prompts aligned on scheduler-first escape reasons', () => {

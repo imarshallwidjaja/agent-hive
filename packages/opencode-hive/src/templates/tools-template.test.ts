@@ -16,12 +16,13 @@ describe('tools template', () => {
 
     expect(toolsTemplate).toContain('In task mode, use task()');
     expect(toolsTemplate).toContain('background-delegation');
-    expect(toolsTemplate).toContain('task_status');
+    expect(toolsTemplate).toContain('native completion notification');
     expect(toolsTemplate).toContain('hive_background_status');
     expect(toolsTemplate).toContain('hive_background_reconcile');
     expect(toolsTemplate).toContain('hive_background_cancel');
     expect(toolsTemplate).toContain('primary-agent-only');
     expect(toolsTemplate).toContain('Cancellation is not rollback');
+    expect(toolsTemplate).not.toContain('task_status');
     expect(toolsTemplate).not.toContain('hive_background_task');
     expect(toolsTemplate).not.toContain('hive_background_output');
   });

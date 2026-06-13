@@ -78,7 +78,7 @@
 
 ### Ad-hoc Worktree (4 tools)
 
-These tools are for isolated executor work (Hive Builder). They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`. `task_status` is not a Hive tool; it is opencode-native when the background subagent experiment is active.
+These tools are for isolated executor work (Hive Builder). They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`.
 
 | Tool | Purpose |
 |------|---------|
@@ -96,7 +96,7 @@ These tools are for isolated executor work (Hive Builder). They operate on `.hiv
 
 ### Background Orchestration (4 tools)
 
-These tools are primary-agent-only and are available when the OpenCode background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`. They manage Hive's scoped background job board around native OpenCode `task({ background: true, ... })` and `task_status`; they do not replace native `task_status` and do not make `task_status` a Hive tool.
+These tools are primary-agent-only and are available when the OpenCode background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`. They manage Hive's scoped background job board around native OpenCode `task({ background: true, ... })` completion notifications.
 
 | Tool | Purpose |
 |------|---------|
@@ -108,7 +108,7 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 #### Background orchestration notes
 
 - With the env gate unset, the background management tools return `background_tools_disabled` and the normal blocking task/worktree flow remains current behavior.
-- With the env gate set, primary agents operate in background-first scheduler mode for independent work: launch native background tasks, inspect the scoped board with `hive_background_status`, use native `task_status` before dependent decisions, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
+- With the env gate set, primary agents operate in background-first scheduler mode for independent work: launch native background tasks, inspect the scoped board with `hive_background_status`, wait for native completion notifications before dependent decisions, refresh `hive_background_status`, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
 - Prompt acknowledgment only means Hive showed the terminal result to the parent session. It does not clear `terminalUnreconciled`; the agent still needs explicit reconciliation after consuming or ignoring the result.
 - Subagents must not start background tasks or manage the background board.
 - Cancellation is not rollback. `hive_background_cancel` does not revert files, branches, worktrees, commits, or task reports; it only records a cancellation request and any confirmed runtime cancellation.

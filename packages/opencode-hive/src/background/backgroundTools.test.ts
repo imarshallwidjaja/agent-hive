@@ -106,7 +106,7 @@ describe('background management tools', () => {
         runtime: { state: string; resultSummary?: string };
         coordination: { terminalUnreconciled?: boolean; staleAt?: string; promptAcknowledgedAt?: string; promptBoardInjectionCount?: number };
       }>;
-      orchestrationBurden?: { visibleLanes: number; actionableLanes: number; pendingLaunches: number; statusCallsRequired: number; reconcileItemsRequired: number; recommendedReconcileToolCalls: number };
+      orchestrationBurden?: { visibleLanes: number; actionableLanes: number; pendingLaunches: number; completionNotificationsPending: number; reconcileItemsRequired: number; recommendedReconcileToolCalls: number };
     }>(rawDefault);
 
     expect(defaultResult.success).toBe(true);
@@ -124,7 +124,7 @@ describe('background management tools', () => {
       visibleLanes: 1,
       actionableLanes: 1,
       pendingLaunches: 0,
-      statusCallsRequired: 0,
+      completionNotificationsPending: 0,
       reconcileItemsRequired: 1,
       recommendedReconcileToolCalls: 1,
     });
@@ -134,8 +134,10 @@ describe('background management tools', () => {
     expect(staleResult.jobs?.map(job => job.taskId)).toEqual(['visible-task', 'stale-task']);
   });
 
-  it('hive_background_status reports runtime polling, reconciliation, and burden next actions', async () => {
+  it('hive_background_status reports native completion waiting, reconciliation, and burden next actions', async () => {
     registerScopedJob(service, { taskId: 'running-task', sessionId: 'running-session' });
+    registerScopedJob(service, { taskId: 'unknown-task', sessionId: 'unknown-session' });
+    service.updateRuntimeState('unknown-task', 'unknown', { statusUncertain: true });
     registerScopedJob(service, { taskId: 'terminal-task', sessionId: 'terminal-session' });
     service.markTerminal('terminal-task', 'completed', { resultSummary: 'done' });
 
@@ -148,15 +150,20 @@ describe('background management tools', () => {
     const result = parseToolJson<{
       jobs?: Array<{ taskId: string }>;
       nextActions?: Array<{ reason: string; taskId?: string; precondition?: string; command?: string }>;
-      orchestrationBurden?: { visibleLanes: number; actionableLanes: number; pendingLaunches: number; statusCallsRequired: number; reconcileItemsRequired: number; recommendedReconcileToolCalls: number };
+      waitingForNativeCompletion?: Array<{ reason: string; taskId?: string; command?: string }>;
+      orchestrationBurden?: { visibleLanes: number; actionableLanes: number; pendingLaunches: number; completionNotificationsPending: number; reconcileItemsRequired: number; recommendedReconcileToolCalls: number };
     }>(await tools.hive_background_status.execute({}, createToolContext()));
 
-    expect(result.jobs?.map(job => job.taskId)).toEqual(['running-task', 'terminal-task']);
-    expect(result.nextActions).toContainEqual(expect.objectContaining({
-      reason: 'runtime_status_required',
+    expect(result.jobs?.map(job => job.taskId)).toEqual(['running-task', 'unknown-task', 'terminal-task']);
+    expect(result.waitingForNativeCompletion).toContainEqual(expect.objectContaining({
+      reason: 'native_completion_pending',
       taskId: 'running-task',
-      command: 'task_status({ task_id: "running-task" })',
     }));
+    expect(result.waitingForNativeCompletion).toContainEqual(expect.objectContaining({
+      reason: 'native_completion_pending',
+      taskId: 'unknown-task',
+    }));
+    expect(result.waitingForNativeCompletion?.some(item => !!item.command)).toBe(false);
     expect(result.nextActions).toContainEqual(expect.objectContaining({
       reason: 'reconcile_required',
       taskId: 'terminal-task',
@@ -164,13 +171,14 @@ describe('background management tools', () => {
       command: 'hive_background_reconcile({ identifier: "terminal-task", decision: "reconciled", summary: "<what was done with the result>" })',
     }));
     expect(result.orchestrationBurden).toEqual({
-      visibleLanes: 2,
-      actionableLanes: 2,
+      visibleLanes: 3,
+      actionableLanes: 1,
       pendingLaunches: 0,
-      statusCallsRequired: 1,
+      completionNotificationsPending: 2,
       reconcileItemsRequired: 1,
       recommendedReconcileToolCalls: 1,
     });
+    expect(JSON.stringify(result)).not.toContain('task_status');
   });
 
   it('hive_background_status surfaces pending launches instead of silently returning an empty board', async () => {
@@ -263,9 +271,9 @@ describe('background management tools', () => {
     ));
     expect(nonTerminal).toMatchObject({ success: false, reason: 'job_not_terminal' });
     expect(nonTerminal.nextAction).toEqual(expect.objectContaining({
-      reason: 'runtime_status_required',
-      command: 'task_status({ task_id: "running-task" })',
+      reason: 'native_completion_pending',
     }));
+    expect(nonTerminal.nextAction?.command).toBeUndefined();
     expect(service.resolve('running-task')?.runtimeState).toBe('running');
   });
 

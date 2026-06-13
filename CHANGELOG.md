@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `autoLoadSkills` now adds compact high-priority guidance for agents to load named OpenCode-native skills with the `skill` tool instead of inlining full skill bodies into startup prompts.
 - Operator docs now distinguish env-gate false/current blocking behavior from env-gate true/background-first scheduler behavior.
-- Background orchestration docs now state that native `task_status` is not a Hive tool, cancellation is not rollback, and stale lanes require no-resume retry/escalation rather than unsafe resume.
+- Background orchestration docs now align with OpenCode's native completion-notification flow, state that cancellation is not rollback, and keep stale lanes on no-resume retry/escalation rather than unsafe resume.
 - Native fallback background jobs launched by task-bound parent sessions now stay feature-scoped unless a pending Hive launch explicitly provides task ownership.
 - Root docs now clarify that background-first orchestration adds no new agents and preserves custom derived agent inheritance.
 

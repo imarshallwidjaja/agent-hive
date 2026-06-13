@@ -97,7 +97,7 @@ Hive Builder uses `hive_adhoc_*` tools for isolated executor work under `.hive/.
 
 When `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set, primary agents run the background-first scheduler contract for independent work. This does not add agents and does not change custom-agent preservation: configured custom subagents still extend their base agents, and primary agents select them only when their descriptions fit the lane.
 
-With the env gate unset, Hive keeps the current blocking task/worktree behavior and the background management tools report `background_tools_disabled`. With the env gate set, primary agents can launch independent native background tasks, keep safe foreground work moving, inspect the scoped board with `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`. Native `task_status` remains the source for polling or waiting on OpenCode task results; it is not a Hive tool.
+With the env gate unset, Hive keeps the current blocking task/worktree behavior and the background management tools report `background_tools_disabled`. With the env gate set, primary agents can launch independent native background tasks, keep safe foreground work moving, inspect the scoped board with `hive_background_status`, wait for OpenCode's native completion notification, refresh `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`.
 
 Prompt acknowledgment only means Hive showed a terminal result to the parent session. It does not clear `terminalUnreconciled`; the primary agent still reconciles or ignores the job after consuming the result.
 
@@ -238,7 +238,7 @@ Create `.hive/agent-hive.json`:
 | `systematic-debugging` | Use when encountering any bug or test failure. Requires root cause investigation before proposing fixes. |
 | `code-reviewer` | Deprecated compatibility wrapper. Use the `code-reviewer` subagent for implementation review. |
 | `verification` | Use before claiming work is complete or when independently checking an implementation against a plan. Requires fresh command output before success claims. |
-| `background-delegation` | Use when opencode background subagents are available (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`). Enables primary agents to run the background-first scheduler contract with native `task({ background: true, ... })`, native `task_status`, `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, and `hive_background_cancel`. Not loaded as a default `autoLoadSkills` entry; the env flag appends an on-demand reference only. |
+| `background-delegation` | Use when opencode background subagents are available (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`). Enables primary agents to run the background-first scheduler contract with native `task({ background: true, ... })`, native completion notifications, `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, and `hive_background_cancel`. Not loaded as a default `autoLoadSkills` entry; the env flag appends an on-demand reference only. |
 
 #### Available MCPs
 

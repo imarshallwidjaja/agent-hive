@@ -62,7 +62,7 @@ Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user i
 When using background mode:
 - load and use the \`background-delegation\` skill
 - capture the \`task_id\` returned by \`task({ background: true, ... })\`
-- call \`task_status\` before making dependent decisions
+- wait for the native completion notification before making dependent decisions
 - use \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\` to manage the scoped background board
 
 Subagents (including custom subagents) must not call \`task()\` recursively.

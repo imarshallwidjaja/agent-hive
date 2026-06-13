@@ -51,6 +51,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           .filter(pending => isPendingLaunchVisible(pending, toolContext as ToolContext))
           .filter(pending => matchesOptionalScope(pending, { feature, task, adHocRunId, workflow }));
         const nextActions = buildNextActions(jobs, pendingLaunches);
+        const waitingForNativeCompletion = buildNativeCompletionWaits(jobs);
         const orchestrationBurden = buildOrchestrationBurden(jobs, pendingLaunches);
 
         return json({
@@ -58,6 +59,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           scope: currentScope(options.projectRoot, toolContext as ToolContext),
           jobs: jobs.map(formatJob),
           pendingLaunches: pendingLaunches.length > 0 ? pendingLaunches.map(formatPendingLaunch) : undefined,
+          waitingForNativeCompletion: waitingForNativeCompletion.length > 0 ? waitingForNativeCompletion : undefined,
           nextActions: nextActions.length > 0 ? nextActions : undefined,
           orchestrationBurden,
         });
@@ -197,7 +199,7 @@ function reconcileVisibleJob(
     return {
       identifier: item.identifier,
       ...failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`),
-      nextAction: statusRequiredAction(resolved.job),
+      nextAction: nativeCompletionPendingWait(resolved.job),
     };
   }
 
@@ -251,12 +253,8 @@ function matchesOptionalScope(
 
 function buildNextActions(jobs: BackgroundJobRecord[], pendingLaunches: BackgroundPendingLaunch[]): Array<Record<string, string | undefined>> {
   const actions: Array<Record<string, string | undefined>> = jobs
-    .filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown')
-    .map(statusRequiredAction);
-
-  actions.push(...jobs
     .filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true)
-    .map(reconcileRequiredAction));
+    .map(reconcileRequiredAction);
 
   if (pendingLaunches.length > 0) {
     actions.push({
@@ -269,27 +267,32 @@ function buildNextActions(jobs: BackgroundJobRecord[], pendingLaunches: Backgrou
   return actions;
 }
 
+function buildNativeCompletionWaits(jobs: BackgroundJobRecord[]): Array<Record<string, string>> {
+  return jobs
+    .filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown')
+    .map(nativeCompletionPendingWait);
+}
+
 function buildOrchestrationBurden(jobs: BackgroundJobRecord[], pendingLaunches: BackgroundPendingLaunch[]): Record<string, number> {
-  const statusCallsRequired = jobs.filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown').length;
+  const completionNotificationsPending = jobs.filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown').length;
   const reconcileItemsRequired = jobs.filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true).length;
-  const actionableLanes = statusCallsRequired + reconcileItemsRequired + pendingLaunches.length;
+  const actionableLanes = reconcileItemsRequired + pendingLaunches.length;
 
   return {
     visibleLanes: jobs.length,
     actionableLanes,
     pendingLaunches: pendingLaunches.length,
-    statusCallsRequired,
+    completionNotificationsPending,
     reconcileItemsRequired,
     recommendedReconcileToolCalls: reconcileItemsRequired > 0 ? 1 : 0,
   };
 }
 
-function statusRequiredAction(job: BackgroundJobRecord): Record<string, string> {
+function nativeCompletionPendingWait(job: BackgroundJobRecord): Record<string, string> {
   return {
-    reason: 'runtime_status_required',
+    reason: 'native_completion_pending',
     taskId: job.taskId,
-    command: `task_status({ task_id: "${job.taskId}" })`,
-    message: 'When native task_status is available, call it before reconciling, merging dependent work, or reporting the background lane complete. If it is not exposed, wait for the native completion notification and call hive_background_status again.',
+    message: 'Wait until OpenCode injects the native background completion notification for this task. Do not refresh the board repeatedly, reconcile, cancel, or duplicate this lane while it is still running.',
   };
 }
 
