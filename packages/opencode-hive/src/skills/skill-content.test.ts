@@ -116,6 +116,13 @@ describe('skill content', () => {
     expect(skill!.template).toContain('hive_background_cancel');
     expect(skill!.template).not.toContain('task_status');
     expect(skill!.template).toContain('Background-first is the scheduler default');
+    expect(skill!.template).toContain('background-delegation governs scheduling and wait mode');
+    expect(skill!.template).toContain('Direct Work Boundary');
+    expect(skill!.template).toContain('Delegation Kind Reference');
+    expect(skill!.template).toContain('Context Packet');
+    expect(skill!.template).toContain('descriptor is a closer match');
+    expect(skill!.template).toContain('Orchestrator owns final confidence');
+    expect(skill!.template).toContain('terminal-unreconciled');
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
     expect(skill!.template).not.toContain('normal blocking `task()` remains the default');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');

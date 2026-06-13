@@ -239,6 +239,8 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(hiveMasterPrompt).not.toContain(backgroundSkill.template);
     expect(hiveMasterPrompt).toContain('skill({ name: "background-delegation" })');
     expect(hiveMasterPrompt).toContain('look for independent background lanes');
+    expect(hiveMasterPrompt).toContain('background-delegation governs scheduling and wait mode');
+    expect(hiveMasterPrompt).toContain('Gate-closed sessions keep the normal direct/blocking workflow');
     expect(hiveMasterPrompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
     expect(hiveMasterPrompt).toContain('hive_background_status');
     expect(hiveMasterPrompt).toContain('hive_background_reconcile');
@@ -251,6 +253,8 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(builderPrompt).not.toContain(backgroundSkill.template);
     expect(builderPrompt).toContain('skill({ name: "background-delegation" })');
     expect(builderPrompt).toContain('look for independent background lanes');
+    expect(builderPrompt).toContain('background-delegation governs scheduling and wait mode');
+    expect(builderPrompt).toContain('Gate-closed sessions keep the normal direct/blocking workflow');
     expect(builderPrompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
     expect(builderPrompt).toContain('hive_background_status');
     expect(builderPrompt).toContain('hive_background_reconcile');
@@ -284,6 +288,8 @@ describe('config hook autoLoadSkills guidance', () => {
       expect(prompt).toContain('## Background-First Orchestration');
       expect(prompt).toContain('skill({ name: "background-delegation" })');
       expect(prompt).toContain('look for independent background lanes');
+      expect(prompt).toContain('background-delegation governs scheduling and wait mode');
+      expect(prompt).toContain('Gate-closed sessions keep the normal direct/blocking workflow');
       expect(prompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
       expect(prompt).toContain('hive_background_status');
       expect(prompt).toContain('hive_background_reconcile');
