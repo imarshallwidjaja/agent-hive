@@ -89,7 +89,8 @@ These tools are for isolated executor work (Hive Builder). They operate on `.hiv
 
 #### Ad-hoc worktree input/output notes
 
-- `hive_adhoc_worktree_create` returns `runId`, `workspacePath`, and `branch`. It accepts optional `runId`, `label`, `baseBranch`, and `repoIds` for manifest-backed composite workspaces. On non-git project roots without a project repository manifest, it returns `reason: "repo_manifest_required"` before any git command.
+- `hive_adhoc_worktree_create` returns `runId`, `workspacePath`, and `branch`. It accepts optional `runId`, `label`, `baseBranch`, `repoIds`, and `autoSpawnWorker`; `repoIds` selects manifest-backed composite workspaces. On non-git project roots without a project repository manifest, it returns `reason: "repo_manifest_required"` before any git command.
+- `autoSpawnWorker` defaults to `true`. In background-enabled sessions, set it to `false` only for inspection, routing, or setup-only ad-hoc worktrees where no worker should be launched; the response suppresses `backgroundTaskCall` and marks the worker launch as suppressed.
 - `hive_adhoc_worktree_commit` requires `runId`, `workspacePath`, `branch`, and `message`; `workspacePath` and `branch` must match the run returned by create.
 - `hive_adhoc_merge` accepts `runId`, optional `strategy` (`merge`, `squash`, `rebase`), optional `message`, optional `preserveConflicts`, and optional `cleanup` (`none`, `worktree`, `worktree+branch`).
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID.
@@ -107,8 +108,13 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 
 #### Background orchestration notes
 
-- With the env gate unset, the background management tools return `background_tools_disabled` and the normal blocking task/worktree flow remains current behavior.
-- With the env gate set, primary agents operate in background-first scheduler mode for independent work: launch native background tasks, inspect the scoped board with `hive_background_status`, wait for native completion notifications before dependent decisions, refresh `hive_background_status`, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
+- With the env gate unset, the background management tools return `background_tools_disabled`. Primary agents keep the direct/blocking task and worktree workflow, and no background appendix is injected.
+- With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active. This is experimental-gate behavior, not the default contract.
+- Gate-open delegation uses lane kind to choose how much management is required. Exploratory/read-only and review lanes are lightweight background candidates. Writing/change and execution lanes require path ownership, explicit state tracking, verification routing, unresolved-lane checks before dependent decisions, and integration control.
+- Every delegated lane needs a context packet: objective, known facts, relevant paths or references, constraints, prior failures, expected output, and where to find missing context. This matters most for non-feature and ad-hoc Hive Builder work because those workers may not have a plan or task context file.
+- Primary orchestrators choose specialists from built-in and custom agent descriptors. Do not add fixed routing tables; use the descriptor that best matches the lane.
+- Hive Builder remains a valid ad-hoc executor with the gate closed. With the gate open, non-trivial non-feature work should be decomposed, routed, tracked, verified, and integrated like orchestration, using ad-hoc worktrees for implementation branches when needed.
+- In gate-open sessions, launch native background tasks, inspect the scoped board with `hive_background_status`, wait for native completion notifications before dependent decisions, refresh `hive_background_status`, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
 - If `hive_background_status` returns `schedulerGuidance.reason: wait_for_native_completion_notification`, do not refresh repeatedly. Wait for OpenCode's native completion notification, continue unrelated foreground work, or cancel only if the lane is stale, wrong, or no longer needed.
 - Prompt acknowledgment only means Hive showed the terminal result to the parent session. It does not clear `terminalUnreconciled`; the agent still needs explicit reconciliation after consuming or ignoring the result.
 - Reconciled and ignored terminal jobs are archived by the background tools and hidden from normal status output. Do not edit `.hive/background-jobs.json` directly.
@@ -157,7 +163,7 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 | `hive_status` | Get comprehensive feature status as JSON, including overview metadata, per-document review counts, and context inclusion flags |
 
 ### Skill Loading
-Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into `.hive/generated/opencode-skills/` and registered through `skills.paths`. No Hive plugin tool is used for skill loading. The `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` env flag enables the primary-agent background-first scheduler contract and background management tools for sessions where OpenCode exposes native background subagents.
+Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into `.hive/generated/opencode-skills/` and registered through `skills.paths`. No Hive plugin tool is used for skill loading. The `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` env flag enables the primary-agent background-first scheduler contract and background management tools for sessions where OpenCode exposes native background subagents.
 
 ---
 

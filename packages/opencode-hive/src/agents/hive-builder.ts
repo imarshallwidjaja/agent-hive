@@ -76,7 +76,7 @@ Classify each delegated lane before dispatch:
 
 Use \`todowrite\` for multi-lane task ID/state tracking in Hive Builder sessions. Track each lane's task ID/state, owned paths, dependencies, verification status, and whether the result has been reconciled.
 
-Before merge, cleanup, final reporting, or dispatching any new overlapping writing/change or execution lane, check for unresolved lanes. Do not proceed with dependent decisions while relevant background lanes are still pending, stale, blocked, or unreconciled.
+Before merge, cleanup, final reporting, integration, or dispatching any new overlapping writing/change or execution lane, check for unresolved lanes. Do not proceed with dependent decisions while relevant background lanes are still pending, stale, blocked, or unreconciled.
 
 ### Write-Conflict Guidance
 

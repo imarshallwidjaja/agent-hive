@@ -69,7 +69,11 @@ task({
 
 ### Background-First Scheduling
 
-Subagents must not start background tasks. When opencode background subagents are enabled (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), `task({ background: true, ... })` and the bundled `background-delegation` protocol are primary-agent-only guidance.
+Subagents must not start background tasks. With `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` unset, Hive keeps the direct/blocking workflow and background board tools are disabled. When either env flag is set, `task({ background: true, ... })`, the bundled `background-delegation` protocol, and the board tools are primary-agent-only guidance.
+
+Gate-open primary orchestrators treat exploratory/read-only and review lanes as lightweight background candidates. Writing/change and execution lanes are managed lanes: define path ownership, state tracking, verification routing, unresolved-lane checks, and integration control. Every delegated lane needs a context packet with objective, known facts, references, constraints, prior failures, expected output, and where to find missing context. For ad-hoc or non-feature work, include this packet in the prompt because there may be no plan/task context file.
+
+Choose specialists from built-in and custom agent descriptors instead of fixed routing tables. Hive Builder remains a direct ad-hoc executor with the gate closed; with the gate open, non-trivial non-feature work should be decomposed, routed, tracked, verified, and integrated like orchestration. For inspection, routing, or setup-only ad-hoc worktrees, call `hive_adhoc_worktree_create` with `autoSpawnWorker: false` so no worker is auto-launched.
 
 Primary-agent-only board tools:
 

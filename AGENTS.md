@@ -147,7 +147,7 @@ feat!: change plan format to support subtasks
 | Hive (Hybrid) | Plans AND orchestrates; phase-aware |
 | Architect | Plans features, interviews, writes plans. NEVER executes |
 | Swarm | Orchestrates execution. Delegates, spawns workers, verifies |
-| Hive Builder | Ad-hoc executor. Isolates, executes, verifies, merges without feature/task overhead. Available in both modes, not default |
+| Hive Builder | Ad-hoc executor when the background gate is closed; gate-open non-feature orchestration uses decomposition, tracking, verification routing, and ad-hoc worktrees when needed. Available in both modes, not default |
 | Scout | Researches codebase + external docs/data |
 | Forager | Executes tasks directly in isolated worktrees |
 | Hygienic | Reviews plan/code quality. OKAY/REJECT verdict |
@@ -262,7 +262,7 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 | Context | hive_context_write |
 | Status | hive_status |
 
-Task-backed worktree tools create feature/task records and appear in `hive_status`. Ad-hoc worktree tools are for isolated executor work (Hive Builder) and do not create feature/task records. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task({ background: true, ... })` completion notifications and do not roll back files, branches, worktrees, commits, or reports. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
+Task-backed worktree tools create feature/task records and appear in `hive_status`. Ad-hoc worktree tools are for isolated Hive Builder work and do not create feature/task records. `hive_adhoc_worktree_create` defaults to auto-spawning a worker; in background-enabled sessions, set `autoSpawnWorker: false` only for inspection, routing, or setup-only ad-hoc worktrees. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task({ background: true, ... })` completion notifications and do not roll back files, branches, worktrees, commits, or reports. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
 
 **Tool access is filtered per agent role:**
 - **Hive** — all 26 tools (hybrid agent)
