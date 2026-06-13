@@ -127,6 +127,50 @@ describe('createBackgroundJobAdapter', () => {
     });
   });
 
+  it('preserves pending launch metadata when task description and specialist selection drift', async () => {
+    const { adapter, service, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1', 'swarm-orchestrator'));
+    service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Hive: 01-add-root-smoke-documentation-file',
+      expectedPrompt: 'Follow instructions in @.hive/features/17_background-smoke-test/tasks/01-add-root-smoke-documentation-file/worker-prompt.md',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'swarm-orchestrator', feature: 'background-smoke-test', task: '01-add-root-smoke-documentation-file' },
+      ownership: { worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'background-smoke-test', '01-add-root-smoke-documentation-file'), branch: 'hive/background-smoke-test/01-add-root-smoke-documentation-file' },
+    });
+
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-drift' }, {
+      args: {
+        background: true,
+        description: 'Hive: smoke docs',
+        prompt: 'Follow instructions in @.hive/features/17_background-smoke-test/tasks/01-add-root-smoke-documentation-file/worker-prompt.md',
+        subagent_type: 'forager-documents',
+      },
+    });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'call-drift' }, {
+      output: '<task id="ses_141cefb43ffeGAlDdBIqeETGNH" state="running"><summary>Background task started</summary></task>',
+    });
+
+    const board = readBoard();
+    expect(board.pendingLaunches).toBeUndefined();
+    expect(board.jobs).toHaveLength(1);
+    expect(board.jobs[0]).toMatchObject({
+      taskId: 'ses_141cefb43ffeGAlDdBIqeETGNH',
+      agentName: 'forager-documents',
+      description: 'Hive: smoke docs',
+      scope: {
+        projectRoot: TEST_DIR,
+        parentSessionId: 'parent-1',
+        primaryAgent: 'swarm-orchestrator',
+        feature: 'background-smoke-test',
+        task: '01-add-root-smoke-documentation-file',
+      },
+      ownership: {
+        branch: 'hive/background-smoke-test/01-add-root-smoke-documentation-file',
+      },
+    });
+  });
+
   it('discards matching pending launch metadata when a foreground task escape is used', async () => {
     const { adapter, service, sessions } = createHarness();
     sessions.set('parent-1', session('parent-1'));
@@ -153,6 +197,51 @@ describe('createBackgroundJobAdapter', () => {
     const board = readBoard();
     expect(board.jobs).toHaveLength(0);
     expect(board.pendingLaunches).toBeUndefined();
+  });
+
+  it('keeps ad-hoc pending metadata across unrelated task calls until the stable prompt launches', async () => {
+    const { adapter, service, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1', 'hive-builder'));
+    const expectedPrompt = 'Work in /tmp/adhoc-1 for ad-hoc run adhoc-1.';
+    service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedPrompt,
+      agentName: 'unknown',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-builder', adHocRunId: 'adhoc-1' },
+      ownership: { worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'adhoc', 'adhoc-1'), branch: 'hive/adhoc/adhoc-1' },
+    });
+
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-foreground-unrelated' }, {
+      args: { background: false, description: 'Foreground sanity check', prompt: 'Check unrelated state', subagent_type: 'scout-researcher' },
+    });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'call-foreground-unrelated' }, {
+      output: 'task_id: foreground-unrelated',
+    });
+    expect(readBoard().pendingLaunches).toHaveLength(1);
+
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-background-unrelated' }, {
+      args: { background: true, description: 'Background unrelated', prompt: 'Inspect unrelated files', subagent_type: 'scout-researcher' },
+    });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'call-background-unrelated' }, {
+      output: '<task id="background-unrelated" state="running"><summary>Background task started</summary></task>',
+    });
+    expect(readBoard().pendingLaunches).toHaveLength(1);
+
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-background-adhoc' }, {
+      args: { background: true, description: 'Run ad-hoc implementation', prompt: expectedPrompt, subagent_type: 'forager-fast' },
+    });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'call-background-adhoc' }, {
+      output: '<task id="adhoc-worker-session" state="running"><summary>Background task started</summary></task>',
+    });
+
+    const board = readBoard();
+    expect(board.pendingLaunches).toBeUndefined();
+    expect(board.jobs).toHaveLength(2);
+    expect(board.jobs[1]).toMatchObject({
+      taskId: 'adhoc-worker-session',
+      scope: { adHocRunId: 'adhoc-1' },
+      ownership: { branch: 'hive/adhoc/adhoc-1' },
+    });
   });
 
   it('updates last-known runtime state and terminal metadata from native task_status', async () => {

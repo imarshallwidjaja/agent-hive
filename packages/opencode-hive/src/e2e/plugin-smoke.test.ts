@@ -312,9 +312,19 @@ Do it
     );
     const execStart = JSON.parse(execStartOutput as string) as {
       instructions?: string;
-      backgroundTaskCall?: Record<string, unknown>;
+      backgroundTaskCall?: {
+        background?: boolean;
+        description?: string;
+        prompt?: string;
+        subagent_type?: string;
+      };
     };
-    expect(execStart.backgroundTaskCall).toBeUndefined();
+    expect(execStart.backgroundTaskCall).toMatchObject({
+      background: true,
+      description: 'Hive: 01-first-task',
+      prompt: expect.stringContaining('@.hive/features/01_smoke-feature/tasks/01-first-task/worker-prompt.md'),
+      subagent_type: 'forager-worker',
+    });
 
     const specPath = path.join(
       testRoot,

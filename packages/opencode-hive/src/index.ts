@@ -1943,20 +1943,39 @@ Expand your Discovery section and try again.`;
             });
             const workspacePath = info.workspacePath ?? info.path;
             const parentSessionId = (toolContext as ToolContext | undefined)?.sessionID;
-            const backgroundScope = isBackgroundSubagentsExperimentEnabled() && parentSessionId
+            const backgroundEnabled = isBackgroundSubagentsExperimentEnabled();
+            const backgroundScope = backgroundEnabled && parentSessionId
               ? {
                   adHocRunId: info.runId,
                   projectRoot: directory,
                   parentSessionId,
                 }
               : undefined;
-            const backgroundOwnership = isBackgroundSubagentsExperimentEnabled()
+            const backgroundOwnership = backgroundScope
               ? {
                   worktreePath: workspacePath,
                   branch: info.branch,
                   repoIds: normalizedRepoIds ?? [],
                 }
               : undefined;
+            const backgroundTaskCall = backgroundScope
+              ? {
+                  background: true,
+                  subagent_type: 'forager-worker',
+                  description: `Ad-hoc: ${info.runId}`,
+                  prompt: `Work in ${workspacePath} for ad-hoc run ${info.runId}. Follow the user's current instructions, keep changes scoped to that worktree, and report verification evidence before commit or merge.`,
+                }
+              : undefined;
+            if (backgroundTaskCall && backgroundScope && backgroundOwnership) {
+              backgroundJobService.registerPendingLaunch({
+                parentSessionId: backgroundScope.parentSessionId,
+                expectedDescription: backgroundTaskCall.description,
+                expectedPrompt: backgroundTaskCall.prompt,
+                agentName: backgroundTaskCall.subagent_type,
+                scope: backgroundScope,
+                ownership: backgroundOwnership,
+              });
+            }
             return respond({
               success: true,
               runId: info.runId,
@@ -1968,6 +1987,7 @@ Expand your Discovery section and try again.`;
               ...(info.baseCommits ? { baseCommits: info.baseCommits } : {}),
               ...(backgroundScope ? { backgroundScope } : {}),
               ...(backgroundOwnership ? { backgroundOwnership } : {}),
+              ...(backgroundTaskCall ? { backgroundTaskCall } : {}),
               nextAction: 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, workspacePath, branch, message }) to commit changes.',
             });
           } catch (error: unknown) {

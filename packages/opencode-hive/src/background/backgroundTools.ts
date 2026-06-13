@@ -1,5 +1,5 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
-import type { BackgroundJobRecord, BackgroundJobService } from 'hive-core';
+import type { BackgroundJobRecord, BackgroundJobService, BackgroundPendingLaunch } from 'hive-core';
 
 type ToolContext = {
   sessionID?: string;
@@ -46,11 +46,18 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           .filter(job => isJobVisible(job, toolContext as ToolContext))
           .filter(job => includeStale === true || !job.staleAt)
           .filter(job => matchesOptionalScope(job, { feature, task, adHocRunId, workflow }));
+        const pendingLaunches = options.backgroundJobService
+          .listPendingLaunches({ projectRoot: options.projectRoot })
+          .filter(pending => isPendingLaunchVisible(pending, toolContext as ToolContext))
+          .filter(pending => matchesOptionalScope(pending, { feature, task, adHocRunId, workflow }));
+        const nextActions = buildNextActions(jobs, pendingLaunches);
 
         return json({
           success: true,
           scope: currentScope(options.projectRoot, toolContext as ToolContext),
           jobs: jobs.map(formatJob),
+          pendingLaunches: pendingLaunches.length > 0 ? pendingLaunches.map(formatPendingLaunch) : undefined,
+          nextActions: nextActions.length > 0 ? nextActions : undefined,
         });
       },
     }),
@@ -78,7 +85,10 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         }
 
         if (!isTerminalRuntimeState(resolved.job.runtimeState)) {
-          return json(failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`));
+          return json({
+            ...failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`),
+            nextAction: statusRequiredAction(resolved.job),
+          });
         }
 
         const reconciled = decision === 'reconciled'
@@ -175,8 +185,18 @@ function isJobVisible(job: BackgroundJobRecord, toolContext: ToolContext): boole
   return true;
 }
 
+function isPendingLaunchVisible(pending: BackgroundPendingLaunch, toolContext: ToolContext): boolean {
+  if (toolContext.sessionID && pending.parentSessionId !== toolContext.sessionID) {
+    return false;
+  }
+  if (toolContext.agent && pending.scope?.primaryAgent && pending.scope.primaryAgent !== toolContext.agent) {
+    return false;
+  }
+  return true;
+}
+
 function matchesOptionalScope(
-  job: BackgroundJobRecord,
+  job: BackgroundJobRecord | BackgroundPendingLaunch,
   filter: { feature?: string; task?: string; adHocRunId?: string; workflow?: string },
 ): boolean {
   return Object.entries(filter).every(([key, value]) => {
@@ -186,6 +206,31 @@ function matchesOptionalScope(
     }
     return job.scope?.[key as keyof typeof filter] === trimmed;
   });
+}
+
+function buildNextActions(jobs: BackgroundJobRecord[], pendingLaunches: BackgroundPendingLaunch[]): Array<Record<string, string | undefined>> {
+  const actions: Array<Record<string, string | undefined>> = jobs
+    .filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown')
+    .map(statusRequiredAction);
+
+  if (pendingLaunches.length > 0) {
+    actions.push({
+      reason: 'pending_launch_without_registered_job',
+      command: 'launch or verify the native task({ background: true, ... }) call, then call hive_background_status again',
+      message: 'A Hive launch is pending but no matching background job is registered yet. Do not report no jobs or reconcile from this empty board alone.',
+    });
+  }
+
+  return actions;
+}
+
+function statusRequiredAction(job: BackgroundJobRecord): Record<string, string> {
+  return {
+    reason: 'runtime_status_required',
+    taskId: job.taskId,
+    command: `task_status({ task_id: "${job.taskId}" })`,
+    message: 'Call native task_status before reconciling, merging dependent work, or reporting the background lane complete.',
+  };
 }
 
 function isTerminalRuntimeState(state: BackgroundJobRecord['runtimeState']): boolean {
@@ -232,6 +277,18 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
     }),
     scope: job.scope,
     ownership: job.ownership,
+  };
+}
+
+function formatPendingLaunch(pending: BackgroundPendingLaunch): Record<string, unknown> {
+  return {
+    parentSessionId: pending.parentSessionId,
+    expectedDescription: pending.expectedDescription,
+    expectedPrompt: pending.expectedPrompt,
+    agentName: pending.agentName,
+    createdAt: pending.createdAt,
+    scope: pending.scope,
+    ownership: pending.ownership,
   };
 }
 

@@ -92,7 +92,7 @@ describe('BackgroundJobService', () => {
     expect(new Set([first.alias, second.alias, otherParent.alias]).size).toBe(3);
   });
 
-  it('consumes pending launches only on exact description and prompt match', () => {
+  it('consumes pending launches by prompt while leaving no-prompt launches untouched', () => {
     service.registerPendingLaunch({
       parentSessionId: 'parent-1',
       agentName: 'unknown',
@@ -121,6 +121,72 @@ describe('BackgroundJobService', () => {
     });
     expect(readBoard().pendingLaunches).toHaveLength(1);
     expect(readBoard().pendingLaunches?.[0].scope?.adHocRunId).toBe('adhoc-1');
+  });
+
+  it('consumes pending launches by prompt when model-facing descriptions drift', () => {
+    const pending = service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Hive: 01-task',
+      expectedPrompt: 'Follow instructions in @worker-prompt.md',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
+      ownership: { worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'feature-a', '01-task') },
+    });
+
+    const consumed = service.consumePendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Hive: smoke docs',
+      expectedPrompt: 'Follow instructions in @worker-prompt.md',
+    });
+
+    expect(consumed).toEqual(pending);
+    expect(readBoard().pendingLaunches).toBeUndefined();
+  });
+
+  it('does not consume pending launches with matching descriptions and different prompts', () => {
+    service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Hive: 01-task',
+      expectedPrompt: 'Follow instructions in @worker-prompt-a.md',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
+    });
+
+    const consumed = service.consumePendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Hive: 01-task',
+      expectedPrompt: 'Follow instructions in @worker-prompt-b.md',
+    });
+
+    expect(consumed).toBeUndefined();
+    expect(readBoard().pendingLaunches).toHaveLength(1);
+  });
+
+  it('consumes ad-hoc pending launches by stable prompt without feature or task metadata', () => {
+    const expectedPrompt = 'Work in /tmp/adhoc-1 for ad-hoc run adhoc-1.';
+    const pending = service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedPrompt,
+      agentName: 'unknown',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-1' },
+      ownership: { worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'adhoc', 'adhoc-1') },
+    });
+
+    service.registerPendingLaunch({
+      parentSessionId: 'parent-2',
+      agentName: 'unknown',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-2', adHocRunId: 'adhoc-2' },
+    });
+
+    const consumed = service.consumePendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedDescription: 'Investigate the failure',
+      expectedPrompt,
+    });
+
+    expect(consumed).toEqual(pending);
+    expect(readBoard().pendingLaunches).toHaveLength(1);
+    expect(readBoard().pendingLaunches?.[0].parentSessionId).toBe('parent-2');
   });
 
   it('updates last-known runtime state idempotently', () => {

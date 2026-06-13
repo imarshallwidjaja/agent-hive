@@ -18,10 +18,11 @@ Default: Background-first is the scheduler default when the env-gated appendix i
 1. Identify independent lanes and the foreground work that can continue safely.
 2. Launch each independent lane with native `task({ background: true, ... })`.
 3. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
-4. Continue only foreground work that does not depend on the background result.
-5. Use native `task_status` to poll or wait before dependent decisions.
-6. Use `hive_background_reconcile` after native jobs reach terminal state so the board does not keep forgotten terminal jobs.
-7. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
+4. Follow every `nextActions` entry returned by `hive_background_status`. Treat `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
+5. Continue only foreground work that does not depend on the background result.
+6. Use native `task_status` to poll or wait before dependent decisions.
+7. Use `hive_background_reconcile` after native jobs reach terminal state so the board does not keep forgotten terminal jobs.
+8. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
 
 ```ts
 const { task_id } = task({
@@ -80,4 +81,5 @@ Result: wait for the final task status before reporting completion or making the
 - Launching speculative work without a clear decision point.
 - Nested delegation. Do not call `task()` from subagents.
 - Forgotten terminal jobs: forgetting to poll, wait, reconcile, or cancel before using background results or ending the turn.
+- Empty-board false negatives: treating `jobs: []` as final when `pendingLaunches` or `nextActions` are present.
 - Launching background work just because the feature exists.

@@ -121,6 +121,61 @@ describe('background management tools', () => {
     expect(staleResult.jobs?.map(job => job.taskId)).toEqual(['visible-task', 'stale-task']);
   });
 
+  it('hive_background_status nudges agents to poll native task_status for running jobs', async () => {
+    registerScopedJob(service, { taskId: 'running-task', sessionId: 'running-session' });
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{
+      jobs?: Array<{ taskId: string }>;
+      nextActions?: Array<{ reason: string; taskId?: string; command?: string }>;
+    }>(await tools.hive_background_status.execute({}, createToolContext()));
+
+    expect(result.jobs?.map(job => job.taskId)).toEqual(['running-task']);
+    expect(result.nextActions).toContainEqual(expect.objectContaining({
+      reason: 'runtime_status_required',
+      taskId: 'running-task',
+      command: 'task_status({ task_id: "running-task" })',
+    }));
+  });
+
+  it('hive_background_status surfaces pending launches instead of silently returning an empty board', async () => {
+    service.registerPendingLaunch({
+      parentSessionId: 'parent-1',
+      expectedPrompt: 'Work in @/tmp/worktree',
+      agentName: 'unknown',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-master', adHocRunId: 'adhoc-1' },
+      ownership: { worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'adhoc', 'adhoc-1'), branch: 'hive/adhoc/adhoc-1' },
+    });
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{
+      jobs?: unknown[];
+      pendingLaunches?: Array<{ expectedPrompt?: string; scope?: { adHocRunId?: string }; ownership?: { branch?: string } }>;
+      nextActions?: Array<{ reason: string; command?: string; message?: string }>;
+    }>(await tools.hive_background_status.execute({}, createToolContext()));
+
+    expect(result.jobs).toEqual([]);
+    expect(result.pendingLaunches).toEqual([expect.objectContaining({
+      expectedPrompt: 'Work in @/tmp/worktree',
+      scope: expect.objectContaining({ adHocRunId: 'adhoc-1' }),
+      ownership: expect.objectContaining({ branch: 'hive/adhoc/adhoc-1' }),
+    })]);
+    expect(result.nextActions).toContainEqual(expect.objectContaining({
+      reason: 'pending_launch_without_registered_job',
+      command: 'launch or verify the native task({ background: true, ... }) call, then call hive_background_status again',
+    }));
+  });
+
   it('hive_background_reconcile reconciles or ignores terminal jobs without changing runtime result', async () => {
     registerScopedJob(service, { taskId: 'completed-task', sessionId: 'completed-session' });
     service.markTerminal('completed-task', 'completed', { resultSummary: 'runtime result stays' });
@@ -172,11 +227,15 @@ describe('background management tools', () => {
     ));
     expect(missingSummary).toMatchObject({ success: false, reason: 'summary_required' });
 
-    const nonTerminal = parseToolJson<{ success?: boolean; reason?: string }>(await tools.hive_background_reconcile.execute(
+    const nonTerminal = parseToolJson<{ success?: boolean; reason?: string; nextAction?: { reason?: string; command?: string } }>(await tools.hive_background_reconcile.execute(
       { identifier: 'running-task', decision: 'ignored', summary: 'Not done yet.' },
       createToolContext(),
     ));
     expect(nonTerminal).toMatchObject({ success: false, reason: 'job_not_terminal' });
+    expect(nonTerminal.nextAction).toEqual(expect.objectContaining({
+      reason: 'runtime_status_required',
+      command: 'task_status({ task_id: "running-task" })',
+    }));
     expect(service.resolve('running-task')?.runtimeState).toBe('running');
   });
 

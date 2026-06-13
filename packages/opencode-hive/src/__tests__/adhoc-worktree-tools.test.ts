@@ -195,6 +195,12 @@ describe('ad-hoc worktree plugin tools', () => {
           branch?: string;
           repoIds?: string[];
         };
+        backgroundTaskCall?: {
+          background?: boolean;
+          subagent_type?: string;
+          description?: string;
+          prompt?: string;
+        };
       }>(raw);
 
       expect(result.success).toBe(true);
@@ -208,6 +214,31 @@ describe('ad-hoc worktree plugin tools', () => {
         branch: result.branch,
         repoIds: [],
       });
+      expect(result.backgroundTaskCall).toEqual({
+        background: true,
+        subagent_type: 'forager-worker',
+        description: `Ad-hoc: ${result.runId}`,
+        prompt: `Work in ${result.workspacePath} for ad-hoc run ${result.runId}. Follow the user's current instructions, keep changes scoped to that worktree, and report verification evidence before commit or merge.`,
+      });
+
+      const board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf-8')) as {
+        pendingLaunches?: Array<{
+          parentSessionId?: string;
+          expectedDescription?: string;
+          expectedPrompt?: string;
+          agentName?: string;
+          scope?: { adHocRunId?: string; projectRoot?: string; parentSessionId?: string };
+          ownership?: { worktreePath?: string; branch?: string; repoIds?: string[] };
+        }>;
+      };
+      expect(board.pendingLaunches).toEqual([expect.objectContaining({
+        parentSessionId: 'sess_adhoc_background_scope',
+        expectedDescription: result.backgroundTaskCall?.description,
+        expectedPrompt: result.backgroundTaskCall?.prompt,
+        agentName: result.backgroundTaskCall?.subagent_type,
+        scope: result.backgroundScope,
+        ownership: result.backgroundOwnership,
+      })]);
     } finally {
       if (previousBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;

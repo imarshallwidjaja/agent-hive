@@ -178,11 +178,7 @@ export class BackgroundJobService {
   consumePendingLaunch(input: ConsumeBackgroundPendingLaunchInput): BackgroundPendingLaunch | undefined {
     return this.updateBoard((board) => {
       const pendingLaunches = board.pendingLaunches ?? [];
-      const index = pendingLaunches.findIndex((candidate) =>
-        candidate.parentSessionId === input.parentSessionId
-        && candidate.expectedDescription === input.expectedDescription
-        && candidate.expectedPrompt === input.expectedPrompt
-      );
+      const index = findPendingLaunchIndex(pendingLaunches, input);
 
       if (index < 0) {
         return undefined;
@@ -329,6 +325,21 @@ export class BackgroundJobService {
     });
   }
 
+  listPendingLaunches(filter: BackgroundJobScopeFilter = {}): BackgroundPendingLaunch[] {
+    return (this.readBoard().pendingLaunches ?? []).filter((pending) => {
+      const scope = pending.scope || {};
+      return Object.entries(filter).every(([key, value]) => {
+        if (value === undefined) {
+          return true;
+        }
+        if (key === 'parentSessionId') {
+          return pending.parentSessionId === value || scope.parentSessionId === value;
+        }
+        return scope[key as keyof BackgroundJobScope] === value;
+      });
+    });
+  }
+
   resolve(identifier: string): BackgroundJobRecord | undefined {
     const board = this.readBoard();
     return board.jobs.find(job => job.taskId === identifier || job.sessionId === identifier || job.alias === identifier);
@@ -387,4 +398,15 @@ export class BackgroundJobService {
       return `- ${job.alias} ${job.runtimeState} ${job.agentName} ${scopeParts || 'unscoped'}${details ? ` (${details})` : ''}`;
     }).join('\n');
   }
+}
+
+function findPendingLaunchIndex(pendingLaunches: BackgroundPendingLaunch[], input: ConsumeBackgroundPendingLaunchInput): number {
+  if (!input.expectedPrompt) {
+    return -1;
+  }
+
+  return pendingLaunches.findIndex(pending =>
+    pending.parentSessionId === input.parentSessionId
+    && pending.expectedPrompt === input.expectedPrompt
+  );
 }
