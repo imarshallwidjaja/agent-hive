@@ -164,10 +164,16 @@ async function createSingleTaskWorktree(
 describe("e2e: opencode-hive plugin (in-process)", () => {
   let testRoot: string;
   let originalHome: string | undefined;
+  let originalExperimentalBackgroundSubagents: string | undefined;
+  let originalExperimental: string | undefined;
 
   beforeEach(() => {
     process.chdir(TEST_PROCESS_CWD);
     originalHome = process.env.HOME;
+    originalExperimentalBackgroundSubagents = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    originalExperimental = process.env.OPENCODE_EXPERIMENTAL;
+    delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    delete process.env.OPENCODE_EXPERIMENTAL;
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, "project-"));
@@ -188,6 +194,16 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
       delete process.env.HOME;
     } else {
       process.env.HOME = originalHome;
+    }
+    if (originalExperimentalBackgroundSubagents === undefined) {
+      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    } else {
+      process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = originalExperimentalBackgroundSubagents;
+    }
+    if (originalExperimental === undefined) {
+      delete process.env.OPENCODE_EXPERIMENTAL;
+    } else {
+      process.env.OPENCODE_EXPERIMENTAL = originalExperimental;
     }
   });
 
@@ -312,19 +328,25 @@ Do it
     );
     const execStart = JSON.parse(execStartOutput as string) as {
       instructions?: string;
-      backgroundTaskCall?: {
-        background?: boolean;
+      taskToolCall?: {
         description?: string;
         prompt?: string;
         subagent_type?: string;
+        background?: boolean;
       };
+      backgroundTaskCall?: unknown;
     };
-    expect(execStart.backgroundTaskCall).toMatchObject({
-      background: true,
-      description: 'Hive: 01-first-task',
-      prompt: expect.stringContaining('@.hive/features/01_smoke-feature/tasks/01-first-task/worker-prompt.md'),
-      subagent_type: 'forager-worker',
+    expect(execStart.taskToolCall).toMatchObject({
+      description: "Hive: 01-first-task",
+      prompt: expect.stringContaining("@.hive/features/01_smoke-feature/tasks/01-first-task/worker-prompt.md"),
+      subagent_type: "forager-worker",
     });
+    expect(execStart.taskToolCall?.background).toBeUndefined();
+    expect(execStart.backgroundTaskCall).toBeUndefined();
+    expect(execStart.instructions).toContain("taskToolCall.prompt");
+    expect(execStart.instructions).not.toContain("background: true");
+    const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
+    expect(fs.existsSync(boardPath)).toBe(false);
 
     const specPath = path.join(
       testRoot,
@@ -580,8 +602,9 @@ Do it
         description: "Hive: 01-first-task",
         prompt: result.taskToolCall?.prompt,
       });
-      expect(result.instructions).toContain("background: true");
-      expect(result.instructions).toContain("Use blocking foreground `task()` only when dependency, risk, simplicity, user interaction, or ownership conflict makes waiting the safer path.");
+      expect(result.taskToolCall).toBeDefined();
+      expect((result.taskToolCall as { background?: boolean } | undefined)?.background).toBeUndefined();
+      expect(result.instructions).toContain("Prefer `backgroundTaskCall`");
 
       const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
       const board = JSON.parse(fs.readFileSync(boardPath, "utf-8")) as {
@@ -615,6 +638,65 @@ Do it
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
       } else {
         process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+      }
+    }
+  });
+
+  it("hive_worktree_start with gate closed returns blocking taskToolCall and does not register pending launches", async () => {
+    const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    const previousExperimental = process.env.OPENCODE_EXPERIMENTAL;
+    delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    delete process.env.OPENCODE_EXPERIMENTAL;
+
+    try {
+      const { hooks, toolContext } = await createHooksForTest(testRoot, "sess_gate_closed_worktree");
+
+      await hooks.tool!.hive_feature_create.execute({ name: "gate-closed-feature" }, toolContext);
+      await hooks.tool!.hive_plan_write.execute(
+        {
+          content: createSingleTaskPlan(
+            "Gate Closed",
+            "Yes, this integration test validates gate-closed hive_worktree_start stays blocking-first and does not mutate the background board.",
+          ),
+          feature: "gate-closed-feature",
+        },
+        toolContext,
+      );
+      await hooks.tool!.hive_plan_approve.execute({ feature: "gate-closed-feature" }, toolContext);
+      await hooks.tool!.hive_tasks_sync.execute({ feature: "gate-closed-feature" }, toolContext);
+
+      const raw = await hooks.tool!.hive_worktree_start.execute(
+        { feature: "gate-closed-feature", task: FIRST_TASK },
+        toolContext,
+      );
+      const result = JSON.parse(raw as string) as {
+        taskToolCall?: { description?: string; prompt?: string; subagent_type?: string; background?: boolean };
+        backgroundTaskCall?: unknown;
+        instructions?: string;
+      };
+
+      expect(result.taskToolCall).toMatchObject({
+        subagent_type: "forager-worker",
+        description: "Hive: 01-first-task",
+        prompt: expect.stringContaining("@.hive/features/01_gate-closed-feature/tasks/01-first-task/worker-prompt.md"),
+      });
+      expect(result.taskToolCall?.background).toBeUndefined();
+      expect(result.backgroundTaskCall).toBeUndefined();
+      expect(result.instructions).toContain("taskToolCall.prompt");
+      expect(result.instructions).not.toContain("backgroundTaskCall");
+
+      const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
+      expect(fs.existsSync(boardPath)).toBe(false);
+    } finally {
+      if (previousBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+      }
+      if (previousExperimental === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL = previousExperimental;
       }
     }
   });
@@ -1797,6 +1879,12 @@ Do it
     expect(swarmPrompt).not.toContain("todoread");
     expect(swarmPrompt).not.toContain("todowrite");
     expect(swarmPrompt).not.toContain("task checkpoints");
+
+    for (const prompt of [hivePrompt, architectPrompt, swarmPrompt]) {
+      expect(prompt).not.toContain("## Background-First Orchestration");
+      expect(prompt).not.toContain('skill({ name: "background-delegation" })');
+      expect(prompt).not.toContain("background-delegation governs scheduling and wait mode");
+    }
 
     expect(foragerPrompt).not.toContain("todowrite");
     expect(foragerPrompt).not.toContain(REMOVED_PROJECTED_TODO_FIELD);

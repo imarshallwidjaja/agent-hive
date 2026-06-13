@@ -264,6 +264,8 @@ describe('ad-hoc worktree plugin tools', () => {
       );
       const result = parseToolJson<{
         success?: boolean;
+        workspacePath?: string;
+        branch?: string;
         workerLaunch?: string;
         backgroundScope?: unknown;
         backgroundOwnership?: unknown;
@@ -272,11 +274,12 @@ describe('ad-hoc worktree plugin tools', () => {
       }>(raw);
 
       expect(result.success).toBe(true);
+      expectWorktreeResponseShape(result);
+      expect(fs.existsSync(result.workspacePath!)).toBe(true);
       expect(result.workerLaunch).toBe('suppressed');
       expect(result.backgroundScope).toBeDefined();
       expect(result.backgroundOwnership).toBeDefined();
       expect(result.backgroundTaskCall).toBeUndefined();
-      expect(result.nextAction).toMatch(/inspection|routing|setup/i);
 
       const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
       if (fs.existsSync(boardPath)) {
@@ -293,6 +296,57 @@ describe('ad-hoc worktree plugin tools', () => {
       }
     }
   });
+
+  it.each([
+    { autoSpawnWorker: undefined as boolean | undefined, label: 'omitted' },
+    { autoSpawnWorker: true, label: 'true' },
+  ])(
+    'hive_adhoc_worktree_create with gate closed and autoSpawnWorker $label does not register pending launch',
+    async ({ autoSpawnWorker }) => {
+      const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      const previousExperimental = process.env.OPENCODE_EXPERIMENTAL;
+      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      delete process.env.OPENCODE_EXPERIMENTAL;
+
+      try {
+        initGitRoot(testRoot);
+        const hooks = await loadHooks(testRoot);
+        const toolContext = createToolContext('sess_adhoc_gate_closed');
+
+        const args: { label: string; autoSpawnWorker?: boolean } = { label: 'gate-closed-run' };
+        if (autoSpawnWorker !== undefined) {
+          args.autoSpawnWorker = autoSpawnWorker;
+        }
+
+        const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(args, toolContext);
+        const result = parseToolJson<{
+          success?: boolean;
+          backgroundTaskCall?: unknown;
+          backgroundScope?: unknown;
+          workerLaunch?: string;
+        }>(raw);
+
+        expect(result.success).toBe(true);
+        expect(result.backgroundTaskCall).toBeUndefined();
+        expect(result.backgroundScope).toBeUndefined();
+        expect(result.workerLaunch).toBeUndefined();
+
+        const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+        expect(fs.existsSync(boardPath)).toBe(false);
+      } finally {
+        if (previousBackgroundEnv === undefined) {
+          delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+        } else {
+          process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+        }
+        if (previousExperimental === undefined) {
+          delete process.env.OPENCODE_EXPERIMENTAL;
+        } else {
+          process.env.OPENCODE_EXPERIMENTAL = previousExperimental;
+        }
+      }
+    },
+  );
 
   it('hive_adhoc_worktree_create treats blank optional fields as omitted', async () => {
     initGitRoot(testRoot);
