@@ -3,6 +3,7 @@ import {
   createTaskLifecycleHook,
   parseTaskLifecycleEvent,
   parseTaskLaunchOutput,
+  parseTaskCompletionNotification,
   parseTaskStatusOutput,
   type ParsedTaskLifecycleEvent,
 } from './taskOutput.js';
@@ -76,6 +77,28 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
   it('returns undefined for malformed status output without throwing', () => {
     expect(parseTaskStatusOutput('status unavailable')).toBeUndefined();
     expect(parseTaskStatusOutput('{"task_id":')).toBeUndefined();
+  });
+
+  it('extracts terminal state from native background completion notifications', () => {
+    const parsed = parseTaskCompletionNotification(`<task id="ses_1414deee4ffe5kZYLAlm3FmXDS" state="completed">
+<summary>Background task completed: Hive: 01-add-background-smoke-a</summary>
+<task_result>
+Created \`BACKGROUND_SMOKE_A.md\` in the task worktree and committed it.
+
+Commit: \`24d154c\` (\`test: add background smoke A marker\`)
+</task_result>
+</task>`);
+
+    expect(parsed).toEqual({
+      task_id: 'ses_1414deee4ffe5kZYLAlm3FmXDS',
+      runtimeState: 'completed',
+      result: 'Created `BACKGROUND_SMOKE_A.md` in the task worktree and committed it.\n\nCommit: `24d154c` (`test: add background smoke A marker`)',
+    });
+  });
+
+  it('ignores non-terminal and task-id-free notification text', () => {
+    expect(parseTaskCompletionNotification('<task id="task-running" state="running"><summary>Still working</summary></task>')).toBeUndefined();
+    expect(parseTaskCompletionNotification('The background worker completed successfully.')).toBeUndefined();
   });
 
   it('extracts lifecycle context from post-tool task payloads', () => {

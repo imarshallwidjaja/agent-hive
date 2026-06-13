@@ -20,9 +20,10 @@ Default: Background-first is the scheduler default when the env-gated appendix i
 3. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 4. Follow every `nextActions` entry returned by `hive_background_status`. Treat `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
 5. Continue only foreground work that does not depend on the background result.
-6. Use native `task_status` to poll or wait before dependent decisions.
-7. Use `hive_background_reconcile` after native jobs reach terminal state so the board does not keep forgotten terminal jobs.
-8. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
+6. Use native `task_status` to poll or wait before dependent decisions when that tool is exposed in the current environment.
+7. If native `task_status` is not exposed, wait for the native background completion notification, then call `hive_background_status` again so Hive can refresh from the observed native terminal state.
+8. Use `hive_background_reconcile` after native jobs reach terminal state so the board does not keep forgotten terminal jobs.
+9. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
 
 ```ts
 const { task_id } = task({
@@ -32,8 +33,12 @@ const { task_id } = task({
   background: true,
 });
 hive_background_status({ includeStale: false });
+// If exposed in this agent environment:
 task_status({ task_id, wait: false });
 task_status({ task_id, wait: true, timeout_ms: 60000 });
+// If task_status is not exposed, wait for the native completion notification,
+// then refresh the Hive board instead of manually mutating runtime state.
+hive_background_status({ includeStale: false });
 hive_background_reconcile({
   identifier: task_id,
   decision: 'reconciled',
@@ -49,7 +54,7 @@ Action: start independent codebase research while you read another bounded area 
 
 Decision: use background when the foreground read does not need the research answer. Use a blocking escape only when dependency, risk, simplicity, user interaction, or ownership conflict makes foreground scheduling wrong.
 
-Result: poll with `task_status({ task_id, wait: false })`, continue foreground work, then wait before using the findings.
+Result: poll with `task_status({ task_id, wait: false })` when exposed, continue foreground work, then wait for `task_status` or the native completion notification before using the findings.
 
 ### Planning validation
 
@@ -57,7 +62,7 @@ Action: ask a reviewer agent to check assumptions while you inspect references n
 
 Decision: use background when the validation cannot change the immediate file reads.
 
-Result: wait with `task_status({ task_id, wait: true, timeout_ms: 60000 })` before finalising plan confidence.
+Result: wait with `task_status({ task_id, wait: true, timeout_ms: 60000 })` when exposed, or wait for the native completion notification, before finalising plan confidence.
 
 ### Review and recovery support
 
@@ -73,13 +78,13 @@ Action: run independent verification or inspection while a foreground implementa
 
 Decision: use background when the running check cannot affect the current edit.
 
-Result: wait for the final task status before reporting completion or making the next dependent decision.
+Result: wait for final native task evidence, then refresh `hive_background_status`, before reporting completion or making the next dependent decision.
 
 ## Anti-Patterns
 
 - Using background when the next step depends on the result.
 - Launching speculative work without a clear decision point.
 - Nested delegation. Do not call `task()` from subagents.
-- Forgotten terminal jobs: forgetting to poll, wait, reconcile, or cancel before using background results or ending the turn.
+- Forgotten terminal jobs: forgetting to poll when available, wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
 - Empty-board false negatives: treating `jobs: []` as final when `pendingLaunches` or `nextActions` are present.
 - Launching background work just because the feature exists.

@@ -5,7 +5,12 @@ import type {
   BackgroundJobService,
   SessionInfo,
 } from 'hive-core';
-import { parseTaskLifecycleEvent, type ParsedTaskLifecycleEvent, type TaskLifecycleContext } from './taskOutput.js';
+import {
+  parseTaskCompletionNotification,
+  parseTaskLifecycleEvent,
+  type ParsedTaskLifecycleEvent,
+  type TaskLifecycleContext,
+} from './taskOutput.js';
 
 export interface ReplayTextPart {
   id?: string;
@@ -69,6 +74,8 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       if (!options.isEnabled() || !Array.isArray(output.messages) || output.messages.length === 0) {
         return;
       }
+
+      observeCompletionNotifications(output.messages);
 
       const targetMessage = findTargetUserMessage(output.messages);
       const sessionID = targetMessage?.info.sessionID;
@@ -191,6 +198,48 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     }
   }
 
+  function observeCompletionNotifications(messages: ReplayMessageEntry[]): void {
+    for (const message of messages) {
+      const parentSessionId = message.info.sessionID;
+      for (const part of message.parts) {
+        const parsed = part.text ? parseTaskCompletionNotification(part.text) : undefined;
+        if (!parsed) {
+          continue;
+        }
+
+        const job = options.service.resolve(parsed.task_id);
+        if (!job || isTerminalRuntimeState(job.runtimeState) || !isNotificationForJob(job, part.sessionID ?? parentSessionId)) {
+          continue;
+        }
+
+        const state = normalizeBackgroundRuntimeState(parsed.runtimeState, parsed.error?.kind);
+        if (state !== 'completed' && state !== 'error' && state !== 'cancelled') {
+          continue;
+        }
+
+        try {
+          options.service.markTerminal(parsed.task_id, state, {
+            resultSummary: parsed.result,
+            lastStatusError: parsed.error?.message,
+            statusUncertain: parsed.timedOut,
+          });
+        } catch (error) {
+          warn(`[hive:background] failed to update background task ${parsed.task_id} from completion notification: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+  }
+
+  function isNotificationForJob(job: BackgroundJobRecord, parentSessionId: string | undefined): boolean {
+    if (job.scope?.projectRoot && job.scope.projectRoot !== options.projectRoot) {
+      return false;
+    }
+    if (job.scope?.parentSessionId) {
+      return job.scope.parentSessionId === parentSessionId;
+    }
+    return true;
+  }
+
   return adapter;
 }
 
@@ -222,6 +271,10 @@ function shouldShowJobInPrompt(job: BackgroundJobRecord): boolean {
     || job.terminalUnreconciled === true
     || !!job.cancelRequestedAt
     || !!job.staleAt;
+}
+
+function isTerminalRuntimeState(state: BackgroundJobRecord['runtimeState']): boolean {
+  return state === 'completed' || state === 'error' || state === 'cancelled';
 }
 
 function formatPromptBoard(jobs: BackgroundJobRecord[]): string {

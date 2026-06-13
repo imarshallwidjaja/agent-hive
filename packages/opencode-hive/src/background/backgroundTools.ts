@@ -229,7 +229,7 @@ function statusRequiredAction(job: BackgroundJobRecord): Record<string, string> 
     reason: 'runtime_status_required',
     taskId: job.taskId,
     command: `task_status({ task_id: "${job.taskId}" })`,
-    message: 'Call native task_status before reconciling, merging dependent work, or reporting the background lane complete.',
+    message: 'When native task_status is available, call it before reconciling, merging dependent work, or reporting the background lane complete. If it is not exposed, wait for the native completion notification and call hive_background_status again.',
   };
 }
 

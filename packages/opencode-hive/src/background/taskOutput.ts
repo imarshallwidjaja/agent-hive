@@ -102,9 +102,18 @@ export function parseTaskStatusOutput(output: string): ParsedTaskStatusOutput | 
     task_id,
     runtimeState,
     timedOut: parseBoolean(timedOutText),
-    result,
+    result: result ?? extractXmlTag(output, 'task_result'),
     error,
   });
+}
+
+export function parseTaskCompletionNotification(output: string): ParsedTaskStatusOutput | undefined {
+  const status = parseTaskStatusOutput(output);
+  if (!status?.runtimeState || !isTerminalRuntimeState(status.runtimeState)) {
+    return undefined;
+  }
+
+  return status;
 }
 
 export function parseTaskLifecycleEvent(input: unknown, output: unknown, context: TaskLifecycleContext = {}): ParsedTaskLifecycleEvent | undefined {
@@ -213,6 +222,24 @@ function extractField(output: string, fieldNames: string[]): string | undefined 
 function extractFirstLine(output: string): string | undefined {
   const line = output.split('\n').map((part) => part.trim()).find(Boolean);
   return line || undefined;
+}
+
+function extractXmlTag(output: string, tagName: string): string | undefined {
+  const match = output.match(new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)</${tagName}>`, 'i'));
+  const value = match?.[1]?.trim();
+  return value || undefined;
+}
+
+function isTerminalRuntimeState(runtimeState: string): boolean {
+  const normalized = runtimeState.trim().toLowerCase();
+  return normalized === 'completed'
+    || normalized === 'complete'
+    || normalized === 'success'
+    || normalized === 'error'
+    || normalized === 'failed'
+    || normalized === 'failure'
+    || normalized === 'cancelled'
+    || normalized === 'canceled';
 }
 
 function parseBoolean(value: string | undefined): boolean | undefined {

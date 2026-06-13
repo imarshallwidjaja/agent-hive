@@ -264,6 +264,124 @@ describe('createBackgroundJobAdapter', () => {
     });
   });
 
+  it('terminalizes registered non-worker jobs from native completion notifications', async () => {
+    const { adapter, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1', 'hive-master'));
+
+    await launchTask(adapter, 'parent-1', 'review-task', {
+      description: 'Review the implementation',
+      prompt: 'Review the current diff for correctness.',
+      subagent_type: 'code-reviewer',
+    });
+
+    const output = messagesFor('parent-1');
+    output.messages[0].parts.push({
+      id: 'prt-completion',
+      sessionID: 'parent-1',
+      messageID: 'msg-parent-1',
+      type: 'text',
+      text: `<task id="review-task" state="completed">
+<summary>Background task completed: Review the implementation</summary>
+<task_result>
+No correctness findings.
+</task_result>
+</task>`,
+    });
+
+    await adapter['experimental.chat.messages.transform']({}, output);
+
+    expect(readBoard().jobs[0]).toMatchObject({
+      taskId: 'review-task',
+      agentName: 'code-reviewer',
+      runtimeState: 'completed',
+      resultSummary: 'No correctness findings.',
+      terminalUnreconciled: true,
+    });
+    expect(readBoard().jobs[0].ownership?.workerPromptPath).toBeUndefined();
+  });
+
+  it('ignores completion notifications without a known registered task id', async () => {
+    const { adapter, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1'));
+    await launchTask(adapter, 'parent-1', 'known-task');
+
+    const output = messagesFor('parent-1');
+    output.messages[0].parts.push({
+      id: 'prt-unknown-completion',
+      sessionID: 'parent-1',
+      messageID: 'msg-parent-1',
+      type: 'text',
+      text: '<task id="other-task" state="completed"><summary>Done</summary><task_result>wrong scope</task_result></task>',
+    });
+
+    await adapter['experimental.chat.messages.transform']({}, output);
+
+    expect(readBoard().jobs[0]).toMatchObject({
+      taskId: 'known-task',
+      runtimeState: 'running',
+    });
+  });
+
+  it('does not let completion notifications overwrite explicit terminal task_status results', async () => {
+    const { adapter, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1'));
+    await launchTask(adapter, 'parent-1', 'task-status-first');
+
+    await adapter['tool.execute.before']({ tool: 'task_status', sessionID: 'parent-1', callID: 'status-first' }, {
+      args: { task_id: 'task-status-first' },
+    });
+    await adapter['tool.execute.after']({ tool: 'task_status', sessionID: 'parent-1', callID: 'status-first' }, {
+      output: JSON.stringify({ task_id: 'task-status-first', status: 'completed', result: 'Explicit task_status result.' }),
+    });
+
+    const output = messagesFor('parent-1');
+    output.messages[0].parts.push({
+      id: 'prt-late-notification',
+      sessionID: 'parent-1',
+      messageID: 'msg-parent-1',
+      type: 'text',
+      text: '<task id="task-status-first" state="completed"><summary>Done</summary><task_result>Late notification result.</task_result></task>',
+    });
+
+    await adapter['experimental.chat.messages.transform']({}, output);
+
+    expect(readBoard().jobs[0]).toMatchObject({
+      taskId: 'task-status-first',
+      runtimeState: 'completed',
+      resultSummary: 'Explicit task_status result.',
+      terminalUnreconciled: true,
+    });
+  });
+
+  it('ignores scoped completion notifications from a different or missing parent session', async () => {
+    const { adapter, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1'));
+    await launchTask(adapter, 'parent-1', 'scoped-task');
+
+    const wrongParent = messagesFor('parent-2');
+    wrongParent.messages[0].parts.push({
+      id: 'prt-wrong-parent',
+      sessionID: 'parent-2',
+      messageID: 'msg-parent-2',
+      type: 'text',
+      text: '<task id="scoped-task" state="completed"><summary>Done</summary><task_result>Wrong parent.</task_result></task>',
+    });
+    await adapter['experimental.chat.messages.transform']({}, wrongParent);
+
+    const missingParent: { messages: ReplayMessageEntry[] } = {
+      messages: [{
+        info: { id: 'msg-no-parent', role: 'assistant', time: { created: Date.now() } },
+        parts: [{ id: 'prt-no-parent', type: 'text', text: '<task id="scoped-task" state="completed"><summary>Done</summary><task_result>No parent.</task_result></task>' }],
+      }],
+    };
+    await adapter['experimental.chat.messages.transform']({}, missingParent);
+
+    expect(readBoard().jobs[0]).toMatchObject({
+      taskId: 'scoped-task',
+      runtimeState: 'running',
+    });
+  });
+
   it('injects compact board entries only for the matching primary-agent parent session', async () => {
     const { adapter, service, sessions } = createHarness();
     sessions.set('parent-1', session('parent-1'));
