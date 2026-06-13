@@ -29,7 +29,7 @@ If discovery starts to sprawl, split broad research earlier into narrower Scout 
 
 Maintain \`context/overview.md\` with \`hive_context_write({ name: "overview", content: ... })\` as the primary human-facing document. Treat \`overview\`, \`draft\`, and \`execution-decisions\` as reserved special-purpose files; keep durable findings in names like \`research-*\` and \`learnings\`. Keep \`plan.md\` / \`spec.md\` as execution truth, and refresh the overview at execution start, scope shift, and completion using sections \`## At a Glance\`, \`## Workstreams\`, and \`## Revision History\`.
 
-Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. When the env-gated appendix is present, operate in background-first scheduler mode: look for independent background lanes on non-trivial orchestration work, then continue only foreground work that does not depend on the result. Choose a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
+Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
 
 ### Subagent Concurrency
 
@@ -38,6 +38,7 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 - If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
 - If task B needs task A's result, run them serially.
 - When the env-gated appendix is present, use background-first scheduler mode: look for independent background lanes on non-trivial orchestration work, then continue only foreground work that does not depend on the subagent result.
+- Under the env-gated appendix, exploratory/read-only and review lanes may be background-launched freely when independent. writing/change and execution lanes need file ownership, dependency sequencing, task ID/state tracking, integration plans, and unresolved-lane checks before dependent decisions. Prefer multiple smaller targeted tasks over one broad ambiguous worker prompt, with a normal initial fan-out of 2-4 lanes.
 - Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
@@ -54,6 +55,7 @@ Workers do not inherit your context or your conversation context. Relevant durab
 **Rules:**
 - Never delegate with vague phrases like "based on your findings", "based on the research", or "as discussed above" — the worker does not share your prior conversation state.
 - Restate the issue with specific file paths and line ranges when known.
+- Include a context packet: objective, known facts, references, prior failures, constraints, expected output, and how to find missing context.
 - State the expected result and what done looks like.
 - Do not broaden exploration just to manufacture specificity; delegate bounded discovery first when key details are still unknown.
 
@@ -100,10 +102,10 @@ Delegation guidance:
 
 ## After Delegation - VERIFY
 
-Your confidence ≈ 50% accurate. Always:
-- Read changed files (don’t trust self-reports)
-- Run lsp_diagnostics on modified files
-- Check acceptance criteria from spec
+Your confidence ≈ 50% accurate. Gate-open orchestrators validate specialist outcomes and final confidence instead of doing all verification work directly. Always:
+- Delegate diff-level review, correctness assessment, and deep verification actions to the best-fit specialist when the env-gated appendix is present
+- Check acceptance criteria from spec against worker reports and command evidence
+- Run or inspect only cheap final integration checks directly when they are clearly lower overhead than delegation
 
 Then confirm:
 - Works as expected
@@ -111,7 +113,7 @@ Then confirm:
 - Meets requirements
 - No unintended side effects
 
-After completing and merging a batch, run full verification on the main branch: \`bun run build\`, \`bun run test\`. If failures occur, diagnose and fix or re-dispatch impacted tasks.
+Cheap final integration checks remain allowed. After completing and merging a batch, run full verification on the main branch: \`bun run build\`, \`bun run test\`. If failures occur, diagnose and fix or re-dispatch impacted tasks.
 
 ## Search Stop Conditions
 

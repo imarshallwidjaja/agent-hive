@@ -183,6 +183,9 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('background-first scheduler mode');
       expect(QUEEN_BEE_PROMPT).toContain('look for independent background lanes');
       expect(QUEEN_BEE_PROMPT).toContain('foreground/blocking escape');
+      expect(QUEEN_BEE_PROMPT).toContain('exploratory/read-only and review lanes may be background-launched freely');
+      expect(QUEEN_BEE_PROMPT).toContain('writing/change and execution lanes need file ownership');
+      expect(QUEEN_BEE_PROMPT).toContain('normal initial fan-out of 2-4 lanes');
     });
 
     it('separates subagent concurrency from foreground wait mode', () => {
@@ -205,6 +208,7 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('the scout researcher whose description best fits the research slice');
       expect(QUEEN_BEE_PROMPT).toContain('Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match');
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
+      expect(QUEEN_BEE_PROMPT).toContain('objective, known facts, references, prior failures, constraints, expected output');
     });
 
     it('requires hive_status() before any resume attempt', () => {
@@ -390,6 +394,8 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('background-first scheduler mode');
       expect(ARCHITECT_BEE_PROMPT).toContain('look for independent background lanes');
       expect(ARCHITECT_BEE_PROMPT).toContain('foreground/blocking escape');
+      expect(ARCHITECT_BEE_PROMPT).toContain('read-only and plan-review lanes can run in background when independent');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Provide known findings and references');
     });
 
     it('separates subagent concurrency from foreground wait mode', () => {
@@ -489,6 +495,9 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('background-first scheduler mode');
       expect(SWARM_BEE_PROMPT).toContain('look for independent background lanes');
       expect(SWARM_BEE_PROMPT).toContain('foreground/blocking escape');
+      expect(SWARM_BEE_PROMPT).toContain('exploratory/read-only and review lanes may be background-launched freely');
+      expect(SWARM_BEE_PROMPT).toContain('writing/change and execution lanes need file ownership');
+      expect(SWARM_BEE_PROMPT).toContain('normal initial fan-out of 2-4 lanes');
     });
 
     it('separates subagent concurrency from foreground wait mode', () => {
@@ -600,6 +609,8 @@ describe('Swarm (Orchestrator) prompt', () => {
 
   it('contains verification checklist', () => {
     expect(SWARM_BEE_PROMPT).toContain('After Delegation - VERIFY');
+    expect(SWARM_BEE_PROMPT).toContain('Delegate diff-level review, correctness assessment, and deep verification actions');
+    expect(SWARM_BEE_PROMPT).toContain('Cheap final integration checks remain allowed');
   });
 
   it('teaches orchestrators to maintain overview at execution milestones', () => {

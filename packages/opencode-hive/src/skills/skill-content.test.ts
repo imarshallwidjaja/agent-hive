@@ -81,6 +81,28 @@ describe('skill content', () => {
     expect(skill!.template).toContain('If the only reason for serializing is `task()` is blocking, that is incorrect');
   });
 
+  it('positions parallel-exploration as lightweight read-only delegation under the background scheduler', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
+
+    expect(skill).toBeDefined();
+    expect(skill!.template).toContain('exploratory/read-only lightweight delegation');
+    expect(skill!.template).toContain('For kind-based scheduling under the gate, load `background-delegation`');
+    expect(skill!.template).toContain('Context Packet');
+    expect(skill!.template).toContain('known facts');
+    expect(skill!.template).toContain('expected output');
+  });
+
+  it('keeps executing-plans sequential guidance subordinate to background-delegation when gate-open', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans');
+
+    expect(skill).toBeDefined();
+    expect(skill!.template).toContain('If `## Background-First Orchestration` is present');
+    expect(skill!.template).toContain('use `background-delegation` as the scheduler authority');
+    expect(skill!.template).toContain('gate-closed fallback guidance');
+    expect(skill!.template).toContain('Execution and Forager lanes are managed/heavy background lanes');
+    expect(skill!.template).toContain('unresolved-lane checks before dependent decisions');
+  });
+
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'dispatching-parallel-agents');
 

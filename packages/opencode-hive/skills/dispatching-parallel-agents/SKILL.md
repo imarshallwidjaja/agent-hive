@@ -11,6 +11,8 @@ When you have multiple unrelated failures (different test files, different subsy
 
 **Core principle:** Dispatch one agent per independent problem domain. Let them work concurrently.
 
+When `## Background-First Orchestration` is present, load `background-delegation` for scheduler and wait-mode decisions. This skill covers task independence, scope, and prompt quality; the background skill governs whether each independent lane runs blocking or background.
+
 ## Prerequisite: Check Runnable Tasks
 
 Before dispatching, use `hive_status()` to get the **runnable** list — tasks whose dependencies are all satisfied.

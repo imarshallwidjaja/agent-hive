@@ -5,6 +5,12 @@ description: "Agent Hive workflow skill for executing an approved Hive implement
 
 # Executing Plans
 
+## Gate-Open Scheduler Authority
+
+If `## Background-First Orchestration` is present in the primary prompt, use `background-delegation` as the scheduler authority. Treat the sequential model below as gate-closed fallback guidance, not competing background policy.
+
+Execution and Forager lanes are managed/heavy background lanes under the gate. They require dependency sequencing, file ownership boundaries, verification obligations, integration tracking, and unresolved-lane checks before dependent decisions, merge, cleanup, or final reporting.
+
 ## Overview
 
 Load plan, review critically, execute tasks in batches, report for review between batches.

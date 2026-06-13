@@ -11,6 +11,8 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 **Core principle:** Decompose into independent sub-questions that fit in one context window, spawn one task per sub-question, then synthesize the bounded results.
 
+**Delegation kind:** This is exploratory/read-only lightweight delegation. For kind-based scheduling under the gate, load `background-delegation` and let it govern foreground/blocking vs background wait mode.
+
 **Safe in Planning mode:** This is read-only exploration. It is OK to use during exploratory research even when there is no feature, no plan, and no approved tasks.
 
 **This skill is for read-only research.** For parallel implementation work, use \`skill({ name: "dispatching-parallel-agents" })\` with \`hive_worktree_start\`.
@@ -75,6 +77,8 @@ Launch all tasks before waiting for any results:
 
 Choose the researcher per slice. Use the scout researcher whose description best fits the research slice, including configured scout-derived custom subagents when their domain or workflow is a closer match. Use `scout-researcher` when no configured custom description is a closer fit.
 
+Each prompt needs a Context Packet: objective, known facts, references, prior failures, constraints, expected output, and how the Scout should find missing context. Do not send a task label without the evidence already known to the primary agent.
+
 ```typescript
 // Parallelize by issuing multiple task() calls in the same assistant message.
 task({
@@ -108,9 +112,9 @@ task({
 **Key points:**
 - Use `subagent_type: 'scout-researcher'` for read-only exploration unless a configured scout-derived custom subagent is a better match
 - Give each task a clear, focused `description`
-- Make prompts specific about what evidence to return
+- Make prompts specific about what evidence to return, including known facts and expected output
 - Dispatch dependency-independent slices together, even though normal `task()` is blocking
-- Use background mode only when the primary agent has independent foreground work to do while the scouts run
+- When the env-gated appendix is present, follow `background-delegation` for wait mode; otherwise use the normal blocking return flow
 
 ### 3. Collect Results
 
