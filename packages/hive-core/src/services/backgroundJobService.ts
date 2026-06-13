@@ -48,6 +48,9 @@ export interface ReconcilePatch {
 }
 
 export type BackgroundJobScopeFilter = BackgroundJobScope;
+export interface BackgroundJobListOptions {
+  includeArchived?: boolean;
+}
 
 export class BackgroundJobService {
   constructor(private readonly projectRoot: string) {}
@@ -257,6 +260,11 @@ export class BackgroundJobService {
       if (patch.reconciliationSummary !== undefined) {
         changed = this.applyIfChanged(record, 'reconciliationSummary', patch.reconciliationSummary) || changed;
       }
+      if (!record.archivedAt) {
+        record.archivedAt = new Date().toISOString();
+        changed = true;
+      }
+      changed = this.applyIfChanged(record, 'archiveReason', 'reconciled') || changed;
 
       this.updateTimestamp(record, changed);
       return record;
@@ -274,6 +282,11 @@ export class BackgroundJobService {
         changed = true;
       }
       changed = this.applyIfChanged(record, 'ignoreReason', ignoreReason) || changed;
+      if (!record.archivedAt) {
+        record.archivedAt = new Date().toISOString();
+        changed = true;
+      }
+      changed = this.applyIfChanged(record, 'archiveReason', 'ignored') || changed;
 
       this.updateTimestamp(record, changed);
       return record;
@@ -367,8 +380,11 @@ export class BackgroundJobService {
     });
   }
 
-  listScoped(filter: BackgroundJobScopeFilter = {}): BackgroundJobRecord[] {
+  listScoped(filter: BackgroundJobScopeFilter = {}, options: BackgroundJobListOptions = {}): BackgroundJobRecord[] {
     return this.readBoard().jobs.filter((job) => {
+      if (job.archivedAt && options.includeArchived !== true) {
+        return false;
+      }
       const scope = job.scope || {};
       return Object.entries(filter).every(([key, value]) => {
         if (value === undefined) {

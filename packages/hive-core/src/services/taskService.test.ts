@@ -1398,6 +1398,26 @@ Align documentation wording.
       expect(status?.dependsOn).toEqual([]);
     });
 
+    it("uses slug-safe folder names while preserving the manual task title", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      const folder = service.create(featureName, "Background smoke worker A!", undefined, {
+        description: "Create the smoke marker file.",
+      });
+
+      expect(folder).toBe("01-background-smoke-worker-a");
+      expect(service.getRawStatus(featureName, folder)?.planTitle).toBe("Background smoke worker A!");
+      expect(fs.existsSync(path.join(TEST_DIR, ".hive", "features", featureName, "tasks", folder))).toBe(true);
+    });
+
+    it("rejects manual task names that cannot produce a safe folder slug", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      expect(() => service.create(featureName, "!!!")).toThrow(/safe task folder slug/i);
+    });
+
     it("creates a spec.md during manual-task creation", () => {
       const featureName = "test-feature";
       setupFeature(featureName);

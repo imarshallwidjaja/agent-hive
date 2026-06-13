@@ -100,16 +100,18 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 
 | Tool | Purpose |
 |------|---------|
-| `hive_background_status` | List background jobs visible to the current primary session scope, optionally including stale entries or filtering by feature, task, ad-hoc run, or workflow |
-| `hive_background_reconcile` | Mark a terminal native background job as reconciled or intentionally ignored with a required summary |
-| `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or intentionally ignored in one scoped operation |
+| `hive_background_status` | List active background jobs visible to the current primary session scope, optionally including stale or archived entries and filtering by feature, task, ad-hoc run, or workflow |
+| `hive_background_reconcile` | Mark a terminal native background job as reconciled or intentionally ignored with a required summary, then archive it from normal status output |
+| `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or intentionally ignored in one scoped operation, then archive them from normal status output |
 | `hive_background_cancel` | Request cancellation for a visible background job and record runtime cancellation only after OpenCode confirms it |
 
 #### Background orchestration notes
 
 - With the env gate unset, the background management tools return `background_tools_disabled` and the normal blocking task/worktree flow remains current behavior.
 - With the env gate set, primary agents operate in background-first scheduler mode for independent work: launch native background tasks, inspect the scoped board with `hive_background_status`, wait for native completion notifications before dependent decisions, refresh `hive_background_status`, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
+- If `hive_background_status` returns `schedulerGuidance.reason: wait_for_native_completion_notification`, do not refresh repeatedly. Wait for OpenCode's native completion notification, continue unrelated foreground work, or cancel only if the lane is stale, wrong, or no longer needed.
 - Prompt acknowledgment only means Hive showed the terminal result to the parent session. It does not clear `terminalUnreconciled`; the agent still needs explicit reconciliation after consuming or ignoring the result.
+- Reconciled and ignored terminal jobs are archived by the background tools and hidden from normal status output. Do not edit `.hive/background-jobs.json` directly.
 - Subagents must not start background tasks or manage the background board.
 - Cancellation is not rollback. `hive_background_cancel` does not revert files, branches, worktrees, commits, or task reports; it only records a cancellation request and any confirmed runtime cancellation.
 - If a background lane cannot be resumed safely, use no-resume retry/escalation: start a fresh scoped attempt when safe, ignore the stale terminal entry with a reason, or escalate the concrete blocker to the operator.

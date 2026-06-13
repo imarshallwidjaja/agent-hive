@@ -236,6 +236,8 @@ export interface BackgroundJobRecord {
   reconciliationSummary?: string;
   ignoredAt?: string;
   ignoreReason?: string;
+  archivedAt?: string;
+  archiveReason?: 'reconciled' | 'ignored';
   staleAt?: string;
   promptNotifiedAt?: string;
   promptNotifiedInSessionId?: string;

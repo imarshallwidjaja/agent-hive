@@ -22,6 +22,9 @@ describe('tools template', () => {
     expect(toolsTemplate).toContain('hive_background_cancel');
     expect(toolsTemplate).toContain('primary-agent-only');
     expect(toolsTemplate).toContain('Cancellation is not rollback');
+    expect(toolsTemplate).toContain('wait_for_native_completion_notification');
+    expect(toolsTemplate).toContain('Do not edit `.hive/background-jobs.json` directly');
+    expect(toolsTemplate).toContain('archives it from normal status');
     expect(toolsTemplate).not.toContain('task_status');
     expect(toolsTemplate).not.toContain('hive_background_task');
     expect(toolsTemplate).not.toContain('hive_background_output');

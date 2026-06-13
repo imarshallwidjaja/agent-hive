@@ -35,14 +35,15 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         task: tool.schema.string().optional().describe('Optional task scope filter.'),
         adHocRunId: tool.schema.string().optional().describe('Optional ad-hoc run scope filter.'),
         workflow: tool.schema.string().optional().describe('Optional workflow scope filter.'),
+        includeArchived: tool.schema.boolean().optional().describe('Include reconciled or ignored background jobs archived by Hive background tools.'),
       },
-      async execute({ includeStale, feature, task, adHocRunId, workflow }, toolContext) {
+      async execute({ includeStale, feature, task, adHocRunId, workflow, includeArchived }, toolContext) {
         if (!options.isEnabled()) {
           return json(disabledResponse());
         }
 
         const jobs = options.backgroundJobService
-          .listScoped({ projectRoot: options.projectRoot })
+          .listScoped({ projectRoot: options.projectRoot }, { includeArchived: includeArchived === true })
           .filter(job => isJobVisible(job, toolContext as ToolContext))
           .filter(job => includeStale === true || !job.staleAt)
           .filter(job => matchesOptionalScope(job, { feature, task, adHocRunId, workflow }));
@@ -53,6 +54,14 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         const nextActions = buildNextActions(jobs, pendingLaunches);
         const waitingForNativeCompletion = buildNativeCompletionWaits(jobs);
         const orchestrationBurden = buildOrchestrationBurden(jobs, pendingLaunches);
+        const schedulerGuidance = orchestrationBurden.completionNotificationsPending > 0
+          && orchestrationBurden.reconcileItemsRequired === 0
+          && orchestrationBurden.pendingLaunches === 0
+          ? {
+              reason: 'wait_for_native_completion_notification',
+              message: 'Do not call hive_background_status repeatedly while every visible lane is wait-only. Wait for OpenCode native completion notification, continue unrelated foreground work, or cancel only if the lane is stale, wrong, or no longer needed.',
+            }
+          : undefined;
 
         return json({
           success: true,
@@ -61,6 +70,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           pendingLaunches: pendingLaunches.length > 0 ? pendingLaunches.map(formatPendingLaunch) : undefined,
           waitingForNativeCompletion: waitingForNativeCompletion.length > 0 ? waitingForNativeCompletion : undefined,
           nextActions: nextActions.length > 0 ? nextActions : undefined,
+          schedulerGuidance,
           orchestrationBurden,
         });
       },
@@ -214,6 +224,10 @@ function reconcileVisibleJob(
     identifier: item.identifier,
     success: true,
     decision: item.decision,
+    archive: {
+      archived: true,
+      message: 'The background job is archived and hidden from normal status output. Do not edit .hive/background-jobs.json directly.',
+    },
     job: formatJob(reconciled),
   };
 }
@@ -319,6 +333,11 @@ function currentScope(projectRoot: string, toolContext: ToolContext): Record<str
 }
 
 function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
+  const terminal = isTerminalRuntimeState(job.runtimeState);
+  const visibility = job.archivedAt
+    ? (job.archiveReason === 'ignored' ? 'ignored_archived' : 'archived_after_reconcile')
+    : (terminal && job.terminalUnreconciled === true ? 'terminal_unreconciled' : 'active');
+
   return {
     taskId: job.taskId,
     sessionId: job.sessionId,
@@ -349,9 +368,13 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
       reconciliationSummary: job.reconciliationSummary,
       ignoredAt: job.ignoredAt,
       ignoreReason: job.ignoreReason,
+      archivedAt: job.archivedAt,
+      archiveReason: job.archiveReason,
       staleAt: job.staleAt,
       retryOf: job.retryOf,
       supersedes: job.supersedes,
+      visibility,
+      actionRequired: terminal && job.terminalUnreconciled === true,
     }),
     scope: job.scope,
     ownership: job.ownership,

@@ -265,6 +265,17 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(false);
   });
 
+  it('blocks direct branch deletion when the task branch has unmerged commits', async () => {
+    const fixture = await createCommittedFixture();
+
+    await expect(fixture.service.remove(fixture.feature, fixture.task, true)).rejects.toThrow(
+      /unmerged commits|hive_merge|discard/i,
+    );
+
+    expect(await pathExists(fixture.worktreePath)).toBe(true);
+    expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(true);
+  });
+
   it('aborts merge conflicts by default and reports the conflict state', async () => {
     const fixture = await createConflictingFixture();
 

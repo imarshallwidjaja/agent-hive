@@ -148,6 +148,10 @@ interface WorkspaceManifest {
   createdAt: string;
 }
 
+interface RemoveOptions {
+  allowUnmergedCommits?: boolean;
+}
+
 export class WorktreeService {
   private config: WorktreeConfig;
 
@@ -755,18 +759,20 @@ export class WorktreeService {
     feature: string,
     step: string,
     deleteBranch = false,
+    options: RemoveOptions = {},
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
     const manifest = await this.readWorkspaceManifest(feature, step);
     if (manifest) {
-      return this.removeComposite(feature, step, manifest, deleteBranch);
+      return this.removeComposite(feature, step, manifest, deleteBranch, options);
     }
-    return this.removeLegacy(feature, step, deleteBranch);
+    return this.removeLegacy(feature, step, deleteBranch, options);
   }
 
   private async removeLegacy(
     feature: string,
     step: string,
     deleteBranch: boolean,
+    options: RemoveOptions = {},
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
     const worktreePath = this.getWorktreePath(feature, step);
     const branchName = this.getLegacyBranchName(feature, step);
@@ -774,6 +780,10 @@ export class WorktreeService {
     let worktreeRemoved = false;
     let branchDeleted = false;
     let pruned = false;
+
+    if (deleteBranch) {
+      await this.assertBranchDeletionSafe(git, branchName, options.allowUnmergedCommits === true);
+    }
 
     try {
       await git.raw(["worktree", "remove", worktreePath, "--force"]);
@@ -807,6 +817,7 @@ export class WorktreeService {
     step: string,
     manifest: WorkspaceManifest,
     deleteBranch: boolean,
+    options: RemoveOptions = {},
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
     const compositeRoot = this.getCompositeRoot(feature, step);
     const resolved = this.resolveRepositories();
@@ -826,6 +837,7 @@ export class WorktreeService {
         entry,
         repoRoot,
         deleteBranch,
+        options,
       );
       if (!perRepo.worktreeRemoved) allWorktreesRemoved = false;
       if (perRepo.pruned) prunedAny = true;
@@ -847,6 +859,27 @@ export class WorktreeService {
       branchDeleted: deleteBranch && branchAttempts > 0 && allBranchesDeleted,
       pruned: prunedAny,
     };
+  }
+
+  private async assertBranchDeletionSafe(git: SimpleGit, branchName: string, allowUnmergedCommits: boolean): Promise<void> {
+    if (allowUnmergedCommits) {
+      return;
+    }
+
+    const branches = await git.branch();
+    if (!branches.all.includes(branchName)) {
+      return;
+    }
+
+    const currentBranch = branches.current;
+    if (!currentBranch) {
+      throw new Error(`Refusing to delete branch ${branchName}: current branch could not be determined. Merge with hive_merge, keep the branch, or use an explicit discard path.`);
+    }
+
+    const unmergedCount = Number((await git.raw(['rev-list', '--count', `${currentBranch}..${branchName}`])).trim());
+    if (unmergedCount > 0) {
+      throw new Error(`Refusing to delete branch ${branchName}: ${unmergedCount} unmerged commits would be discarded. Merge with hive_merge, keep the branch, or use an explicit discard path.`);
+    }
   }
 
   async list(feature?: string): Promise<WorktreeInfo[]> {
@@ -1138,7 +1171,7 @@ export class WorktreeService {
       step,
       preserveConflicts,
       cleanupMode,
-      cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch),
+      cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch, { allowUnmergedCommits: true }),
     });
     return {
       success: repoResult.success,
@@ -1312,6 +1345,7 @@ export class WorktreeService {
           entry,
           repoRoot,
           deleteBranch,
+          { allowUnmergedCommits: true },
         );
         repos[repoId].cleanup = repoCleanup;
         perRepoCleanups.push(repoCleanup);
@@ -1364,6 +1398,7 @@ export class WorktreeService {
     entry: WorkspaceManifestEntry,
     repoRoot: string | undefined,
     deleteBranch: boolean,
+    options: RemoveOptions = {},
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
     const compositeRoot = this.getCompositeRoot(feature, step);
     const repoWtPath = path.join(compositeRoot, entry.path);
@@ -1375,6 +1410,9 @@ export class WorktreeService {
     let branchDeleted = false;
 
     if (repoGit) {
+      if (deleteBranch) {
+        await this.assertBranchDeletionSafe(repoGit, entry.branch, options.allowUnmergedCommits === true);
+      }
       try {
         await repoGit.raw(['worktree', 'remove', repoWtPath, '--force']);
         worktreeRemoved = true;

@@ -20,11 +20,12 @@ Default: Background-first is the scheduler default when the env-gated appendix i
 3. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 4. Follow every `nextActions` entry returned by `hive_background_status`, including `reconcile_required` after consuming or intentionally ignoring terminal results. Treat `waitingForNativeCompletion` as wait-only state and `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
 5. Continue only foreground work that does not depend on the background result.
-6. Do not repeatedly refresh the board while a lane is only listed under `waitingForNativeCompletion`. Wait for OpenCode's native background completion notification, then call `hive_background_status` again so Hive can refresh from the observed native terminal state.
+6. Do not repeatedly refresh the board while visible lanes are only listed under `waitingForNativeCompletion`. If `completionNotificationsPending > 0` and `reconcileItemsRequired == 0`, wait for OpenCode's native background completion notification before calling `hive_background_status` again, unless a lane is stale, wrong, no longer needed, or a new task ID must be registered.
 7. Treat `native_completion_pending` as a wait state, not a command to reconcile, cancel, or duplicate the lane.
 8. Treat prompt acknowledgment as notification only: a terminal job may stop repeating in prompt detail after Hive showed it once, but it is not reconciled until you consume or intentionally ignore the result.
-9. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results. Use `orchestrationBurden` from `hive_background_status` to report pending completion notifications and reconcile items per visible and actionable lane.
-10. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
+9. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results. Reconciliation archives terminal jobs and hides them from normal status output; do not edit `.hive/background-jobs.json` directly.
+10. Use `orchestrationBurden` from `hive_background_status` to report pending completion notifications and reconcile items per visible and actionable lane.
+11. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
 
 ```ts
 const { task_id } = task({
@@ -35,13 +36,14 @@ const { task_id } = task({
 });
 hive_background_status({ includeStale: false });
 // Wait for the native background completion notification, then refresh the Hive board
-// instead of repeatedly refreshing or manually mutating runtime state.
+// instead of repeatedly refreshing or manually mutating .hive/background-jobs.json.
 hive_background_status({ includeStale: false });
 hive_background_reconcile({
   identifier: task_id,
   decision: 'reconciled',
   summary: 'Background job result was applied to the task state.',
 });
+// Reconciled or ignored jobs are archived by the tool and hidden from normal status.
 // For multiple terminal lanes, prefer one batch cleanup after consuming results.
 hive_background_reconcile_batch({
   items: [
@@ -91,4 +93,6 @@ Result: wait for final native task evidence, then refresh `hive_background_statu
 - Nested delegation. Do not call `task()` from subagents.
 - Forgotten terminal jobs: treating a prompt-acknowledged terminal result as reconciled, or forgetting to wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
 - Empty-board false negatives: treating `jobs: []` as final when `pendingLaunches` or `nextActions` are present.
+- Wait-only polling: repeatedly calling `hive_background_status` while `schedulerGuidance.reason` is `wait_for_native_completion_notification`.
+- Manual board mutation: editing `.hive/background-jobs.json` instead of using `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, or `hive_background_cancel`.
 - Launching background work just because the feature exists.

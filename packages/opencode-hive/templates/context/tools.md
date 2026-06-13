@@ -75,12 +75,12 @@ Primary-agent-only board tools:
 
 | Tool | Use |
 |------|-----|
-| `hive_background_status` | Inspect the scoped board before deciding what is still running, terminal, stale, or unreconciled |
-| `hive_background_reconcile` | Mark a terminal native background job reconciled or ignored after inspecting the result |
-| `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or ignored after inspecting their results |
+| `hive_background_status` | Inspect the scoped board before deciding what is still running, terminal, stale, unreconciled, or wait-only |
+| `hive_background_reconcile` | Mark a terminal native background job reconciled or ignored after inspecting the result; the tool archives it from normal status |
+| `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or ignored after inspecting their results; the tool archives them from normal status |
 | `hive_background_cancel` | Request cancellation for a visible job when it is stale, wrong, or no longer needed |
 
-Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. Cancellation is not rollback. Cancelling a background job does not revert files, branches, worktrees, commits, or task reports. Wait for OpenCode's native completion notification before dependent decisions; use `hive_background_status` to refresh the board and keep scheduler state explicit.
+Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. Cancellation is not rollback. Cancelling a background job does not revert files, branches, worktrees, commits, or task reports. Wait for OpenCode's native completion notification before dependent decisions; use `hive_background_status` to refresh the board and keep scheduler state explicit. When `schedulerGuidance.reason` is `wait_for_native_completion_notification`, do not refresh repeatedly; wait for native completion or continue unrelated foreground work. Do not edit `.hive/background-jobs.json` directly.
 
 ---
 

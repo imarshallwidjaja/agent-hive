@@ -159,7 +159,11 @@ export class TaskService {
     this.validateRepoIds(repoIds, 'manual task metadata');
 
     const resolvedOrder = order ?? nextOrder;
-    const folder = `${String(resolvedOrder).padStart(2, '0')}-${name}`;
+    const taskSlug = this.slugify(name);
+    if (!taskSlug) {
+      throw new Error(`Manual task name "${name}" cannot produce a safe task folder slug.`);
+    }
+    const folder = `${String(resolvedOrder).padStart(2, '0')}-${taskSlug}`;
 
     const collision = existingFolders.find(f => {
       const match = f.match(/^(\d+)-/);
@@ -1043,6 +1047,9 @@ export class TaskService {
   }
 
   private slugify(name: string): string {
-    return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    return name.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .replace(/-+/g, '-');
   }
 }

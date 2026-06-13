@@ -122,7 +122,15 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Do not call `task()` from subagents');
     expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
     expect(skill!.template).toContain('waitingForNativeCompletion');
+    expect(skill!.template).toContain('completionNotificationsPending > 0');
+    expect(skill!.template).toContain('reconcileItemsRequired == 0');
+    expect(skill!.template).toContain('schedulerGuidance.reason');
+    expect(skill!.template).toContain('wait_for_native_completion_notification');
+    expect(skill!.template).toContain('do not edit `.hive/background-jobs.json` directly');
+    expect(skill!.template).toContain('archived by the tool and hidden from normal status');
     expect(skill!.template).toContain('Forgotten terminal jobs');
+    expect(skill!.template).toContain('Wait-only polling');
+    expect(skill!.template).toContain('Manual board mutation');
     expect(skill!.template).not.toContain('poll when available');
     expect(skill!.template).not.toContain('@explorer');
     expect(skill!.template).not.toContain('subtask');

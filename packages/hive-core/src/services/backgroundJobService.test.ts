@@ -221,10 +221,28 @@ describe('BackgroundJobService', () => {
     expect(reconciled.reconciledAt).toBeDefined();
     expect(reconciled.reconciledBy).toBe('parent-1');
     expect(reconciled.reconciliationSummary).toBe('Task report and status were updated.');
+    expect(reconciled.archivedAt).toBeDefined();
+    expect(reconciled.archiveReason).toBe('reconciled');
 
     const lateStatus = service.markTerminal('task-1', 'completed', { resultSummary: 'worker finished cleanly' });
     expect(lateStatus.terminalUnreconciled).toBe(false);
     expect(lateStatus.reconciledAt).toBe(reconciled.reconciledAt);
+    expect(lateStatus.archivedAt).toBe(reconciled.archivedAt);
+  });
+
+  it('hides archived reconciled jobs from active scoped lists while preserving history', () => {
+    registerJob(service, 'terminal-task', 'terminal-session');
+    service.markTerminal('terminal-task', 'completed', { resultSummary: 'done' });
+
+    const reconciled = service.markReconciled('terminal-task', {
+      reconciledBy: 'parent-1',
+      reconciliationSummary: 'Consumed final result.',
+    });
+
+    expect(reconciled.archivedAt).toBeDefined();
+    expect(service.listScoped({ projectRoot: TEST_DIR, feature: 'feature-a' }).map(job => job.taskId)).toEqual([]);
+    expect(service.listScoped({ projectRoot: TEST_DIR, feature: 'feature-a' }, { includeArchived: true }).map(job => job.taskId)).toEqual(['terminal-task']);
+    expect(service.resolve('terminal-task')?.archiveReason).toBe('reconciled');
   });
 
   it('marks prompt notification and acknowledgment separately from reconciliation', () => {
@@ -275,6 +293,8 @@ describe('BackgroundJobService', () => {
     expect(ignored.ignoredAt).toBeDefined();
     expect(ignored.ignoreReason).toBe('orphaned worker already surfaced elsewhere');
     expect(ignored.staleAt).toBeDefined();
+    expect(ignored.archivedAt).toBeDefined();
+    expect(ignored.archiveReason).toBe('ignored');
   });
 
   it('keeps cancellation requests distinct from runtime cancellation and preserves ownership metadata', () => {
