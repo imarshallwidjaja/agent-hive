@@ -106,7 +106,7 @@ var vscode3 = __toESM(require("vscode"));
 var fs3 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 
-// ../../../../../../packages/hive-core/dist/index.js
+// ../hive-core/dist/index.js
 var import_node_module = require("module");
 var path = __toESM(require("path"), 1);
 var fs2 = __toESM(require("fs"), 1);
@@ -1001,6 +1001,29 @@ var DEFAULT_AGENT_MODELS = {
   "approach-advisor": "github-copilot/gpt-5.2-codex",
   "hive-builder": "github-copilot/gpt-5.2-codex"
 };
+var DEFAULT_COUNCIL_CONFIG = {
+  defaultGroup: "decision",
+  maxMembers: 4,
+  excludedAgents: ["hive-master", "swarm-orchestrator", "forager-worker", "hive-builder", "hive-helper"],
+  groups: {
+    design: {
+      description: "Architecture and implementation-shape advice",
+      members: ["scout-researcher", "approach-advisor", "plan-reviewer", "code-reviewer"]
+    },
+    decision: {
+      description: "Hard tradeoff decision support",
+      members: ["scout-researcher", "approach-advisor", "plan-reviewer"]
+    },
+    "minimal-change": {
+      description: "Smallest correct change and cleanup lens",
+      members: ["scout-researcher", "simplicity-reviewer", "code-reviewer"]
+    },
+    documents: {
+      description: "Documentation and prose-oriented review",
+      members: ["scout-researcher", "code-reviewer", "plan-reviewer"]
+    }
+  }
+};
 var DEFAULT_HIVE_CONFIG = {
   $schema: "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   enableToolsFor: [],
@@ -1008,6 +1031,7 @@ var DEFAULT_HIVE_CONFIG = {
   disableMcps: [],
   agentMode: "unified",
   sandbox: "none",
+  council: DEFAULT_COUNCIL_CONFIG,
   customAgents: {
     "scout-example-template": {
       baseAgent: "scout-researcher",
@@ -5352,11 +5376,12 @@ var BackgroundJobGroupItem = class extends vscode5.TreeItem {
 var BackgroundJobItem = class extends vscode5.TreeItem {
   copyCommand;
   constructor(job, workspaceRoot, boardPath) {
+    const presentation = getJobPresentation(job);
     super(job.alias || job.taskId, vscode5.TreeItemCollapsibleState.None);
-    this.description = [job.agentName, job.runtimeState, getCoordinationStatus(job) || job.objective || job.description].filter(Boolean).join(" \xB7 ");
+    this.description = [job.agentName, job.runtimeState, presentation.statusLabel || job.objective || job.description].filter(Boolean).join(" \xB7 ");
     this.tooltip = getJobTooltip(job);
     this.contextValue = "background-job";
-    this.iconPath = new vscode5.ThemeIcon(getJobIcon(job));
+    this.iconPath = new vscode5.ThemeIcon(presentation.iconId);
     const relatedPath = getRelatedPath(job, workspaceRoot);
     this.command = relatedPath ? {
       command: "hive.openFile",
@@ -5425,22 +5450,19 @@ var BackgroundJobsProvider = class {
     return this.getGroups(jobs);
   }
   getGroups(jobs) {
+    var _a2;
     const groups = [
-      { label: "Running", jobs: [] },
-      { label: "Needs Reconciliation", jobs: [] },
-      { label: "Cancel Requested", jobs: [] },
-      { label: "Stale / Ignored / Completed", jobs: [], collapsed: true }
+      { label: "Running", jobs: [], collapsed: false },
+      { label: "Needs Reconciliation", jobs: [], collapsed: false },
+      { label: "Cancel Requested", jobs: [], collapsed: false },
+      { label: "Stale / Uncertain", jobs: [], collapsed: false },
+      { label: "Ignored", jobs: [], collapsed: true },
+      { label: "Reconciled", jobs: [], collapsed: true },
+      { label: "Finished", jobs: [], collapsed: true }
     ];
+    const groupsByLabel = new Map(groups.map((group) => [group.label, group]));
     for (const job of jobs) {
-      if (job.cancelRequestedAt) {
-        groups[2].jobs.push(job);
-      } else if (job.terminalUnreconciled) {
-        groups[1].jobs.push(job);
-      } else if (job.runtimeState === "running") {
-        groups[0].jobs.push(job);
-      } else {
-        groups[3].jobs.push(job);
-      }
+      (_a2 = groupsByLabel.get(getJobPresentation(job).groupLabel)) == null ? void 0 : _a2.jobs.push(job);
     }
     return groups.filter((group) => group.jobs.length > 0).map((group) => new BackgroundJobGroupItem(group.label, group.jobs, group.collapsed));
   }
@@ -5454,18 +5476,62 @@ function getRelatedPath(job, workspaceRoot) {
   if (!relatedPath) return null;
   return path4.isAbsolute(relatedPath) ? relatedPath : path4.resolve(workspaceRoot, relatedPath);
 }
-function getCoordinationStatus(job) {
-  if (job.cancelRequestedAt) return "cancel requested";
-  if (job.terminalUnreconciled) return "terminal unreconciled";
-  if (job.ignoredAt) return "ignored";
-  if (job.staleAt || job.statusUncertain) return "stale/uncertain";
-  if (job.reconciledAt) return "reconciled";
-  return void 0;
+function getJobPresentation(job) {
+  const cancellationHistory = job.cancelRequestedAt ? "cancel requested" : void 0;
+  if (job.ignoredAt || job.archiveReason === "ignored") {
+    return {
+      groupLabel: "Ignored",
+      statusLabel: ["ignored", cancellationHistory].filter(Boolean).join(" \xB7 "),
+      iconId: "circle-slash"
+    };
+  }
+  if (job.reconciledAt || job.archiveReason === "reconciled") {
+    return {
+      groupLabel: "Reconciled",
+      statusLabel: ["reconciled", cancellationHistory].filter(Boolean).join(" \xB7 "),
+      iconId: "check"
+    };
+  }
+  if (job.terminalUnreconciled) {
+    return {
+      groupLabel: "Needs Reconciliation",
+      statusLabel: "needs reconciliation",
+      iconId: "warning"
+    };
+  }
+  if (job.cancelRequestedAt && !isTerminalRuntimeState(job.runtimeState)) {
+    return {
+      groupLabel: "Cancel Requested",
+      statusLabel: "cancel requested",
+      iconId: "debug-stop"
+    };
+  }
+  if (job.staleAt || job.statusUncertain) {
+    return {
+      groupLabel: "Stale / Uncertain",
+      statusLabel: ["stale/uncertain", cancellationHistory].filter(Boolean).join(" \xB7 "),
+      iconId: "question"
+    };
+  }
+  if (job.runtimeState === "running") {
+    return {
+      groupLabel: "Running",
+      iconId: "sync~spin"
+    };
+  }
+  return {
+    groupLabel: "Finished",
+    statusLabel: cancellationHistory,
+    iconId: getTerminalIcon(job)
+  };
 }
-function getJobIcon(job) {
-  if (job.cancelRequestedAt) return "debug-stop";
-  if (job.terminalUnreconciled) return "warning";
-  if (job.runtimeState === "running") return "sync~spin";
+function isTerminalRuntimeState(state) {
+  return state === "completed" || state === "error" || state === "cancelled";
+}
+function getTerminalIcon(job) {
+  if (job.runtimeState === "error") return "error";
+  if (job.runtimeState === "cancelled") return "circle-slash";
+  if (job.runtimeState === "unknown") return "question";
   return "check";
 }
 function getJobTooltip(job) {

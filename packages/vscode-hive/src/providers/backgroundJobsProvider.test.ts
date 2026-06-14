@@ -116,7 +116,7 @@ describe('BackgroundJobsProvider', () => {
     const jobs = await provider.getChildren(groups[0]);
 
     expect(groups.map(item => item.label)).toEqual(['Needs Reconciliation']);
-    expect((jobs[0] as any).description).toBe('forager-worker · completed · terminal unreconciled');
+    expect((jobs[0] as any).description).toBe('forager-worker · completed · needs reconciliation');
   });
 
   it('groups cancel-requested jobs separately from running jobs', async () => {
@@ -132,6 +132,61 @@ describe('BackgroundJobsProvider', () => {
     expect(groups.map(item => item.label)).toEqual(['Cancel Requested']);
     expect((jobs[0] as any).description).toBe('forager-worker · running · cancel requested');
     expect((jobs[0] as any).tooltip).toContain('operator requested stop');
+  });
+
+  it('keeps ignored cancelled jobs out of active cancel-requested grouping', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [job({
+        alias: 'ignored-cancelled',
+        runtimeState: 'cancelled',
+        cancelRequestedAt: '2026-06-12T00:00:00.000Z',
+        cancelReason: 'operator requested stop',
+        ignoredAt: '2026-06-12T00:01:00.000Z',
+        ignoreReason: 'stale lane ignored',
+        archivedAt: '2026-06-12T00:01:00.000Z',
+        archiveReason: 'ignored',
+      })],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+    const jobs = await provider.getChildren(groups[0]);
+
+    expect(groups.map(item => item.label)).toEqual(['Ignored']);
+    expect((groups[0] as any).collapsibleState).toBe(1);
+    expect((jobs[0] as any).description).toBe('forager-worker · cancelled · ignored · cancel requested');
+  });
+
+  it('uses granular groups in lifecycle priority order', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [
+        job({ alias: 'finished', runtimeState: 'completed' }),
+        job({ alias: 'ignored', runtimeState: 'cancelled', ignoredAt: '2026-06-12T00:01:00.000Z', archiveReason: 'ignored' }),
+        job({ alias: 'reconciled', runtimeState: 'completed', reconciledAt: '2026-06-12T00:01:00.000Z', archiveReason: 'reconciled' }),
+        job({ alias: 'stale', staleAt: '2026-06-12T00:00:30.000Z' }),
+        job({ alias: 'stop-me', cancelRequestedAt: '2026-06-12T00:00:00.000Z' }),
+        job({ alias: 'needs-action', runtimeState: 'completed', terminalUnreconciled: true }),
+        job({ alias: 'running' }),
+      ],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+
+    expect(groups.map(item => item.label)).toEqual([
+      'Running',
+      'Needs Reconciliation',
+      'Cancel Requested',
+      'Stale / Uncertain',
+      'Ignored',
+      'Reconciled',
+      'Finished',
+    ]);
+    expect((groups[4] as any).collapsibleState).toBe(1);
+    expect((groups[5] as any).collapsibleState).toBe(1);
+    expect((groups[6] as any).collapsibleState).toBe(1);
   });
 
   it('uses related worker prompt path as safe open command metadata when present', async () => {

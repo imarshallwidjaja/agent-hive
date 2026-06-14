@@ -4,6 +4,13 @@ import * as path from 'path'
 import type { BackgroundJobRecord, BackgroundJobsJson } from 'hive-core'
 
 type BackgroundJobsItem = BackgroundJobGroupItem | BackgroundJobItem | BackgroundJobsStateItem
+type BackgroundJobGroupLabel = 'Running' | 'Needs Reconciliation' | 'Cancel Requested' | 'Stale / Uncertain' | 'Ignored' | 'Reconciled' | 'Finished'
+
+interface BackgroundJobPresentation {
+  groupLabel: BackgroundJobGroupLabel
+  statusLabel?: string
+  iconId: string
+}
 
 class BackgroundJobGroupItem extends vscode.TreeItem {
   constructor(
@@ -22,13 +29,14 @@ class BackgroundJobItem extends vscode.TreeItem {
   public readonly copyCommand: vscode.Command
 
   constructor(job: BackgroundJobRecord, workspaceRoot: string, boardPath: string) {
+    const presentation = getJobPresentation(job)
     super(job.alias || job.taskId, vscode.TreeItemCollapsibleState.None)
-    this.description = [job.agentName, job.runtimeState, getCoordinationStatus(job) || job.objective || job.description]
+    this.description = [job.agentName, job.runtimeState, presentation.statusLabel || job.objective || job.description]
       .filter(Boolean)
       .join(' · ')
     this.tooltip = getJobTooltip(job)
     this.contextValue = 'background-job'
-    this.iconPath = new vscode.ThemeIcon(getJobIcon(job))
+    this.iconPath = new vscode.ThemeIcon(presentation.iconId)
     const relatedPath = getRelatedPath(job, workspaceRoot)
     this.command = relatedPath
       ? {
@@ -109,23 +117,19 @@ export class BackgroundJobsProvider implements vscode.TreeDataProvider<Backgroun
   }
 
   private getGroups(jobs: BackgroundJobRecord[]): BackgroundJobGroupItem[] {
-    const groups: Array<{ label: string; jobs: BackgroundJobRecord[]; collapsed?: boolean }> = [
-      { label: 'Running', jobs: [] },
-      { label: 'Needs Reconciliation', jobs: [] },
-      { label: 'Cancel Requested', jobs: [] },
-      { label: 'Stale / Ignored / Completed', jobs: [], collapsed: true },
+    const groups: Array<{ label: BackgroundJobGroupLabel; jobs: BackgroundJobRecord[]; collapsed: boolean }> = [
+      { label: 'Running', jobs: [], collapsed: false },
+      { label: 'Needs Reconciliation', jobs: [], collapsed: false },
+      { label: 'Cancel Requested', jobs: [], collapsed: false },
+      { label: 'Stale / Uncertain', jobs: [], collapsed: false },
+      { label: 'Ignored', jobs: [], collapsed: true },
+      { label: 'Reconciled', jobs: [], collapsed: true },
+      { label: 'Finished', jobs: [], collapsed: true },
     ]
+    const groupsByLabel = new Map(groups.map(group => [group.label, group]))
 
     for (const job of jobs) {
-      if (job.cancelRequestedAt) {
-        groups[2].jobs.push(job)
-      } else if (job.terminalUnreconciled) {
-        groups[1].jobs.push(job)
-      } else if (job.runtimeState === 'running') {
-        groups[0].jobs.push(job)
-      } else {
-        groups[3].jobs.push(job)
-      }
+      groupsByLabel.get(getJobPresentation(job).groupLabel)?.jobs.push(job)
     }
 
     return groups
@@ -144,19 +148,71 @@ function getRelatedPath(job: BackgroundJobRecord, workspaceRoot: string): string
   return path.isAbsolute(relatedPath) ? relatedPath : path.resolve(workspaceRoot, relatedPath)
 }
 
-function getCoordinationStatus(job: BackgroundJobRecord): string | undefined {
-  if (job.cancelRequestedAt) return 'cancel requested'
-  if (job.terminalUnreconciled) return 'terminal unreconciled'
-  if (job.ignoredAt) return 'ignored'
-  if (job.staleAt || job.statusUncertain) return 'stale/uncertain'
-  if (job.reconciledAt) return 'reconciled'
-  return undefined
+function getJobPresentation(job: BackgroundJobRecord): BackgroundJobPresentation {
+  const cancellationHistory = job.cancelRequestedAt ? 'cancel requested' : undefined
+
+  if (job.ignoredAt || job.archiveReason === 'ignored') {
+    return {
+      groupLabel: 'Ignored',
+      statusLabel: ['ignored', cancellationHistory].filter(Boolean).join(' · '),
+      iconId: 'circle-slash',
+    }
+  }
+
+  if (job.reconciledAt || job.archiveReason === 'reconciled') {
+    return {
+      groupLabel: 'Reconciled',
+      statusLabel: ['reconciled', cancellationHistory].filter(Boolean).join(' · '),
+      iconId: 'check',
+    }
+  }
+
+  if (job.terminalUnreconciled) {
+    return {
+      groupLabel: 'Needs Reconciliation',
+      statusLabel: 'needs reconciliation',
+      iconId: 'warning',
+    }
+  }
+
+  if (job.cancelRequestedAt && !isTerminalRuntimeState(job.runtimeState)) {
+    return {
+      groupLabel: 'Cancel Requested',
+      statusLabel: 'cancel requested',
+      iconId: 'debug-stop',
+    }
+  }
+
+  if (job.staleAt || job.statusUncertain) {
+    return {
+      groupLabel: 'Stale / Uncertain',
+      statusLabel: ['stale/uncertain', cancellationHistory].filter(Boolean).join(' · '),
+      iconId: 'question',
+    }
+  }
+
+  if (job.runtimeState === 'running') {
+    return {
+      groupLabel: 'Running',
+      iconId: 'sync~spin',
+    }
+  }
+
+  return {
+    groupLabel: 'Finished',
+    statusLabel: cancellationHistory,
+    iconId: getTerminalIcon(job),
+  }
 }
 
-function getJobIcon(job: BackgroundJobRecord): string {
-  if (job.cancelRequestedAt) return 'debug-stop'
-  if (job.terminalUnreconciled) return 'warning'
-  if (job.runtimeState === 'running') return 'sync~spin'
+function isTerminalRuntimeState(state: BackgroundJobRecord['runtimeState']): boolean {
+  return state === 'completed' || state === 'error' || state === 'cancelled'
+}
+
+function getTerminalIcon(job: BackgroundJobRecord): string {
+  if (job.runtimeState === 'error') return 'error'
+  if (job.runtimeState === 'cancelled') return 'circle-slash'
+  if (job.runtimeState === 'unknown') return 'question'
   return 'check'
 }
 
