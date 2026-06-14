@@ -5,8 +5,36 @@
   "dataPath": "../../.hive",
   "commands": [
     {
-      "name": "/hive",
-      "description": "Create a new feature: /hive <feature-name>"
+      "name": "/interview",
+      "description": "Clarify an idea one question at a time before planning"
+    },
+    {
+      "name": "/implementation-brief",
+      "description": "Create a copy-paste-ready implementation planning brief"
+    },
+    {
+      "name": "/hive-plan",
+      "description": "Create a Hive implementation plan from a spec or brief"
+    },
+    {
+      "name": "/approve-sync-plan",
+      "description": "Approve the active Hive plan and sync executable tasks"
+    },
+    {
+      "name": "/start-execution",
+      "description": "Start executing an approved Hive plan"
+    },
+    {
+      "name": "/council-directive",
+      "description": "Turn a rough request into a reusable council directive"
+    },
+    {
+      "name": "/council",
+      "description": "Run a read-only council and synthesize a recommendation"
+    },
+    {
+      "name": "/compact-summary",
+      "description": "Produce a recovery summary for the current OpenCode session"
     }
   ],
   "tools": [

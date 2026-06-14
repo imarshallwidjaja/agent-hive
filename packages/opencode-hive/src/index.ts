@@ -217,7 +217,10 @@ import { writeWorkerPromptFile } from "./utils/prompt-file";
 import { formatRelativeTime } from "./utils/format";
 import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
-import { HIVE_COMMANDS, HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
+import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
+import { buildHiveCommandMap } from './commands/runtime.js';
+import type { HiveCommandKey } from './commands/registry.js';
+import type { HiveCommandRenderers } from './commands/types.js';
 import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
 import { createBackgroundTools } from './background/backgroundTools.js';
 
@@ -235,6 +238,43 @@ type SystemTransformHook = (
   input: { sessionID?: string; agent?: string },
   output: { system: string[] },
 ) => Promise<void>;
+
+const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
+  interview(args) {
+    return args.trim()
+      ? `Clarify this idea one question at a time before planning:\n${args.trim()}`
+      : 'Clarify an idea one question at a time before planning.';
+  },
+  'implementation-brief'(args) {
+    return args.trim()
+      ? `Create a copy-paste-ready implementation planning brief for:\n${args.trim()}`
+      : 'Create a copy-paste-ready implementation planning brief.';
+  },
+  'hive-plan'(args) {
+    return args.trim()
+      ? `Create a Hive implementation plan from this spec or brief:\n${args.trim()}`
+      : 'Create a Hive implementation plan from a spec or brief.';
+  },
+  'approve-sync-plan'() {
+    return 'Approve the active Hive plan and sync executable tasks.';
+  },
+  'start-execution'() {
+    return 'Start executing the approved Hive plan.';
+  },
+  'council-directive'(args) {
+    return args.trim()
+      ? `Turn this rough request into a reusable council directive:\n${args.trim()}`
+      : 'Turn a rough request into a reusable council directive.';
+  },
+  council(args) {
+    return args.trim()
+      ? `Run a read-only council and synthesize a recommendation for:\n${args.trim()}`
+      : 'Run a read-only council and synthesize a recommendation.';
+  },
+  'compact-summary'() {
+    return 'Produce a recovery summary for the current OpenCode session.';
+  },
+};
 
 const plugin: Plugin = async (ctx) => {
   const { directory, client, worktree } = ctx;
@@ -2428,16 +2468,7 @@ Expand your Discovery section and try again.`;
 
     },
 
-    command: {
-      [HIVE_COMMANDS[0].key]: {
-        description: HIVE_COMMANDS[0].description,
-        async run(args: string) {
-          const name = args.trim();
-          if (!name) return "Usage: /hive <feature-name>";
-          return `Create feature "${name}" using hive_feature_create tool.`;
-        },
-      },
-    },
+    command: buildHiveCommandMap(hiveCommandRenderers, () => ({ directory, worktree })),
 
     // Config hook - merge agents into opencodeConfig.agent
     config: async (opencodeConfig: Record<string, unknown>) => {

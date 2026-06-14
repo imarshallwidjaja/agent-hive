@@ -1,12 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { HIVE_COMMANDS } from '../commands/registry.js';
+import type { HiveCommandMetadata } from '../commands/types.js';
 
-export interface PluginCommandManifestEntry {
-  key: string;
-  name: string;
-  description: string;
-}
+export type PluginCommandManifestEntry = HiveCommandMetadata;
 
 export interface PluginManifest {
   name: string;
@@ -20,14 +18,7 @@ export interface PluginManifest {
 export const HIVE_PLUGIN_NAME = 'hive';
 export const HIVE_PLUGIN_DESCRIPTION = 'Context-Driven Development';
 export const HIVE_PLUGIN_DATA_PATH = '../../.hive';
-
-export const HIVE_COMMANDS: PluginCommandManifestEntry[] = [
-  {
-    key: 'hive',
-    name: '/hive',
-    description: 'Create a new feature: /hive <feature-name>',
-  },
-];
+export { HIVE_COMMANDS };
 
 export const HIVE_TOOL_NAMES = [
   'hive_feature_create',
