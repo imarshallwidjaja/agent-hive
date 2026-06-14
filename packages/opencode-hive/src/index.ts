@@ -17,19 +17,8 @@ import { SIMPLICITY_REVIEWER_PROMPT } from './agents/simplicity-reviewer.js';
 import { APPROACH_ADVISOR_PROMPT } from './agents/approach-advisor.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
-
-const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
-
-function isTruthyEnv(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized !== '' && normalized !== '0' && normalized !== 'false' && normalized !== 'no';
-}
-
-function isBackgroundSubagentsExperimentEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return isTruthyEnv(env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
-    || isTruthyEnv(env.OPENCODE_EXPERIMENTAL);
-}
+import { BACKGROUND_DELEGATION_SKILL_ID, isBackgroundSubagentsExperimentEnabled, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
+import type { BackgroundDelegationAvailability } from './utils/background-gate.js';
 
 function blankToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -117,19 +106,28 @@ function buildBackgroundDelegationPromptAppendix(
   skippedHiveSkills: Map<string, PreparedNativeHiveSkills['skipped'][number]>,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  if (!isBackgroundSubagentsExperimentEnabled(env)) return '';
+  const availability = resolveBackgroundDelegationAvailability(
+    agentName,
+    nativeSkillsByName,
+    eligibleHiveSkills,
+    skippedHiveSkills,
+    env,
+  );
 
-  if (nativeSkillsByName.has(BACKGROUND_DELEGATION_SKILL_ID) || eligibleHiveSkills.has(BACKGROUND_DELEGATION_SKILL_ID)) {
+  if (availability.available) {
     return `\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. This appendix is the gate-open policy boundary: when this heading is present, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. On non-trivial work, operate in background-first scheduler mode: first look for independent background lanes that can run through native task({ background: true, ... }) while you continue safe foreground work. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Track work with hive_background_status, wait for native completion notification before dependent decisions, reconcile terminal native jobs with hive_background_reconcile or hive_background_reconcile_batch, and request cancellation with hive_background_cancel. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict. Gate-closed sessions keep the normal direct/blocking workflow and must not simulate background orchestration.`;
   }
 
-  const skippedSkill = skippedHiveSkills.get(BACKGROUND_DELEGATION_SKILL_ID);
-  if (skippedSkill?.reason === 'disabled') {
+  if (availability.reason === 'experiment-disabled') {
+    return '';
+  }
+
+  if (availability.reason === 'skill-disabled') {
     console.warn(`[hive] Background delegation guidance was not advertised for agent "${agentName}" because skill "${BACKGROUND_DELEGATION_SKILL_ID}" is disabled in Hive config.`);
     return '';
   }
 
-  if (skippedSkill?.reason === 'url-scan-incomplete') {
+  if (availability.reason === 'url-scan-incomplete') {
     console.warn(`[hive] Background delegation guidance was not advertised for agent "${agentName}" because configured skills URLs could not be fully scanned for conflicts during this config-hook run.`);
     return '';
   }
@@ -198,6 +196,7 @@ import {
   DockerSandboxService,
   BackgroundJobService,
   SessionService,
+  DEFAULT_COUNCIL_CONFIG,
   buildEffectiveDependencies,
   computeRunnableAndBlocked,
   detectContext,
@@ -219,8 +218,9 @@ import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
-import type { HiveCommandKey } from './commands/registry.js';
-import type { HiveCommandRenderers } from './commands/types.js';
+import { hiveCommandRenderers } from './commands/renderers.js';
+import { isReadOnlyCouncilEligibleBase } from './commands/council.js';
+import type { HiveCommandAgentDescriptor } from './commands/types.js';
 import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
 import { createBackgroundTools } from './background/backgroundTools.js';
 
@@ -238,43 +238,6 @@ type SystemTransformHook = (
   input: { sessionID?: string; agent?: string },
   output: { system: string[] },
 ) => Promise<void>;
-
-const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
-  interview(args) {
-    return args.trim()
-      ? `Clarify this idea one question at a time before planning:\n${args.trim()}`
-      : 'Clarify an idea one question at a time before planning.';
-  },
-  'implementation-brief'(args) {
-    return args.trim()
-      ? `Create a copy-paste-ready implementation planning brief for:\n${args.trim()}`
-      : 'Create a copy-paste-ready implementation planning brief.';
-  },
-  'hive-plan'(args) {
-    return args.trim()
-      ? `Create a Hive implementation plan from this spec or brief:\n${args.trim()}`
-      : 'Create a Hive implementation plan from a spec or brief.';
-  },
-  'approve-sync-plan'() {
-    return 'Approve the active Hive plan and sync executable tasks.';
-  },
-  'start-execution'() {
-    return 'Start executing the approved Hive plan.';
-  },
-  'council-directive'(args) {
-    return args.trim()
-      ? `Turn this rough request into a reusable council directive:\n${args.trim()}`
-      : 'Turn a rough request into a reusable council directive.';
-  },
-  council(args) {
-    return args.trim()
-      ? `Run a read-only council and synthesize a recommendation for:\n${args.trim()}`
-      : 'Run a read-only council and synthesize a recommendation.';
-  },
-  'compact-summary'() {
-    return 'Produce a recovery summary for the current OpenCode session.';
-  },
-};
 
 const plugin: Plugin = async (ctx) => {
   const { directory, client, worktree } = ctx;
@@ -315,6 +278,8 @@ const plugin: Plugin = async (ctx) => {
   const sessionService = new SessionService(directory);
   const backgroundJobService = new BackgroundJobService(directory);
   const runtimeAgentPrompts = new Map<string, string>();
+  let runtimeBackgroundGuidance: BackgroundDelegationAvailability = { available: false, reason: 'availability-unknown' };
+  let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
   const disabledMcps = configService.getDisabledMcps();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message ?? null;
   if (configFallbackWarning) {
@@ -2468,7 +2433,17 @@ Expand your Discovery section and try again.`;
 
     },
 
-    command: buildHiveCommandMap(hiveCommandRenderers, () => ({ directory, worktree })),
+    command: buildHiveCommandMap(hiveCommandRenderers, () => {
+      const currentConfig = configService.get();
+      return {
+        directory,
+        worktree: worktree || directory,
+        agentMode: currentConfig.agentMode ?? 'unified',
+        backgroundGuidance: runtimeBackgroundGuidance,
+        council: currentConfig.council ?? DEFAULT_COUNCIL_CONFIG,
+        agents: runtimeCommandAgents,
+      };
+    }),
 
     // Config hook - merge agents into opencodeConfig.agent
     config: async (opencodeConfig: Record<string, unknown>) => {
@@ -2502,6 +2477,12 @@ Expand your Discovery section and try again.`;
       });
       const skippedHiveSkills = new Map(
         preparedNativeHiveSkills.skipped.map((skill) => [skill.name, skill] as const),
+      );
+      runtimeBackgroundGuidance = resolveBackgroundDelegationAvailability(
+        'command-renderer',
+        preparedNativeHiveSkills.nativeSkillsByName,
+        preparedNativeHiveSkills.skillsByName,
+        skippedHiveSkills,
       );
       opencodeConfig.skills = {
         ...(existingSkillsConfig ?? {}),
@@ -2856,6 +2837,28 @@ Do not choose a custom subagent only because the task is important, complex, or 
       allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
 
       Object.assign(allAgents, customSubagents);
+
+      runtimeCommandAgents = Object.fromEntries(
+        Object.entries(allAgents).map(([agentName, agentConfig]) => {
+          const customAgentConfig = customAgentConfigs[agentName];
+          const record = agentConfig && typeof agentConfig === 'object'
+            ? agentConfig as { description?: unknown }
+            : {};
+          const baseAgent = customAgentConfig?.baseAgent ?? agentName;
+          const description = customAgentConfig?.description
+            ?? (typeof record.description === 'string' ? record.description : 'Registered Hive agent');
+
+          return [
+            agentName,
+            {
+              baseAgent,
+              available: true,
+              description,
+              readOnlyCouncilEligible: isReadOnlyCouncilEligibleBase(baseAgent),
+            } satisfies HiveCommandAgentDescriptor,
+          ];
+        }),
+      );
 
       // Merge agents into opencodeConfig.agent (config hook is sufficient for agent discovery)
       const configAgent = opencodeConfig.agent as Record<string, unknown> | undefined;
