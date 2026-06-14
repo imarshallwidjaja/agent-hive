@@ -19,6 +19,7 @@ export interface CreateBackgroundToolsOptions {
 }
 
 type ReconcileDecision = 'reconciled' | 'ignored';
+type RecommendedNextAction = Record<string, string | string[] | boolean | undefined>;
 
 export function createBackgroundTools(options: CreateBackgroundToolsOptions): Record<string, ToolDefinition> {
   const cancelRuntimeTask = options.cancelRuntimeTask ?? (async () => ({
@@ -54,6 +55,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         const nextActions = buildNextActions(jobs, pendingLaunches);
         const waitingForNativeCompletion = buildNativeCompletionWaits(jobs);
         const orchestrationBurden = buildOrchestrationBurden(jobs, pendingLaunches);
+        const recommendedNextAction = buildRecommendedNextAction(jobs, pendingLaunches);
         const schedulerGuidance = orchestrationBurden.completionNotificationsPending > 0
           && orchestrationBurden.reconcileItemsRequired === 0
           && orchestrationBurden.pendingLaunches === 0
@@ -70,6 +72,8 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           pendingLaunches: pendingLaunches.length > 0 ? pendingLaunches.map(formatPendingLaunch) : undefined,
           waitingForNativeCompletion: waitingForNativeCompletion.length > 0 ? waitingForNativeCompletion : undefined,
           nextActions: nextActions.length > 0 ? nextActions : undefined,
+          recommendedNextAction,
+          requiresHiveStatusRefresh: recommendedNextAction.requiresHiveStatusRefresh === true,
           schedulerGuidance,
           orchestrationBurden,
         });
@@ -116,6 +120,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         return json({
           success: results.every(result => result.success === true),
           results,
+          recommendedNextAction: buildBatchPostReconcileRecommendedNextAction(results),
         });
       },
     }),
@@ -228,6 +233,7 @@ function reconcileVisibleJob(
       archived: true,
       message: 'The background job is archived and hidden from normal status output. Do not edit .hive/background-jobs.json directly.',
     },
+    recommendedNextAction: buildPostReconcileRecommendedNextAction(reconciled),
     job: formatJob(reconciled),
   };
 }
@@ -300,6 +306,100 @@ function buildOrchestrationBurden(jobs: BackgroundJobRecord[], pendingLaunches: 
     reconcileItemsRequired,
     recommendedReconcileToolCalls: reconcileItemsRequired > 0 ? 1 : 0,
   };
+}
+
+function buildRecommendedNextAction(jobs: BackgroundJobRecord[], pendingLaunches: BackgroundPendingLaunch[]): RecommendedNextAction {
+  const terminalJobs = jobs.filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true);
+
+  if (terminalJobs.length > 1) {
+    return {
+      action: 'reconcile_terminal_jobs',
+      reasonCode: 'terminal_unreconciled_jobs_visible',
+      taskIds: terminalJobs.map(job => job.taskId),
+      message: 'Multiple visible background jobs are terminal and unreconciled. Reconcile or ignore each board item, then inspect Hive status for scoped feature/task work.',
+      requiresHiveStatusRefresh: terminalJobs.some(hasHiveFeatureOrTaskScope),
+    };
+  }
+
+  if (terminalJobs.length === 1) {
+    return {
+      action: 'reconcile_terminal_job',
+      reasonCode: 'terminal_unreconciled_job_visible',
+      taskId: terminalJobs[0].taskId,
+      message: 'A visible background job is terminal and unreconciled. Reconcile or ignore the board item, then inspect Hive status if it belongs to scoped feature/task work.',
+      requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(terminalJobs[0]),
+    };
+  }
+
+  if (pendingLaunches.length > 0) {
+    return {
+      action: 'verify_pending_launch',
+      reasonCode: 'pending_launch_without_registered_job',
+      message: 'A Hive launch is pending but no matching background job is registered yet. Verify the native background launch before treating the board as idle.',
+      requiresHiveStatusRefresh: false,
+    };
+  }
+
+  const waitingJobs = jobs.filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown');
+  if (waitingJobs.length > 0 && waitingJobs.length === jobs.length) {
+    const taskIds = waitingJobs.map(job => job.taskId);
+    return pruneUndefined({
+      action: 'wait_for_native_completion',
+      reasonCode: 'native_completion_wait_only',
+      taskId: taskIds.length === 1 ? taskIds[0] : undefined,
+      taskIds: taskIds.length > 1 ? taskIds : undefined,
+      message: 'Every visible background lane is still waiting on the native OpenCode completion notification. Do not refresh the board repeatedly.',
+      requiresHiveStatusRefresh: false,
+    });
+  }
+
+  return idleRecommendedNextAction();
+}
+
+function buildPostReconcileRecommendedNextAction(job: BackgroundJobRecord): RecommendedNextAction {
+  if (!hasHiveFeatureOrTaskScope(job)) {
+    return idleRecommendedNextAction();
+  }
+
+  return {
+    action: 'inspect_hive_status',
+    reasonCode: 'reconciled_job_has_hive_scope',
+    taskId: job.taskId,
+    message: 'The background board item is archived. Inspect Hive feature/task status to decide the next orchestration step.',
+    requiresHiveStatusRefresh: true,
+  };
+}
+
+function buildBatchPostReconcileRecommendedNextAction(results: Array<Record<string, unknown>>): RecommendedNextAction {
+  const taskIds = results.flatMap(result => {
+    const action = result.recommendedNextAction as Record<string, unknown> | undefined;
+    return action?.action === 'inspect_hive_status' && typeof action.taskId === 'string' ? [action.taskId] : [];
+  });
+
+  if (taskIds.length === 0) {
+    return idleRecommendedNextAction();
+  }
+
+  return {
+    action: 'inspect_hive_status',
+    reasonCode: 'reconciled_job_has_hive_scope',
+    taskIds,
+    message: 'One or more background board items were archived for Hive feature/task work. Inspect Hive status to decide the next orchestration step.',
+    requiresHiveStatusRefresh: true,
+  };
+}
+
+function idleRecommendedNextAction(): RecommendedNextAction {
+  return {
+    action: 'idle',
+    reasonCode: 'no_background_action_needed',
+    message: 'No background board action is needed from the visible local board state.',
+    requiresHiveStatusRefresh: false,
+  };
+}
+
+function hasHiveFeatureOrTaskScope(job: BackgroundJobRecord): boolean {
+  return !!job.scope?.feature || !!job.scope?.task;
 }
 
 function nativeCompletionPendingWait(job: BackgroundJobRecord): Record<string, string> {
