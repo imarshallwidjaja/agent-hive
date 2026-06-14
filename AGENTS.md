@@ -297,11 +297,12 @@ If a completed task branch has no net tracked changes, `hive_merge` returns `suc
 
 ### Delegated Execution
 
-`hive_worktree_start` creates worktree and spawns worker automatically:
+`hive_worktree_start` creates the worktree and returns the worker launch payload:
 
-1. `hive_worktree_start(task)` → Creates worktree + spawns Forager (Worker/Coder) worker
-2. Worker executes → calls `hive_worktree_commit(status: "completed")`
-3. Worker blocked → calls `hive_worktree_commit(status: "blocked", blocker: {...})`
+1. `hive_worktree_start(task)` -> creates the worktree and returns blocking/background `task()` launch guidance
+2. Parent launches the worker with the returned payload; use blocking when the next step depends on the result, or `backgroundTaskCall` when independent foreground work can continue
+3. Worker executes -> calls `hive_worktree_commit(status: "completed")`
+4. Worker blocked -> calls `hive_worktree_commit(status: "blocked", blocker: {...})`
 
 **Handling blocked workers:**
 1. Check blockers with `hive_status()`
