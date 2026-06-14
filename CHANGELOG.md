@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vscode-arkive` docs now cover the viewer-only Background Jobs and Tracked Repositories views.
 
 ### Changed
+- OpenCode operator docs now describe the shipped slash command surface, the removal of `/hive`, routing differences between unified and dedicated agent modes, env-gated background command guidance, and global-only council configuration.
 - Modern plan docs now state that `hive_tasks_sync` syncs numbered tasks only from `## Tasks`, with pure final verification kept in `## Final Verification` outside the task graph.
 - Merge docs now cover no-change results: `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, no empty `sha`, and safe requested cleanup.
 - Operator docs now use `hive_status.helperStatus.mergeEligibility` as the task/worktree-aware merge-readiness surface instead of deriving readiness from background board state.

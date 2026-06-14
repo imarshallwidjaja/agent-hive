@@ -43,6 +43,37 @@ The bundled `ast_grep` MCP tools run through the official ast-grep server.
 
 Modern plans sync numbered tasks only from `## Tasks`. Keep pure release or suite-level checks in `## Final Verification` unless they need a worker to write tracked artifacts.
 
+### Operator Commands
+
+`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools, switch agents automatically, or make unavailable tools available to the current agent.
+
+| Command | Purpose |
+|---------|---------|
+| `/interview` | Clarify an idea one question at a time before planning. |
+| `/implementation-brief` | Produce a copy-paste-ready brief for a later Hive plan. |
+| `/hive-plan` | Create or update the Hive feature plan from a spec or brief. |
+| `/approve-sync-plan` | Approve the active plan and sync executable tasks. |
+| `/start-execution` | Start execution for an approved and synced plan. |
+| `/council-directive` | Turn rough input into a reusable directive for a council run. |
+| `/council` | Run a read-only council and synthesize a recommendation. |
+| `/compact-summary` | Produce a compact recovery summary for the current session. |
+
+`/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by `hive_plan_write`, review, approval, task sync, execution, and merge.
+
+`/council` accepts `/council --group <group> <directive>`. If `--group` is omitted, Hive uses `council.defaultGroup`. Free-text tokens are directive text, not implicit group selectors.
+
+Routing depends on `agentMode`:
+
+| Command set | Unified mode | Dedicated mode |
+|-------------|--------------|----------------|
+| `/interview`, `/implementation-brief`, `/hive-plan`, `/council-directive`, `/council` | Use `hive-master`. | Route or delegate to `architect-planner`. |
+| `/approve-sync-plan`, `/start-execution` | Use `hive-master`. | Route or delegate to `swarm-orchestrator`. |
+| `/compact-summary` | Use `hive-master`. | Route or delegate to `scout-researcher`. |
+
+In dedicated mode, slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
+
+Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set and the bundled background protocol is available. Use the existing Background Orchestration section and the `background-delegation` skill for the scheduler protocol; command text only points at it when the gate is open.
+
 ### Planning-mode delegation
 
 During planning, "don't execute" means "don't implement" (no code edits, no worktrees). Read-only exploration is explicitly allowed and encouraged, both via local tools and by delegating to Scout.
@@ -223,9 +254,50 @@ Hive reads user/session policy from `~/.config/opencode/agent_hive.json`, then o
 2. `<project>/.opencode/agent_hive.json` (legacy fallback, used only when the new file is missing)
 3. defaults for anything not set globally or by the project overlay
 
-Project config only affects `sandbox`, `dockerImage`, `persistentContainers`, and `repositories`. Agent routing, custom agents, disabled MCPs, disabled skills, and hook cadence are global user settings. If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Hive warns, skips the legacy project file, and uses the global config and defaults.
+Project config only affects `sandbox`, `dockerImage`, `persistentContainers`, and `repositories`. Agent routing, custom agents, council groups, disabled MCPs, disabled skills, and hook cadence are global user settings. If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Hive warns, skips the legacy project file, and uses the global config and defaults.
 
-You can customize agent models, variants, disabled skills, and disabled MCP servers in the global config.
+You can customize agent models, variants, council groups, disabled skills, and disabled MCP servers in the global config.
+
+### Council config
+
+Council settings are global-only and live in `~/.config/opencode/agent_hive.json`. Structurally valid project-local `council` values are ignored during runtime merge. Malformed project-local `council` values still make the project config invalid before they can be ignored, so the normal invalid-project fallback applies: Hive warns and uses global config/defaults.
+
+Built-in council defaults are read-only and portable:
+
+| Group | Purpose | Default members |
+|-------|---------|-----------------|
+| `design` | Architecture and implementation-shape advice. | `scout-researcher`, `approach-advisor`, `plan-reviewer`, `code-reviewer` |
+| `decision` | Hard tradeoff decision support. | `scout-researcher`, `approach-advisor`, `plan-reviewer` |
+| `minimal-change` | Smallest correct change and cleanup lens. | `scout-researcher`, `simplicity-reviewer`, `code-reviewer` |
+| `documents` | Documentation and prose-oriented review. | `scout-researcher`, `code-reviewer`, `plan-reviewer` |
+
+Default council limits exclude mutable orchestration or implementation seats: `hive-master`, `swarm-orchestrator`, `forager-worker`, `hive-builder`, and `hive-helper`. Member names can be built-in stock agents or configured custom agents. Custom agents derived from mutable bases, including `forager-worker`, are skipped by default with warnings.
+
+Partial global overrides merge with the built-in defaults. Declaring a group replaces that group declaration and leaves omitted default groups intact:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "council": {
+    "defaultGroup": "documents",
+    "maxMembers": 3,
+    "excludedAgents": ["simplicity-reviewer"],
+    "groups": {
+      "documents": {
+        "description": "Docs and operator prose review",
+        "members": ["scout-researcher", "code-reviewer", "plan-reviewer"],
+        "maxMembers": 2
+      },
+      "security": {
+        "description": "Security-sensitive review",
+        "members": ["scout-researcher", "reviewer-security", "code-reviewer"]
+      }
+    }
+  }
+}
+```
+
+Council resolution preserves configured order, deduplicates by first occurrence, filters unusable seats before applying the cap, and uses `group.maxMembers ?? council.maxMembers ?? 4`. It skips unavailable agents, explicitly excluded agents, starter template custom agents, mutable-base agents, and duplicates with warnings. If a requested group has no usable seats, `/council` falls back to `council.defaultGroup`; if the fallback also has no usable seats, the command stops with an error instead of running an unsafe council.
 
 ### Project-local config example
 

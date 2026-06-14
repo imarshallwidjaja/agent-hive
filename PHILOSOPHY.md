@@ -770,7 +770,7 @@ The Claude Code plugin published in v1.4.7 passed every local check we had. It p
 
 **Shared insight:** "It publishes" and "a user can install it and it works" are separate contracts. The second one needs a test.
 
-The new release contract test (`claude-code-hive plugin.json invokes the MCP runtime via npx without requiring a local dependency`) is a first step. The harder step — installing the plugin against a real Claude Code runtime and proving `/hive` dispatches correctly — belongs in a future iteration.
+The new release contract test (`claude-code-hive plugin.json invokes the MCP runtime via npx without requiring a local dependency`) is a first step. The harder step is still end-to-end host installation against the real runtime, but the command contract must now prove the shipped command surface directly rather than assuming a legacy `/hive` dispatcher.
 
 ### v1.4.7 (Idempotent Release Pipeline)
 
