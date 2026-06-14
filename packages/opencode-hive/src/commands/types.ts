@@ -15,8 +15,6 @@ export interface HiveRuntimeCommand {
 export type HiveRuntimeCommandMap = Record<string, HiveRuntimeCommand>;
 
 export interface HiveCommandContext {
-  directory: string;
-  worktree: string;
   agentMode: 'unified' | 'dedicated';
   backgroundGuidance: BackgroundDelegationAvailability;
   council: CouncilConfig;
@@ -28,7 +26,6 @@ export interface HiveCommandAgentDescriptor {
   available: boolean;
   description: string;
   readOnlyCouncilEligible: boolean;
-  exampleTemplate?: boolean;
 }
 
 export type HiveCommandContextFactory = () => HiveCommandContext;

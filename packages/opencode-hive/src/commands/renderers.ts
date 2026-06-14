@@ -53,12 +53,8 @@ function renderSections(input: CommandSectionInput): string {
   return sections.join('\n\n');
 }
 
-function normalizedArgs(args: string): string {
-  return args.trim();
-}
-
 function topicOrCurrent(args: string, fallback: string): string {
-  const topic = normalizedArgs(args);
+  const topic = args.trim();
   return topic || fallback;
 }
 

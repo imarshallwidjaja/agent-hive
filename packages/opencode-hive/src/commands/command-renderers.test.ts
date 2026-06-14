@@ -78,8 +78,6 @@ function createContext(
   overrides: Partial<HiveCommandContext> = {},
 ): HiveCommandContext {
   return {
-    directory: '/repo',
-    worktree: '/repo',
     agentMode: 'unified',
     backgroundGuidance: { available: false, reason: 'experiment-disabled' },
     council: DEFAULT_COUNCIL_CONFIG,
@@ -237,7 +235,6 @@ describe('resolveCouncilMembers', () => {
         available: true,
         description: 'Example template only: rename before use.',
         readOnlyCouncilEligible: true,
-        exampleTemplate: true,
       },
       'disabled-reviewer': {
         baseAgent: 'code-reviewer',

@@ -1,4 +1,4 @@
-import type { CouncilConfig, CouncilGroupConfig } from 'hive-core';
+import type { CouncilConfig } from 'hive-core';
 import type { HiveCommandAgentDescriptor } from './types.js';
 
 export const READ_ONLY_COUNCIL_ELIGIBLE_BASES = new Set([
@@ -45,8 +45,7 @@ export function isReadOnlyCouncilEligibleBase(baseAgent: string): boolean {
 }
 
 function isExampleTemplateAgent(name: string, descriptor: HiveCommandAgentDescriptor): boolean {
-  return descriptor.exampleTemplate === true
-    || name.includes('example-template')
+  return name.includes('example-template')
     || descriptor.description.trim().toLowerCase().startsWith('example template only');
 }
 
@@ -58,24 +57,13 @@ function skipReasonForIneligibleBase(baseAgent: string): string {
   return `base agent ${baseAgent} is not read-only council-eligible`;
 }
 
-function resolveConfiguredGroup(
-  council: CouncilConfig,
-  groupName: string,
-): CouncilGroupConfig | undefined {
-  return council.groups?.[groupName];
-}
-
-function resolveMaxMembers(council: CouncilConfig, group: CouncilGroupConfig | undefined): number {
-  return group?.maxMembers ?? council.maxMembers ?? 4;
-}
-
 function resolveGroupMembers(
   council: CouncilConfig,
   agents: Record<string, HiveCommandAgentDescriptor>,
   groupName: string,
 ): GroupResolution {
-  const group = resolveConfiguredGroup(council, groupName);
-  const maxMembers = resolveMaxMembers(council, group);
+  const group = council.groups?.[groupName];
+  const maxMembers = group?.maxMembers ?? council.maxMembers ?? 4;
   const warnings: string[] = [];
   const selected = new Set<string>();
   const usableMembers: ResolvedCouncilMember[] = [];

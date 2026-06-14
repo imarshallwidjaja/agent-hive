@@ -2436,8 +2436,6 @@ Expand your Discovery section and try again.`;
     command: buildHiveCommandMap(hiveCommandRenderers, () => {
       const currentConfig = configService.get();
       return {
-        directory,
-        worktree: worktree || directory,
         agentMode: currentConfig.agentMode ?? 'unified',
         backgroundGuidance: runtimeBackgroundGuidance,
         council: currentConfig.council ?? DEFAULT_COUNCIL_CONFIG,
