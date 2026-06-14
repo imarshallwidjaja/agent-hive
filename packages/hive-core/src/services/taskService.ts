@@ -710,7 +710,8 @@ export class TaskService {
 
   private extractTasksSectionContent(content: string): string | null {
     const lines = content.split('\n');
-    const tasksHeadingRegex = /^##\s+tasks\s*$/i;
+    const tasksHeadingRegex = /^ {0,3}##\s+tasks\s*$/i;
+    const topLevelHeadingRegex = /^ {0,3}##\s+/;
     let startIndex = -1;
 
     for (let i = 0; i < lines.length; i++) {
@@ -726,7 +727,7 @@ export class TaskService {
 
     const sectionLines: string[] = [];
     for (let i = startIndex; i < lines.length; i++) {
-      if (/^##\s+/.test(lines[i])) {
+      if (topLevelHeadingRegex.test(lines[i])) {
         break;
       }
       sectionLines.push(lines[i]);
@@ -776,7 +777,7 @@ export class TaskService {
         descriptionLines = [];
       } else if (currentTask) {
         // Check for end of task section (next ## header or ### without number)
-        if (line.match(/^##\s+/) || line.match(/^###\s+[^0-9]/)) {
+        if (line.match(/^ {0,3}##\s+/) || line.match(/^###\s+[^0-9]/)) {
           currentTask.description = descriptionLines.join('\n').trim();
           tasks.push(currentTask);
           currentTask = null;

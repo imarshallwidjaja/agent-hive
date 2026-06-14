@@ -1248,6 +1248,47 @@ Non-numbered verification gate.
       expect(service.getRawStatus(featureName, "01-run-full-test-suite")).toBeNull();
     });
 
+    it("detects indented ## Tasks headings and stops at indented top-level boundaries", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Discovery
+
+### 1. Historical Context
+
+Should not become a task.
+
+   ## Tasks
+
+### 1. Real Task
+
+**Depends on**: none
+
+Do the work.
+
+   ## Final Verification
+
+### 2. Verification Checklist
+
+Should not become a task.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-real-task"]);
+      expect(service.getRawStatus(featureName, "01-historical-context")).toBeNull();
+      expect(service.getRawStatus(featureName, "02-verification-checklist")).toBeNull();
+    });
+
     it("returns no tasks when ## Tasks exists but contains no valid numbered tasks", () => {
       const featureName = "test-feature";
       const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);

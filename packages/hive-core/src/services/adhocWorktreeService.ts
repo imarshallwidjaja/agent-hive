@@ -1098,6 +1098,32 @@ export class AdhocWorktreeService {
 
       const currentBranch = branches.current;
 
+      const repoRoot = (await git.raw(['rev-parse', '--show-toplevel'])).trim();
+      const stateChecks: Array<{ name: string; label: string }> = [
+        { name: 'MERGE_HEAD', label: 'merge' },
+        { name: 'REBASE_HEAD', label: 'rebase' },
+        { name: 'CHERRY_PICK_HEAD', label: 'cherry-pick' },
+        { name: 'rebase-merge', label: 'rebase' },
+        { name: 'rebase-apply', label: 'rebase' },
+      ];
+      for (const { name, label } of stateChecks) {
+        const statePath = await this.resolveGitPath(git, repoRoot, name);
+        try {
+          await fs.access(statePath);
+          return {
+            success: false,
+            merged: false,
+            filesChanged: [],
+            conflicts: [],
+            conflictState: 'none',
+            cleanup: emptyCleanup,
+            error: `active ${label} state in progress`,
+          };
+        } catch {
+          /* not present -> ok */
+        }
+      }
+
       const diffNames = await git.diff([`${currentBranch}...${branchName}`, '--name-only']);
       filesChanged = diffNames
         .split('\n')

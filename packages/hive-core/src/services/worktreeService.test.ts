@@ -314,6 +314,38 @@ describe("WorktreeService merge and commit messages", () => {
     });
   }
 
+  for (const { stateName, label } of [
+    { stateName: 'MERGE_HEAD', label: 'merge' },
+    { stateName: 'rebase-merge', label: 'rebase' },
+    { stateName: 'CHERRY_PICK_HEAD', label: 'cherry-pick' },
+  ] as const) {
+    it(`fails safely when a net-zero task merge sees active ${label} state`, async () => {
+      const fixture = await createNetZeroCommittedFixture();
+      await fs.writeFile(path.join(fixture.repoPath, '.git', stateName), 'deadbeef\n', 'utf-8');
+
+      const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', undefined, {
+        cleanup: 'worktree+branch',
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        merged: false,
+        strategy: 'merge',
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none',
+        cleanup: {
+          worktreeRemoved: false,
+          branchDeleted: false,
+          pruned: false,
+        },
+      });
+      expect(result.error).toMatch(new RegExp(`active ${label} state`, 'i'));
+      expect(await pathExists(fixture.worktreePath)).toBe(true);
+      expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(true);
+    });
+  }
+
   it('blocks direct branch deletion when the task branch has unmerged commits', async () => {
     const fixture = await createCommittedFixture();
 

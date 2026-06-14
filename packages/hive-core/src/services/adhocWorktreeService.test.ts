@@ -289,6 +289,44 @@ describe("AdhocWorktreeService.merge", () => {
     expect(await branchExists(fixture.repoGit, created.branch)).toBe(false);
   });
 
+  for (const { stateName, label } of [
+    { stateName: "MERGE_HEAD", label: "merge" },
+    { stateName: "rebase-merge", label: "rebase" },
+    { stateName: "CHERRY_PICK_HEAD", label: "cherry-pick" },
+  ] as const) {
+    it(`fails safely when a net-zero ad-hoc merge sees active ${label} state`, async () => {
+      const fixture = await createFixture();
+      const created = await fixture.service.create({ runId: `merge-active-${label}` });
+      await fs.writeFile(path.join(created.path, "tracked.txt"), "transient ad-hoc change\n", "utf-8");
+      await fixture.service.commit(created.runId, "chore: transient ad-hoc change");
+      await fs.writeFile(path.join(created.path, "tracked.txt"), "base\n", "utf-8");
+      await fixture.service.commit(created.runId, "revert: transient ad-hoc change");
+      await fixture.repoGit.checkout("main");
+      await fs.writeFile(path.join(fixture.repoPath, ".git", stateName), "deadbeef\n", "utf-8");
+
+      const result = await fixture.service.merge(created.runId, "squash", undefined, {
+        cleanup: "worktree+branch",
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        merged: false,
+        strategy: "squash",
+        filesChanged: [],
+        conflicts: [],
+        conflictState: "none",
+        cleanup: {
+          worktreeRemoved: false,
+          branchDeleted: false,
+          pruned: false,
+        },
+      });
+      expect(result.error).toMatch(new RegExp(`active ${label} state`, "i"));
+      expect(await pathExists(created.path)).toBe(true);
+      expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+    });
+  }
+
   it("returns an error for strategy: 'rebase' with a custom message", async () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "merge-rebase-run" });
