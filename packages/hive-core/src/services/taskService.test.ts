@@ -1175,6 +1175,137 @@ Independent task with capital None.
       const task1Status = service.getRawStatus(featureName, "01-independent-task");
       expect(task1Status?.dependsOn).toEqual([]);
     });
+
+    it("ignores numbered headings under Discovery when a later ## Tasks section exists", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Discovery
+
+### 1. Historical Context
+
+Should not become a task.
+
+## Tasks
+
+### 1. Real Task
+
+**Depends on**: none
+
+Do the work.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-real-task"]);
+      expect(service.getRawStatus(featureName, "01-historical-context")).toBeNull();
+    });
+
+    it("does not create tasks from ## Final Verification after ## Tasks", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Tasks
+
+### 1. Implement
+
+**Depends on**: none
+
+Implementation work.
+
+## Final Verification
+
+### 1. Run full test suite
+
+- [ ] Run: bun test -> PASS
+
+### Final checks
+
+Non-numbered verification gate.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-implement"]);
+      expect(service.getRawStatus(featureName, "01-run-full-test-suite")).toBeNull();
+    });
+
+    it("returns no tasks when ## Tasks exists but contains no valid numbered tasks", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Discovery
+
+### 1. Legacy Heading
+
+Would be a task under legacy parsing.
+
+## Tasks
+
+No numbered task headings here yet.
+
+## Final Verification
+
+Checklist only.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual([]);
+      expect(service.getRawStatus(featureName, "01-legacy-heading")).toBeNull();
+    });
+
+    it("uses legacy whole-document parsing when plan has no ## Tasks heading", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+### 1. Legacy Task
+
+**Depends on**: none
+
+Old plan format.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-legacy-task"]);
+    });
   });
 
   describe("sync() - dependency validation edge cases", () => {
@@ -1877,6 +2008,53 @@ Align documentation wording.
       expect(service.getRawStatus(featureName, "01-taska")?.status).toBe("blocked");
       expect(service.getRawStatus(featureName, "02-taskb")?.status).toBe("failed");
       expect(service.getRawStatus(featureName, "03-taskc")?.status).toBe("partial");
+    });
+
+    it("does not remove pending tasks when a non-task Final Verification section is added", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planV1 = `# Plan
+
+## Tasks
+
+### 1. Setup
+
+**Depends on**: none
+
+Setup.
+
+### 2. Build
+
+**Depends on**: 1
+
+Build.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
+      service.sync(featureName);
+
+      const planV2 = `${planV1}
+## Final Verification
+
+### 1. Run verification
+
+- [ ] Run: bun test -> PASS
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
+
+      const result = service.sync(featureName, { refreshPending: true });
+
+      expect(result.removed).not.toContain("01-setup");
+      expect(result.removed).not.toContain("02-build");
+      expect(service.getRawStatus(featureName, "01-setup")).not.toBeNull();
+      expect(service.getRawStatus(featureName, "02-build")).not.toBeNull();
+      expect(service.getRawStatus(featureName, "01-run-verification")).toBeNull();
     });
   });
 });

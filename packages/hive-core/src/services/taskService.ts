@@ -708,9 +708,38 @@ export class TaskService {
     }
   }
 
-  private parseTasksFromPlan(content: string): ParsedTask[] {
-    const tasks: ParsedTask[] = [];
+  private extractTasksSectionContent(content: string): string | null {
     const lines = content.split('\n');
+    const tasksHeadingRegex = /^##\s+tasks\s*$/i;
+    let startIndex = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (tasksHeadingRegex.test(lines[i].trimEnd())) {
+        startIndex = i + 1;
+        break;
+      }
+    }
+
+    if (startIndex === -1) {
+      return null;
+    }
+
+    const sectionLines: string[] = [];
+    for (let i = startIndex; i < lines.length; i++) {
+      if (/^##\s+/.test(lines[i])) {
+        break;
+      }
+      sectionLines.push(lines[i]);
+    }
+
+    return sectionLines.join('\n');
+  }
+
+  private parseTasksFromPlan(content: string): ParsedTask[] {
+    const tasksSection = this.extractTasksSectionContent(content);
+    const parseSource = tasksSection !== null ? tasksSection : content;
+    const tasks: ParsedTask[] = [];
+    const lines = parseSource.split('\n');
     
     let currentTask: ParsedTask | null = null;
     let descriptionLines: string[] = [];
