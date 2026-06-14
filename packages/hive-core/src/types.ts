@@ -427,15 +427,25 @@ export const DEFAULT_AGENT_MODELS = {
 } as const;
 
 export const DEFAULT_COUNCIL_CONFIG: CouncilConfig = {
-  defaultGroup: 'research',
+  defaultGroup: 'decision',
+  maxMembers: 4,
+  excludedAgents: ['hive-master', 'swarm-orchestrator', 'forager-worker', 'hive-builder', 'hive-helper'],
   groups: {
-    research: {
-      description: 'Read-only research and discovery agents',
-      members: ['scout-researcher', 'approach-advisor'],
+    design: {
+      description: 'Architecture and implementation-shape advice',
+      members: ['scout-researcher', 'approach-advisor', 'plan-reviewer', 'code-reviewer'],
     },
-    review: {
-      description: 'Read-only plan, code, and simplicity reviewers',
-      members: ['plan-reviewer', 'code-reviewer', 'simplicity-reviewer'],
+    decision: {
+      description: 'Hard tradeoff decision support',
+      members: ['scout-researcher', 'approach-advisor', 'plan-reviewer'],
+    },
+    'minimal-change': {
+      description: 'Smallest correct change and cleanup lens',
+      members: ['scout-researcher', 'simplicity-reviewer', 'code-reviewer'],
+    },
+    documents: {
+      description: 'Documentation and prose-oriented review',
+      members: ['scout-researcher', 'code-reviewer', 'plan-reviewer'],
     },
   },
 };

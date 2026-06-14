@@ -84,14 +84,25 @@ describe("ConfigService defaults", () => {
     const config = new ConfigService().get();
 
     expect(config.council).toEqual(DEFAULT_HIVE_CONFIG.council);
+    expect(config.council?.defaultGroup).toBe('decision');
+    expect(config.council?.maxMembers).toBe(4);
+    expect(config.council?.excludedAgents).toEqual(['hive-master', 'swarm-orchestrator', 'forager-worker', 'hive-builder', 'hive-helper']);
     expect(config.council?.groups).toEqual({
-      research: {
-        description: 'Read-only research and discovery agents',
-        members: ['scout-researcher', 'approach-advisor'],
+      design: {
+        description: 'Architecture and implementation-shape advice',
+        members: ['scout-researcher', 'approach-advisor', 'plan-reviewer', 'code-reviewer'],
       },
-      review: {
-        description: 'Read-only plan, code, and simplicity reviewers',
-        members: ['plan-reviewer', 'code-reviewer', 'simplicity-reviewer'],
+      decision: {
+        description: 'Hard tradeoff decision support',
+        members: ['scout-researcher', 'approach-advisor', 'plan-reviewer'],
+      },
+      'minimal-change': {
+        description: 'Smallest correct change and cleanup lens',
+        members: ['scout-researcher', 'simplicity-reviewer', 'code-reviewer'],
+      },
+      documents: {
+        description: 'Documentation and prose-oriented review',
+        members: ['scout-researcher', 'code-reviewer', 'plan-reviewer'],
       },
     });
     expect(Object.values(config.council?.groups ?? {}).flatMap((group) => group.members)).not.toContain('forager-worker');
@@ -107,7 +118,7 @@ describe("ConfigService defaults", () => {
       configPath,
       JSON.stringify({
         council: {
-          defaultGroup: 'review',
+          defaultGroup: 'documents',
           maxMembers: 2,
           excludedAgents: ['simplicity-reviewer'],
           groups: {
@@ -123,10 +134,10 @@ describe("ConfigService defaults", () => {
 
     const config = service.get();
 
-    expect(config.council?.defaultGroup).toBe('review');
+    expect(config.council?.defaultGroup).toBe('documents');
     expect(config.council?.maxMembers).toBe(2);
     expect(config.council?.excludedAgents).toEqual(['simplicity-reviewer']);
-    expect(Object.keys(config.council?.groups ?? {})).toEqual(['research', 'review', 'custom']);
+    expect(Object.keys(config.council?.groups ?? {})).toEqual(['design', 'decision', 'minimal-change', 'documents', 'custom']);
     expect(config.council?.groups?.custom).toEqual({
       description: 'Custom structural member references',
       members: ['unknown-specialist'],
@@ -144,7 +155,7 @@ describe("ConfigService defaults", () => {
       JSON.stringify({
         council: {
           groups: {
-            review: {
+            decision: {
               members: ['code-reviewer'],
             },
           },
@@ -154,8 +165,9 @@ describe("ConfigService defaults", () => {
 
     const config = service.get();
 
-    expect(config.council?.groups?.research).toEqual(DEFAULT_HIVE_CONFIG.council?.groups?.research);
-    expect(config.council?.groups?.review).toEqual({ members: ['code-reviewer'] });
+    expect(config.council?.groups?.design).toEqual(DEFAULT_HIVE_CONFIG.council?.groups?.design);
+    expect(config.council?.groups?.documents).toEqual(DEFAULT_HIVE_CONFIG.council?.groups?.documents);
+    expect(config.council?.groups?.decision).toEqual({ members: ['code-reviewer'] });
   });
 
   it("loads customAgents from config", () => {

@@ -122,17 +122,25 @@ describe('agent_hive schema council contract', () => {
   it('accepts a valid default-like council shape', () => {
     expect(validateConfigShape({
       council: {
-        defaultGroup: 'research',
-        maxMembers: 3,
-        excludedAgents: ['simplicity-reviewer'],
+        defaultGroup: 'decision',
+        maxMembers: 4,
+        excludedAgents: ['hive-master', 'swarm-orchestrator', 'forager-worker', 'hive-builder', 'hive-helper'],
         groups: {
-          research: {
-            description: 'Read-only research and discovery agents',
-            members: ['scout-researcher', 'approach-advisor'],
+          design: {
+            description: 'Architecture and implementation-shape advice',
+            members: ['scout-researcher', 'approach-advisor', 'plan-reviewer', 'code-reviewer'],
           },
-          review: {
-            description: 'Read-only plan, code, and simplicity reviewers',
-            members: ['plan-reviewer', 'code-reviewer', 'simplicity-reviewer'],
+          decision: {
+            description: 'Hard tradeoff decision support',
+            members: ['scout-researcher', 'approach-advisor', 'plan-reviewer'],
+          },
+          'minimal-change': {
+            description: 'Smallest correct change and cleanup lens',
+            members: ['scout-researcher', 'simplicity-reviewer', 'code-reviewer'],
+          },
+          documents: {
+            description: 'Documentation and prose-oriented review',
+            members: ['scout-researcher', 'code-reviewer', 'plan-reviewer'],
           },
         },
       },
@@ -142,9 +150,9 @@ describe('agent_hive schema council contract', () => {
   it('accepts partial global council overrides only when declared groups include members', () => {
     expect(validateConfigShape({
       council: {
-        defaultGroup: 'review',
+        defaultGroup: 'documents',
         groups: {
-          review: {
+          documents: {
             members: ['code-reviewer'],
           },
         },
@@ -154,7 +162,7 @@ describe('agent_hive schema council contract', () => {
     expect(validateConfigShape({
       council: {
         groups: {
-          review: {
+          documents: {
             description: 'missing members',
           },
         },
