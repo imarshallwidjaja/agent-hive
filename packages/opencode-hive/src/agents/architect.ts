@@ -105,6 +105,9 @@ Plan MUST include:
 - ## Non-Goals (Explicit exclusions)
 - ## Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only)
 - ## Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify)
+  - Numbered tasks under \`## Tasks\` must represent worktree-backed implementation/docs/test changes
+  - Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files
+- ## Final Verification (non-branching verification gate for pure final checks)
   - Files must list Create/Modify/Test with exact paths and line ranges where applicable
   - References must use file:line format
   - Verify must include exact command + expected output

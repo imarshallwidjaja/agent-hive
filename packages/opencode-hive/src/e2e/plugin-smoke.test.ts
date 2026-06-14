@@ -604,7 +604,11 @@ Do it
       });
       expect(result.taskToolCall).toBeDefined();
       expect((result.taskToolCall as { background?: boolean } | undefined)?.background).toBeUndefined();
-      expect(result.instructions).toContain("Prefer `backgroundTaskCall`");
+      expect(result.instructions).toContain("backgroundTaskCall");
+      expect(result.instructions).toContain("independent lane");
+      expect(result.instructions).toContain("safe foreground work can continue");
+      expect(result.instructions).toContain("blocking `task()` is correct");
+      expect(result.instructions).toContain("next meaningful step depends on the worker");
 
       const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
       const board = JSON.parse(fs.readFileSync(boardPath, "utf-8")) as {
@@ -684,6 +688,7 @@ Do it
       expect(result.backgroundTaskCall).toBeUndefined();
       expect(result.instructions).toContain("taskToolCall.prompt");
       expect(result.instructions).not.toContain("backgroundTaskCall");
+      expect(result.instructions).not.toContain("independent lane");
 
       const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
       expect(fs.existsSync(boardPath)).toBe(false);

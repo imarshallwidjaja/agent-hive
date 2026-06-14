@@ -437,6 +437,17 @@ describe('Architect (Planner) prompt', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('plan.md');
   });
 
+  it('keeps pure final verification outside numbered implementation tasks', () => {
+    for (const [name, prompt] of [
+      ['Architect', ARCHITECT_BEE_PROMPT],
+      ['Hive', QUEEN_BEE_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('pure final verification outside `## Tasks`');
+      expect(prompt, name).toContain('## Final Verification');
+      expect(prompt, name).toContain('worktree-backed implementation/docs/test changes');
+    }
+  });
+
   it('describes mermaid as optional in the plan preamble only', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('optional Mermaid');
     expect(ARCHITECT_BEE_PROMPT).toContain('dependency or sequence overview');
@@ -571,6 +582,15 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('Use built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match');
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
       expect(SWARM_BEE_PROMPT).toContain('post-implementation cleanup pass');
+    });
+
+    it('routes post-batch review by risk tier without fixed specialist tables', () => {
+      expect(SWARM_BEE_PROMPT).toContain('Risk-Tier Review Routing');
+      expect(SWARM_BEE_PROMPT).toContain('public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior');
+      expect(SWARM_BEE_PROMPT).toContain('bounded docs/tests');
+      expect(SWARM_BEE_PROMPT).toContain('verification-only gates');
+      expect(SWARM_BEE_PROMPT).toContain('named high-risk concern');
+      expect(SWARM_BEE_PROMPT).toContain('description best fits');
     });
 
     it('tells orchestrators to split broad research earlier', () => {
@@ -1038,6 +1058,17 @@ describe('trimmed OpenCode runtime prompts', () => {
     expect(SWARM_BEE_PROMPT).not.toContain('todowrite');
     expect(SWARM_BEE_PROMPT).not.toContain('task checkpoints');
     expect(SWARM_BEE_PROMPT).not.toContain('worker return/block');
+  });
+});
+
+describe('Hive orchestration review policy', () => {
+  it('routes post-batch review by risk tier without fixed specialist tables', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('Risk-Tier Review Routing');
+    expect(QUEEN_BEE_PROMPT).toContain('public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior');
+    expect(QUEEN_BEE_PROMPT).toContain('bounded docs/tests');
+    expect(QUEEN_BEE_PROMPT).toContain('verification-only gates');
+    expect(QUEEN_BEE_PROMPT).toContain('named high-risk concern');
+    expect(QUEEN_BEE_PROMPT).toContain('description best fits');
   });
 });
 

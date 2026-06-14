@@ -101,6 +101,11 @@ describe('skill content', () => {
     expect(skill!.template).toContain('gate-closed fallback guidance');
     expect(skill!.template).toContain('Execution and Forager lanes are managed/heavy background lanes');
     expect(skill!.template).toContain('unresolved-lane checks before dependent decisions');
+    expect(skill!.template).toContain('Risk-Tier Review Routing');
+    expect(skill!.template).toContain('public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior');
+    expect(skill!.template).toContain('bounded docs/tests');
+    expect(skill!.template).toContain('verification-only gates');
+    expect(skill!.template).toContain('named high-risk concern');
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
@@ -155,6 +160,14 @@ describe('skill content', () => {
     expect(skill!.template).toContain('reconcileItemsRequired == 0');
     expect(skill!.template).toContain('schedulerGuidance.reason');
     expect(skill!.template).toContain('wait_for_native_completion_notification');
+    expect(skill!.template).toContain('recommendedNextAction');
+    expect(skill!.template).toContain('orchestrationBurden');
+    expect(skill!.template).toContain('pure final verification outside `## Tasks`');
+    expect(skill!.template).toContain('## Final Verification');
+    expect(skill!.template).toContain('one small, local, immediately verified integration fix');
+    expect(skill!.template).toContain('second patch/test loop');
+    expect(skill!.template).toContain('behavior-contract change');
+    expect(skill!.template).toContain('manual task/plan amendment');
     expect(skill!.template).toContain('do not edit `.hive/background-jobs.json` directly');
     expect(skill!.template).toContain('archived by the tool and hidden from normal status');
     expect(skill!.template).toContain('Forgotten terminal jobs');

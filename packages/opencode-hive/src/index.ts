@@ -811,7 +811,7 @@ Default to \`${defaultAgent}\` if no specialist is a better match.
 
 ${eligibleAgents.map((candidate) => `- \`${candidate.name}\` — ${candidate.description}`).join('\n')}
 
-Use OpenCode's built-in \`task\` tool with the chosen \`subagent_type\` and the provided ${backgroundEnabled ? '\`backgroundTaskCall.prompt\` value. Prefer \`backgroundTaskCall\` so this task runs in the background and remains visible on the Hive background board.' : '\`taskToolCall.prompt\` value.'}
+Use OpenCode's built-in \`task\` tool with the chosen \`subagent_type\` and the provided ${backgroundEnabled ? '\`backgroundTaskCall.prompt\` value when this worker is an independent lane and safe foreground work can continue. Use the blocking \`taskToolCall.prompt\` value when the next meaningful step depends on the worker and no non-overlapping foreground work exists.' : '\`taskToolCall.prompt\` value.'}
 \`taskToolCall.subagent_type\` is prefilled with the default for convenience; override it when a specialist in \`eligibleAgents\` is a better match.
 
 \`\`\`
@@ -822,7 +822,7 @@ task({
 })
 \`\`\`
 
-${backgroundEnabled ? 'Use blocking foreground `task()` only when dependency, risk, simplicity, user interaction, or ownership conflict makes waiting the safer path. Keep the same `subagent_type`, `description`, and `prompt` if you use that escape path.\n\n' : ''}
+${backgroundEnabled ? 'Use `backgroundTaskCall` for independent background lanes with useful safe foreground work. Using blocking `task()` is correct when the next meaningful step depends on the worker, or dependency, risk, simplicity, user interaction, or ownership conflict makes waiting the safer path. Keep the same `subagent_type`, `description`, and `prompt` if you use that escape path.\n\n' : ''}
 
 Use the \`@path\` attachment syntax in the prompt to reference the file. Do not inline the file contents.
 

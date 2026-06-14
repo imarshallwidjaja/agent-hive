@@ -19,7 +19,13 @@ If the env-gated appendix is absent, preserve the normal direct/blocking workflo
 
 Default to delegating implementation/test work and non-trivial verification actions. The primary agent is the scheduler, not the default implementer.
 
-Direct primary-agent work is allowed when the edit or check is small, cheap, integral to coordination, and clearly lower overhead than delegation. Direct work normally includes clarifying the request, minimal routing reads, classifying the delegation kind, choosing specialists, maintaining todos and task IDs, launching and monitoring lanes, synthesizing results, running cheap final checks, validating outcomes, and communicating decisions.
+Direct primary-agent work is allowed when the edit or check is small, cheap, integral to coordination, and clearly lower overhead than delegation. The direct fix threshold is one small, local, immediately verified integration fix. A second patch/test loop, behavior-contract change, or broadened scope must be delegated, resumed, or turned into a manual task/plan amendment.
+
+Direct work normally includes clarifying the request, minimal routing reads, classifying the delegation kind, choosing specialists, maintaining todos and task IDs, launching and monitoring lanes, synthesizing results, running cheap final checks, validating outcomes, and communicating decisions.
+
+## Final Verification Gates
+
+Keep pure final verification outside `## Tasks` in `## Final Verification` when no tracked artifacts are written. Treat that section as a non-branching plan gate, not a worktree-backed task. If verification writes tracked artifacts, model it as a normal numbered task and list those files.
 
 ## Delegation Kind Reference
 
@@ -52,13 +58,13 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 2. Build the context packet for each lane.
 3. Launch each independent lane with native `task({ background: true, ... })`.
 4. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
-5. Follow every `nextActions` entry returned by `hive_background_status`, including `reconcile_required` after consuming or intentionally ignoring terminal results. Treat `waitingForNativeCompletion` as wait-only state and `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
+5. Follow `recommendedNextAction` from `hive_background_status` when present; use `nextActions` and `orchestrationBurden` as supporting detail for visible lanes and operator reporting. Treat `waitingForNativeCompletion` as wait-only state and `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
 6. Continue only foreground work that does not depend on the background result.
 7. Do not repeatedly refresh the board while visible lanes are only listed under `waitingForNativeCompletion`. If `completionNotificationsPending > 0` and `reconcileItemsRequired == 0`, wait for OpenCode's native background completion notification before calling `hive_background_status` again, unless a lane is stale, wrong, no longer needed, or a new task ID must be registered.
 8. Treat `native_completion_pending` as a wait state, not a command to reconcile, cancel, or duplicate the lane.
 9. Treat prompt acknowledgment as notification only: a terminal job may stop repeating in prompt detail after Hive showed it once, but it is not reconciled until you consume or intentionally ignore the result.
 10. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results. Reconciliation archives terminal jobs and hides them from normal status output; do not edit `.hive/background-jobs.json` directly.
-11. Use `orchestrationBurden` from `hive_background_status` to report pending completion notifications and reconcile items per visible and actionable lane.
+11. Use `orchestrationBurden` from `hive_background_status` to report pending completion notifications and reconcile items per visible and actionable lane; it supports the recommended action but does not replace it.
 12. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
 
 ```ts

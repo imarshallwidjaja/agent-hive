@@ -55,8 +55,16 @@ When batch complete:
 
 ### Step 4.5: Post-Batch Code Review
 
-After the batch report, ask the operator if they want a `code-reviewer` review for the batch.
-If yes, run `task({ subagent_type: "code-reviewer", prompt: "Review implementation changes from the latest batch." })`.
+After the batch report, apply Risk-Tier Review Routing, then ask the operator which recommended review path to run.
+
+- High-risk surfaces — public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior — should get paired correctness + simplicity review.
+- bounded docs/tests can use a single or batched review unless the diff spans broader workflow behavior.
+- verification-only gates with no source changes and clear command evidence can skip extra review by default.
+- Escalate to xhigh reviewer variants only after the default reviewer identifies a named high-risk concern.
+
+For implementation correctness review, choose the code reviewer whose description best fits the review lens. Use built-in `code-reviewer` when no configured code-reviewer-derived custom description is a closer match. Then run `task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })`.
+For simplicity review, choose the simplicity reviewer whose description best fits the cleanup lens. Use built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match. Treat it as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
+
 Route review feedback through this decision tree before continuing:
 
 | Feedback type | Action |

@@ -157,7 +157,10 @@ hive_feature_create({ name: "feature-name" })
 hive_plan_write({ content: "..." })
 \`\`\`
 
-Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only), Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify)
+Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only), Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify), and Final Verification.
+- Numbered tasks under \`## Tasks\` must represent worktree-backed implementation/docs/test changes
+- Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files
+- \`## Final Verification\` is the non-branching verification gate for pure final checks
 - Files must list Create/Modify/Test with exact paths and line ranges where applicable
 - References must use file:line format
 - Verify must include exact command + expected output
@@ -254,11 +257,15 @@ For bounded operational cleanup, Hive may also delegate hard-task cleanup to \`h
 
 ### Post-Batch Review
 After completing and merging a batch:
-1. Ask the user via \`question()\` if they want review for the batch: implementation correctness review, simplicity review, both, or skip.
-2. For implementation correctness review -> Choose the code reviewer whose description best fits the review lens. Use built-in \`code-reviewer\` when no configured code-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
-3. For simplicity review -> Choose the simplicity reviewer whose description best fits the cleanup lens. Use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
-4. Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
-5. Route review feedback through this decision tree before starting the next batch:
+1. Apply Risk-Tier Review Routing before asking the user what to run.
+2. For high-risk surfaces — public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior — ask for paired correctness + simplicity review.
+3. For bounded docs/tests, ask for a single or batched review unless the diff spans broader workflow behavior.
+4. For verification-only gates with no source changes and clear command evidence, skip extra review by default and record the evidence.
+5. Escalate to xhigh reviewer variants only after the default reviewer identifies a named high-risk concern.
+6. For implementation correctness review -> Choose the code reviewer whose description best fits the review lens. Use built-in \`code-reviewer\` when no configured code-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
+7. For simplicity review -> Choose the simplicity reviewer whose description best fits the cleanup lens. Use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
+8. Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
+9. Route review feedback through this decision tree before starting the next batch:
 
 #### Review Follow-Up Routing
 

@@ -115,6 +115,8 @@ Then confirm:
 
 Cheap final integration checks remain allowed. After completing and merging a batch, run full verification on the main branch: \`bun run build\`, \`bun run test\`. If failures occur, diagnose and fix or re-dispatch impacted tasks.
 
+Direct orchestration fixes are bounded: one small, local, immediately verified integration fix is allowed. A second patch/test loop, behavior-contract change, or broadened scope must be delegated, resumed, or turned into a manual task/plan amendment.
+
 ## Search Stop Conditions
 
 - Stop when there is enough context
@@ -152,7 +154,11 @@ When execution exposes a strategic approach question that could change the plan,
 
 ### Post-Batch Review
 
-After completing and merging a batch: ask via \`question()\` if they want implementation correctness review, simplicity review, both, or skip.
+After completing and merging a batch: apply Risk-Tier Review Routing, then ask via \`question()\` which recommended review path to run.
+For high-risk surfaces — public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior — recommend paired correctness + simplicity review.
+For bounded docs/tests, recommend a single or batched review unless the diff spans broader workflow behavior.
+For verification-only gates with no source changes and clear command evidence, skip extra review by default and record the evidence.
+Escalate to xhigh reviewer variants only after the default reviewer identifies a named high-risk concern.
 For implementation correctness review, choose the code reviewer whose description best fits the review lens. Use built-in \`code-reviewer\` when no configured code-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
 For simplicity review, choose the simplicity reviewer whose description best fits the cleanup lens. Use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
 Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
