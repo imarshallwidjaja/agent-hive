@@ -1904,9 +1904,11 @@ Expand your Discovery section and try again.`;
             cleanup,
           });
 
-          const responseMessage = result.success
-            ? `Task "${task}" merged successfully using ${strategy} strategy.`
-            : `Merge failed: ${result.error}`;
+          const responseMessage = result.success && result.merged === false && result.reasonCode === 'NO_TRACKED_CHANGES'
+            ? `Task "${task}" had no tracked changes to merge; cleanup ${result.cleanup.worktreeRemoved || result.cleanup.branchDeleted || result.cleanup.pruned ? 'completed' : 'available'}.`
+            : result.success
+              ? `Task "${task}" merged successfully using ${strategy} strategy.`
+              : `Merge failed: ${result.error}`;
 
           return respond({
             ...result,
@@ -2298,6 +2300,21 @@ Expand your Discovery section and try again.`;
           const nonInProgressTasksWithWorktrees = tasksSummary
             .filter(t => t.status !== 'in_progress' && t.worktree)
             .map(t => t.folder);
+          const mergeEligibility = tasksSummary.map(t => {
+            const eligible = t.status === 'done' && !!t.worktree;
+            const reasonCode = eligible
+              ? 'TASK_DONE_WITH_LIVE_WORKTREE'
+              : t.status !== 'done'
+                ? 'TASK_NOT_DONE'
+                : 'NO_LIVE_WORKTREE';
+
+            return {
+              task: t.folder,
+              eligible,
+              reasonCode,
+              ...(eligible ? { recommendedCommand: `hive_merge({ task: "${t.folder}" })` } : {}),
+            };
+          });
 
           const tasksWithDeps = tasksSummary.map(t => ({
             folder: t.folder,
@@ -2402,6 +2419,7 @@ Expand your Discovery section and try again.`;
               doneTasksWithLiveWorktrees,
               dirtyWorktrees,
               nonInProgressTasksWithWorktrees,
+              mergeEligibility,
               manualTaskPolicy: {
                 order: {
                   omitted: 'append_next_order',

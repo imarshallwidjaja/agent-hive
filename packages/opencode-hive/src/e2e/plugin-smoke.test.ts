@@ -2207,6 +2207,56 @@ Do it
     expect(taskStatus?.status).toBe("done");
   });
 
+  it('hive_merge reports no tracked changes as a no-op instead of a successful merge', async () => {
+    const feature = 'merge-no-tracked-changes-feature';
+    const { hooks, toolContext } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_merge_no_tracked_changes',
+      feature,
+      'Merge No Tracked Changes Feature',
+      'Yes, this regression test validates that hive_merge preserves service-level no-change merge semantics in the OpenCode tool response.',
+    );
+
+    await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'completed',
+        summary: 'Completed without tracked file changes.',
+      },
+      toolContext,
+    );
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: FIRST_TASK, strategy: 'merge', cleanup: 'worktree' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      reason?: string;
+      reasonCode?: string;
+      cleanupEligible?: boolean;
+      taskUpdateRecommended?: boolean;
+      filesChanged: string[];
+      sha?: string;
+      cleanup: { worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean };
+      message: string;
+    };
+
+    expect(mergeResult.success).toBe(true);
+    expect(mergeResult.merged).toBe(false);
+    expect(mergeResult.reasonCode).toBe('NO_TRACKED_CHANGES');
+    expect(mergeResult.reason).toBe('nothing_to_merge');
+    expect(mergeResult.cleanupEligible).toBe(true);
+    expect(mergeResult.taskUpdateRecommended).toBe(true);
+    expect(mergeResult.filesChanged).toEqual([]);
+    expect(mergeResult.sha).toBeUndefined();
+    expect(mergeResult.cleanup.worktreeRemoved).toBe(true);
+    expect(mergeResult.message).toBe(`Task "${FIRST_TASK}" had no tracked changes to merge; cleanup completed.`);
+    expect(mergeResult.message).not.toContain('merged successfully');
+  });
+
   it("uses custom commit message in task worktree head", async () => {
     const feature = "commit-custom-message-feature";
     const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
@@ -2960,6 +3010,12 @@ Also wait for task one.
           };
         };
         ambiguityFlags: string[];
+        mergeEligibility: Array<{
+          task: string;
+          eligible: boolean;
+          reasonCode: string;
+          recommendedCommand?: string;
+        }>;
       };
     };
 
@@ -2973,6 +3029,29 @@ Also wait for task one.
       doneTasksWithLiveWorktrees: ["01-first-task"],
       dirtyWorktrees: ["01-first-task"],
       nonInProgressTasksWithWorktrees: ["01-first-task"],
+      mergeEligibility: [
+        {
+          task: "01-first-task",
+          eligible: true,
+          reasonCode: "TASK_DONE_WITH_LIVE_WORKTREE",
+          recommendedCommand: 'hive_merge({ task: "01-first-task" })',
+        },
+        {
+          task: "02-second-task",
+          eligible: false,
+          reasonCode: "TASK_NOT_DONE",
+        },
+        {
+          task: "03-third-task",
+          eligible: false,
+          reasonCode: "TASK_NOT_DONE",
+        },
+        {
+          task: "04-operator-followup",
+          eligible: false,
+          reasonCode: "TASK_NOT_DONE",
+        },
+      ],
       manualTaskPolicy: {
         order: {
           omitted: "append_next_order",
@@ -3136,6 +3215,12 @@ Original plan task four content must stay isolated from any append-only manual f
           };
         };
         ambiguityFlags: string[];
+        mergeEligibility: Array<{
+          task: string;
+          eligible: boolean;
+          reasonCode: string;
+          recommendedCommand?: string;
+        }>;
       };
     };
 
@@ -3145,6 +3230,29 @@ Original plan task four content must stay isolated from any append-only manual f
       doneTasksWithLiveWorktrees: ['03-third-task'],
       dirtyWorktrees: ['03-third-task'],
       nonInProgressTasksWithWorktrees: ['03-third-task'],
+      mergeEligibility: [
+        {
+          task: '01-first-task',
+          eligible: false,
+          reasonCode: 'NO_LIVE_WORKTREE',
+        },
+        {
+          task: '02-second-task',
+          eligible: false,
+          reasonCode: 'NO_LIVE_WORKTREE',
+        },
+        {
+          task: '03-third-task',
+          eligible: true,
+          reasonCode: 'TASK_DONE_WITH_LIVE_WORKTREE',
+          recommendedCommand: 'hive_merge({ task: "03-third-task" })',
+        },
+        {
+          task: '04-fourth-task',
+          eligible: false,
+          reasonCode: 'TASK_NOT_DONE',
+        },
+      ],
       manualTaskPolicy: {
         order: {
           omitted: 'append_next_order',
