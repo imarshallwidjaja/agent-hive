@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vscode-arkive` docs now cover the viewer-only Background Jobs and Tracked Repositories views.
 
 ### Changed
+- Modern plan docs now state that `hive_tasks_sync` syncs numbered tasks only from `## Tasks`, with pure final verification kept in `## Final Verification` outside the task graph.
+- Merge docs now cover no-change results: `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, no empty `sha`, and safe requested cleanup.
+- Operator docs now use `hive_status.helperStatus.mergeEligibility` as the task/worktree-aware merge-readiness surface instead of deriving readiness from background board state.
+- Background orchestration docs now describe `recommendedNextAction` and `requiresHiveStatusRefresh` as board-local scheduler outputs, and clarify that gate-open `hive_worktree_start` creates pending board state only after the parent launches the returned `backgroundTaskCall`.
 - `autoLoadSkills` now adds compact high-priority guidance for agents to load named OpenCode-native skills with the `skill` tool instead of inlining full skill bodies into startup prompts.
 - Operator docs now distinguish env-gate false/current blocking behavior from env-gate true/background-first scheduler behavior.
 - Background orchestration docs now align with OpenCode's native completion-notification flow, state that cancellation is not rollback, and keep stale lanes on no-resume retry/escalation rather than unsafe resume.

@@ -139,7 +139,13 @@ Implement refresh token rotation.
 
 ### 3. Update API routes
 Convert all routes to use AuthService.
+
+## Final Verification
+
+- Run the full suite after the task branches are merged.
 ```
+
+Modern plans sync numbered tasks only from `## Tasks`. Put pure final verification in `## Final Verification` so it stays outside the task graph unless it needs a worker to write tracked artifacts.
 
 ### 2. Human Approval
 
@@ -160,9 +166,9 @@ Orchestrator
         ↓ merge + full test suite
 ```
 
-Independent tasks run concurrently. Dependent tasks wait. Each worker runs in its own worktree, verifies its own work, and commits. The orchestrator merges batch-by-batch and runs the full suite after each merge.
+Independent tasks run concurrently. Dependent tasks wait. Each worker runs in its own worktree, verifies its own work, and commits. The orchestrator uses `hive_status` to inspect task/worktree-aware merge eligibility, merges batch-by-batch, and runs the full suite after each merge.
 
-When OpenCode's background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents use background-first scheduler mode for independent work. They launch native background tasks when safe foreground work can continue, inspect the scoped board with `hive_background_status`, wait for OpenCode's native completion notification, refresh `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`. With the env gate unset, the current blocking task/worktree behavior remains in place. Prompt acknowledgment only means Hive showed a terminal result once; explicit reconciliation still records whether the result was consumed or ignored. Reconciled and ignored jobs are archived by the tools and hidden from normal status output, and agents should not edit `.hive/background-jobs.json` directly. If status returns wait-only scheduler guidance, agents should wait for the native completion notification instead of refreshing repeatedly.
+When OpenCode's background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents use background-first scheduler mode for independent work that can run while useful foreground work continues. Dependent work stays on the blocking path. Gate-open `hive_worktree_start` may return a `backgroundTaskCall`, but that is launch guidance only; no pending background board entry exists until the parent actually starts the native background task. Primary agents inspect the scoped board with `hive_background_status`, wait for OpenCode's native completion notification, refresh `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`. With the env gate unset, the current blocking task/worktree behavior remains in place. Prompt acknowledgment only means Hive showed a terminal result once; explicit reconciliation still records whether the result was consumed or ignored. Reconciled and ignored jobs are archived by the tools and hidden from normal status output, and agents should not edit `.hive/background-jobs.json` directly. If status returns wait-only scheduler guidance, agents should wait for the native completion notification instead of refreshing repeatedly. Board `recommendedNextAction` and `requiresHiveStatusRefresh` outputs guide scheduler bookkeeping; they do not replace `hive_status` for merge readiness.
 
 ### 4. Audit Trail
 
@@ -199,7 +205,7 @@ Hive is built on nine principles. They explain why the workflow is shaped the wa
 
 **P6 — Tests Define Done.** A batch is done when the suite passes, not when a worker says so.
 
-**P7 — Iron Laws + Hard Gates.** Constraints are enforced by tools, not by prompts. A plan without `## Tasks` does not pass; a worker that commits incomplete work gets rejected.
+**P7 — Iron Laws + Hard Gates.** Constraints are enforced by tools, not by prompts. Modern plans parse task work from `## Tasks`; final verification stays separate unless it needs tracked artifacts. A worker that commits incomplete work gets rejected.
 
 **P8 — Cross-Model Prompts.** Agent instructions work across model families. The workflow design does not depend on any one model's quirks.
 

@@ -262,7 +262,7 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 | Context | hive_context_write |
 | Status | hive_status |
 
-Task-backed worktree tools create feature/task records and appear in `hive_status`. Ad-hoc worktree tools are for isolated Hive Builder work and do not create feature/task records. `hive_adhoc_worktree_create` defaults to auto-spawning a worker; in background-enabled sessions, set `autoSpawnWorker: false` only for inspection, routing, or setup-only ad-hoc worktrees. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task({ background: true, ... })` completion notifications and do not roll back files, branches, worktrees, commits, or reports. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
+Task-backed worktree tools create feature/task records and appear in `hive_status`. Modern `hive_tasks_sync` reads numbered tasks only from `## Tasks`; pure suite or release checks belong in `## Final Verification` unless they write tracked artifacts. Ad-hoc worktree tools are for isolated Hive Builder work and do not create feature/task records. `hive_adhoc_worktree_create` defaults to auto-spawning a worker; in background-enabled sessions, set `autoSpawnWorker: false` only for inspection, routing, or setup-only ad-hoc worktrees. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task({ background: true, ... })` completion notifications and do not roll back files, branches, worktrees, commits, or reports. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
 
 **Tool access is filtered per agent role:**
 - **Hive** — all 26 tools (hybrid agent)
@@ -293,6 +293,8 @@ Multi-line `message` is supported where a new commit is created.
 Omit `message` (or pass `''`) to keep default message behavior.
 Do not provide `message` when using `hive_merge(..., strategy: 'rebase')`.
 
+If a completed task branch has no net tracked changes, `hive_merge` returns `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, and no `sha`; requested cleanup can still run when safe. Use `hive_status.helperStatus.mergeEligibility` as the task/worktree-aware state surface before merge or cleanup decisions.
+
 ### Delegated Execution
 
 `hive_worktree_start` creates worktree and spawns worker automatically:
@@ -314,7 +316,7 @@ The previous worker's progress is preserved. Include the user's decision in the 
 - task() is BLOCKING by default — when it returns, the worker is DONE
 - Call `hive_status()` immediately to check the new task state and find next runnable tasks
 - Prefer structured worker-result envelopes over free-form completion interpretation when extending worker/orchestrator flows
-- When opencode is launched with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents may load and use the bundled `background-delegation` skill and call `task({ background: true, ... })` only for independent foreground work; wait for the native completion notification and refresh `hive_background_status` before dependent decisions. If status returns wait-only scheduler guidance, do not refresh repeatedly until the native notification arrives or the lane becomes stale, wrong, or no longer needed
+- When opencode is launched with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents may load and use the bundled `background-delegation` skill and call `task({ background: true, ... })` only for independent work where useful foreground work can continue. Use blocking task/worktree calls when the next meaningful step depends on the worker. Gate-open `hive_worktree_start` may return `backgroundTaskCall`, but pending background board state is not created until the parent actually launches the native background task. Wait for the native completion notification and refresh `hive_background_status` before dependent decisions. If status returns wait-only scheduler guidance, do not refresh repeatedly until the native notification arrives or the lane becomes stale, wrong, or no longer needed. Treat `recommendedNextAction` and `requiresHiveStatusRefresh` as board-local scheduler hints, not merge readiness.
 - Subagents (including custom derived subagents) must not call `task()` recursively
 
 ### Sandbox Configuration

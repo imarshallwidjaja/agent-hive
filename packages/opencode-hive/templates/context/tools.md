@@ -69,7 +69,7 @@ task({
 
 ### Background-First Scheduling
 
-Subagents must not start background tasks. With `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` unset, Hive keeps the direct/blocking workflow and background board tools are disabled. When either env flag is set, `task({ background: true, ... })`, the bundled `background-delegation` protocol, and the board tools are primary-agent-only guidance.
+Subagents must not start background tasks. With `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` unset, Hive keeps the direct/blocking workflow and background board tools are disabled. When either env flag is set, `task({ background: true, ... })`, the bundled `background-delegation` protocol, and the board tools are primary-agent-only guidance for independent work that can run while useful foreground work continues. Keep dependent work on the blocking path.
 
 Gate-open primary orchestrators treat exploratory/read-only and review lanes as lightweight background candidates. Writing/change and execution lanes are managed lanes: define path ownership, state tracking, verification routing, unresolved-lane checks, and integration control. Every delegated lane needs a context packet with objective, known facts, references, constraints, prior failures, expected output, and where to find missing context. For ad-hoc or non-feature work, include this packet in the prompt because there may be no plan/task context file.
 
@@ -84,7 +84,7 @@ Primary-agent-only board tools:
 | `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or ignored after inspecting their results; the tool archives them from normal status |
 | `hive_background_cancel` | Request cancellation for a visible job when it is stale, wrong, or no longer needed |
 
-Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. Cancellation is not rollback. Cancelling a background job does not revert files, branches, worktrees, commits, or task reports. Wait for OpenCode's native completion notification before dependent decisions; use `hive_background_status` to refresh the board and keep scheduler state explicit. When `schedulerGuidance.reason` is `wait_for_native_completion_notification`, do not refresh repeatedly; wait for native completion or continue unrelated foreground work. Do not edit `.hive/background-jobs.json` directly.
+Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. A gate-open `hive_worktree_start` response may include `backgroundTaskCall`, but no pending background board entry exists until the parent actually launches the native background task. Cancellation is not rollback. Cancelling a background job does not revert files, branches, worktrees, commits, or task reports. Wait for OpenCode's native completion notification before dependent decisions; use `hive_background_status` to refresh the board and keep scheduler state explicit. When `schedulerGuidance.reason` is `wait_for_native_completion_notification`, do not refresh repeatedly; wait for native completion or continue unrelated foreground work. Treat `recommendedNextAction` and `requiresHiveStatusRefresh` as board-local scheduler hints; use `hive_status` for task/worktree-aware merge readiness. Do not edit `.hive/background-jobs.json` directly.
 
 ---
 

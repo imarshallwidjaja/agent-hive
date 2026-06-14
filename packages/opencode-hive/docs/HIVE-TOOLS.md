@@ -38,6 +38,8 @@
 #### Task model notes
 
 - Plan-backed tasks get their DAG from `plan.md` `Depends on:` annotations during `hive_tasks_sync`.
+- Modern plans sync numbered task headings only from the `## Tasks` section. A pure final verification checklist belongs in `## Final Verification` outside the task graph unless it writes tracked artifacts or otherwise needs worker execution.
+- Plans without a `## Tasks` heading keep the legacy whole-document parser path. Modern plans with an empty or malformed `## Tasks` section sync zero tasks instead of falling back to numbered headings elsewhere.
 - Manual tasks always persist explicit `dependsOn`; omitting it means `[]`, not implicit sequential ordering.
 - manual tasks are append-only.
 - If `order` is omitted, Hive uses the next order; explicit `order` is only accepted when it equals that next order, so intermediate insertion requires plan amendment.
@@ -75,6 +77,7 @@
 - `workerPromptPath`: file path to `.hive/features/<feature>/tasks/<task>/worker-prompt.md`
 - `workerPromptPreview`: short preview of the prompt
 - `promptMeta`, `payloadMeta`, `budgetApplied`, `warnings`: size and budget observability
+- In gate-open sessions, `hive_worktree_start` can also return a `backgroundTaskCall` for independent work that can run while useful foreground work continues. The pending background board entry is created only after the parent actually launches the native background `task({ background: true, ... })`; blocking `hive_worktree_start` remains the correct path when the next meaningful step depends on the worker result.
 
 ### Ad-hoc Worktree (4 tools)
 
@@ -115,6 +118,8 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 - Primary orchestrators choose specialists from built-in and custom agent descriptors. Do not add fixed routing tables; use the descriptor that best matches the lane.
 - Hive Builder remains a valid ad-hoc executor with the gate closed. With the gate open, non-trivial non-feature work should be decomposed, routed, tracked, verified, and integrated like orchestration, using ad-hoc worktrees for implementation branches when needed.
 - In gate-open sessions, launch native background tasks, inspect the scoped board with `hive_background_status`, wait for native completion notifications before dependent decisions, refresh `hive_background_status`, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
+- `hive_background_status` and reconcile responses include `recommendedNextAction` guidance and may set `requiresHiveStatusRefresh` after reconciliation. Treat these as board-local scheduler hints. They do not predict task merge readiness; use `hive_status` for task/worktree-aware state before merge decisions.
+- A `backgroundTaskCall` returned from `hive_worktree_start` is launch guidance, not board state. Until the parent actually launches the native background task, no pending background board entry exists.
 - If `hive_background_status` returns `schedulerGuidance.reason: wait_for_native_completion_notification`, do not refresh repeatedly. Wait for OpenCode's native completion notification, continue unrelated foreground work, or cancel only if the lane is stale, wrong, or no longer needed.
 - Prompt acknowledgment only means Hive showed the terminal result to the parent session. It does not clear `terminalUnreconciled`; the agent still needs explicit reconciliation after consuming or ignoring the result.
 - Reconciled and ignored terminal jobs are archived by the background tools and hidden from normal status output. Do not edit `.hive/background-jobs.json` directly.
@@ -150,6 +155,7 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
   - `cleanup.branchDeleted`
   - `cleanup.pruned`
   - `error?`
+- If the task branch has no net tracked changes to integrate, `hive_merge` returns `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, omits `sha`, and still performs requested cleanup when safe.
 - `conflictState: 'preserved'` means the caller requested `preserveConflicts: true` and must resolve the merge locally before cleanup can finish.
 
 ### Context (1 tool)
@@ -160,7 +166,12 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 ### Status (1 tool)
 | Tool | Purpose |
 |------|---------|
-| `hive_status` | Get comprehensive feature status as JSON, including overview metadata, per-document review counts, and context inclusion flags |
+| `hive_status` | Get comprehensive feature status as JSON, including overview metadata, per-document review counts, context inclusion flags, and task/worktree-aware merge eligibility |
+
+#### hive_status output notes
+
+- `helperStatus.mergeEligibility` is the canonical operator surface for whether completed task work has a live worktree and can be considered for merge or cleanup.
+- Background board state is intentionally separate. Reconcile terminal background jobs first, then refresh `hive_status` before making dependent task or merge decisions.
 
 ### Skill Loading
 Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into `.hive/generated/opencode-skills/` and registered through `skills.paths`. No Hive plugin tool is used for skill loading. The `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` env flag enables the primary-agent background-first scheduler contract and background management tools for sessions where OpenCode exposes native background subagents.

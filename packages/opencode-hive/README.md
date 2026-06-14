@@ -41,6 +41,8 @@ The bundled `ast_grep` MCP tools run through the official ast-grep server.
 5. **Execute** — Tasks run in isolated git worktrees
 6. **Ship** — Clean commits, full audit trail
 
+Modern plans sync numbered tasks only from `## Tasks`. Keep pure release or suite-level checks in `## Final Verification` unless they need a worker to write tracked artifacts.
+
 ### Planning-mode delegation
 
 During planning, "don't execute" means "don't implement" (no code edits, no worktrees). Read-only exploration is explicitly allowed and encouraged, both via local tools and by delegating to Scout.
@@ -89,6 +91,17 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 | `hive_worktree_commit` | Complete task (applies changes) |
 | `hive_worktree_discard` | Abort task (discard changes) |
 
+In gate-open sessions, `hive_worktree_start` may return a `backgroundTaskCall` for independent work. That output is launch guidance only; Hive does not create pending background board state until the parent actually starts the native background task. Use the normal blocking call when the next meaningful step depends on the worker result.
+
+### Merge and Status
+
+| Tool | Description |
+|------|-------------|
+| `hive_merge` | Merge a completed task branch, with merge/squash/rebase strategies, optional conflict preservation, and optional cleanup |
+| `hive_status` | Inspect feature state, including task/worktree-aware merge eligibility through `helperStatus.mergeEligibility` |
+
+When a task branch has no net tracked changes to integrate, `hive_merge` reports a successful no-op: `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, and no empty `sha`. Requested cleanup can still run when safe. Use `hive_status`, not the background board, to decide whether a task has completed work and a live worktree eligible for merge or cleanup.
+
 ### Ad-hoc Worktree
 
 Hive Builder uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. With the background gate closed, Hive Builder remains a direct ad-hoc executor. With the gate open, non-trivial work should be decomposed, routed, tracked, verified, and integrated like orchestration, using ad-hoc worktrees for implementation branches when needed. `hive_adhoc_worktree_create` accepts `autoSpawnWorker`, default `true`; set it to `false` only for inspection, routing, or setup-only worktrees where no worker should auto-launch. See `docs/HIVE-TOOLS.md` for the full tool contracts.
@@ -101,7 +114,9 @@ With the env gate set, primary orchestrators receive delegate-first background s
 
 Gate-open orchestration uses lane kind to decide how much management is needed. Exploratory/read-only and review lanes are lightweight background candidates. Writing/change and execution lanes require path ownership, state tracking, verification routing, unresolved-lane checks, integration control, and a context packet. See `docs/HIVE-TOOLS.md` and the `background-delegation` skill for the full scheduler protocol.
 
-With the env gate set, primary agents can launch independent native background tasks, keep safe foreground work moving, inspect the scoped board with `hive_background_status`, wait for OpenCode's native completion notification, refresh `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`. Reconciliation archives terminal jobs and hides them from normal status output; agents should not edit `.hive/background-jobs.json` directly. Wait-only scheduler guidance from status means wait for the native notification instead of refreshing repeatedly.
+With the env gate set, primary agents can launch independent native background tasks when useful foreground work can continue, inspect the scoped board with `hive_background_status`, wait for OpenCode's native completion notification, refresh `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`. Reconciliation archives terminal jobs and hides them from normal status output; agents should not edit `.hive/background-jobs.json` directly. Wait-only scheduler guidance from status means wait for the native notification instead of refreshing repeatedly.
+
+`hive_background_status` and reconcile responses may return `recommendedNextAction` and `requiresHiveStatusRefresh`. These are board-local scheduler outputs. They do not predict merge readiness; refresh `hive_status` before dependent task or merge decisions.
 
 Prompt acknowledgment only means Hive showed a terminal result to the parent session. It does not clear `terminalUnreconciled`; the primary agent still reconciles or ignores the job after consuming the result.
 
@@ -192,7 +207,13 @@ Description of what to do.
 
 ### 2. Another Task
 Description.
+
+## Final Verification
+
+- Run the full test suite after task branches are merged.
 ```
+
+`hive_tasks_sync` reads numbered task headings from `## Tasks` in modern plans. A final verification section stays outside the task DAG unless the verification itself needs tracked artifacts produced by a task.
 
 ## Configuration
 
