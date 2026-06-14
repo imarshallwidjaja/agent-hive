@@ -402,6 +402,15 @@ Do it
     expect(new Set(pluginJson.commands.map((entry) => entry.name)).size).toBe(pluginJson.commands.length);
   });
 
+  it('ships plugin.json in the npm package manifest allowlist', () => {
+    const packageJsonPath = path.resolve(import.meta.dir, '..', '..', 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+      files?: string[];
+    };
+
+    expect(packageJson.files).toContain('plugin.json');
+  });
+
   it('registers every registry command on hooks.command and returns string guidance', async () => {
     const { hooks } = await createHooksForTest(testRoot, 'sess_command_hooks');
     const commandHooks = (hooks as PluginHooks & {

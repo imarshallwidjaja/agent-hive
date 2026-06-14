@@ -58,6 +58,7 @@
   },
   "files": [
     "dist/",
+    "plugin.json",
     "skills/",
     "templates/",
     "README.md"
