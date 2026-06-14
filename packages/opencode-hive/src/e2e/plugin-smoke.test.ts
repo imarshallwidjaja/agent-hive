@@ -11,7 +11,8 @@ import { FORAGER_BEE_PROMPT } from "../agents/forager";
 import { HIVE_BUILDER_PROMPT } from "../agents/hive-builder";
 import { HIVE_SYSTEM_PROMPT } from "../hooks/system-hook";
 import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
-import { buildPluginManifest, HIVE_COMMANDS, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
+import { HIVE_COMMANDS, type HiveCommandKey } from '../commands/registry.js';
+import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 type PluginHooks = Awaited<ReturnType<typeof plugin>>;
@@ -401,6 +402,27 @@ Do it
     expect(pluginJson.tools).not.toContain(removedHiveSkillTool);
     expect(pluginJson.tools).toEqual([...EXPECTED_TOOLS]);
     expect(pluginJson).toEqual(expectedManifest);
+    expect(pluginJson.commands.map((entry) => entry.name)).not.toContain('/hive');
+    expect(new Set(pluginJson.commands.map((entry) => entry.name)).size).toBe(pluginJson.commands.length);
+  });
+
+  it('registers every registry command on hooks.command and returns string guidance', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_command_hooks');
+    const commandHooks = (hooks as PluginHooks & {
+      command: Record<string, { description: string; run: (args: string) => string }>;
+    }).command;
+
+    const registryKeys = HIVE_COMMANDS.map((command) => command.key);
+    expect(Object.keys(commandHooks).sort()).toEqual([...registryKeys].sort());
+    expect(commandHooks.hive).toBeUndefined();
+
+    for (const command of HIVE_COMMANDS) {
+      const handler = commandHooks[command.key];
+      expect(handler.description).toBe(command.description);
+      const output = handler.run('smoke args');
+      expect(typeof output).toBe('string');
+      expect(output.trim()).not.toBe('');
+    }
   });
 
   it("writes logical active-feature names and status fallback prefers the shared pointer", async () => {

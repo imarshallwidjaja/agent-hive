@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import plugin from "../index";
+import { HIVE_COMMANDS, type HiveCommandKey } from '../commands/registry.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" });
 const removedHiveSkillTool = ['hive', 'skill'].join('_');
@@ -108,6 +109,41 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["approach-advisor"]).toBeDefined();
     expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("architect-planner");
+  });
+
+  it('names dedicated-mode route targets in command output and warns slash commands do not switch agents', async () => {
+    const configPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ agentMode: 'dedicated' }));
+
+    const ctx: any = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: createProject(testRoot),
+      client: OPENCODE_CLIENT,
+    };
+
+    const hooks = await plugin(ctx);
+    const commandHooks = (hooks as Awaited<ReturnType<typeof plugin>> & {
+      command: Record<string, { run: (args: string) => string }>;
+    }).command;
+    const routeByKey: Record<HiveCommandKey, string> = {
+      interview: 'architect-planner',
+      'implementation-brief': 'architect-planner',
+      'hive-plan': 'architect-planner',
+      'approve-sync-plan': 'swarm-orchestrator',
+      'start-execution': 'swarm-orchestrator',
+      'council-directive': 'architect-planner',
+      council: 'architect-planner',
+      'compact-summary': 'scout-researcher',
+    };
+
+    for (const command of HIVE_COMMANDS) {
+      const output = commandHooks[command.key].run('route smoke');
+      expect(output).toContain(`Route: ${routeByKey[command.key]}`);
+      expect(output).toContain('Slash commands do not switch agents automatically');
+    }
   });
 
   it("injects custom-subagent appendix into dedicated-mode primary prompts and registers custom agents", async () => {
