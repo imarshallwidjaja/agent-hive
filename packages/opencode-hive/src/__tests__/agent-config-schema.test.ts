@@ -5,6 +5,48 @@ import * as path from 'node:path';
 const schemaPath = path.resolve(import.meta.dir, '..', '..', 'schema', 'agent_hive.schema.json');
 const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf-8')) as Record<string, any>;
 
+const validateConfigShape = (config: Record<string, any>): boolean => {
+  if (Object.keys(config).some((key) => !Object.hasOwn(schema.properties, key))) {
+    return false;
+  }
+
+  const council = config.council;
+  if (council === undefined) {
+    return true;
+  }
+  if (council === null || typeof council !== 'object' || Array.isArray(council)) {
+    return false;
+  }
+  if (council.defaultGroup !== undefined && typeof council.defaultGroup !== 'string') {
+    return false;
+  }
+  if (council.maxMembers !== undefined && (!Number.isInteger(council.maxMembers) || council.maxMembers < 1)) {
+    return false;
+  }
+  if (council.excludedAgents !== undefined && (!Array.isArray(council.excludedAgents) || council.excludedAgents.some((agent: unknown) => typeof agent !== 'string'))) {
+    return false;
+  }
+  if (council.groups === undefined) {
+    return true;
+  }
+  if (council.groups === null || typeof council.groups !== 'object' || Array.isArray(council.groups)) {
+    return false;
+  }
+
+  return Object.values(council.groups).every((group) => {
+    if (group === null || typeof group !== 'object' || Array.isArray(group)) {
+      return false;
+    }
+
+    const declaration = group as Record<string, unknown>;
+    return Array.isArray(declaration.members)
+      && declaration.members.length > 0
+      && declaration.members.every((member) => typeof member === 'string')
+      && (declaration.description === undefined || typeof declaration.description === 'string')
+      && (declaration.maxMembers === undefined || (typeof declaration.maxMembers === 'number' && Number.isInteger(declaration.maxMembers) && declaration.maxMembers >= 1));
+  });
+};
+
 const expectReservedNameToFail = (name: string): void => {
   const reservedNames = schema.properties?.customAgents?.propertyNames?.not?.enum;
   expect(Array.isArray(reservedNames)).toBe(true);
@@ -64,5 +106,67 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('code');
     expectReservedNameToFail('hive-builder');
     expectReservedNameToFail('builder');
+  });
+});
+
+describe('agent_hive schema council contract', () => {
+  it('defines council as a documented global-only config section', () => {
+    expect(schema.properties.council).toEqual({
+      $ref: '#/$defs/councilConfig',
+      description: 'Global council command group configuration. Read from the global user config; structurally valid project-local values are ignored by runtime config resolution, while malformed project-local values make the project config invalid before they can be ignored.',
+    });
+    expect(schema.$defs.councilConfig).toBeDefined();
+    expect(schema.$defs.councilGroupConfig).toBeDefined();
+  });
+
+  it('accepts a valid default-like council shape', () => {
+    expect(validateConfigShape({
+      council: {
+        defaultGroup: 'research',
+        maxMembers: 3,
+        excludedAgents: ['simplicity-reviewer'],
+        groups: {
+          research: {
+            description: 'Read-only research and discovery agents',
+            members: ['scout-researcher', 'approach-advisor'],
+          },
+          review: {
+            description: 'Read-only plan, code, and simplicity reviewers',
+            members: ['plan-reviewer', 'code-reviewer', 'simplicity-reviewer'],
+          },
+        },
+      },
+    })).toBe(true);
+  });
+
+  it('accepts partial global council overrides only when declared groups include members', () => {
+    expect(validateConfigShape({
+      council: {
+        defaultGroup: 'review',
+        groups: {
+          review: {
+            members: ['code-reviewer'],
+          },
+        },
+      },
+    })).toBe(true);
+
+    expect(validateConfigShape({
+      council: {
+        groups: {
+          review: {
+            description: 'missing members',
+          },
+        },
+      },
+    })).toBe(false);
+  });
+
+  it.each([
+    { name: 'bad members', config: { council: { groups: { review: { members: [] } } } } },
+    { name: 'bad maxMembers', config: { council: { maxMembers: 0 } } },
+    { name: 'unknown top-level schema property', config: { unknown: true } },
+  ])('rejects $name', ({ config }) => {
+    expect(validateConfigShape(config)).toBe(false);
   });
 });

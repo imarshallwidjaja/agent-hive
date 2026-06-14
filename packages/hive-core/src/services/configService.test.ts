@@ -80,6 +80,84 @@ describe("ConfigService defaults", () => {
     });
   });
 
+  it('includes default council groups with stock read-only members only', () => {
+    const config = new ConfigService().get();
+
+    expect(config.council).toEqual(DEFAULT_HIVE_CONFIG.council);
+    expect(config.council?.groups).toEqual({
+      research: {
+        description: 'Read-only research and discovery agents',
+        members: ['scout-researcher', 'approach-advisor'],
+      },
+      review: {
+        description: 'Read-only plan, code, and simplicity reviewers',
+        members: ['plan-reviewer', 'code-reviewer', 'simplicity-reviewer'],
+      },
+    });
+    expect(Object.values(config.council?.groups ?? {}).flatMap((group) => group.members)).not.toContain('forager-worker');
+    expect(Object.values(config.council?.groups ?? {}).flatMap((group) => group.members)).not.toContain('hive-master');
+  });
+
+  it('merges partial global council config with defaults deterministically', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        council: {
+          defaultGroup: 'review',
+          maxMembers: 2,
+          excludedAgents: ['simplicity-reviewer'],
+          groups: {
+            custom: {
+              description: 'Custom structural member references',
+              members: ['unknown-specialist'],
+              maxMembers: 1,
+            },
+          },
+        },
+      }),
+    );
+
+    const config = service.get();
+
+    expect(config.council?.defaultGroup).toBe('review');
+    expect(config.council?.maxMembers).toBe(2);
+    expect(config.council?.excludedAgents).toEqual(['simplicity-reviewer']);
+    expect(Object.keys(config.council?.groups ?? {})).toEqual(['research', 'review', 'custom']);
+    expect(config.council?.groups?.custom).toEqual({
+      description: 'Custom structural member references',
+      members: ['unknown-specialist'],
+      maxMembers: 1,
+    });
+  });
+
+  it('replaces only the declared council group while preserving omitted default groups', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        council: {
+          groups: {
+            review: {
+              members: ['code-reviewer'],
+            },
+          },
+        },
+      }),
+    );
+
+    const config = service.get();
+
+    expect(config.council?.groups?.research).toEqual(DEFAULT_HIVE_CONFIG.council?.groups?.research);
+    expect(config.council?.groups?.review).toEqual({ members: ['code-reviewer'] });
+  });
+
   it("loads customAgents from config", () => {
     const service = new ConfigService();
     const configPath = service.getPath();
@@ -931,6 +1009,14 @@ describe('ConfigService project-aware read source selection', () => {
         agents: {
           'forager-worker': { variant: 'low' },
         },
+        council: {
+          defaultGroup: 'project-review',
+          groups: {
+            'project-review': {
+              members: ['project-agent'],
+            },
+          },
+        },
         sandbox: 'docker',
         repositories: [{ id: 'api', path: './api' }],
       }),
@@ -952,6 +1038,14 @@ describe('ConfigService project-aware read source selection', () => {
             autoLoadSkills: ['react-best-practices'],
           },
         },
+        council: {
+          defaultGroup: 'global-review',
+          groups: {
+            'global-review': {
+              members: ['global-agent'],
+            },
+          },
+        },
         sandbox: 'none',
       }),
     );
@@ -962,6 +1056,9 @@ describe('ConfigService project-aware read source selection', () => {
     expect(config.agentMode).toBe('dedicated');
     expect(config.disableMcps).toEqual(['global-mcp']);
     expect(config.agents?.['forager-worker']?.variant).toBe('high');
+    expect(config.council?.defaultGroup).toBe('global-review');
+    expect(config.council?.groups?.['global-review']).toEqual({ members: ['global-agent'] });
+    expect(config.council?.groups).not.toHaveProperty('project-review');
     expect(config.customAgents?.['forager-ui']).toEqual({
       baseAgent: 'forager-worker',
       description: 'Use for UI-heavy implementation tasks.',
@@ -1138,6 +1235,52 @@ describe('ConfigService project-aware read source selection', () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  it('falls back to global config when project config has malformed council structure', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
+    const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
+    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
+
+    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+    fs.writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        sandbox: 'docker',
+        council: {
+          groups: {
+            review: {
+              members: 'bad-member-shape',
+            },
+          },
+        },
+      }),
+    );
+
+    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+    fs.writeFileSync(
+      globalConfigPath,
+      JSON.stringify({
+        sandbox: 'none',
+      }),
+    );
+
+    const service = new ConfigService(projectRoot);
+    const config = service.get();
+
+    expect(config.sandbox).toBe('none');
+    expect(service.getActiveReadSourceType()).toBe('global');
+    expect(service.getActiveReadPath()).toBe(globalConfigPath);
+    expect(service.getLastFallbackWarning()).toEqual({
+      message: `Failed to read project config at ${projectConfigPath}; using global config at ${globalConfigPath}`,
+      sourceType: 'project',
+      sourcePath: projectConfigPath,
+      fallbackType: 'global',
+      fallbackPath: globalConfigPath,
+      reason: 'validation_error',
+    });
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
   it('falls back to defaults and records a global warning when global config is invalid', () => {
     const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
 
@@ -1162,6 +1305,54 @@ describe('ConfigService project-aware read source selection', () => {
       fallbackType: 'defaults',
       reason: 'validation_error',
     });
+  });
+
+  it.each([
+    { name: 'a non-object council value', council: [] },
+    { name: 'a non-string defaultGroup', council: { defaultGroup: 123 } },
+    { name: 'a non-positive maxMembers', council: { maxMembers: 0 } },
+    { name: 'a non-integer maxMembers', council: { maxMembers: 1.5 } },
+    { name: 'non-string excludedAgents', council: { excludedAgents: ['code-reviewer', 123] } },
+    { name: 'a non-object groups value', council: { groups: [] } },
+    { name: 'a group without members', council: { groups: { review: { description: 'missing members' } } } },
+    { name: 'a group with empty members', council: { groups: { review: { members: [] } } } },
+    { name: 'a group with non-string members', council: { groups: { review: { members: ['code-reviewer', 123] } } } },
+    { name: 'a group with non-string description', council: { groups: { review: { description: 123, members: ['code-reviewer'] } } } },
+    { name: 'a group with invalid maxMembers', council: { groups: { review: { members: ['code-reviewer'], maxMembers: 0 } } } },
+  ])('falls back to defaults when global config has $name', ({ council }) => {
+    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
+
+    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+    fs.writeFileSync(globalConfigPath, JSON.stringify({ council }));
+
+    const service = new ConfigService();
+
+    expect(service.get()).toEqual(DEFAULT_HIVE_CONFIG);
+    expect(service.getLastFallbackWarning()?.reason).toBe('validation_error');
+  });
+
+  it('structurally accepts unknown council member names in global config', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        council: {
+          groups: {
+            specialists: {
+              members: ['not-registered-yet'],
+            },
+          },
+        },
+      }),
+    );
+
+    expect(service.get().council?.groups?.specialists).toEqual({
+      members: ['not-registered-yet'],
+    });
+    expect(service.getLastFallbackWarning()).toBeNull();
   });
 
   it('falls back to defaults when both project and global configs are invalid', () => {

@@ -339,6 +339,19 @@ export interface RepositoryConfig {
   path: string;
 }
 
+export interface CouncilGroupConfig {
+  description?: string;
+  members: string[];
+  maxMembers?: number;
+}
+
+export interface CouncilConfig {
+  defaultGroup?: string;
+  maxMembers?: number;
+  excludedAgents?: string[];
+  groups?: Record<string, CouncilGroupConfig>;
+}
+
 export interface ResolvedRepository {
   id: string;
   path: string;
@@ -384,6 +397,8 @@ export interface HiveConfig {
     'hive-builder'?: AgentModelConfig;
   };
   customAgents?: Record<string, CustomAgentConfig>;
+  /** Global council command group configuration. Project-local values are ignored by runtime merge. */
+  council?: CouncilConfig;
   /** Sandbox mode for worker isolation */
   sandbox?: 'none' | 'docker';
   /** Docker image to use when sandbox is 'docker' (optional explicit override) */
@@ -411,6 +426,20 @@ export const DEFAULT_AGENT_MODELS = {
   'hive-builder': 'github-copilot/gpt-5.2-codex',
 } as const;
 
+export const DEFAULT_COUNCIL_CONFIG: CouncilConfig = {
+  defaultGroup: 'research',
+  groups: {
+    research: {
+      description: 'Read-only research and discovery agents',
+      members: ['scout-researcher', 'approach-advisor'],
+    },
+    review: {
+      description: 'Read-only plan, code, and simplicity reviewers',
+      members: ['plan-reviewer', 'code-reviewer', 'simplicity-reviewer'],
+    },
+  },
+};
+
 export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   $schema: 'https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json',
   enableToolsFor: [],
@@ -418,6 +447,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   disableMcps: [],
   agentMode: 'unified',
   sandbox: 'none',
+  council: DEFAULT_COUNCIL_CONFIG,
   customAgents: {
     'scout-example-template': {
       baseAgent: 'scout-researcher',

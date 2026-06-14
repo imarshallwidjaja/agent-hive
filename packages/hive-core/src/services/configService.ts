@@ -10,6 +10,7 @@ import { isValidRepositoryId } from '../utils/repositoryIds.js';
 import type {
   AgentModelConfig,
   BuiltInAgentName,
+  CouncilConfig,
   CustomAgentBase,
   HiveConfig,
   ResolvedCustomAgentConfig,
@@ -521,6 +522,24 @@ export class ConfigService {
         ...DEFAULT_HIVE_CONFIG.customAgents,
         ...storedCustomAgents,
       },
+      council: this.mergeCouncilConfig(DEFAULT_HIVE_CONFIG.council, stored.council),
+    };
+  }
+
+  private mergeCouncilConfig(defaults: CouncilConfig | undefined, stored: CouncilConfig | undefined): CouncilConfig | undefined {
+    if (!defaults && !stored) {
+      return undefined;
+    }
+
+    return {
+      ...defaults,
+      ...(stored?.defaultGroup !== undefined ? { defaultGroup: stored.defaultGroup } : {}),
+      ...(stored?.maxMembers !== undefined ? { maxMembers: stored.maxMembers } : {}),
+      ...(stored?.excludedAgents !== undefined ? { excludedAgents: stored.excludedAgents } : {}),
+      groups: {
+        ...defaults?.groups,
+        ...stored?.groups,
+      },
     };
   }
 
@@ -630,6 +649,10 @@ export class ConfigService {
       }
     }
 
+    if (config.council !== undefined && !this.isValidCouncilConfig(config.council)) {
+      return false;
+    }
+
     if (config.sandbox !== undefined && config.sandbox !== 'none' && config.sandbox !== 'docker') {
       return false;
     }
@@ -661,6 +684,66 @@ export class ConfigService {
 
   private isStringArray(value: unknown): value is string[] {
     return Array.isArray(value) && value.every((item) => typeof item === 'string');
+  }
+
+  private isPositiveInteger(value: unknown): value is number {
+    return typeof value === 'number' && Number.isInteger(value) && value > 0;
+  }
+
+  private isValidCouncilConfig(value: unknown): boolean {
+    if (!this.isObjectRecord(value)) {
+      return false;
+    }
+
+    const council = value as Record<string, unknown>;
+
+    if (council.defaultGroup !== undefined && typeof council.defaultGroup !== 'string') {
+      return false;
+    }
+
+    if (council.maxMembers !== undefined && !this.isPositiveInteger(council.maxMembers)) {
+      return false;
+    }
+
+    if (council.excludedAgents !== undefined && !this.isStringArray(council.excludedAgents)) {
+      return false;
+    }
+
+    if (council.groups !== undefined && !this.isObjectRecord(council.groups)) {
+      return false;
+    }
+
+    if (this.isObjectRecord(council.groups)) {
+      for (const group of Object.values(council.groups)) {
+        if (!this.isValidCouncilGroupConfig(group)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  private isValidCouncilGroupConfig(value: unknown): boolean {
+    if (!this.isObjectRecord(value)) {
+      return false;
+    }
+
+    const group = value as Record<string, unknown>;
+
+    if (!this.isStringArray(group.members) || group.members.length === 0) {
+      return false;
+    }
+
+    if (group.description !== undefined && typeof group.description !== 'string') {
+      return false;
+    }
+
+    if (group.maxMembers !== undefined && !this.isPositiveInteger(group.maxMembers)) {
+      return false;
+    }
+
+    return true;
   }
 
   private isValidAgentConfigDeclaration(value: unknown): boolean {

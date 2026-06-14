@@ -78,6 +78,10 @@
         }
       ]
     },
+    "council": {
+      "$ref": "#/$defs/councilConfig",
+      "description": "Global council command group configuration. Read from the global user config; structurally valid project-local values are ignored by runtime config resolution, while malformed project-local values make the project config invalid before they can be ignored."
+    },
     "agents": {
       "type": "object",
       "description": "Global agent model configuration overrides. Project-local values are ignored by runtime config resolution.",
@@ -167,6 +171,63 @@
     }
   },
   "$defs": {
+    "councilConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Global-only council command settings. Project-local council values are ignored by runtime merge after the project file passes structural validation.",
+      "properties": {
+        "defaultGroup": {
+          "type": "string",
+          "description": "Default council group name to use when a command does not specify one. The referenced group is resolved later by command rendering."
+        },
+        "maxMembers": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of council members selected for a command."
+        },
+        "excludedAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Agent names excluded from council selection. Names are structurally accepted here and resolved later by command rendering."
+        },
+        "groups": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/councilGroupConfig"
+          },
+          "description": "Named council groups. Each declared group replaces the default group declaration of the same name during global config merge."
+        }
+      }
+    },
+    "councilGroupConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "members"
+      ],
+      "description": "Council group declaration. Member names are structurally accepted here and resolved later by command rendering.",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-facing group description."
+        },
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "Agent names available in this council group."
+        },
+        "maxMembers": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of members selected from this group."
+        }
+      }
+    },
     "repositoryConfig": {
       "type": "object",
       "additionalProperties": false,
