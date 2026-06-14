@@ -253,6 +253,42 @@ describe("AdhocWorktreeService.merge", () => {
     expect(await branchExists(fixture.repoGit, created.branch)).toBe(false);
   });
 
+  it("returns a cleanup-eligible no-op when an ad-hoc branch has commits but zero tracked diff", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "merge-no-change-run" });
+    await fs.writeFile(path.join(created.path, "tracked.txt"), "transient ad-hoc change\n", "utf-8");
+    await fixture.service.commit(created.runId, "chore: transient ad-hoc change");
+    await fs.writeFile(path.join(created.path, "tracked.txt"), "base\n", "utf-8");
+    await fixture.service.commit(created.runId, "revert: transient ad-hoc change");
+    await fixture.repoGit.checkout("main");
+    const beforeHead = (await fixture.repoGit.revparse(["HEAD"])).trim();
+
+    const result = await fixture.service.merge(created.runId, "squash", undefined, {
+      cleanup: "worktree+branch",
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      merged: false,
+      strategy: "squash",
+      reason: "nothing_to_merge",
+      reasonCode: "NO_TRACKED_CHANGES",
+      filesChanged: [],
+      conflicts: [],
+      conflictState: "none",
+      cleanupEligible: true,
+      cleanup: {
+        worktreeRemoved: true,
+        branchDeleted: true,
+        pruned: true,
+      },
+    });
+    expect("sha" in result).toBe(false);
+    expect((await fixture.repoGit.revparse(["HEAD"])).trim()).toBe(beforeHead);
+    expect(await pathExists(created.path)).toBe(false);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(false);
+  });
+
   it("returns an error for strategy: 'rebase' with a custom message", async () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "merge-rebase-run" });
@@ -444,6 +480,31 @@ describe("AdhocWorktreeService composite commit", () => {
 });
 
 describe("AdhocWorktreeService composite merge", () => {
+  async function commitChangeInCompositeRepo(
+    service: AdhocWorktreeService,
+    runId: string,
+    repoPath: string,
+    file: string,
+    content: string,
+  ): Promise<void> {
+    await fs.writeFile(path.join(repoPath, file), content, "utf-8");
+    const result = await service.commit(runId, `chore: ${file}`);
+    expect(result.committed).toBe(true);
+  }
+
+  async function commitNetZeroChangeInCompositeRepo(
+    service: AdhocWorktreeService,
+    runId: string,
+    repoPath: string,
+  ): Promise<void> {
+    await fs.writeFile(path.join(repoPath, "tracked.txt"), "transient composite change\n", "utf-8");
+    const transient = await service.commit(runId, "chore: transient composite change");
+    expect(transient.committed).toBe(true);
+    await fs.writeFile(path.join(repoPath, "tracked.txt"), "base\n", "utf-8");
+    const reverted = await service.commit(runId, "revert: transient composite change");
+    expect(reverted.committed).toBe(true);
+  }
+
   it("merges in stable repo ID order, returns per-repo results, and supports cleanup", async () => {
     const fixture = await createCompositeFixture();
     const created = await fixture.service.create({
@@ -471,6 +532,68 @@ describe("AdhocWorktreeService composite merge", () => {
     expect(await pathExists(created.workspacePath!)).toBe(false);
     expect(await branchExists(fixture.apiGit, "hive/adhoc/api/merge-composite")).toBe(false);
     expect(await branchExists(fixture.webGit, "hive/adhoc/web/merge-composite")).toBe(false);
+  });
+
+  it("returns an all-repo composite no-op when every ad-hoc repo has zero tracked diff", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "merge-composite-no-change",
+      repoIds: ["api", "web"],
+    });
+    await commitNetZeroChangeInCompositeRepo(fixture.service, created.runId, created.repos!.api.path);
+    await commitNetZeroChangeInCompositeRepo(fixture.service, created.runId, created.repos!.web.path);
+    const before = {
+      api: (await fixture.apiGit.revparse(["HEAD"])).trim(),
+      web: (await fixture.webGit.revparse(["HEAD"])).trim(),
+    };
+
+    const result = await fixture.service.merge(created.runId, "merge", undefined, {
+      cleanup: "worktree+branch",
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      merged: false,
+      reason: "nothing_to_merge",
+      reasonCode: "NO_TRACKED_CHANGES",
+      filesChanged: [],
+      conflicts: [],
+      conflictState: "none",
+      cleanupEligible: true,
+      cleanup: {
+        worktreeRemoved: true,
+        branchDeleted: true,
+        pruned: true,
+      },
+    });
+    expect("sha" in result).toBe(false);
+    expect(result.repos!.api).toMatchObject({ success: true, merged: false, reasonCode: "NO_TRACKED_CHANGES" });
+    expect(result.repos!.web).toMatchObject({ success: true, merged: false, reasonCode: "NO_TRACKED_CHANGES" });
+    expect((await fixture.apiGit.revparse(["HEAD"])).trim()).toBe(before.api);
+    expect((await fixture.webGit.revparse(["HEAD"])).trim()).toBe(before.web);
+    expect(await pathExists(created.workspacePath!)).toBe(false);
+    expect(await branchExists(fixture.apiGit, "hive/adhoc/api/merge-composite-no-change")).toBe(false);
+    expect(await branchExists(fixture.webGit, "hive/adhoc/web/merge-composite-no-change")).toBe(false);
+  });
+
+  it("aggregates mixed ad-hoc composite no-op and changed repos as a successful actual merge", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "merge-composite-mixed-no-change",
+      repoIds: ["api", "web"],
+    });
+    await commitNetZeroChangeInCompositeRepo(fixture.service, created.runId, created.repos!.api.path);
+    await commitChangeInCompositeRepo(fixture.service, created.runId, created.repos!.web.path, "web-new.txt", "w\n");
+
+    const result = await fixture.service.merge(created.runId, "merge");
+
+    expect(result.success).toBe(true);
+    expect(result.merged).toBe(true);
+    expect(result.reasonCode).toBeUndefined();
+    expect(typeof result.sha).toBe("string");
+    expect(result.filesChanged).toEqual(["web:web-new.txt"]);
+    expect(result.repos!.api).toMatchObject({ success: true, merged: false, reasonCode: "NO_TRACKED_CHANGES" });
+    expect(result.repos!.web.merged).toBe(true);
   });
 
   it("preflights clean target repos and refuses to merge when a source repo is dirty", async () => {

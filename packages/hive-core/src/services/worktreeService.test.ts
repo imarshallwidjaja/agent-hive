@@ -81,6 +81,22 @@ async function createCommittedFixture(): Promise<TestFixture> {
   return fixture;
 }
 
+async function createNetZeroCommittedFixture(): Promise<TestFixture> {
+  const fixture = await createFixture();
+
+  await fs.writeFile(path.join(fixture.worktreePath, "tracked.txt"), "transient task change\n", "utf-8");
+  const transient = await fixture.service.commitChanges(fixture.feature, fixture.task, "chore: transient task change");
+  expect(transient.committed).toBe(true);
+
+  await fs.writeFile(path.join(fixture.worktreePath, "tracked.txt"), "base\n", "utf-8");
+  const reverted = await fixture.service.commitChanges(fixture.feature, fixture.task, "revert: transient task change");
+  expect(reverted.committed).toBe(true);
+
+  await fixture.repoGit.checkout("main");
+
+  return fixture;
+}
+
 async function createConflictingFixture(): Promise<TestFixture> {
   const fixture = await createFixture();
 
@@ -264,6 +280,39 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await pathExists(fixture.worktreePath)).toBe(false);
     expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(false);
   });
+
+  for (const strategy of ['merge', 'squash', 'rebase'] as const) {
+    it(`returns a cleanup-eligible no-op for a net-zero ${strategy} task merge`, async () => {
+      const fixture = await createNetZeroCommittedFixture();
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+      const result = await fixture.service.merge(fixture.feature, fixture.task, strategy, undefined, {
+        cleanup: 'worktree+branch',
+      });
+
+      expect(result).toMatchObject({
+        success: true,
+        merged: false,
+        strategy,
+        reason: 'nothing_to_merge',
+        reasonCode: 'NO_TRACKED_CHANGES',
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none',
+        cleanupEligible: true,
+        taskUpdateRecommended: true,
+        cleanup: {
+          worktreeRemoved: true,
+          branchDeleted: true,
+          pruned: true,
+        },
+      });
+      expect('sha' in result).toBe(false);
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+      expect(await pathExists(fixture.worktreePath)).toBe(false);
+      expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(false);
+    });
+  }
 
   it('blocks direct branch deletion when the task branch has unmerged commits', async () => {
     const fixture = await createCommittedFixture();
@@ -846,6 +895,18 @@ describe("WorktreeService composite merge aggregation", () => {
     await g.commit(`chore: ${repoId} ${file}`);
   }
 
+  async function commitNetZeroChangeInRepo(fx: CompositeFixture, repoId: string): Promise<void> {
+    const wt = await fx.service.get(fx.feature, fx.task);
+    const repoWt = wt!.repos![repoId].path;
+    const g = simpleGit(repoWt);
+    await fs.writeFile(path.join(repoWt, 'README.md'), `${repoId} transient\n`, 'utf-8');
+    await g.add('-A');
+    await g.commit(`chore: ${repoId} transient`);
+    await fs.writeFile(path.join(repoWt, 'README.md'), `# ${repoId}\n`, 'utf-8');
+    await g.add('-A');
+    await g.commit(`revert: ${repoId} transient`);
+  }
+
   it("merges a single-repo composite task into the source repo's current branch", async () => {
     const fx = await createCompositeFixture({ repoIds: ['api'] });
     await fx.service.create(fx.feature, fx.task);
@@ -1162,6 +1223,88 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.cleanup.worktreeRemoved).toBe(true);
     expect(result.cleanup.branchDeleted).toBe(false);
     expect(result.cleanup.pruned).toBe(true);
+  });
+
+  it('returns an all-repo composite no-op when every repo has zero tracked diff', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await commitNetZeroChangeInRepo(fx, 'api');
+    await commitNetZeroChangeInRepo(fx, 'web-ui');
+    const before = {
+      api: (await fx.repos['api'].git.revparse(['HEAD'])).trim(),
+      web: (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim(),
+    };
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', undefined, {
+      cleanup: 'worktree+branch',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      merged: false,
+      reason: 'nothing_to_merge',
+      reasonCode: 'NO_TRACKED_CHANGES',
+      filesChanged: [],
+      conflicts: [],
+      conflictState: 'none',
+      cleanupEligible: true,
+      taskUpdateRecommended: true,
+      cleanup: {
+        worktreeRemoved: true,
+        branchDeleted: true,
+        pruned: true,
+      },
+    });
+    expect('sha' in result).toBe(false);
+    expect(result.repos!['api']).toMatchObject({ success: true, merged: false, reasonCode: 'NO_TRACKED_CHANGES' });
+    expect(result.repos!['web-ui']).toMatchObject({ success: true, merged: false, reasonCode: 'NO_TRACKED_CHANGES' });
+    expect((await fx.repos['api'].git.revparse(['HEAD'])).trim()).toBe(before.api);
+    expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(before.web);
+    expect(await pathExists(wt.path)).toBe(false);
+    expect(await branchExists(fx.repos['api'].git, `hive/api/${fx.feature}/${fx.task}`)).toBe(false);
+    expect(await branchExists(fx.repos['web-ui'].git, `hive/web-ui/${fx.feature}/${fx.task}`)).toBe(false);
+  });
+
+  it('aggregates mixed composite no-op and changed repos as a successful actual merge', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitNetZeroChangeInRepo(fx, 'api');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(true);
+    expect(result.merged).toBe(true);
+    expect(result.reasonCode).toBeUndefined();
+    expect(typeof result.sha).toBe('string');
+    expect(result.filesChanged).toEqual(['web-ui:w.txt']);
+    expect(result.repos!['api']).toMatchObject({ success: true, merged: false, reasonCode: 'NO_TRACKED_CHANGES' });
+    expect(result.repos!['web-ui'].merged).toBe(true);
+  });
+
+  it('does not mark a composite failure partial after only no-op repos have succeeded', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitNetZeroChangeInRepo(fx, 'api');
+
+    const wt = await fx.service.get(fx.feature, fx.task);
+    await fs.writeFile(path.join(wt!.repos!['web-ui'].path, 'README.md'), 'task-side\n', 'utf-8');
+    const wg = simpleGit(wt!.repos!['web-ui'].path);
+    await wg.add('-A');
+    await wg.commit('chore: web-ui task side');
+
+    await fs.writeFile(path.join(fx.repos['web-ui'].path, 'README.md'), 'main-side\n', 'utf-8');
+    await fx.repos['web-ui'].git.add('-A');
+    await fx.repos['web-ui'].git.commit('chore: web-ui main side');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge');
+
+    expect(result.success).toBe(false);
+    expect(result.merged).toBe(false);
+    expect(result.partial).toBe(false);
+    expect(result.repos!['api']).toMatchObject({ success: true, merged: false, reasonCode: 'NO_TRACKED_CHANGES' });
+    expect(result.repos!['web-ui'].success).toBe(false);
+    expect(result.conflicts).toContain('web-ui:README.md');
   });
 
   it("does not report aggregate merged=true when a per-repo result is success=true but merged=false", async () => {

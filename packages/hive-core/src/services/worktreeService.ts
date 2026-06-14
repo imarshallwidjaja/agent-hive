@@ -76,6 +76,10 @@ export interface MergeResult {
   merged: boolean;
   strategy: 'merge' | 'squash' | 'rebase';
   sha?: string;
+  reason?: string;
+  reasonCode?: 'NO_TRACKED_CHANGES';
+  cleanupEligible?: boolean;
+  taskUpdateRecommended?: boolean;
   filesChanged: string[];
   conflicts: string[];
   conflictState: 'none' | 'aborted' | 'preserved';
@@ -99,6 +103,10 @@ export interface RepoMergeResult {
   success: boolean;
   merged: boolean;
   sha?: string;
+  reason?: string;
+  reasonCode?: 'NO_TRACKED_CHANGES';
+  cleanupEligible?: boolean;
+  taskUpdateRecommended?: boolean;
   filesChanged: string[];
   conflicts: string[];
   conflictState: 'none' | 'aborted' | 'preserved';
@@ -1177,7 +1185,11 @@ export class WorktreeService {
       success: repoResult.success,
       merged: repoResult.merged,
       strategy,
-      sha: repoResult.sha,
+      ...(repoResult.sha !== undefined ? { sha: repoResult.sha } : {}),
+      ...(repoResult.reason !== undefined ? { reason: repoResult.reason } : {}),
+      ...(repoResult.reasonCode !== undefined ? { reasonCode: repoResult.reasonCode } : {}),
+      ...(repoResult.cleanupEligible !== undefined ? { cleanupEligible: repoResult.cleanupEligible } : {}),
+      ...(repoResult.taskUpdateRecommended !== undefined ? { taskUpdateRecommended: repoResult.taskUpdateRecommended } : {}),
       filesChanged: repoResult.filesChanged,
       conflicts: repoResult.conflicts,
       conflictState: repoResult.conflictState,
@@ -1276,7 +1288,8 @@ export class WorktreeService {
     const repos: Record<string, RepoMergeResult> = {};
     const flattenedFiles: string[] = [];
     const flattenedConflicts: string[] = [];
-    let anySuccess = false;
+    let anyActualMerge = false;
+    let firstActualSha: string | undefined;
     let stoppedRepoId: string | undefined;
     let firstError: string | undefined;
     let lastConflictState: 'none' | 'aborted' | 'preserved' = 'none';
@@ -1296,24 +1309,35 @@ export class WorktreeService {
         cleanupFn: async () => ({ worktreeRemoved: false, branchDeleted: false, pruned: false }),
       });
       repos[repoId] = repoResult;
-      for (const f of repoResult.filesChanged) flattenedFiles.push(`${repoId}:${f}`);
+      if (repoResult.merged) {
+        for (const f of repoResult.filesChanged) flattenedFiles.push(`${repoId}:${f}`);
+      }
       for (const c of repoResult.conflicts) flattenedConflicts.push(`${repoId}:${c}`);
 
-      // Stop immediately on per-repo failure (success=false) OR a "successful"
-      // call that did not actually merge (success=true, merged=false).
-      // The latter must not be silently aggregated as a clean composite merge.
-      if (!repoResult.success || !repoResult.merged) {
+      if (!repoResult.success) {
         stoppedRepoId = repoId;
-        firstError = `${repoId}: ${repoResult.error ?? (repoResult.success ? 'repo reported merged=false' : 'merge failed')}`;
+        firstError = `${repoId}: ${repoResult.error ?? 'merge failed'}`;
         lastConflictState = repoResult.conflictState;
         break;
       }
-      anySuccess = true;
+
+      if (!repoResult.merged) {
+        if (repoResult.reasonCode === 'NO_TRACKED_CHANGES') {
+          continue;
+        }
+        stoppedRepoId = repoId;
+        firstError = `${repoId}: ${repoResult.error ?? 'repo reported merged=false'}`;
+        lastConflictState = repoResult.conflictState;
+        break;
+      }
+
+      anyActualMerge = true;
+      firstActualSha ??= repoResult.sha;
     }
 
     if (stoppedRepoId !== undefined) {
       // Stop: do not rollback earlier successful repo merges
-      const partial = anySuccess;
+      const partial = anyActualMerge;
       return {
         success: false,
         merged: false,
@@ -1365,14 +1389,28 @@ export class WorktreeService {
       };
     }
 
-    // Top-level sha = first repo (stable order) result sha
-    const firstSha = repos[repoIds[0]].sha;
+    if (!anyActualMerge) {
+      return {
+        success: true,
+        merged: false,
+        strategy,
+        reason: 'nothing_to_merge',
+        reasonCode: 'NO_TRACKED_CHANGES',
+        cleanupEligible: true,
+        taskUpdateRecommended: true,
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none',
+        cleanup,
+        repos,
+      };
+    }
 
     return {
       success: true,
       merged: true,
       strategy,
-      sha: firstSha,
+      ...(firstActualSha !== undefined ? { sha: firstActualSha } : {}),
       filesChanged: flattenedFiles,
       conflicts: flattenedConflicts,
       conflictState: 'none',
@@ -1482,11 +1520,27 @@ export class WorktreeService {
 
       const currentBranch = branches.current;
 
-      const diffStat = await git.diff([`${currentBranch}...${branchName}`, "--stat"]);
-      filesChanged = diffStat
+      const diffNames = await git.diff([`${currentBranch}...${branchName}`, "--name-only"]);
+      filesChanged = diffNames
         .split("\n")
-        .filter(l => l.trim() && l.includes("|"))
-        .map(l => l.split("|")[0].trim());
+        .map(l => l.trim())
+        .filter(Boolean);
+
+      if (filesChanged.length === 0) {
+        const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
+        return {
+          success: true,
+          merged: false,
+          reason: 'nothing_to_merge',
+          reasonCode: 'NO_TRACKED_CHANGES',
+          cleanupEligible: true,
+          taskUpdateRecommended: true,
+          filesChanged: [],
+          conflicts: [],
+          conflictState: 'none',
+          cleanup,
+        };
+      }
 
       if (strategy === "squash") {
         await git.raw(["merge", "--squash", branchName]);
