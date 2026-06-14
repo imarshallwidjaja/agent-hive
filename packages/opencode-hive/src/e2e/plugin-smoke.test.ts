@@ -557,7 +557,7 @@ Do it
     expect(execStart.instructions).not.toContain("Read the prompt file");
   });
 
-  it("returns env-gated background task call metadata for feature worktree launches", async () => {
+  it("returns env-gated background task call metadata without pre-registering a blocking escape", async () => {
     const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "1";
 
@@ -611,32 +611,7 @@ Do it
       expect(result.instructions).toContain("next meaningful step depends on the worker");
 
       const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
-      const board = JSON.parse(fs.readFileSync(boardPath, "utf-8")) as {
-        pendingLaunches?: Array<{
-          parentSessionId?: string;
-          expectedDescription?: string;
-          expectedPrompt?: string;
-          scope?: { feature?: string; task?: string; projectRoot?: string };
-          ownership?: { worktreePath?: string; workerPromptPath?: string; branch?: string };
-        }>;
-      };
-
-      expect(board.pendingLaunches).toHaveLength(1);
-      expect(board.pendingLaunches?.[0]).toMatchObject({
-        parentSessionId: "sess_background_feature_launch",
-        expectedDescription: "Hive: 01-first-task",
-        expectedPrompt: result.taskToolCall?.prompt,
-        scope: {
-          feature: "background-feature",
-          task: FIRST_TASK,
-          projectRoot: testRoot,
-        },
-        ownership: {
-          workerPromptPath: ".hive/features/01_background-feature/tasks/01-first-task/worker-prompt.md",
-        },
-      });
-      expect(board.pendingLaunches?.[0]?.ownership?.worktreePath).toContain(FIRST_TASK);
-      expect(board.pendingLaunches?.[0]?.ownership?.branch).toContain(FIRST_TASK);
+      expect(fs.existsSync(boardPath)).toBe(false);
     } finally {
       if (previousBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;

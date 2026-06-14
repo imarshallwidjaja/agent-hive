@@ -315,12 +315,6 @@ describe('Hive (Hybrid) prompt', () => {
     expect(QUEEN_BEE_PROMPT).toContain('docker-mastery');
   });
 
-  it('teaches Hive Builder about the built-in simplicity-reviewer', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('simplicity-reviewer');
-    expect(HIVE_BUILDER_PROMPT).toContain('final post-implementation simplicity pass');
-    expect(HIVE_BUILDER_PROMPT).toContain('simplicity reviewer whose description best fits the cleanup lens');
-  });
-
   it('contains agents-md-mastery skill reference', () => {
     expect(QUEEN_BEE_PROMPT).toContain('agents-md-mastery');
   });

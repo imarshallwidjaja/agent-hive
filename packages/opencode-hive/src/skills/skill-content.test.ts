@@ -102,10 +102,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Execution and Forager lanes are managed/heavy background lanes');
     expect(skill!.template).toContain('unresolved-lane checks before dependent decisions');
     expect(skill!.template).toContain('Risk-Tier Review Routing');
-    expect(skill!.template).toContain('public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior');
-    expect(skill!.template).toContain('bounded docs/tests');
-    expect(skill!.template).toContain('verification-only gates');
-    expect(skill!.template).toContain('named high-risk concern');
+    expect(skill!.template).toContain('Post-Batch Code Review');
+    expect(skill!.template).toContain('recommended review path');
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {

@@ -779,29 +779,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       prompt: taskToolPrompt,
     };
     const backgroundEnabled = isBackgroundSubagentsExperimentEnabled();
-    const parentSessionId = (toolContext as ToolContext | undefined)?.sessionID;
 
-    if (backgroundEnabled && parentSessionId) {
+    if (backgroundEnabled) {
       bindFeatureSession(feature, toolContext, { taskFolder: task, workerPromptPath: relativePromptPath });
-      backgroundJobService.registerPendingLaunch({
-        parentSessionId,
-        expectedDescription: backgroundTaskCall.description,
-        expectedPrompt: backgroundTaskCall.prompt,
-        agentName: agent,
-        scope: {
-          projectRoot: directory,
-          parentSessionId,
-          primaryAgent: (toolContext as ToolContext | undefined)?.agent,
-          feature,
-          task,
-        },
-        ownership: {
-          worktreePath: workspacePath,
-          branch: worktree.branch,
-          workerPromptPath: relativePromptPath,
-          repoIds: status?.repoIds ?? [],
-        },
-      });
     }
 
     const taskToolInstructions = `## Delegation Required
