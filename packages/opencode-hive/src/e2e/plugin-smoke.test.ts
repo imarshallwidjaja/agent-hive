@@ -11,7 +11,7 @@ import { FORAGER_BEE_PROMPT } from "../agents/forager";
 import { HIVE_BUILDER_PROMPT } from "../agents/hive-builder";
 import { HIVE_SYSTEM_PROMPT } from "../hooks/system-hook";
 import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
-import { HIVE_COMMANDS, type HiveCommandKey } from '../commands/registry.js';
+import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
@@ -26,7 +26,6 @@ type ToolContext = {
 
 const EXPECTED_TOOLS = [...HIVE_TOOL_NAMES];
 
-const EXPECTED_COMMANDS = HIVE_COMMANDS.map(({ name, description }) => ({ name, description }));
 const removedHiveSkillTool = ['hive', 'skill'].join('_');
 
 const UNSUPPORTED_RUNTIME_HOOKS = [
@@ -397,11 +396,8 @@ Do it
 
     const expectedManifest = buildPluginManifest();
 
-    expect(pluginJson.version).toBe(expectedManifest.version);
-    expect(pluginJson.commands).toEqual([...EXPECTED_COMMANDS]);
-    expect(pluginJson.tools).not.toContain(removedHiveSkillTool);
-    expect(pluginJson.tools).toEqual([...EXPECTED_TOOLS]);
     expect(pluginJson).toEqual(expectedManifest);
+    expect(pluginJson.tools).not.toContain(removedHiveSkillTool);
     expect(pluginJson.commands.map((entry) => entry.name)).not.toContain('/hive');
     expect(new Set(pluginJson.commands.map((entry) => entry.name)).size).toBe(pluginJson.commands.length);
   });
