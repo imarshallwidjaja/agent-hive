@@ -254,9 +254,7 @@ Hive reads user/session policy from `~/.config/opencode/agent_hive.json`, then o
 2. `<project>/.opencode/agent_hive.json` (legacy fallback, used only when the new file is missing)
 3. defaults for anything not set globally or by the project overlay
 
-Project config only affects `sandbox`, `dockerImage`, `persistentContainers`, and `repositories`. Agent routing, custom agents, council groups, disabled MCPs, disabled skills, and hook cadence are global user settings. If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Hive warns, skips the legacy project file, and uses the global config and defaults.
-
-You can customize agent models, variants, council groups, disabled skills, and disabled MCP servers in the global config.
+Project config only affects `sandbox`, `dockerImage`, `persistentContainers`, and `repositories`. Agent models, variants, routing, custom agents, council groups, disabled MCPs, disabled skills, and hook cadence are global user settings. If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Hive warns, skips the legacy project file, and uses the global config and defaults.
 
 ### Council config
 
@@ -271,7 +269,7 @@ Built-in council defaults are read-only and portable:
 | `minimal-change` | Smallest correct change and cleanup lens. | `scout-researcher`, `simplicity-reviewer`, `code-reviewer` |
 | `documents` | Documentation and prose-oriented review. | `scout-researcher`, `code-reviewer`, `plan-reviewer` |
 
-Default council limits exclude mutable orchestration or implementation seats: `hive-master`, `swarm-orchestrator`, `forager-worker`, `hive-builder`, and `hive-helper`. Member names can be built-in stock agents or configured custom agents. Custom agents derived from mutable bases, including `forager-worker`, are skipped by default with warnings.
+The default `excludedAgents` list excludes mutable orchestration or implementation seats: `hive-master`, `swarm-orchestrator`, `forager-worker`, `hive-builder`, and `hive-helper`. Member names can be built-in stock agents or configured custom agents. Custom agents derived from mutable bases, including `forager-worker`, are skipped by default with warnings.
 
 Partial global overrides merge with the built-in defaults. Declaring a group replaces that group declaration and leaves omitted default groups intact:
 
@@ -313,7 +311,7 @@ Create `.hive/agent-hive.json`:
 }
 ```
 
-### Disable Skills or MCPs
+### Global-only: Disable Skills or MCPs
 
 ```json
 {
