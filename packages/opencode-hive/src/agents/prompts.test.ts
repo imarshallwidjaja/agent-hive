@@ -7,7 +7,7 @@ import { SWARM_BEE_PROMPT } from './swarm';
 import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
-import { HIVE_BUILDER_PROMPT } from './hive-builder';
+import { HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL, HIVE_BUILDER_PROMPT } from './hive-builder';
 import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
 import { CODE_REVIEWER_PROMPT } from './code-reviewer';
 import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
@@ -1127,58 +1127,58 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('omit it instead of sending an empty string');
   });
 
-  it('contains background-first scheduler policy', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('background-first scheduler mode');
-    expect(HIVE_BUILDER_PROMPT).toContain('background-delegation');
-    expect(HIVE_BUILDER_PROMPT).toContain('look for independent background lanes');
-    expect(HIVE_BUILDER_PROMPT).toContain('foreground/blocking escape');
-    expect(HIVE_BUILDER_PROMPT).toContain('task_id');
-    expect(HIVE_BUILDER_PROMPT).toContain('native completion notification');
+  const BUILDER_GATE_CLOSED_LEAK_STRINGS = [
+    'specialist-default',
+    'delegate-first',
+    'task({ background: true',
+    'hive_background_status',
+    '## Background Delegation',
+
+    'background-first scheduler mode',
+    'background-delegation',
+    'look for independent background lanes',
+    'not the default implementation worker',
+    'Gate open',
+    'Gate closed',
+  ] as const;
+
+  it('keeps gate-open scheduling language out of the base Hive Builder prompt', () => {
+    for (const leaked of BUILDER_GATE_CLOSED_LEAK_STRINGS) {
+      expect(HIVE_BUILDER_PROMPT).not.toContain(leaked);
+    }
+    expect(HIVE_BUILDER_PROMPT).toContain('env-gated appendix');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('## Background-First Orchestration');
     expect(HIVE_BUILDER_PROMPT).not.toContain('task_status');
   });
 
-  it('scopes Hive Builder behavior to gate-closed ad-hoc execution and gate-open non-feature orchestration', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('Gate closed');
-    expect(HIVE_BUILDER_PROMPT).toContain('Gate open');
-    expect(HIVE_BUILDER_PROMPT).toContain('delegate-first non-feature orchestration');
-    expect(HIVE_BUILDER_PROMPT).toContain('not the default implementation worker');
-  });
-
-  it('requires complete context packets and delegation-kind classification for ad-hoc delegation', () => {
+  it('requires complete context packets in the base prompt; delegation kinds live on the gate-open rail', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('context packet');
     expect(HIVE_BUILDER_PROMPT).toContain('prior failures');
     expect(HIVE_BUILDER_PROMPT).toContain('run IDs');
     expect(HIVE_BUILDER_PROMPT).toContain('verification requirements');
-    expect(HIVE_BUILDER_PROMPT).toContain('Exploratory/read-only');
-    expect(HIVE_BUILDER_PROMPT).toContain('Writing/change');
-    expect(HIVE_BUILDER_PROMPT).toContain('- **Review**: lightweight background lane');
-    expect(HIVE_BUILDER_PROMPT).toContain('- **Execution**: managed ad-hoc lifecycle');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('Exploratory/read-only');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Exploratory/read-only');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('- **Review**:');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('do not require an ad-hoc worktree');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('- **Execution**:');
   });
 
-  it('requires lane tracking, unresolved-lane checks, and prompt-level write-conflict boundaries', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('todowrite');
-    expect(HIVE_BUILDER_PROMPT).toContain('task ID/state');
-    expect(HIVE_BUILDER_PROMPT).toContain('unresolved lanes');
-    expect(HIVE_BUILDER_PROMPT).toContain('Before merge, cleanup, final reporting');
+  it('requires write-conflict boundaries in the base prompt; lane tracking on the gate-open rail', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('one active writing/change lane per owned path/module');
     expect(HIVE_BUILDER_PROMPT).toContain('Assign file/path boundaries');
     expect(HIVE_BUILDER_PROMPT).toContain('auto-abort conflicts by default');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('todowrite');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('todowrite');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('unresolved lanes');
   });
 
-  it('routes verification and durable execution decisions through the gate-open orchestrator contract', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('Workers verify their own changes before commit');
-    expect(HIVE_BUILDER_PROMPT).toContain('delegates diff/deep verification');
-    expect(HIVE_BUILDER_PROMPT).toContain('cheap integration checks');
-    expect(HIVE_BUILDER_PROMPT).toContain("hive_context_write({ name: 'execution-decisions'");
-    expect(HIVE_BUILDER_PROMPT).toContain('non-trivial orchestration');
-    expect(HIVE_BUILDER_PROMPT).toContain('Skip durable context for trivial single-lane ad-hoc work');
-  });
-
-  it('keeps primary prompts aligned on scheduler-first escape reasons', () => {
-    for (const prompt of [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, HIVE_BUILDER_PROMPT]) {
+  it('keeps Hive, Architect, and Swarm aligned on scheduler-first escape reasons without leaking into Builder base', () => {
+    for (const prompt of [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT]) {
       expect(prompt).toContain('background-first scheduler mode');
       expect(prompt).toContain('dependency, risk, simplicity, user interaction, or ownership conflict');
     }
+    expect(HIVE_BUILDER_PROMPT).not.toContain('background-first scheduler mode');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('background-first scheduler mode');
   });
 
   it('separates subagent concurrency from foreground wait mode', () => {
@@ -1204,6 +1204,29 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
   it('does NOT contain stale background wrappers', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_background_task');
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_background_output');
+  });
+
+  it('does not embed the gate-open delegation rail in the base prompt', () => {
+    expect(HIVE_BUILDER_PROMPT).not.toContain('## Hive Builder Gate-Open Delegation');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('Delegate by default');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('state the escape reason before direct implementation');
+  });
+
+  it('defines a Builder gate-open rail with specialist-default, direct escapes, and ad-hoc-not-DAG language', () => {
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('## Hive Builder Gate-Open Delegation');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('## Background-First Orchestration');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('ad-hoc orchestrator');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('not the default implementation worker');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('specialist-default');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('delegate-first');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('state the escape reason before direct implementation');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('coordination/setup');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_adhoc_worktree');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('native `task()`');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('task({ background: true');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_background_status');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Do not default to');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('Depends on:');
   });
 });
 

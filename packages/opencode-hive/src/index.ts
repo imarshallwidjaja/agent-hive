@@ -10,7 +10,7 @@ import { SWARM_BEE_PROMPT } from './agents/swarm.js';
 import { SCOUT_BEE_PROMPT } from './agents/scout.js';
 import { FORAGER_BEE_PROMPT } from './agents/forager.js';
 import { HIVE_HELPER_PROMPT } from './agents/hive-helper.js';
-import { HIVE_BUILDER_PROMPT } from './agents/hive-builder.js';
+import { HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL, HIVE_BUILDER_PROMPT } from './agents/hive-builder.js';
 import { PLAN_REVIEWER_PROMPT } from './agents/plan-reviewer.js';
 import { CODE_REVIEWER_PROMPT } from './agents/code-reviewer.js';
 import { SIMPLICITY_REVIEWER_PROMPT } from './agents/simplicity-reviewer.js';
@@ -2735,7 +2735,8 @@ Do not choose a custom subagent only because the task is important, complex, or 
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadSkillsAppendix + builderBackgroundDelegationAppendix + customSubagentAppendix;
+      const builderGateOpenDelegationRailAppendix = builderBackgroundDelegationAppendix ? HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL : '';
+      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadSkillsAppendix + builderBackgroundDelegationAppendix + builderGateOpenDelegationRailAppendix + customSubagentAppendix;
       runtimeAgentPrompts.set('hive-builder', builderPrompt);
       const builderConfig = {
         model: builderUserConfig.model,

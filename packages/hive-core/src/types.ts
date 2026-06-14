@@ -532,7 +532,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
     'hive-builder': {
       model: DEFAULT_AGENT_MODELS['hive-builder'],
       temperature: 0.4,
-      autoLoadSkills: ['verification', 'dispatching-parallel-agents', 'parallel-exploration'],
+      autoLoadSkills: ['verification'],
     },
   },
 };

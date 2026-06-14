@@ -34,11 +34,7 @@ describe("hive-core", () => {
     expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']).toBeDefined();
     expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.temperature).toBe(0.4);
     expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.model).toBe('github-copilot/gpt-5.2-codex');
-    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.autoLoadSkills).toEqual([
-      'verification',
-      'dispatching-parallel-agents',
-      'parallel-exploration',
-    ]);
+    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.autoLoadSkills).toEqual(['verification']);
   });
 
   it("includes hive-builder and builder in CUSTOM_AGENT_RESERVED_NAMES", () => {

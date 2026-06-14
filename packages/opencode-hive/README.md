@@ -389,7 +389,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 |-------|------------------------|
 | `hive-master` | `parallel-exploration` |
 | `forager-worker` | `test-driven-development`, `verification` |
-| `hive-builder` | `verification`, `dispatching-parallel-agents`, `parallel-exploration` |
+| `hive-builder` | `verification` |
 | `hive-helper` | (none) |
 | `scout-researcher` | (none) |
 | `architect-planner` | `parallel-exploration` |
@@ -398,7 +398,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | `code-reviewer` | (none) |
 | `approach-advisor` | (none) |
 
-`background-delegation` is not a default `autoLoadSkills` entry for any agent. For Hive Builder, it is advertised by env-gated compact scheduler guidance only. The env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends an on-demand reference to primary agent prompts without adding it to the default autoload set.
+`background-delegation` is not a default `autoLoadSkills` entry for any agent. For Hive Builder, background-first delegation and the Builder-specific specialist-default rail are advertised by env-gated compact scheduler guidance only. The env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends the on-demand guidance to primary agent prompts without adding it to the default autoload set.
 
 ### Per-Agent Model Variants
 

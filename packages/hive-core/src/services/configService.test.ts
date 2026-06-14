@@ -478,11 +478,7 @@ describe("ConfigService defaults", () => {
 
     expect(config.model).toBe("github-copilot/gpt-5.2-codex");
     expect(config.temperature).toBe(0.4);
-    expect(config.autoLoadSkills).toEqual([
-      "verification",
-      "dispatching-parallel-agents",
-      "parallel-exploration",
-    ]);
+    expect(config.autoLoadSkills).toEqual(["verification"]);
   });
 
   it("deep-merges hive-builder overrides with defaults", () => {
@@ -507,14 +503,10 @@ describe("ConfigService defaults", () => {
     expect(config.temperature).toBe(0.6);
     expect(config.variant).toBe("high");
     expect(config.model).toBe("github-copilot/gpt-5.2-codex");
-    expect(config.autoLoadSkills).toEqual([
-      "verification",
-      "dispatching-parallel-agents",
-      "parallel-exploration",
-    ]);
+    expect(config.autoLoadSkills).toEqual(["verification"]);
   });
 
-  it("hive-builder is not treated as planner-only for autoLoadSkills", () => {
+  it("hive-builder merges safe default autoLoadSkills with user overrides", () => {
     const service = new ConfigService();
     const configPath = service.getPath();
 
@@ -536,10 +528,7 @@ describe("ConfigService defaults", () => {
 
     const config = service.getAgentConfig("hive-builder");
     // Non-planner agents get their defaults merged with user overrides
-    expect(config.autoLoadSkills).toContain("verification");
-    expect(config.autoLoadSkills).toContain("dispatching-parallel-agents");
-    expect(config.autoLoadSkills).toContain("parallel-exploration");
-    expect(config.autoLoadSkills).toContain("custom-skill");
+    expect(config.autoLoadSkills).toEqual(["verification", "custom-skill"]);
   });
 
   it("skips hive-builder reserved custom agent name", () => {

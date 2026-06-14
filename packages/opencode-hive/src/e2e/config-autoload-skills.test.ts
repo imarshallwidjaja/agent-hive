@@ -213,7 +213,7 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(fs.existsSync(path.join(generatedPath!, 'background-delegation', 'SKILL.md'))).toBe(true);
   });
 
-  it('advertises background-first scheduler guidance only to hive-master when the specific env is enabled in unified mode', async () => {
+  it('advertises background-first scheduler guidance to hive-master and hive-builder when the specific env is enabled in unified mode', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
@@ -263,6 +263,8 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(builderPrompt).toContain('task({ background: true');
     expect(builderPrompt).toContain('native completion notification');
     expect(builderPrompt).not.toContain('task_status');
+    expect(builderPrompt).toContain('## Hive Builder Gate-Open Delegation');
+    expect(builderPrompt).toContain('specialist-default');
     for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, codeReviewerPrompt, customPrompt]) {
       expect(prompt).not.toContain('skill({ name: "background-delegation" })');
       expect(prompt).not.toContain('task({ background: true');
@@ -284,6 +286,10 @@ describe('config hook autoLoadSkills guidance', () => {
     const codeReviewerPrompt = getAgentPrompt(opencodeConfig, 'code-reviewer');
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
+    expect(builderPrompt).toContain('## Hive Builder Gate-Open Delegation');
+    for (const prompt of [architectPrompt, swarmPrompt]) {
+      expect(prompt).not.toContain('## Hive Builder Gate-Open Delegation');
+    }
     for (const prompt of [architectPrompt, swarmPrompt, builderPrompt]) {
       expect(prompt).toContain('## Background-First Orchestration');
       expect(prompt).toContain('skill({ name: "background-delegation" })');
@@ -314,11 +320,23 @@ describe('config hook autoLoadSkills guidance', () => {
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
     const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
 
+    const gateClosedLeakStrings = [
+      'specialist-default',
+      'delegate-first',
+      'task({ background: true',
+      'hive_background_status',
+      '## Background Delegation',
+    ] as const;
+
     expect(hiveMasterPrompt).not.toContain('## Background-First Orchestration');
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
     expect(hiveMasterPrompt).not.toContain('task({ background: true');
-    expect(builderPrompt).not.toContain('## Background-First Orchestration');
+    expect(builderPrompt).not.toContain('\n\n## Background-First Orchestration\n');
     expect(builderPrompt).not.toContain('skill({ name: "background-delegation" })');
+    expect(builderPrompt).not.toContain('## Hive Builder Gate-Open Delegation');
+    for (const leaked of gateClosedLeakStrings) {
+      expect(builderPrompt).not.toContain(leaked);
+    }
   });
 
   it('does not advertise background delegation guidance when env is enabled but the Hive bundle is disabled', async () => {
@@ -335,8 +353,10 @@ describe('config hook autoLoadSkills guidance', () => {
 
     expect(hiveMasterPrompt).not.toContain('## Background-First Orchestration');
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
-    expect(builderPrompt).not.toContain('## Background-First Orchestration');
+    expect(builderPrompt).not.toContain('\n\n## Background-First Orchestration\n');
     expect(builderPrompt).not.toContain('skill({ name: "background-delegation" })');
+    expect(builderPrompt).not.toContain('## Hive Builder Gate-Open Delegation');
+    expect(builderPrompt).not.toContain('specialist-default');
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'background-delegation'))).toBe(false);
     expect(warnings).toContainEqual(
@@ -378,9 +398,11 @@ describe('config hook autoLoadSkills guidance', () => {
 
     const opencodeConfig = await applyConfigHook(testRoot);
     const hiveMasterPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false });
+    const builderPrompt = await renderRuntimeSystemPrompt(testRoot, 'hive-builder');
     const scoutPrompt = getAgentPrompt(opencodeConfig, 'scout-researcher');
     const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
     const hiveMasterGuidance = getAutoLoadSkillsGuidance(hiveMasterPrompt);
+    const builderGuidance = getAutoLoadSkillsGuidance(builderPrompt);
     const scoutGuidance = getAutoLoadSkillsGuidance(scoutPrompt);
     const foragerGuidance = getAutoLoadSkillsGuidance(foragerPrompt);
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
@@ -390,6 +412,12 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(hiveMasterPrompt).toContain('## Configured Auto-Load Skills');
     expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
+    expect(builderGuidance).toContain(skillToolCall('verification'));
+    expect(builderGuidance).not.toContain(skillToolCall('dispatching-parallel-agents'));
+    expect(builderGuidance).not.toContain(skillToolCall('parallel-exploration'));
+    expect(builderPrompt).not.toContain('hive_worktree_start');
+    expect(builderPrompt).not.toContain('hive_tasks_sync');
+    expect(builderPrompt).not.toContain('runnable tasks');
     expect(scoutGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(scoutPrompt).not.toContain(parallelExplorationSkill.template);
     expect(foragerGuidance).toContain(skillToolCall('test-driven-development'));
