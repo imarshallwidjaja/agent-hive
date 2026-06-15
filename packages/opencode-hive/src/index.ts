@@ -220,7 +220,8 @@ import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
 import { HIVE_COMMANDS, type HiveCommandKey } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
-import { isReadOnlyCouncilEligibleBase } from './commands/council.js';
+import { COMMAND_BEHAVIOR } from './commands/command-bodies.js';
+import { isReadOnlyCouncilEligibleBase, resolveCouncilMembers } from './commands/council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
 import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
 import { createBackgroundTools } from './background/backgroundTools.js';
@@ -309,7 +310,18 @@ const plugin: Plugin = async (ctx) => {
     const groups = Object.entries(context.council.groups ?? {});
     const groupSummary = groups.length > 0
       ? groups
-          .map(([name, group]) => `- ${name}: ${group.description ?? 'No description'}; members: ${group.members.join(', ')}`)
+          .map(([name, group]) => {
+            const resolution = resolveCouncilMembers(context.council, context.agents, name);
+            const usableMembers = resolution.members.length > 0
+              ? resolution.members.map((member) => `${member.name} (${member.baseAgent})`).join(', ')
+              : 'none usable';
+            const warnings = resolution.warnings.length > 0
+              ? `; warnings: ${resolution.warnings.join(' | ')}`
+              : '';
+            const error = resolution.error ? `; error: ${resolution.error}` : '';
+
+            return `- ${name}: ${group.description ?? 'No description'}; usable members: ${usableMembers}${warnings}${error}`;
+          })
           .join('\n')
       : '- none configured';
 
@@ -325,16 +337,20 @@ const plugin: Plugin = async (ctx) => {
         '- Parse Runtime arguments at execution time, after OpenCode substitutes $ARGUMENTS.',
         '- Only --group <group> selects a non-default group; otherwise use the default group.',
         '- Treat all remaining arguments as the directive, or use the current operator request when no directive is provided.',
-        '- Run a read-only council with the resolved councillors in the displayed group order.',
-        '- Synthesize a recommendation with consensus, dissent, evidence gaps, and next action.',
+        '- If the selected group has no usable councillors, stop and report the resolver warnings instead of running council.',
+        '- When the selected group has usable councillors, run a read-only council with the resolved councillors in the displayed group order.',
+        '- When council runs, synthesize a recommendation with consensus, dissent, evidence gaps, and next action.',
       ].join('\n'),
       [
         'Do not:',
         '- Do not treat the literal $ARGUMENTS token as the group or directive before OpenCode substitution.',
         '- Do not infer a group from the first free-text token; only --group selects a non-default group.',
+        '- Do not add unavailable, excluded, template-placeholder, mutable-base, or duplicate councillors back into the run.',
         '- Do not let councillors edit files, create plans, call planning write tools, create worktrees, or commit.',
       ].join('\n'),
-      'Output expected:\n- Council synthesis with recommendation, dissent, evidence quality, assumptions, and follow-up actions.',
+      'Output expected:\n- When usable councillors are resolved: council synthesis with recommendation, dissent, evidence quality, assumptions, and follow-up actions.\n- When no usable councillors remain: resolver warnings/error only.',
+      '---',
+      COMMAND_BEHAVIOR.council,
     ].join('\n\n');
   };
   const renderHiveConfigCommandTemplate = async (commandKey: HiveCommandKey): Promise<string> => {

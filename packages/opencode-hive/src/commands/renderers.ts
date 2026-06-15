@@ -1,5 +1,6 @@
 import type { HiveCommandKey } from './registry.js';
 import type { HiveCommandContext, HiveCommandRenderers } from './types.js';
+import { COMMAND_BEHAVIOR } from './command-bodies.js';
 import { resolveCouncilMembers } from './council.js';
 
 type CommandSectionInput = {
@@ -51,6 +52,23 @@ function renderSections(input: CommandSectionInput): string {
 
   sections.push(`Output expected:\n${formatList(input.outputItems)}`);
   return sections.join('\n\n');
+}
+
+function renderHybridCommand(
+  command: HiveCommandKey,
+  context: HiveCommandContext,
+  input: Omit<CommandSectionInput, 'mode' | 'route'> & { unifiedRoute: string; dedicatedRoute: string },
+): string {
+  const wrapper = renderSections({
+    mode: context.agentMode,
+    route: routeFor(context, input.unifiedRoute, input.dedicatedRoute),
+    details: input.details,
+    doItems: input.doItems,
+    doNotItems: input.doNotItems,
+    backgroundItems: input.backgroundItems,
+    outputItems: input.outputItems,
+  });
+  return `${wrapper}\n\n---\n\n${COMMAND_BEHAVIOR[command]}`;
 }
 
 function topicOrCurrent(args: string, fallback: string): string {
@@ -129,14 +147,14 @@ function renderUsage(context: HiveCommandContext, error: string): string {
 
 export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
   interview(args, context) {
-    return renderSections({
-      mode: context.agentMode,
-      route: routeFor(context, 'hive-master', 'architect-planner'),
+    return renderHybridCommand('interview', context, {
+      unifiedRoute: 'hive-master',
+      dedicatedRoute: 'architect-planner',
       details: [`Topic: ${topicOrCurrent(args, 'clarify the operator idea before planning')}`],
       doItems: [
         'Ask exactly one question at a time and wait for the answer before continuing.',
-        'Use repo-aware drill-down when paths, data flow, tools, or ownership affect the answer.',
-        'Separate confirmed repo facts from assumptions and unknowns.',
+        'Choose the highest-ambiguity, highest-risk, or highest-value missing decision first.',
+        'After each answer, include a short running summary of decisions, constraints, and open questions.',
       ],
       doNotItems: [
         'Do not write code, edit files, create plans, or mutate Hive state during the interview.',
@@ -147,20 +165,19 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Distinguish validated facts from pending assumptions until those lanes finish.',
       ]),
       outputItems: [
-        'The next single question, plus any known facts, assumptions, and unknowns needed to frame it.',
+        '## Interview Summary, ## Recommended Next Step, and ## Context For /implementation-brief when appropriate.',
       ],
     });
   },
 
   'implementation-brief'(args, context) {
-    return renderSections({
-      mode: context.agentMode,
-      route: routeFor(context, 'hive-master', 'architect-planner'),
+    return renderHybridCommand('implementation-brief', context, {
+      unifiedRoute: 'hive-master',
+      dedicatedRoute: 'architect-planner',
       details: [`Subject: ${topicOrCurrent(args, 'the current operator request')}`],
       doItems: [
-        'Produce one copy-paste-ready brief for another agent to make the real implementation plan.',
         'Revalidate important repo paths, symbols, commands, and ownership before treating them as facts.',
-        'Include live repo facts, assumptions, unknowns, constraints, and expected observable outcomes.',
+        'Produce one copy-paste-ready brief for another agent to make the real implementation plan.',
       ],
       doNotItems: [
         'Do not write the Hive implementation plan or call plan-writing tools.',
@@ -169,19 +186,17 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       backgroundItems: backgroundItems(context, [
         'Use independent background research only when foreground brief assembly can safely continue without those results.',
       ]),
-      outputItems: [
-        'A single implementation-planning brief with repo facts, assumptions, unknowns, and expected outcomes.',
-      ],
+      outputItems: ['Output only the final prompt in one fenced code block.'],
     });
   },
 
   'hive-plan'(args, context) {
-    return renderSections({
-      mode: context.agentMode,
-      route: routeFor(context, 'hive-master', 'architect-planner'),
+    return renderHybridCommand('hive-plan', context, {
+      unifiedRoute: 'hive-master',
+      dedicatedRoute: 'architect-planner',
       details: [`Planning input: ${topicOrCurrent(args, 'the current spec or brief')}`],
       doItems: [
-        'Perform active discovery before writing the plan; inspect the relevant files, tests, docs, and constraints first.',
+        'Perform active discovery before writing the plan; inspect relevant files, tests, docs, and constraints first.',
         'Create or select the feature, write durable context when useful, then write the plan using hive_feature_create, hive_context_write, and hive_plan_write as appropriate.',
         'Include documentation updates for non-ad-hoc work when user-facing behavior, setup, install flow, or operator workflow changes.',
       ],
@@ -193,15 +208,16 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Use independent scout validation in background lanes when it can run without blocking plan framing.',
       ]),
       outputItems: [
-        'A Hive feature plan ready for review, with dependencies, files, task boundaries, and verification expectations.',
+        'Feature, plan readback, task breakdown, recommended execution order, session strategy, operator input, and decision points.',
       ],
     });
   },
 
-  'approve-sync-plan'(_args, context) {
-    return renderSections({
-      mode: context.agentMode,
-      route: routeFor(context, 'hive-master', 'swarm-orchestrator'),
+  'approve-sync-plan'(args, context) {
+    return renderHybridCommand('approve-sync-plan', context, {
+      unifiedRoute: 'hive-master',
+      dedicatedRoute: 'swarm-orchestrator',
+      details: args.trim() ? [`Additional operator input: ${args.trim()}`] : undefined,
       doItems: [
         'Read the active state with hive_status and hive_plan_read before approval.',
         'Approve with hive_plan_approve, sync with hive_tasks_sync, then read back status and tasks.',
@@ -212,19 +228,20 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Do not silently ignore unresolved plan comments, malformed tasks, or sync failures.',
       ],
       outputItems: [
-        'Approval and sync result, readback summary, runnable/blocked task state, or exact blocker details.',
+        '## Feature, ## Plan Readback, ## Task Breakdown, ## Recommended Execution Order, ## Session Strategy, ## Additional Operator Input, ## Decision Points For Operator.',
       ],
     });
   },
 
-  'start-execution'(_args, context) {
-    return renderSections({
-      mode: context.agentMode,
-      route: routeFor(context, 'hive-master', 'swarm-orchestrator'),
+  'start-execution'(args, context) {
+    return renderHybridCommand('start-execution', context, {
+      unifiedRoute: 'hive-master',
+      dedicatedRoute: 'swarm-orchestrator',
+      details: args.trim() ? [`Context: ${args.trim()}`] : undefined,
       doItems: [
-        'Confirm the execution strategy before choosing parallel or sequential task execution.',
+        'Confirm parallel vs sequential execution strategy with the operator before proceeding.',
         'Use todos to track task progress and transitions.',
-        'Preserve the flow hive_worktree_start -> worker execution -> hive_worktree_commit -> hive_merge.',
+        'Preserve hive_worktree_start -> worker execution -> hive_worktree_commit -> hive_merge; orchestrator does not call hive_worktree_commit for workers.',
         'Retry failed worker sessions in fresh workers with concise failure context.',
       ],
       doNotItems: [
@@ -241,23 +258,25 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
   },
 
   'council-directive'(args, context) {
-    return renderSections({
-      mode: context.agentMode,
-      route: routeFor(context, 'hive-master', 'architect-planner'),
+    return renderHybridCommand('council-directive', context, {
+      unifiedRoute: 'hive-master',
+      dedicatedRoute: 'architect-planner',
       details: [
         `Rough input: ${topicOrCurrent(args, 'the current operator request')}`,
         `Configured council groups: ${configuredGroupNames(context)}`,
       ],
       doItems: [
-        'Turn rough input into a reusable directive that another command can pass to a configured global council group.',
-        'Name the decision, evidence needed, constraints, unacceptable actions, and expected recommendation shape.',
-        'Refer to configured global council groups and built-in defaults by role, not personal custom aliases.',
+        'Ask one question at a time when needed (max 4) to shape a reusable council directive.',
+        'Name objective, direction, include (configured groups/members), constraints, context, assumptions needing validation, and desired output.',
+        'Refer to configured global council groups by role, not stale personal aliases or mutable worker seats.',
       ],
       doNotItems: [
         'Do not run council or launch agents.',
         'Do not create Hive plans, worktrees, patches, or commits.',
       ],
-      outputItems: ['One reusable council directive with scope, evidence, constraints, and requested output shape.'],
+      outputItems: [
+        '## Council Directive, ## Recommendation, ## Recommended Invocation, and ## Paste Into New Chat when appropriate.',
+      ],
     });
   },
 
@@ -283,9 +302,9 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       'architect-planner must not call planning write tools during a council run.',
     ];
 
-    return renderSections({
-      mode: context.agentMode,
-      route: routeFor(context, 'hive-master', 'architect-planner'),
+    const councilInput = {
+      unifiedRoute: 'hive-master',
+      dedicatedRoute: 'architect-planner',
       details,
       doItems: resolution.error
         ? ['Stop and report the council member resolution error with all warnings.']
@@ -299,30 +318,48 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Do not add unavailable, excluded, template-placeholder, mutable-base, or duplicate councillors back into the run.',
         'Do not let councillors edit files, create plans, call planning write tools, create worktrees, or commit.',
       ],
-      backgroundItems: backgroundItems(context, [
-        'Independent councillor lanes are native background candidates only from the orchestrating agent.',
-        'Wait for native completion notification and reconcile terminal lanes with hive_background_reconcile or hive_background_reconcile_batch before synthesis.',
-        'Councillors must not call task recursively.',
-      ]),
+      backgroundItems: resolution.error
+        ? undefined
+        : backgroundItems(context, [
+            'Independent councillor lanes are native background candidates only from the orchestrating agent.',
+            'Wait for native completion notification and reconcile terminal lanes with hive_background_reconcile or hive_background_reconcile_batch before synthesis.',
+            'Councillors must not call task recursively.',
+          ]),
       outputItems: resolution.error
         ? ['Clear error explaining why no usable council members remain.']
         : ['Council synthesis with recommendation, dissent, evidence quality, assumptions, and follow-up actions.'],
-    });
+    };
+
+    if (resolution.error) {
+      return renderSections({
+        mode: context.agentMode,
+        route: routeFor(context, councilInput.unifiedRoute, councilInput.dedicatedRoute),
+        details: councilInput.details,
+        doItems: councilInput.doItems,
+        doNotItems: councilInput.doNotItems,
+        backgroundItems: councilInput.backgroundItems,
+        outputItems: councilInput.outputItems,
+      });
+    }
+
+    return renderHybridCommand('council', context, councilInput);
   },
 
-  'compact-summary'(_args, context) {
-    return renderSections({
-      mode: context.agentMode,
-      route: routeFor(context, 'hive-master', 'scout-researcher'),
+  'compact-summary'(args, context) {
+    return renderHybridCommand('compact-summary', context, {
+      unifiedRoute: 'hive-master',
+      dedicatedRoute: 'scout-researcher',
+      details: args.trim() ? [`Focus: ${args.trim()}`] : undefined,
       doItems: [
-        'Produce a summary only: current goal, completed work, changed files, decisions, blockers, and exact next step.',
+        'Produce a recovery summary only using conversation and tool evidence.',
+        'Use the exact section order: Goal, Constraints & Preferences, Progress (Done/In Progress/Blocked), Key Decisions, Next Steps, Critical Context, Relevant Files.',
         'Include verification evidence only when actual command output or tool evidence exists.',
       ],
       doNotItems: [
         'Do not mutate files, start agents, launch background tasks, or change Hive state.',
         'Do not claim verification, tests, builds, or checks succeeded without actual command output.',
       ],
-      outputItems: ['A compact recovery summary only.'],
+      outputItems: ['Exact compact-summary template sections only.'],
     });
   },
 };

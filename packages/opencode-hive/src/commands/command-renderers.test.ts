@@ -188,6 +188,95 @@ describe('hive command renderers', () => {
     expect(output).not.toContain('example-template');
   });
 
+  it('anchors interview behavior: one question, running summary, implementation-brief handoff', () => {
+    const output = render('interview', 'new feature idea');
+    expect(output).toContain('Ask exactly one question at a time');
+    expect(output).toContain('running summary');
+    expect(output).toContain('## Interview Summary');
+    expect(output).toContain('/implementation-brief');
+    expect(output).toMatch(/highest-ambiguity|highest-risk|highest-value/);
+  });
+
+  it('anchors implementation-brief: revalidate repo and single code block output', () => {
+    const output = render('implementation-brief', 'restore commands');
+    expect(output).toContain('Revalidate');
+    expect(output).toContain('one fenced code block');
+    expect(output).toContain('Do not call `hive_plan_write`');
+  });
+
+  it('anchors hive-plan: discovery, hive tools, and operator-facing completion sections', () => {
+    const output = render('hive-plan', 'spec body');
+    expect(output).toContain('active discovery');
+    expect(output).toContain('hive_plan_write');
+    expect(output).toContain('session strategy');
+    expect(output).toContain('documentation updates');
+  });
+
+  it('anchors approve-sync-plan workflow sections and exact blocker stop', () => {
+    const output = render('approve-sync-plan', 'go fast');
+    expect(output).toContain('hive_plan_approve');
+    expect(output).toContain('hive_tasks_sync');
+    expect(output).toContain('## Session Strategy');
+    expect(output).toContain('exact blocker');
+  });
+
+  it('anchors start-execution: confirm strategy and worker commit boundary', () => {
+    const output = render('start-execution', '');
+    expect(output).toMatch(/parallel|sequential/i);
+    expect(output).toContain('hive_worktree_commit');
+    expect(output).toContain('orchestrator must not call `hive_worktree_commit`');
+  });
+
+  it('anchors council-directive: no council run, one question max 4, directive fields', () => {
+    const output = render('council-directive', 'rough ask');
+    expect(output).toContain('Do not run council');
+    expect(output).toContain('one question at a time');
+    expect(output).toContain('max 4');
+    expect(output).toContain('## Council Directive');
+    expect(output).toContain('## Paste Into New Chat');
+  });
+
+  it('anchors council synthesis sections and read-only normalization', () => {
+    const output = render('council', 'pick the safer API');
+    expect(output).toContain('## Council Result');
+    expect(output).toContain('## Disagreement');
+    expect(output).toContain('at most 2 clarification questions');
+    expect(output).not.toContain('forager-smart');
+    expect(output).not.toContain('approach-advisor-xhigh-reasoning');
+  });
+
+  it('stops council runs when no usable members remain, even when background is available', () => {
+    const context = createContext({
+      backgroundGuidance: { available: true },
+      council: {
+        defaultGroup: 'empty',
+        groups: {
+          empty: {
+            members: ['forager-worker', 'hive-builder'],
+          },
+        },
+      },
+    });
+    const output = render('council', 'pick the safer API', context);
+
+    expect(output).toContain('No usable council members remain');
+    expect(output).toContain('Stop and report the council member resolution error');
+    expect(output).not.toContain('Run a read-only council');
+    expect(output).not.toContain('## Council Result');
+    expect(output).not.toContain('Background:');
+    expect(output).not.toContain('native completion');
+    expect(output).not.toContain('hive_background_');
+  });
+
+  it('anchors compact-summary exact recovery template sections', () => {
+    const output = render('compact-summary', 'emphasize blockers');
+    expect(output).toContain('## Goal');
+    expect(output).toContain('## Constraints & Preferences');
+    expect(output).toContain('### Done');
+    expect(output).toContain('## Relevant Files');
+    expect(output).toContain('Do not claim verification, tests, builds, or checks succeeded');
+  });
+
   it('keeps compact-summary summary-only and avoids Cursor wording', () => {
     const output = render('compact-summary', 'summarize this state');
 

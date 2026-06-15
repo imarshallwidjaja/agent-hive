@@ -451,8 +451,12 @@ Do it
     expect(configCommands.interview.template).toContain('$ARGUMENTS');
     expect(configCommands.council.template).toContain('Runtime arguments: $ARGUMENTS');
     expect(configCommands.council.template).toContain('Only --group <group> selects a non-default group');
+    expect(configCommands.council.template).toContain('## Council Result');
+    expect(configCommands.council.template).toContain('## Disagreement');
+    expect(configCommands.council.template).toContain('Use resolved councillors from configured groups only');
     expect(configCommands.council.template).not.toContain('Group: decision');
     expect(configCommands.council.template).not.toContain('Directive: $ARGUMENTS');
+    expect(configCommands.council.template).not.toContain('forager-smart');
   });
 
   it('preserves existing non-Hive OpenCode config commands while injecting Hive commands', async () => {
@@ -474,6 +478,87 @@ Do it
     expect(configCommands.hive).toEqual(existingCommand);
     expect(configCommands['user-check']).toEqual(existingCommand);
     expect(configCommands.interview.description).toBe('Clarify an idea one question at a time before planning');
+  });
+
+  it('sanitizes configured council groups in OpenCode command templates', async () => {
+    const configPath = path.join(process.env.HOME || '', '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        customAgents: {
+          'reviewer-example-template': {
+            baseAgent: 'code-reviewer',
+            description: 'Example template only: rename before use.',
+            autoLoadSkills: [],
+          },
+        },
+        council: {
+          defaultGroup: 'review',
+          groups: {
+            review: {
+              description: 'Review group with bad members',
+              members: [
+                'forager-worker',
+                'hive-builder',
+                'reviewer-example-template',
+                'missing-agent',
+                'scout-researcher',
+                'scout-researcher',
+                'code-reviewer',
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const { hooks } = await createHooksForTest(testRoot, 'sess_sanitized_council_commands');
+    const opencodeConfig: Record<string, unknown> = {};
+
+    await hooks.config!(opencodeConfig);
+
+    const configCommands = opencodeConfig.command as Record<string, { description?: string; template?: string }>;
+    const councilTemplate = configCommands.council.template ?? '';
+
+    expect(councilTemplate).toContain('review: Review group with bad members; usable members: scout-researcher (scout-researcher), code-reviewer (code-reviewer)');
+    expect(councilTemplate).toContain('warnings:');
+    expect(councilTemplate).toContain('Do not add unavailable, excluded, template-placeholder, mutable-base, or duplicate councillors back into the run.');
+    expect(councilTemplate).not.toContain('usable members: forager-worker');
+    expect(councilTemplate).not.toContain('usable members: hive-builder');
+    expect(councilTemplate).not.toContain('usable members: reviewer-example-template');
+  });
+
+  it('renders no-usable configured council groups as stop conditions in command templates', async () => {
+    const configPath = path.join(process.env.HOME || '', '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        council: {
+          defaultGroup: 'empty',
+          groups: {
+            empty: {
+              description: 'No usable seats',
+              members: ['forager-worker', 'hive-builder'],
+            },
+          },
+        },
+      }),
+    );
+    const { hooks } = await createHooksForTest(testRoot, 'sess_no_usable_council_commands');
+    const opencodeConfig: Record<string, unknown> = {};
+
+    await hooks.config!(opencodeConfig);
+
+    const configCommands = opencodeConfig.command as Record<string, { description?: string; template?: string }>;
+    const councilTemplate = configCommands.council.template ?? '';
+
+    expect(councilTemplate).toContain('empty: No usable seats; usable members: none usable');
+    expect(councilTemplate).toContain('error: No usable council members remain for requested group empty.');
+    expect(councilTemplate).toContain('If the selected group has no usable councillors, stop and report the resolver warnings instead of running council.');
+    expect(councilTemplate).toContain('When the selected group has usable councillors, run a read-only council');
+    expect(councilTemplate).not.toContain('- Run a read-only council with the resolved councillors');
+    expect(councilTemplate).not.toContain('- Council synthesis with recommendation');
   });
 
   it("writes logical active-feature names and status fallback prefers the shared pointer", async () => {
