@@ -430,6 +430,52 @@ Do it
     }
   });
 
+  it('injects every registry command into OpenCode config.command for slash command loading', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_config_commands');
+    const opencodeConfig: Record<string, unknown> = {};
+
+    await hooks.config!(opencodeConfig);
+
+    const configCommands = opencodeConfig.command as Record<string, { description?: string; template?: string }>;
+    const registryKeys = HIVE_COMMANDS.map((command) => command.key);
+
+    expect(Object.keys(configCommands).sort()).toEqual([...registryKeys].sort());
+    expect(configCommands.hive).toBeUndefined();
+
+    for (const command of HIVE_COMMANDS) {
+      const configCommand = configCommands[command.key];
+      expect(configCommand.description).toBe(command.description);
+      expect(configCommand.template).toContain('Mode:');
+    }
+
+    expect(configCommands.interview.template).toContain('$ARGUMENTS');
+    expect(configCommands.council.template).toContain('Runtime arguments: $ARGUMENTS');
+    expect(configCommands.council.template).toContain('Only --group <group> selects a non-default group');
+    expect(configCommands.council.template).not.toContain('Group: decision');
+    expect(configCommands.council.template).not.toContain('Directive: $ARGUMENTS');
+  });
+
+  it('preserves existing non-Hive OpenCode config commands while injecting Hive commands', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_existing_config_commands');
+    const existingCommand = {
+      description: 'Existing operator command',
+      template: 'Keep this command intact.',
+    };
+    const opencodeConfig: Record<string, unknown> = {
+      command: {
+        hive: existingCommand,
+        'user-check': existingCommand,
+      },
+    };
+
+    await hooks.config!(opencodeConfig);
+
+    const configCommands = opencodeConfig.command as Record<string, { description?: string; template?: string }>;
+    expect(configCommands.hive).toEqual(existingCommand);
+    expect(configCommands['user-check']).toEqual(existingCommand);
+    expect(configCommands.interview.description).toBe('Clarify an idea one question at a time before planning');
+  });
+
   it("writes logical active-feature names and status fallback prefers the shared pointer", async () => {
     const ctx: PluginInput = {
       directory: testRoot,

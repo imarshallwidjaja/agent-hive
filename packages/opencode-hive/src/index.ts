@@ -218,9 +218,10 @@ import { createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
+import { HIVE_COMMANDS, type HiveCommandKey } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
 import { isReadOnlyCouncilEligibleBase } from './commands/council.js';
-import type { HiveCommandAgentDescriptor } from './commands/types.js';
+import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
 import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
 import { createBackgroundTools } from './background/backgroundTools.js';
 
@@ -288,6 +289,62 @@ const plugin: Plugin = async (ctx) => {
   const builtinMcps = createBuiltinMcps(disabledMcps);
   const repositoryService = new RepositoryService(directory, configService);
   const repositoryManifestService = new RepositoryManifestService(directory);
+  const createHiveCommandContext = () => {
+    const currentConfig = configService.get();
+    return {
+      agentMode: currentConfig.agentMode ?? 'unified',
+      backgroundGuidance: runtimeBackgroundGuidance,
+      council: currentConfig.council ?? DEFAULT_COUNCIL_CONFIG,
+      agents: runtimeCommandAgents,
+    };
+  };
+  const renderCommandRoute = (context: HiveCommandContext, unifiedTarget: string, dedicatedTarget: string): string => {
+    if (context.agentMode === 'unified') {
+      return unifiedTarget;
+    }
+
+    return `${dedicatedTarget}. Slash commands do not switch agents automatically; if the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.`;
+  };
+  const renderCouncilConfigTemplate = (context: HiveCommandContext): string => {
+    const groups = Object.entries(context.council.groups ?? {});
+    const groupSummary = groups.length > 0
+      ? groups
+          .map(([name, group]) => `- ${name}: ${group.description ?? 'No description'}; members: ${group.members.join(', ')}`)
+          .join('\n')
+      : '- none configured';
+
+    return [
+      `Mode: ${context.agentMode}`,
+      `Route: ${renderCommandRoute(context, 'hive-master', 'architect-planner')}`,
+      'Usage: /council [--group <group>] <directive>',
+      `Default group: ${context.council.defaultGroup ?? 'decision'}`,
+      `Configured groups:\n${groupSummary}`,
+      'Runtime arguments: $ARGUMENTS',
+      [
+        'Do:',
+        '- Parse Runtime arguments at execution time, after OpenCode substitutes $ARGUMENTS.',
+        '- Only --group <group> selects a non-default group; otherwise use the default group.',
+        '- Treat all remaining arguments as the directive, or use the current operator request when no directive is provided.',
+        '- Run a read-only council with the resolved councillors in the displayed group order.',
+        '- Synthesize a recommendation with consensus, dissent, evidence gaps, and next action.',
+      ].join('\n'),
+      [
+        'Do not:',
+        '- Do not treat the literal $ARGUMENTS token as the group or directive before OpenCode substitution.',
+        '- Do not infer a group from the first free-text token; only --group selects a non-default group.',
+        '- Do not let councillors edit files, create plans, call planning write tools, create worktrees, or commit.',
+      ].join('\n'),
+      'Output expected:\n- Council synthesis with recommendation, dissent, evidence quality, assumptions, and follow-up actions.',
+    ].join('\n\n');
+  };
+  const renderHiveConfigCommandTemplate = async (commandKey: HiveCommandKey): Promise<string> => {
+    const context = createHiveCommandContext();
+    if (commandKey === 'council') {
+      return renderCouncilConfigTemplate(context);
+    }
+
+    return hiveCommandRenderers[commandKey]('$ARGUMENTS', context);
+  };
   const hasRepositoryManifest = (): boolean => {
     // Only treat the project as multi-repo when an explicit project-scoped
     // `repositories` manifest exists. Without a manifest, RepositoryService
@@ -2433,15 +2490,7 @@ Expand your Discovery section and try again.`;
 
     },
 
-    command: buildHiveCommandMap(hiveCommandRenderers, () => {
-      const currentConfig = configService.get();
-      return {
-        agentMode: currentConfig.agentMode ?? 'unified',
-        backgroundGuidance: runtimeBackgroundGuidance,
-        council: currentConfig.council ?? DEFAULT_COUNCIL_CONFIG,
-        agents: runtimeCommandAgents,
-      };
-    }),
+    command: buildHiveCommandMap(hiveCommandRenderers, createHiveCommandContext),
 
     // Config hook - merge agents into opencodeConfig.agent
     config: async (opencodeConfig: Record<string, unknown>) => {
@@ -2858,6 +2907,25 @@ Do not choose a custom subagent only because the task is important, complex, or 
           ];
         }),
       );
+
+      const hiveConfigCommands = Object.fromEntries(
+        await Promise.all(
+          HIVE_COMMANDS.map(async (command) => [
+            command.key,
+            {
+              description: command.description,
+              template: await renderHiveConfigCommandTemplate(command.key),
+            },
+          ]),
+        ),
+      );
+
+      const configCommand = opencodeConfig.command as Record<string, unknown> | undefined;
+      if (!configCommand) {
+        opencodeConfig.command = hiveConfigCommands;
+      } else {
+        Object.assign(configCommand, hiveConfigCommands);
+      }
 
       // Merge agents into opencodeConfig.agent (config hook is sufficient for agent discovery)
       const configAgent = opencodeConfig.agent as Record<string, unknown> | undefined;
