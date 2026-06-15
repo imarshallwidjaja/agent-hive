@@ -453,7 +453,7 @@ Do it
     expect(configCommands.council.template).toContain('Only --group <group> selects a non-default group');
     expect(configCommands.council.template).toContain('## Council Result');
     expect(configCommands.council.template).toContain('## Disagreement');
-    expect(configCommands.council.template).toContain('Use resolved councillors from configured groups only');
+    expect(configCommands.council.template).toContain('Use only councillors resolved for this run from configured groups');
     expect(configCommands.council.template).not.toContain('Group: decision');
     expect(configCommands.council.template).not.toContain('Directive: $ARGUMENTS');
     expect(configCommands.council.template).not.toContain('forager-smart');
@@ -557,6 +557,7 @@ Do it
     expect(councilTemplate).toContain('error: No usable council members remain for requested group empty.');
     expect(councilTemplate).toContain('If the selected group has no usable councillors, stop and report the resolver warnings instead of running council.');
     expect(councilTemplate).toContain('When the selected group has usable councillors, run a read-only council');
+    expect(councilTemplate).toContain('When usable councillors are resolved and council runs, use this output format:');
     expect(councilTemplate).not.toContain('- Run a read-only council with the resolved councillors');
     expect(councilTemplate).not.toContain('- Council synthesis with recommendation');
   });

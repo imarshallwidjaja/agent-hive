@@ -195,6 +195,12 @@ describe('hive command renderers', () => {
     expect(output).toContain('## Interview Summary');
     expect(output).toContain('/implementation-brief');
     expect(output).toMatch(/highest-ambiguity|highest-risk|highest-value/);
+    expect(output).toContain('Prioritize collecting');
+    expect(output).toContain('needs validation');
+    expect(output).toContain('brainstorming, exploring options');
+    expect(output).toContain('2-4 concise options');
+    expect(output).toContain('## Context For `/implementation-brief`');
+    expect(output).toContain('parity, migration, or compatibility concerns');
   });
 
   it('anchors implementation-brief: revalidate repo and single code block output', () => {
@@ -202,6 +208,12 @@ describe('hive command renderers', () => {
     expect(output).toContain('Revalidate');
     expect(output).toContain('one fenced code block');
     expect(output).toContain('Do not call `hive_plan_write`');
+    expect(output).toContain('copy-paste-ready');
+    expect(output).toContain('live code references and call paths');
+    expect(output).toContain('execution-ready implementation plan');
+    expect(output).toContain('begin immediately without follow-up steering');
+    expect(output).toContain('Do not give a short recap');
+    expect(output).toContain('repo and parity constraints');
   });
 
   it('anchors hive-plan: discovery, hive tools, and operator-facing completion sections', () => {
@@ -210,6 +222,12 @@ describe('hive command renderers', () => {
     expect(output).toContain('hive_plan_write');
     expect(output).toContain('session strategy');
     expect(output).toContain('documentation updates');
+    expect(output).toContain('parallelized cleanly');
+    expect(output).toContain('do not resume the old worker');
+    expect(output).toContain('narrower scopes');
+    expect(output).toContain('pre-trained knowledge only as guidance');
+    expect(output).toContain('hive_feature_create');
+    expect(output).toContain('hive_plan_read');
   });
 
   it('anchors approve-sync-plan workflow sections and exact blocker stop', () => {
@@ -218,6 +236,12 @@ describe('hive command renderers', () => {
     expect(output).toContain('hive_tasks_sync');
     expect(output).toContain('## Session Strategy');
     expect(output).toContain('exact blocker');
+    expect(output).toContain('context-load risk');
+    expect(output).toContain('fewest reasonable execution sessions');
+    expect(output).toContain('what done looks like');
+    expect(output).toContain('recommended default');
+    expect(output).toContain('hive_status');
+    expect(output).toContain('avoid generic advice');
   });
 
   it('anchors start-execution: confirm strategy and worker commit boundary', () => {
@@ -225,6 +249,12 @@ describe('hive command renderers', () => {
     expect(output).toMatch(/parallel|sequential/i);
     expect(output).toContain('hive_worktree_commit');
     expect(output).toContain('orchestrator must not call `hive_worktree_commit`');
+    expect(output).toContain('Work autonomously through the tasks');
+    expect(output).toContain('salvageable');
+    expect(output).toContain('hive_worktree_start');
+    expect(output).toContain('hive_merge');
+    expect(output).toContain('todo list');
+    expect(output).toContain('squash when `hive_merge`');
   });
 
   it('anchors council-directive: no council run, one question max 4, directive fields', () => {
@@ -234,6 +264,11 @@ describe('hive command renderers', () => {
     expect(output).toContain('max 4');
     expect(output).toContain('## Council Directive');
     expect(output).toContain('## Paste Into New Chat');
+    expect(output).toContain('smallest directive');
+    expect(output).toContain('session mode');
+    expect(output).toContain('configured council group');
+    expect(output).not.toContain('forager-smart');
+    expect(output).not.toContain('approach-advisor-xhigh-reasoning');
   });
 
   it('anchors council synthesis sections and read-only normalization', () => {
@@ -243,6 +278,13 @@ describe('hive command renderers', () => {
     expect(output).toContain('at most 2 clarification questions');
     expect(output).not.toContain('forager-smart');
     expect(output).not.toContain('approach-advisor-xhigh-reasoning');
+    expect(output).toContain('read-only council session');
+    expect(output).toContain('one-paragraph verdict');
+    expect(output).toContain('do not average vague opinions');
+    expect(output).toContain('smallest useful set');
+    expect(output).toContain('## Agreement');
+    expect(output).toContain('## Suggested Next Step');
+    expect(output).not.toContain('Council aliases:');
   });
 
   it('stops council runs when no usable members remain, even when background is available', () => {
@@ -275,6 +317,12 @@ describe('hive command renderers', () => {
     expect(output).toContain('### Done');
     expect(output).toContain('## Relevant Files');
     expect(output).toContain('Do not claim verification, tests, builds, or checks succeeded');
+    expect(output).toContain('Keep every section, even when empty');
+    expect(output).toContain('terse bullets');
+    expect(output).toMatch(/do not compact, prune, delete/i);
+    expect(output).toContain('current OpenCode');
+    expect(output).toContain('### In Progress');
+    expect(output).toContain('### Blocked');
   });
 
   it('keeps compact-summary summary-only and avoids Cursor wording', () => {
