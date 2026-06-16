@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'bun:test';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
+import * as path from 'path';
 
 const bundle = fs.readFileSync(new URL('../../dist/extension.js', import.meta.url), 'utf8');
+const packageDir = path.resolve(import.meta.dirname, '../..');
+const bundlePath = path.join(packageDir, 'dist', 'extension.js');
 
 describe('shipped extension artifact parity', () => {
   it('includes overview comment routing and storage in the bundle', () => {
@@ -29,5 +33,18 @@ describe('shipped extension artifact parity', () => {
     expect(bundle).not.toContain('hive.background.cancel');
     expect(bundle).not.toContain('hive.background.reconcile');
     expect(bundle).not.toContain('hive.background.ignore');
+  });
+
+  it('keeps the committed bundle aligned with source rebuilds', () => {
+    const before = fs.readFileSync(bundlePath, 'utf8');
+
+    execFileSync('bun', ['run', 'build'], {
+      cwd: packageDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const after = fs.readFileSync(bundlePath, 'utf8');
+
+    expect(after).toBe(before);
   });
 });

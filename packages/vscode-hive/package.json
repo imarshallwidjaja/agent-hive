@@ -191,7 +191,7 @@
     }
   },
   "scripts": {
-    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node14 --sourcemap --define:import.meta.url=__importMetaUrl --banner:js=\"const __importMetaUrl = require('url').pathToFileURL(__filename).href;\"",
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node14 --sourcemap --minify-whitespace --define:import.meta.url=__importMetaUrl --banner:js=\"const __importMetaUrl = require('url').pathToFileURL(__filename).href;\"",
     "package": "bun run build && vsce package --no-dependencies -o vscode-arkive.vsix",
     "watch": "npm run build -- --watch",
     "build:types": "tsc --emitDeclarationOnly",
