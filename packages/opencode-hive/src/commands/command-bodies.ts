@@ -212,7 +212,7 @@ Stop to clarify or ask questions only when a real decision or blocker requires i
 
 Preserve execution flow: \`hive_worktree_start\` → worker execution → worker \`hive_worktree_commit\` → orchestrator \`hive_merge\`. The orchestrator must not call \`hive_worktree_commit\` for workers.
 
-Tidy up commits and worktrees after each task or batch when appropriate. Commits should use the correct topical prefix for the work in that commit, not a generic "hive" prefix. Prefer squash when \`hive_merge\` so each task can be represented by one well-written, self-descriptive commit with summary and description matching the style already used in this repository.
+Tidy up commits and worktrees after each task or batch when appropriate. Commits should use the correct topical prefix for the work in that commit, not a generic "hive" prefix. Prefer \`strategy: "rebase"\` when the task branch has clean, well-written commits and replaying them preserves useful linear root history. Use squash or merge only when appropriate. Do not omit \`message\` for merge or squash merges. The message should be self-descriptive project history. Do not use \`hive\`, task numbers, task folder names, or "merge task" prose.
 
 Create a todo list of tasks and track progress using the todo list throughout execution. Keep this updated as you progress.
 

@@ -254,7 +254,9 @@ describe('hive command renderers', () => {
     expect(output).toContain('hive_worktree_start');
     expect(output).toContain('hive_merge');
     expect(output).toContain('todo list');
-    expect(output).toContain('squash when `hive_merge`');
+    expect(output).toContain('Prefer `strategy: "rebase"`');
+    expect(output).toContain('Do not omit `message` for merge or squash merges');
+    expect(output).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
   });
 
   it('anchors council-directive: no council run, one question max 4, directive fields', () => {

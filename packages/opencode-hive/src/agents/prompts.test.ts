@@ -276,6 +276,13 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('bun run test');
     });
 
+    it('requires self-descriptive merge messages and linear history preference', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('well-written, self-descriptive merge message');
+      expect(QUEEN_BEE_PROMPT).toContain('Do not omit `message` for merge or squash merges');
+      expect(QUEEN_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
+      expect(QUEEN_BEE_PROMPT).toContain('Prefer `strategy: "rebase"`');
+    });
+
     it('teaches Hive to delegate bounded hard-task cleanup and safe follow-up handling to hive-helper', () => {
       expect(QUEEN_BEE_PROMPT).toContain('hard-task cleanup');
       expect(QUEEN_BEE_PROMPT).toContain('interrupted wrap-up candidates');
@@ -599,6 +606,13 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('bun run test');
     });
 
+    it('requires self-descriptive merge messages and linear history preference', () => {
+      expect(SWARM_BEE_PROMPT).toContain('well-written, self-descriptive merge message');
+      expect(SWARM_BEE_PROMPT).toContain('Do not omit `message` for merge or squash merges');
+      expect(SWARM_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
+      expect(SWARM_BEE_PROMPT).toContain('Prefer `strategy: "rebase"`');
+    });
+
     it('teaches Swarm to delegate bounded hard-task cleanup and safe follow-up handling to hive-helper', () => {
       expect(SWARM_BEE_PROMPT).toContain('hard-task cleanup');
       expect(SWARM_BEE_PROMPT).toContain('interrupted wrap-up candidates');
@@ -742,6 +756,13 @@ describe('Hive Helper prompt', () => {
   it('requires concise operational summaries only', () => {
     expect(HIVE_HELPER_PROMPT).toContain('concise');
     expect(HIVE_HELPER_PROMPT).toContain('merged/state/task/blocker summary');
+  });
+
+  it('requires explicit self-descriptive hive_merge messages', () => {
+    expect(HIVE_HELPER_PROMPT).toContain('Do not omit `message` for merge or squash merges');
+    expect(HIVE_HELPER_PROMPT).toContain('well-written, self-descriptive commit subject');
+    expect(HIVE_HELPER_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
+    expect(HIVE_HELPER_PROMPT).toContain('Prefer `strategy: "rebase"`');
   });
 
   it('does not auto-load a Hive Skill appendix into the helper prompt', () => {

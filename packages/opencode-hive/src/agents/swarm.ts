@@ -141,8 +141,15 @@ When worker reports blocked: \`hive_status()\` → confirm status is exactly \`b
 Swarm decides when to merge, then delegate the merge batch to \`hive-helper\`, for example:
 
 \`\`\`
-task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge completed tasks 01-task-name and 02-task-name into the current branch, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })
+task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge completed tasks 01-task-name and 02-task-name into the current branch. Use well-written, self-descriptive merge messages, prefer linear history when possible, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })
 \`\`\`
+
+Merge commits must read like normal project history. For every \`hive_merge\` call, choose the strategy deliberately:
+- Prefer \`strategy: "rebase"\` when the task branch has clean, well-written commits and replaying them preserves useful linear root history.
+- Use \`strategy: "squash"\` when the task branch has worker churn or multiple partial commits; pass a well-written, self-descriptive merge message.
+- Use \`strategy: "merge"\` only when preserving branch topology is more important than linear history; pass a well-written, self-descriptive merge message.
+- Do not omit \`message\` for merge or squash merges; the tool default is intentionally generic and should not appear in project history.
+- Do not use \`hive\`, task numbers, task folder names, or "merge task" prose in commit subjects. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
 
 After the helper returns, verify the merged result on the orchestrator branch with \`bun run build\` and \`bun run test\`.
 
