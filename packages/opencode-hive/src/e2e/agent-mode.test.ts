@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import plugin from "../index";
-import { HIVE_COMMANDS, type HiveCommandKey } from '../commands/registry.js';
+import { HIVE_COMMANDS } from '../commands/registry.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" });
 const removedHiveSkillTool = ['hive', 'skill'].join('_');
@@ -111,7 +111,7 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.default_agent).toBe("architect-planner");
   });
 
-  it('names dedicated-mode route targets in command output and warns slash commands do not switch agents', async () => {
+  it('does not render dedicated-mode route prose in command output', async () => {
     const configPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({ agentMode: 'dedicated' }));
@@ -128,21 +128,12 @@ describe("agentMode gating", () => {
     const commandHooks = (hooks as Awaited<ReturnType<typeof plugin>> & {
       command: Record<string, { run: (args: string) => string }>;
     }).command;
-    const routeByKey: Record<HiveCommandKey, string> = {
-      interview: 'architect-planner',
-      'implementation-brief': 'architect-planner',
-      'hive-plan': 'architect-planner',
-      'approve-sync-plan': 'swarm-orchestrator',
-      'start-execution': 'swarm-orchestrator',
-      'council-directive': 'architect-planner',
-      council: 'architect-planner',
-      'compact-summary': 'scout-researcher',
-    };
-
     for (const command of HIVE_COMMANDS) {
       const output = commandHooks[command.key].run('route smoke');
-      expect(output).toContain(`Route: ${routeByKey[command.key]}`);
-      expect(output).toContain('Slash commands do not switch agents automatically');
+      expect(output).not.toContain('Mode:');
+      expect(output).not.toContain('Route:');
+      expect(output).not.toContain('Slash commands do not switch agents automatically');
+      expect(output).not.toContain('delegate or reroute to the target agent and stop if that is not possible');
     }
   });
 

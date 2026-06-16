@@ -99,8 +99,6 @@ describe('hive command renderers', () => {
         const output = render(command.key, args);
 
         expect(output.trim()).not.toBe('');
-        expect(output).toContain('Mode:');
-        expect(output).toContain('Route:');
         expect(output).toContain('Do:');
         expect(output).toContain('Do not:');
         expect(output).toContain('Output expected:');
@@ -147,25 +145,16 @@ describe('hive command renderers', () => {
     }
   });
 
-  it('uses dedicated-mode route targets and warns that slash commands do not switch agents automatically', () => {
+  it('does not render dedicated-mode route prose', () => {
     const context = createContext({ agentMode: 'dedicated' });
-    const expectations: Record<HiveCommandKey, string> = {
-      interview: 'architect-planner',
-      'implementation-brief': 'architect-planner',
-      'hive-plan': 'architect-planner',
-      'approve-sync-plan': 'swarm-orchestrator',
-      'start-execution': 'swarm-orchestrator',
-      'council-directive': 'architect-planner',
-      council: 'architect-planner',
-      'compact-summary': 'scout-researcher',
-    };
 
     for (const command of HIVE_COMMANDS) {
       const output = render(command.key, 'Route this', context);
 
-      expect(output).toContain(`Route: ${expectations[command.key]}`);
-      expect(output).toContain('Slash commands do not switch agents automatically');
-      expect(output).toContain('delegate or reroute to the target agent and stop if that is not possible');
+      expect(output).not.toContain('Mode:');
+      expect(output).not.toContain('Route:');
+      expect(output).not.toContain('Slash commands do not switch agents automatically');
+      expect(output).not.toContain('delegate or reroute to the target agent and stop if that is not possible');
     }
   });
 

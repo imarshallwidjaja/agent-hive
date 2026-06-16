@@ -299,13 +299,6 @@ const plugin: Plugin = async (ctx) => {
       agents: runtimeCommandAgents,
     };
   };
-  const renderCommandRoute = (context: HiveCommandContext, unifiedTarget: string, dedicatedTarget: string): string => {
-    if (context.agentMode === 'unified') {
-      return unifiedTarget;
-    }
-
-    return `${dedicatedTarget}. Slash commands do not switch agents automatically; if the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.`;
-  };
   const renderCouncilConfigTemplate = (context: HiveCommandContext): string => {
     const groups = Object.entries(context.council.groups ?? {});
     const groupSummary = groups.length > 0
@@ -326,8 +319,6 @@ const plugin: Plugin = async (ctx) => {
       : '- none configured';
 
     return [
-      `Mode: ${context.agentMode}`,
-      `Route: ${renderCommandRoute(context, 'hive-master', 'architect-planner')}`,
       'Usage: /council [--group <group>] <directive>',
       `Default group: ${context.council.defaultGroup ?? 'decision'}`,
       `Configured groups:\n${groupSummary}`,

@@ -4,8 +4,6 @@ import { COMMAND_BEHAVIOR } from './command-bodies.js';
 import { resolveCouncilMembers } from './council.js';
 
 type CommandSectionInput = {
-  mode: HiveCommandContext['agentMode'];
-  route: string;
   doItems: string[];
   doNotItems: string[];
   outputItems: string[];
@@ -19,25 +17,14 @@ type ParsedCouncilArgs = {
   error?: string;
 };
 
-const DEDICATED_ROUTE_NOTE = 'Slash commands do not switch agents automatically; if the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.';
 const COUNCIL_USAGE = 'Usage: /council [--group <group>] <directive>';
-
-function routeFor(context: HiveCommandContext, unifiedTarget: string, dedicatedTarget: string): string {
-  const target = context.agentMode === 'unified' ? unifiedTarget : dedicatedTarget;
-  return context.agentMode === 'dedicated'
-    ? `${target}. ${DEDICATED_ROUTE_NOTE}`
-    : target;
-}
 
 function formatList(items: string[]): string {
   return items.map((item) => `- ${item}`).join('\n');
 }
 
 function renderSections(input: CommandSectionInput): string {
-  const sections = [
-    `Mode: ${input.mode}`,
-    `Route: ${input.route}`,
-  ];
+  const sections: string[] = [];
 
   if (input.details && input.details.length > 0) {
     sections.push(input.details.join('\n'));
@@ -56,12 +43,10 @@ function renderSections(input: CommandSectionInput): string {
 
 function renderHybridCommand(
   command: HiveCommandKey,
-  context: HiveCommandContext,
-  input: Omit<CommandSectionInput, 'mode' | 'route'> & { unifiedRoute: string; dedicatedRoute: string },
+  _context: HiveCommandContext,
+  input: CommandSectionInput,
 ): string {
   const wrapper = renderSections({
-    mode: context.agentMode,
-    route: routeFor(context, input.unifiedRoute, input.dedicatedRoute),
     details: input.details,
     doItems: input.doItems,
     doNotItems: input.doNotItems,
@@ -130,8 +115,6 @@ function parseCouncilArgs(args: string): ParsedCouncilArgs {
 
 function renderUsage(context: HiveCommandContext, error: string): string {
   return renderSections({
-    mode: context.agentMode,
-    route: routeFor(context, 'hive-master', 'architect-planner'),
     details: [error],
     doItems: [
       'Provide deterministic council input as /council --group <group> <directive>, or omit --group to use the configured default group.',
@@ -148,8 +131,6 @@ function renderUsage(context: HiveCommandContext, error: string): string {
 export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
   interview(args, context) {
     return renderHybridCommand('interview', context, {
-      unifiedRoute: 'hive-master',
-      dedicatedRoute: 'architect-planner',
       details: [`Topic: ${topicOrCurrent(args, 'clarify the operator idea before planning')}`],
       doItems: [
         'Ask exactly one question at a time and wait for the answer before continuing.',
@@ -172,8 +153,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
   'implementation-brief'(args, context) {
     return renderHybridCommand('implementation-brief', context, {
-      unifiedRoute: 'hive-master',
-      dedicatedRoute: 'architect-planner',
       details: [`Subject: ${topicOrCurrent(args, 'the current operator request')}`],
       doItems: [
         'Revalidate important repo paths, symbols, commands, and ownership before treating them as facts.',
@@ -192,8 +171,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
   'hive-plan'(args, context) {
     return renderHybridCommand('hive-plan', context, {
-      unifiedRoute: 'hive-master',
-      dedicatedRoute: 'architect-planner',
       details: [`Planning input: ${topicOrCurrent(args, 'the current spec or brief')}`],
       doItems: [
         'Perform active discovery before writing the plan; inspect relevant files, tests, docs, and constraints first.',
@@ -215,8 +192,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
   'approve-sync-plan'(args, context) {
     return renderHybridCommand('approve-sync-plan', context, {
-      unifiedRoute: 'hive-master',
-      dedicatedRoute: 'swarm-orchestrator',
       details: args.trim() ? [`Additional operator input: ${args.trim()}`] : undefined,
       doItems: [
         'Read the active state with hive_status and hive_plan_read before approval.',
@@ -235,8 +210,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
   'start-execution'(args, context) {
     return renderHybridCommand('start-execution', context, {
-      unifiedRoute: 'hive-master',
-      dedicatedRoute: 'swarm-orchestrator',
       details: args.trim() ? [`Context: ${args.trim()}`] : undefined,
       doItems: [
         'Confirm parallel vs sequential execution strategy with the operator before proceeding.',
@@ -259,8 +232,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
   'council-directive'(args, context) {
     return renderHybridCommand('council-directive', context, {
-      unifiedRoute: 'hive-master',
-      dedicatedRoute: 'architect-planner',
       details: [
         `Rough input: ${topicOrCurrent(args, 'the current operator request')}`,
         `Configured council groups: ${configuredGroupNames(context)}`,
@@ -303,8 +274,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     ];
 
     const councilInput = {
-      unifiedRoute: 'hive-master',
-      dedicatedRoute: 'architect-planner',
       details,
       doItems: resolution.error
         ? ['Stop and report the council member resolution error with all warnings.']
@@ -332,8 +301,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
     if (resolution.error) {
       return renderSections({
-        mode: context.agentMode,
-        route: routeFor(context, councilInput.unifiedRoute, councilInput.dedicatedRoute),
         details: councilInput.details,
         doItems: councilInput.doItems,
         doNotItems: councilInput.doNotItems,
@@ -347,8 +314,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
   'compact-summary'(args, context) {
     return renderHybridCommand('compact-summary', context, {
-      unifiedRoute: 'hive-master',
-      dedicatedRoute: 'scout-researcher',
       details: args.trim() ? [`Focus: ${args.trim()}`] : undefined,
       doItems: [
         'Produce a recovery summary only using conversation and tool evidence.',
