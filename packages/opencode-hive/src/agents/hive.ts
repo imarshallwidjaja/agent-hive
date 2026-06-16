@@ -240,7 +240,7 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 1. Dispatch a batch of runnable tasks (ask user before parallelizing).
 2. Wait for all workers to finish.
 3. Decide which completed task branches belong in the next merge batch.
-4. Delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge completed tasks 01-task-name and 02-task-name into the current branch. Use well-written, self-descriptive merge messages, prefer linear history when possible, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`.
+4. Delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge completed tasks 01-task-name and 02-task-name into the current branch. Preserve one root commit per completed task, keep review follow-up and integration fixes as separate self-descriptive commits, prefer linear history when possible, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`.
 5. After the helper returns, inspect the merge summary and run full verification **once** on the merged batch: \`bun run build\` + \`bun run test\`.
 6. If verification fails, diagnose with full context. Fix directly or re-dispatch targeted tasks as needed.
 
@@ -252,10 +252,11 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 
 ### Merge Strategy
 Hive decides when to merge, delegated \`hive-helper\` executes the batch, and Hive keeps post-batch verification.
-Merge commits must read like normal project history. For every \`hive_merge\` call, choose the strategy deliberately:
+Root history should show task-level progress, not feature-level compaction. Preserve one root commit per completed task. Keep review follow-up and integration fixes as separate self-descriptive commits. Do not squash a whole feature or merge batch into one commit.
+Merge commits must read like normal project history. For every \`hive_merge\` call, choose the strategy deliberately for that task branch:
 - Prefer \`strategy: "rebase"\` when the task branch has clean, well-written commits and replaying them preserves useful linear root history.
-- Use \`strategy: "squash"\` when the task branch has worker churn or multiple partial commits; pass a well-written, self-descriptive merge message.
-- Use \`strategy: "merge"\` only when preserving branch topology is more important than linear history; pass a well-written, self-descriptive merge message.
+- Use \`strategy: "squash"\` only to collapse worker-internal churn within one task branch; pass a well-written, self-descriptive merge message for that task's work.
+- Use \`strategy: "merge"\` only when preserving a task branch topology is more important than linear history; pass a well-written, self-descriptive merge message.
 - Do not omit \`message\` for merge or squash merges; the tool default is intentionally generic and should not appear in project history.
 - Do not use \`hive\`, task numbers, task folder names, or "merge task" prose in commit subjects. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
 For manifest-backed tasks, merge results surface per-repo outcomes through the aggregate \`repos\` field. \`partial: true\` means at least one repo succeeded before a later repo failed or hit a conflict — do not treat a partial merge as complete. Route partial merges back to plan amendment. Preflight failures (\`partial: false\`) leave all repos untouched.

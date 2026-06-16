@@ -244,6 +244,9 @@ describe('hive command renderers', () => {
     expect(output).toContain('hive_merge');
     expect(output).toContain('todo list');
     expect(output).toContain('Prefer `strategy: "rebase"`');
+    expect(output).toContain('Preserve one root commit per completed task');
+    expect(output).toContain('Do not squash a whole feature or merge batch into one commit');
+    expect(output).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
     expect(output).toContain('Do not omit `message` for merge or squash merges');
     expect(output).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
   });
