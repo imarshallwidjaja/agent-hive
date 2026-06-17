@@ -104,6 +104,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 | Tool | Description |
 |------|-------------|
 | `hive_plan_write` | Write plan.md |
+| `hive_plan_patch` | Apply revision-scoped section/task amendments to plan.md; does not sync tasks automatically |
 | `hive_plan_read` | Read plan and comments |
 | `hive_plan_approve` | Approve plan for execution |
 

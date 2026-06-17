@@ -32,6 +32,74 @@ function normalizeOptionalStringList(values: string[] | undefined): string[] | u
   return normalized && normalized.length > 0 ? normalized : undefined;
 }
 
+function validateDiscoverySection(content: string): string | null {
+  const discoveryMatch = content.match(/^##\s+Discovery\s*$/im);
+  if (!discoveryMatch) {
+    return `BLOCKED: Discovery section required before planning.
+
+Your plan must include a \`## Discovery\` section documenting:
+- Questions you asked and answers received
+- Research findings from codebase exploration
+- Key decisions made
+
+Add this section to your plan content and try again.`;
+  }
+
+  const afterDiscovery = content.slice(discoveryMatch.index! + discoveryMatch[0].length);
+  const nextHeading = afterDiscovery.search(/^##\s+/m);
+  const discoveryContent = nextHeading > -1
+    ? afterDiscovery.slice(0, nextHeading).trim()
+    : afterDiscovery.trim();
+
+  if (discoveryContent.length < 100) {
+    return `BLOCKED: Discovery section is too thin (${discoveryContent.length} chars, minimum 100).
+
+A substantive Discovery section should include:
+- Original request quoted
+- Interview summary (key decisions)
+- Research findings with file:line references
+
+Expand your Discovery section and try again.`;
+  }
+
+  return null;
+}
+
+function normalizePlanPatchOperations(operations: Array<{
+  type: string;
+  headingPath?: string[];
+  taskNumber?: number;
+  content: string;
+}>): PlanPatchOperation[] {
+  return operations.map((operation) => {
+    if (operation.type === 'replace_section' || operation.type === 'insert_after_section') {
+      if (!operation.headingPath || operation.headingPath.length === 0) {
+        throw new Error(`${operation.type} requires headingPath`);
+      }
+
+      return {
+        type: operation.type,
+        headingPath: operation.headingPath,
+        content: operation.content,
+      };
+    }
+
+    if (operation.type === 'replace_task') {
+      if (!Number.isInteger(operation.taskNumber) || operation.taskNumber < 1) {
+        throw new Error('replace_task requires a positive integer taskNumber');
+      }
+
+      return {
+        type: 'replace_task',
+        taskNumber: operation.taskNumber,
+        content: operation.content,
+      };
+    }
+
+    throw new Error(`Unsupported plan patch operation: ${operation.type}`);
+  });
+}
+
 /**
  * Build compact auto-load skill guidance for an agent.
  * Native discovered skills win over Hive bundled skills so user/native definitions can shadow Hive bundles.
@@ -208,6 +276,7 @@ import {
   type AdhocCommitResult,
   type AdhocMergeResult,
   type AdhocCleanupResult,
+  type PlanPatchOperation,
 } from "hive-core";
 import { buildWorkerPrompt, type ContextFile as WorkerPromptContextFile, type CompletedTask } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
@@ -1485,36 +1554,8 @@ NEXT: Ask your first clarifying question about this feature.`;
           const feature = resolveFeature(explicitFeature);
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
 
-          // GATE: Check for discovery section with substantive content
-          const discoveryMatch = content.match(/^##\s+Discovery\s*$/im);
-          if (!discoveryMatch) {
-            return `BLOCKED: Discovery section required before planning.
-
-Your plan must include a \`## Discovery\` section documenting:
-- Questions you asked and answers received
-- Research findings from codebase exploration
-- Key decisions made
-
-Add this section to your plan content and try again.`;
-          }
-          
-          // Extract content between ## Discovery and next ## heading (or end)
-          const afterDiscovery = content.slice(discoveryMatch.index! + discoveryMatch[0].length);
-          const nextHeading = afterDiscovery.search(/^##\s+/m);
-          const discoveryContent = nextHeading > -1
-            ? afterDiscovery.slice(0, nextHeading).trim()
-            : afterDiscovery.trim();
-          
-          if (discoveryContent.length < 100) {
-            return `BLOCKED: Discovery section is too thin (${discoveryContent.length} chars, minimum 100).
-
-A substantive Discovery section should include:
-- Original request quoted
-- Interview summary (key decisions)
-- Research findings with file:line references
-
-Expand your Discovery section and try again.`;
-          }
+          const discoveryError = validateDiscoverySection(content);
+          if (discoveryError) return discoveryError;
 
           captureSession(feature, toolContext);
           const planPath = planService.write(feature, content);
@@ -1522,17 +1563,51 @@ Expand your Discovery section and try again.`;
         },
       }),
 
+      hive_plan_patch: tool({
+        description: 'Patch bounded sections of plan.md by heading path or task number using optimistic concurrency; clears plan review comments and revokes approval on success.',
+        args: {
+          expectedRevision: tool.schema.string().describe('Revision token from hive_plan_read; covers plan content, review comments, and approval state'),
+          operations: tool.schema.array(tool.schema.object({
+            type: tool.schema.enum(['replace_section', 'replace_task', 'insert_after_section']).describe('Patch operation type'),
+            headingPath: tool.schema.array(tool.schema.string()).optional().describe('Heading path for section operations, e.g. ["Design Summary"]'),
+            taskNumber: tool.schema.number().optional().describe('Task number for replace_task'),
+            content: tool.schema.string().describe('Replacement or insertion markdown content'),
+          })).describe('Scoped plan patch operations'),
+          feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+        },
+        async execute({ expectedRevision, operations, feature: explicitFeature }, toolContext) {
+          const feature = resolveFeature(explicitFeature);
+          if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
+
+          try {
+            const normalizedOperations = normalizePlanPatchOperations(operations);
+            captureSession(feature, toolContext);
+            const result = planService.patch(feature, expectedRevision, normalizedOperations, validateDiscoverySection);
+            return JSON.stringify({
+              ...result,
+              summary: `Patched ${result.changedSections.join(', ')}`,
+              nextAction: 'If task sequencing or scope changed, run hive_tasks_sync({ refreshPending: true }) explicitly after review/approval. hive_plan_patch does not sync tasks automatically.',
+            }, null, 2);
+          } catch (error) {
+            return `Error: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        },
+      }),
+
       hive_plan_read: tool({
         description: 'Read plan.md and related review comments',
         args: {
           feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
+          mode: tool.schema.enum(['full', 'outline']).optional().describe('Read mode. full returns content (default); outline omits full content and returns headings/task list.'),
         },
-        async execute({ feature: explicitFeature }, toolContext) {
+        async execute({ feature: explicitFeature, mode }, toolContext) {
           const feature = resolveFeature(explicitFeature);
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
           captureSession(feature, toolContext);
           bindFeatureSession(feature, toolContext);
-          const result = planService.read(feature);
+          const result = mode === 'outline'
+            ? planService.read(feature, { mode: 'outline' })
+            : planService.read(feature);
           if (!result) return "Error: No plan.md found";
           return JSON.stringify(result, null, 2);
         },
@@ -2607,7 +2682,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
         prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadSkillsAppendix + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
         tools: agentTools([
-          'hive_feature_create', 'hive_plan_write', 'hive_plan_read', 'hive_context_write', 'hive_status',
+          'hive_feature_create', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_context_write', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
         ]),

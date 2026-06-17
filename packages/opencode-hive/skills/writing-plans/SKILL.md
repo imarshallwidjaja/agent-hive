@@ -13,9 +13,11 @@ Assume they are a skilled developer, but know almost nothing about our toolset o
 
 **Announce at start:** "I'm using the writing-plans skill to create the implementation plan."
 
-**Context:** Planning is read-only. Use `hive_feature_create` + `hive_plan_write` + `hive_context_write` and avoid worktrees during planning.
+**Context:** Planning is read-only. Use `hive_feature_create` + `hive_plan_write`/`hive_plan_patch` + `hive_context_write` and avoid worktrees during planning.
 
-**Save plans to:** `hive_plan_write` (writes to `.hive/features/<feature>/plan.md`)
+**Save initial plans or major rewrites to:** `hive_plan_write` (writes the full `.hive/features/<feature>/plan.md`)
+
+**Apply bounded review amendments with:** `hive_plan_patch` using `expectedRevision` from `hive_plan_read`. If task sequencing, dependencies, or scope changed, run `hive_tasks_sync({ refreshPending: true })` explicitly after review/approval; patching never syncs tasks automatically.
 
 **Maintain context with:** `hive_context_write({ name: "learnings", content: ... })` or another focused context name when durable notes would help future workers
 

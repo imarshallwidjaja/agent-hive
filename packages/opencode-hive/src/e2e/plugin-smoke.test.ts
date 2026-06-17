@@ -372,6 +372,73 @@ Do it
     expect(status.tasks?.list?.[0]?.folder).toBe("01-first-task");
   });
 
+  it("hive_plan_patch applies a bounded revision patch without returning full content", async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, "session-plan-patch");
+
+    await hooks.tool!.hive_feature_create.execute({ name: "plan-patch-feature" }, toolContext);
+
+    const plan = `# Patch Plan
+
+## Discovery
+
+This discovery section is intentionally long enough to satisfy the planning gate while testing bounded plan patch behavior through the OpenCode tool path.
+
+## Design Summary
+
+Keep the original design.
+
+## Tasks
+
+### 1. First Task
+Do it
+`;
+
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature: "plan-patch-feature" }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature: "plan-patch-feature" }, toolContext);
+
+    const beforeRead = JSON.parse(
+      await hooks.tool!.hive_plan_read.execute({ feature: "plan-patch-feature" }, toolContext) as string,
+    ) as { revision: string };
+
+    const patchRaw = await hooks.tool!.hive_plan_patch.execute(
+      {
+        feature: "plan-patch-feature",
+        expectedRevision: beforeRead.revision,
+        operations: [
+          {
+            type: "replace_section",
+            headingPath: ["Design Summary"],
+            content: "## Design Summary\n\nUse the revised design.\n",
+          },
+        ],
+      },
+      toolContext,
+    );
+    const patchResult = JSON.parse(patchRaw as string) as {
+      revision: string;
+      contentHash: string;
+      changedSections: string[];
+      content?: string;
+      nextAction: string;
+    };
+
+    expect(patchResult.revision).toMatch(/^[a-f0-9]{64}$/);
+    expect(patchResult.contentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(patchResult.contentHash).not.toBe(patchResult.revision);
+    expect(patchResult.changedSections).toEqual(["Design Summary"]);
+    expect(patchResult.content).toBeUndefined();
+    expect(patchResult.nextAction).toContain("hive_tasks_sync({ refreshPending: true })");
+
+    const afterRead = JSON.parse(
+      await hooks.tool!.hive_plan_read.execute({ feature: "plan-patch-feature" }, toolContext) as string,
+    ) as { content: string; status: string; revision: string };
+
+    expect(afterRead.content).toContain("Use the revised design.");
+    expect(afterRead.content).not.toContain("Keep the original design.");
+    expect(afterRead.status).toBe("planning");
+    expect(afterRead.revision).toBe(patchResult.revision);
+  });
+
   it('rejects context writes for explicit missing features', async () => {
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_missing_context_feature');
 

@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Tools (26 total)
+## Tools (27 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -21,12 +21,19 @@
 - Discovery is bounded to the project root, depth 4, and 50 candidates, and skips `.git`, `.hive`, `.opencode`, `node_modules`, build outputs, coverage, and temp folders.
 - Updates are add-only and accept project-relative paths only. If any requested repo is invalid, the manifest is not written.
 
-### Plan Management (3 tools)
+### Plan Management (4 tools)
 | Tool | Purpose |
 |------|---------|
-| `hive_plan_write` | Write plan.md (execution truth; clears plan review comments) |
-| `hive_plan_read` | Read plan.md and related review comments so approval can account for overview + plan feedback |
+| `hive_plan_write` | Write or replace the full plan.md for initial plans and major rewrites (execution truth; clears plan review comments) |
+| `hive_plan_patch` | Patch bounded plan sections/tasks with `expectedRevision` from `hive_plan_read`; clears plan review comments, revokes approval, and does not sync tasks |
+| `hive_plan_read` | Read plan.md and related review comments, including revision/hash; use `mode: "outline"` when full content is not needed |
 | `hive_plan_approve` | Approve plan for execution |
+
+#### Plan amendment notes
+
+- Use `hive_plan_write` for initial plans and major rewrites where resending the full execution plan is clearer.
+- Use `hive_plan_patch` for bounded review amendments by heading path or task number to avoid resending the whole plan.
+- If task sequencing, dependencies, or scope changed after a patch, run `hive_tasks_sync({ refreshPending: true })` explicitly after review/approval. The patch tool never auto-syncs tasks.
 
 ### Task Management (3 tools)
 | Tool | Purpose |
@@ -197,7 +204,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 |----------|-------|-------|
 | Feature | 2 | create, complete |
 | Repository Manifest | 3 | status, discover, update |
-| Plan | 3 | write, read, approve |
+| Plan | 4 | write, patch, read, approve |
 | Task | 3 | sync, create, update |
 | Worktree (task-backed) | 4 | start, create, commit, discard |
 | Ad-hoc Worktree | 4 | create, commit, merge, cleanup |
@@ -205,7 +212,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Merge | 1 | merge |
 | Context | 1 | write |
 | Status | 1 | status |
-| **Total** | **26** | |
+| **Total** | **27** | |
 
 ## Reserved Overview Convention
 

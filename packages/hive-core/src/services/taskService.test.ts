@@ -27,7 +27,7 @@ function setupFeature(featureName: string): void {
   // Create plan.md with a task
   fs.writeFileSync(
     path.join(featurePath, "plan.md"),
-    `# Plan\n\n### 1. Test Task\n\nDescription of the test task.\n`
+    `# Plan\n\n## Tasks\n\n### 1. Test Task\n\nDescription of the test task.\n`
   );
 }
 
@@ -369,6 +369,8 @@ describe("TaskService", () => {
       // Plan with explicit dependencies
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Setup Base
 
 Base setup task.
@@ -420,6 +422,8 @@ Build the UI layer.
 
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Independent Task A
 
 **Depends on**: none
@@ -455,6 +459,8 @@ Also independent.
 
       // Plan without any dependency annotations - should use implicit sequential
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. First Task
 
@@ -498,6 +504,8 @@ Do the third thing.
 
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Setup
 
 Setup task.
@@ -533,6 +541,8 @@ Build task.
 
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Independent Task
 
 **Depends on**: none
@@ -561,6 +571,8 @@ Independent task.
       );
 
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Base
 
@@ -608,6 +620,8 @@ Explicitly depends only on 1, not 2.
 
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Build API
 
 **Repos**: api
@@ -640,6 +654,8 @@ Build the API service.
 
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Coordinate Apps
 
 Repos: api, web
@@ -670,6 +686,8 @@ Coordinate both repos.
 
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Invalid Repo Task
 
 **Repos**: api, Web_App
@@ -696,6 +714,8 @@ Invalid repo annotation.
       );
 
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Rootless Task
 
@@ -729,6 +749,8 @@ No repository annotation.
       // Task 2 depends on non-existent task 99
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. First Task
 
 First task description.
@@ -757,6 +779,8 @@ Second task depends on unknown task 99.
       // Task 2 depends on itself
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. First Task
 
 First task description.
@@ -784,6 +808,8 @@ This task depends on itself.
 
       // Task 1 depends on task 2, task 2 depends on task 1
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Task A
 
@@ -814,6 +840,8 @@ Task B depends on A.
 
       // Cycle: 1->2->3->1
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Task A
 
@@ -850,6 +878,8 @@ Task C depends on B.
 
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Only Task
 
 **Depends on**: 5
@@ -872,6 +902,8 @@ Depends on non-existent task 5.
       );
 
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Task A
 
@@ -902,6 +934,8 @@ Cycle with A.
 
       // Valid DAG: 1 <- 2, 1 <- 3, 2 <- 4, 3 <- 4
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Base
 
@@ -1074,6 +1108,144 @@ Build task.
       expect(specContent).not.toContain("### Sequence Overview");
     });
 
+    it("builds spec sections only from the canonical level-two Tasks section", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Discovery
+
+### Tasks
+
+This is a discovery subsection, not the executable task section.
+
+\`\`\`markdown
+## Tasks
+
+### 1. Fake Task
+
+Do not sync this fenced example.
+\`\`\`
+
+### 1. Real Task
+
+This pre-task heading must not become the generated task spec section.
+
+## Tasks
+
+### 1. Real Task
+
+**Depends on**: none
+
+Use this real task section.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-real-task"]);
+      const specContent = fs.readFileSync(path.join(featurePath, "tasks", "01-real-task", "spec.md"), "utf-8");
+      expect(specContent).toContain("### 1. Real Task");
+      expect(specContent).toContain("Use this real task section.");
+      expect(specContent).not.toContain("This pre-task heading must not become");
+      expect(specContent).not.toContain("Do not sync this fenced example");
+    });
+
+    it("builds spec sections from non-fenced task headings inside canonical Tasks", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Tasks
+
+\`\`\`markdown
+### 1. Real Task
+
+Fenced fake section must not appear in spec.md.
+\`\`\`
+
+### 1. Real Task
+
+Real task section must appear in spec.md.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-real-task"]);
+      const specContent = fs.readFileSync(path.join(featurePath, "tasks", "01-real-task", "spec.md"), "utf-8");
+      expect(specContent).toContain("Real task section must appear in spec.md.");
+      expect(specContent).not.toContain("Fenced fake section must not appear");
+    });
+
+    it("parses task headings indented up to three spaces", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Tasks
+
+   ### 1. Indented Task
+
+Indented task body.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-indented-task"]);
+    });
+
+    it("rejects duplicate canonical level-two Tasks sections", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Tasks
+
+### 1. First Task
+
+First task.
+
+## tasks
+
+### 2. Second Task
+
+Second task.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      expect(() => service.sync(featureName)).toThrow(/multiple Tasks sections/i);
+    });
+
     it("handles whitespace variations in Depends on line", () => {
       const featureName = "test-feature";
       const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
@@ -1086,6 +1258,8 @@ Build task.
 
       // Whitespace variations: extra spaces, tabs, etc.
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Base Task
 
@@ -1131,6 +1305,8 @@ Task with spaces around comma.
       // Non-bold format
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. First
 
 First task.
@@ -1161,6 +1337,8 @@ Second depends on first (non-bold format).
 
       // "None" with capital N
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Independent Task
 
@@ -1210,6 +1388,44 @@ Do the work.
       expect(service.getRawStatus(featureName, "01-historical-context")).toBeNull();
     });
 
+    it("ignores fenced Tasks headings before the real Tasks section", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Discovery
+
+\`\`\`markdown
+## Tasks
+
+### 1. Hidden Task
+
+Should not become a task.
+\`\`\`
+
+## Tasks
+
+### 1. Real Task
+
+**Depends on**: none
+
+Do the work.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-real-task"]);
+      expect(service.getRawStatus(featureName, "01-hidden-task")).toBeNull();
+    });
+
     it("does not create tasks from ## Final Verification after ## Tasks", () => {
       const featureName = "test-feature";
       const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
@@ -1246,6 +1462,40 @@ Non-numbered verification gate.
 
       expect(result.created).toEqual(["01-implement"]);
       expect(service.getRawStatus(featureName, "01-run-full-test-suite")).toBeNull();
+    });
+
+    it("stops task parsing at a later H1 boundary", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      const planContent = `# Plan
+
+## Tasks
+
+### 1. Real Task
+
+**Depends on**: none
+
+Do the work.
+
+# Appendix
+
+### 2. Appendix Task-Like Heading
+
+Should not become a task.
+`;
+      fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-real-task"]);
+      expect(service.getRawStatus(featureName, "02-appendix-task-like-heading")).toBeNull();
     });
 
     it("detects indented ## Tasks headings and stops at indented top-level boundaries", () => {
@@ -1323,7 +1573,7 @@ Checklist only.
       expect(service.getRawStatus(featureName, "01-legacy-heading")).toBeNull();
     });
 
-    it("uses legacy whole-document parsing when plan has no ## Tasks heading", () => {
+    it("does not parse executable tasks when plan has no canonical ## Tasks heading", () => {
       const featureName = "test-feature";
       const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
       fs.mkdirSync(featurePath, { recursive: true });
@@ -1339,13 +1589,14 @@ Checklist only.
 
 **Depends on**: none
 
-Old plan format.
+This pre-task heading must not create an executable task.
 `;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planContent);
 
       const result = service.sync(featureName);
 
-      expect(result.created).toEqual(["01-legacy-task"]);
+      expect(result.created).toEqual([]);
+      expect(service.getRawStatus(featureName, "01-legacy-task")).toBeNull();
     });
   });
 
@@ -1362,6 +1613,8 @@ Old plan format.
 
       // Normal forward dependency
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Foundation
 
@@ -1400,6 +1653,8 @@ Test depends on build.
 
       // Diamond with cycle: 1->2, 1->3, 2->4, 3->4, 4->1
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Start
 
@@ -1443,6 +1698,8 @@ End depends on both branches.
       // Multiple unknown task numbers
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Only Task
 
 **Depends on**: 5, 10, 99
@@ -1459,6 +1716,8 @@ Depends on multiple non-existent tasks.
     it("should infer greenfield type when plan section has only Create: files", () => {
       const featureName = "test-feature";
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Greenfield Task
 
@@ -1486,6 +1745,8 @@ Create the new module.
       const featureName = "test-feature";
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Coverage Update
 
 **Depends on**: none
@@ -1512,6 +1773,8 @@ Add coverage for task specs.
       const featureName = "test-feature";
       const planContent = `# Plan
 
+## Tasks
+
 ### 1. Update Worker Prompt
 
 **Depends on**: none
@@ -1537,6 +1800,8 @@ Update prompt copy.
     it("should omit task type when no inference signal is present", () => {
       const featureName = "test-feature";
       const planContent = `# Plan
+
+## Tasks
 
 ### 1. Align Docs
 
@@ -1834,11 +2099,11 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const planV1 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
+      const planV1 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
       service.sync(featureName);
 
-      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup revised.\n\n### 2. Build\n\n**Depends on**: none\n\nBuild now independent.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup revised.\n\n### 2. Build\n\n**Depends on**: none\n\nBuild now independent.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
 
       const result = service.sync(featureName, { refreshPending: true });
@@ -1857,11 +2122,11 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const planV1 = `# Plan\n\n### 1. Build\n\n**Repos**: api\n\nBuild.\n`;
+      const planV1 = `# Plan\n\n## Tasks\n\n### 1. Build\n\n**Repos**: api\n\nBuild.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
       service.sync(featureName);
 
-      const planV2 = `# Plan\n\n### 1. Build\n\n**Repos**: web\n\nBuild revised.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 1. Build\n\n**Repos**: web\n\nBuild revised.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
 
       service.sync(featureName, { refreshPending: true });
@@ -1884,12 +2149,12 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const planV1 = `# Plan\n\n### 1. Build\n\n**Repos**: api\n\nBuild.\n`;
+      const planV1 = `# Plan\n\n## Tasks\n\n### 1. Build\n\n**Repos**: api\n\nBuild.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
       service.sync(featureName);
       service.update(featureName, "01-build", { status: "in_progress" });
 
-      const planV2 = `# Plan\n\n### 1. Build\n\n**Repos**: web\n\nBuild revised.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 1. Build\n\n**Repos**: web\n\nBuild revised.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
 
       service.sync(featureName, { refreshPending: true });
@@ -1910,11 +2175,11 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const planV1 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Old Task\n\n**Depends on**: 1\n\nOld task.\n`;
+      const planV1 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Old Task\n\n**Depends on**: 1\n\nOld task.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
       service.sync(featureName);
 
-      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
 
       const result = service.sync(featureName, { refreshPending: true });
@@ -1934,7 +2199,7 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const plan = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
+      const plan = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
       service.sync(featureName);
 
@@ -1958,13 +2223,13 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const plan = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
+      const plan = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
       service.sync(featureName);
 
       service.update(featureName, "01-setup", { status: "done", summary: "Done" });
 
-      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup revised.\n\n### 2. Build\n\n**Depends on**: none\n\nBuild revised.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup revised.\n\n### 2. Build\n\n**Depends on**: none\n\nBuild revised.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
 
       service.sync(featureName, { refreshPending: true });
@@ -1984,11 +2249,11 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const planV1 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nOld description.\n`;
+      const planV1 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nOld description.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV1);
       service.sync(featureName);
 
-      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nNew description with changes.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nNew description with changes.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
       service.sync(featureName, { refreshPending: true });
 
@@ -2007,13 +2272,13 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const plan = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
+      const plan = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
       service.sync(featureName);
 
       service.update(featureName, "02-build", { status: "in_progress" });
 
-      const planV2 = `# Plan\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
 
       service.sync(featureName, { refreshPending: true });
@@ -2033,7 +2298,7 @@ Align documentation wording.
         JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
       );
 
-      const plan = `# Plan\n\n### 1. TaskA\n\n**Depends on**: none\n\nA.\n\n### 2. TaskB\n\n**Depends on**: 1\n\nB.\n\n### 3. TaskC\n\n**Depends on**: 1\n\nC.\n`;
+      const plan = `# Plan\n\n## Tasks\n\n### 1. TaskA\n\n**Depends on**: none\n\nA.\n\n### 2. TaskB\n\n**Depends on**: 1\n\nB.\n\n### 3. TaskC\n\n**Depends on**: 1\n\nC.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
       service.sync(featureName);
 
@@ -2041,7 +2306,7 @@ Align documentation wording.
       service.update(featureName, "02-taskb", { status: "failed" });
       service.update(featureName, "03-taskc", { status: "partial" });
 
-      const planV2 = `# Plan\n\n### 1. NewTask\n\n**Depends on**: none\n\nNew.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 1. NewTask\n\n**Depends on**: none\n\nNew.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
 
       service.sync(featureName, { refreshPending: true });

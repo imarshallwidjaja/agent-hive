@@ -157,6 +157,8 @@ hive_feature_create({ name: "feature-name" })
 hive_plan_write({ content: "..." })
 \`\`\`
 
+Use \`hive_plan_write\` for the initial plan or a major rewrite. Use \`hive_plan_patch\` with \`expectedRevision\` from \`hive_plan_read\` for bounded review amendments. If task sequencing, dependencies, or scope changed, run \`hive_tasks_sync({ refreshPending: true })\` explicitly after review/approval; patching never syncs tasks automatically.
+
 Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only), Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify), and Final Verification.
 - Numbered tasks under \`## Tasks\` must represent worktree-backed implementation/docs/test changes
 - Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files

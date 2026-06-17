@@ -115,10 +115,61 @@ export interface ReviewCounts {
 
 export type PlanComment = ReviewThread;
 
+export type PlanReadMode = 'full' | 'outline';
+
+export interface PlanHeadingOutline {
+  level: number;
+  title: string;
+  path: string[];
+}
+
+export interface PlanTaskOutline {
+  taskNumber: number;
+  title: string;
+}
+
 export interface PlanReadResult {
   content: string;
   status: FeatureStatusType;
   comments: ReviewThread[];
+  revision: string;
+  contentHash: string;
+}
+
+export interface PlanReadOutlineResult {
+  status: FeatureStatusType;
+  comments: ReviewThread[];
+  revision: string;
+  contentHash: string;
+  headings: PlanHeadingOutline[];
+  taskList: PlanTaskOutline[];
+}
+
+export interface PlanReadOptions {
+  mode?: PlanReadMode;
+}
+
+export type PlanPatchOperation =
+  | {
+      type: 'replace_section';
+      headingPath: string[];
+      content: string;
+    }
+  | {
+      type: 'replace_task';
+      taskNumber: number;
+      content: string;
+    }
+  | {
+      type: 'insert_after_section';
+      headingPath: string[];
+      content: string;
+    };
+
+export interface PlanPatchResult {
+  revision: string;
+  contentHash: string;
+  changedSections: string[];
 }
 
 export interface TasksSyncResult {

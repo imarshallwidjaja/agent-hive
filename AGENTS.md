@@ -247,13 +247,13 @@ This is a **bun workspaces** monorepo:
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Hive Plugin Tools (26 total)
+### Hive Plugin Tools (27 total)
 
 | Domain | Tools |
 |--------|-------|
 | Feature | hive_feature_create, hive_feature_complete |
 | Repository Manifest | hive_repositories_status, hive_repositories_discover, hive_repositories_update |
-| Plan | hive_plan_write, hive_plan_read, hive_plan_approve |
+| Plan | hive_plan_write, hive_plan_patch, hive_plan_read, hive_plan_approve |
 | Task | hive_tasks_sync, hive_task_create, hive_task_update |
 | Worktree (task-backed) | hive_worktree_start, hive_worktree_create, hive_worktree_commit, hive_worktree_discard |
 | Ad-hoc Worktree | hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup |
@@ -265,9 +265,9 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 Task-backed worktree tools create feature/task records and appear in `hive_status`. Modern `hive_tasks_sync` reads numbered tasks only from `## Tasks`; pure suite or release checks belong in `## Final Verification` unless they write tracked artifacts. Ad-hoc worktree tools are for isolated Hive Builder work and do not create feature/task records. `hive_adhoc_worktree_create` defaults to auto-spawning a worker; in background-enabled sessions, set `autoSpawnWorker: false` only for inspection, routing, or setup-only ad-hoc worktrees. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task({ background: true, ... })` completion notifications and do not roll back files, branches, worktrees, commits, or reports. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
 
 **Tool access is filtered per agent role:**
-- **Hive** — all 26 tools (hybrid agent)
-- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_merge, hive_context_write, hive_status (20 tools — excludes hive_worktree_commit, hive_plan_write, and ad-hoc worktree tools)
-- **Architect** — hive_feature_create, hive_plan_write, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write, hive_status (12 tools)
+- **Hive** — all 27 tools (hybrid agent)
+- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_merge, hive_context_write, hive_status (20 tools — excludes hive_worktree_commit, hive_plan_write, hive_plan_patch, and ad-hoc worktree tools)
+- **Architect** — hive_feature_create, hive_plan_write, hive_plan_patch, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write, hive_status (13 tools)
 - **Hive Builder** — hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write (12 tools — ad-hoc worktree + repo manifest + background board + context; denied task-backed worktree, plan, feature, and status tools)
 - **Forager** — hive_plan_read, hive_worktree_commit, hive_context_write (3 tools)
 - **Scout** — hive_plan_read, hive_context_write, hive_status (3 tools)
@@ -278,7 +278,8 @@ Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `s
 ### Workflow
 
 1. `hive_feature_create(name)` - Create feature
-2. `hive_plan_write(content)` - Write plan.md
+2. `hive_plan_write(content)` - Write the initial plan.md or replace it for a major rewrite
+   Use `hive_plan_patch({ expectedRevision, operations })` for bounded review amendments from the current `hive_plan_read` revision. If task sequencing, dependencies, or scope changed, run `hive_tasks_sync({ refreshPending: true })` explicitly after review/approval; patching never syncs tasks automatically.
 3. User adds comments in VSCode → `hive_plan_read` to see them
 4. Revise plan → User approves
 5. `hive_tasks_sync()` - Generate tasks from plan

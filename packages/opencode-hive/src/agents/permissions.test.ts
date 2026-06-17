@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn, afterEach, mock } from 'bun:test';
 import { ConfigService } from 'hive-core';
 import * as path from 'path';
 import plugin from '../index';
+import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 
 const removedHiveSkillTool = ['hive', 'skill'].join('_');
 
@@ -429,6 +430,7 @@ describe('Per-agent tool filtering', () => {
     const architectTools = agents['architect-planner']?.tools;
     expect(architectTools).toBeTruthy();
     expect(architectTools!['hive_plan_write']).toBeUndefined();
+    expect(architectTools!['hive_plan_patch']).toBeUndefined();
     expect(architectTools!['hive_worktree_create']).toBe(false);
     expect(architectTools!['hive_worktree_start']).toBe(false);
     expect(architectTools!['hive_worktree_commit']).toBe(false);
@@ -442,8 +444,19 @@ describe('Per-agent tool filtering', () => {
     expect(swarmTools!['hive_worktree_create']).toBeUndefined();
     expect(swarmTools!['hive_worktree_start']).toBeUndefined();
     expect(swarmTools!['hive_plan_write']).toBe(false);
+    expect(swarmTools!['hive_plan_patch']).toBe(false);
     expect(swarmTools!['hive_worktree_commit']).toBe(false);
     expect(swarmTools!['hive_plan_approve']).toBeUndefined();
+  });
+
+  it('registers plan patch as a write-scoped planning tool', async () => {
+    expect(HIVE_TOOL_NAMES as readonly string[]).toContain('hive_plan_patch');
+
+    const agents = await buildConfig('dedicated');
+    expect(agents['architect-planner']?.tools?.['hive_plan_patch']).toBeUndefined();
+    expect(agents['swarm-orchestrator']?.tools?.['hive_plan_patch']).toBe(false);
+    expect(agents['scout-researcher']?.tools?.['hive_plan_patch']).toBe(false);
+    expect(agents['forager-worker']?.tools?.['hive_plan_patch']).toBe(false);
   });
 
   it('allows todo read/write only for hive, architect, and swarm primary roles', async () => {

@@ -100,6 +100,8 @@ hive_context_write({ name: "draft", content: "# Draft\\n## Requirements\\n## Dec
 hive_plan_write({ content: "..." })
 \`\`\`
 
+Use \`hive_plan_write\` for the initial plan or a major rewrite. Use \`hive_plan_patch\` with \`expectedRevision\` from \`hive_plan_read\` for bounded review amendments. If task sequencing, dependencies, or scope changed, run \`hive_tasks_sync({ refreshPending: true })\` explicitly after review/approval; patching never syncs tasks automatically.
+
 Plan MUST include:
 - ## Discovery (Original Request, Interview Summary, Research)
 - ## Non-Goals (Explicit exclusions)

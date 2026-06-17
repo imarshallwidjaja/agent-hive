@@ -52,6 +52,42 @@ interface ParsedTask {
   repoIds: string[] | null;
 }
 
+interface FenceState {
+  marker: '`' | '~';
+  length: number;
+}
+
+function getFenceTransition(line: string, fence: FenceState | null, nestedFences: FenceState[]): { opened?: FenceState; closedOuter: boolean } | null {
+  const closingFenceMatch = fence
+    ? line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)
+    : null;
+  if (closingFenceMatch) {
+    const marker = closingFenceMatch[1][0] as '`' | '~';
+    const length = closingFenceMatch[1].length;
+    const nestedFence = nestedFences.at(-1);
+    if (nestedFence && nestedFence.marker === marker && length === nestedFence.length) {
+      nestedFences.pop();
+      return { closedOuter: false };
+    }
+    if (fence.marker === marker && length >= fence.length) {
+      nestedFences.length = 0;
+      return { closedOuter: true };
+    }
+  }
+
+  const openingFenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
+  if (!openingFenceMatch) return null;
+
+  const marker = openingFenceMatch[1][0] as '`' | '~';
+  const length = openingFenceMatch[1].length;
+  const opened = { marker, length };
+  if (fence) {
+    nestedFences.push(opened);
+  }
+
+  return { opened, closedOuter: false };
+}
+
 export interface SyncOptions {
   refreshPending?: boolean;
 }
@@ -352,16 +388,47 @@ export class TaskService {
   private extractPlanSection(planContent: string | null, task: { name: string; order: number; folder: string }): string | null {
     if (!planContent) return null;
 
-    const escapedTitle = task.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const titleRegex = new RegExp(`###\\s*\\d+\\.\\s*${escapedTitle}[\\s\\S]*?(?=###|$)`, 'i');
-    let taskMatch = planContent.match(titleRegex);
+    const tasksSection = this.extractTasksSectionContent(planContent);
+    if (!tasksSection) return null;
 
-    if (!taskMatch && task.order > 0) {
-      const orderRegex = new RegExp(`###\\s*${task.order}\\.\\s*[^\\n]+[\\s\\S]*?(?=###|$)`, 'i');
-      taskMatch = planContent.match(orderRegex);
+    const orderRegex = new RegExp(`^ {0,3}###\\s*${task.order}\\.\\s+[^\\n]+\\s*$`, 'i');
+    const boundaryRegex = /^ {0,3}###\s+/;
+    const lines = tasksSection.split('\n');
+    let fence: FenceState | null = null;
+    const nestedFences: FenceState[] = [];
+    let sectionLines: string[] | null = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trimEnd();
+
+      const transition = getFenceTransition(line, fence, nestedFences);
+      if (transition) {
+        if (sectionLines) sectionLines.push(lines[i]);
+        if (!fence && transition.opened) {
+          fence = transition.opened;
+        } else if (transition.closedOuter) {
+          fence = null;
+        }
+        continue;
+      }
+
+      if (fence) {
+        if (sectionLines) sectionLines.push(lines[i]);
+        continue;
+      }
+
+      if (sectionLines) {
+        if (boundaryRegex.test(line)) break;
+        sectionLines.push(lines[i]);
+        continue;
+      }
+
+      if (task.order > 0 && orderRegex.test(line)) {
+        sectionLines = [lines[i]];
+      }
     }
 
-    return taskMatch ? taskMatch[0].trim() : null;
+    return sectionLines ? sectionLines.join('\n').trim() : null;
   }
 
   /**
@@ -710,14 +777,32 @@ export class TaskService {
 
   private extractTasksSectionContent(content: string): string | null {
     const lines = content.split('\n');
-    const tasksHeadingRegex = /^ {0,3}##\s+tasks\s*$/i;
-    const topLevelHeadingRegex = /^ {0,3}##\s+/;
+    const tasksHeadingRegex = /^ {0,3}##\s+tasks(?:\s+#+)?\s*$/i;
+    const sectionBoundaryRegex = /^ {0,3}#{1,2}\s+/;
     let startIndex = -1;
+    let tasksHeadingCount = 0;
+    let fence: FenceState | null = null;
+    const nestedFences: FenceState[] = [];
 
     for (let i = 0; i < lines.length; i++) {
+      const transition = getFenceTransition(lines[i].trimEnd(), fence, nestedFences);
+      if (transition) {
+        if (!fence && transition.opened) {
+          fence = transition.opened;
+        } else if (transition.closedOuter) {
+          fence = null;
+        }
+        continue;
+      }
+
+      if (fence) continue;
+
       if (tasksHeadingRegex.test(lines[i].trimEnd())) {
+        tasksHeadingCount += 1;
+        if (tasksHeadingCount > 1) {
+          throw new Error('Plan contains multiple Tasks sections');
+        }
         startIndex = i + 1;
-        break;
       }
     }
 
@@ -726,8 +811,26 @@ export class TaskService {
     }
 
     const sectionLines: string[] = [];
+    fence = null;
+    nestedFences.length = 0;
     for (let i = startIndex; i < lines.length; i++) {
-      if (topLevelHeadingRegex.test(lines[i])) {
+      const transition = getFenceTransition(lines[i].trimEnd(), fence, nestedFences);
+      if (transition) {
+        if (!fence && transition.opened) {
+          fence = transition.opened;
+        } else if (transition.closedOuter) {
+          fence = null;
+        }
+        sectionLines.push(lines[i]);
+        continue;
+      }
+
+      if (fence) {
+        sectionLines.push(lines[i]);
+        continue;
+      }
+
+      if (sectionBoundaryRegex.test(lines[i])) {
         break;
       }
       sectionLines.push(lines[i]);
@@ -738,9 +841,12 @@ export class TaskService {
 
   private parseTasksFromPlan(content: string): ParsedTask[] {
     const tasksSection = this.extractTasksSectionContent(content);
-    const parseSource = tasksSection !== null ? tasksSection : content;
+    if (tasksSection === null) {
+      return [];
+    }
+
     const tasks: ParsedTask[] = [];
-    const lines = parseSource.split('\n');
+    const lines = tasksSection.split('\n');
     
     let currentTask: ParsedTask | null = null;
     let descriptionLines: string[] = [];
@@ -749,10 +855,28 @@ export class TaskService {
     // Strips markdown formatting (**, *, etc.) and captures the value
     const dependsOnRegex = /^\s*\*{0,2}Depends\s+on\*{0,2}\s*:\s*(.+)$/i;
     const reposRegex = /^\s*\*{0,2}Repos\*{0,2}\s*:\s*(.*)$/i;
+    let fence: FenceState | null = null;
+    const nestedFences: FenceState[] = [];
     
     for (const line of lines) {
+      const transition = getFenceTransition(line.trimEnd(), fence, nestedFences);
+      if (transition) {
+        if (!fence && transition.opened) {
+          fence = transition.opened;
+        } else if (transition.closedOuter) {
+          fence = null;
+        }
+        if (currentTask) descriptionLines.push(line);
+        continue;
+      }
+
+      if (fence) {
+        if (currentTask) descriptionLines.push(line);
+        continue;
+      }
+
       // Check for task header: ### N. Task Name
-      const taskMatch = line.match(/^###\s+(\d+)\.\s+(.+)$/);
+      const taskMatch = line.match(/^ {0,3}###\s+(\d+)\.\s+(.+)$/);
       
       if (taskMatch) {
         // Save previous task if exists
@@ -776,8 +900,8 @@ export class TaskService {
         };
         descriptionLines = [];
       } else if (currentTask) {
-        // Check for end of task section (next ## header or ### without number)
-        if (line.match(/^ {0,3}##\s+/) || line.match(/^###\s+[^0-9]/)) {
+        // Check for end of task section (next task-level heading without a number)
+        if (line.match(/^ {0,3}###\s+[^0-9]/)) {
           currentTask.description = descriptionLines.join('\n').trim();
           tasks.push(currentTask);
           currentTask = null;
