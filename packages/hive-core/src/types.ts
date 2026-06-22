@@ -1,4 +1,4 @@
-export type FeatureStatusType = 'planning' | 'approved' | 'executing' | 'completed';
+export type FeatureStatusType = 'planning' | 'approved' | 'executing' | 'completed' | 'archived';
 
 export interface FeatureJson {
   name: string;
@@ -8,6 +8,8 @@ export interface FeatureJson {
   createdAt: string;
   approvedAt?: string;
   completedAt?: string;
+  archivedAt?: string;
+  archiveReason?: string;
 }
 
 export interface FeatureDirectoryInfo {
@@ -299,6 +301,10 @@ export interface BackgroundJobRecord {
   alias: string;
   scope?: BackgroundJobScope;
   ownership?: BackgroundJobOwnership;
+}
+
+export function isBackgroundJobArchived(job: { archivedAt?: string; ignoredAt?: string; reconciledAt?: string }): boolean {
+  return !!(job.archivedAt || job.ignoredAt || job.reconciledAt);
 }
 
 export interface BackgroundJobsJson {

@@ -41,7 +41,9 @@
     "onCommand:hive.comment.create",
     "onCommand:hive.comment.reply",
     "onCommand:hive.comment.resolve",
-    "onCommand:hive.comment.delete"
+    "onCommand:hive.comment.delete",
+    "onCommand:hive.feature.archive",
+    "onCommand:hive.job.archive"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -123,6 +125,14 @@
       {
         "command": "hive.comment.delete",
         "title": "Delete Comment"
+      },
+      {
+        "command": "hive.feature.archive",
+        "title": "Archive Feature"
+      },
+      {
+        "command": "hive.job.archive",
+        "title": "Archive Background Job"
       }
     ],
     "menus": {
@@ -150,11 +160,31 @@
         },
         {
           "command": "hive.openFile",
-          "when": "viewItem == background-job || viewItem == tracked-repository || viewItem == background-jobs-state || viewItem == tracked-repositories-state"
+          "when": "viewItem =~ /^background-job-/ || viewItem == tracked-repository || viewItem == background-jobs-state || viewItem == tracked-repositories-state"
         },
         {
           "command": "hive.copyToClipboard",
-          "when": "viewItem == background-job || viewItem == tracked-repository"
+          "when": "viewItem =~ /^background-job-/ || viewItem == tracked-repository"
+        },
+        {
+          "command": "hive.feature.archive",
+          "when": "viewItem =~ /^feature-(planning|approved|executing)$/",
+          "group": "inline"
+        },
+        {
+          "command": "hive.job.archive",
+          "when": "viewItem == background-job-archiveable",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "hive.feature.archive",
+          "when": "false"
+        },
+        {
+          "command": "hive.job.archive",
+          "when": "false"
         }
       ],
       "editor/title": [

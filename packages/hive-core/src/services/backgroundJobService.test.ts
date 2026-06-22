@@ -245,6 +245,21 @@ describe('BackgroundJobService', () => {
     expect(service.resolve('terminal-task')?.archiveReason).toBe('reconciled');
   });
 
+  it('does not mark archived jobs terminal-unreconciled when runtime state arrives later', () => {
+    registerJob(service, 'archived-late-terminal', 'archived-late-terminal-session');
+    let board = readBoard();
+    const record = board.jobs.find(job => job.taskId === 'archived-late-terminal')!;
+    record.archivedAt = new Date().toISOString();
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+
+    const terminal = service.markTerminal('archived-late-terminal', 'completed', { resultSummary: 'late result' });
+
+    expect(terminal.runtimeState).toBe('completed');
+    expect(terminal.resultSummary).toBe('late result');
+    expect(terminal.terminalUnreconciled).toBeUndefined();
+    expect(terminal.archivedAt).toBeDefined();
+  });
+
   it('marks prompt notification and acknowledgment separately from reconciliation', () => {
     registerJob(service, 'task-terminal', 'sess-terminal');
     registerJob(service, 'task-running', 'sess-running');
@@ -368,5 +383,76 @@ describe('BackgroundJobService', () => {
     expect(prompt).toContain('running');
     expect(prompt).toContain('cancel requested: need to stop');
     expect(prompt).toContain('feature-a');
+  });
+
+  it('markIgnored archives running jobs without mutating runtime state', () => {
+    registerJob(service, 'running-task', 'sess-running');
+
+    const archived = service.markIgnored('running-task', 'Operator archived stale lane');
+
+    expect(archived.runtimeState).toBe('running');
+    expect(archived.terminalUnreconciled).toBe(false);
+    expect(archived.ignoredAt).toBeDefined();
+    expect(archived.ignoreReason).toBe('Operator archived stale lane');
+    expect(archived.archivedAt).toBeDefined();
+    expect(archived.archiveReason).toBe('ignored');
+
+    const fetched = service.resolve('running-task')!;
+    expect(fetched.runtimeState).toBe('running');
+    expect(fetched.ignoredAt).toBeDefined();
+  });
+
+  it('markIgnored archives unknown/stale jobs using ignored fields', () => {
+    registerJob(service, 'unknown-task', 'sess-unknown');
+    service.updateRuntimeState('unknown-task', 'unknown');
+    service.markStale('unknown-task');
+
+    const archived = service.markIgnored('unknown-task', 'Stale unknown job, operator archived');
+
+    expect(archived.runtimeState).toBe('unknown');
+    expect(archived.staleAt).toBeDefined();
+    expect(archived.ignoredAt).toBeDefined();
+    expect(archived.ignoreReason).toBe('Stale unknown job, operator archived');
+    expect(archived.archivedAt).toBeDefined();
+    expect(archived.archiveReason).toBe('ignored');
+  });
+
+  it('markIgnored throws for missing jobs', () => {
+    expect(() => service.markIgnored('nonexistent', 'gone')).toThrow('Background job not found');
+  });
+
+  it('hides ignored-only records (no archivedAt) from default listScoped and status', () => {
+    registerJob(service, 'ignored-no-archive', 'sess-ignored-no-archive');
+    const board = readBoard();
+    const record = board.jobs.find(j => j.taskId === 'ignored-no-archive')!;
+    record.ignoredAt = new Date().toISOString();
+    record.reconciledAt = new Date().toISOString();
+    record.terminalUnreconciled = false;
+    delete (record as any).archivedAt;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+
+    const all = service.listScoped({ projectRoot: TEST_DIR }).map(job => job.taskId);
+    expect(all).not.toContain('ignored-no-archive');
+    expect(all.length).toBe(0);
+
+    const includeArchived = service.listScoped({ projectRoot: TEST_DIR }, { includeArchived: true }).map(job => job.taskId);
+    expect(includeArchived).toContain('ignored-no-archive');
+  });
+
+  it('hides reconciled-only records (no archivedAt) from default listScoped and status', () => {
+    registerJob(service, 'reconciled-no-archive', 'sess-reconciled-no-archive');
+    const board = readBoard();
+    const record = board.jobs.find(j => j.taskId === 'reconciled-no-archive')!;
+    record.reconciledAt = new Date().toISOString();
+    record.terminalUnreconciled = false;
+    delete (record as any).archivedAt;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+
+    const all = service.listScoped({ projectRoot: TEST_DIR }).map(job => job.taskId);
+    expect(all).not.toContain('reconciled-no-archive');
+    expect(all.length).toBe(0);
+
+    const includeArchived = service.listScoped({ projectRoot: TEST_DIR }, { includeArchived: true }).map(job => job.taskId);
+    expect(includeArchived).toContain('reconciled-no-archive');
   });
 });

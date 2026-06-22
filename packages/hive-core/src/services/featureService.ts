@@ -59,8 +59,14 @@ export class FeatureService {
     return readJson<FeatureJson>(getFeatureJsonPath(this.projectRoot, name));
   }
 
-  list(): string[] {
-    return listFeatureDirectories(this.projectRoot)
+  list(options?: { includeArchived?: boolean }): string[] {
+    const features = listFeatureDirectories(this.projectRoot);
+    return features
+      .filter((feature) => {
+        if (options?.includeArchived) return true;
+        const json = readJson<FeatureJson>(getFeatureJsonPath(this.projectRoot, feature.logicalName));
+        return json?.status !== 'archived';
+      })
       .map((feature) => feature.logicalName)
       .sort((left, right) => left.localeCompare(right));
   }
@@ -69,7 +75,7 @@ export class FeatureService {
     const activeName = this.readActiveFeatureName();
     if (activeName) {
       const activeFeature = this.get(activeName);
-      if (activeFeature && activeFeature.status !== 'completed') {
+      if (activeFeature && isActiveFeatureStatus(activeFeature.status)) {
         return activeFeature;
       }
     }
@@ -77,7 +83,7 @@ export class FeatureService {
     const features = this.list();
     for (const name of features) {
       const feature = this.get(name);
-      if (feature && feature.status !== 'completed') {
+      if (feature && isActiveFeatureStatus(feature.status)) {
         return feature;
       }
     }
@@ -105,6 +111,9 @@ export class FeatureService {
     }
     if (status === 'completed' && !feature.completedAt) {
       feature.completedAt = new Date().toISOString();
+    }
+    if (status === 'archived' && !feature.archivedAt) {
+      feature.archivedAt = new Date().toISOString();
     }
 
     writeJson(getFeatureJsonPath(this.projectRoot, name), feature);
@@ -166,6 +175,22 @@ export class FeatureService {
     return this.updateStatus(name, 'completed');
   }
 
+  archive(name: string, reason?: string): FeatureJson {
+    const feature = this.get(name);
+    if (!feature) throw new Error(`Feature '${name}' not found`);
+
+    feature.status = 'archived';
+    if (!feature.archivedAt) {
+      feature.archivedAt = new Date().toISOString();
+    }
+    if (reason) {
+      feature.archiveReason = reason;
+    }
+
+    writeJson(getFeatureJsonPath(this.projectRoot, name), feature);
+    return feature;
+  }
+
   setSession(name: string, sessionId: string): void {
     const feature = this.get(name);
     if (!feature) throw new Error(`Feature '${name}' not found`);
@@ -188,4 +213,8 @@ export class FeatureService {
     const activeFeature = fs.readFileSync(activeFeaturePath, 'utf-8').trim();
     return activeFeature || null;
   }
+}
+
+function isActiveFeatureStatus(status: FeatureStatusType): boolean {
+  return status === 'planning' || status === 'approved' || status === 'executing';
 }

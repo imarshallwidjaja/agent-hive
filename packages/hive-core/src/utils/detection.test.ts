@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { detectContext, getFeatureData, listFeatures } from './detection';
+import { detectContext, getActiveFeatureName, getFeatureData, listFeatures, resolveActiveFeatureName } from './detection';
 
 const tempDirs: string[] = [];
 
@@ -45,5 +45,28 @@ describe('detection', () => {
     expect(result.feature).toBe('indexed-feature');
     expect(result.task).toBe('01-task');
     expect(result.projectRoot).toBe('/repo');
+  });
+
+  it('getActiveFeatureName returns null for archived active-pointer feature', () => {
+    const projectRoot = createProject();
+    writeFeature(projectRoot, '01_archived-pointer', 'archived-pointer');
+    const featurePath = path.join(projectRoot, '.hive', 'features', '01_archived-pointer', 'feature.json');
+    const feature = JSON.parse(fs.readFileSync(featurePath, 'utf-8'));
+    feature.status = 'archived';
+    fs.writeFileSync(featurePath, JSON.stringify(feature));
+    fs.writeFileSync(path.join(projectRoot, '.hive', 'active-feature'), 'archived-pointer\n');
+
+    expect(getActiveFeatureName(projectRoot)).toBeNull();
+  });
+
+  it('resolveActiveFeatureName returns null when only archived features exist', () => {
+    const projectRoot = createProject();
+    writeFeature(projectRoot, '01_archived-only', 'archived-only');
+    const featurePath = path.join(projectRoot, '.hive', 'features', '01_archived-only', 'feature.json');
+    const feature = JSON.parse(fs.readFileSync(featurePath, 'utf-8'));
+    feature.status = 'archived';
+    fs.writeFileSync(featurePath, JSON.stringify(feature));
+
+    expect(resolveActiveFeatureName(projectRoot)).toBeNull();
   });
 });

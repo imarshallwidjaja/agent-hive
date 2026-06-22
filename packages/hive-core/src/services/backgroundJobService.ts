@@ -8,6 +8,7 @@ import type {
   BackgroundJobsJson,
   BackgroundJobScope,
 } from '../types.js';
+import { isBackgroundJobArchived } from '../types.js';
 
 export interface RegisterBackgroundJobInput {
   taskId: string;
@@ -222,7 +223,7 @@ export class BackgroundJobService {
       let changed = false;
 
       changed = this.applyIfChanged(record, 'runtimeState', runtimeState) || changed;
-      if (!record.reconciledAt && !record.ignoredAt) {
+      if (!isBackgroundJobArchived(record)) {
         changed = this.applyIfChanged(record, 'terminalUnreconciled', true) || changed;
       }
       if (!record.runtimeCompletedAt) {
@@ -274,6 +275,11 @@ export class BackgroundJobService {
   markIgnored(identifier: string, ignoreReason: string): BackgroundJobRecord {
     return this.updateBoard((board) => {
       const record = this.findRecord(board, identifier);
+
+      if (record.archivedAt || record.ignoredAt || record.reconciledAt) {
+        return record;
+      }
+
       let changed = false;
 
       changed = this.applyIfChanged(record, 'terminalUnreconciled', false) || changed;
@@ -382,7 +388,7 @@ export class BackgroundJobService {
 
   listScoped(filter: BackgroundJobScopeFilter = {}, options: BackgroundJobListOptions = {}): BackgroundJobRecord[] {
     return this.readBoard().jobs.filter((job) => {
-      if (job.archivedAt && options.includeArchived !== true) {
+      if (!options.includeArchived && isBackgroundJobArchived(job)) {
         return false;
       }
       const scope = job.scope || {};

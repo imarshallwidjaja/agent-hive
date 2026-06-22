@@ -235,9 +235,50 @@ describe('HiveSidebarProvider', () => {
 
     expect(rootItems.map(item => item.label)).toEqual([]);
   });
+
+  it('shows archived features in a collapsed Archived group and excludes them from pending/active groups', async () => {
+    const featureService = new FeatureService(testRoot);
+    const planService = new PlanService(testRoot);
+
+    featureService.create('active-feature');
+    featureService.create('archived-feature');
+
+    planService.write('active-feature', '# Plan\n');
+    planService.write('archived-feature', '# Plan\n');
+
+    const archivedPath = path.join(testRoot, '.hive', 'features', '02_archived-feature');
+    setFeatureStatus(archivedPath, 'archived');
+
+    const provider = new HiveSidebarProvider(testRoot);
+    const groups = await provider.getChildren();
+    const statusGroups = groups.filter(item => 'groupName' in item);
+
+    expect(statusGroups.map(g => g.groupName)).toContain('Archived');
+
+    const archivedGroup = statusGroups.find(g => g.groupName === 'Archived');
+    expect(archivedGroup?.features.map(f => f.name)).toEqual(['archived-feature']);
+    expect(archivedGroup?.features[0]?.description).toContain('Archived');
+
+    const pendingGroup = statusGroups.find(g => g.groupName === 'Pending');
+    expect(pendingGroup?.features.map(f => f.name)).not.toContain('archived-feature');
+  });
+
+  it('archived features get context value for archive command', async () => {
+    const featureService = new FeatureService(testRoot);
+    featureService.create('archiveable-feature');
+
+    const provider = new HiveSidebarProvider(testRoot);
+    const groups = await provider.getChildren();
+    const pendingGroup = groups.find(item => 'groupName' in item && item.groupName === 'Pending');
+    if (pendingGroup && 'features' in pendingGroup) {
+      const feature = pendingGroup.features.find(f => f.name === 'archiveable-feature');
+      expect(feature).toBeDefined();
+      expect((feature as any).contextValue).toBe('feature-planning');
+    }
+  });
 });
 
-function setFeatureStatus(featurePath: string, status: 'planning' | 'executing' | 'completed'): void {
+function setFeatureStatus(featurePath: string, status: 'planning' | 'executing' | 'completed' | 'archived'): void {
   const featureJsonPath = path.join(featurePath, 'feature.json');
   const feature = JSON.parse(fs.readFileSync(featureJsonPath, 'utf-8')) as { status: string };
   feature.status = status;

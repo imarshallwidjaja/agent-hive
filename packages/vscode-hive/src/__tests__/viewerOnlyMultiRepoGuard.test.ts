@@ -64,8 +64,9 @@ describe('viewer-only VS Code package under multi-repo readiness', () => {
     expect(pkg.contributes?.[lmKey]).toBeUndefined();
   });
 
-  it('README documents the viewer-only stance', () => {
+  it('README documents the viewer + limited operator archive stance', () => {
     const readme = fs.readFileSync(readmePath, 'utf8');
-    expect(readme.toLowerCase()).toContain('viewer-only');
+    expect(readme.toLowerCase()).toContain('viewer');
+    expect(readme).toContain('archive');
   });
 });

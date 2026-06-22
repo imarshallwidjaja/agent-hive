@@ -1,5 +1,6 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import type { BackgroundJobRecord, BackgroundJobService, BackgroundPendingLaunch } from 'hive-core';
+import { isBackgroundJobArchived } from 'hive-core';
 
 type ToolContext = {
   sessionID?: string;
@@ -43,19 +44,21 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           return json(disabledResponse());
         }
 
-        const jobs = options.backgroundJobService
+        const allJobs = options.backgroundJobService
           .listScoped({ projectRoot: options.projectRoot }, { includeArchived: includeArchived === true })
           .filter(job => isJobVisible(job, toolContext as ToolContext))
           .filter(job => includeStale === true || !job.staleAt)
           .filter(job => matchesOptionalScope(job, { feature, task, adHocRunId, workflow }));
+        const archivedJobs = allJobs.filter(job => isBackgroundJobArchived(job));
+        const activeJobs = allJobs.filter(job => !isBackgroundJobArchived(job));
         const pendingLaunches = options.backgroundJobService
           .listPendingLaunches({ projectRoot: options.projectRoot })
           .filter(pending => isPendingLaunchVisible(pending, toolContext as ToolContext))
           .filter(pending => matchesOptionalScope(pending, { feature, task, adHocRunId, workflow }));
-        const nextActions = buildNextActions(jobs, pendingLaunches);
-        const waitingForNativeCompletion = buildNativeCompletionWaits(jobs);
-        const orchestrationBurden = buildOrchestrationBurden(jobs, pendingLaunches);
-        const recommendedNextAction = buildRecommendedNextAction(jobs, pendingLaunches);
+        const nextActions = buildNextActions(activeJobs, pendingLaunches);
+        const waitingForNativeCompletion = buildNativeCompletionWaits(activeJobs);
+        const orchestrationBurden = buildOrchestrationBurden(activeJobs, pendingLaunches);
+        const recommendedNextAction = buildRecommendedNextAction(activeJobs, pendingLaunches);
         const schedulerGuidance = orchestrationBurden.completionNotificationsPending > 0
           && orchestrationBurden.reconcileItemsRequired === 0
           && orchestrationBurden.pendingLaunches === 0
@@ -68,7 +71,8 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         return json({
           success: true,
           scope: currentScope(options.projectRoot, toolContext as ToolContext),
-          jobs: jobs.map(formatJob),
+          jobs: allJobs.map(formatJob),
+          archivedCount: archivedJobs.length > 0 ? archivedJobs.length : undefined,
           pendingLaunches: pendingLaunches.length > 0 ? pendingLaunches.map(formatPendingLaunch) : undefined,
           waitingForNativeCompletion: waitingForNativeCompletion.length > 0 ? waitingForNativeCompletion : undefined,
           nextActions: nextActions.length > 0 ? nextActions : undefined,
@@ -189,6 +193,10 @@ function resolveVisibleJob(
 
   if (job.scope?.projectRoot !== projectRoot || !isJobVisible(job, toolContext)) {
     return failure('job_not_in_scope', `Background job ${trimmedIdentifier} is not visible to this primary session.`);
+  }
+
+  if (isBackgroundJobArchived(job)) {
+    return failure('job_archived', `Background job ${trimmedIdentifier} is archived and cannot be acted on through management tools.`);
   }
 
   return { success: true, job };
@@ -434,9 +442,11 @@ function currentScope(projectRoot: string, toolContext: ToolContext): Record<str
 
 function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
   const terminal = isTerminalRuntimeState(job.runtimeState);
-  const visibility = job.archivedAt
+  const archived = isBackgroundJobArchived(job);
+  const actionRequired = !archived && terminal && job.terminalUnreconciled === true;
+  const visibility = archived
     ? (job.archiveReason === 'ignored' ? 'ignored_archived' : 'archived_after_reconcile')
-    : (terminal && job.terminalUnreconciled === true ? 'terminal_unreconciled' : 'active');
+    : (actionRequired ? 'terminal_unreconciled' : 'active');
 
   return {
     taskId: job.taskId,
@@ -474,7 +484,7 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
       retryOf: job.retryOf,
       supersedes: job.supersedes,
       visibility,
-      actionRequired: terminal && job.terminalUnreconciled === true,
+      actionRequired,
     }),
     scope: job.scope,
     ownership: job.ownership,

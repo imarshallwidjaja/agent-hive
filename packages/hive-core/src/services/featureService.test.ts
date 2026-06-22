@@ -129,4 +129,73 @@ describe('FeatureService', () => {
     writeActiveFeature('done-feature');
     expect(service.getActive()).toMatchObject({ name: 'alpha-feature' });
   });
+
+  it('archive sets status to archived with timestamp and optional reason', () => {
+    setupFeature('archive-me');
+    const result = service.archive('archive-me', 'No longer needed');
+
+    expect(result.status).toBe('archived');
+    expect(result.archivedAt).toBeDefined();
+    expect(result.archiveReason).toBe('No longer needed');
+
+    const loaded = service.get('archive-me')!;
+    expect(loaded.status).toBe('archived');
+    expect(loaded.archivedAt).toBeDefined();
+    expect(loaded.archiveReason).toBe('No longer needed');
+  });
+
+  it('archive works without a reason', () => {
+    setupFeature('no-reason');
+    const result = service.archive('no-reason');
+
+    expect(result.status).toBe('archived');
+    expect(result.archivedAt).toBeDefined();
+    expect(result.archiveReason).toBeUndefined();
+  });
+
+  it('archive throws when feature does not exist', () => {
+    expect(() => service.archive('nonexistent')).toThrow("Feature 'nonexistent' not found");
+  });
+
+  it('getActive excludes archived features', () => {
+    setupFeature('active-feature');
+    setupIndexedFeature('01_archived-feature', 'archived-feature');
+    service.archive('archived-feature', 'Done with this');
+
+    expect(service.getActive()).toMatchObject({ name: 'active-feature' });
+  });
+
+  it('getActive skips archived when it is the active-feature pointer', () => {
+    setupFeature('archived-alpha');
+    writeActiveFeature('archived-alpha');
+    service.archive('archived-alpha', 'Not worth it');
+
+    expect(service.getActive()).toBeNull();
+  });
+
+  it('default list excludes archived features', () => {
+    setupFeature('still-here');
+    setupIndexedFeature('01_archived-visible', 'archived-visible');
+    service.archive('archived-visible', 'archived');
+
+    expect(service.list()).not.toContain('archived-visible');
+    expect(service.list()).toContain('still-here');
+  });
+
+  it('list with includeArchived includes archived features', () => {
+    setupFeature('still-here');
+    setupIndexedFeature('01_archived-visible', 'archived-visible');
+    service.archive('archived-visible', 'archived');
+
+    expect(service.list({ includeArchived: true })).toContain('archived-visible');
+    expect(service.list({ includeArchived: true })).toContain('still-here');
+  });
+
+  it('updateStatus to archived sets archivedAt timestamp', () => {
+    setupFeature('arch-status');
+    const result = service.updateStatus('arch-status', 'archived');
+
+    expect(result.status).toBe('archived');
+    expect(result.archivedAt).toBeDefined();
+  });
 });

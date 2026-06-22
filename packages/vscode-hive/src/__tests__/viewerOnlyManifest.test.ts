@@ -16,7 +16,7 @@ describe('viewer-only VS Code manifest', () => {
     expect(pkg.devDependencies['@types/vscode']).toBe('1.64.0');
   });
 
-  it('contributes only viewer and review commands', () => {
+  it('contributes viewer, review, and limited operator archive commands', () => {
     const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
     const lmKey = ['language', 'Model', 'Tools'].join('');
     expect(pkg.contributes[lmKey]).toBeUndefined();
@@ -27,6 +27,8 @@ describe('viewer-only VS Code manifest', () => {
       'hive.comment.delete',
       'hive.comment.reply',
       'hive.comment.resolve',
+      'hive.feature.archive',
+      'hive.job.archive',
       'hive.openFile',
       'hive.plan.doneReview',
       'hive.refresh',
@@ -47,11 +49,13 @@ describe('viewer-only VS Code manifest', () => {
     ].sort());
   });
 
-  it('documents background and repository views as viewer-only surfaces', () => {
+  it('documents background and repository views as viewer-first surfaces with limited archive actions', () => {
     const readme = fs.readFileSync(readmePath, 'utf8');
 
     expect(readme).toContain('Background Jobs');
     expect(readme).toContain('Tracked Repositories');
-    expect(readme).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, reconcile jobs, or ignore jobs');
+    expect(readme).toContain('does not start worktrees, commit changes, merge branches, cancel jobs');
+    expect(readme).toContain('Archive Background Job');
+    expect(readme).toContain('Archive Feature');
   });
 });

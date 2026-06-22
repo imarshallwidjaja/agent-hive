@@ -86,7 +86,12 @@ export function getActiveFeatureName(projectRoot: string): string | null {
   }
 
   const feature = getFeatureData(projectRoot, activeFeatureName);
-  if (!feature || feature.status === 'completed') {
+  if (!feature) {
+    return null;
+  }
+
+  const activeStatuses: FeatureJson['status'][] = ['planning', 'approved', 'executing'];
+  if (!activeStatuses.includes(feature.status)) {
     return null;
   }
 
@@ -99,7 +104,11 @@ export function resolveActiveFeatureName(projectRoot: string): string | null {
     return activeFeatureName;
   }
 
-  return listFeatures(projectRoot).find((featureName) => getFeatureData(projectRoot, featureName)?.status !== 'completed') ?? null;
+  const activeStatuses: FeatureJson['status'][] = ['planning', 'approved', 'executing'];
+  return listFeatures(projectRoot).find((featureName) => {
+    const data = getFeatureData(projectRoot, featureName);
+    return data && activeStatuses.includes(data.status);
+  }) ?? null;
 }
 
 export function getFeatureData(projectRoot: string, featureName: string): FeatureJson | null {

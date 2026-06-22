@@ -516,6 +516,227 @@ describe('background management tools', () => {
     expect(result.job?.coordination.cancelReason).toBe('cancel requested');
   });
 
+  it('hive_background_reconcile cannot act on archived jobs by direct identifier', async () => {
+    registerScopedJob(service, { taskId: 'archived-job', sessionId: 'archived-session' });
+    service.markTerminal('archived-job', 'completed', { resultSummary: 'done' });
+    service.markReconciled('archived-job', { reconciliationSummary: 'archived' });
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{ success?: boolean; reason?: string }>(await tools.hive_background_reconcile.execute(
+      { identifier: 'archived-job', decision: 'ignored', summary: 'Should not be possible.' },
+      createToolContext(),
+    ));
+
+    expect(result).toMatchObject({ success: false, reason: 'job_archived' });
+    expect(service.resolve('archived-job')?.archiveReason).toBe('reconciled');
+  });
+
+  it('hive_background_cancel cannot act on archived jobs by direct identifier', async () => {
+    registerScopedJob(service, { taskId: 'archived-cancel', sessionId: 'archived-cancel-session' });
+    service.markTerminal('archived-cancel', 'completed', { resultSummary: 'done' });
+    service.markIgnored('archived-cancel', 'archived by operator');
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{ success?: boolean; reason?: string }>(await tools.hive_background_cancel.execute(
+      { identifier: 'archived-cancel', reason: 'Should not reach cancel.' },
+      createToolContext(),
+    ));
+
+    expect(result).toMatchObject({ success: false, reason: 'job_archived' });
+  });
+
+  it('hive_background_status default output hides operator-archived jobs, includeArchived shows them', async () => {
+    registerScopedJob(service, { taskId: 'hidden-job', sessionId: 'hidden-session' });
+    service.markTerminal('hidden-job', 'completed', { resultSummary: 'done' });
+    service.markReconciled('hidden-job', { reconciliationSummary: 'archived' });
+    registerScopedJob(service, { taskId: 'visible-job', sessionId: 'visible-session' });
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const defaultRaw = await tools.hive_background_status.execute({}, createToolContext());
+    const defaultResult = parseToolJson<{ jobs?: Array<{ taskId: string }> }>(defaultRaw);
+    expect(defaultResult.jobs?.map(j => j.taskId)).not.toContain('hidden-job');
+    expect(defaultResult.jobs?.map(j => j.taskId)).toContain('visible-job');
+
+    const includeArchivedRaw = await tools.hive_background_status.execute({ includeArchived: true }, createToolContext());
+    const includeArchivedResult = parseToolJson<{ jobs?: Array<{ taskId: string }> }>(includeArchivedRaw);
+    expect(includeArchivedResult.jobs?.map(j => j.taskId)).toContain('hidden-job');
+  });
+
+  it('hive_background_reconcile rejects jobs with only ignoredAt (no archivedAt) as archived', async () => {
+    registerScopedJob(service, { taskId: 'ignored-no-archive-tool', sessionId: 'ignored-no-archive-tool-session' });
+    let board = readBoard();
+    const rec = board.jobs.find(j => j.taskId === 'ignored-no-archive-tool')!;
+    rec.ignoredAt = new Date().toISOString();
+    rec.reconciledAt = new Date().toISOString();
+    delete (rec as any).archivedAt;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+    board = readBoard();
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{ success?: boolean; reason?: string }>(await tools.hive_background_reconcile.execute(
+      { identifier: 'ignored-no-archive-tool', decision: 'reconciled', summary: 'Should reject.' },
+      createToolContext(),
+    ));
+
+    expect(result).toMatchObject({ success: false, reason: 'job_archived' });
+  });
+
+  it('hive_background_reconcile rejects jobs with only reconciledAt (no archivedAt) as archived', async () => {
+    registerScopedJob(service, { taskId: 'reconciled-no-archive-tool', sessionId: 'reconciled-no-archive-tool-session' });
+    let board = readBoard();
+    const rec = board.jobs.find(j => j.taskId === 'reconciled-no-archive-tool')!;
+    rec.reconciledAt = new Date().toISOString();
+    delete (rec as any).archivedAt;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+    board = readBoard();
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{ success?: boolean; reason?: string }>(await tools.hive_background_reconcile.execute(
+      { identifier: 'reconciled-no-archive-tool', decision: 'reconciled', summary: 'Should reject.' },
+      createToolContext(),
+    ));
+
+    expect(result).toMatchObject({ success: false, reason: 'job_archived' });
+  });
+
+  it('hive_background_status with includeArchived includes archived running jobs in jobs but excludes from scheduler/action calculations', async () => {
+    registerScopedJob(service, { taskId: 'archived-running', sessionId: 'archived-running-session' });
+    let board = readBoard();
+    let rec = board.jobs.find(j => j.taskId === 'archived-running')!;
+    rec.archivedAt = new Date().toISOString();
+    rec.archiveReason = 'reconciled';
+    rec.reconciledAt = new Date().toISOString();
+    rec.terminalUnreconciled = false;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+    registerScopedJob(service, { taskId: 'active-running', sessionId: 'active-running-session' });
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const raw = await tools.hive_background_status.execute({ includeArchived: true }, createToolContext());
+    const result = parseToolJson<{
+      jobs?: Array<{ taskId: string; coordination: { visibility: string } }>;
+      archivedCount?: number;
+      nextActions?: unknown[];
+      recommendedNextAction?: { action: string; reasonCode: string };
+      orchestrationBurden?: { visibleLanes: number; actionableLanes: number; completionNotificationsPending: number; reconcileItemsRequired: number };
+      schedulerGuidance?: { reason: string };
+    }>(raw);
+
+    expect(result.jobs?.map(j => j.taskId)).toContain('archived-running');
+    expect(result.jobs?.map(j => j.taskId)).toContain('active-running');
+    expect(result.archivedCount).toBe(1);
+    expect(result.nextActions).toBeUndefined();
+    expect(result.recommendedNextAction?.action).toBe('wait_for_native_completion');
+    expect(result.orchestrationBurden).toMatchObject({
+      visibleLanes: 1,
+      actionableLanes: 0,
+      completionNotificationsPending: 1,
+      reconcileItemsRequired: 0,
+    });
+    expect(result.schedulerGuidance).toBeDefined();
+  });
+
+  it('hive_background_status formats ignored-only and reconciled-only records as archived/inert visibility', async () => {
+    registerScopedJob(service, { taskId: 'ignored-only-job', sessionId: 'ignored-only-session' });
+    let board = readBoard();
+    let rec = board.jobs.find(j => j.taskId === 'ignored-only-job')!;
+    rec.ignoredAt = new Date().toISOString();
+    delete (rec as any).archivedAt;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+
+    registerScopedJob(service, { taskId: 'reconciled-only-job', sessionId: 'reconciled-only-session' });
+    board = readBoard();
+    rec = board.jobs.find(j => j.taskId === 'reconciled-only-job')!;
+    rec.reconciledAt = new Date().toISOString();
+    rec.terminalUnreconciled = false;
+    delete (rec as any).archivedAt;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const raw = await tools.hive_background_status.execute({ includeArchived: true }, createToolContext());
+    const result = parseToolJson<{
+      jobs?: Array<{ taskId: string; coordination: { visibility: string; archivedAt?: string; reconciledAt?: string; ignoredAt?: string } }>;
+      archivedCount?: number;
+    }>(raw);
+
+    expect(result.archivedCount).toBe(2);
+    const ignoredOnly = result.jobs?.find(j => j.taskId === 'ignored-only-job');
+    expect(ignoredOnly?.coordination.visibility).toBe('archived_after_reconcile');
+    expect(ignoredOnly?.coordination.archivedAt).toBeUndefined();
+    expect(ignoredOnly?.coordination.ignoredAt).toBeDefined();
+    const reconciledOnly = result.jobs?.find(j => j.taskId === 'reconciled-only-job');
+    expect(reconciledOnly?.coordination.visibility).toBe('archived_after_reconcile');
+    expect(reconciledOnly?.coordination.archivedAt).toBeUndefined();
+    expect(reconciledOnly?.coordination.reconciledAt).toBeDefined();
+  });
+
+  it('hive_background_status keeps later-terminal archived jobs inert with includeArchived', async () => {
+    registerScopedJob(service, { taskId: 'archived-late-terminal', sessionId: 'archived-late-terminal-session' });
+    let board = readBoard();
+    const record = board.jobs.find(j => j.taskId === 'archived-late-terminal')!;
+    record.archivedAt = new Date().toISOString();
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+    service.markTerminal('archived-late-terminal', 'completed', { resultSummary: 'late result' });
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const raw = await tools.hive_background_status.execute({ includeArchived: true }, createToolContext());
+    const result = parseToolJson<{
+      jobs?: Array<{ taskId: string; coordination: { terminalUnreconciled?: boolean; visibility: string; actionRequired?: boolean } }>;
+      recommendedNextAction?: { action: string; reasonCode: string };
+      orchestrationBurden?: { visibleLanes: number; actionableLanes: number; reconcileItemsRequired: number };
+    }>(raw);
+
+    const archived = result.jobs?.find(j => j.taskId === 'archived-late-terminal');
+    expect(archived?.coordination.visibility).toBe('archived_after_reconcile');
+    expect(archived?.coordination.terminalUnreconciled).toBeUndefined();
+    expect(archived?.coordination.actionRequired).toBe(false);
+    expect(result.recommendedNextAction?.action).toBe('idle');
+    expect(result.orchestrationBurden).toMatchObject({
+      visibleLanes: 0,
+      actionableLanes: 0,
+      reconcileItemsRequired: 0,
+    });
+  });
+
   it('background tools are inert and do not mutate the board when the experiment is disabled', async () => {
     registerScopedJob(service, { taskId: 'disabled-task', sessionId: 'disabled-session' });
     const tools = createBackgroundTools({

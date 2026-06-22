@@ -235,6 +235,73 @@ class HiveExtension {
         
         await vscode.env.clipboard.writeText(feedback)
         vscode.window.showInformationMessage('Hive: Feedback copied to clipboard for your next planning step.')
+      }),
+
+      vscode.commands.registerCommand('hive.feature.archive', async (featureItem: any) => {
+        if (!this.workspaceRoot) {
+          vscode.window.showErrorMessage('Hive: No .hive directory found')
+          return
+        }
+
+        const featureName = featureItem?.name || featureItem?.label
+        if (!featureName) {
+          vscode.window.showErrorMessage('Hive: No feature selected')
+          return
+        }
+
+        const confirmResult = await vscode.window.showWarningMessage(
+          `Archive feature "${featureName}"? This removes it from active feature selection and normal agent status, but keeps its .hive files for audit or manual recovery. It does not delete worktrees, branches, tasks, or commits.`,
+          { modal: true },
+          'Archive Feature'
+        )
+        if (confirmResult !== 'Archive Feature') return
+
+        const reason = await vscode.window.showInputBox({
+          prompt: 'Reason for archiving (optional)',
+          placeHolder: 'e.g., No longer needed'
+        })
+        if (reason === undefined) return
+
+        const { FeatureService } = await import('hive-core')
+        const service = new FeatureService(this.workspaceRoot)
+        service.archive(featureName, reason || undefined)
+
+        vscode.window.showInformationMessage(`Hive: Feature "${featureName}" archived.`)
+        this.sidebarProvider?.refresh()
+      }),
+
+      vscode.commands.registerCommand('hive.job.archive', async (jobItem: any) => {
+        if (!this.workspaceRoot) {
+          vscode.window.showErrorMessage('Hive: No .hive directory found')
+          return
+        }
+
+        const taskId = jobItem?.taskId
+        if (!taskId) {
+          vscode.window.showErrorMessage('Hive: No background job selected')
+          return
+        }
+
+        const label = jobItem?.alias || taskId
+        const confirmResult = await vscode.window.showWarningMessage(
+          `Archive background job "${label}"? This moves it to the collapsed Ignored group and hides it from normal agent tooling. It does not cancel or kill any running process.`,
+          { modal: true },
+          'Archive Job'
+        )
+        if (confirmResult !== 'Archive Job') return
+
+        const reason = await vscode.window.showInputBox({
+          prompt: 'Reason for archiving (optional)',
+          placeHolder: 'e.g., Operator archived stale lane'
+        })
+        if (reason === undefined) return
+
+        const { BackgroundJobService } = await import('hive-core')
+        const service = new BackgroundJobService(this.workspaceRoot)
+        service.markIgnored(taskId, reason || 'Operator archived')
+
+        vscode.window.showInformationMessage(`Hive: Background job "${label}" archived.`)
+        this.backgroundJobsProvider?.refresh()
       })
     )
   }

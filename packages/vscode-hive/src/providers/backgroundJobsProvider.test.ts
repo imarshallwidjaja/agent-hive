@@ -189,6 +189,42 @@ describe('BackgroundJobsProvider', () => {
     expect((groups[6] as any).collapsibleState).toBe(1);
   });
 
+  it('background job item exposes taskId, alias, and label for archive command', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [job({ taskId: 'archive-test-task', alias: 'archive-test-alias' })],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+    const jobs = await provider.getChildren(groups[0]);
+    const item = jobs[0] as any;
+
+    expect(item.taskId).toBe('archive-test-task');
+    expect(item.alias).toBe('archive-test-alias');
+    expect(item.label).toBe('archive-test-alias');
+  });
+
+  it('uses archiveable context value for non-archived jobs and archived context for archived jobs', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [
+        job({ alias: 'active-job' }),
+        job({ alias: 'archived-job', runtimeState: 'cancelled', ignoredAt: '2026-06-12T00:01:00.000Z', archivedAt: '2026-06-12T00:01:00.000Z', archiveReason: 'ignored' }),
+      ],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+    expect(groups.map((g: any) => g.label)).toEqual(['Running', 'Ignored']);
+
+    const active = await provider.getChildren(groups[0]);
+    expect((active[0] as any).contextValue).toBe('background-job-archiveable');
+
+    const archivedItems = await provider.getChildren(groups[1]);
+    expect((archivedItems[0] as any).contextValue).toBe('background-job-archived');
+  });
+
   it('uses related worker prompt path as safe open command metadata when present', async () => {
     const workerPromptPath = path.join(testRoot, '.hive', 'features', 'feature-a', 'tasks', 'task-a', 'worker-prompt.md');
     writeJobs({
@@ -204,7 +240,7 @@ describe('BackgroundJobsProvider', () => {
       command: 'hive.openFile',
       arguments: [workerPromptPath],
     });
-    expect((jobs[0] as any).contextValue).toBe('background-job');
+    expect((jobs[0] as any).contextValue).toBe('background-job-archiveable');
   });
 
   it('resolves relative worker prompt paths against the workspace root', async () => {
@@ -254,6 +290,63 @@ describe('BackgroundJobsProvider', () => {
       command: 'hive.openBackgroundJobInBoard',
       arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'review-task'],
     });
+  });
+
+  it('puts archived running jobs in Ignored group, not Running', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [job({
+        alias: 'archived-running',
+        runtimeState: 'running',
+        ignoredAt: '2026-06-12T00:01:00.000Z',
+        ignoreReason: 'operator archived',
+        archivedAt: '2026-06-12T00:01:00.000Z',
+        archiveReason: 'ignored',
+      })],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+    expect(groups.map(item => item.label)).toEqual(['Ignored']);
+  });
+
+  it('puts archivedAt-only running job in Ignored group, not Running, and uses archived context', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [job({
+        alias: 'archivedAt-only',
+        runtimeState: 'running',
+        archivedAt: '2026-06-12T00:01:00.000Z',
+      })],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+    expect(groups.map((item: any) => item.label)).not.toContain('Running');
+    expect(groups.map((item: any) => item.label)).toContain('Ignored');
+
+    const jobs = await provider.getChildren(groups[0]);
+    expect((jobs[0] as any).contextValue).toBe('background-job-archived');
+    expect((jobs[0] as any).description).toContain('archived');
+  });
+
+  it('puts archived stale jobs in Ignored group, not Stale / Uncertain', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [job({
+        alias: 'archived-stale',
+        runtimeState: 'running',
+        staleAt: '2026-06-12T00:00:30.000Z',
+        ignoredAt: '2026-06-12T00:01:00.000Z',
+        ignoreReason: 'operator archived stale',
+        archivedAt: '2026-06-12T00:01:00.000Z',
+        archiveReason: 'ignored',
+      })],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+
+    const groups = await provider.getChildren();
+    expect(groups.map(item => item.label)).toEqual(['Ignored']);
   });
 
   function writeJobs(data: unknown): void {

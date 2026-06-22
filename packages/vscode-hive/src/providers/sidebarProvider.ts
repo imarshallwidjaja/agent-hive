@@ -15,13 +15,14 @@ const STATUS_ICONS: Record<string, string> = {
   approved: 'check',
   executing: 'run-all',
   completed: 'pass-filled',
+  archived: 'archive',
 }
 
 // Status group for organizing features
 class StatusGroupItem extends vscode.TreeItem {
   constructor(
     public readonly groupName: string,
-    public readonly groupStatus: 'in_progress' | 'pending' | 'completed',
+    public readonly groupStatus: 'in_progress' | 'pending' | 'completed' | 'archived',
     public readonly features: FeatureItem[],
     collapsed: boolean = false
   ) {
@@ -34,6 +35,7 @@ class StatusGroupItem extends vscode.TreeItem {
       in_progress: 'sync~spin',
       pending: 'circle-outline',
       completed: 'pass-filled',
+      archived: 'archive',
     }
     this.iconPath = new vscode.ThemeIcon(icons[groupStatus] || 'folder')
   }
@@ -219,13 +221,15 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
   private getStatusGroups(): StatusGroupItem[] {
     const features = this.getAllFeatures()
     
-    // Group features by status category
     const inProgress: FeatureItem[] = []
     const pending: FeatureItem[] = []
     const completed: FeatureItem[] = []
+    const archived: FeatureItem[] = []
     
     for (const feature of features) {
-      if (feature.feature.status === 'executing') {
+      if (feature.feature.status === 'archived') {
+        archived.push(feature)
+      } else if (feature.feature.status === 'executing') {
         inProgress.push(feature)
       } else if (feature.feature.status === 'planning' || feature.feature.status === 'approved') {
         pending.push(feature)
@@ -244,6 +248,9 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     }
     if (completed.length > 0) {
       groups.push(new StatusGroupItem('Completed', 'completed', completed, true))
+    }
+    if (archived.length > 0) {
+      groups.push(new StatusGroupItem('Archived', 'archived', archived, true))
     }
     
     return groups
@@ -374,7 +381,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
     if (configuredActive) {
       const feature = this.readFeature(configuredActive)
-      if (feature && feature.status !== 'completed') {
+      if (feature && !isTerminalFeatureStatus(feature.status)) {
         return configuredActive
       }
     }
@@ -383,7 +390,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       .map(entry => entry.logicalName)
       .filter(name => {
         const feature = this.readFeature(name)
-        return feature !== null && feature.status !== 'completed'
+        return feature !== null && !isTerminalFeatureStatus(feature.status)
       })
       .sort((a, b) => a.localeCompare(b))
 
@@ -414,4 +421,8 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       return 0
     }
   }
+}
+
+function isTerminalFeatureStatus(status: FeatureJson['status']): boolean {
+  return status === 'completed' || status === 'archived'
 }

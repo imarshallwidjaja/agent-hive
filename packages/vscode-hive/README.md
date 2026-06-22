@@ -17,7 +17,7 @@ Download from [Releases](https://github.com/tctinh/agent-hive/releases) and inst
 ## Features
 
 ### Feature Sidebar
-Feature tree with status indicators.
+Feature tree with status indicators and grouping. Archived features appear in a collapsed **Archived** group. Right-clicking a planning/approved/executing feature shows **Archive Feature**, which hides it from normal agent status without deleting worktrees, branches, tasks, or commits.
 
 ### Inline Review
 Add comments on plan.md and overview.md.
@@ -26,7 +26,7 @@ Add comments on plan.md and overview.md.
 Watches `.hive/` for changes and refreshes automatically.
 
 ### Background Jobs
-Viewer-only tree for `.hive/background-jobs.json`. It shows scoped background job state written by `oc-arkive`, including runtime state and coordination metadata.
+Viewer + limited operator archive tree for `.hive/background-jobs.json`. It shows scoped background job state written by `oc-arkive`, including runtime state and coordination metadata. Right-clicking a non-archived job (Running, Stale, etc.) shows **Archive Background Job**, which moves it to the collapsed Ignored group without cancelling or killing any running process.
 
 ### Tracked Repositories
 Viewer-only tree for `.hive/agent-hive.json` repository manifests. It shows the project-relative repositories that `oc-arkive` uses for manifest-backed workspaces.
@@ -44,7 +44,8 @@ Viewer-only tree for `.hive/agent-hive.json` repository manifests. It shows the 
 
 - **Document review**: inspect `plan.md` and `overview.md` as the required review documents
 - **Sidebar visibility**: features, tasks, status, and reports in one place
-- **Background visibility**: Background Jobs and Tracked Repositories views read Hive state without controlling it
+- **Background visibility**: Background Jobs and Tracked Repositories views read Hive state without agentic control
+- **Operator archive**: Archive stale features and background jobs from the right-click context menu
 - **Inline comments**: discuss changes directly in `plan.md` and `overview.md`
 - **File watching**: tracks `.hive/` changes and refreshes in real time
 
@@ -60,6 +61,8 @@ Viewer-only tree for `.hive/agent-hive.json` repository manifests. It shows the 
 | Hive: Reply Comment | Reply to an existing comment |
 | Hive: Resolve Comment | Mark a comment as resolved |
 | Hive: Delete Comment | Delete a comment |
+| Hive: Archive Feature | Archive a feature (planning/approved/executing only) — hides from active tools, preserves files |
+| Hive: Archive Background Job | Archive a background job — moves to Ignored group, does not kill running process |
 
 ### Tips
 
@@ -70,9 +73,15 @@ Viewer-only tree for `.hive/agent-hive.json` repository manifests. It shows the 
 
 For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc-arkive) and use this extension as the review/sidebar companion.
 
-## Scope: viewer-only
+## Scope: viewer + limited operator archive
 
-This extension is **viewer-only**. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, background jobs, and repository manifests) and surfaces them in the sidebar and review flow. Safe actions are limited to Refresh, Open File, Copy to Clipboard, Done Review, and inline comment actions. It does not start worktrees, commit changes, merge branches, cancel jobs, reconcile jobs, or ignore jobs, and it contributes no `languageModelTools`. Use `oc-arkive` in OpenCode for those operations. Multi-repo orchestration (composite workspaces, per-repo base commits, aggregate diff/commit/merge) is owned by `hive-core` and exposed through `oc-arkive`; any per-repo metadata the sidebar shows is read-through from those files. Reintroducing agentic command surfaces here would change the security and review posture of this extension and is out of scope.
+This extension is **viewer-first** with limited operator archive actions. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, background jobs, and repository manifests) and surfaces them in the sidebar and review flow. Safe viewing actions are limited to Refresh, Open File, Copy to Clipboard, Done Review, and inline comment actions.
+
+Two additional **operator archive** actions allow cleaning up stale state without agentic escape:
+- **Archive Feature** — marks a feature with `archived` status, hiding it from normal agent tooling and active feature selection. Preserves all `.hive/` files for audit or manual recovery. Does not delete worktrees, branches, tasks, or commits.
+- **Archive Background Job** — moves a background job to the collapsed Ignored group using existing ignored/archive fields. Does not mutate runtime state and does not cancel or kill any running process.
+
+It does not start worktrees, commit changes, merge branches, cancel jobs (runtime), reconcile jobs, or delete artifacts, and it contributes no `languageModelTools`. Use `oc-arkive` in OpenCode for those operations. Multi-repo orchestration (composite workspaces, per-repo base commits, aggregate diff/commit/merge) is owned by `hive-core` and exposed through `oc-arkive`; any per-repo metadata the sidebar shows is read-through from those files. Reintroducing agentic command surfaces beyond archive would change the security and review posture of this extension and is out of scope.
 
 ## Requirements
 

@@ -2,6 +2,7 @@ import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
 import type { BackgroundJobRecord, BackgroundJobsJson } from 'hive-core'
+import { isBackgroundJobArchived } from 'hive-core'
 
 type BackgroundJobsItem = BackgroundJobGroupItem | BackgroundJobItem | BackgroundJobsStateItem
 type BackgroundJobGroupLabel = 'Running' | 'Needs Reconciliation' | 'Cancel Requested' | 'Stale / Uncertain' | 'Ignored' | 'Reconciled' | 'Finished'
@@ -26,16 +27,20 @@ class BackgroundJobGroupItem extends vscode.TreeItem {
 }
 
 class BackgroundJobItem extends vscode.TreeItem {
+  public readonly taskId: string
+  public readonly alias: string
   public readonly copyCommand: vscode.Command
 
   constructor(job: BackgroundJobRecord, workspaceRoot: string, boardPath: string) {
     const presentation = getJobPresentation(job)
     super(job.alias || job.taskId, vscode.TreeItemCollapsibleState.None)
+    this.taskId = job.taskId
+    this.alias = job.alias
     this.description = [job.agentName, job.runtimeState, presentation.statusLabel || job.objective || job.description]
       .filter(Boolean)
       .join(' · ')
     this.tooltip = getJobTooltip(job)
-    this.contextValue = 'background-job'
+    this.contextValue = isBackgroundJobArchived(job) ? 'background-job-archived' : 'background-job-archiveable'
     this.iconPath = new vscode.ThemeIcon(presentation.iconId)
     const relatedPath = getRelatedPath(job, workspaceRoot)
     this.command = relatedPath
@@ -164,6 +169,14 @@ function getJobPresentation(job: BackgroundJobRecord): BackgroundJobPresentation
       groupLabel: 'Reconciled',
       statusLabel: ['reconciled', cancellationHistory].filter(Boolean).join(' · '),
       iconId: 'check',
+    }
+  }
+
+  if (isBackgroundJobArchived(job)) {
+    return {
+      groupLabel: 'Ignored',
+      statusLabel: 'archived',
+      iconId: 'circle-slash',
     }
   }
 
