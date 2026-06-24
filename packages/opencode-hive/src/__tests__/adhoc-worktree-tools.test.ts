@@ -186,6 +186,7 @@ describe('ad-hoc worktree plugin tools', () => {
         runId?: string;
         workspacePath?: string;
         branch?: string;
+        nextAction?: string;
         backgroundScope?: {
           adHocRunId?: string;
           projectRoot?: string;
@@ -219,8 +220,12 @@ describe('ad-hoc worktree plugin tools', () => {
         background: true,
         subagent_type: 'forager-worker',
         description: `Ad-hoc: ${result.runId}`,
-        prompt: `Work in ${result.workspacePath} for ad-hoc run ${result.runId}. Follow the user's current instructions, keep changes scoped to that worktree, and report verification evidence before commit or merge.`,
+        prompt: expect.stringContaining(`Workspace: ${result.workspacePath}`),
       });
+      expect(result.backgroundTaskCall?.prompt).toContain(`Run ID: ${result.runId}`);
+      expect(result.backgroundTaskCall?.prompt).toContain('report blocked without editing');
+      expect(result.nextAction).toContain('launch the returned `backgroundTaskCall`');
+      expect(result.nextAction).not.toContain('Work in the ad-hoc worktree');
 
       const board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf-8')) as {
         pendingLaunches?: Array<{
@@ -240,6 +245,86 @@ describe('ad-hoc worktree plugin tools', () => {
         scope: result.backgroundScope,
         ownership: result.backgroundOwnership,
       })]);
+    } finally {
+      if (previousBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+      }
+    }
+  });
+
+  it('hive_adhoc_worktree_create uses supplied workerInstructions in backgroundTaskCall prompt', async () => {
+    const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+
+    try {
+      initGitRoot(testRoot);
+      const hooks = await loadHooks(testRoot);
+      const toolContext = createToolContext('sess_adhoc_worker_instructions');
+
+      const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+        {
+          label: 'worker-instructions',
+          workerInstructions: 'Objective: update the focused prompt tests and run bun test prompts.test.ts.',
+        },
+        toolContext,
+      );
+      const result = parseToolJson<{
+        success?: boolean;
+        workspacePath?: string;
+        backgroundTaskCall?: { prompt?: string };
+        nextAction?: string;
+      }>(raw);
+
+      expect(result.success).toBe(true);
+      expect(result.backgroundTaskCall?.prompt).toContain(`Workspace: ${result.workspacePath}`);
+      expect(result.backgroundTaskCall?.prompt).toContain('Objective: update the focused prompt tests and run bun test prompts.test.ts.');
+      expect(result.backgroundTaskCall?.prompt).toContain('must not call task-backed Hive commit/merge tools');
+      expect(result.backgroundTaskCall?.prompt).toContain('must not commit, merge, or cleanup');
+      expect(result.backgroundTaskCall?.prompt).toContain('changed files');
+      expect(result.backgroundTaskCall?.prompt).toContain('verification commands and observed results');
+      expect(result.nextAction).toContain('launch the returned `backgroundTaskCall`');
+    } finally {
+      if (previousBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
+      }
+    }
+  });
+
+  it('hive_adhoc_worktree_create exposes only workerInstructions and ignores the removed worker alias', async () => {
+    const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+
+    try {
+      initGitRoot(testRoot);
+      const hooks = await loadHooks(testRoot);
+      const toolContext = createToolContext('sess_adhoc_removed_worker_prompt_alias');
+      const createTool = hooks.tool!.hive_adhoc_worktree_create as unknown as {
+        args?: Record<string, unknown>;
+        execute(args: Record<string, unknown>, context: ToolContext): Promise<unknown>;
+      };
+      const removedAlias = ['worker', 'Prompt'].join('');
+
+      expect(Object.keys(createTool.args ?? {})).toContain('workerInstructions');
+      expect(Object.keys(createTool.args ?? {})).not.toContain(removedAlias);
+
+      const raw = await createTool.execute(
+        {
+          label: 'removed-worker-prompt-alias',
+          [removedAlias]: 'Removed alias text must not reach the spawned worker prompt.',
+        },
+        toolContext,
+      );
+      const result = parseToolJson<{
+        success?: boolean;
+        backgroundTaskCall?: { prompt?: string };
+      }>(raw);
+
+      expect(result.success).toBe(true);
+      expect(result.backgroundTaskCall?.prompt).not.toContain('Removed alias text must not reach the spawned worker prompt.');
     } finally {
       if (previousBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;

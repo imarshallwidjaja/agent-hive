@@ -13,6 +13,7 @@ import { CODE_REVIEWER_PROMPT } from './code-reviewer';
 import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { buildWorkerPrompt } from '../utils/worker-prompt';
+import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 
 describe('Orchestrator synthesis-before-delegation', () => {
   it('Hive prompt contains synthesis-before-delegating reminder', () => {
@@ -671,6 +672,22 @@ describe('Swarm (Orchestrator) prompt', () => {
   it('tells swarm not to treat partial multi-repo merges as complete', () => {
     expect(SWARM_BEE_PROMPT).toContain('do not treat a partial merge as complete');
   });
+
+  it('routes merge and wrap-up endings through helper by default, not direct hive_merge', () => {
+    expect(SWARM_BEE_PROMPT).toContain('hive_status.helperStatus');
+    expect(SWARM_BEE_PROMPT).toContain('helper merge delegation/state clarification');
+    expect(SWARM_BEE_PROMPT).toContain('retry helper delegation once');
+    expect(SWARM_BEE_PROMPT).toContain('direct `hive_merge` recovery escape');
+    expect(SWARM_BEE_PROMPT).not.toContain('merge (hive_merge)');
+  });
+
+  it('does not regain normal direct hive_merge guidance from the shared system prompt', () => {
+    const effectiveSwarmPrompt = SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT;
+
+    expect(HIVE_SYSTEM_PROMPT).toContain('responsible orchestrator/helper flow');
+    expect(effectiveSwarmPrompt).toContain('Swarm normally delegates merge batches to `hive-helper`');
+    expect(effectiveSwarmPrompt).not.toContain('Use hive_merge to integrate changes into the current branch.');
+  });
 });
 
 describe('Forager (Worker/Coder) prompt', () => {
@@ -744,14 +761,19 @@ describe('Hive Helper prompt', () => {
     expect(HIVE_HELPER_PROMPT).toContain('never plans, orchestrates, or broadens the assignment');
   });
 
-  it('uses hive_merge first and resolves preserved conflicts locally', () => {
+  it('uses hive_merge first only for merge recovery and resolves preserved conflicts locally', () => {
     expect(HIVE_HELPER_PROMPT).toContain('hive_merge');
+    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: call `hive_merge` first');
+    expect(HIVE_HELPER_PROMPT).not.toContain('- use `hive_merge` first');
+    expect(HIVE_HELPER_PROMPT).not.toContain('1. Call `hive_merge` first for the requested task branch.');
     expect(HIVE_HELPER_PROMPT).toContain("conflictState: 'preserved'");
-    expect(HIVE_HELPER_PROMPT).toContain('resolves locally');
-    expect(HIVE_HELPER_PROMPT).toContain('continues the merge batch');
+    expect(HIVE_HELPER_PROMPT).toContain('resolve locally');
+    expect(HIVE_HELPER_PROMPT).toContain('continue the merge batch');
   });
 
   it('allows state summaries and append-only manual tasks but forbids plan-backed task updates', () => {
+    expect(HIVE_HELPER_PROMPT).toContain('State clarification: call `hive_status` first');
+    expect(HIVE_HELPER_PROMPT).toContain('Safe manual-follow-up assistance: inspect state/boundary as needed');
     expect(HIVE_HELPER_PROMPT).toContain('summarize observable state');
     expect(HIVE_HELPER_PROMPT).toContain('safe append-only manual tasks');
     expect(HIVE_HELPER_PROMPT).toContain('never update plan-backed task state');
@@ -1202,13 +1224,14 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('unresolved lanes');
   });
 
-  it('keeps Hive, Architect, and Swarm aligned on scheduler-first escape reasons without leaking into Builder base', () => {
+  it('keeps Hive, Architect, and Swarm scheduler guidance out of Builder base while Builder rail points to background-delegation', () => {
     for (const prompt of [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT]) {
       expect(prompt).toContain('background-first scheduler mode');
       expect(prompt).toContain('dependency, risk, simplicity, user interaction, or ownership conflict');
     }
     expect(HIVE_BUILDER_PROMPT).not.toContain('background-first scheduler mode');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('background-first scheduler mode');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('background-delegation');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Builder-specific overrides');
   });
 
   it('separates subagent concurrency from foreground wait mode', () => {
@@ -1245,18 +1268,38 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
   it('defines a Builder gate-open rail with specialist-default, direct escapes, and ad-hoc-not-DAG language', () => {
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('## Hive Builder Gate-Open Delegation');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('## Background-First Orchestration');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('overrides the base lifecycle execution default');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('ad-hoc orchestrator');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('not the default implementation worker');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('specialist-default');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('delegate-first');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('state the escape reason before direct implementation');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('very small local changes');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('no behavior-contract changes');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('no new files');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('no test modifications');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('immediately verifiable in one step');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('If a second patch/test loop is needed, delegate');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('coordination/setup');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_adhoc_worktree');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('native `task()`');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('task({ background: true');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_background_status');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Do not default to');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('Depends on:');
+  });
+
+  it('keeps background scheduler protocol details owned by the background-delegation skill', () => {
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('background-delegation');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Builder-specific overrides');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('capture the `task_id`');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('wait for the native completion notification');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('hive_background_reconcile');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('hive_background_cancel');
+  });
+
+  it('does not keep the old equal-choice execution lifecycle wording', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('execute under the active session policy');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('implement the change directly or delegate');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('Inspect, isolate, implement directly or delegate');
   });
 });
 

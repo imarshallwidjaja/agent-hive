@@ -446,6 +446,7 @@ describe('Per-agent tool filtering', () => {
     expect(swarmTools!['hive_plan_write']).toBe(false);
     expect(swarmTools!['hive_plan_patch']).toBe(false);
     expect(swarmTools!['hive_worktree_commit']).toBe(false);
+    expect(swarmTools!['hive_merge']).toBeUndefined();
     expect(swarmTools!['hive_plan_approve']).toBeUndefined();
   });
 

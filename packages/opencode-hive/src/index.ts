@@ -32,6 +32,33 @@ function normalizeOptionalStringList(values: string[] | undefined): string[] | u
   return normalized && normalized.length > 0 ? normalized : undefined;
 }
 
+function buildAdhocWorkerPrompt(params: {
+  runId: string;
+  workspacePath: string;
+  branch: string;
+  instructions?: string;
+}): string {
+  const objective = params.instructions
+    ? params.instructions
+    : 'No worker instructions were supplied. If the request is not visible/self-contained, report blocked without editing.';
+
+  return `You are an ad-hoc implementation worker.
+
+Workspace: ${params.workspacePath}
+Run ID: ${params.runId}
+Branch: ${params.branch}
+
+Objective / Worker Instructions:
+${objective}
+
+Rules:
+- Work only inside the workspace above.
+- You own implementation in this worktree.
+- You must not call task-backed Hive commit/merge tools and must not use Hive feature/task-backed lifecycle tools.
+- You must not commit, merge, or cleanup; the caller owns ad-hoc commit, merge, and cleanup.
+- Return changed files, verification commands and observed results, and any blockers or residual risks.`;
+}
+
 function validateDiscoverySection(content: string): string | null {
   const discoveryMatch = content.match(/^##\s+Discovery\s*$/im);
   if (!discoveryMatch) {
@@ -2049,8 +2076,9 @@ NEXT: Ask your first clarifying question about this feature.`;
           baseBranch: tool.schema.string().optional().describe('Optional base ref/commit. Omit or leave blank to use current HEAD.'),
           repoIds: tool.schema.array(tool.schema.string()).optional().describe('Explicit repo IDs for composite ad-hoc workspaces. Omit or pass an empty array for single-root mode.'),
           autoSpawnWorker: tool.schema.boolean().optional().describe('When false, create the worktree without registering a pending background worker launch (inspection/routing/setup only). Default true when omitted.'),
+          workerInstructions: tool.schema.string().optional().describe('Self-contained ad-hoc worker handoff instructions. Used as the objective in backgroundTaskCall.prompt when auto-spawning a worker.'),
         },
-        async execute({ runId, label, baseBranch, repoIds, autoSpawnWorker }, toolContext) {
+        async execute({ runId, label, baseBranch, repoIds, autoSpawnWorker, workerInstructions }, toolContext) {
           if (!hasRepositoryManifest() && !isProjectRootGitRepo()) {
             return respond({
               success: false,
@@ -2087,12 +2115,18 @@ NEXT: Ask your first clarifying question about this feature.`;
                 }
               : undefined;
             const shouldAutoSpawnWorker = autoSpawnWorker !== false;
+            const adhocWorkerPrompt = buildAdhocWorkerPrompt({
+              runId: info.runId,
+              workspacePath,
+              branch: info.branch,
+              instructions: blankToUndefined(workerInstructions),
+            });
             const backgroundTaskCall = backgroundScope && shouldAutoSpawnWorker
               ? {
                   background: true,
                   subagent_type: 'forager-worker',
                   description: `Ad-hoc: ${info.runId}`,
-                  prompt: `Work in ${workspacePath} for ad-hoc run ${info.runId}. Follow the user's current instructions, keep changes scoped to that worktree, and report verification evidence before commit or merge.`,
+                  prompt: adhocWorkerPrompt,
                 }
               : undefined;
             if (backgroundTaskCall && backgroundScope && backgroundOwnership) {
@@ -2121,7 +2155,9 @@ NEXT: Ask your first clarifying question about this feature.`;
               ...(workerLaunchSuppressed ? { workerLaunch: 'suppressed' as const } : {}),
               nextAction: workerLaunchSuppressed
                 ? 'Use this worktree for inspection, routing, or setup. Delegate execution lanes explicitly when needed; call hive_adhoc_worktree_commit only after changes are ready to commit.'
-                : 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, workspacePath, branch, message }) to commit changes.',
+                : backgroundTaskCall
+                  ? 'launch the returned `backgroundTaskCall`; do not write implementation code in Builder unless an allowed direct-edit escape is stated. After the worker completes, reconcile/inspect/verify, then commit, merge, and cleanup the ad-hoc worktree.'
+                  : 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, workspacePath, branch, message }) to commit changes.',
             });
           } catch (error: unknown) {
             const err = error as { message?: string };
