@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-25
+
 ### Added
 - Background-first orchestration is now documented for OpenCode sessions that enable `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, including `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, and `hive_background_cancel`.
 - Background job prompt acknowledgment now records that terminal results were shown to the parent session without treating that as reconciliation.
@@ -25,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Manual Hive task creation now derives slug-safe task folders from display names, and direct task worktree cleanup blocks branch deletion when unmerged commits would be discarded.
 - Native fallback background jobs launched by task-bound parent sessions now stay feature-scoped unless a pending Hive launch explicitly provides task ownership.
 - Root docs now clarify that background-first orchestration adds no new agents and preserves custom derived agent inheritance.
+- Version-bearing package, lockfile, plugin manifest, changelog, and release-note surfaces are refreshed to `1.7.0`.
 
 ## [1.6.3] - 2026-06-03
 

@@ -442,11 +442,13 @@ const plugin: Plugin = async (ctx) => {
   };
   const renderHiveConfigCommandTemplate = async (commandKey: HiveCommandKey): Promise<string> => {
     const context = createHiveCommandContext();
-    if (commandKey === 'council') {
-      return renderCouncilConfigTemplate(context);
-    }
+    const template = commandKey === 'council'
+      ? renderCouncilConfigTemplate(context)
+      : hiveCommandRenderers[commandKey]('$ARGUMENTS', context);
 
-    return hiveCommandRenderers[commandKey]('$ARGUMENTS', context);
+    return context.agentMode === 'unified'
+      ? `Mode: unified\n\n${template}`
+      : template;
   };
   const hasRepositoryManifest = (): boolean => {
     // Only treat the project as multi-repo when an explicit project-scoped

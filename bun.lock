@@ -7,7 +7,7 @@
     },
     "packages/hive-core": {
       "name": "hive-core",
-      "version": "1.6.3",
+      "version": "1.7.0",
       "dependencies": {
         "simple-git": "^3.27.0",
       },
@@ -19,7 +19,7 @@
     },
     "packages/opencode-hive": {
       "name": "oc-arkive",
-      "version": "1.6.3",
+      "version": "1.7.0",
       "dependencies": {
         "@ast-grep/cli": "^0.42.0",
         "@manzt/uv": "^0.8.13",
@@ -45,7 +45,7 @@
     },
     "packages/vscode-hive": {
       "name": "vscode-arkive",
-      "version": "1.6.3",
+      "version": "1.7.0",
       "dependencies": {
         "hive-core": "workspace:*",
       },
