@@ -145,6 +145,21 @@ describe('hive command renderers', () => {
     }
   });
 
+  it('adds interview-specific gate-open timing and guardrail guidance', () => {
+    const context = createContext({
+      backgroundGuidance: { available: true },
+    });
+
+    const output = render('interview', 'shape the release flow', context);
+
+    expect(output).toContain('After 2-3 clarifying questions');
+    expect(output).toContain('concrete, self-contained validation questions');
+    expect(output).toContain('will not be contradicted by remaining open interview questions');
+    expect(output).toContain('Do not report background results mid-interview');
+    expect(output).toContain('natural pause');
+    expect(output).toContain('Distinguish validated facts from pending assumptions');
+  });
+
   it('does not render dedicated-mode route prose', () => {
     const context = createContext({ agentMode: 'dedicated' });
 

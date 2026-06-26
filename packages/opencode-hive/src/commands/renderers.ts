@@ -142,7 +142,9 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Do not invent repository facts; verify them or label them as assumptions.',
       ],
       backgroundItems: backgroundItems(context, [
-        'When useful, run independent validation or research in background lanes while continuing safe interview questions.',
+        'After 2-3 clarifying questions, delegate concrete, self-contained validation questions to independent background lanes when they can run while the interview continues.',
+        'Only delegate when the validation target is bounded and will not be contradicted by remaining open interview questions.',
+        'Do not report background results mid-interview unless they resolve the operator\'s current question or the interview reaches a natural pause.',
         'Distinguish validated facts from pending assumptions until those lanes finish.',
       ]),
       outputItems: [
