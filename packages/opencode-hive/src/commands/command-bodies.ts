@@ -79,21 +79,15 @@ When implementation planning is the likely next step, write a compact handoff bl
 
 If implementation planning is not yet the right next step, say so plainly and do not fabricate this handoff block.`,
 
-  'implementation-brief': `Turn the current exploration in this session into a strong implementation-planning prompt for another agent.
+  'implementation-brief': `Turn the current exploration in this session into an implementation brief that the operator can pass to \`/hive-plan\`.
 
 Use the live codebase as source of truth, not just prior notes. Revalidate the current code paths, references, and assumptions first.
 
 Use extra context from runtime arguments when provided.
 
-Produce a single copy-paste-ready prompt that tells another agent how to prepare the real implementation plan for this work.
+Produce a single copy-paste-ready brief. The brief tells the receiving agent to treat the enclosed information as directional goals, validate every assumption against the live codebase, use live code references and call paths as discovery anchors, and route through \`/hive-plan\` to produce the formal Hive plan.
 
-Do not produce the Hive implementation plan itself.
-Do not write code.
-Do not call \`hive_plan_write\`.
-Do not give a short recap.
-Do not soften uncertainties by being vague. Anchor everything in the current repo state.
-
-The prompt must clearly define:
+The brief must clearly define:
 
 - the problem being solved
 - the exact high-value scope to target
@@ -102,11 +96,11 @@ The prompt must clearly define:
 - the strongest solution leads already identified
 - the expected solution outcomes
 - the repo and parity constraints that must be preserved
-- what the next agent must validate, research, and resolve in order to produce an execution-ready implementation plan
+- what the receiving agent must validate, research, and resolve in order to produce an execution-ready implementation plan
 
-The prompt should be detailed, concrete, and strong enough that the next agent can begin immediately without follow-up steering.
+The brief should be detailed, concrete, and strong enough that the receiving agent can begin immediately without follow-up steering.
 
-Output only the final prompt in one fenced code block.`,
+Output only the final brief in one fenced code block.`,
 
   'hive-plan': `Create a Hive plan for implementing the spec or brief from runtime arguments when provided.
 

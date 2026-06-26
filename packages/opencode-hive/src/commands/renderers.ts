@@ -158,16 +158,16 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       details: [`Subject: ${topicOrCurrent(args, 'the current operator request')}`],
       doItems: [
         'Revalidate important repo paths, symbols, commands, and ownership before treating them as facts.',
-        'Produce one copy-paste-ready brief for another agent to make the real implementation plan.',
+        'Produce one copy-paste-ready brief for /hive-plan to turn into the formal Hive plan.',
       ],
       doNotItems: [
-        'Do not write the Hive implementation plan or call plan-writing tools.',
+        'Do not write the Hive implementation plan or call plan-writing tools during brief generation.',
         'Do not present stale paths or unverified codebase claims as facts.',
       ],
       backgroundItems: backgroundItems(context, [
         'Use independent background research only when foreground brief assembly can safely continue without those results.',
       ]),
-      outputItems: ['Output only the final prompt in one fenced code block.'],
+      outputItems: ['Output only the final brief in one fenced code block.'],
     });
   },
 

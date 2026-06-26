@@ -207,17 +207,23 @@ describe('hive command renderers', () => {
     expect(output).toContain('parity, migration, or compatibility concerns');
   });
 
-  it('anchors implementation-brief: revalidate repo and single code block output', () => {
+  it('anchors implementation-brief: revalidate repo, /hive-plan handoff, and separate body/wrapper contracts', () => {
     const output = render('implementation-brief', 'restore commands');
-    expect(output).toContain('Revalidate');
-    expect(output).toContain('one fenced code block');
-    expect(output).toContain('Do not call `hive_plan_write`');
-    expect(output).toContain('copy-paste-ready');
-    expect(output).toContain('live code references and call paths');
-    expect(output).toContain('execution-ready implementation plan');
-    expect(output).toContain('begin immediately without follow-up steering');
-    expect(output).toContain('Do not give a short recap');
-    expect(output).toContain('repo and parity constraints');
+    const parts = output.split('\n---\n');
+    expect(parts.length).toBe(2);
+    const wrapperSection = parts[0];
+    const bodySection = parts[1];
+
+    expect(wrapperSection).toContain('Revalidate');
+    expect(wrapperSection).toContain('/hive-plan');
+    expect(wrapperSection).toContain('copy-paste-ready');
+    expect(wrapperSection).toContain('during brief generation');
+    expect(output).not.toContain('another agent to make the real implementation plan');
+    expect(output).not.toContain('final prompt');
+    expect(output).toContain('final brief');
+    expect(output).toContain('directional goals');
+    expect(output).toContain('validate every assumption against the live codebase');
+    expect(bodySection).not.toMatch(/Do not call.*hive_plan_write/);
   });
 
   it('anchors hive-plan: discovery, hive tools, and operator-facing completion sections', () => {
