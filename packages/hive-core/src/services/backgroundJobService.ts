@@ -17,6 +17,7 @@ export interface RegisterBackgroundJobInput {
   customAgentBase?: string;
   description?: string;
   objective?: string;
+  runtimeId?: string;
   scopeSource?: BackgroundJobRecord['scopeSource'];
   scope?: BackgroundJobScope;
   ownership?: BackgroundJobOwnership;
@@ -136,6 +137,7 @@ export class BackgroundJobService {
         customAgentBase: input.customAgentBase,
         description: input.description,
         objective: input.objective,
+        runtimeId: input.runtimeId,
         createdAt: now,
         updatedAt: now,
         runtimeState: 'running',
@@ -334,6 +336,26 @@ export class BackgroundJobService {
     });
   }
 
+  markRuntimeEpochStale(identifier: string, currentRuntimeId: string, lastStatusError: string): BackgroundJobRecord | undefined {
+    return this.updateBoard((board) => {
+      const record = this.findRecord(board, identifier);
+      const isActive = record.runtimeState === 'running' || record.runtimeState === 'unknown';
+      const isForeignRuntime = record.runtimeId !== currentRuntimeId;
+
+      if (!isActive || !isForeignRuntime || isBackgroundJobArchived(record) || record.staleAt) {
+        return undefined;
+      }
+
+      let changed = false;
+      record.staleAt = new Date().toISOString();
+      changed = true;
+      changed = this.applyIfChanged(record, 'statusUncertain', true) || changed;
+      changed = this.applyIfChanged(record, 'lastStatusError', lastStatusError) || changed;
+      this.updateTimestamp(record, changed);
+      return record;
+    });
+  }
+
   markPromptNotified(taskIds: string[], parentSessionId: string): BackgroundJobRecord[] {
     const uniqueIds = new Set(taskIds);
     if (uniqueIds.size === 0) {
@@ -439,6 +461,7 @@ export class BackgroundJobService {
         customAgentBase: input.customAgentBase,
         description: input.description,
         objective: input.objective,
+        runtimeId: input.runtimeId,
         createdAt: now,
         updatedAt: now,
         runtimeState: 'running',

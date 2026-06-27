@@ -74,10 +74,10 @@ const { task_id } = task({
   prompt: 'Concrete independent work with done criteria',
   background: true,
 });
-hive_background_status({ includeStale: false });
+hive_background_status({});
 // Wait for the native background completion notification, then refresh the Hive board
 // instead of repeatedly refreshing or manually mutating .hive/background-jobs.json.
-hive_background_status({ includeStale: false });
+hive_background_status({});
 hive_background_reconcile({
   identifier: task_id,
   decision: 'reconciled',

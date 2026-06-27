@@ -277,6 +277,7 @@ export interface BackgroundJobRecord {
   updatedAt: string;
   runtimeState: BackgroundJobRuntimeState;
   scopeSource?: 'pending-launch' | 'native-fallback' | 'retry';
+  runtimeId?: string;
   terminalUnreconciled?: boolean;
   statusUncertain?: boolean;
   resultSummary?: string;

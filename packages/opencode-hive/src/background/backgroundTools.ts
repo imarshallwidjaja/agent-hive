@@ -1,6 +1,7 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import type { BackgroundJobRecord, BackgroundJobService, BackgroundPendingLaunch } from 'hive-core';
 import { isBackgroundJobArchived } from 'hive-core';
+import { classifyRuntimeEpochStaleJobs } from './backgroundJobAdapter.js';
 
 type ToolContext = {
   sessionID?: string;
@@ -16,6 +17,7 @@ export interface CreateBackgroundToolsOptions {
   backgroundJobService: BackgroundJobService;
   projectRoot: string;
   isEnabled: () => boolean;
+  currentRuntimeId?: string;
   cancelRuntimeTask?: (taskId: string, context: ToolContext) => Promise<RuntimeCancelResult> | RuntimeCancelResult;
 }
 
@@ -37,25 +39,31 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
     hive_background_status: tool({
       description: 'List background jobs visible to the current primary session scope.',
       args: {
-        includeStale: tool.schema.boolean().optional().describe('Include stale scoped recovery entries.'),
         feature: tool.schema.string().optional().describe('Optional feature scope filter.'),
         task: tool.schema.string().optional().describe('Optional task scope filter.'),
         adHocRunId: tool.schema.string().optional().describe('Optional ad-hoc run scope filter.'),
         workflow: tool.schema.string().optional().describe('Optional workflow scope filter.'),
         includeArchived: tool.schema.boolean().optional().describe('Include reconciled or ignored background jobs archived by Hive background tools.'),
       },
-      async execute({ includeStale, feature, task, adHocRunId, workflow, includeArchived }, toolContext) {
+      async execute({ feature, task, adHocRunId, workflow, includeArchived }, toolContext) {
         if (!options.isEnabled()) {
           return json(disabledResponse());
         }
 
+        classifyRuntimeEpochStaleJobs({
+          service: options.backgroundJobService,
+          projectRoot: options.projectRoot,
+          currentRuntimeId: options.currentRuntimeId,
+          isVisible: job => isJobVisible(job, toolContext as ToolContext),
+        });
+
         const allJobs = options.backgroundJobService
           .listScoped({ projectRoot: options.projectRoot }, { includeArchived: includeArchived === true })
           .filter(job => isJobVisible(job, toolContext as ToolContext))
-          .filter(job => includeStale === true || !job.staleAt)
           .filter(job => matchesOptionalScope(job, { feature, task, adHocRunId, workflow }));
         const archivedJobs = allJobs.filter(job => isBackgroundJobArchived(job));
         const activeJobs = allJobs.filter(job => !isBackgroundJobArchived(job));
+        const staleActiveJobs = activeJobs.filter(isNonTerminalStaleJob);
         const pendingLaunches = options.backgroundJobService
           .listPendingLaunches({ projectRoot: options.projectRoot })
           .filter(pending => isPendingLaunchVisible(pending, toolContext as ToolContext))
@@ -64,9 +72,10 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         const waitingForNativeCompletion = buildNativeCompletionWaits(activeJobs);
         const orchestrationBurden = buildOrchestrationBurden(activeJobs, pendingLaunches);
         const recommendedNextAction = buildRecommendedNextAction(activeJobs, pendingLaunches);
-        const schedulerGuidance = orchestrationBurden.completionNotificationsPending > 0
-          && orchestrationBurden.reconcileItemsRequired === 0
-          && orchestrationBurden.pendingLaunches === 0
+        const schedulerGuidance = staleActiveJobs.length === 0
+          && orchestrationBurden.completionNotificationsPending > 0
+            && orchestrationBurden.reconcileItemsRequired === 0
+            && orchestrationBurden.pendingLaunches === 0
           ? {
               reason: 'wait_for_native_completion_notification',
               message: 'Do not call hive_background_status repeatedly while every visible lane is wait-only. Wait for OpenCode native completion notification, continue unrelated foreground work, or cancel only if the lane is stale, wrong, or no longer needed.',
@@ -90,10 +99,10 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
     }),
 
     hive_background_reconcile: tool({
-      description: 'Mark a terminal background job reconciled or ignored without changing its runtime result.',
+      description: 'Mark a terminal or stale background job reconciled or ignored without changing its runtime result.',
       args: {
         identifier: tool.schema.string().describe('Task ID, session ID, or scoped alias to reconcile.'),
-        decision: tool.schema.enum(['reconciled', 'ignored']).describe('Whether the terminal job was reconciled into task state or intentionally ignored.'),
+        decision: tool.schema.enum(['reconciled', 'ignored']).describe('Whether the terminal job was reconciled into task state or intentionally ignored. Stale non-terminal jobs may only be ignored.'),
         summary: tool.schema.string().describe('Required reconciliation summary or ignore reason.'),
       },
       async execute({ identifier, decision, summary }, toolContext) {
@@ -118,13 +127,13 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
     }),
 
     hive_background_reconcile_batch: tool({
-      description: 'Mark multiple terminal background jobs reconciled or ignored without changing runtime results.',
+      description: 'Mark multiple terminal or stale background jobs reconciled or ignored without changing runtime results.',
       args: {
         items: tool.schema.array(tool.schema.object({
           identifier: tool.schema.string().describe('Task ID, session ID, or scoped alias to reconcile.'),
-          decision: tool.schema.enum(['reconciled', 'ignored']).describe('Whether the terminal job was reconciled into task state or intentionally ignored.'),
+          decision: tool.schema.enum(['reconciled', 'ignored']).describe('Whether the terminal job was reconciled into task state or intentionally ignored. Stale non-terminal jobs may only be ignored.'),
           summary: tool.schema.string().describe('Required reconciliation summary or ignore reason.'),
-        })).describe('Terminal background jobs to reconcile or ignore.'),
+        })).describe('Terminal or stale background jobs to reconcile or ignore.'),
       },
       async execute({ items }, toolContext) {
         if (!options.isEnabled()) {
@@ -251,6 +260,28 @@ function reconcileVisibleJob(
   }
 
   if (!isTerminalRuntimeState(resolved.job.runtimeState)) {
+    if (resolved.job.staleAt) {
+      if (item.decision !== 'ignored') {
+        return {
+          identifier: item.identifier,
+          ...failure('stale_job_requires_ignore', `Stale background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal. Inspect or retry it, or archive it with decision "ignored".`),
+          nextAction: staleRecoveryPendingAction(resolved.job),
+        };
+      }
+
+      const ignored = backgroundJobService.markIgnored(resolved.job.taskId, trimmedSummary);
+      return {
+        identifier: item.identifier,
+        success: true,
+        decision: item.decision,
+        archive: {
+          archived: true,
+          message: 'The stale background job is archived and hidden from normal status output. Do not edit .hive/background-jobs.json directly.',
+        },
+        job: formatJob(ignored),
+      };
+    }
+
     return {
       identifier: item.identifier,
       ...failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`),
@@ -328,12 +359,12 @@ function buildNextActions(jobs: BackgroundJobRecord[], pendingLaunches: Backgrou
 
 function buildNativeCompletionWaits(jobs: BackgroundJobRecord[]): Array<Record<string, string>> {
   return jobs
-    .filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown')
+    .filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt)
     .map(nativeCompletionPendingWait);
 }
 
 function buildOrchestrationBurden(jobs: BackgroundJobRecord[], pendingLaunches: BackgroundPendingLaunch[]): Record<string, number> {
-  const completionNotificationsPending = jobs.filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown').length;
+  const completionNotificationsPending = jobs.filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt).length;
   const reconcileItemsRequired = jobs.filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true).length;
   const actionableLanes = reconcileItemsRequired + pendingLaunches.length;
 
@@ -352,6 +383,11 @@ function buildRecommendedNextAction(
   pendingLaunches: BackgroundPendingLaunch[],
   reconciledJobs: BackgroundJobRecord[] = [],
 ): RecommendedNextAction {
+  const staleJobs = jobs.filter(isNonTerminalStaleJob);
+  if (staleJobs.length > 0) {
+    return buildStaleRecoveryAction(staleJobs);
+  }
+
   const terminalJobs = jobs.filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true);
 
   if (terminalJobs.length > 1) {
@@ -383,7 +419,7 @@ function buildRecommendedNextAction(
     };
   }
 
-  const waitingJobs = jobs.filter(job => job.runtimeState === 'running' || job.runtimeState === 'unknown');
+  const waitingJobs = jobs.filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt);
   if (waitingJobs.length > 0 && waitingJobs.length === jobs.length) {
     const taskIds = waitingJobs.map(job => job.taskId);
     return pruneUndefined({
@@ -416,18 +452,27 @@ function buildVisibleBackgroundBoard(
   backgroundJobService: BackgroundJobService,
   projectRoot: string,
   toolContext: ToolContext,
-  options?: { includeStale?: boolean },
 ): VisibleBackgroundBoard {
   const allJobs = backgroundJobService
     .listScoped({ projectRoot })
-    .filter(job => isJobVisible(job, toolContext))
-    .filter(job => options?.includeStale === true || !job.staleAt);
+    .filter(job => isJobVisible(job, toolContext));
   const activeJobs = allJobs.filter(job => !isBackgroundJobArchived(job));
   const pendingLaunches = backgroundJobService
     .listPendingLaunches({ projectRoot })
     .filter(pending => isPendingLaunchVisible(pending, toolContext));
 
   return { activeJobs, pendingLaunches };
+}
+
+function buildStaleRecoveryAction(staleJobs: BackgroundJobRecord[]): RecommendedNextAction {
+  const taskIds = staleJobs.map(job => job.taskId);
+  return {
+    action: 'recover_stale_background_jobs',
+    reasonCode: 'stale_background_jobs_visible',
+    taskIds,
+    message: 'One or more background jobs from a previous runtime epoch are now stale. Inspect the associated worktree and task branch, retry if the work was lost, or ignore/archive the stale lane with hive_background_reconcile({ decision: "ignored" }). These stale lanes are not counted as native completion pending.',
+    requiresHiveStatusRefresh: true,
+  };
 }
 
 function idleRecommendedNextAction(): RecommendedNextAction {
@@ -451,6 +496,15 @@ function nativeCompletionPendingWait(job: BackgroundJobRecord): Record<string, s
   };
 }
 
+function staleRecoveryPendingAction(job: BackgroundJobRecord): Record<string, string> {
+  return {
+    reason: 'stale_recovery_pending',
+    taskId: job.taskId,
+    command: `hive_background_reconcile({ identifier: "${job.taskId}", decision: "ignored", summary: "<why the stale lane was archived>" })`,
+    message: 'This stale background job is not terminal. Inspect the associated worktree and task branch, retry if needed, or archive it with decision "ignored".',
+  };
+}
+
 function reconcileRequiredAction(job: BackgroundJobRecord): Record<string, string> {
   return {
     reason: 'reconcile_required',
@@ -463,6 +517,10 @@ function reconcileRequiredAction(job: BackgroundJobRecord): Record<string, strin
 
 function isTerminalRuntimeState(state: BackgroundJobRecord['runtimeState']): boolean {
   return state === 'completed' || state === 'error' || state === 'cancelled';
+}
+
+function isNonTerminalStaleJob(job: BackgroundJobRecord): boolean {
+  return !!job.staleAt && !isTerminalRuntimeState(job.runtimeState);
 }
 
 function currentScope(projectRoot: string, toolContext: ToolContext): Record<string, string | undefined> {

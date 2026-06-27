@@ -337,6 +337,8 @@ type SystemTransformHook = (
   output: { system: string[] },
 ) => Promise<void>;
 
+const RUNTIME_ID = `pid-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 const plugin: Plugin = async (ctx) => {
   const { directory, client, worktree } = ctx;
 
@@ -527,6 +529,7 @@ const plugin: Plugin = async (ctx) => {
     projectRoot: directory,
     service: backgroundJobService,
     isEnabled: () => isBackgroundSubagentsExperimentEnabled(),
+    runtimeId: RUNTIME_ID,
     getSession: (sessionId) => sessionService.getGlobal(sessionId),
     isPrimaryAgent: (_agentName, session) => session?.sessionKind === 'primary',
   });
@@ -1476,6 +1479,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         backgroundJobService,
         projectRoot: directory,
         isEnabled: isBackgroundSubagentsExperimentEnabled,
+        currentRuntimeId: RUNTIME_ID,
         cancelRuntimeTask: async (taskId) => {
           const result = await client.session.abort({ path: { id: taskId }, query: { directory } });
           if (result.error) {

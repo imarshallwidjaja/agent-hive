@@ -35,11 +35,41 @@ export interface BackgroundJobAdapterOptions {
   projectRoot: string;
   service: BackgroundJobService;
   isEnabled: () => boolean;
+  runtimeId?: string;
   getSession?: (sessionId: string) => SessionInfo | undefined;
   isPrimaryAgent?: (agentName: string | undefined, session: SessionInfo | undefined) => boolean;
   resolvePromptScope?: (input: unknown, session: SessionInfo | undefined) => BackgroundJobScope;
   parseLifecycleEvent?: (input: unknown, output: unknown, context?: TaskLifecycleContext) => ParsedTaskLifecycleEvent | undefined;
   warn?: (message: string) => void;
+}
+
+export function classifyRuntimeEpochStaleJobs(input: {
+  service: BackgroundJobService;
+  projectRoot: string;
+  currentRuntimeId?: string;
+  isVisible?: (job: BackgroundJobRecord) => boolean;
+}): void {
+  if (!input.currentRuntimeId) {
+    return;
+  }
+
+  const candidates = input.service
+    .listScoped({ projectRoot: input.projectRoot })
+    .filter(job => input.isVisible ? input.isVisible(job) : true);
+
+  for (const job of candidates) {
+    const isActive = job.runtimeState === 'running' || job.runtimeState === 'unknown';
+    const isForeignRuntime = job.runtimeId !== input.currentRuntimeId;
+    if (!isActive || !isForeignRuntime || job.staleAt) {
+      continue;
+    }
+
+    input.service.markRuntimeEpochStale(
+      job.taskId,
+      input.currentRuntimeId,
+      `Background worker runtime identity changed. Job was registered by runtime '${job.runtimeId || '(unknown)'}' but current runtime is '${input.currentRuntimeId}'.`,
+    );
+  }
 }
 
 export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions) {
@@ -91,6 +121,12 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       }
 
       const scope = options.resolvePromptScope?.(input, session) ?? defaultPromptScope(options.projectRoot, session);
+      classifyRuntimeEpochStaleJobs({
+        service: options.service,
+        projectRoot: options.projectRoot,
+        currentRuntimeId: options.runtimeId,
+        isVisible: job => isJobVisibleInPrompt(job, scope, sessionID),
+      });
       const jobs = options.service
         .listScoped({ projectRoot: options.projectRoot })
         .filter(job => isJobVisibleInPrompt(job, scope, sessionID))
@@ -172,6 +208,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
           sessionId: `${event.parentSessionId}:${event.taskId}`,
           agentName: event.args.subagent_type ?? pendingLaunch?.agentName ?? 'unknown',
           description: event.args.description,
+          runtimeId: options.runtimeId,
           scopeSource,
           scope: pendingLaunch?.scope ?? {
             projectRoot: options.projectRoot,

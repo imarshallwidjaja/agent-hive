@@ -312,6 +312,49 @@ describe('BackgroundJobService', () => {
     expect(ignored.archiveReason).toBe('ignored');
   });
 
+  it('marks active foreign-runtime jobs stale without mutating runtime state', () => {
+    service.registerLaunch({
+      taskId: 'foreign-runtime-task',
+      sessionId: 'foreign-runtime-session',
+      agentName: 'forager-worker',
+      runtimeId: 'old-runtime',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-master' },
+    });
+
+    const stale = service.markRuntimeEpochStale('foreign-runtime-task', 'current-runtime', 'runtime changed');
+
+    expect(stale).toMatchObject({
+      taskId: 'foreign-runtime-task',
+      runtimeState: 'running',
+      statusUncertain: true,
+      lastStatusError: 'runtime changed',
+    });
+    expect(stale?.staleAt).toBeDefined();
+  });
+
+  it('does not mark terminal foreign-runtime jobs stale or downgrade their runtime state', () => {
+    service.registerLaunch({
+      taskId: 'terminal-runtime-task',
+      sessionId: 'terminal-runtime-session',
+      agentName: 'forager-worker',
+      runtimeId: 'old-runtime',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-master' },
+    });
+    service.markTerminal('terminal-runtime-task', 'completed', { resultSummary: 'worker finished' });
+
+    const stale = service.markRuntimeEpochStale('terminal-runtime-task', 'current-runtime', 'runtime changed');
+    const job = service.resolve('terminal-runtime-task');
+
+    expect(stale).toBeUndefined();
+    expect(job).toMatchObject({
+      runtimeState: 'completed',
+      resultSummary: 'worker finished',
+      terminalUnreconciled: true,
+    });
+    expect(job?.staleAt).toBeUndefined();
+    expect(job?.statusUncertain).toBeUndefined();
+  });
+
   it('keeps cancellation requests distinct from runtime cancellation and preserves ownership metadata', () => {
     registerJob(service);
 

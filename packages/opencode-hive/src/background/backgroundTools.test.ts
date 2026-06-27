@@ -133,13 +133,13 @@ describe('background management tools', () => {
         runtime: { state: string; resultSummary?: string };
         coordination: { terminalUnreconciled?: boolean; staleAt?: string; promptAcknowledgedAt?: string; promptBoardInjectionCount?: number };
       }>;
-      recommendedNextAction?: { action: string; reasonCode: string; taskId?: string; requiresHiveStatusRefresh: boolean };
+      recommendedNextAction?: { action: string; reasonCode: string; taskId?: string; taskIds?: string[]; requiresHiveStatusRefresh: boolean };
       requiresHiveStatusRefresh?: boolean;
       orchestrationBurden?: { visibleLanes: number; actionableLanes: number; pendingLaunches: number; completionNotificationsPending: number; reconcileItemsRequired: number; recommendedReconcileToolCalls: number };
     }>(rawDefault);
 
     expect(defaultResult.success).toBe(true);
-    expect(defaultResult.jobs?.map(job => job.taskId)).toEqual(['visible-task']);
+    expect(defaultResult.jobs?.map(job => job.taskId)).toEqual(['visible-task', 'stale-task']);
     expect(defaultResult.jobs?.[0]).toMatchObject({
       taskId: 'visible-task',
       alias: visible.alias,
@@ -149,8 +149,9 @@ describe('background management tools', () => {
     expect(defaultResult.jobs?.[0].coordination.promptAcknowledgedAt).toBeDefined();
     expect(defaultResult.jobs?.[0].coordination.promptBoardInjectionCount).toBe(1);
     expect(defaultResult.jobs?.[0].coordination.staleAt).toBeUndefined();
+    expect(defaultResult.jobs?.[1].coordination.staleAt).toBeDefined();
     expect(defaultResult.orchestrationBurden).toEqual({
-      visibleLanes: 1,
+      visibleLanes: 2,
       actionableLanes: 1,
       pendingLaunches: 0,
       completionNotificationsPending: 0,
@@ -158,16 +159,13 @@ describe('background management tools', () => {
       recommendedReconcileToolCalls: 1,
     });
     expect(defaultResult.recommendedNextAction).toMatchObject({
-      action: 'reconcile_terminal_job',
-      reasonCode: 'terminal_unreconciled_job_visible',
-      taskId: 'visible-task',
+      action: 'recover_stale_background_jobs',
+      reasonCode: 'stale_background_jobs_visible',
+      taskIds: ['stale-task'],
       requiresHiveStatusRefresh: true,
     });
     expect(defaultResult.requiresHiveStatusRefresh).toBe(true);
 
-    const rawWithStale = await tools.hive_background_status.execute({ includeStale: true }, createToolContext());
-    const staleResult = parseToolJson<{ jobs?: Array<{ taskId: string }> }>(rawWithStale);
-    expect(staleResult.jobs?.map(job => job.taskId)).toEqual(['visible-task', 'stale-task']);
   });
 
   it('hive_background_status recommends batch reconciliation for multiple terminal unreconciled jobs', async () => {
@@ -195,6 +193,35 @@ describe('background management tools', () => {
     });
     expect(result.requiresHiveStatusRefresh).toBe(true);
     expect(JSON.stringify(result)).not.toContain('task_status');
+  });
+
+  it('hive_background_status prioritizes terminal reconciliation for stale terminal jobs', async () => {
+    registerScopedJob(service, { taskId: 'terminal-stale-task', sessionId: 'terminal-stale-session' });
+    service.markTerminal('terminal-stale-task', 'completed', { resultSummary: 'worker finished before stale classification' });
+    service.markStale('terminal-stale-task');
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{
+      jobs?: Array<{ taskId: string; runtime: { state: string }; coordination: { staleAt?: string; terminalUnreconciled?: boolean } }>;
+      recommendedNextAction?: { action?: string; reasonCode?: string; taskId?: string };
+    }>(await tools.hive_background_status.execute({}, createToolContext()));
+
+    expect(result.jobs?.map(job => job.taskId)).toEqual(['terminal-stale-task']);
+    expect(result.jobs?.[0]).toMatchObject({
+      runtime: { state: 'completed' },
+      coordination: { terminalUnreconciled: true },
+    });
+    expect(result.jobs?.[0].coordination.staleAt).toBeDefined();
+    expect(result.recommendedNextAction).toMatchObject({
+      action: 'reconcile_terminal_job',
+      reasonCode: 'terminal_unreconciled_job_visible',
+      taskId: 'terminal-stale-task',
+    });
   });
 
   it('hive_background_status reports native completion waiting, reconciliation, and burden next actions', async () => {
@@ -427,6 +454,119 @@ describe('background management tools', () => {
     }));
     expect(nonTerminal.nextAction?.command).toBeUndefined();
     expect(service.resolve('running-task')?.runtimeState).toBe('running');
+  });
+
+  it('hive_background_reconcile allows stale non-terminal jobs to be ignored without changing runtime state', async () => {
+    registerScopedJob(service, { taskId: 'stale-running-task', sessionId: 'stale-running-session' });
+    service.markStale('stale-running-task');
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const ignored = parseToolJson<{
+      success?: boolean;
+      decision?: string;
+      job?: { runtime: { state: string }; coordination: { archiveReason?: string; ignoreReason?: string; staleAt?: string; visibility?: string } };
+    }>(await tools.hive_background_reconcile.execute(
+      { identifier: 'stale-running-task', decision: 'ignored', summary: 'Native runtime died before completion.' },
+      createToolContext(),
+    ));
+
+    expect(ignored).toMatchObject({ success: true, decision: 'ignored' });
+    expect(ignored.job?.runtime.state).toBe('running');
+    expect(ignored.job?.coordination).toMatchObject({
+      archiveReason: 'ignored',
+      ignoreReason: 'Native runtime died before completion.',
+      visibility: 'ignored_archived',
+    });
+    expect(ignored.job?.coordination.staleAt).toBeDefined();
+  });
+
+  it('hive_background_reconcile rejects stale non-terminal reconcile with stale recovery guidance', async () => {
+    registerScopedJob(service, { taskId: 'stale-reconcile-task', sessionId: 'stale-reconcile-session' });
+    service.markStale('stale-reconcile-task');
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{ success?: boolean; reason?: string; nextAction?: { reason?: string; command?: string; message?: string } }>(
+      await tools.hive_background_reconcile.execute(
+        { identifier: 'stale-reconcile-task', decision: 'reconciled', summary: 'Trying to reconcile stale lane.' },
+        createToolContext(),
+      ),
+    );
+
+    expect(result).toMatchObject({ success: false, reason: 'stale_job_requires_ignore' });
+    expect(result.nextAction).toMatchObject({
+      reason: 'stale_recovery_pending',
+      command: 'hive_background_reconcile({ identifier: "stale-reconcile-task", decision: "ignored", summary: "<why the stale lane was archived>" })',
+    });
+    expect(result.nextAction?.message).toContain('archive it with decision "ignored"');
+    expect(result.nextAction?.message).not.toContain('native completion');
+  });
+
+  it('keeps unresolved stale jobs visible in default recommendations after ignoring one stale lane', async () => {
+    registerScopedJob(service, { taskId: 'stale-task-a', sessionId: 'stale-session-a' });
+    service.markStale('stale-task-a');
+    registerScopedJob(service, { taskId: 'stale-task-b', sessionId: 'stale-session-b' });
+    service.markStale('stale-task-b');
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const ignored = parseToolJson<{
+      success?: boolean;
+      recommendedNextAction?: { action?: string; reasonCode?: string; taskIds?: string[] };
+    }>(await tools.hive_background_reconcile.execute(
+      { identifier: 'stale-task-a', decision: 'ignored', summary: 'Archived stale lane A.' },
+      createToolContext(),
+    ));
+
+    expect(ignored.success).toBe(true);
+    expect(ignored.recommendedNextAction).toMatchObject({
+      action: 'recover_stale_background_jobs',
+      reasonCode: 'stale_background_jobs_visible',
+      taskIds: ['stale-task-b'],
+    });
+
+    const status = parseToolJson<{ jobs?: Array<{ taskId: string }>; recommendedNextAction?: { action?: string; reasonCode?: string; taskIds?: string[] } }>(
+      await tools.hive_background_status.execute({}, createToolContext()),
+    );
+    expect(status.jobs?.map(job => job.taskId)).toEqual(['stale-task-b']);
+    expect(status.recommendedNextAction).toMatchObject({
+      action: 'recover_stale_background_jobs',
+      reasonCode: 'stale_background_jobs_visible',
+      taskIds: ['stale-task-b'],
+    });
+  });
+
+  it('includeArchived shows archived stale jobs', async () => {
+    registerScopedJob(service, { taskId: 'archived-stale-task', sessionId: 'archived-stale-session' });
+    service.markStale('archived-stale-task');
+    service.markIgnored('archived-stale-task', 'Archived stale lane.');
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{ jobs?: Array<{ taskId: string; coordination: { archiveReason?: string; staleAt?: string } }> }>(
+      await tools.hive_background_status.execute({ includeArchived: true }, createToolContext()),
+    );
+
+    expect(result.jobs?.map(job => job.taskId)).toEqual(['archived-stale-task']);
+    expect(result.jobs?.[0].coordination).toMatchObject({ archiveReason: 'ignored' });
+    expect(result.jobs?.[0].coordination.staleAt).toBeDefined();
   });
 
   it('hive_background_reconcile_batch reconciles terminal jobs and reports per-item failures', async () => {
@@ -904,5 +1044,49 @@ describe('background management tools', () => {
       runtimeState: 'running',
     });
     expect(readBoard().jobs[0].cancelRequestedAt).toBeUndefined();
+  });
+
+  it('hive_background_status classifies foreign-runtime running jobs as stale and does not count them as native completion pending', async () => {
+    const CURRENT_RUNTIME_ID = 'current-runtime-001';
+
+    registerScopedJob(service, { taskId: 'mismatched-runtime-job', sessionId: 'mismatched-session' });
+    let board = readBoard();
+    const rec = board.jobs.find(j => j.taskId === 'mismatched-runtime-job')!;
+    rec.runtimeId = undefined;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
+
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+      currentRuntimeId: CURRENT_RUNTIME_ID,
+    });
+
+    const raw = await tools.hive_background_status.execute({}, createToolContext());
+    const result = parseToolJson<{
+      jobs?: Array<{
+        taskId: string;
+        runtime: { state: string; statusUncertain?: boolean; lastStatusError?: string };
+        coordination: { staleAt?: string; visibility?: string };
+      }>;
+      recommendedNextAction?: { action: string; reasonCode: string; taskId?: string; message?: string };
+      schedulerGuidance?: { reason: string; message: string };
+      orchestrationBurden?: {
+        visibleLanes: number;
+        completionNotificationsPending: number;
+        reconcileItemsRequired: number;
+      };
+    }>(raw);
+
+    expect(result.jobs?.map(j => j.taskId)).toContain('mismatched-runtime-job');
+    const job = result.jobs?.find(j => j.taskId === 'mismatched-runtime-job')!;
+    expect(job.runtime.state).toBe('running');
+    expect(job.runtime.statusUncertain).toBe(true);
+    expect(job.runtime.lastStatusError).toContain('runtime');
+    expect(job.coordination.staleAt).toBeDefined();
+    expect(result.orchestrationBurden?.completionNotificationsPending).toBe(0);
+    expect(result.schedulerGuidance).toBeUndefined();
+    expect(result.recommendedNextAction?.action).not.toBe('wait_for_native_completion');
+    expect(result.recommendedNextAction?.message).toContain('stale');
   });
 });

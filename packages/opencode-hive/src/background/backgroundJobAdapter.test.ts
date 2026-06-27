@@ -25,6 +25,7 @@ function createHarness(enabled = true) {
     projectRoot: TEST_DIR,
     service,
     isEnabled: () => enabled,
+    runtimeId: 'current-runtime',
     getSession: (sessionId) => sessions.get(sessionId),
     isPrimaryAgent: (agentName, session) => session?.sessionKind === 'primary' || agentName === 'hive-master',
     resolvePromptScope: (_input, session): BackgroundJobScope => ({
@@ -126,6 +127,31 @@ describe('createBackgroundJobAdapter', () => {
         primaryAgent: 'hive-master',
       },
     });
+  });
+
+  it('marks foreign-runtime jobs stale before injecting the prompt board', async () => {
+    const { adapter, service, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1'));
+    service.registerLaunch({
+      taskId: 'foreign-runtime-task',
+      sessionId: 'foreign-runtime-session',
+      agentName: 'forager-worker',
+      runtimeId: 'old-runtime',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-master' },
+    });
+
+    const output = messagesFor('parent-1');
+    await adapter['experimental.chat.messages.transform']({}, output);
+
+    const text = injectedText(output);
+    const job = service.resolve('foreign-runtime-task');
+    expect(job?.runtimeState).toBe('running');
+    expect(job?.staleAt).toBeDefined();
+    expect(job?.statusUncertain).toBe(true);
+    expect(text).toContain('foreign-runtime-task');
+    expect(text).toContain('runtime: running; status error: Background worker runtime identity changed');
+    expect(text).toContain('coordination: stale/orphan recovery');
+    expect(text).not.toContain('coordination: none');
   });
 
   it('preserves pending launch metadata when task description and specialist selection drift', async () => {
