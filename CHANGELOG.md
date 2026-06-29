@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-06-29
+
+### Fixed
+- Background jobs registered before an OpenCode runtime restart are now detected via `runtimeId` epoch mismatch and marked stale with `statusUncertain` instead of leaving orphaned running lanes on the board.
+- `hive_background_status` reclassifies foreign-runtime active jobs on read and suppresses wait-only scheduler guidance while stale lanes remain unreconciled.
+- `hive_background_reconcile` and `hive_background_reconcile_batch` now accept stale non-terminal jobs for `ignored` archival; reconcile decisions remain terminal-only.
+- `/interview` gate-open guidance now delegates bounded validation after 2-3 clarifying questions, avoids contradicting open interview threads, and withholds background results until the current question is resolved or the interview reaches a natural pause.
+- `/implementation-brief` now frames output as a copy-paste-ready brief for `/hive-plan`, separating brief generation from formal plan-writing tools.
+
+### Changed
+- Background job records now persist `runtimeId` at registration time for restart recovery.
+- `hive_background_status` removed the `includeStale` filter; stale active lanes surface in normal status output for operator action.
+- Version-bearing package, lockfile, plugin manifest, changelog, and release-note surfaces are refreshed to `1.7.1`.
+
 ## [1.7.0] - 2026-06-25
 
 ### Added
