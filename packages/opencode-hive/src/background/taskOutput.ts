@@ -84,6 +84,11 @@ export function parseTaskStatusOutput(output: string): ParsedTaskStatusOutput | 
     });
   }
 
+  const xmlParsed = parseXmlTaskStatusOutput(output);
+  if (xmlParsed) {
+    return xmlParsed;
+  }
+
   const task_id = extractTaskId(output);
   if (!task_id) {
     return undefined;
@@ -191,6 +196,39 @@ function parseJsonObject(output: string): Record<string, unknown> | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseXmlTaskStatusOutput(output: string): ParsedTaskStatusOutput | undefined {
+  const openingMatch = output.match(/<task\b([^>]*)>/i);
+  if (!openingMatch) {
+    return undefined;
+  }
+
+  const attributeSource = openingMatch[1] ?? '';
+  const task_id = extractXmlAttribute(attributeSource, 'id');
+  if (!task_id) {
+    return undefined;
+  }
+
+  const runtimeState = extractXmlAttribute(attributeSource, 'runtimeState')
+    ?? extractXmlAttribute(attributeSource, 'status')
+    ?? extractXmlAttribute(attributeSource, 'state');
+  const timedOutText = extractXmlAttribute(attributeSource, 'timedOut')
+    ?? extractXmlAttribute(attributeSource, 'timed_out');
+  const result = extractXmlTag(output, 'task_result');
+
+  return pruneUndefined({
+    task_id,
+    runtimeState,
+    timedOut: parseBoolean(timedOutText),
+    result,
+  });
+}
+
+function extractXmlAttribute(attributeSource: string, name: string): string | undefined {
+  const match = attributeSource.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i'));
+  const value = match?.[1]?.trim();
+  return value || undefined;
 }
 
 function extractTaskId(output: string): string | undefined {

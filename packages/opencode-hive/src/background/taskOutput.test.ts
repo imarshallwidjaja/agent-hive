@@ -101,6 +101,46 @@ Commit: \`24d154c\` (\`test: add background smoke A marker\`)
     expect(parseTaskCompletionNotification('The background worker completed successfully.')).toBeUndefined();
   });
 
+  it('parses terminal completed when task_result prose contains status: ready', () => {
+    const xml = '<task id="xml-shadow-ready" state="completed"><task_result>status: "ready"</task_result></task>';
+    expect(parseTaskCompletionNotification(xml)).toEqual({
+      task_id: 'xml-shadow-ready',
+      runtimeState: 'completed',
+      result: 'status: "ready"',
+    });
+    expect(parseTaskStatusOutput(xml)).toEqual({
+      task_id: 'xml-shadow-ready',
+      runtimeState: 'completed',
+      result: 'status: "ready"',
+    });
+  });
+
+  it('parses terminal completed when task_result prose contains status: replay-pending', () => {
+    const xml = '<task id="xml-shadow-replay" state="completed"><task_result>status: replay-pending logic...</task_result></task>';
+    expect(parseTaskCompletionNotification(xml)).toEqual({
+      task_id: 'xml-shadow-replay',
+      runtimeState: 'completed',
+      result: 'status: replay-pending logic...',
+    });
+  });
+
+  it('parses XML task notifications when id and state attribute order varies', () => {
+    const xml = '<task state="completed" id="xml-reordered"><task_result>done</task_result></task>';
+    expect(parseTaskCompletionNotification(xml)).toEqual({
+      task_id: 'xml-reordered',
+      runtimeState: 'completed',
+      result: 'done',
+    });
+  });
+
+  it('fails closed for malformed XML task notifications without terminal envelope state', () => {
+    expect(parseTaskCompletionNotification('<task id="xml-no-state"><task_result>status: completed</task_result></task>')).toBeUndefined();
+    expect(parseTaskStatusOutput('<task id="xml-no-state"><task_result>status: completed</task_result></task>')).toEqual({
+      task_id: 'xml-no-state',
+      result: 'status: completed',
+    });
+  });
+
   it('extracts lifecycle context from post-tool task payloads', () => {
     const parsed = parseTaskLifecycleEvent({
       tool: 'task',
