@@ -88,7 +88,7 @@
 
 ### Ad-hoc Worktree (4 tools)
 
-These tools are for isolated executor work (Hive Builder). They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`.
+These tools are for isolated ad-hoc orchestration work (Hive Builder). They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`.
 
 | Tool | Purpose |
 |------|---------|
@@ -100,7 +100,7 @@ These tools are for isolated executor work (Hive Builder). They operate on `.hiv
 #### Ad-hoc worktree input/output notes
 
 - `hive_adhoc_worktree_create` returns `runId`, `workspacePath`, and `branch`. It accepts optional `runId`, `label`, `baseBranch`, `repoIds`, and `autoSpawnWorker`; `repoIds` selects manifest-backed composite workspaces. On non-git project roots without a project repository manifest, it returns `reason: "repo_manifest_required"` before any git command.
-- `autoSpawnWorker` defaults to `true`. In background-enabled sessions, set it to `false` only for inspection, routing, or setup-only ad-hoc worktrees where no worker should be launched; the response suppresses `backgroundTaskCall` and marks the worker launch as suppressed.
+- `autoSpawnWorker` defaults to `true`. With the background gate closed, create returns a blocking `taskToolCall`; launch it instead of working directly in the ad-hoc worktree. In background-enabled sessions, create returns both `taskToolCall` (blocking) and `backgroundTaskCall` (same prompt/description/subagent except `background: true`); register pending board state applies to the background launch path. Use blocking when the next step depends on the worker; use background only for independent lanes. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only ad-hoc worktrees; the response sets `launchMode: "suppressed"` and omits launch payloads.
 - `hive_adhoc_worktree_commit` requires `runId`, `workspacePath`, `branch`, and `message`; `workspacePath` and `branch` must match the run returned by create.
 - `hive_adhoc_merge` accepts `runId`, optional `strategy` (`merge`, `squash`, `rebase`), optional `message`, optional `preserveConflicts`, and optional `cleanup` (`none`, `worktree`, `worktree+branch`).
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID.
@@ -118,12 +118,12 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 
 #### Background orchestration notes
 
-- With the env gate unset, the background management tools return `background_tools_disabled`. Primary agents keep the direct/blocking task and worktree workflow, and no background appendix is injected.
+- With the env gate unset, the background management tools return `background_tools_disabled`. Primary agents keep normal blocking `task()` wait mode, and no background appendix is injected.
 - With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active. This is experimental-gate behavior, not the default contract.
 - Gate-open delegation uses lane kind to choose how much management is required. Exploratory/read-only and review lanes are lightweight background candidates. Writing/change and execution lanes require path ownership, explicit state tracking, verification routing, unresolved-lane checks before dependent decisions, and integration control.
 - Every delegated lane needs a context packet: objective, known facts, relevant paths or references, constraints, prior failures, expected output, and where to find missing context. This matters most for non-feature and ad-hoc Hive Builder work because those workers may not have a plan or task context file.
 - Primary orchestrators choose specialists from built-in and custom agent descriptors. Do not add fixed routing tables; use the descriptor that best matches the lane.
-- Hive Builder remains a valid ad-hoc executor with the gate closed. With the gate open, non-trivial non-feature work should be decomposed, routed, tracked, verified, and integrated like orchestration, using ad-hoc worktrees for implementation branches when needed.
+- Hive Builder is an ad-hoc orchestrator in both gate-closed and gate-open sessions. Non-trivial non-feature work should be decomposed, routed, tracked, verified, and integrated like orchestration, using ad-hoc worktrees for implementation branches when needed.
 - In gate-open sessions, launch native background tasks, inspect the scoped board with `hive_background_status`, wait for native completion notifications before dependent decisions, refresh `hive_background_status`, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
 - `hive_background_status` and reconcile responses include `recommendedNextAction` guidance and may set `requiresHiveStatusRefresh` after reconciliation. Treat these as board-local scheduler hints. They do not predict task merge readiness; use `hive_status` for task/worktree-aware state before merge decisions.
 - A `backgroundTaskCall` returned from `hive_worktree_start` is launch guidance, not board state. Until the parent actually launches the native background task, no pending background board entry exists.

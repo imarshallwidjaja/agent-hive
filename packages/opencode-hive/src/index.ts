@@ -19,6 +19,10 @@ import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
 import { BACKGROUND_DELEGATION_SKILL_ID, isBackgroundSubagentsExperimentEnabled, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
 import type { BackgroundDelegationAvailability } from './utils/background-gate.js';
+import {
+  adhocCreateNextAction,
+  buildAdhocWorkerLaunchPayloads,
+} from './utils/adhoc-launch-payload.js';
 
 function blankToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -210,7 +214,7 @@ function buildBackgroundDelegationPromptAppendix(
   );
 
   if (availability.available) {
-    return `\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. This appendix is the gate-open policy boundary: when this heading is present, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. On non-trivial work, operate in background-first scheduler mode: first look for independent background lanes that can run through native task({ background: true, ... }) while you continue safe foreground work. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Track work with hive_background_status, wait for native completion notification before dependent decisions, reconcile terminal native jobs with hive_background_reconcile or hive_background_reconcile_batch, and request cancellation with hive_background_cancel. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict. Gate-closed sessions keep the normal direct/blocking workflow and must not simulate background orchestration.`;
+    return `\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. On non-trivial work, operate in background-first scheduler mode: first look for independent background lanes that can run through native task({ background: true, ... }) while you continue safe foreground work. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Track work with hive_background_status, wait for native completion notification before dependent decisions, reconcile terminal native jobs with hive_background_reconcile or hive_background_reconcile_batch, and request cancellation with hive_background_cancel. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict. Gate-closed sessions keep normal blocking task() wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.`;
   }
 
   if (availability.reason === 'experiment-disabled') {
@@ -2082,7 +2086,7 @@ NEXT: Ask your first clarifying question about this feature.`;
           baseBranch: tool.schema.string().optional().describe('Optional base ref/commit. Omit or leave blank to use current HEAD.'),
           repoIds: tool.schema.array(tool.schema.string()).optional().describe('Explicit repo IDs for composite ad-hoc workspaces. Omit or pass an empty array for single-root mode.'),
           autoSpawnWorker: tool.schema.boolean().optional().describe('When false, create the worktree without registering a pending background worker launch (inspection/routing/setup only). Default true when omitted.'),
-          workerInstructions: tool.schema.string().optional().describe('Self-contained ad-hoc worker handoff instructions. Used as the objective in backgroundTaskCall.prompt when auto-spawning a worker.'),
+          workerInstructions: tool.schema.string().optional().describe('Self-contained ad-hoc worker handoff instructions. Used as the objective in taskToolCall/backgroundTaskCall.prompt when auto-spawning a worker.'),
         },
         async execute({ runId, label, baseBranch, repoIds, autoSpawnWorker, workerInstructions }, toolContext) {
           if (!hasRepositoryManifest() && !isProjectRootGitRepo()) {
@@ -2127,14 +2131,15 @@ NEXT: Ask your first clarifying question about this feature.`;
               branch: info.branch,
               instructions: blankToUndefined(workerInstructions),
             });
-            const backgroundTaskCall = backgroundScope && shouldAutoSpawnWorker
-              ? {
-                  background: true,
-                  subagent_type: 'forager-worker',
-                  description: `Ad-hoc: ${info.runId}`,
-                  prompt: adhocWorkerPrompt,
-                }
-              : undefined;
+            const subagent_type = 'forager-worker';
+            const description = `Ad-hoc: ${info.runId}`;
+            const { taskToolCall, backgroundTaskCall, launchMode } = buildAdhocWorkerLaunchPayloads({
+              subagent_type,
+              description,
+              prompt: adhocWorkerPrompt,
+              backgroundEnabled: Boolean(backgroundScope),
+              shouldAutoSpawnWorker,
+            });
             if (backgroundTaskCall && backgroundScope && backgroundOwnership) {
               backgroundJobService.registerPendingLaunch({
                 parentSessionId: backgroundScope.parentSessionId,
@@ -2145,7 +2150,7 @@ NEXT: Ask your first clarifying question about this feature.`;
                 ownership: backgroundOwnership,
               });
             }
-            const workerLaunchSuppressed = backgroundScope && !shouldAutoSpawnWorker;
+            const workerLaunchSuppressed = launchMode === 'suppressed';
             return respond({
               success: true,
               runId: info.runId,
@@ -2157,13 +2162,14 @@ NEXT: Ask your first clarifying question about this feature.`;
               ...(info.baseCommits ? { baseCommits: info.baseCommits } : {}),
               ...(backgroundScope ? { backgroundScope } : {}),
               ...(backgroundOwnership ? { backgroundOwnership } : {}),
+              launchMode,
+              ...(taskToolCall ? { taskToolCall } : {}),
               ...(backgroundTaskCall ? { backgroundTaskCall } : {}),
               ...(workerLaunchSuppressed ? { workerLaunch: 'suppressed' as const } : {}),
-              nextAction: workerLaunchSuppressed
-                ? 'Use this worktree for inspection, routing, or setup. Delegate execution lanes explicitly when needed; call hive_adhoc_worktree_commit only after changes are ready to commit.'
-                : backgroundTaskCall
-                  ? 'launch the returned `backgroundTaskCall`; do not write implementation code in Builder unless an allowed direct-edit escape is stated. After the worker completes, reconcile/inspect/verify, then commit, merge, and cleanup the ad-hoc worktree.'
-                  : 'Work in the ad-hoc worktree, then call hive_adhoc_worktree_commit({ runId, workspacePath, branch, message }) to commit changes.',
+              nextAction: adhocCreateNextAction({
+                shouldAutoSpawnWorker,
+                hasBackgroundTaskCall: Boolean(backgroundTaskCall),
+              }),
             });
           } catch (error: unknown) {
             const err = error as { message?: string };
@@ -2915,7 +2921,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         model: builderUserConfig.model,
         variant: builderUserConfig.variant,
         temperature: builderUserConfig.temperature ?? 0.4,
-        description: 'Hive Builder - Hive-aware ad-hoc executor with lightweight worktree, verification, merge, and cleanup flow.',
+        description: 'Hive Builder - Hive-aware ad-hoc orchestrator with lightweight worktree, delegation, verification, merge, and cleanup flow.',
         tools: agentTools([
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',

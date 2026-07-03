@@ -95,6 +95,14 @@ describe('buildCompactionReanchor', () => {
       });
       expect(anchor.prompt).toContain('Role: Swarm');
     });
+
+    it('anchors hive-builder with Role: Hive Builder', () => {
+      const anchor = buildCompactionReanchor({
+        agent: 'hive-builder',
+        sessionKind: 'primary',
+      });
+      expect(anchor.prompt).toContain('Role: Hive Builder');
+    });
   });
 
   describe('normal subagents', () => {

@@ -108,6 +108,7 @@ Plan MUST include:
 - ## Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only)
 - ## Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify)
   - Numbered tasks under \`## Tasks\` must represent worktree-backed implementation/docs/test changes
+  - numbered tasks are worker-branch units, not micro-steps. Split by dependency, path ownership, verification boundary, or independently deliverable behavior. Reads, runs, and commits are steps inside a task. Typical plan has roughly 3-12 tasks; more than 12 needs justification or grouping.
   - Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files
 - ## Final Verification (non-branching verification gate for pure final checks)
   - Files must list Create/Modify/Test with exact paths and line ranges where applicable

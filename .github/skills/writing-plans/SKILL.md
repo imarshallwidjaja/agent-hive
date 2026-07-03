@@ -7,7 +7,7 @@ description: Use when you have a spec or requirements for a multi-step task, bef
 
 ## Overview
 
-Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as worker-branch tasks. DRY. YAGNI. TDD. Frequent commits.
 
 Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
 
@@ -23,14 +23,9 @@ Assume they are a skilled developer, but know almost nothing about our toolset o
 - Use `todo` only when shaping a multi-task plan or review response needs an active checklist.
 - Use `vscode/memory` only for durable planning decisions or blocker history that future turns need.
 
-## Bite-Sized Task Granularity
+## Worker-Branch Task Granularity
 
-**Each step is one action (2-5 minutes):**
-- "Write the failing test" - step
-- "Run it to make sure it fails" - step
-- "Implement the minimal code to make the test pass" - step
-- "Run the tests and make sure they pass" - step
-- "Commit" - step
+numbered tasks are worker-branch units, not micro-steps. Split by dependency, path ownership, verification boundary, or independently deliverable behavior. Reads, runs, and commits are steps inside a task. Typical plan has roughly 3-12 tasks; more than 12 needs justification or grouping.
 
 ## Plan Structure
 

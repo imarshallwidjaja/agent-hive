@@ -203,6 +203,13 @@ describe('ad-hoc worktree plugin tools', () => {
           description?: string;
           prompt?: string;
         };
+        taskToolCall?: {
+          subagent_type?: string;
+          description?: string;
+          prompt?: string;
+          background?: boolean;
+        };
+        launchMode?: string;
       }>(raw);
 
       expect(result.success).toBe(true);
@@ -216,15 +223,23 @@ describe('ad-hoc worktree plugin tools', () => {
         branch: result.branch,
         repoIds: [],
       });
-      expect(result.backgroundTaskCall).toEqual({
-        background: true,
+      expect(result.launchMode).toBe('blocking_task_call');
+      expect(result.taskToolCall).toEqual({
         subagent_type: 'forager-worker',
         description: `Ad-hoc: ${result.runId}`,
         prompt: expect.stringContaining(`Workspace: ${result.workspacePath}`),
       });
+      expect(result.taskToolCall?.background).toBeUndefined();
+      expect(result.backgroundTaskCall).toEqual({
+        background: true,
+        subagent_type: 'forager-worker',
+        description: `Ad-hoc: ${result.runId}`,
+        prompt: result.taskToolCall?.prompt,
+      });
       expect(result.backgroundTaskCall?.prompt).toContain(`Run ID: ${result.runId}`);
       expect(result.backgroundTaskCall?.prompt).toContain('report blocked without editing');
-      expect(result.nextAction).toContain('launch the returned `backgroundTaskCall`');
+      expect(result.nextAction).toContain('taskToolCall');
+      expect(result.nextAction).toContain('backgroundTaskCall');
       expect(result.nextAction).not.toContain('Work in the ad-hoc worktree');
 
       const board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf-8')) as {
@@ -252,6 +267,50 @@ describe('ad-hoc worktree plugin tools', () => {
         process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
       }
     }
+  });
+
+  it('hive_adhoc_worktree_create returns a blocking taskToolCall when background is disabled', async () => {
+    delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    delete process.env.OPENCODE_EXPERIMENTAL;
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_gate_closed_worker');
+
+    const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { label: 'blocking-run' },
+      toolContext,
+    );
+    const result = parseToolJson<{
+      success?: boolean;
+      runId?: string;
+      workspacePath?: string;
+      branch?: string;
+      nextAction?: string;
+      launchMode?: string;
+      taskToolCall?: {
+        subagent_type?: string;
+        description?: string;
+        prompt?: string;
+        background?: boolean;
+      };
+      backgroundTaskCall?: unknown;
+      backgroundScope?: unknown;
+    }>(raw);
+
+    expect(result.success).toBe(true);
+    expect(result.launchMode).toBe('blocking_task_call');
+    expect(result.taskToolCall).toEqual({
+      subagent_type: 'forager-worker',
+      description: `Ad-hoc: ${result.runId}`,
+      prompt: expect.stringContaining(`Workspace: ${result.workspacePath}`),
+    });
+    expect(result.taskToolCall?.background).toBeUndefined();
+    expect(result.taskToolCall?.prompt).toContain(`Run ID: ${result.runId}`);
+    expect(result.backgroundTaskCall).toBeUndefined();
+    expect(result.backgroundScope).toBeUndefined();
+    expect(result.nextAction).toContain('launch the returned `taskToolCall`');
+    expect(result.nextAction).not.toContain('Work in the ad-hoc worktree');
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'background-jobs.json'))).toBe(false);
   });
 
   it('hive_adhoc_worktree_create uses supplied workerInstructions in backgroundTaskCall prompt', async () => {
@@ -284,7 +343,7 @@ describe('ad-hoc worktree plugin tools', () => {
       expect(result.backgroundTaskCall?.prompt).toContain('must not commit, merge, or cleanup');
       expect(result.backgroundTaskCall?.prompt).toContain('changed files');
       expect(result.backgroundTaskCall?.prompt).toContain('verification commands and observed results');
-      expect(result.nextAction).toContain('launch the returned `backgroundTaskCall`');
+      expect(result.nextAction).toContain('backgroundTaskCall');
     } finally {
       if (previousBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
@@ -334,6 +393,35 @@ describe('ad-hoc worktree plugin tools', () => {
     }
   });
 
+  it('hive_adhoc_worktree_create with gate closed and autoSpawnWorker false omits launch payloads', async () => {
+    delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    delete process.env.OPENCODE_EXPERIMENTAL;
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_gate_closed_suppressed');
+
+    const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { label: 'gate-closed-inspection', autoSpawnWorker: false },
+      toolContext,
+    );
+    const result = parseToolJson<{
+      success?: boolean;
+      launchMode?: string;
+      taskToolCall?: unknown;
+      backgroundTaskCall?: unknown;
+      backgroundScope?: unknown;
+      workerLaunch?: string;
+    }>(raw);
+
+    expect(result.success).toBe(true);
+    expect(result.launchMode).toBe('suppressed');
+    expect(result.taskToolCall).toBeUndefined();
+    expect(result.backgroundTaskCall).toBeUndefined();
+    expect(result.backgroundScope).toBeUndefined();
+    expect(result.workerLaunch).toBe('suppressed');
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'background-jobs.json'))).toBe(false);
+  });
+
   it('hive_adhoc_worktree_create with autoSpawnWorker false suppresses pending launch and backgroundTaskCall', async () => {
     const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
@@ -352,6 +440,8 @@ describe('ad-hoc worktree plugin tools', () => {
         workspacePath?: string;
         branch?: string;
         workerLaunch?: string;
+        launchMode?: string;
+        taskToolCall?: unknown;
         backgroundScope?: unknown;
         backgroundOwnership?: unknown;
         backgroundTaskCall?: unknown;
@@ -361,7 +451,9 @@ describe('ad-hoc worktree plugin tools', () => {
       expect(result.success).toBe(true);
       expectWorktreeResponseShape(result);
       expect(fs.existsSync(result.workspacePath!)).toBe(true);
+      expect(result.launchMode).toBe('suppressed');
       expect(result.workerLaunch).toBe('suppressed');
+      expect(result.taskToolCall).toBeUndefined();
       expect(result.backgroundScope).toBeDefined();
       expect(result.backgroundOwnership).toBeDefined();
       expect(result.backgroundTaskCall).toBeUndefined();
@@ -406,12 +498,22 @@ describe('ad-hoc worktree plugin tools', () => {
         const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(args, toolContext);
         const result = parseToolJson<{
           success?: boolean;
+          launchMode?: string;
+          taskToolCall?: {
+            subagent_type?: string;
+            description?: string;
+            prompt?: string;
+            background?: boolean;
+          };
           backgroundTaskCall?: unknown;
           backgroundScope?: unknown;
           workerLaunch?: string;
         }>(raw);
 
         expect(result.success).toBe(true);
+        expect(result.launchMode).toBe('blocking_task_call');
+        expect(result.taskToolCall?.subagent_type).toBe('forager-worker');
+        expect(result.taskToolCall?.background).toBeUndefined();
         expect(result.backgroundTaskCall).toBeUndefined();
         expect(result.backgroundScope).toBeUndefined();
         expect(result.workerLaunch).toBeUndefined();

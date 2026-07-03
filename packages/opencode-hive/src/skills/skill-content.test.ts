@@ -126,7 +126,7 @@ describe('skill content', () => {
     }
   });
 
-  it('bundles background-delegation with env-gated scheduler-first guidance', () => {
+  it('bundles background-delegation with baseline delegation and env-gated wait-mode guidance', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation');
 
     expect(skill).toBeDefined();
@@ -140,7 +140,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('hive_background_reconcile_batch');
     expect(skill!.template).toContain('hive_background_cancel');
     expect(skill!.template).not.toContain('task_status');
-    expect(skill!.template).toContain('Background-first is the scheduler default');
+    expect(skill!.template).toContain('Delegation-first orchestration is the baseline');
+    expect(skill!.template).toContain('Background mode only changes wait mode and board protocol');
     expect(skill!.template).toContain('background-delegation governs scheduling and wait mode');
     expect(skill!.template).toContain('Direct Work Boundary');
     expect(skill!.template).toContain('Delegation Kind Reference');
@@ -149,7 +150,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Orchestrator owns final confidence');
     expect(skill!.template).toContain('terminal-unreconciled');
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
-    expect(skill!.template).not.toContain('normal blocking `task()` remains the default');
+    expect(skill!.template).toContain('Gate-closed sessions use normal blocking `task()` wait mode');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Do not call `task()` from subagents');
     expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
@@ -163,6 +164,13 @@ describe('skill content', () => {
     expect(skill!.template).toContain('pure final verification outside `## Tasks`');
     expect(skill!.template).toContain('## Final Verification');
     expect(skill!.template).toContain('one small, local, immediately verified integration fix');
+    expect(skill!.template).toContain('exactly one bounded read');
+    expect(skill!.template).toContain('exactly one bounded write/patch');
+    expect(skill!.template).toContain('one cheap final check');
+    expect(skill!.template).toContain('one independently answerable question or one coherent change');
+    expect(skill!.template).toContain('one owner, one expected output, and one verification/return contract');
+    expect(skill!.template).toContain('Normal fan-out is 2-4 lanes');
+    expect(skill!.template).toContain('synthesize before dispatching more');
     expect(skill!.template).toContain('second patch/test loop');
     expect(skill!.template).toContain('behavior-contract change');
     expect(skill!.template).toContain('manual task/plan amendment');

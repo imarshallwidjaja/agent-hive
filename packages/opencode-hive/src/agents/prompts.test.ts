@@ -64,6 +64,24 @@ describe('Primary agent subagent concurrency guidance', () => {
   });
 });
 
+describe('Direct Work Boundary prompt hygiene', () => {
+  const staleBroadDirectPhrases = [
+    'Single-file, <10-line changes — do directly',
+    'Questions answerable with one grep + one file read',
+    '| Explicit | Specific file/line, clear command | Execute directly |',
+    '| Simple | 1-2 files, <30 min | Light discovery → act |',
+  ] as const;
+
+  it('Hive and Swarm do not retain stale broad direct-execution allowances', () => {
+    for (const phrase of staleBroadDirectPhrases) {
+      expect(QUEEN_BEE_PROMPT).not.toContain(phrase);
+      expect(SWARM_BEE_PROMPT).not.toContain(phrase);
+    }
+    expect(QUEEN_BEE_PROMPT).toContain('Direct Work Boundary');
+    expect(SWARM_BEE_PROMPT).toContain('Direct Work Boundary');
+  });
+});
+
 describe('Scout operating contract', () => {
   it('enforces a read-only contract', () => {
     expect(SCOUT_BEE_PROMPT).toContain('### Read-Only Contract');
@@ -1118,17 +1136,19 @@ describe('Hive orchestration review policy', () => {
   });
 });
 
-describe('Hive Builder (ad-hoc executor) prompt', () => {
-  it('identifies role as ad-hoc executor, not planner-first', () => {
+describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
+  it('identifies role as ad-hoc orchestrator, not default implementation worker', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('Hive Builder');
-    expect(HIVE_BUILDER_PROMPT).toContain('ad-hoc executor');
+    expect(HIVE_BUILDER_PROMPT).toContain('ad-hoc orchestrator');
+    expect(HIVE_BUILDER_PROMPT).toContain('not the default implementation worker');
     expect(HIVE_BUILDER_PROMPT).toContain('not planner-first');
   });
 
-  it('contains default lifecycle: inspect, isolate, execute, verify, commit, merge, cleanup', () => {
+  it('contains default lifecycle: classify, isolate, delegate, verify, commit, merge, cleanup', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('classify direct vs delegated work');
     expect(HIVE_BUILDER_PROMPT).toContain('inspect');
     expect(HIVE_BUILDER_PROMPT).toContain('isolate');
-    expect(HIVE_BUILDER_PROMPT).toContain('execute');
+    expect(HIVE_BUILDER_PROMPT).toContain('delegate');
     expect(HIVE_BUILDER_PROMPT).toContain('verify');
     expect(HIVE_BUILDER_PROMPT).toContain('commit');
     expect(HIVE_BUILDER_PROMPT).toContain('merge');
@@ -1155,7 +1175,7 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
   });
 
   it('contains synthesis-before-delegation wording', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('subagents do not inherit');
+    expect(HIVE_BUILDER_PROMPT).toContain('Subagents do not inherit');
     expect(HIVE_BUILDER_PROMPT).toContain('evidence');
     expect(HIVE_BUILDER_PROMPT).toContain('expected result');
     expect(HIVE_BUILDER_PROMPT).toContain('done criteria');
@@ -1180,8 +1200,6 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
   });
 
   const BUILDER_GATE_CLOSED_LEAK_STRINGS = [
-    'specialist-default',
-    'delegate-first',
     'task({ background: true',
     'hive_background_status',
     '## Background Delegation',
@@ -1189,7 +1207,6 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     'background-first scheduler mode',
     'background-delegation',
     'look for independent background lanes',
-    'not the default implementation worker',
     'Gate open',
     'Gate closed',
   ] as const;
@@ -1203,35 +1220,33 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('task_status');
   });
 
-  it('requires complete context packets in the base prompt; delegation kinds live on the gate-open rail', () => {
+  it('requires complete context packets and delegation units in the base prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('context packet');
     expect(HIVE_BUILDER_PROMPT).toContain('prior failures');
     expect(HIVE_BUILDER_PROMPT).toContain('run IDs');
     expect(HIVE_BUILDER_PROMPT).toContain('verification requirements');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('Exploratory/read-only');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Exploratory/read-only');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('- **Review**:');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('do not require an ad-hoc worktree');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('- **Execution**:');
+    expect(HIVE_BUILDER_PROMPT).toContain('one independently answerable question or one coherent change');
+    expect(HIVE_BUILDER_PROMPT).toContain('one owner, one expected output, and one verification/return contract');
+    expect(HIVE_BUILDER_PROMPT).toContain('Normal fan-out is 2-4 lanes');
+    expect(HIVE_BUILDER_PROMPT).toContain('synthesize before dispatching more');
   });
 
-  it('requires write-conflict boundaries in the base prompt; lane tracking on the gate-open rail', () => {
+  it('requires write-conflict boundaries and lane tracking in the base prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('one active writing/change lane per owned path/module');
     expect(HIVE_BUILDER_PROMPT).toContain('Assign file/path boundaries');
     expect(HIVE_BUILDER_PROMPT).toContain('auto-abort conflicts by default');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('todowrite');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('todowrite');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('unresolved lanes');
+    expect(HIVE_BUILDER_PROMPT).toContain('Track each lane');
+    expect(HIVE_BUILDER_PROMPT).toContain('unresolved lanes');
   });
 
-  it('keeps Hive, Architect, and Swarm scheduler guidance out of Builder base while Builder rail points to background-delegation', () => {
+  it('keeps background scheduler guidance out of Builder base while Builder rail points to wait-mode protocol', () => {
     for (const prompt of [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT]) {
       expect(prompt).toContain('background-first scheduler mode');
       expect(prompt).toContain('dependency, risk, simplicity, user interaction, or ownership conflict');
     }
     expect(HIVE_BUILDER_PROMPT).not.toContain('background-first scheduler mode');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('background-delegation');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Builder-specific overrides');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('wait-mode and board protocol');
   });
 
   it('separates subagent concurrency from foreground wait mode', () => {
@@ -1259,47 +1274,72 @@ describe('Hive Builder (ad-hoc executor) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_background_output');
   });
 
-  it('does not embed the gate-open delegation rail in the base prompt', () => {
+  it('does not embed the gate-open wait-mode rail in the base prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('## Hive Builder Gate-Open Delegation');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('Delegate by default');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('state the escape reason before direct implementation');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('task({ background: true');
   });
 
-  it('defines a Builder gate-open rail with specialist-default, direct escapes, and ad-hoc-not-DAG language', () => {
+  it('defines a Builder gate-open rail as wait-mode and board protocol only', () => {
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('## Hive Builder Gate-Open Delegation');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('## Background-First Orchestration');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('overrides the base lifecycle execution default');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('ad-hoc orchestrator');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('not the default implementation worker');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('specialist-default');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('delegate-first');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('state the escape reason before direct implementation');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('very small local changes');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('no behavior-contract changes');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('no new files');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('no test modifications');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('immediately verifiable in one step');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('If a second patch/test loop is needed, delegate');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('coordination/setup');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_adhoc_worktree');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('native `task()`');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Do not default to');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('wait-mode and board protocol');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('task({ background: true');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_background_status');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('native completion notification');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('overrides the base lifecycle execution default');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('specialist-default');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('state the escape reason before direct implementation');
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('Depends on:');
   });
 
   it('keeps background scheduler protocol details owned by the background-delegation skill', () => {
     expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('background-delegation');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('Builder-specific overrides');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('capture the `task_id`');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('wait for the native completion notification');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('hive_background_reconcile');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('hive_background_cancel');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('wait-mode and board protocol');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_background_reconcile');
+    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_background_cancel');
   });
 
   it('does not keep the old equal-choice execution lifecycle wording', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('execute under the active session policy');
+    expect(HIVE_BUILDER_PROMPT).toContain('classify direct vs delegated work');
     expect(HIVE_BUILDER_PROMPT).not.toContain('implement the change directly or delegate');
     expect(HIVE_BUILDER_PROMPT).not.toContain('Inspect, isolate, implement directly or delegate');
+  });
+});
+
+describe('Primary orchestration direct-work boundaries', () => {
+  it('aligns Hive, Swarm, and Hive Builder on direct-work threshold and task-DAG preservation', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('Direct work is allowed only for coordination/setup');
+      expect(prompt, name).toContain('exactly one bounded read');
+      expect(prompt, name).toContain('exactly one bounded write/patch');
+      expect(prompt, name).toContain('one cheap final check');
+      expect(prompt, name).toContain('Anything requiring 2+ reads, 2+ patches, tests/debug loops');
+      expect(prompt, name).toContain('behavior-contract changes');
+    }
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('Hive feature tasks are durable decomposition units');
+      expect(prompt, name).toContain('must not be split into ephemeral ad-hoc subtasks');
+      expect(prompt, name).toContain('amend the plan or create an append-only manual task');
+    }
+  });
+
+  it('documents worker-branch task granularity for planning prompts', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Architect', ARCHITECT_BEE_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('numbered tasks are worker-branch units, not micro-steps');
+      expect(prompt, name).toContain('Split by dependency, path ownership, verification boundary, or independently deliverable behavior');
+      expect(prompt, name).toContain('Reads, runs, and commits are steps inside a task');
+      expect(prompt, name).toContain('Typical plan has roughly 3-12 tasks');
+    }
   });
 });
 

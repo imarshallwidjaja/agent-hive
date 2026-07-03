@@ -136,11 +136,11 @@ When a task branch has no net tracked changes to integrate, `hive_merge` reports
 
 ### Ad-hoc Worktree
 
-Hive Builder uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. With the background gate closed, Hive Builder remains a direct ad-hoc executor. `hive_adhoc_worktree_create` accepts `autoSpawnWorker`, default `true`; set it to `false` only for inspection, routing, or setup-only worktrees where no worker should auto-launch. See `docs/HIVE-TOOLS.md` for the full tool contracts.
+Hive Builder uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. Hive Builder is an ad-hoc orchestrator in both gate-closed and gate-open sessions; gate-closed sessions return blocking `taskToolCall` payloads, while gate-open sessions return both `taskToolCall` and `backgroundTaskCall` (identical except `background: true`) so blocking remains available when the next step depends on the worker. `hive_adhoc_worktree_create` accepts `autoSpawnWorker`, default `true`; set it to `false` only for inspection, routing, or setup-only worktrees where no worker should auto-launch. See `docs/HIVE-TOOLS.md` for the full tool contracts.
 
 ### Background Orchestration
 
-With the env gate unset (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), Hive keeps the current direct/blocking task and worktree workflow. Background board tools report `background_tools_disabled`, and no background appendix is injected into primary prompts.
+With the env gate unset (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), Hive keeps normal blocking `task()` wait mode. Background board tools report `background_tools_disabled`, and no background appendix is injected into primary prompts.
 
 With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active. This is the background-first scheduler contract under the experimental gate, not always-on behavior. It does not add agents or change custom-agent preservation: primary agents still choose built-in or configured custom specialists by descriptor, not by a fixed routing table.
 
@@ -327,14 +327,14 @@ Create `.hive/agent-hive.json`:
 | ID | Description |
 |----|-------------|
 | `brainstorming` | Use before any creative work. Explores user intent, requirements, and design through collaborative dialogue before implementation. |
-| `writing-plans` | Use when you have a spec or requirements for a multi-step task. Creates detailed implementation plans with bite-sized tasks. |
+| `writing-plans` | Use when you have a spec or requirements for a multi-step task. Creates detailed implementation plans with worker-branch tasks. |
 | `executing-plans` | Use when you have a written implementation plan. Executes tasks in batches with review checkpoints. |
 | `dispatching-parallel-agents` | Use when facing 2+ independent tasks. Dispatches multiple agents to work concurrently on unrelated problems. |
 | `test-driven-development` | Use when implementing any feature or bugfix. Enforces write-test-first, red-green-refactor cycle. |
 | `systematic-debugging` | Use when encountering any bug or test failure. Requires root cause investigation before proposing fixes. |
 | `code-reviewer` | Deprecated compatibility wrapper. Use the `code-reviewer` subagent for implementation review. |
 | `verification` | Use before claiming work is complete or when independently checking an implementation against a plan. Requires fresh command output before success claims. |
-| `background-delegation` | Use when opencode background subagents are available (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`). Defines the env-gated delegate-first scheduler protocol, including board status, reconciliation, and cancellation. Not loaded as a default `autoLoadSkills` entry; the env flag appends an on-demand reference only. |
+| `background-delegation` | Use when opencode background subagents are available (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`). Defines the env-gated background wait-mode and board protocol, including board status, reconciliation, and cancellation. Not loaded as a default `autoLoadSkills` entry; the env flag appends an on-demand reference only. |
 
 #### Available MCPs
 
@@ -361,7 +361,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 
 **URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload guidance for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be advertised in guidance; partially scanned URL skills are not advertised.
 
-`background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are env-gated and compact. When the env flag is set, primary agent prompts include the delegate-first scheduler contract and point to the skill for the full protocol instead of treating background delegation as appendix-only text. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
+`background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are env-gated and compact. Delegation-first orchestration lives in the base primary prompts; when the env flag is set, primary agent prompts add background wait-mode and board protocol guidance and point to the skill for the full protocol. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
 
 **Example:**
 
@@ -399,7 +399,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | `code-reviewer` | (none) |
 | `approach-advisor` | (none) |
 
-`background-delegation` is not a default `autoLoadSkills` entry for any agent. For Hive Builder, background-first delegation and the Builder-specific specialist-default rail are advertised by env-gated compact scheduler guidance only. The env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) appends the on-demand guidance to primary agent prompts without adding it to the default autoload set.
+`background-delegation` is not a default `autoLoadSkills` entry for any agent. For Hive Builder, delegation-first orchestration is in the base prompt; the env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) only appends background wait-mode and board guidance without adding it to the default autoload set.
 
 ### Per-Agent Model Variants
 

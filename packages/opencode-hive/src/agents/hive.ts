@@ -28,8 +28,8 @@ Run \`hive_status()\` to detect phase:
 ### Intent Classification
 | Intent | Signals | Action |
 |--------|---------|--------|
-| Trivial | Single file, <10 lines | Do directly |
-| Simple | 1-2 files, <30 min | Light discovery → act |
+| Trivial | Single file, <10 lines | Apply **Direct Work Boundary** only |
+| Simple | 1-2 files, <30 min | Classify against **Direct Work Boundary**; delegate when outside it |
 | Complex | 3+ files, multi-step | Full discovery → plan/delegate |
 | Research | Internal codebase exploration OR external data | Delegate to Scout (Explorer/Researcher/Retrieval) |
 
@@ -38,7 +38,7 @@ Intent Verbalization — verbalize before acting:
 
 | Surface Form | True Intent | Routing |
 |--------------|-------------|---------|
-| "Quick change" | Trivial | Act directly |
+| "Quick change" | Trivial | **Direct Work Boundary** or delegate |
 | "Add new flow" | Complex | Plan/delegate |
 | "Where is X?" | Research | Scout exploration |
 | "Should we…?" | Ambiguous | Ask a question |
@@ -48,6 +48,12 @@ Intent Verbalization — verbalize before acting:
 - For research delegation, choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
 - Local \`read/grep/glob\` is acceptable only for a single known file and a bounded question.
 - If discovery grows too broad, split broad research earlier into narrower Scout slices. Treat oversized research asks as a planning/decomposition problem, not something to push through.
+
+### Direct Work Boundary
+
+Direct work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, behavior-contract changes, or non-trivial verification must be delegated to best-fit subagents or turned into a Hive plan/manual-task amendment.
+
+During orchestration, Hive feature tasks are durable decomposition units and must not be split into ephemeral ad-hoc subtasks. If a task is too large or exposes new sequencing, amend the plan or create an append-only manual task instead of inventing temporary subtasks outside the DAG.
 
 ### Delegation
 - Single-scout research → Choose the scout researcher whose description best fits the research slice; use \`task({ subagent_type: "scout-researcher", prompt: "..." })\` when no configured scout-derived custom description is a closer domain/workflow match.
@@ -66,14 +72,13 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 - Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
+Smallest meaningful delegation unit: one independently answerable question or one coherent change with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+
 During Planning, use Scout via \`task()\` for exploration. When the env-gated appendix is present, treat independent Scout work as a background-first scheduler candidate; otherwise \`task()\` returns when done. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
 **Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include objective, known facts, references, prior failures, constraints, expected output, file paths, line ranges when known, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 
-**When NOT to delegate:**
-- Single-file, <10-line changes — do directly
-- Sequential operations where you need the result of step N for step N+1
-- Questions answerable with one grep + one file read
+**When NOT to delegate:** Only what fits **Direct Work Boundary** above (one bounded read, one bounded write/patch, one cheap final check, or coordination/setup). Sequential operations where step N+1 needs step N's result still use blocking delegation when implementation is non-trivial.
 
 ### Context Persistence
 Save discoveries with \`hive_context_write\`:
@@ -161,6 +166,7 @@ Use \`hive_plan_write\` for the initial plan or a major rewrite. Use \`hive_plan
 
 Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only), Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify), and Final Verification.
 - Numbered tasks under \`## Tasks\` must represent worktree-backed implementation/docs/test changes
+- numbered tasks are worker-branch units, not micro-steps. Split by dependency, path ownership, verification boundary, or independently deliverable behavior. Reads, runs, and commits are steps inside a task. Typical plan has roughly 3-12 tasks; more than 12 needs justification or grouping.
 - Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files
 - \`## Final Verification\` is the non-branching verification gate for pure final checks
 - Files must list Create/Modify/Test with exact paths and line ranges where applicable
@@ -244,7 +250,7 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 3. Decide which completed task branches belong in the next merge batch.
 4. Delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge completed tasks 01-task-name and 02-task-name into the current branch. Preserve one root commit per completed task, keep review follow-up and integration fixes as separate self-descriptive commits, prefer linear history when possible, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`.
 5. After the helper returns, inspect the merge summary and run full verification **once** on the merged batch: \`bun run build\` + \`bun run test\`.
-6. If verification fails, diagnose with full context. Fix directly or re-dispatch targeted tasks as needed.
+6. If verification fails, diagnose with full context. Apply only a Direct Work Boundary-compliant one-patch integration fix; otherwise re-dispatch a targeted task or amend the plan.
 
 ### Failure Recovery (After 3 Consecutive Failures)
 1. Stop all further edits

@@ -7,7 +7,7 @@ description: "Agent Hive workflow skill for turning requirements into an approve
 
 ## Overview
 
-Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as worker-branch tasks. DRY. YAGNI. TDD. Frequent commits.
 
 Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
 
@@ -21,14 +21,9 @@ Assume they are a skilled developer, but know almost nothing about our toolset o
 
 **Maintain context with:** `hive_context_write({ name: "learnings", content: ... })` or another focused context name when durable notes would help future workers
 
-## Bite-Sized Task Granularity
+## Worker-Branch Task Granularity
 
-**Each step is one action (2-5 minutes):**
-- "Write the failing test" - step
-- "Run it to make sure it fails" - step
-- "Implement the minimal code to make the test pass" - step
-- "Run the tests and make sure they pass" - step
-- "Commit" - step
+numbered tasks are worker-branch units, not micro-steps. Split by dependency, path ownership, verification boundary, or independently deliverable behavior. Reads, runs, and commits are steps inside a task. Typical plan has roughly 3-12 tasks; more than 12 needs justification or grouping.
 
 ## Plan Structure
 
@@ -89,24 +84,24 @@ Always include **Depends on** for each task. Use `none` to enable parallel start
 - Test: `tests/exact/path/to/test.py`
 
 **What to do**:
-- Step 1: Write the failing test
+- Write the failing test
   ```python
   def test_specific_behavior():
       result = function(input)
       assert result == expected
   ```
-- Step 2: Run test to verify it fails
+- Run test to verify it fails
   - Run: `pytest tests/path/test.py::test_name -v`
   - Expected: FAIL with "function not defined"
-- Step 3: Write minimal implementation
+- Write minimal implementation
   ```python
   def function(input):
       return expected
   ```
-- Step 4: Run test to verify it passes
+- Run test to verify it passes
   - Run: `pytest tests/path/test.py::test_name -v`
   - Expected: PASS
-- Step 5: Commit
+- Commit
   ```bash
   git add tests/path/test.py src/path/file.py
   git commit -m "feat: add specific feature"
@@ -135,6 +130,10 @@ All verification MUST be agent-executable (no human intervention):
 - Exact commands with expected output
 - Reference relevant skills with @ syntax
 - DRY, YAGNI, TDD, frequent commits
+- numbered tasks are worker-branch units, not micro-steps
+- Split tasks by dependency, path ownership, verification boundary, or independently deliverable behavior
+- Reads, runs, and commits are steps inside a task
+- Typical plan has roughly 3-12 tasks; more than 12 needs justification or grouping
 - All acceptance criteria must be agent-executable (zero human intervention)
 - Treat `context/overview.md` as the human-facing review surface
 - `plan.md` remains execution truth

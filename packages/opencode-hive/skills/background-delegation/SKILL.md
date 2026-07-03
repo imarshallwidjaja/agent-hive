@@ -1,25 +1,25 @@
 ---
 name: background-delegation
-description: Agent Hive background-first scheduler guidance for opencode background subagent delegation when the experiment is enabled.
+description: Agent Hive background wait-mode and board protocol guidance for opencode background subagent delegation when the experiment is enabled.
 ---
 
 # Background Delegation
 
-Background delegation is the Agent Hive scheduler mode for independent primary-agent work when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` enables the native background task experiment.
+Background delegation is the Agent Hive wait-mode and board protocol for independent primary-agent work when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` enables the native background task experiment.
 
-Core rule: independence first. On non-trivial work, look for independent background lanes before choosing a foreground-only path. Use `task({ background: true, ... })` only when useful foreground work does not depend on the result.
+Core rule: delegation first, independence second. Delegation-first orchestration is the baseline. Background mode only changes wait mode and board protocol. Use `task({ background: true, ... })` only when useful foreground work does not depend on the result.
 
 Background is a wait mode, not the definition of parallelism. Independent subagent tasks can run in parallel when the primary agent emits all `task()` calls in the same assistant message. Background mode answers a separate scheduling question: can the primary agent keep doing unrelated foreground work while those subagents run?
 
-Default: Background-first is the scheduler default when the env-gated appendix is present. When `## Background-First Orchestration` is present, background-delegation governs scheduling and wait mode; other skills govern domain workflow and safety. Safety, dependency, user, risk, simplicity, and ownership gates may still force blocking. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict. If the next decision depends on the result, use blocking `task()` and name the escape reason in the handoff.
+Default: When `## Background-First Orchestration` is present, background-delegation governs scheduling and wait mode; other skills govern domain workflow and safety. Safety, dependency, user, risk, simplicity, and ownership gates may still force blocking. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict. If the next decision depends on the result, use blocking `task()` and name the escape reason in the handoff.
 
-If the env-gated appendix is absent, preserve the normal direct/blocking workflow. Do not simulate background orchestration from this skill alone.
+Gate-closed sessions use normal blocking `task()` wait mode. Do not simulate background orchestration from this skill alone.
 
 ## Direct Work Boundary
 
 Default to delegating implementation/test work and non-trivial verification actions. The primary agent is the scheduler, not the default implementer.
 
-Direct primary-agent work is allowed when the edit or check is small, cheap, integral to coordination, and clearly lower overhead than delegation. The direct fix threshold is one small, local, immediately verified integration fix. A second patch/test loop, behavior-contract change, or broadened scope must be delegated, resumed, or turned into a manual task/plan amendment.
+Direct primary-agent work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. The direct fix threshold is one small, local, immediately verified integration fix. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, non-trivial verification, a second patch/test loop, behavior-contract change, or broadened scope must be delegated, resumed, or turned into a manual task/plan amendment.
 
 Direct work normally includes clarifying the request, minimal routing reads, classifying the delegation kind, choosing specialists, maintaining todos and task IDs, launching and monitoring lanes, synthesizing results, running cheap final checks, validating outcomes, and communicating decisions.
 
@@ -35,6 +35,8 @@ Keep pure final verification outside `## Tasks` in `## Final Verification` when 
 - Execution: highest-management tasks with lifecycle/state, merge or cleanup handling, verification routing, and outcome reporting.
 
 Prefer more smaller targeted background tasks over broad ambiguous tasks, especially for exploratory/read-only and review work. Start with a 2-4 initial lanes fan-out unless there is a clear reason for more, synthesize the results, then dispatch another wave if needed.
+
+Smallest meaningful non-feature delegation unit: one independently answerable question or one coherent change with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
 
 ## Context Packet
 

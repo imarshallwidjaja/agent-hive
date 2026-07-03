@@ -11,7 +11,7 @@
  * - Code Reviewer: Reviews implementation changes
  * - Simplicity Reviewer: Reviews implementation changes for deletion-biased cleanup
  * - Approach Advisor: Reviews technical direction
- * - Hive Builder: Ad-hoc executor for direct work
+ * - Hive Builder: Ad-hoc orchestrator for non-feature work
  */
 
 // Bee agents (lean, focused)
@@ -41,7 +41,7 @@ export { approachAdvisorAgent, APPROACH_ADVISOR_PROMPT } from './approach-adviso
  * - code-reviewer: Reviews implementation changes
  * - simplicity-reviewer: Reviews implementation changes for deletion-biased cleanup
  * - approach-advisor: Reviews technical direction
- * - hive-builder: Primary general-purpose Hive-aware executor for ad-hoc work
+   * - hive-builder: Primary general-purpose Hive-aware orchestrator for ad-hoc work
  */
 export const hiveAgents = {
   // Bee Agents (lean, focused - recommended)
@@ -97,7 +97,7 @@ export const hiveAgents = {
   },
   'hive-builder': {
     name: 'Hive Builder',
-    description: 'Primary general-purpose Hive-aware executor for ad-hoc work. Executes directly without plan/task DAG overhead.',
+    description: 'Primary general-purpose Hive-aware ad-hoc orchestrator. Delegates non-trivial work without plan/task DAG overhead.',
     mode: 'primary' as const,
   },
 };
