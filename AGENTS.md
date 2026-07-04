@@ -291,8 +291,8 @@ Use `hive_merge` to explicitly integrate changes. Worktrees persist until manual
 
 `summary` remains task/report context; optional `message` controls git commit/merge text.
 Multi-line `message` is supported where a new commit is created.
-Omit `message` (or pass `''`) to keep default message behavior.
-Do not provide `message` when using `hive_merge(..., strategy: 'rebase')`.
+For `hive_merge` with `merge` or `squash`, pass `message` when you need a specific self-descriptive project-history subject or body; omit `message` (or pass `''`) to derive from source branch commits (single commit: subject only; multiple: first subject plus strategy heading and short hashes). Do not rely on generic hive/task/run IDs in project history.
+Do not provide a non-blank `message` when using `hive_merge(..., strategy: 'rebase')`.
 
 If a completed task branch has no net tracked changes, `hive_merge` returns `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, and no `sha`; requested cleanup can still run when safe. Use `hive_status.helperStatus.mergeEligibility` as the task/worktree-aware state surface before merge or cleanup decisions.
 

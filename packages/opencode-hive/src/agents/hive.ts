@@ -263,10 +263,11 @@ Hive decides when to merge, delegated \`hive-helper\` executes the batch, and Hi
 Root history should show task-level progress, not feature-level compaction. Preserve one root commit per completed task. Keep review follow-up and integration fixes as separate self-descriptive commits. Do not squash a whole feature or merge batch into one commit.
 Merge commits must read like normal project history. For every \`hive_merge\` call, choose the strategy deliberately for that task branch:
 - Prefer \`strategy: "rebase"\` when the task branch has clean, well-written commits and replaying them preserves useful linear root history.
-- Use \`strategy: "squash"\` only to collapse worker-internal churn within one task branch; pass a well-written, self-descriptive merge message for that task's work.
-- Use \`strategy: "merge"\` only when preserving a task branch topology is more important than linear history; pass a well-written, self-descriptive merge message.
-- Do not omit \`message\` for merge or squash merges; the tool default is intentionally generic and should not appear in project history.
-- Do not use \`hive\`, task numbers, task folder names, or "merge task" prose in commit subjects. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
+- Use \`strategy: "squash"\` only to collapse worker-internal churn within one task branch.
+- Use \`strategy: "merge"\` only when preserving a task branch topology is more important than linear history.
+- Pass an explicit \`message\` when you need a specific self-descriptive project-history subject or body; omit \`message\` (or pass \`''\`) to derive from source branch commits (single commit: subject only; multiple: first subject plus strategy heading and short hashes).
+- Do not use \`hive\`, task numbers, task folder names, run IDs, or "merge task" prose in project history. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
+- Do not provide a non-blank \`message\` when using \`strategy: "rebase"\`.
 For manifest-backed tasks, merge results surface per-repo outcomes through the aggregate \`repos\` field. \`partial: true\` means at least one repo succeeded before a later repo failed or hit a conflict — do not treat a partial merge as complete. Route partial merges back to plan amendment. Preflight failures (\`partial: false\`) leave all repos untouched.
 For bounded operational cleanup, Hive may also delegate hard-task cleanup to \`hive-helper\`: clarifying current feature/task/worktree state, summarizing interrupted wrap-up candidates, and creating a safe append-only manual follow-up when the work is isolated and does not change sequencing. Helper may inspect current feature state and summarize what is observably mergeable/resumable/blocked, but DAG-changing requests or anything that needs new sequencing must route back to Hive for plan amendment.
 

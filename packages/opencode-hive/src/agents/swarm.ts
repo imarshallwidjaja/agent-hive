@@ -154,10 +154,11 @@ task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge co
 Root history should show task-level progress, not feature-level compaction. Preserve one root commit per completed task. Keep review follow-up and integration fixes as separate self-descriptive commits. Do not squash a whole feature or merge batch into one commit.
 Merge commits must read like normal project history. Helper should choose the strategy deliberately for each task branch:
 - Prefer \`strategy: "rebase"\` when the task branch has clean, well-written commits and replaying them preserves useful linear root history.
-- Use \`strategy: "squash"\` only to collapse worker-internal churn within one task branch; pass a well-written, self-descriptive merge message for that task's work.
-- Use \`strategy: "merge"\` only when preserving a task branch topology is more important than linear history; pass a well-written, self-descriptive merge message.
-- Do not omit \`message\` for merge or squash merges; the tool default is intentionally generic and should not appear in project history.
-- Do not use \`hive\`, task numbers, task folder names, or "merge task" prose in commit subjects. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
+- Use \`strategy: "squash"\` only to collapse worker-internal churn within one task branch.
+- Use \`strategy: "merge"\` only when preserving a task branch topology is more important than linear history.
+- Pass an explicit \`message\` when you need a specific self-descriptive project-history subject or body; omit \`message\` (or pass \`''\`) to derive from source branch commits (single commit: subject only; multiple: first subject plus strategy heading and short hashes).
+- Do not use \`hive\`, task numbers, task folder names, run IDs, or "merge task" prose in project history. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
+- Do not provide a non-blank \`message\` when using \`strategy: "rebase"\`.
 
 If helper delegation fails, retry helper delegation once before using a direct \`hive_merge\` recovery escape.
 

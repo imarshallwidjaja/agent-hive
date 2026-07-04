@@ -296,12 +296,12 @@ describe('Hive (Hybrid) prompt', () => {
     });
 
     it('requires self-descriptive merge messages and linear history preference', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('well-written, self-descriptive merge message');
+      expect(QUEEN_BEE_PROMPT).toContain('Pass an explicit `message` when you need a specific self-descriptive project-history subject or body');
+      expect(QUEEN_BEE_PROMPT).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
       expect(QUEEN_BEE_PROMPT).toContain('Preserve one root commit per completed task');
       expect(QUEEN_BEE_PROMPT).toContain('Do not squash a whole feature or merge batch into one commit');
       expect(QUEEN_BEE_PROMPT).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
-      expect(QUEEN_BEE_PROMPT).toContain('Do not omit `message` for merge or squash merges');
-      expect(QUEEN_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
+      expect(QUEEN_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
       expect(QUEEN_BEE_PROMPT).toContain('Prefer `strategy: "rebase"`');
     });
 
@@ -629,12 +629,12 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('requires self-descriptive merge messages and linear history preference', () => {
-      expect(SWARM_BEE_PROMPT).toContain('well-written, self-descriptive merge message');
+      expect(SWARM_BEE_PROMPT).toContain('Pass an explicit `message` when you need a specific self-descriptive project-history subject or body');
+      expect(SWARM_BEE_PROMPT).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
       expect(SWARM_BEE_PROMPT).toContain('Preserve one root commit per completed task');
       expect(SWARM_BEE_PROMPT).toContain('Do not squash a whole feature or merge batch into one commit');
       expect(SWARM_BEE_PROMPT).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
-      expect(SWARM_BEE_PROMPT).toContain('Do not omit `message` for merge or squash merges');
-      expect(SWARM_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
+      expect(SWARM_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
       expect(SWARM_BEE_PROMPT).toContain('Prefer `strategy: "rebase"`');
     });
 
@@ -808,9 +808,9 @@ describe('Hive Helper prompt', () => {
     expect(HIVE_HELPER_PROMPT).toContain('Preserve one root commit per completed task');
     expect(HIVE_HELPER_PROMPT).toContain('Do not squash a whole feature or merge batch into one commit');
     expect(HIVE_HELPER_PROMPT).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
-    expect(HIVE_HELPER_PROMPT).toContain('Do not omit `message` for merge or squash merges');
-    expect(HIVE_HELPER_PROMPT).toContain('well-written, self-descriptive commit subject');
-    expect(HIVE_HELPER_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
+    expect(HIVE_HELPER_PROMPT).toContain('Pass an explicit `message` when you need a specific self-descriptive project-history subject or body');
+    expect(HIVE_HELPER_PROMPT).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
+    expect(HIVE_HELPER_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
     expect(HIVE_HELPER_PROMPT).toContain('Prefer `strategy: "rebase"`');
   });
 

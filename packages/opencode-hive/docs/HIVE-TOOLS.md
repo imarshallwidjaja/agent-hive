@@ -67,7 +67,7 @@
 - `summary`: task/report summary.
 - `message` (optional): git commit message text.
 - Multi-line `message` is allowed when creating a commit.
-- Omit `message` (or pass `''`) to use default commit message behavior.
+- Omit `message` (or pass `''`) to use the task commit default. This applies to the worker commit only, not the later merge commit.
 
 #### hive_worktree_commit output
 
@@ -103,6 +103,7 @@ These tools are for isolated ad-hoc orchestration work (Hive Builder). They oper
 - `autoSpawnWorker` defaults to `true`. With the background gate closed, create returns a blocking `taskToolCall`; launch it instead of working directly in the ad-hoc worktree. In background-enabled sessions, create returns both `taskToolCall` (blocking) and `backgroundTaskCall` (same prompt/description/subagent except `background: true`); register pending board state applies to the background launch path. Use blocking when the next step depends on the worker; use background only for independent lanes. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only ad-hoc worktrees; the response sets `launchMode: "suppressed"` and omits launch payloads.
 - `hive_adhoc_worktree_commit` requires `runId`, `workspacePath`, `branch`, and `message`; `workspacePath` and `branch` must match the run returned by create.
 - `hive_adhoc_merge` accepts `runId`, optional `strategy` (`merge`, `squash`, `rebase`), optional `message`, optional `preserveConflicts`, and optional `cleanup` (`none`, `worktree`, `worktree+branch`).
+- `hive_adhoc_merge` returns `commitMessage` and `messageSource` (`explicit`, `derived`, or `fallback`) when it creates a merge/squash commit.
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID.
 
 ### Background Orchestration (4 tools)
@@ -143,9 +144,9 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 
 - `preserveConflicts?: boolean` defaults to `false`; when `true`, merge conflicts stay in place for an isolated helper session instead of being auto-aborted.
 - `cleanup?: 'none' | 'worktree' | 'worktree+branch'` defaults to `'none'`; successful merges can keep the worktree, remove only the worktree, or remove the worktree and delete the task branch.
-- `message` is optional and applies to `merge`/`squash` strategies.
-- Do not provide `message` with `strategy: 'rebase'`.
-- Omit `message` (or pass `''`) to use default merge/squash message behavior.
+- `message` is optional and applies to `merge`/`squash` strategies. Use it when the merge commit needs a specific self-descriptive project-history subject or body.
+- Do not provide a non-blank `message` with `strategy: 'rebase'`.
+- Omit `message` (or pass `''`) only when the merge commit should derive its message from the source branch commits.
 
 #### hive_merge output
 
@@ -155,6 +156,8 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
   - `merged`
   - `strategy`
   - `sha?`
+  - `commitMessage?` when a merge/squash commit is created
+  - `messageSource?` (`explicit`, `derived`, or `fallback`) when a merge/squash commit is created
   - `filesChanged`
   - `conflicts`
   - `conflictState` (`none`, `aborted`, or `preserved`)

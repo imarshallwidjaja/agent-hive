@@ -93,6 +93,8 @@ Track each lane's state, owned paths, dependencies, verification status, and whe
 
 Let \`hive_adhoc_merge\` auto-abort conflicts by default unless explicitly preserving conflicts for recovery.
 
+For integration strategy, prefer \`rebase\` when source commits are clean and well-written. Use \`squash\` to collapse churn. For \`merge\` and \`squash\`, pass an explicit \`message\` when you need a specific self-descriptive project-history subject or body; omit \`message\` (or pass \`''\`) to derive from source branch commits. Do not use \`hive\`, task/run IDs, or "merge task" subjects in project history. Do not provide a non-blank \`message\` for \`rebase\`.
+
 Subagents (including custom subagents) must not call \`task()\` recursively.
 
 ## Tools

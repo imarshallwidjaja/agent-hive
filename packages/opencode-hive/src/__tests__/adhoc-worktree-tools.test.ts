@@ -725,6 +725,52 @@ describe('ad-hoc worktree plugin tools', () => {
     expectWorktreeResponseShape(merge);
   });
 
+  it('ad-hoc squash merge with omitted message derives from the source commit', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_merge_derived_message');
+
+    const createRaw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { label: 'derived-message' },
+      toolContext,
+    );
+    const created = parseToolJson<{
+      runId: string;
+      workspacePath: string;
+      branch: string;
+    }>(createRaw);
+
+    fs.writeFileSync(path.join(created.workspacePath, 'note.txt'), 'hello');
+    await hooks.tool!.hive_adhoc_worktree_commit.execute(
+      {
+        runId: created.runId,
+        workspacePath: created.workspacePath,
+        branch: created.branch,
+        message: 'feat: preserve adhoc source narrative\n\nBody from the ad-hoc source commit.',
+      },
+      toolContext,
+    );
+
+    const mergeRaw = await hooks.tool!.hive_adhoc_merge.execute(
+      { runId: created.runId },
+      toolContext,
+    );
+    const merge = parseToolJson<{
+      success: boolean;
+      merged: boolean;
+      commitMessage?: string;
+      messageSource?: string;
+    }>(mergeRaw);
+
+    expect(merge.success).toBe(true);
+    expect(merge.merged).toBe(true);
+    expect(merge.messageSource).toBe('derived');
+    expect(merge.commitMessage).toBe('feat: preserve adhoc source narrative');
+    expect(execSync('git log -1 --format=%B', { cwd: testRoot, encoding: 'utf-8' }).trimEnd()).toBe(
+      'feat: preserve adhoc source narrative',
+    );
+  });
+
   it('ad-hoc cleanup response contains workspacePath, branch, and nextAction', async () => {
     initGitRoot(testRoot);
     const hooks = await loadHooks(testRoot);

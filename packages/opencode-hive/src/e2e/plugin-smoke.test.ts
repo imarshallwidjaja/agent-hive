@@ -2591,6 +2591,8 @@ Do it
       conflictState: string;
       cleanup: { worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean };
       message: string;
+      commitMessage?: string;
+      messageSource?: string;
     };
 
     expect(mergeResult).toMatchObject({
@@ -2608,7 +2610,163 @@ Do it
       message: 'Task "01-first-task" merged successfully using merge strategy.',
     });
     expect(typeof mergeResult.sha).toBe('string');
+    expect(mergeResult.messageSource).toBe('explicit');
+    expect(mergeResult.commitMessage).toBe(customMessage);
     expect(readHeadBody(testRoot)).toBe(customMessage);
+  });
+
+  it('derives squash merge message from multiple source commits when omitted', async () => {
+    const feature = 'merge-derived-squash-feature';
+    const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_merge_derived_squash',
+      feature,
+      'Merge Derived Squash Feature',
+      'Yes, this test validates derived squash merge commit messages from task branch history.',
+    );
+
+    fs.writeFileSync(path.join(worktreePath, 'first.txt'), 'first\n');
+    execSync('git add first.txt && git commit -m "feat: first source change"', { cwd: worktreePath });
+    fs.writeFileSync(path.join(worktreePath, 'second.txt'), 'second\n');
+    execSync('git add second.txt && git commit -m "fix: second source change"', { cwd: worktreePath });
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'completed',
+        summary: 'Marked pre-committed worktree done. Tests pass (bun test).',
+      },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as { ok: boolean; taskState?: string };
+    expect(commitResult.ok).toBe(true);
+    expect(commitResult.taskState).toBe('done');
+
+    const baseBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: testRoot, encoding: 'utf-8' }).trim();
+    const sourceLog = execSync(`git log --reverse --format=%h%x00%s ${baseBranch}..HEAD`, {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+    }).trim().split('\n');
+    const [firstHash, firstSubject] = sourceLog[0].split('\0');
+    const [secondHash, secondSubject] = sourceLog[1].split('\0');
+    const expectedMessage = `feat: first source change\n\nSquashed commits:\n- ${firstHash} ${firstSubject}\n- ${secondHash} ${secondSubject}`;
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: FIRST_TASK, strategy: 'squash' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      commitMessage?: string;
+      messageSource?: string;
+    };
+
+    expect(mergeResult.success).toBe(true);
+    expect(mergeResult.merged).toBe(true);
+    expect(mergeResult.messageSource).toBe('derived');
+    expect(mergeResult.commitMessage).toBe(expectedMessage);
+    expect(readHeadBody(testRoot)).toBe(expectedMessage);
+  });
+
+  it('derives normal merge commit message from single source commit subject when omitted', async () => {
+    const feature = 'merge-derived-normal-feature';
+    const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_merge_derived_normal',
+      feature,
+      'Merge Derived Normal Feature',
+      'Yes, this test validates derived normal merge commit messages from task branch history.',
+    );
+
+    fs.writeFileSync(path.join(worktreePath, 'task-note.txt'), 'normal derived merge\n');
+    const sourceMessage = 'feat: normal source narrative\n\nNormal merge body from task branch.';
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'completed',
+        summary: 'Prepared normal merge derivation test. Tests pass (bun test).',
+        message: sourceMessage,
+      },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as { ok: boolean; taskState?: string };
+    expect(commitResult.ok).toBe(true);
+    expect(commitResult.taskState).toBe('done');
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: FIRST_TASK, strategy: 'merge' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      commitMessage?: string;
+      messageSource?: string;
+    };
+
+    expect(mergeResult.success).toBe(true);
+    expect(mergeResult.merged).toBe(true);
+    expect(mergeResult.messageSource).toBe('derived');
+    expect(mergeResult.commitMessage).toBe('feat: normal source narrative');
+    expect(readHeadBody(testRoot)).toBe('feat: normal source narrative');
+  });
+
+  it('derives normal merge commit message from multiple source commits when omitted', async () => {
+    const feature = 'merge-derived-normal-multi-feature';
+    const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_merge_derived_normal_multi',
+      feature,
+      'Merge Derived Normal Multi Feature',
+      'Yes, this test validates derived normal merge commit messages from multiple task branch commits.',
+    );
+
+    fs.writeFileSync(path.join(worktreePath, 'first.txt'), 'first\n');
+    execSync('git add first.txt && git commit -m "feat: first normal change"', { cwd: worktreePath });
+    fs.writeFileSync(path.join(worktreePath, 'second.txt'), 'second\n');
+    execSync('git add second.txt && git commit -m "fix: second normal change"', { cwd: worktreePath });
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'completed',
+        summary: 'Marked pre-committed worktree done. Tests pass (bun test).',
+      },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as { ok: boolean; taskState?: string };
+    expect(commitResult.ok).toBe(true);
+    expect(commitResult.taskState).toBe('done');
+
+    const baseBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: testRoot, encoding: 'utf-8' }).trim();
+    const sourceLog = execSync(`git log --reverse --format=%h%x00%s ${baseBranch}..HEAD`, {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+    }).trim().split('\n');
+    const [firstHash, firstSubject] = sourceLog[0].split('\0');
+    const [secondHash, secondSubject] = sourceLog[1].split('\0');
+    const expectedMessage = `feat: first normal change\n\nMerged commits:\n- ${firstHash} ${firstSubject}\n- ${secondHash} ${secondSubject}`;
+
+    const mergeRaw = await hooks.tool!.hive_merge.execute(
+      { feature, task: FIRST_TASK, strategy: 'merge' },
+      toolContext,
+    );
+    const mergeResult = JSON.parse(mergeRaw as string) as {
+      success: boolean;
+      merged: boolean;
+      commitMessage?: string;
+      messageSource?: string;
+    };
+
+    expect(mergeResult.success).toBe(true);
+    expect(mergeResult.merged).toBe(true);
+    expect(mergeResult.messageSource).toBe('derived');
+    expect(mergeResult.commitMessage).toBe(expectedMessage);
+    expect(readHeadBody(testRoot)).toBe(expectedMessage);
   });
 
   it("rejects custom merge message for rebase strategy", async () => {

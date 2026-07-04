@@ -268,8 +268,9 @@ describe('hive command renderers', () => {
     expect(output).toContain('Preserve one root commit per completed task');
     expect(output).toContain('Do not squash a whole feature or merge batch into one commit');
     expect(output).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
-    expect(output).toContain('Do not omit `message` for merge or squash merges');
-    expect(output).toContain('Do not use `hive`, task numbers, task folder names, or "merge task" prose');
+    expect(output).toContain('Pass an explicit `message` for merge or squash when you need a specific self-descriptive project-history subject or body');
+    expect(output).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
+    expect(output).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
   });
 
   it('anchors council-directive: no council run, one question max 4, directive fields', () => {

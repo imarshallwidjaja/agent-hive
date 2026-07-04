@@ -2031,7 +2031,7 @@ NEXT: Ask your first clarifying question about this feature.`;
         args: {
           task: tool.schema.string().describe('Task folder name to merge'),
           strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional().describe('Merge strategy (default: merge)'),
-          message: tool.schema.string().optional().describe('Optional merge message for merge/squash. Empty uses default.'),
+          message: tool.schema.string().optional().describe('Self-descriptive project-history commit message for merge/squash. Omit only to derive from source branch commits. Rebase disallows custom messages.'),
           preserveConflicts: tool.schema.boolean().optional().describe('Keep merge conflict state intact instead of auto-aborting (default: false).'),
           cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional().describe('Cleanup mode after a successful merge (default: none).'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
@@ -2230,7 +2230,7 @@ NEXT: Ask your first clarifying question about this feature.`;
                 ...(result.repos !== undefined ? { repos: result.repos } : {}),
               },
               nextAction: result.committed
-                ? 'Call hive_adhoc_merge({ runId }) to squash-merge the ad-hoc branch by default, pass strategy: "merge" when needed, or call hive_adhoc_cleanup to discard.'
+                ? 'Call hive_adhoc_merge with message when a specific project-history subject is needed, omit message only to derive from branch commits, pass strategy: "merge" when needed, or call hive_adhoc_cleanup to discard.'
                 : (result.message === 'No changes to commit'
                   ? 'No changes were committed. Modify the worktree and retry hive_adhoc_worktree_commit.'
                   : 'Resolve the commit failure (per-repo error or git state) and retry hive_adhoc_worktree_commit.'),
@@ -2253,7 +2253,7 @@ NEXT: Ask your first clarifying question about this feature.`;
         args: {
           runId: tool.schema.string().describe('Ad-hoc run identifier.'),
           strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional().describe('Merge strategy (default: squash). Use merge explicitly when preserving branch topology is more important than minimizing commit churn.'),
-          message: tool.schema.string().optional().describe('Optional merge message for merge/squash. Not supported for rebase.'),
+          message: tool.schema.string().optional().describe('Self-descriptive project-history commit message for merge/squash. Omit only to derive from source branch commits. Rebase disallows custom messages.'),
           preserveConflicts: tool.schema.boolean().optional().describe('Keep merge conflict state intact instead of auto-aborting (default: false).'),
           cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional().describe('Cleanup mode after a successful merge (default: none).'),
         },

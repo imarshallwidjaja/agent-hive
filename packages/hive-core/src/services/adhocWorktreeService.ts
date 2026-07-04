@@ -2,6 +2,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import type { ResolvedRepository } from '../types.js';
+import type { MergeMessageSource } from '../utils/mergeMessage.js';
+import { selectMergeCommitMessage } from '../utils/mergeMessage.js';
 
 export interface RepositoryResolver {
   resolveRepositories(): ResolvedRepository[];
@@ -76,6 +78,8 @@ export interface AdhocRepoMergeResult {
   success: boolean;
   merged: boolean;
   sha?: string;
+  commitMessage?: string;
+  messageSource?: MergeMessageSource;
   reason?: string;
   reasonCode?: 'NO_TRACKED_CHANGES';
   cleanupEligible?: boolean;
@@ -95,6 +99,8 @@ export interface AdhocMergeResult {
   merged: boolean;
   strategy: AdhocMergeStrategy;
   sha?: string;
+  commitMessage?: string;
+  messageSource?: MergeMessageSource;
   reason?: string;
   reasonCode?: 'NO_TRACKED_CHANGES';
   cleanupEligible?: boolean;
@@ -712,7 +718,7 @@ export class AdhocWorktreeService {
       pruned: false,
     };
 
-    if (strategy === 'rebase' && message) {
+    if (strategy === 'rebase' && message?.trim()) {
       return {
         success: false,
         merged: false,
@@ -767,6 +773,8 @@ export class AdhocWorktreeService {
       merged: repoResult.merged,
       strategy,
       ...(repoResult.sha !== undefined ? { sha: repoResult.sha } : {}),
+      ...(repoResult.commitMessage !== undefined ? { commitMessage: repoResult.commitMessage } : {}),
+      ...(repoResult.messageSource !== undefined ? { messageSource: repoResult.messageSource } : {}),
       ...(repoResult.reason !== undefined ? { reason: repoResult.reason } : {}),
       ...(repoResult.reasonCode !== undefined ? { reasonCode: repoResult.reasonCode } : {}),
       ...(repoResult.cleanupEligible !== undefined ? { cleanupEligible: repoResult.cleanupEligible } : {}),
@@ -867,6 +875,8 @@ export class AdhocWorktreeService {
     const flattenedConflicts: string[] = [];
     let anyActualMerge = false;
     let firstActualSha: string | undefined;
+    let firstActualCommitMessage: string | undefined;
+    let firstActualMessageSource: MergeMessageSource | undefined;
     let stoppedRepoId: string | undefined;
     let firstError: string | undefined;
     let lastConflictState: 'none' | 'aborted' | 'preserved' = 'none';
@@ -911,6 +921,8 @@ export class AdhocWorktreeService {
 
       anyActualMerge = true;
       firstActualSha ??= repoResult.sha;
+      firstActualCommitMessage ??= repoResult.commitMessage;
+      firstActualMessageSource ??= repoResult.messageSource;
     }
 
     if (stoppedRepoId !== undefined) {
@@ -981,6 +993,8 @@ export class AdhocWorktreeService {
       merged: true,
       strategy,
       ...(firstActualSha !== undefined ? { sha: firstActualSha } : {}),
+      ...(firstActualCommitMessage !== undefined ? { commitMessage: firstActualCommitMessage } : {}),
+      ...(firstActualMessageSource !== undefined ? { messageSource: firstActualMessageSource } : {}),
       filesChanged: flattenedFiles,
       conflicts: flattenedConflicts,
       conflictState: 'none',
@@ -1146,16 +1160,27 @@ export class AdhocWorktreeService {
         };
       }
 
+      const sourceCommits = strategy === 'rebase'
+        ? []
+        : [...(await git.log([`${currentBranch}..${branchName}`])).all].reverse();
+
       if (strategy === 'squash') {
         await git.raw(['merge', '--squash', branchName]);
-        const squashMessage = message || defaultSquashMessage;
-        const result = await git.commit(squashMessage);
+        const selectedMessage = selectMergeCommitMessage({
+          explicitMessage: message,
+          commits: sourceCommits,
+          fallbackMessage: defaultSquashMessage,
+          strategy: 'squash',
+        });
+        const result = await git.commit(selectedMessage.message);
         const cleanup =
           cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
         return {
           success: true,
           merged: true,
           sha: result.commit,
+          commitMessage: selectedMessage.message,
+          messageSource: selectedMessage.source,
           filesChanged,
           conflicts: [],
           conflictState: 'none',
@@ -1180,8 +1205,13 @@ export class AdhocWorktreeService {
           cleanup,
         };
       } else {
-        const mergeMessage = message || defaultMessage;
-        const result = await git.merge([branchName, '--no-ff', '-m', mergeMessage]);
+        const selectedMessage = selectMergeCommitMessage({
+          explicitMessage: message,
+          commits: sourceCommits,
+          fallbackMessage: defaultMessage,
+          strategy: 'merge',
+        });
+        const result = await git.merge([branchName, '--no-ff', '-m', selectedMessage.message]);
         const head = (await git.revparse(['HEAD'])).trim();
         const cleanup =
           cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
@@ -1189,6 +1219,8 @@ export class AdhocWorktreeService {
           success: true,
           merged: !result.failed,
           sha: head,
+          commitMessage: selectedMessage.message,
+          messageSource: selectedMessage.source,
           filesChanged,
           conflicts: result.conflicts?.map((c) => c.file || String(c)) || [],
           conflictState: 'none',
