@@ -1,5 +1,21 @@
 import { describe, it, expect } from 'bun:test';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { BUILTIN_SKILLS } from './registry.generated.js';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+const copilotBrainstormingSkillPath = path.join(
+  repoRoot,
+  '.github/skills/brainstorming/SKILL.md'
+);
+
+function expectInSessionDesignDocumentationPolicy(content: string) {
+  expect(content).not.toContain('docs/plans/YYYY-MM-DD-<topic>-design.md');
+  expect(content).not.toContain('Commit the design document to git');
+  expect(content).toContain('in-session');
+  expect(content).toMatch(/explicitly.*tracked artifact|tracked artifact.*explicitly/i);
+}
 
 describe('skill content', () => {
   it('bundles adversarial-review with explicit read-only multi-pass constraints', () => {
@@ -51,6 +67,19 @@ describe('skill content', () => {
     expect(skill!.template).toContain('ast_grep_find_code_by_rule');
     expect(skill!.template).not.toContain('ast_grep_search');
     expect(skill!.template).not.toContain('ast_grep_replace');
+  });
+
+  it('keeps brainstorming design in-session without mandatory tracked design documents', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'brainstorming');
+
+    expect(skill).toBeDefined();
+    expectInSessionDesignDocumentationPolicy(skill!.template);
+  });
+
+  it('aligns Copilot brainstorming documentation policy with the canonical skill', () => {
+    const copilotSkill = fs.readFileSync(copilotBrainstormingSkillPath, 'utf-8');
+
+    expectInSessionDesignDocumentationPolicy(copilotSkill);
   });
 
   it('documents overview-first execution truth in writing-plans', () => {

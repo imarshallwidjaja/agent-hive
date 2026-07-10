@@ -35,8 +35,8 @@ Start by understanding the current project context, then ask questions one at a 
 ## After the Design
 
 **Documentation:**
-- Write the validated design to `docs/plans/YYYY-MM-DD-<topic>-design.md`
-- Commit the design document to git
+- Keep the validated design in-session in the conversation unless the user explicitly asks for a tracked artifact
+- Write a tracked design document only when the user explicitly requests one or the repository workflow explicitly requires one (for example an approved Hive plan or another named project artifact)
 
 **Implementation (if continuing):**
 - Ask: "Ready to set up for implementation?"
