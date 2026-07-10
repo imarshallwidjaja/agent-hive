@@ -233,11 +233,14 @@ describe('hive command renderers', () => {
     expect(output).toContain('session strategy');
     expect(output).toContain('documentation updates');
     expect(output).toContain('parallelized cleanly');
-    expect(output).toContain('do not resume the old worker');
+    expect(output).toContain('do not send a follow-up prompt to that session');
     expect(output).toContain('narrower scopes');
     expect(output).toContain('pre-trained knowledge only as guidance');
     expect(output).toContain('hive_feature_create');
     expect(output).toContain('hive_plan_read');
+    expect(output).toContain('one primary goal');
+    expect(output).toContain('fresh subagent session');
+    expect(output).toContain('complete constraints and acceptance criteria only for that goal');
   });
 
   it('anchors approve-sync-plan workflow sections and exact blocker stop', () => {
@@ -271,6 +274,9 @@ describe('hive command renderers', () => {
     expect(output).toContain('Pass an explicit `message` for merge or squash when you need a specific self-descriptive project-history subject or body');
     expect(output).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
     expect(output).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
+    expect(output).toContain('new worker session in the same worktree');
+    expect(output).toContain('concise self-contained handoff');
+    expect(output).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
   });
 
   it('anchors council-directive: no council run, one question max 4, directive fields', () => {

@@ -47,6 +47,8 @@ For each task in the batch:
 3. Run verifications as specified
 4. Mark as completed
 
+One implementation assignment normally maps to one numbered task. Its primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. A `hive_worktree_start` or blocked-continuation launch starts a fresh worker session for that task. For a blocked task, collect the decision and use `hive_worktree_create({ task, continueFrom: "blocked", decision })` to start a new worker session in the same worktree. For failed or retry work, launch a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
+
 ### Step 4: Report
 When batch complete:
 - Show what was implemented

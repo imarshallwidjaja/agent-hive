@@ -9,7 +9,7 @@ description: "Agent Hive workflow skill for coordinating independent Hive subage
 
 When you have multiple unrelated failures (different test files, different subsystems, different bugs), investigating them sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Dispatch one agent per independent problem domain. Let them work concurrently.
+**Core principle:** Dispatch one fresh subagent session per independent primary goal. Let them work concurrently.
 
 When `## Background-First Orchestration` is present, load `background-delegation` for scheduler and wait-mode decisions. This skill covers task independence, scope, and prompt quality; the background skill governs whether each independent lane runs blocking or background.
 
@@ -71,10 +71,14 @@ Each domain is independent - fixing tool approval doesn't affect abort tests.
 ### 2. Create Focused Agent Tasks
 
 Each agent gets:
-- **Specific scope:** One test file or subsystem
+- **Specific scope:** One primary goal, which may include tightly coupled code, tests, docs, and multiple files
 - **Clear goal:** Make these tests pass
 - **Constraints:** Don't change other code
 - **Expected output:** Summary of what you found and fixed
+
+Each native `task()` launch has one primary goal and one terminal handoff. Give complete constraints and acceptance criteria only for that goal. Never pass `task_id` to `task()` or send a follow-up prompt to a completed, failed, or blocked session. Returned task IDs are observe-only board handles for status, reconcile, and cancel.
+
+One implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
 ### 3. Dispatch in Parallel
 

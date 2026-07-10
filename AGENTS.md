@@ -305,21 +305,27 @@ If a completed task branch has no net tracked changes, `hive_merge` returns `suc
 3. Worker executes -> calls `hive_worktree_commit(status: "completed")`
 4. Worker blocked -> calls `hive_worktree_commit(status: "blocked", blocker: {...})`
 
-**Handling blocked workers:**
+One native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches. Never pass `task_id` to `task()`: returned task IDs are observe-only board handles for status, reconcile, and cancel. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse.
+
+Feature task granularity remains separate: one implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
+
+**Handling blocked task continuation:**
 1. Check blockers with `hive_status()`
 2. Read the blocker info (reason, options, recommendation, context)
 3. Ask user via `question()` tool - NEVER plain text
-4. Resume with `hive_worktree_create(task, continueFrom: "blocked", decision: answer)`
+4. Launch a new worker session with `hive_worktree_create(task, continueFrom: "blocked", decision: answer)`
 
-**CRITICAL**: When resuming, a NEW worker spawns in the SAME worktree.
+**CRITICAL**: Blocked continuation starts a NEW worker in the SAME worktree.
 The previous worker's progress is preserved. Include the user's decision in the `decision` parameter.
+
+Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
 
 **After task() Returns:**
 - task() is BLOCKING by default — when it returns, the worker is DONE
 - Call `hive_status()` immediately to check the new task state and find next runnable tasks
 - Prefer structured worker-result envelopes over free-form completion interpretation when extending worker/orchestrator flows
 - When opencode is launched with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents may load and use the bundled `background-delegation` skill and call `task({ background: true, ... })` only for independent work where useful foreground work can continue. Use blocking task/worktree calls when the next meaningful step depends on the worker. Gate-open `hive_worktree_start` may return `backgroundTaskCall`, but pending background board state is not created until the parent actually launches the native background task. Wait for the native completion notification and refresh `hive_background_status` before dependent decisions. If status returns wait-only scheduler guidance, do not refresh repeatedly until the native notification arrives or the lane becomes stale, wrong, or no longer needed. Treat `recommendedNextAction` and `requiresHiveStatusRefresh` as board-local scheduler hints, not merge readiness.
-- Subagents (including custom derived subagents) must not call `task()` recursively
+- Subagents are terminal and cannot recurse; including custom derived subagents, they must not call `task()` recursively
 
 ### Sandbox Configuration
 

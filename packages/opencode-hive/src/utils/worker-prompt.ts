@@ -15,8 +15,15 @@ export interface CompletedTask {
 
 export interface ContinueFromBlocked {
   status: 'blocked';
-  previousSummary: string;
+  previousSummary?: string;
   decision: string;
+}
+
+export interface PreviousAttempt {
+  status: 'failed' | 'partial';
+  summary?: string;
+  report?: string;
+  error?: string;
 }
 
 export interface WorkerPromptRepo {
@@ -35,6 +42,7 @@ export interface WorkerPromptParams {
   spec: string;
   previousTasks?: CompletedTask[];
   continueFrom?: ContinueFromBlocked;
+  previousAttempt?: PreviousAttempt;
   /**
    * Optional composite workspace metadata. When provided, the worker prompt
    * documents the per-repo declared boundaries instead of (or in addition to)
@@ -69,6 +77,7 @@ export function buildWorkerPrompt(params: WorkerPromptParams): string {
     // plan, contextFiles, previousTasks - NOT used separately (embedded in spec)
     spec,
     continueFrom,
+    previousAttempt,
     workspacePath,
     repos,
   } = params;
@@ -98,18 +107,37 @@ If the task requires touching a repository that is not in this list, do NOT edit
 
 Do NOT modify files outside this directory.`;
 
-  // Build continuation section if resuming from blocked
-  const continuationSection = continueFrom ? `
-## Continuation from Blocked State
+  const recovery = continueFrom
+    ? {
+        heading: 'Continuation from Blocked State',
+        introduction: 'A previous worker was blocked and exited. Use the preserved progress and operator decision below.',
+        evidence: [
+          continueFrom.previousSummary ? `**Previous Progress**: ${continueFrom.previousSummary}` : undefined,
+          `**User Decision**: ${continueFrom.decision}`,
+        ],
+        nextAction: `Continue from where the previous worker left off, incorporating the user's decision.\nThe worktree already contains the previous worker's progress.`,
+      }
+    : previousAttempt
+      ? {
+          heading: 'Previous Attempt',
+          introduction: 'A previous worker ended this task without completing it. Its worktree progress is preserved.',
+          evidence: [
+            `**Status**: ${previousAttempt.status}`,
+            previousAttempt.summary ? `**Summary**: ${previousAttempt.summary}` : undefined,
+            previousAttempt.report ? `**Report**:\n\n${previousAttempt.report}` : undefined,
+            previousAttempt.error ? `**Error**: ${previousAttempt.error}` : undefined,
+          ],
+          nextAction: '**Remaining Assignment**: Continue the mission below from the preserved worktree state. Use the evidence above to avoid repeating completed work and address what remains.',
+        }
+      : undefined;
+  const recoverySection = recovery ? `
+## ${recovery.heading}
 
-Previous worker was blocked and exited. Here's the context:
+${recovery.introduction}
 
-**Previous Progress**: ${continueFrom.previousSummary}
+${recovery.evidence.filter((item): item is string => !!item).join('\n\n')}
 
-**User Decision**: ${continueFrom.decision}
-
-Continue from where the previous worker left off, incorporating the user's decision.
-The worktree already contains the previous worker's progress.
+${recovery.nextAction}
 ` : '';
 
   return `# Hive Worker Assignment
@@ -127,7 +155,7 @@ You are a worker agent executing a task in an isolated git worktree.
 | ${worktreeLabel} | ${worktreePath} |
 
 ${boundaryLine}
-${reposTable}${continuationSection}
+${reposTable}${recoverySection}
 ---
 
 ## Your Mission

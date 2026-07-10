@@ -6,6 +6,7 @@ import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import plugin from '../index';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
+import { HIVE_SESSION_POLICY } from '../utils/session-policy.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
 
@@ -208,8 +209,10 @@ describe('ad-hoc worktree plugin tools', () => {
           description?: string;
           prompt?: string;
           background?: boolean;
+          task_id?: string;
         };
         launchMode?: string;
+        sessionPolicy?: typeof HIVE_SESSION_POLICY;
       }>(raw);
 
       expect(result.success).toBe(true);
@@ -224,18 +227,21 @@ describe('ad-hoc worktree plugin tools', () => {
         repoIds: [],
       });
       expect(result.launchMode).toBe('blocking_task_call');
+      expect(result.sessionPolicy).toEqual(HIVE_SESSION_POLICY);
       expect(result.taskToolCall).toEqual({
         subagent_type: 'forager-worker',
         description: `Ad-hoc: ${result.runId}`,
         prompt: expect.stringContaining(`Workspace: ${result.workspacePath}`),
       });
       expect(result.taskToolCall?.background).toBeUndefined();
+      expect(result.taskToolCall).not.toHaveProperty('task_id');
       expect(result.backgroundTaskCall).toEqual({
         background: true,
         subagent_type: 'forager-worker',
         description: `Ad-hoc: ${result.runId}`,
         prompt: result.taskToolCall?.prompt,
       });
+      expect(result.backgroundTaskCall).not.toHaveProperty('task_id');
       expect(result.backgroundTaskCall?.prompt).toContain(`Run ID: ${result.runId}`);
       expect(result.backgroundTaskCall?.prompt).toContain('report blocked without editing');
       expect(result.nextAction).toContain('taskToolCall');
@@ -287,11 +293,13 @@ describe('ad-hoc worktree plugin tools', () => {
       branch?: string;
       nextAction?: string;
       launchMode?: string;
+      sessionPolicy?: typeof HIVE_SESSION_POLICY;
       taskToolCall?: {
         subagent_type?: string;
         description?: string;
         prompt?: string;
         background?: boolean;
+        task_id?: string;
       };
       backgroundTaskCall?: unknown;
       backgroundScope?: unknown;
@@ -299,12 +307,14 @@ describe('ad-hoc worktree plugin tools', () => {
 
     expect(result.success).toBe(true);
     expect(result.launchMode).toBe('blocking_task_call');
+    expect(result.sessionPolicy).toEqual(HIVE_SESSION_POLICY);
     expect(result.taskToolCall).toEqual({
       subagent_type: 'forager-worker',
       description: `Ad-hoc: ${result.runId}`,
       prompt: expect.stringContaining(`Workspace: ${result.workspacePath}`),
     });
     expect(result.taskToolCall?.background).toBeUndefined();
+    expect(result.taskToolCall).not.toHaveProperty('task_id');
     expect(result.taskToolCall?.prompt).toContain(`Run ID: ${result.runId}`);
     expect(result.backgroundTaskCall).toBeUndefined();
     expect(result.backgroundScope).toBeUndefined();

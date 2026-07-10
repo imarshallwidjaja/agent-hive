@@ -104,15 +104,15 @@ Output only the final brief in one fenced code block.`,
 
   'hive-plan': `Create a Hive plan for implementing the spec or brief from runtime arguments when provided.
 
-Take initiative to split tasks so they are well-defined single topics that can be parallelized cleanly without overloading the context required to execute each one.
+Take initiative to define one primary goal per implementation assignment. That goal may include tightly coupled code, tests, docs, and multiple files; do not split work by file or step. Give complete constraints and acceptance criteria only for that goal. Split independently verifiable outcomes into fresh assignments.
 
-Only split work when it improves execution quality. Do not break apart tasks that should remain together to preserve code quality or coherence.
+One implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. Independent assignments can be parallelized cleanly. Only split work when it improves execution quality; do not break apart tasks that should remain together to preserve code quality or coherence.
 
 If the intention detected is not an ad-hoc piece of work: make sure plans include updating documentation when user-facing behavior, setup, install flow, or operator workflow changes.
 
 When prompting the operator for decisions, include the detail needed to make the decision and explain the reasoning behind your recommendation.
 
-If a worker task fails, do not resume the old worker. Task a new worker and include concise context from the failed session or sessions, including what was attempted, where it failed, relevant errors, and the most likely cause, so the new worker can get past the failure instead of repeating the same path.
+If a worker task fails, do not send a follow-up prompt to that session. Launch a new worker in a fresh subagent session with a concise self-contained handoff: the primary goal, what was attempted, where it failed, relevant errors, the likely cause, and the next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation.
 
 When delegating scouts or explorers, prefer more subagents with narrower scopes, minimising decision making to keep the context for each subagent focused and manageable.
 
@@ -202,15 +202,17 @@ Work autonomously through the tasks.
 
 Determine whether the plan and tasks can be executed effectively in parallel or should be executed sequentially, then ask the operator to confirm your recommendation before proceeding with that execution strategy.
 
-Stop to clarify or ask questions only when a real decision or blocker requires it. Use \`hive_status\` and the \`question\` tool for blockers; resume blocked work with \`hive_worktree_create\` and the operator's decision.
+Stop to clarify or ask questions only when a real decision or blocker requires it. Use \`hive_status\` and the \`question\` tool for blockers; use \`hive_worktree_create\` with the operator's decision to launch a new worker session in the same worktree for blocked continuation.
 
 Preserve execution flow: \`hive_worktree_start\` → worker execution → worker \`hive_worktree_commit\` → orchestrator \`hive_merge\`. The orchestrator must not call \`hive_worktree_commit\` for workers.
+
+Each native \`task()\` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. Never pass \`task_id\` to \`task()\`; returned task IDs are observe-only board handles. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse.
 
 Tidy up commits and worktrees after each task or batch when appropriate. Preserve one root commit per completed task. Keep review follow-up and integration fixes as separate self-descriptive commits. Do not squash a whole feature or merge batch into one commit. Commits should use the correct topical prefix for the work in that commit, not a generic "hive" prefix. Prefer \`strategy: "rebase"\` when the task branch has clean, well-written commits and replaying them preserves useful linear root history. Use squash only to collapse worker-internal churn within one task branch, and use merge only when preserving a task branch topology matters. Pass an explicit \`message\` for merge or squash when you need a specific self-descriptive project-history subject or body; omit \`message\` (or pass \`''\`) to derive from source branch commits. Do not use \`hive\`, task numbers, task folder names, run IDs, or "merge task" prose in project history.
 
 Create a todo list of tasks and track progress using the todo list throughout execution. Keep this updated as you progress.
 
-If a worker task fails, do not resume the old worker. Task a new worker and include concise context from the failed session or sessions, including what was attempted, where it failed, relevant errors, and the most likely cause, so the new worker can get past the failure instead of repeating the same path. If the task is salvageable there is no need to reset the worktree.
+If a worker task fails, launch a new worker in a fresh subagent session with a concise self-contained handoff: the primary goal, what was attempted, where it failed, relevant errors, the likely cause, and the next constraints. If the task is salvageable there is no need to reset the worktree. Compaction may re-anchor a currently running worker; it is not re-delegation.
 
 When delegating scouts or explorers, prefer more subagents with narrower scopes, minimising decision making to keep the context for each subagent focused and manageable.
 

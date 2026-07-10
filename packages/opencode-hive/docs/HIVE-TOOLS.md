@@ -58,7 +58,7 @@
 | Tool | Purpose |
 |------|---------|
 | `hive_worktree_start` | Create worktree and begin normal work |
-| `hive_worktree_create` | Resume blocked task in existing worktree |
+| `hive_worktree_create` | Launch blocked-task continuation in existing worktree |
 | `hive_worktree_commit` | Commit changes, write report (does NOT merge), optional `message` controls git commit text |
 | `hive_worktree_discard` | Discard changes, reset status |
 
@@ -85,6 +85,10 @@
 - `workerPromptPreview`: short preview of the prompt
 - `promptMeta`, `payloadMeta`, `budgetApplied`, `warnings`: size and budget observability
 - In gate-open sessions, `hive_worktree_start` can also return a `backgroundTaskCall` for independent work that can run while useful foreground work continues. The pending background board entry is created only after the parent actually launches the native background `task({ background: true, ... })`; blocking `hive_worktree_start` remains the correct path when the next meaningful step depends on the worker result.
+- Every native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches.
+- Do not pass `task_id` to `task()`. Returned task IDs are observe-only board handles for `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`; they are not inputs for session continuation. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse.
+- A blocked feature continuation starts a new worker session in the same worktree with the operator decision. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
+- One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
 
 ### Ad-hoc Worktree (4 tools)
 
@@ -99,6 +103,7 @@ These tools are for isolated ad-hoc orchestration work (Hive Builder). They oper
 
 #### Ad-hoc worktree input/output notes
 
+- For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers. Do not use a returned task ID to continue a prior session.
 - `hive_adhoc_worktree_create` returns `runId`, `workspacePath`, and `branch`. It accepts optional `runId`, `label`, `baseBranch`, `repoIds`, and `autoSpawnWorker`; `repoIds` selects manifest-backed composite workspaces. On non-git project roots without a project repository manifest, it returns `reason: "repo_manifest_required"` before any git command.
 - `autoSpawnWorker` defaults to `true`. With the background gate closed, create returns a blocking `taskToolCall`; launch it instead of working directly in the ad-hoc worktree. In background-enabled sessions, create returns both `taskToolCall` (blocking) and `backgroundTaskCall` (same prompt/description/subagent except `background: true`); register pending board state applies to the background launch path. Use blocking when the next step depends on the worker; use background only for independent lanes. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only ad-hoc worktrees; the response sets `launchMode: "suppressed"` and omits launch payloads.
 - `hive_adhoc_worktree_commit` requires `runId`, `workspacePath`, `branch`, and `message`; `workspacePath` and `branch` must match the run returned by create.
@@ -132,6 +137,7 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 - Prompt acknowledgment only means Hive showed the terminal result to the parent session. It does not clear `terminalUnreconciled`; the agent still needs explicit reconciliation after consuming or ignoring the result.
 - Reconciled and ignored terminal jobs are archived by the background tools and hidden from normal status output. Do not edit `.hive/background-jobs.json` directly.
 - Subagents must not start background tasks or manage the background board.
+- Returned background task IDs are observe-only board handles for status, reconcile, and cancel. Never pass `task_id` to `task()` or treat it as an input for session continuation.
 - Cancellation is not rollback. `hive_background_cancel` does not revert files, branches, worktrees, commits, or task reports; it only records a cancellation request and any confirmed runtime cancellation.
 - If a background lane cannot be resumed safely, use no-resume retry/escalation: start a fresh scoped attempt when safe, ignore the stale terminal entry with a reason, or escalate the concrete blocker to the operator.
 

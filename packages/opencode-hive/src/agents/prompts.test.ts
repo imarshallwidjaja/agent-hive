@@ -64,6 +64,58 @@ describe('Primary agent subagent concurrency guidance', () => {
   });
 });
 
+describe('Fresh-session delegation contract', () => {
+  const primaryPrompts = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+    ['Hive Builder', HIVE_BUILDER_PROMPT],
+  ] as const;
+
+  it('treats every task launch as one fresh session with one primary goal and terminal handoff', () => {
+    for (const [name, prompt] of primaryPrompts) {
+      expect(prompt, name).toContain('one primary goal');
+      expect(prompt, name).toContain('fresh subagent session');
+      expect(prompt, name).toContain('one terminal handoff');
+      expect(prompt, name).toContain('tightly coupled code, tests, docs, and multiple files');
+    }
+  });
+
+  it('forbids task session reuse and task_id input reuse', () => {
+    for (const [name, prompt] of primaryPrompts) {
+      expect(prompt, name).toContain('Never pass `task_id` to `task()`');
+      expect(prompt, name).toContain('observe-only board handles');
+      expect(prompt, name).toContain('Do not send a follow-up prompt to a completed, failed, or blocked session');
+    }
+  });
+
+  it('distinguishes feature continuation, retry, and compaction from re-delegation', () => {
+    for (const [name, prompt] of primaryPrompts) {
+      expect(prompt, name).toContain('concise self-contained handoff');
+      expect(prompt, name).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
+      expect(prompt, name).toContain('Subagents are terminal and cannot recurse');
+    }
+
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('new worker session in the same worktree');
+    }
+  });
+
+  it('keeps feature DAG granularity distinct from ad-hoc lane ownership', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+    ] as const) {
+      expect(prompt.toLowerCase(), name).toContain('one implementation assignment normally maps to one numbered task');
+      expect(prompt, name).toContain('amend the DAG or create an append-only manual task');
+    }
+
+    expect(HIVE_BUILDER_PROMPT).toContain('disjoint path ownership or sequence overlapping writers');
+  });
+});
+
 describe('Direct Work Boundary prompt hygiene', () => {
   const staleBroadDirectPhrases = [
     'Single-file, <10-line changes — do directly',
@@ -230,22 +282,22 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('objective, known facts, references, prior failures, constraints, expected output');
     });
 
-    it('requires hive_status() before any resume attempt', () => {
+    it('requires hive_status() before any blocked-continuation launch', () => {
       expect(QUEEN_BEE_PROMPT).toContain('After `task()` returns, immediately call `hive_status()`');
-      expect(QUEEN_BEE_PROMPT).toContain('before any resume attempt');
+      expect(QUEEN_BEE_PROMPT).toContain('before any blocked-continuation launch');
     });
 
-    it('allows blocked resume only for exactly blocked tasks', () => {
+    it('allows blocked continuation only for exactly blocked tasks', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Use `continueFrom: "blocked"` only when status is exactly `blocked`');
       expect(QUEEN_BEE_PROMPT).not.toContain('Use `continueFrom: "blocked"` when status is unresolved');
     });
 
-    it('forbids blocked resume loops on non-blocked statuses', () => {
+    it('forbids blocked-continuation loops on non-blocked statuses', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Never loop `continueFrom: "blocked"` on non-blocked statuses');
     });
 
-    it('requires immediate status re-check before blocked resume', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Before every blocked resume, call `hive_status()` immediately beforehand');
+    it('requires immediate status re-check before blocked continuation', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('Before every blocked-continuation launch, call `hive_status()` immediately beforehand');
       expect(QUEEN_BEE_PROMPT).toContain('verify the task is still exactly `blocked`');
     });
 
@@ -546,21 +598,21 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('hive_status()');
     });
 
-    it('requires hive_status() before any resume attempt', () => {
+    it('requires hive_status() before any blocked-continuation launch', () => {
       expect(SWARM_BEE_PROMPT).toContain('After `task()` returns, call `hive_status()` immediately');
-      expect(SWARM_BEE_PROMPT).toContain('before any resume attempt');
+      expect(SWARM_BEE_PROMPT).toContain('before any blocked-continuation launch');
     });
 
-    it('allows blocked resume only for exactly blocked tasks', () => {
+    it('allows blocked continuation only for exactly blocked tasks', () => {
       expect(SWARM_BEE_PROMPT).toContain('Use `continueFrom: "blocked"` only when status is exactly `blocked`');
     });
 
-    it('requires immediate status re-check before each blocked resume', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Before every blocked resume, call `hive_status()` immediately beforehand');
+    it('requires immediate status re-check before each blocked continuation', () => {
+      expect(SWARM_BEE_PROMPT).toContain('Before every blocked-continuation launch, call `hive_status()` immediately beforehand');
       expect(SWARM_BEE_PROMPT).toContain('verify the task is still exactly `blocked`');
     });
 
-    it('forbids blocked resume loops on non-blocked statuses', () => {
+    it('forbids blocked-continuation loops on non-blocked statuses', () => {
       expect(SWARM_BEE_PROMPT).toContain('Never loop `continueFrom: "blocked"` on non-blocked statuses');
     });
 
@@ -1201,7 +1253,6 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
 
   const BUILDER_GATE_CLOSED_LEAK_STRINGS = [
     'task({ background: true',
-    'hive_background_status',
     '## Background Delegation',
 
     'background-first scheduler mode',
@@ -1225,7 +1276,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('prior failures');
     expect(HIVE_BUILDER_PROMPT).toContain('run IDs');
     expect(HIVE_BUILDER_PROMPT).toContain('verification requirements');
-    expect(HIVE_BUILDER_PROMPT).toContain('one independently answerable question or one coherent change');
+    expect(HIVE_BUILDER_PROMPT).toContain('one independently answerable question or one primary goal');
     expect(HIVE_BUILDER_PROMPT).toContain('one owner, one expected output, and one verification/return contract');
     expect(HIVE_BUILDER_PROMPT).toContain('Normal fan-out is 2-4 lanes');
     expect(HIVE_BUILDER_PROMPT).toContain('synthesize before dispatching more');
@@ -1324,10 +1375,10 @@ describe('Primary orchestration direct-work boundaries', () => {
       ['Hive', QUEEN_BEE_PROMPT],
       ['Swarm', SWARM_BEE_PROMPT],
     ] as const) {
-      expect(prompt, name).toContain('Hive feature tasks are durable decomposition units');
-      expect(prompt, name).toContain('must not be split into ephemeral ad-hoc subtasks');
-      expect(prompt, name).toContain('amend the plan or create an append-only manual task');
+      expect(prompt.toLowerCase(), name).toContain('one implementation assignment normally maps to one numbered task');
+      expect(prompt, name).toContain('append-only manual task');
     }
+    expect(QUEEN_BEE_PROMPT).toContain('tightly coupled code, tests, docs, and multiple files');
   });
 
   it('documents worker-branch task granularity for planning prompts', () => {

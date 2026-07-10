@@ -220,9 +220,7 @@ describe("AdhocWorktreeService.merge", () => {
     expect(result.success).toBe(true);
     expect(result.merged).toBe(true);
     expect(result.strategy).toBe("squash");
-    expect(await readHeadBody(fixture.repoPath)).toBe(
-      "hive(adhoc/merge-run): merge (squashed)",
-    );
+    expect(await readHeadBody(fixture.repoPath)).toBe("chore: merge content");
     expect(result.conflictState).toBe("none");
     expect(result.cleanup).toEqual({
       worktreeRemoved: false,

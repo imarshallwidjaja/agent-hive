@@ -1,3 +1,5 @@
+import { HIVE_SESSION_POLICY } from './session-policy.js';
+
 export type HiveTaskToolCallPayload = {
   subagent_type: string;
   description: string;
@@ -20,6 +22,7 @@ export function buildAdhocWorkerLaunchPayloads(params: {
   taskToolCall?: HiveTaskToolCallPayload;
   backgroundTaskCall?: HiveBackgroundTaskCallPayload;
   launchMode: AdhocLaunchMode;
+  sessionPolicy?: typeof HIVE_SESSION_POLICY;
 } {
   if (!params.shouldAutoSpawnWorker) {
     return { launchMode: 'suppressed' };
@@ -42,6 +45,7 @@ export function buildAdhocWorkerLaunchPayloads(params: {
     taskToolCall,
     ...(backgroundTaskCall ? { backgroundTaskCall } : {}),
     launchMode,
+    sessionPolicy: HIVE_SESSION_POLICY,
   };
 }
 

@@ -9,7 +9,7 @@ description: "Agent Hive workflow skill for Scout fan-out. Use when a Hive agent
 
 When you need to answer "where/how does X work?" across multiple domains (codebase, tests, docs, OSS), investigating sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Decompose into independent sub-questions that fit in one context window, spawn one task per sub-question, then synthesize the bounded results.
+**Core principle:** Decompose into independent sub-questions that fit in one context window, then start one fresh subagent session per primary question and synthesize the bounded results.
 
 **Delegation kind:** This is exploratory/read-only lightweight delegation. For kind-based scheduling under the gate, load `background-delegation` and let it govern foreground/blocking vs background wait mode.
 
@@ -78,6 +78,8 @@ Launch all tasks before waiting for any results:
 Choose the researcher per slice. Use the scout researcher whose description best fits the research slice, including configured scout-derived custom subagents when their domain or workflow is a closer match. Use `scout-researcher` when no configured custom description is a closer fit.
 
 Each prompt needs a Context Packet: objective, known facts, references, prior failures, constraints, expected output, and how the Scout should find missing context. Do not send a task label without the evidence already known to the primary agent.
+
+Each native `task()` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. Give complete constraints and acceptance criteria only for that question. Never pass `task_id` to `task()`; returned task IDs are observe-only board handles for status, reconcile, and cancel. Do not send a follow-up prompt to a completed, failed, or blocked session. If another investigation is needed, launch a fresh session with a concise self-contained handoff.
 
 ```typescript
 // Parallelize by issuing multiple task() calls in the same assistant message.

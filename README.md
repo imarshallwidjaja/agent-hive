@@ -168,6 +168,8 @@ Orchestrator
 
 Independent tasks run concurrently. Dependent tasks wait. Each worker runs in its own worktree, verifies its own work, and commits. The orchestrator uses `hive_status` to inspect task/worktree-aware merge eligibility, merges batch-by-batch, and runs the full suite after each merge.
 
+Each native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal can include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. Returned task IDs are observe-only board handles for status, reconcile, and cancel, never inputs to `task()`. A blocked feature continuation starts a new worker session in the same worktree; failed or retry work uses a fresh worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
+
 When OpenCode's background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents use background-first scheduler mode for independent work that can run while useful foreground work continues. Dependent work stays on the blocking path. Background board state is managed through `hive_background_status`, reconcile, and cancel tools; merge readiness still comes from `hive_status`. See `packages/opencode-hive/README.md` and `packages/opencode-hive/docs/HIVE-TOOLS.md` for the full protocol.
 
 ### 4. Audit Trail

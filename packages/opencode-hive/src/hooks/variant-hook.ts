@@ -68,15 +68,16 @@ export function createVariantHook(
       variant?: string;
     },
     output: {
-      message: { variant?: string };
+      message: { agent?: string; variant?: string };
       parts: unknown[];
     },
   ): Promise<void> => {
     const { agent } = input;
+    const effectiveAgent = agent ?? output.message.agent;
 
-    if (agent && sessionService) {
-      const { sessionKind, baseAgent } = classifySession(agent, customAgents);
-      const patch: Record<string, unknown> = { agent, sessionKind };
+    if (effectiveAgent && sessionService) {
+      const { sessionKind, baseAgent } = classifySession(effectiveAgent, customAgents);
+      const patch: Record<string, unknown> = { agent: effectiveAgent, sessionKind };
       if (baseAgent) {
         patch.baseAgent = baseAgent;
       }

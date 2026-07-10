@@ -80,6 +80,10 @@ During planning, "don't execute" means "don't implement" (no code edits, no work
 
 When delegation is warranted, synthesize the task before handing it off: name the file paths or search target, state the expected result, and say what done looks like. Workers do not inherit planner context.
 
+Each native `task()` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, then split independently verifiable outcomes into fresh launches. Never pass `task_id` to `task()`: returned IDs are observe-only board handles for status, reconcile, and cancel. Do not send a follow-up prompt to a completed, failed, or blocked session. Compaction may re-anchor a currently running worker; it is not re-delegation.
+
+One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. A blocked feature continuation starts a new worker session in the same worktree with the operator decision. Failed or retry work starts a new worker with a concise self-contained handoff. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers. Subagents are terminal and cannot recurse.
+
 For execution work, treat worker output as evidence to inspect, not proof to trust blindly. OpenCode is the supported execution runtime; if you use `vscode-arkive`, treat it as a review/sidebar companion. Read changed files yourself and run the shared verification commands on the main branch before claiming the batch is complete.
 
 ### Local skill and model use cases
@@ -119,7 +123,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 | Tool | Description |
 |------|-------------|
 | `hive_worktree_start` | Start normal work on task (creates worktree) |
-| `hive_worktree_create` | Resume blocked task in existing worktree |
+| `hive_worktree_create` | Launch blocked-task continuation in existing worktree |
 | `hive_worktree_commit` | Complete task (applies changes) |
 | `hive_worktree_discard` | Abort task (discard changes) |
 
@@ -156,17 +160,17 @@ Cancellation is not rollback. A cancellation request does not revert files, bran
 
 ### Troubleshooting
 
-#### Repeated blocked-resume errors / loop
+#### Repeated blocked-continuation errors / loop
 
-If you see repeated retries around `continueFrom: "blocked"`, use this protocol:
+If you see repeated retries around `continueFrom: "blocked"`, use this protocol. That tool launches a new worker session in the same worktree; it does not continue the previous session:
 
 1. Call `hive_status()` first.
 2. If status is `pending` or `in_progress`, start normally with:
    - `hive_worktree_start({ feature, task })`
-3. Only use blocked resume when status is exactly `blocked`:
+3. Only use blocked continuation when status is exactly `blocked`:
    - `hive_worktree_create({ task, continueFrom: "blocked", decision })`
 
-Do not retry the same blocked-resume call on non-blocked statuses; re-check `hive_status()` and use `hive_worktree_start` for normal starts.
+Do not retry the same blocked-continuation call on non-blocked statuses; re-check `hive_status()` and use `hive_worktree_start` for normal starts.
 
 #### Using with DCP plugin
 
@@ -186,7 +190,7 @@ For normal usage, set the OpenCode plugin entry to `"oc-arkive@latest"`. Keep a 
 
 ### Task worker recovery
 
-After session compaction, task workers re-read `worker-prompt.md` and continue from the current worktree state. Primary and subagent sessions replay the stored user directive once, then escalate if needed.
+After session compaction, task workers re-read `worker-prompt.md` and continue from the current worktree state. Compaction may re-anchor a currently running worker; it is not re-delegation. Primary and subagent sessions replay the stored user directive once, then escalate if needed.
 
 Manual tasks created with `hive_task_create()` follow the same DAG model as plan-backed tasks. The `goal`, `description`, `acceptanceCriteria`, `files`, and `references` fields are turned into `spec.md` content visible to the worker. To change downstream sequencing or scope after review feedback, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })`.
 

@@ -61,7 +61,11 @@ Use targeted subagents by default for non-trivial work:
 
 ### Delegation Units
 
-A non-feature delegation unit is one independently answerable question or one coherent change with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more. Do not split a single tightly coupled change across workers just to create parallelism.
+A non-feature delegation unit is one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+
+Each native \`task()\` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal. Split independently verifiable outcomes into fresh launches. Never pass \`task_id\` to \`task()\`. Returned task IDs are observe-only board handles for status, reconcile, and cancel; they are not session-continuation inputs. Do not send a follow-up prompt to a completed, failed, or blocked session.
+
+For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse; they must not call \`task()\` recursively.
 
 ### Subagent Concurrency
 
@@ -79,7 +83,7 @@ Subagents do not inherit your context. Every \`task()\` prompt must be a self-co
 - all known facts and evidence from your inspection
 - relevant file paths and line references
 - prior failures and attempted fixes
-- branch, worktree, run IDs, and background task IDs when available
+- branch, worktree, and run IDs when available
 - constraints, file ownership, and verification requirements
 - done criteria (what done means)
 
@@ -87,19 +91,17 @@ If context is missing, tell the specialist exactly how to find it and what not t
 
 ### Write-Conflict Guidance
 
-Default to one active writing/change lane per owned path/module unless ownership is clearly disjoint. Do not dispatch two writing workers against the same files or tightly coupled modules unless sequenced. Assign file/path boundaries in worker prompts.
+Default to one active writing/change lane per owned path/module. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers. Do not dispatch two writing workers against the same files or tightly coupled modules unless sequenced. Assign file/path boundaries in worker prompts.
 
-Track each lane's state, owned paths, dependencies, verification status, and whether the result has been reconciled. Before merge, cleanup, final reporting, integration, or dispatching any new overlapping writing/change or execution lane, check for unresolved lanes.
+Track each lane's state, owned paths, dependencies, verification status, and whether the result has been recorded. Before merge, cleanup, final reporting, integration, or dispatching any new overlapping writing/change or execution lane, check for unresolved lanes.
 
 Let \`hive_adhoc_merge\` auto-abort conflicts by default unless explicitly preserving conflicts for recovery.
 
 For integration strategy, prefer \`rebase\` when source commits are clean and well-written. Use \`squash\` to collapse churn. For \`merge\` and \`squash\`, pass an explicit \`message\` when you need a specific self-descriptive project-history subject or body; omit \`message\` (or pass \`''\`) to derive from source branch commits. Do not use \`hive\`, task/run IDs, or "merge task" subjects in project history. Do not provide a non-blank \`message\` for \`rebase\`.
 
-Subagents (including custom subagents) must not call \`task()\` recursively.
-
 ## Tools
 
-Use only explicit IDs returned by prior ad-hoc tool calls. When the env-gated appendix is present, also use background \`task_id\` values returned from native background \`task()\` calls. Do not rely on hidden status.
+Use only explicit IDs returned by prior ad-hoc tool calls. Do not rely on hidden status.
 
 When an optional ad-hoc tool argument is not needed, omit it instead of sending an empty string.
 

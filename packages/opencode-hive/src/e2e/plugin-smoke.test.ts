@@ -328,11 +328,20 @@ Do it
     );
     const execStart = JSON.parse(execStartOutput as string) as {
       instructions?: string;
+      sessionPolicy?: {
+        version?: number;
+        sessionMode?: string;
+        taskIdUse?: string;
+        followUpMode?: string;
+        workerLifecycle?: string;
+        goalMode?: string;
+      };
       taskToolCall?: {
         description?: string;
         prompt?: string;
         subagent_type?: string;
         background?: boolean;
+        task_id?: string;
       };
       backgroundTaskCall?: unknown;
     };
@@ -342,6 +351,15 @@ Do it
       subagent_type: "forager-worker",
     });
     expect(execStart.taskToolCall?.background).toBeUndefined();
+    expect(execStart.taskToolCall).not.toHaveProperty("task_id");
+    expect(execStart.sessionPolicy).toEqual({
+      version: 1,
+      sessionMode: "fresh",
+      taskIdUse: "observe-only",
+      followUpMode: "new-launch",
+      workerLifecycle: "terminal",
+      goalMode: "one-primary",
+    });
     expect(execStart.backgroundTaskCall).toBeUndefined();
     expect(execStart.instructions).toContain("taskToolCall.prompt");
     expect(execStart.instructions).not.toContain("background: true");
@@ -476,6 +494,19 @@ Do it
     };
 
     expect(packageJson.files).toContain('plugin.json');
+  });
+
+  it('describes task worktree tools as returning fresh-worker launch guidance', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_worktree_tool_descriptions');
+    const tools = hooks.tool as unknown as Record<string, { description?: string }>;
+    const startDescription = tools.hive_worktree_start.description ?? '';
+    const continuationDescription = tools.hive_worktree_create.description ?? '';
+
+    expect(startDescription).toContain('Returns fresh-worker launch guidance');
+    expect(continuationDescription).toContain('blocked-task continuation in the existing worktree');
+    expect(continuationDescription).toContain('Returns fresh-worker launch guidance');
+    expect(startDescription).not.toMatch(/spawn.*automatically/i);
+    expect(continuationDescription).not.toMatch(/spawn.*automatically|resume.*session/i);
   });
 
   it('registers every registry command on hooks.command and returns string guidance', async () => {
@@ -817,8 +848,17 @@ Do it
           subagent_type?: string;
           description?: string;
           prompt?: string;
+          task_id?: string;
         };
-        taskToolCall?: { prompt?: string };
+        taskToolCall?: { prompt?: string; task_id?: string; background?: boolean };
+        sessionPolicy?: {
+          version?: number;
+          sessionMode?: string;
+          taskIdUse?: string;
+          followUpMode?: string;
+          workerLifecycle?: string;
+          goalMode?: string;
+        };
         instructions?: string;
       };
 
@@ -829,6 +869,16 @@ Do it
         prompt: result.taskToolCall?.prompt,
       });
       expect(result.taskToolCall).toBeDefined();
+      expect(result.taskToolCall).not.toHaveProperty("task_id");
+      expect(result.backgroundTaskCall).not.toHaveProperty("task_id");
+      expect(result.sessionPolicy).toEqual({
+        version: 1,
+        sessionMode: "fresh",
+        taskIdUse: "observe-only",
+        followUpMode: "new-launch",
+        workerLifecycle: "terminal",
+        goalMode: "one-primary",
+      });
       expect((result.taskToolCall as { background?: boolean } | undefined)?.background).toBeUndefined();
       expect(result.instructions).toContain("backgroundTaskCall");
       expect(result.instructions).toContain("independent lane");
@@ -2258,12 +2308,157 @@ Do it
     expect(invalidRetry.canRetry).toBe(false);
     expect(typeof invalidRetry.retryReason).toBe("string");
     expect(invalidRetry.retryReason?.length).toBeGreaterThan(0);
+    expect(invalidRetry.retryReason).toContain('blocked-task continuation');
+    expect(invalidRetry.retryReason).not.toMatch(/blocked resume/i);
     expect(invalidRetry.currentStatus).toBe("in_progress");
     expect(Array.isArray(invalidRetry.hints)).toBe(true);
     expect(invalidRetry.hints?.length).toBeGreaterThan(0);
+    expect(invalidRetry.hints?.some((hint) => /blocked-task continuation/i.test(hint))).toBe(true);
+    expect(invalidRetry.hints?.some((hint) => /blocked-resume/i.test(hint))).toBe(false);
     expect(invalidRetry.hints?.some((hint) => /start|resume/i.test(hint))).toBe(true);
     expect(invalidRetry.hints?.some((hint) => /hive_status|status/i.test(hint))).toBe(true);
   });
+
+  it('continues a blocked task with a fresh worker in the existing worktree', async () => {
+    const feature = 'blocked-continuation-feature';
+    const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_blocked_continuation',
+      feature,
+      'Blocked Continuation Feature',
+      'Yes, this test validates self-contained blocked-task continuation in the existing worktree.',
+    );
+    const summary = 'Implemented request parsing; authorization policy needs an operator decision.';
+    const decision = 'Keep the strict authorization policy and update the fixture.';
+
+    const blockedRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'blocked',
+        summary,
+        blocker: {
+          reason: 'Authorization policy is ambiguous.',
+          options: ['Keep strict policy', 'Relax policy'],
+        },
+      },
+      toolContext,
+    );
+    const blocked = JSON.parse(blockedRaw as string) as { message?: string; nextAction?: string };
+    expect(blocked.message).toMatch(/launch a new worker.*existing worktree/i);
+    expect(blocked.nextAction).toMatch(/fresh worker.*existing worktree/i);
+    expect(blocked.message).not.toMatch(/resume/i);
+
+    const missingDecisionRaw = await hooks.tool!.hive_worktree_create.execute(
+      { feature, task: FIRST_TASK, continueFrom: 'blocked' },
+      toolContext,
+    );
+    const missingDecision = JSON.parse(missingDecisionRaw as string) as {
+      success?: boolean;
+      terminal?: boolean;
+      reason?: string;
+      error?: string;
+    };
+    expect(missingDecision.success).toBe(false);
+    expect(missingDecision.terminal).toBe(true);
+    expect(missingDecision.reason).toBe('operator_decision_required');
+    expect(missingDecision.error).toMatch(/operator decision.*fresh worker.*existing worktree/i);
+
+    const continuationRaw = await hooks.tool!.hive_worktree_create.execute(
+      { feature, task: FIRST_TASK, continueFrom: 'blocked', decision },
+      toolContext,
+    );
+    const continuation = JSON.parse(continuationRaw as string) as {
+      success?: boolean;
+      terminal?: boolean;
+      worktreePath?: string;
+      workerPromptPath?: string;
+      taskToolCall?: { task_id?: string };
+    };
+
+    expect(continuation.success).toBe(true);
+    expect(continuation.terminal).toBe(false);
+    expect(continuation.worktreePath).toBe(worktreePath);
+    expect(continuation.taskToolCall).not.toHaveProperty('task_id');
+    const prompt = fs.readFileSync(path.resolve(testRoot, continuation.workerPromptPath!), 'utf-8');
+    expect(prompt).toContain('## Continuation from Blocked State');
+    expect(prompt).toContain(summary);
+    expect(prompt).toContain(decision);
+    expect(prompt).toContain('The worktree already contains the previous worker\'s progress.');
+
+    const statusRaw = await hooks.tool!.hive_status.execute({ feature }, toolContext);
+    const status = JSON.parse(statusRaw as string) as {
+      tasks?: { list?: Array<{ folder: string; status: string }> };
+    };
+    expect(status.tasks?.list?.find((task) => task.folder === FIRST_TASK)?.status).toBe('in_progress');
+  });
+
+  it.each(['failed', 'partial'] as const)(
+    'starts a fresh self-contained worker after a %s attempt',
+    async (attemptStatus) => {
+      const feature = attemptStatus === 'failed'
+        ? 'attempt-recovery-one-feature'
+        : 'attempt-recovery-two-feature';
+      const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
+        testRoot,
+        `sess_${attemptStatus}_attempt_recovery`,
+        feature,
+        attemptStatus === 'failed' ? 'Failed Attempt Recovery Feature' : 'Partial Attempt Recovery Feature',
+        `Yes, this test validates self-contained ${attemptStatus} attempt recovery, including persisted report evidence, fresh-worker launch payloads, and unchanged task-state transitions.`,
+      );
+      const summary = attemptStatus === 'failed'
+        ? 'Parser changes are preserved; the response assertion still fails.'
+        : 'Parser changes and unit coverage are complete; the integration fixture remains.';
+      fs.writeFileSync(path.join(worktreePath, `${attemptStatus}-progress.txt`), `${summary}\n`);
+
+      const terminalRaw = await hooks.tool!.hive_worktree_commit.execute(
+        { feature, task: FIRST_TASK, status: attemptStatus, summary },
+        toolContext,
+      );
+      const terminal = JSON.parse(terminalRaw as string) as {
+        terminal?: boolean;
+        taskState?: string;
+        nextAction?: string;
+      };
+      expect(terminal.terminal).toBe(true);
+      expect(terminal.taskState).toBe(attemptStatus);
+      expect(terminal.nextAction).toMatch(/hive_worktree_start/i);
+      expect(terminal.nextAction).not.toMatch(/hive_merge/i);
+
+      const retryRaw = await hooks.tool!.hive_worktree_start.execute(
+        { feature, task: FIRST_TASK },
+        toolContext,
+      );
+      const retry = JSON.parse(retryRaw as string) as {
+        success?: boolean;
+        terminal?: boolean;
+        worktreePath?: string;
+        workerPromptPath?: string;
+        taskToolCall?: { task_id?: string };
+      };
+
+      expect(retry.success).toBe(true);
+      expect(retry.terminal).toBe(false);
+      expect(retry.worktreePath).toBe(worktreePath);
+      expect(retry.taskToolCall).not.toHaveProperty('task_id');
+      const prompt = fs.readFileSync(path.resolve(testRoot, retry.workerPromptPath!), 'utf-8');
+      expect(prompt).toContain('## Previous Attempt');
+      expect(prompt).toContain(`**Status**: ${attemptStatus}`);
+      expect(prompt).toContain(`**Summary**: ${summary}`);
+      expect(prompt).toContain('**Report**:');
+      expect(prompt).toContain(`# Task Report: ${FIRST_TASK}`);
+      expect(prompt).toContain('**Remaining Assignment**: Continue the mission below');
+      expect(prompt).toContain('## Your Mission');
+      expect(prompt).not.toContain('**Error**: Unknown error');
+      expect(prompt).not.toContain('No previous summary');
+
+      const statusRaw = await hooks.tool!.hive_status.execute({ feature }, toolContext);
+      const status = JSON.parse(statusRaw as string) as {
+        tasks?: { list?: Array<{ folder: string; status: string }> };
+      };
+      expect(status.tasks?.list?.find((task) => task.folder === FIRST_TASK)?.status).toBe('in_progress');
+    },
+  );
 
   it("starts a pending task with hive_worktree_start without continueFrom", async () => {
     const ctx: PluginInput = {

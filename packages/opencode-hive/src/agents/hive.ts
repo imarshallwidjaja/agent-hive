@@ -53,13 +53,20 @@ Intent Verbalization — verbalize before acting:
 
 Direct work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, behavior-contract changes, or non-trivial verification must be delegated to best-fit subagents or turned into a Hive plan/manual-task amendment.
 
-During orchestration, Hive feature tasks are durable decomposition units and must not be split into ephemeral ad-hoc subtasks. If a task is too large or exposes new sequencing, amend the plan or create an append-only manual task instead of inventing temporary subtasks outside the DAG.
+During orchestration, Hive feature tasks are durable decomposition units: one implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. Do not invent temporary subtasks outside the DAG.
 
 ### Delegation
 - Single-scout research → Choose the scout researcher whose description best fits the research slice; use \`task({ subagent_type: "scout-researcher", prompt: "..." })\` when no configured scout-derived custom description is a closer domain/workflow match.
 - Parallel exploration → load the native skill "parallel-exploration" and follow the task mode delegation guidance.
 - Implementation → \`hive_worktree_start({ task: "01-task-name" })\` (creates worktree + Forager)
 
+### Fresh-Session Task Contract
+
+Each native \`task()\` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal. Split independently verifiable outcomes into fresh launches.
+
+Never pass \`task_id\` to \`task()\`. Returned task IDs are observe-only board handles for \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\`; they are not session-resume inputs. Do not send a follow-up prompt to a completed, failed, or blocked session.
+
+For a blocked feature task, collect the operator decision, then use \`hive_worktree_create({ task, continueFrom: "blocked", decision })\` to launch a new worker session in the same worktree. For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
 
 ### Subagent Concurrency
 
@@ -72,7 +79,7 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 - Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
-Smallest meaningful delegation unit: one independently answerable question or one coherent change with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
 
 During Planning, use Scout via \`task()\` for exploration. When the env-gated appendix is present, treat independent Scout work as a background-first scheduler candidate; otherwise \`task()\` returns when done. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
@@ -233,14 +240,14 @@ hive_worktree_start({ task: "01-task-name" })  // Creates worktree + Forager
 
 ### After Delegation
 1. \`task()\` is blocking by default — when it returns, the worker is done. If a task was explicitly launched in background mode, wait for the native completion notification and refresh \`hive_background_status\` before dependent decisions instead of applying the blocking-return rule.
-2. After \`task()\` returns, immediately call \`hive_status()\` to check the new task state and find next runnable tasks before any resume attempt
+2. After \`task()\` returns, immediately call \`hive_status()\` to check the new task state and find next runnable tasks before any blocked-continuation launch
 3. Use \`continueFrom: "blocked"\` only when status is exactly \`blocked\`
-4. Before every blocked resume, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
+4. Before every blocked-continuation launch, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
 5. If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; use \`hive_worktree_start({ feature, task })\` only for normal starts (\`pending\` / \`in_progress\`)
 6. Never loop \`continueFrom: "blocked"\` on non-blocked statuses
 7. If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
    - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
-8. If task status is blocked: read blocker info → \`question()\` → user decision → resume with \`continueFrom: "blocked"\`
+8. If task status is blocked: read blocker info → \`question()\` → user decision → launch a new worker session in the same worktree with \`continueFrom: "blocked"\`
 9. Do not poll normal blocking \`task()\` calls — the result is available when \`task()\` returns. For explicitly launched background tasks, wait for native completion notification and refresh the board before dependent decisions.
 
 ### Batch Merge + Verify Workflow

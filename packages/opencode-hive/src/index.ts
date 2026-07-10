@@ -23,6 +23,7 @@ import {
   adhocCreateNextAction,
   buildAdhocWorkerLaunchPayloads,
 } from './utils/adhoc-launch-payload.js';
+import { HIVE_SESSION_POLICY, shouldRejectTaskIdReuse } from './utils/session-policy.js';
 
 function blankToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -299,7 +300,9 @@ import {
   buildEffectiveDependencies,
   computeRunnableAndBlocked,
   detectContext,
+  getTaskReportPath,
   normalizePath,
+  readText,
   resolveFeatureDirectoryName,
   type CustomAgentBase,
   type WorktreeInfo,
@@ -791,6 +794,22 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     decision?: string;
     toolContext?: unknown;
   }) => {
+    const previousStatus = taskInfo.status;
+    const previousRawStatus = taskService.getRawStatus(feature, task);
+    const persistedError = previousRawStatus
+      && 'error' in previousRawStatus
+      && typeof previousRawStatus.error === 'string'
+      ? blankToUndefined(previousRawStatus.error)
+      : undefined;
+    const previousAttempt = previousStatus === 'failed' || previousStatus === 'partial'
+      ? {
+          status: previousStatus,
+          summary: blankToUndefined(taskInfo.summary),
+          report: blankToUndefined(readText(getTaskReportPath(directory, feature, task)) ?? undefined),
+          error: persistedError,
+        }
+      : undefined;
+
     taskService.update(feature, task, {
       status: 'in_progress',
       baseCommit: worktree.commit,
@@ -894,9 +913,10 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       previousTasks,
       continueFrom: continueFrom === 'blocked' ? {
         status: 'blocked',
-        previousSummary: (taskInfo as any).summary || 'No previous summary',
-        decision: decision || 'No decision provided',
+        previousSummary: blankToUndefined(taskInfo.summary),
+        decision: decision!,
       } : undefined,
+      previousAttempt,
       workspacePath: worktree.workspacePath,
       repos: promptRepoInfo,
     });
@@ -1005,6 +1025,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         prompt: taskToolPrompt,
       },
       ...(backgroundEnabled ? { backgroundTaskCall } : {}),
+      sessionPolicy: HIVE_SESSION_POLICY,
       instructions: taskToolInstructions,
     };
 
@@ -1115,12 +1136,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       return respond({
         success: false,
         terminal: true,
-        error: `Task "${task}" is blocked and must be resumed with hive_worktree_create using continueFrom: 'blocked'.`,
+        error: `Task "${task}" is blocked. Use hive_worktree_create with continueFrom: 'blocked' for blocked-task continuation in the existing worktree; it returns fresh-worker launch guidance.`,
         currentStatus: 'blocked',
         feature,
         task,
         hints: [
-          'Ask the user the blocker question, then call hive_worktree_create({ task, continueFrom: "blocked", decision }).',
+          'Ask the user the blocker question, then request fresh-worker launch guidance with hive_worktree_create({ task, continueFrom: "blocked", decision }).',
           'Use hive_status to inspect blocker details before retrying.',
         ],
       });
@@ -1223,13 +1244,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       return respond({
         success: false,
         terminal: true,
-        error: 'hive_worktree_create is only for resuming blocked tasks.',
+        error: 'hive_worktree_create only returns fresh-worker launch guidance for blocked-task continuation in the existing worktree.',
         reason: 'blocked_resume_required',
         currentStatus: taskInfo.status,
         feature,
         task,
         hints: [
-          'Use hive_worktree_start({ feature, task }) to start a pending or in-progress task normally.',
+          'Use hive_worktree_start({ feature, task }) to get fresh-worker launch guidance for pending, in-progress, failed, or partial tasks.',
           'Use hive_worktree_create({ task, continueFrom: "blocked", decision }) only after hive_status confirms the task is blocked.',
         ],
       });
@@ -1241,13 +1262,30 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         terminal: true,
         reason: 'task_not_blocked',
         canRetry: false,
-        retryReason: `Task is in ${taskInfo.status} state. Run hive_status() and follow the current status flow instead of blocked resume.`,
+        retryReason: `Task is in ${taskInfo.status} state. Run hive_status() and follow the current status flow instead of requesting blocked-task continuation.`,
         error: `continueFrom: 'blocked' was specified but task "${task}" is not in blocked state (current status: ${taskInfo.status}).`,
         currentStatus: taskInfo.status,
         hints: [
-          'This blocked-resume call cannot be retried with the same parameters.',
-          'Use hive_worktree_start({ feature, task }) for normal starts or re-dispatch.',
+          'This blocked-task continuation request cannot be retried with the same parameters.',
+          'Use hive_worktree_start({ feature, task }) to return fresh-worker launch guidance for normal starts or re-dispatch.',
           'Use hive_status to verify the current task status before retrying.',
+        ],
+      });
+    }
+
+    const operatorDecision = blankToUndefined(decision);
+    if (!operatorDecision) {
+      return respond({
+        success: false,
+        terminal: true,
+        reason: 'operator_decision_required',
+        currentStatus: taskInfo.status,
+        feature,
+        task,
+        error: `An operator decision is required before returning fresh worker launch guidance for blocked-task continuation in the existing worktree.`,
+        hints: [
+          'Ask the blocker question and pass the operator answer in decision.',
+          'Retry hive_worktree_create({ task, continueFrom: "blocked", decision }) after the operator answers.',
         ],
       });
     }
@@ -1257,7 +1295,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       return respond({
         success: false,
         terminal: true,
-        error: `Cannot resume blocked task "${task}": no existing worktree record found.`,
+        error: `Cannot return fresh-worker launch guidance for blocked-task continuation of "${task}": no existing worktree record was found.`,
         currentStatus: taskInfo.status,
         hints: [
           'The worktree may have been removed manually. Use hive_worktree_discard to reset the task to pending, then restart it with hive_worktree_start.',
@@ -1272,7 +1310,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       taskInfo,
       worktree,
       continueFrom,
-      decision,
+      decision: operatorDecision,
       toolContext,
     });
   };
@@ -1299,8 +1337,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
     // Apply per-agent variant to messages (covers built-in and accepted custom task() agents)
     // Type assertion needed because TypeScript's contravariance rules are too strict
-    // for the hook's output parameter type. The hook only accesses output.message.variant
-    // which exists on UserMessage.
+    // for the hook's output parameter type. The hook only accesses output.message.agent and
+    // output.message.variant, which exist on UserMessage.
     "chat.message": createVariantHook(configService, sessionService, customAgentConfigsForClassification, taskWorkerRecovery) as any,
 
     "experimental.chat.system.transform": (async (
@@ -1435,6 +1473,18 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     },
 
     "tool.execute.before": async (input, output) => {
+      if (input.tool === 'task' && input.sessionID) {
+        const session = sessionService.getGlobal(input.sessionID);
+        const decision = shouldRejectTaskIdReuse({
+          tool: input.tool,
+          sessionKind: session?.sessionKind,
+          args: output.args as Record<string, unknown> | undefined,
+        });
+        if (decision.reject) {
+          throw new Error(decision.message);
+        }
+      }
+
       await backgroundJobAdapter['tool.execute.before'](input, output);
 
       // Cadence gate: check if this hook should execute this turn
@@ -1758,7 +1808,7 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
       hive_worktree_start: tool({
-        description: 'Create worktree and begin work on pending/in-progress task. Spawns Forager worker automatically.',
+        description: 'Create or reuse a worktree for a pending, in-progress, failed, or partial task. Returns fresh-worker launch guidance.',
         args: {
           task: tool.schema.string().describe('Task folder name'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
@@ -1769,12 +1819,12 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
       hive_worktree_create: tool({
-        description: 'Resume a blocked task in its existing worktree. Spawns Forager worker automatically.',
+        description: 'Prepare blocked-task continuation in the existing worktree. Returns fresh-worker launch guidance with preserved progress and the operator decision.',
         args: {
           task: tool.schema.string().describe('Task folder name'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to detection or single feature)'),
-          continueFrom: tool.schema.enum(['blocked']).optional().describe('Resume a blocked task'),
-          decision: tool.schema.string().optional().describe('Answer to blocker question when continuing'),
+          continueFrom: tool.schema.enum(['blocked']).optional().describe('Request blocked-task continuation in the existing worktree'),
+          decision: tool.schema.string().optional().describe('Operator answer to include in fresh-worker launch guidance'),
         },
         async execute({ task, feature: explicitFeature, continueFrom, decision }, toolContext) {
           return executeBlockedResume({ task, feature: explicitFeature, continueFrom, decision, toolContext });
@@ -1877,8 +1927,8 @@ NEXT: Ask your first clarifying question about this feature.`;
               blocker,
               worktreePath: worktree?.path,
               branch: worktree?.branch,
-              message: 'Task blocked. Hive Master will ask user and resume with hive_worktree_create(continueFrom: "blocked", decision: answer)',
-              nextAction: 'Wait for orchestrator to collect user decision and resume with continueFrom: "blocked".',
+              message: 'Task blocked. Hive Master will ask the user, then launch a new worker for blocked-task continuation in the existing worktree with hive_worktree_create(continueFrom: "blocked", decision: answer).',
+              nextAction: 'Wait for the orchestrator to collect the user decision and request fresh worker launch guidance for the existing worktree.',
             });
           }
 
@@ -2003,7 +2053,10 @@ NEXT: Ask your first clarifying question about this feature.`;
             branch: worktree?.branch,
             reportPath,
             message: `Task "${task}" ${status}.`,
-            nextAction: 'Use hive_merge to integrate changes. Worktree is preserved for review.',
+            nextAction:
+              status === 'completed'
+                ? 'Use hive_merge to integrate changes. Worktree is preserved for review.'
+                : 'Use hive_worktree_start({ feature, task }) to launch a fresh self-contained worker. Worktree is preserved. Do not pass task_id to task().',
           });
         },
       }),
@@ -2133,7 +2186,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
             const subagent_type = 'forager-worker';
             const description = `Ad-hoc: ${info.runId}`;
-            const { taskToolCall, backgroundTaskCall, launchMode } = buildAdhocWorkerLaunchPayloads({
+            const { taskToolCall, backgroundTaskCall, launchMode, sessionPolicy } = buildAdhocWorkerLaunchPayloads({
               subagent_type,
               description,
               prompt: adhocWorkerPrompt,
@@ -2163,6 +2216,7 @@ NEXT: Ask your first clarifying question about this feature.`;
               ...(backgroundScope ? { backgroundScope } : {}),
               ...(backgroundOwnership ? { backgroundOwnership } : {}),
               launchMode,
+              ...(sessionPolicy ? { sessionPolicy } : {}),
               ...(taskToolCall ? { taskToolCall } : {}),
               ...(backgroundTaskCall ? { backgroundTaskCall } : {}),
               ...(workerLaunchSuppressed ? { workerLaunch: 'suppressed' as const } : {}),

@@ -13,7 +13,7 @@ Delegate by default. Work yourself only when trivial.
 
 Direct work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, behavior-contract changes, or non-trivial verification must be delegated to best-fit subagents or turned into a Hive plan/manual-task amendment.
 
-Hive feature tasks are durable decomposition units and must not be split into ephemeral ad-hoc subtasks. If a task is too large or exposes new sequencing, amend the plan or create an append-only manual task instead of inventing temporary subtasks outside the DAG.
+One implementation assignment normally maps to one numbered task. Its one primary goal may include tightly coupled code, tests, docs, and multiple files; do not fragment it by file or step. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task instead of inventing temporary subtasks outside the DAG.
 
 ## Intent Gate (Every Message)
 
@@ -48,7 +48,7 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 - Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
-Smallest meaningful delegation unit: one independently answerable question or one coherent change with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
 
 
 **When NOT to delegate:** Only what fits **Direct Work Boundary** above. Sequential operations where step N+1 needs step N's result still use blocking delegation when implementation is non-trivial.
@@ -72,13 +72,21 @@ Workers do not inherit your context or your conversation context. Relevant durab
 "In \`packages/core/src/services/task.ts:45-60\`, the \`resolveTask\` function silently swallows errors from \`loadConfig\`. Change it to propagate the error with the original message. Done = \`loadConfig\` failures surface to the caller, existing tests in \`task.test.ts\` still pass."
 </Good>
 
+## Fresh-Session Task Contract
+
+Each native \`task()\` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal. Split independently verifiable outcomes into fresh launches.
+
+Never pass \`task_id\` to \`task()\`. Returned task IDs are observe-only board handles for \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\`; they are not session-resume inputs. Do not send a follow-up prompt to a completed, failed, or blocked session.
+
+For a blocked feature task, collect the operator decision, then use \`hive_worktree_create({ task, continueFrom: "blocked", decision })\` to launch a new worker session in the same worktree. For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
+
 ## Delegation Prompt Structure (All 6 Sections)
 
 \`\`\`
 1. TASK: Atomic, specific goal
 2. EXPECTED OUTCOME: Concrete deliverables
 3. REQUIRED TOOLS: Explicit tool whitelist
-4. REQUIRED: Exhaustive requirements
+4. REQUIRED: Complete constraints and acceptance criteria for this primary goal only
 5. FORBIDDEN: Forbidden actions
 6. CONTEXT: File paths, patterns, constraints
 \`\`\`
@@ -96,9 +104,9 @@ hive_worktree_start({ task: "01-task-name" })
 
 Delegation guidance:
 - When the env-gated appendix is absent, \`task()\` returns when the worker is done; when it is present, use the background-first scheduler contract for independent lanes
-- After \`task()\` returns, call \`hive_status()\` immediately to check new state and find next runnable tasks before any resume attempt
+- After \`task()\` returns, call \`hive_status()\` immediately to check new state and find next runnable tasks before any blocked-continuation launch
 - Use \`continueFrom: "blocked"\` only when status is exactly \`blocked\`
-- Before every blocked resume, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
+- Before every blocked-continuation launch, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
 - If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; use \`hive_worktree_start({ feature, task })\` only for normal starts (\`pending\` / \`in_progress\`)
 - Never loop \`continueFrom: "blocked"\` on non-blocked statuses
 - If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
@@ -132,7 +140,7 @@ Direct orchestration fixes are bounded: one small, local, immediately verified i
 
 ## Blocker Handling
 
-When worker reports blocked: \`hive_status()\` → confirm status is exactly \`blocked\` → read blocker info; \`question()\` → ask user (no plain text); call \`hive_status()\` again immediately before resume; only then \`hive_worktree_create({ task, continueFrom: "blocked", decision })\`. If status is not \`blocked\`, do not use blocked resume; only use \`hive_worktree_start({ feature, task })\` for normal starts (\`pending\` / \`in_progress\`).
+When worker reports blocked: \`hive_status()\` → confirm status is exactly \`blocked\` → read blocker info; \`question()\` → ask user (no plain text); call \`hive_status()\` again immediately before the blocked-continuation launch; only then \`hive_worktree_create({ task, continueFrom: "blocked", decision })\` starts a new worker session in the same worktree. If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; only use \`hive_worktree_start({ feature, task })\` for normal starts (\`pending\` / \`in_progress\`).
 
 ## Failure Recovery (After 3 Consecutive Failures)
 

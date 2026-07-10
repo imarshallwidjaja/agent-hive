@@ -156,4 +156,78 @@ describe('background task lifecycle hook support', () => {
       }
     }
   });
+
+  it('rejects configured default primary task() calls with task_id when input.agent is omitted', async () => {
+    const testRoot = `/tmp/hive-fresh-session-task-id-reject-${process.pid}`;
+    const originalBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    fs.rmSync(testRoot, { recursive: true, force: true });
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+
+    const hooks = await plugin({
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: {
+        id: 'test',
+        worktree: testRoot,
+        time: { created: Date.now() },
+      },
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    });
+
+    try {
+      const opencodeConfig: Record<string, unknown> = {};
+      await hooks.config?.(opencodeConfig as never);
+      const defaultAgent = opencodeConfig.default_agent;
+      expect(typeof defaultAgent).toBe('string');
+      if (typeof defaultAgent !== 'string') throw new Error('default_agent was not configured');
+      expect(['hive-master', 'architect-planner']).toContain(defaultAgent);
+
+      await hooks['chat.message']?.(
+        { sessionID: 'sess_primary_fresh' } as never,
+        { message: { agent: defaultAgent }, parts: [] } as never,
+      );
+
+      await expect(
+        hooks['tool.execute.before']?.(
+          { tool: 'task', sessionID: 'sess_primary_fresh', callID: 'call_resume' } as never,
+          {
+            args: {
+              description: 'Resume worker',
+              prompt: 'continue previous worker',
+              subagent_type: 'forager-worker',
+              task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+              background: true,
+            },
+          } as never,
+        ),
+      ).rejects.toThrow(/fresh-session|task_id|new-launch|without task_id/i);
+
+      expect(fs.existsSync(path.join(testRoot, '.hive', 'background-jobs.json'))).toBe(false);
+
+      await hooks['tool.execute.before']?.(
+        { tool: 'task_status', sessionID: 'sess_primary_fresh', callID: 'call_status_ok' } as never,
+        { args: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' } } as never,
+      );
+
+      await hooks['tool.execute.before']?.(
+        { tool: 'task', sessionID: 'sess_primary_fresh', callID: 'call_fresh' } as never,
+        {
+          args: {
+            description: 'Hive: 01-first-task',
+            prompt: 'Follow instructions in @worker-prompt.md',
+            subagent_type: 'forager-worker',
+          },
+        } as never,
+      );
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+      if (originalBackgroundEnv === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = originalBackgroundEnv;
+      }
+    }
+  });
 });

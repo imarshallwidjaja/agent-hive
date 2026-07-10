@@ -36,7 +36,17 @@ Keep pure final verification outside `## Tasks` in `## Final Verification` when 
 
 Prefer more smaller targeted background tasks over broad ambiguous tasks, especially for exploratory/read-only and review work. Start with a 2-4 initial lanes fan-out unless there is a clear reason for more, synthesize the results, then dispatch another wave if needed.
 
-Smallest meaningful non-feature delegation unit: one independently answerable question or one coherent change with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+Smallest meaningful non-feature delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+
+## Fresh-Session Launch Contract
+
+Each native `task()` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal. Split independently verifiable outcomes into fresh launches.
+
+Never pass `task_id` to `task()`. Returned task IDs are observe-only board handles for `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`; they are not session-resume inputs. Do not send a follow-up prompt to a completed, failed, or blocked session.
+
+For a blocked feature task, `hive_worktree_create({ task, continueFrom: "blocked", decision })` launches a new worker session in the same worktree after the operator provides the decision. For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
+
+For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
 ## Context Packet
 

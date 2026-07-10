@@ -79,6 +79,10 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Wait mode decides blocking foreground vs background');
     expect(skill!.template).toContain('Blocking does not mean serial');
     expect(skill!.template).toContain('If the only reason for serializing is `task()` is blocking, that is incorrect');
+    expect(skill!.template).toContain('one primary goal');
+    expect(skill!.template).toContain('fresh subagent session');
+    expect(skill!.template).toContain('Never pass `task_id` to `task()`');
+    expect(skill!.template).toContain('one terminal handoff');
   });
 
   it('positions parallel-exploration as lightweight read-only delegation under the background scheduler', () => {
@@ -104,6 +108,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Risk-Tier Review Routing');
     expect(skill!.template).toContain('Post-Batch Code Review');
     expect(skill!.template).toContain('recommended review path');
+    expect(skill!.template).toContain('One implementation assignment normally maps to one numbered task');
+    expect(skill!.template).toContain('new worker session in the same worktree');
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
@@ -114,6 +120,9 @@ describe('skill content', () => {
     expect(skill!.template).toContain(
       'Parallelize by issuing multiple task() calls in the same assistant message.'
     );
+    expect(skill!.template).toContain('one primary goal');
+    expect(skill!.template).toContain('fresh subagent session');
+    expect(skill!.template).toContain('disjoint path ownership or sequence overlapping writers');
   });
 
   it('does not keep stale synchronous-exploration wording in delegation skills', () => {
@@ -167,8 +176,11 @@ describe('skill content', () => {
     expect(skill!.template).toContain('exactly one bounded read');
     expect(skill!.template).toContain('exactly one bounded write/patch');
     expect(skill!.template).toContain('one cheap final check');
-    expect(skill!.template).toContain('one independently answerable question or one coherent change');
+    expect(skill!.template).toContain('one independently answerable question or one primary goal');
     expect(skill!.template).toContain('one owner, one expected output, and one verification/return contract');
+    expect(skill!.template).toContain('Never pass `task_id` to `task()`');
+    expect(skill!.template).toContain('observe-only board handles');
+    expect(skill!.template).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
     expect(skill!.template).toContain('Normal fan-out is 2-4 lanes');
     expect(skill!.template).toContain('synthesize before dispatching more');
     expect(skill!.template).toContain('second patch/test loop');

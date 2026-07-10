@@ -287,6 +287,44 @@ describe('buildWorkerPrompt continuation', () => {
     
     expect(prompt).not.toContain('## Continuation from Blocked State');
   });
+
+  it('includes available failed-attempt evidence and remaining assignment context', () => {
+    const prompt = buildWorkerPrompt(createTestParams({
+      previousAttempt: {
+        status: 'failed',
+        summary: 'Implemented the parser but the integration test still fails.',
+        report: '# Task Report\n\n## Summary\n\nParser work is preserved.',
+        error: 'Expected status 200, received 500.',
+      },
+    }));
+
+    expect(prompt).toContain('## Previous Attempt');
+    expect(prompt).toContain('**Status**: failed');
+    expect(prompt).toContain('**Summary**: Implemented the parser but the integration test still fails.');
+    expect(prompt).toContain('**Report**:');
+    expect(prompt).toContain('Parser work is preserved.');
+    expect(prompt).toContain('**Error**: Expected status 200, received 500.');
+    expect(prompt).toContain('**Remaining Assignment**: Continue the mission below');
+  });
+
+  it('does not invent unavailable previous-attempt evidence', () => {
+    const prompt = buildWorkerPrompt(createTestParams({
+      previousAttempt: {
+        status: 'partial',
+      },
+    }));
+
+    const attemptSection = prompt.slice(
+      prompt.indexOf('## Previous Attempt'),
+      prompt.indexOf('---', prompt.indexOf('## Previous Attempt')),
+    );
+    expect(attemptSection).toContain('**Status**: partial');
+    expect(attemptSection).toContain('**Remaining Assignment**: Continue the mission below');
+    expect(attemptSection).not.toContain('**Summary**:');
+    expect(attemptSection).not.toContain('**Report**:');
+    expect(attemptSection).not.toContain('**Error**:');
+    expect(attemptSection).not.toMatch(/unknown|unavailable|not provided/i);
+  });
 });
 
 // ============================================================================
