@@ -3619,10 +3619,14 @@ Do not choose a custom subagent only because the task is important, complex, or 
           }];
         }),
       ];
+      const configAgentRecord = (opencodeConfig.agent as Record<string, { description?: unknown }> | undefined) ?? {};
+      for (const priorTarget of runtimeDashReviewLanes.map((lane) => lane.taskTarget)) {
+        delete configAgentRecord[priorTarget];
+      }
       const existingAgentNames = [
         ...Object.keys(builtInAgentConfigs),
         ...Object.keys(customSubagents),
-        ...Object.keys((opencodeConfig.agent as Record<string, unknown> | undefined) ?? {}),
+        ...Object.keys(configAgentRecord),
       ];
       const dashReviewLanes = buildDashReviewLanes({
         sources: dashReviewSources,

@@ -119,9 +119,29 @@ async function createSnapshotPlugin(directory: string): Promise<{
   } as any);
   const config: { agent?: Record<string, AgentConfig> } = {};
   await hooks.config?.(config);
-  const scopeAlias = Object.keys(config.agent ?? {}).find((name) => name.startsWith('__hive_dash_review_lane_scope_'));
+  const scopeAlias = Object.keys(config.agent ?? {}).find((name) => {
+    const agent = config.agent?.[name];
+    return agent?.tools?.hive_review_workspace_create === true;
+  });
   if (!scopeAlias) throw new Error('Expected a generated dash scope alias');
   return { hooks, scopeAlias };
+}
+
+function findDashReviewLanes(agents: Record<string, AgentConfig> | undefined): Array<[string, AgentConfig]> {
+  return Object.entries(agents ?? {}).filter(([, config]) => {
+    return config.description?.startsWith('Frozen Workspace Review Lane -');
+  });
+}
+
+function findDashScopeAlias(agents: Record<string, AgentConfig> | undefined): string | undefined {
+  return findDashReviewLanes(agents).find(([, config]) => config.tools?.hive_review_workspace_create === true)?.[0];
+}
+
+function findDashCodeAlias(agents: Record<string, AgentConfig> | undefined): string | undefined {
+  return findDashReviewLanes(agents).find(([, config]) => {
+    return config.tools?.hive_review_workspace_create !== true
+      && config.description?.includes('code-reviewer');
+  })?.[0];
 }
 
 function snapshotContext(agent: string): Record<string, unknown> {
@@ -550,9 +570,9 @@ describe('Per-agent tool filtering', () => {
         baseAgent: 'forager-worker',
         description: 'Mutable implementation worker',
       },
-      '__hive_dash_review_lane_scope_1': {
+      'review-scout-researcher': {
         baseAgent: 'forager-worker',
-        description: 'Existing mutable user agent that must not collide with an internal alias',
+        description: 'Existing mutable user agent that must not collide with a generated review alias',
       },
       'planner-design': {
         baseAgent: 'plan-reviewer',
@@ -562,9 +582,7 @@ describe('Per-agent tool filtering', () => {
     const reviewer = agents['__hive_dash_review_primary'];
     const tools = reviewer?.tools;
     const taskPermissions = reviewer?.permission?.task as Record<string, string>;
-    const reviewLanes = Object.entries(agents).filter(([, config]) => {
-      return config.description?.startsWith('Dash Review Lane -');
-    });
+    const reviewLanes = findDashReviewLanes(agents);
 
     expect(reviewer).toBeTruthy();
     expect(tools).toBeTruthy();
@@ -580,8 +598,11 @@ describe('Per-agent tool filtering', () => {
     expect(taskPermissions['*']).toBe('deny');
     expect(Object.keys(taskPermissions)[0]).toBe('*');
     expect(reviewLanes).toHaveLength(10);
-    expect(reviewLanes.map(([name]) => name)).not.toContain('__hive_dash_review_lane_scope_1');
-    expect(reviewLanes.map(([name]) => name)).toContain('__hive_dash_review_lane_scope_2');
+    expect(reviewLanes.map(([name]) => name)).not.toContain('review-scout-researcher');
+    expect(reviewLanes.map(([name]) => name)).toContain('review-scout-researcher-2');
+    expect(reviewLanes.map(([name]) => name)).toContain('review-code-reviewer');
+    expect(reviewLanes.every(([name]) => name.startsWith('review-'))).toBe(true);
+    expect(reviewLanes.some(([name]) => name.includes('__hive_dash_review_lane_'))).toBe(false);
     for (const [name] of reviewLanes) {
       expect(resolveTaskPermission(taskPermissions, name)).toBe('allow');
     }
@@ -589,7 +610,7 @@ describe('Per-agent tool filtering', () => {
       'hive-master', 'scout-researcher', 'code-reviewer', 'simplicity-reviewer', 'forager-worker',
       'hive-builder', 'plan-reviewer', 'approach-advisor', 'scout-audit', 'reviewer-security',
        'reviewer-minimal', 'reviewer-*', 'reviewer/security', 'reviewer\\security', '42',
-       'forager-ui', 'planner-design',
+       'forager-ui', 'planner-design', 'review-scout-researcher',
     ]) {
       expect(resolveTaskPermission(taskPermissions, name)).toBe('deny');
     }
@@ -604,15 +625,16 @@ describe('Per-agent tool filtering', () => {
       expect(resolveToolPermission(lane.tools!, 'unknown_custom_tool')).toBeUndefined();
       expect(resolveToolPermission(lane.tools!, 'unknown_mcp_tool')).toBeUndefined();
       expect(lane.tools?.['hive_context_write']).toBe(false);
+      const isScopeLane = lane.tools?.hive_review_workspace_create === true;
       for (const toolName of HIVE_TOOL_NAMES) {
-        if (name.includes('_scope_') && ['hive_git_snapshot', 'hive_repositories_status', 'hive_review_workspace_create'].includes(toolName)) continue;
+        if (isScopeLane && ['hive_git_snapshot', 'hive_repositories_status', 'hive_review_workspace_create'].includes(toolName)) continue;
         expect(lane.tools?.[toolName]).toBe(false);
       }
       expect(lane.permission?.edit).toBe('deny');
       expect(lane.permission?.task).toBe('deny');
       expect(lane.permission?.delegate).toBe('deny');
       expect(lane.permission?.bash).toBeUndefined();
-      if (name.includes('_scope_')) {
+      if (isScopeLane) {
         expect(lane.tools?.['hive_git_snapshot']).toBe(true);
         expect(lane.tools?.['hive_repositories_status']).toBe(true);
         expect(lane.tools?.['hive_review_workspace_create']).toBe(true);
@@ -621,25 +643,107 @@ describe('Per-agent tool filtering', () => {
         expect(lane.tools?.['hive_repositories_status']).toBe(false);
         expect(lane.tools?.['hive_review_workspace_create']).toBe(false);
       }
-      expect(lane.prompt).toContain('Dash Review Lane');
+      expect(lane.prompt).toContain('Frozen Workspace Review Lane');
+      expect(lane.prompt).not.toContain('DoorDash');
       expect(lane.prompt).not.toContain('hive_context_write');
+      expect(name.startsWith('review-')).toBe(true);
     }
 
-    const scopeLane = reviewLanes.find(([name]) => name === '__hive_dash_review_lane_scope_2')?.[1];
+    const scopeLane = reviewLanes.find(([name]) => name === 'review-scout-researcher-2')?.[1];
     const securityLane = reviewLanes.find(([, lane]) => lane.model === 'provider/security-model')?.[1];
     expect(scopeLane?.prompt).not.toContain('## Persistence');
     expect(scopeLane?.tools?.['hive_git_snapshot']).toBe(true);
     expect(scopeLane?.prompt).toContain('hive_git_snapshot');
     expect(scopeLane?.prompt).toContain('hive_review_workspace_create');
+    expect(scopeLane?.prompt).toContain('first tool call must be `hive_repositories_status`');
+    expect(scopeLane?.prompt).toContain('do not call `hive_status`');
     expect(securityLane?.variant).toBe('xhigh');
     expect(securityLane?.description).toContain('Security implementation reviewer');
     expect(securityLane?.prompt).toContain('Security implementation reviewer');
     expect(securityLane?.permission?.bash).toBeUndefined();
     expect(securityLane?.tools?.['hive_git_snapshot']).toBe(false);
+    expect(securityLane?.prompt).toContain('process cwd is live source');
     for (const sourceName of ['reviewer-*', 'reviewer/security', 'reviewer\\security', '42']) {
       expect(reviewLanes.some(([, lane]) => lane.description?.includes(`- ${sourceName}:`))).toBe(true);
     }
     expect(reviewLanes.some(([, lane]) => lane.description?.includes('forager-ui'))).toBe(false);
+  });
+
+  it('replaces plugin-owned generated review wrappers idempotently on config reentry', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-review-reentry-'));
+    createGitRepository(repository);
+    try {
+      spyOn(ConfigService.prototype, 'get').mockReturnValue({
+        agentMode: 'unified',
+        agents: {},
+        customAgents: {
+          'review-custom-user': {
+            baseAgent: 'forager-worker',
+            description: 'Unrelated user agent that starts with review-',
+          },
+        },
+      } as any);
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'reentry', worktree: repository, time: { created: Date.now() } },
+        client: createStubClient(),
+        $: createStubShell(),
+      } as any);
+
+      const opencodeConfig: { agent?: Record<string, AgentConfig> } = {};
+      await hooks.config?.(opencodeConfig);
+      const firstLanes = findDashReviewLanes(opencodeConfig.agent);
+      const firstTargets = firstLanes.map(([name]) => name).sort();
+      const firstScope = findDashScopeAlias(opencodeConfig.agent)!;
+      const firstCode = findDashCodeAlias(opencodeConfig.agent)!;
+      const firstCount = firstLanes.length;
+      expect(firstCount).toBeGreaterThan(0);
+      expect(opencodeConfig.agent?.['review-custom-user']).toBeTruthy();
+      expect(opencodeConfig.agent?.['review-custom-user']?.description).toBe(
+        'Unrelated user agent that starts with review-',
+      );
+
+      // Another plugin/config pass may mutate a prior generated target's description.
+      // Reentry must still replace exact prior runtime targets without alias churn.
+      const mutatedTarget = firstScope;
+      const mutatedAgent = opencodeConfig.agent?.[mutatedTarget];
+      expect(mutatedAgent).toBeTruthy();
+      opencodeConfig.agent![mutatedTarget] = {
+        ...mutatedAgent!,
+        description: 'Mutated by another plugin pass - no Frozen Workspace prefix',
+        model: 'mutated/other-plugin',
+      };
+
+      await hooks.config?.(opencodeConfig);
+      const secondLanes = findDashReviewLanes(opencodeConfig.agent);
+      const secondTargets = secondLanes.map(([name]) => name).sort();
+      const secondScope = findDashScopeAlias(opencodeConfig.agent)!;
+      const secondCode = findDashCodeAlias(opencodeConfig.agent)!;
+      const reviewPrefixed = Object.keys(opencodeConfig.agent ?? {}).filter((name) => name.startsWith('review-'));
+      const staleAliases = reviewPrefixed.filter((name) => {
+        if (name === 'review-custom-user') return false;
+        return !secondTargets.includes(name);
+      });
+
+      expect(secondTargets).toEqual(firstTargets);
+      expect(secondLanes).toHaveLength(firstCount);
+      expect(staleAliases).toEqual([]);
+      expect(opencodeConfig.agent?.[mutatedTarget]?.description?.startsWith('Frozen Workspace Review Lane -')).toBe(true);
+      expect(opencodeConfig.agent?.['review-custom-user']?.description).toBe(
+        'Unrelated user agent that starts with review-',
+      );
+      expect(secondScope).toBe(firstScope);
+      expect(secondCode).toBe(firstCode);
+
+      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+      expect(JSON.parse(await execute({}, snapshotContext(secondScope))).repository.root).toBe(repository);
+      await expect(execute({}, snapshotContext(secondCode))).rejects.toThrow('not authorized');
+      await expect(execute({}, snapshotContext(`${secondScope}-2`))).rejects.toThrow(/not (registered|authorized)/);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
   });
 
   it('enforces snapshot callers at runtime after generated scope aliases are registered', async () => {
@@ -657,16 +761,17 @@ describe('Per-agent tool filtering', () => {
       } as any);
       const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
 
-      await expect(execute({}, snapshotContext('__hive_dash_review_lane_scope_1'))).rejects.toThrow('not registered');
+      await expect(execute({}, snapshotContext('review-scout-researcher-unregistered'))).rejects.toThrow('not registered');
 
       const config: { agent?: Record<string, AgentConfig> } = {};
       await hooks.config?.(config);
-      const scopeAlias = Object.keys(config.agent ?? {}).find((name) => name.startsWith('__hive_dash_review_lane_scope_'))!;
+      const scopeAlias = findDashScopeAlias(config.agent)!;
+      const codeAlias = findDashCodeAlias(config.agent)!;
 
       await expect(execute({}, snapshotContext('hive-master'))).rejects.toThrow('not authorized');
       await expect(execute({}, snapshotContext('__hive_dash_review_primary'))).rejects.toThrow('not authorized');
       await expect(execute({}, snapshotContext('external-agent'))).rejects.toThrow('not authorized');
-      await expect(execute({}, snapshotContext('__hive_dash_review_lane_code_1'))).rejects.toThrow('not authorized');
+      await expect(execute({}, snapshotContext(codeAlias))).rejects.toThrow('not authorized');
       expect(JSON.parse(await execute({}, snapshotContext(scopeAlias))).repository.root).toBe(repository);
     } finally {
       rmSync(repository, { recursive: true, force: true });
@@ -805,7 +910,7 @@ describe('Per-agent tool filtering', () => {
       const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string; template: string }> } = {};
       await hooks.config?.(config);
       const dashPrimary = config.command?.['dash-review']?.agent!;
-      const safeAlias = Object.keys(config.agent ?? {}).find((name) => name.startsWith('__hive_dash_review_lane_scope_'))!;
+      const safeAlias = findDashScopeAlias(config.agent)!;
       const messageHook = hooks['chat.message']!;
       const taskHook = hooks['tool.execute.before']!;
       await messageHook({ sessionID: 'dash-session', agent: dashPrimary }, {
@@ -818,6 +923,9 @@ describe('Per-agent tool filtering', () => {
       })).resolves.toBeUndefined();
       await expect(taskHook({ tool: 'task', sessionID: 'dash-session', callID: 'denied' }, {
         args: { subagent_type: 'forager-worker' },
+      })).rejects.toThrow('dash-review task target is not authorized');
+      await expect(taskHook({ tool: 'task', sessionID: 'dash-session', callID: 'prefix-denied' }, {
+        args: { subagent_type: `${safeAlias}-extra` },
       })).rejects.toThrow('dash-review task target is not authorized');
       await (hooks as any)['command.execute.before']({
         command: 'dash-review',
@@ -867,8 +975,8 @@ describe('Per-agent tool filtering', () => {
       const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string; template: string }> } = {};
       await hooks.config?.(config);
       const dashPrimary = config.command?.['dash-review']?.agent!;
-      const scopeAlias = Object.keys(config.agent ?? {}).find((name) => name.startsWith('__hive_dash_review_lane_scope_'))!;
-      const codeAlias = Object.keys(config.agent ?? {}).find((name) => name.startsWith('__hive_dash_review_lane_code_'))!;
+      const scopeAlias = findDashScopeAlias(config.agent)!;
+      const codeAlias = findDashCodeAlias(config.agent)!;
       const messageHook = hooks['chat.message']!;
       const toolHook = hooks['tool.execute.before']!;
       const invoke = (sessionID: string, tool: string, args: Record<string, unknown> = {}) => {

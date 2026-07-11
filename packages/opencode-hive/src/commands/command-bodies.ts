@@ -371,11 +371,12 @@ When usable councillors are resolved and council runs, use this output format:
 
 List the councillors that participated and why they were chosen.`,
 
-  'dash-review': `Run a DoorDash-inspired review over one frozen disposable review workspace. This is a review-only command: do not change implementation source, Hive feature/task state, source branches, commits, or merges in this turn.
+  'dash-review': `Run a frozen-workspace implementation review over one frozen disposable review workspace. This is a review-only command: do not change implementation source, Hive feature/task state, source branches, commits, or merges in this turn.
 
 Workspace execution contract:
 
 - First use the built-in scope/lead scout to construct the frozen manifest and call hive_repositories_status, hive_git_snapshot, and hive_review_workspace_create with one structured scope. It returns selected/excluded repositoryIds, source fingerprint, materialized workspace fingerprint, workspace paths, ownership token, and truncation/error state.
+- Scope contract overrides any inherited guidance: the first tool call must be hive_repositories_status; do not call hive_status; for legacy single-root omit repositoryIds entirely from snapshot/create; for composite use manifest IDs consistently; the scope lane may only status/snapshot/create and must return run ID/token without claim/inspect/cleanup.
 - Immediately after Stage A returns runId and ownershipToken, the private primary must call hive_review_workspace_claim for its current session before deep review lanes. The claim binds session cleanup. Internal recovery preserves a live claimed owner, reclaims a dead claimed owner, and reclaims an unclaimed workspace only after its creator dies or the bounded handoff expires.
 - The create tool captures one final dirty-tree generation, materializes only final scoped content into detached worktrees, verifies the materialized workspace fingerprint, and retries source drift once. A second drift is NEEDS_DISCUSSION. Committed refs/ranges use the resolved comparison target with no unrelated dirty overlay. Live drift is non-attributable; do not use generic rollback.
 - All deep reviewers, specialists, serialized verification, simplicity review, the unconditional falsifier, and escalation use one shared review workspace, never live source paths. Parallel lanes may use local CLI and retrieval tools in that workspace. Read-only Railway/Vercel/status/log/diagnostic commands are allowed; remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states.
@@ -410,6 +411,8 @@ Put this in every baseline, specialist, falsifier, and revalidation task prompt:
 \`\`\`text
 This is a review-only implementation lane.
 You receive the supplied frozen manifest, workspace paths, and snapshot ID. Do not inspect live source paths.
+process cwd is live source. Before any local-source file/Git/shell/cymbal/build/test/glob/grep/ast-grep/read operation, every tool must use an explicit frozen absolute workdir/cwd, project_folder, or absolute path. Never rely on default cwd or cd. If a tool cannot be scoped, do not use it.
+Require manifest-led file discovery before direct reads: use manifest paths or discover under the frozen absolute root; never guess filenames.
 Use local CLI and retrieval tools only in the disposable review workspace. Read-only Railway, Vercel, status, log, and diagnostic commands are allowed when relevant. Remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states. Live drift is non-attributable; do not use generic rollback.
 Do not create Hive plans, tasks, worktrees, commits, merges, PRs, or context writes. Do not call task() recursively. Editor denial is a reviewer-role speed bump, not filesystem immutability.
 For serialized verification only, return the structured command transcript as { command, cwd, exitCode, conciseOutcome }. Other lanes return findings plus exceptional boundaries, workspace footprint, self-reported source-path escape, remote side effects, and recovery notes.

@@ -320,7 +320,8 @@ describe('hive command renderers', () => {
     const output = render('dash-review', 'feature/retry-restore');
 
     expect(output).toContain('Target: feature/retry-restore');
-    expect(output).toContain('frozen disposable review workspace');
+    expect(output).toContain('frozen-workspace implementation review');
+    expect(output).not.toContain('DoorDash');
     expect(output).toContain('scope/lead scout');
     expect(output).toContain('materialize');
     expect(output).toContain('serialized verification');
@@ -346,7 +347,7 @@ describe('hive command renderers', () => {
     const specialistName = ['reviewer', 'security'].join('-');
     const context = createContext({
       dashReviewLanes: [{
-        taskTarget: '__hive_dash_review_lane_code_1',
+        taskTarget: 'review-reviewer-security',
         sourceAgent: specialistName,
         baseAgent: 'code-reviewer',
         description: 'Security and public API risk reviewer',
@@ -361,7 +362,7 @@ describe('hive command renderers', () => {
     expect(output).toContain('Security and public API risk reviewer');
     expect(output).toContain('provider/reasoning');
     expect(output).toContain('xhigh');
-    expect(output).toContain('__hive_dash_review_lane_code_1');
+    expect(output).toContain('review-reviewer-security');
     expect(output).toContain('Task target');
   });
 
@@ -395,15 +396,28 @@ describe('hive command renderers', () => {
     expect(bootstrap).toContain('construct the frozen manifest');
     expect(bootstrap).toContain('hive_git_snapshot');
     expect(bootstrap).toContain('hive_repositories_status');
+    expect(bootstrap).toContain('first tool call must be hive_repositories_status');
+    expect(bootstrap).not.toContain('first Hive tool');
+    expect(bootstrap).toContain('do not call hive_status');
+    expect(bootstrap).toContain('omit repositoryIds');
     expect(bootstrap).toContain('workspace.json');
     expect(bootstrap).toContain('repositoryIds');
     expect(bootstrap).toContain('hive_review_workspace_create');
     expect(bootstrap).toContain('materialized workspace fingerprint');
+    expect(bootstrap).toContain('without claim');
     expect(bootstrap).not.toContain('supplied frozen manifest');
     expect(downstream).toContain('supplied frozen manifest, workspace paths, and snapshot ID');
+    expect(downstream).toContain('process cwd is live source');
+    expect(downstream).toContain('explicit frozen absolute');
+    expect(downstream).toContain('workdir');
+    expect(downstream).toContain('project_folder');
+    expect(downstream).toContain('Never rely on default cwd');
+    expect(downstream).toContain('manifest');
+    expect(downstream).toContain('never guess filenames');
     expect(downstream).toContain('local CLI and retrieval tools');
     expect(downstream).toContain('Do not inspect live source paths');
     expect(downstream).toContain('Remote mutation');
+    expect(output).toContain('parallel blocking `task()` calls only');
   });
 
   it('documents that dash-review scope is appended after command expansion as inert data', () => {
