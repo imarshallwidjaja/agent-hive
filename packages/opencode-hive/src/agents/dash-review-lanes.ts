@@ -27,25 +27,26 @@ function withoutScoutPersistence(prompt: string): string {
   return prompt.replace(/\n## Persistence\n[\s\S]*?(?=\n## |$)/, '\n');
 }
 
-function safePrompt(source: DashReviewLaneSource): string {
+function lanePrompt(source: DashReviewLaneSource): string {
   const inherited = (source.baseAgent === 'scout-researcher'
     ? withoutScoutPersistence(source.prompt ?? '')
     : source.prompt ?? '')
     .split('\n')
     .filter((line) => !line.includes('hive_context_write'))
     .join('\n');
+  const scopeBoundary = source.baseAgent === 'scout-researcher'
+    ? 'This scope lane may use `hive_repositories_status`, `hive_git_snapshot`, and `hive_review_workspace_create` with structured scope data only. It captures and materializes the frozen review workspace before any deep review runs.'
+    : 'Use only the supplied frozen review workspace paths and identity. Do not inspect or write to the live source workspace.';
 
-  const snapshotBoundary = source.baseAgent === 'scout-researcher'
-    ? 'This scope/revalidation lane may use `hive_git_snapshot` for Git state only. It accepts structured repositoryIds, refs, ranges, paths, and output bounds; it does not accept commands or flags. Use `hive_repositories_status` for repository context, then select composite repository IDs from the active workspace `workspace.json`, not the project repository config. Use one atomic snapshot set: omitting repositoryIds includes every manifest repository, while an explicit selection must report excluded IDs. Revalidation repeats the same structured scope and compares the set fingerprint. Do not use Bash.'
-    : 'You receive the frozen manifest, bounded patch material, and Stage A leads from the scope lane. Do not use `hive_git_snapshot` or Bash.';
+  return `${inherited}
 
-  return `${inherited}\n\n## Dash Review Safe Lane
+## Dash Review Lane
 
 Configured lens: ${source.description}
 
-${snapshotBoundary}
+${scopeBoundary}
 
-Inspect only repository state relevant to the supplied review scope. Do not edit files, apply patches, write Hive context, create plans, tasks, worktrees, commits, merges, or PRs, or call task() recursively.`;
+You may use normal local CLI and retrieval tools inside the frozen review workspace. Read-only Railway, Vercel, status, log, and diagnostic commands are allowed when relevant. Remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states; report any observed escape or effect. Live source drift is non-attributable. Do not use generic rollback. Treat ignored live artifacts as non-source output; regenerate required artifacts in serialized verification. Only the serialized verification lane returns a structured command transcript; other lanes report exceptional boundaries and recovery limits. Do not edit files through the editor; this is only a reviewer-role speed bump and is not filesystem immutability because CLI commands can write. Do not write Hive context, create plans, tasks, worktrees, commits, merges, or PRs, and do not call task() recursively.`;
 }
 
 function nextTaskTarget(baseAgent: DashReviewLaneBase, usedNames: Set<string>): string {
@@ -64,11 +65,10 @@ function nextTaskTarget(baseAgent: DashReviewLaneBase, usedNames: Set<string>): 
   return target;
 }
 
-export function buildDashReviewSafeLanes(input: {
+export function buildDashReviewLanes(input: {
   sources: DashReviewLaneSource[];
   existingNames: Iterable<string>;
-  tools: Record<string, boolean>;
-  scopeTools: Record<string, boolean>;
+  hiveTools: readonly string[];
 }): {
   agents: Record<string, DashReviewLaneConfig>;
   lanes: HiveCommandDashReviewLane[];
@@ -79,24 +79,25 @@ export function buildDashReviewSafeLanes(input: {
 
   for (const source of input.sources) {
     const taskTarget = nextTaskTarget(source.baseAgent, usedNames);
-    const description = `Dash Review Safe Lane - ${source.name}: ${source.description}`;
+    const tools = Object.fromEntries(input.hiveTools.map((tool) => [tool, false]));
+    if (source.baseAgent === 'scout-researcher') {
+      tools.hive_repositories_status = true;
+      tools.hive_git_snapshot = true;
+      tools.hive_review_workspace_create = true;
+    }
     agents[taskTarget] = {
       model: source.model,
       variant: source.variant,
       temperature: source.temperature,
       mode: 'subagent',
-      description,
-      prompt: safePrompt(source),
-      tools: {
-        ...(source.baseAgent === 'scout-researcher' ? input.scopeTools : input.tools),
-        '*': false,
-      },
+      description: `Dash Review Lane - ${source.name}: ${source.description}`,
+      prompt: lanePrompt(source),
+      tools,
       permission: {
         edit: 'deny',
         task: 'deny',
         delegate: 'deny',
         skill: 'allow',
-        bash: 'deny',
       },
     };
     lanes.push({

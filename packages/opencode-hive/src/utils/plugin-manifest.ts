@@ -49,6 +49,10 @@ export const HIVE_TOOL_NAMES = [
   'hive_context_write',
   'hive_status',
   'hive_git_snapshot',
+  'hive_review_workspace_create',
+  'hive_review_workspace_claim',
+  'hive_review_workspace_inspect',
+  'hive_review_workspace_cleanup',
 ] as const;
 
 export const SUPPORTED_PLUGIN_HOOKS = [

@@ -32,6 +32,8 @@ export type GitSnapshotInput = {
   targetRef?: string;
   range?: string;
   paths?: string[];
+  /** Internal fixed review-workspace paths excluded from live untracked capture. */
+  excludePaths?: string[];
   maxFiles?: number;
   maxPatchBytes?: number;
 };
@@ -39,6 +41,7 @@ export type GitSnapshotInput = {
 type CapturedContent = {
   byteLength: number;
   digest: string;
+  content: Buffer;
   preview: Buffer;
   previewTruncated: boolean;
   fileType?: 'regular' | 'symlink';
@@ -46,6 +49,40 @@ type CapturedContent = {
 };
 
 type ChangedPathGroup = 'comparison' | 'staged' | 'unstaged' | 'untracked';
+
+export interface GitSnapshot {
+  repository: { root: string; currentHead: string };
+  scope: {
+    baseRef?: string;
+    targetRef?: string;
+    range?: string;
+    paths: string[];
+    comparisonBase?: string;
+    comparisonTarget: string;
+    mergeBase?: string;
+  };
+  limits: { maxFiles: number; maxPatchBytes: number };
+  changedPaths: Record<ChangedPathGroup, string[]>;
+  fingerprint: string;
+  patch: string;
+  omissions: {
+    changedPaths: Record<ChangedPathGroup, number>;
+    patch: { truncated: boolean; omittedBytes: number };
+  };
+}
+
+export interface ReviewMaterializationEntry {
+  path: string;
+  kind: 'delete' | 'regular' | 'symlink';
+  content?: Buffer;
+  mode?: number;
+}
+
+export interface ReviewMaterialization {
+  snapshot: GitSnapshot;
+  entries: ReviewMaterializationEntry[];
+  fingerprint: string;
+}
 
 type BoundedPaths = {
   values: string[];
@@ -61,6 +98,7 @@ function captureBuffer(
   return {
     byteLength: content.byteLength,
     digest: createHash('sha256').update(content).digest('hex'),
+    content,
     preview: content.subarray(0, previewLength),
     previewTruncated: content.byteLength > previewLength,
     ...metadata,
@@ -109,6 +147,7 @@ async function captureRegularFile(
     }
 
     const hash = createHash('sha256');
+    const content: Buffer[] = [];
     const preview: Buffer[] = [];
     const buffer = Buffer.allocUnsafe(64 * 1024);
     let byteLength = 0;
@@ -119,6 +158,7 @@ async function captureRegularFile(
       if (bytesRead === 0) break;
       const chunk = buffer.subarray(0, bytesRead);
       hash.update(chunk);
+      content.push(Buffer.from(chunk));
       assertUntrackedDeadline(deadline);
       if (byteLength + bytesRead > MAX_UNTRACKED_FILE_BYTES) {
         throw new Error(`Untracked snapshot incomplete: untracked file size exceeded ${MAX_UNTRACKED_FILE_BYTES} bytes: ${filePath}`);
@@ -142,6 +182,7 @@ async function captureRegularFile(
     return {
       byteLength,
       digest: hash.digest('hex'),
+      content: Buffer.concat(content),
       preview: Buffer.concat(preview),
       previewTruncated: byteLength > previewLength,
       fileType: 'regular',
@@ -320,8 +361,12 @@ async function tryRunGit(repository: string, args: string[]): Promise<Buffer | u
   }
 }
 
+function parseNullSeparatedTokens(content: Buffer): string[] {
+  return content.toString('utf8').split('\0').filter(Boolean);
+}
+
 function parseNullSeparatedPaths(content: Buffer): string[] {
-  return content.toString('utf8').split('\0').filter(Boolean).sort();
+  return parseNullSeparatedTokens(content).sort();
 }
 
 function parseLsFilesStages(content: Buffer): Array<{ mode: string; path: string }> {
@@ -557,31 +602,16 @@ function repoPath(repository: string, relativePath: string): string {
   return resolved;
 }
 
-export async function inspectGitSnapshot(repositoryDirectory: string, input: GitSnapshotInput): Promise<{
-  repository: { root: string; currentHead: string };
-  scope: {
-    baseRef?: string;
-    targetRef?: string;
-    range?: string;
-    paths: string[];
-    comparisonBase?: string;
-    comparisonTarget: string;
-    mergeBase?: string;
-  };
-  limits: { maxFiles: number; maxPatchBytes: number };
-  changedPaths: Record<ChangedPathGroup, string[]>;
-  fingerprint: string;
-  patch: string;
-  omissions: {
-    changedPaths: Record<ChangedPathGroup, number>;
-    patch: { truncated: boolean; omittedBytes: number };
-  };
-}> {
+export async function inspectGitSnapshot(repositoryDirectory: string, input: GitSnapshotInput): Promise<GitSnapshot> {
   if (input.range && (input.baseRef || input.targetRef)) {
     throw new Error('range cannot be combined with baseRef or targetRef.');
   }
 
   const paths = normalizeScopedPaths(input.paths);
+  const excludePaths = normalizeScopedPaths(input.excludePaths);
+  const isExcludedPath = (relativePath: string): boolean => excludePaths.some(
+    (excludedPath) => relativePath === excludedPath || relativePath.startsWith(`${excludedPath}/`),
+  );
   const maxFiles = resolveLimit(input.maxFiles, 100, MAX_FILES, 'maxFiles');
   const maxPatchBytes = resolveLimit(input.maxPatchBytes, 64 * 1024, MAX_PATCH_BYTES, 'maxPatchBytes');
   const repository = await resolveAuthorizedGitRoot(repositoryDirectory);
@@ -620,16 +650,28 @@ export async function inspectGitSnapshot(repositoryDirectory: string, input: Git
   }
 
   const pathArgs = paths.length > 0 ? ['--', ...paths] : [];
+  const usesLiveWorkingTree = input.targetRef === undefined && input.range === undefined;
   await assertNoInScopeSubmoduleGitlinks(repository, comparisonBase, comparisonTarget, pathArgs);
-  await assertNoConcealedIndexPaths(repository, pathArgs);
+  if (usesLiveWorkingTree) await assertNoConcealedIndexPaths(repository, pathArgs);
   await assertNoFilterAttributes(repository, pathArgs);
   const comparisonDiff = captureBuffer(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', comparisonBase, comparisonTarget, ...pathArgs]));
-  const stagedDiff = captureBuffer(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', '--cached', ...pathArgs]));
-  const unstagedDiff = captureBuffer(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', ...pathArgs]));
+  const emptyContent = captureBuffer(Buffer.alloc(0));
+  const stagedDiff = usesLiveWorkingTree
+    ? captureBuffer(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', '--cached', ...pathArgs]))
+    : emptyContent;
+  const unstagedDiff = usesLiveWorkingTree
+    ? captureBuffer(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', ...pathArgs]))
+    : emptyContent;
   const comparisonPaths = parseNullSeparatedPaths(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', comparisonBase, comparisonTarget, ...pathArgs]));
-  const stagedPaths = parseNullSeparatedPaths(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', '--cached', ...pathArgs]));
-  const unstagedPaths = parseNullSeparatedPaths(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', ...pathArgs]));
-  const untrackedPaths = parseNullSeparatedPaths(await runGit(repository, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs]));
+  const stagedPaths = usesLiveWorkingTree
+    ? parseNullSeparatedPaths(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', '--cached', ...pathArgs]))
+    : [];
+  const unstagedPaths = usesLiveWorkingTree
+    ? parseNullSeparatedPaths(await runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', ...pathArgs]))
+    : [];
+  const untrackedPaths = (usesLiveWorkingTree
+    ? parseNullSeparatedPaths(await runGit(repository, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs]))
+    : []).filter((relativePath) => !isExcludedPath(relativePath));
   if (untrackedPaths.length > MAX_UNTRACKED_FILES) {
     throw new Error(`Untracked snapshot incomplete: untracked file count exceeded ${MAX_UNTRACKED_FILES}.`);
   }
@@ -654,7 +696,17 @@ export async function inspectGitSnapshot(repositoryDirectory: string, input: Git
   }
 
   const fingerprintHash = createHash('sha256');
-  fingerprintHash.update(JSON.stringify({ baseRef, targetRef, range: input.range, paths }));
+  fingerprintHash.update(JSON.stringify({
+    baseRef,
+    targetRef,
+    range: input.range,
+    paths,
+    excludePaths,
+    currentHead,
+    comparisonBase,
+    comparisonTarget,
+    mergeBase,
+  }));
   appendFingerprint(fingerprintHash, 'comparison', comparisonDiff);
   appendFingerprint(fingerprintHash, 'staged', stagedDiff);
   appendFingerprint(fingerprintHash, 'unstaged', unstagedDiff);
@@ -713,4 +765,236 @@ export async function inspectGitSnapshot(repositoryDirectory: string, input: Git
       },
     },
   };
+}
+
+export function parseNameStatusPaths(content: Buffer): string[] {
+  const tokens = parseNullSeparatedTokens(content);
+  const paths: string[] = [];
+  for (let index = 0; index < tokens.length;) {
+    const status = tokens[index++];
+    if (!status) continue;
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const before = tokens[index++];
+      const after = tokens[index++];
+      if (before) paths.push(before);
+      if (after) paths.push(after);
+      continue;
+    }
+    const changedPath = tokens[index++];
+    if (changedPath) paths.push(changedPath);
+  }
+  return [...new Set(paths)].sort();
+}
+
+export type ReviewSourceScopeFingerprintInput = {
+  manifestRepositoryIds: string[];
+  selectedRepositoryIds: string[];
+  snapshots: Array<{ repositoryId: string; fingerprint: string }>;
+};
+
+export type ReviewMaterializationEntryDescriptor = {
+  path: string;
+  kind: ReviewMaterializationEntry['kind'];
+};
+
+export function serializeReviewSourceScopeFingerprint(input: ReviewSourceScopeFingerprintInput): string {
+  return JSON.stringify({
+    manifestRepositoryIds: input.manifestRepositoryIds,
+    selectedRepositoryIds: input.selectedRepositoryIds,
+    snapshots: [...input.snapshots]
+      .sort((left, right) => left.repositoryId.localeCompare(right.repositoryId))
+      .map(({ repositoryId, fingerprint }) => ({ repositoryId, fingerprint })),
+  });
+}
+
+export function fingerprintReviewSourceScope(input: ReviewSourceScopeFingerprintInput): string {
+  return createHash('sha256').update(serializeReviewSourceScopeFingerprint(input)).digest('hex');
+}
+
+export function compactMaterializationDescriptors(
+  entries: readonly ReviewMaterializationEntry[],
+): ReviewMaterializationEntryDescriptor[] {
+  return [...entries]
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map(({ path, kind }) => ({ path, kind }));
+}
+
+export function fingerprintReviewRepositoryMaterializations(
+  captures: Array<{ repositoryId: string; fingerprint: string }>,
+): string {
+  return createHash('sha256').update(JSON.stringify(
+    [...captures].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId)),
+  )).digest('hex');
+}
+
+function materializationFingerprint(entries: readonly ReviewMaterializationEntry[]): string {
+  const hash = createHash('sha256');
+  hash.update('hive-review-materialization-v1\0');
+  for (const entry of [...entries].sort((left, right) => left.path.localeCompare(right.path))) {
+    hash.update(entry.path);
+    hash.update('\0');
+    hash.update(entry.kind);
+    hash.update('\0');
+    hash.update(entry.mode === undefined ? '' : String(entry.mode));
+    hash.update('\0');
+    if (entry.content) hash.update(entry.content);
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+async function captureMaterializationEntry(
+  repository: string,
+  relativePath: string,
+  deadline: number,
+  remainingBytes: number,
+): Promise<ReviewMaterializationEntry> {
+  try {
+    const content = await captureBeforeDeadline(
+      captureFile(repoPath(repository, relativePath), MAX_UNTRACKED_FILE_BYTES, deadline, remainingBytes),
+      deadline,
+    );
+    return {
+      path: relativePath,
+      kind: content.fileType === 'symlink' ? 'symlink' : 'regular',
+      content: content.content,
+      mode: content.mode,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { path: relativePath, kind: 'delete' };
+    }
+    throw error;
+  }
+}
+
+async function assertWorkspaceParents(root: string, relativePath: string): Promise<void> {
+  const segments = path.dirname(relativePath).split(path.sep).filter((segment) => segment && segment !== '.');
+  let current = root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    try {
+      const stat = await fs.lstat(current);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Review materialization path escapes through symlink: ${relativePath}`);
+      }
+      if (!stat.isDirectory()) {
+        throw new Error(`Review materialization parent is not a directory: ${relativePath}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      await fs.mkdir(current);
+    }
+  }
+}
+
+async function captureWorkspaceEntry(
+  workspace: string,
+  entry: ReviewMaterializationEntryDescriptor,
+  deadline: number,
+  remainingBytes: number,
+): Promise<ReviewMaterializationEntry> {
+  const target = repoPath(workspace, entry.path);
+  if (entry.kind === 'delete') {
+    try {
+      await fs.lstat(target);
+      return { path: entry.path, kind: 'regular' };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { path: entry.path, kind: 'delete' };
+      throw error;
+    }
+  }
+  const content = await captureBeforeDeadline(captureFile(target, MAX_UNTRACKED_FILE_BYTES, deadline, remainingBytes), deadline);
+  return {
+    path: entry.path,
+    kind: content.fileType === 'symlink' ? 'symlink' : 'regular',
+    content: content.content,
+    mode: content.mode,
+  };
+}
+
+export async function captureReviewMaterialization(
+  repositoryDirectory: string,
+  input: GitSnapshotInput,
+): Promise<ReviewMaterialization> {
+  const snapshot = await inspectGitSnapshot(repositoryDirectory, input);
+  if (Object.values(snapshot.omissions.changedPaths).some((count) => count > 0)) {
+    throw new Error('Review snapshot has a partial materialization path set.');
+  }
+  if (input.targetRef !== undefined || input.range !== undefined) {
+    return { snapshot, entries: [], fingerprint: materializationFingerprint([]) };
+  }
+
+  const pathArgs = snapshot.scope.paths.length > 0 ? ['--', ...snapshot.scope.paths] : [];
+  const excludePaths = normalizeScopedPaths(input.excludePaths);
+  const isExcludedPath = (relativePath: string): boolean => excludePaths.some(
+    (excludedPath) => relativePath === excludedPath || relativePath.startsWith(`${excludedPath}/`),
+  );
+  const repository = snapshot.repository.root;
+  const pathGroups = await Promise.all([
+    runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-status', '-z', snapshot.scope.comparisonBase!, snapshot.scope.comparisonTarget, ...pathArgs]),
+    runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-status', '-z', '--cached', ...pathArgs]),
+    runGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-status', '-z', ...pathArgs]),
+    runGit(repository, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs]),
+  ]);
+  const changedPaths = new Set([
+    ...parseNameStatusPaths(pathGroups[0]),
+    ...parseNameStatusPaths(pathGroups[1]),
+    ...parseNameStatusPaths(pathGroups[2]),
+    ...parseNullSeparatedPaths(pathGroups[3]),
+  ].filter((relativePath) => !isExcludedPath(relativePath)));
+  if (changedPaths.size > MAX_FILES) {
+    throw new Error('Review snapshot has a partial materialization path set.');
+  }
+
+  const deadline = Date.now() + UNTRACKED_CAPTURE_TIMEOUT_MS;
+  let remainingBytes = MAX_UNTRACKED_TOTAL_BYTES;
+  const entries: ReviewMaterializationEntry[] = [];
+  for (const relativePath of [...changedPaths].sort()) {
+    const entry = await captureMaterializationEntry(repository, relativePath, deadline, remainingBytes);
+    if (entry.content) remainingBytes -= entry.content.byteLength;
+    entries.push(entry);
+  }
+  return { snapshot, entries, fingerprint: materializationFingerprint(entries) };
+}
+
+export async function fingerprintReviewWorkspace(
+  workspace: string,
+  expectedEntries: readonly ReviewMaterializationEntryDescriptor[],
+): Promise<string> {
+  const deadline = Date.now() + UNTRACKED_CAPTURE_TIMEOUT_MS;
+  let remainingBytes = MAX_UNTRACKED_TOTAL_BYTES;
+  const entries: ReviewMaterializationEntry[] = [];
+  for (const expected of [...expectedEntries].sort((left, right) => left.path.localeCompare(right.path))) {
+    const entry = await captureWorkspaceEntry(workspace, expected, deadline, remainingBytes);
+    if (entry.content) remainingBytes -= entry.content.byteLength;
+    entries.push(entry);
+  }
+  return materializationFingerprint(entries);
+}
+
+export async function materializeReviewWorkspace(
+  workspace: string,
+  materialization: ReviewMaterialization,
+): Promise<void> {
+  for (const entry of materialization.entries.filter((entry) => entry.kind === 'delete')) {
+    const target = repoPath(workspace, entry.path);
+    await assertWorkspaceParents(workspace, entry.path);
+    await fs.rm(target, { recursive: true, force: true });
+  }
+  for (const entry of materialization.entries.filter((entry) => entry.kind !== 'delete')) {
+    const target = repoPath(workspace, entry.path);
+    await assertWorkspaceParents(workspace, entry.path);
+    await fs.rm(target, { recursive: true, force: true });
+    if (entry.kind === 'symlink') {
+      await fs.symlink(entry.content!.toString('utf8'), target);
+    } else {
+      await fs.writeFile(target, entry.content!);
+      if (entry.mode !== undefined) await fs.chmod(target, entry.mode & 0o7777);
+    }
+  }
+  const fingerprint = await fingerprintReviewWorkspace(workspace, materialization.entries);
+  if (fingerprint !== materialization.fingerprint) {
+    throw new Error('Review workspace materialization fingerprint mismatch.');
+  }
 }

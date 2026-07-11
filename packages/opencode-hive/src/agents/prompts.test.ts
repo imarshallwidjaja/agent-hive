@@ -207,11 +207,13 @@ describe('Specialized reviewer prompts', () => {
     expect(DASH_REVIEWER_PROMPT).toContain('review orchestrator');
     expect(DASH_REVIEWER_PROMPT).toContain('not a reviewer or fixer');
     expect(DASH_REVIEWER_PROMPT).toContain('Do not edit files');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not use shell tools');
-    expect(DASH_REVIEWER_PROMPT).toContain('You do not have `hive_git_snapshot`');
+    expect(DASH_REVIEWER_PROMPT).toContain('normal local CLI and retrieval tools');
+    expect(DASH_REVIEWER_PROMPT).toContain('review workspace');
     expect(DASH_REVIEWER_PROMPT).toContain('Do not create or mutate Hive state');
     expect(DASH_REVIEWER_PROMPT).toContain('native `task()`');
-    expect(DASH_REVIEWER_PROMPT).toContain('safe lane task targets');
+    expect(DASH_REVIEWER_PROMPT).toContain('generated review-lane task targets');
+    expect(DASH_REVIEWER_PROMPT).toContain('hive_review_workspace_claim');
+    expect(DASH_REVIEWER_PROMPT).toContain('before deep review lanes');
     expect(DASH_REVIEWER_PROMPT).not.toContain('scope/lead scout');
     expect(DASH_REVIEWER_PROMPT).not.toContain('Do not run Git');
   });

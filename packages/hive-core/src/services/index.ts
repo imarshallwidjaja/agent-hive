@@ -31,6 +31,15 @@ export type {
   AdhocRepoMergeResult,
   AdhocCleanupResult,
 } from './adhocWorktreeService.js';
+export { ReviewWorkspaceService } from './reviewWorkspaceService.js';
+export type {
+  ReviewWorkspaceConfig,
+  ReviewWorkspaceCreateOptions,
+  ReviewWorkspaceRepositoryInput,
+  ReviewWorkspaceRepositoryInfo,
+  ReviewWorkspaceInfo,
+  ReviewWorkspaceInspection,
+} from './reviewWorkspaceService.js';
 export { ContextService } from './contextService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService } from './sessionService.js';

@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { tool, type Plugin } from "@opencode-ai/plugin";
 import { prepareNativeHiveSkills } from './skills/native-materializer.js';
 import type { PreparedHiveSkill, PreparedNativeHiveSkills, PreparedNativeSkill } from './skills/native-materializer.js';
@@ -17,9 +17,19 @@ import { CODE_REVIEWER_PROMPT } from './agents/code-reviewer.js';
 import { SIMPLICITY_REVIEWER_PROMPT } from './agents/simplicity-reviewer.js';
 import { APPROACH_ADVISOR_PROMPT } from './agents/approach-advisor.js';
 import { DASH_REVIEWER_PROMPT } from './agents/dash-reviewer.js';
-import { buildDashReviewSafeLanes } from './agents/dash-review-lanes.js';
+import { buildDashReviewLanes } from './agents/dash-review-lanes.js';
 import type { DashReviewLaneSource } from './agents/dash-review-lanes.js';
-import { inspectGitSnapshot, isExactGitTopLevel } from './utils/git-snapshot.js';
+import {
+  captureReviewMaterialization,
+  compactMaterializationDescriptors,
+  fingerprintReviewRepositoryMaterializations,
+  fingerprintReviewSourceScope,
+  fingerprintReviewWorkspace,
+  inspectGitSnapshot,
+  isExactGitTopLevel,
+  materializeReviewWorkspace,
+} from './utils/git-snapshot.js';
+import type { GitSnapshotInput, ReviewMaterialization, ReviewMaterializationEntryDescriptor } from './utils/git-snapshot.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
 import { BACKGROUND_DELEGATION_SKILL_ID, isBackgroundSubagentsExperimentEnabled, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
@@ -294,6 +304,7 @@ function getCustomAgentConfigsCompat(configService: ConfigService): Record<strin
 import {
   WorktreeService,
   AdhocWorktreeService,
+  ReviewWorkspaceService,
   FeatureService,
   PlanService,
   TaskService,
@@ -359,6 +370,19 @@ const DASH_REVIEW_PRIMARY_AGENT = '__hive_dash_review_primary';
 const DASH_REVIEW_ARGUMENT_GUARD_PLACEHOLDER = '$2147483647';
 const MAX_COMPOSITE_SNAPSHOT_REPOSITORIES = 32;
 
+type DashReviewWorkspaceState = {
+  ownershipToken: string;
+  ownerSessionID?: string;
+  sourceScope: {
+    repositoryIds?: string[];
+    snapshot: GitSnapshotInput;
+  };
+  sourceFingerprint: string;
+  materializedFingerprint: string;
+  materializedEntries: Record<string, ReviewMaterializationEntryDescriptor[]>;
+  workspacePaths: Record<string, string>;
+};
+
 const plugin: Plugin = async (ctx) => {
   const { directory, client, worktree } = ctx;
 
@@ -396,21 +420,31 @@ const plugin: Plugin = async (ctx) => {
   const contextService = new ContextService(directory);
   const configService = new ConfigService(directory);
   const sessionService = new SessionService(directory);
+  const reviewWorkspaceService = new ReviewWorkspaceService({
+    projectRoot: directory,
+    onSweepError: (runId, error) => {
+      console.warn(`[hive:dash-review] preserved review workspace ${runId}: ${error.message}`);
+    },
+  });
+  await reviewWorkspaceService.cleanupExpired().catch((error) => {
+    console.warn(`[hive:dash-review] stale review workspace cleanup failed: ${(error as Error).message}`);
+  });
   const backgroundJobService = new BackgroundJobService(directory);
   const runtimeAgentPrompts = new Map<string, string>();
   let runtimeBackgroundGuidance: BackgroundDelegationAvailability = { available: false, reason: 'availability-unknown' };
   let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
   let runtimeDashReviewLanes: HiveCommandDashReviewLane[] = [];
   const dashReviewPendingCommandSessions = new Set<string>();
-  const dashReviewAllowedTools = (agent: string): ReadonlySet<string> | undefined => {
+  const dashReviewWorkspaces = new Map<string, DashReviewWorkspaceState>();
+  const dashReviewAllowedHiveTools = (agent: string): ReadonlySet<string> | undefined => {
     if (agent === DASH_REVIEW_PRIMARY_AGENT) {
-      return new Set(['read', 'glob', 'grep', 'task']);
+      return new Set(['hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']);
     }
     const lane = runtimeDashReviewLanes.find((candidate) => candidate.taskTarget === agent);
     if (!lane) return undefined;
     return lane.baseAgent === 'scout-researcher'
-      ? new Set(['read', 'glob', 'grep', 'hive_repositories_status', 'hive_git_snapshot'])
-      : new Set(['read', 'glob', 'grep']);
+      ? new Set(['hive_repositories_status', 'hive_git_snapshot', 'hive_review_workspace_create'])
+      : new Set();
   };
   const disabledMcps = configService.getDisabledMcps();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message ?? null;
@@ -519,6 +553,72 @@ const plugin: Plugin = async (ctx) => {
     if (!agent || !allowedAliases.has(agent)) {
       throw new Error('Caller is not authorized to inspect dash-review snapshots.');
     }
+  };
+  const requireDashReviewPrimary = (context: { agent?: unknown } | undefined): void => {
+    if (context?.agent !== DASH_REVIEW_PRIMARY_AGENT) {
+      throw new Error('Caller is not authorized to manage dash-review workspaces.');
+    }
+  };
+  const reviewSnapshotInputForRepository = (
+    repositoryPath: string,
+    snapshotInput: GitSnapshotInput,
+  ): GitSnapshotInput => {
+    const hiveRoot = path.resolve(directory, '.hive');
+    const relativeHiveRoot = path.relative(repositoryPath, hiveRoot);
+    if (!relativeHiveRoot || relativeHiveRoot === '..' || relativeHiveRoot.startsWith(`..${path.sep}`)) {
+      return snapshotInput;
+    }
+    return {
+      ...snapshotInput,
+      excludePaths: [...(snapshotInput.excludePaths ?? []), relativeHiveRoot],
+    };
+  };
+  const reviewSnapshotSet = async (
+    resolved: {
+      manifestRepositoryIds: string[];
+      selectedRepositoryIds: string[];
+      repositories: Array<{ id: string; path: string }>;
+    },
+    snapshotInput: GitSnapshotInput,
+  ) => {
+    const snapshots = await Promise.all(resolved.repositories.map(async (repository) => ({
+      repositoryId: repository.id,
+      snapshot: await inspectGitSnapshot(repository.path, reviewSnapshotInputForRepository(repository.path, snapshotInput)),
+    })));
+    const fingerprint = fingerprintReviewSourceScope({
+      manifestRepositoryIds: resolved.manifestRepositoryIds,
+      selectedRepositoryIds: resolved.selectedRepositoryIds,
+      snapshots: snapshots.map(({ repositoryId, snapshot }) => ({ repositoryId, fingerprint: snapshot.fingerprint })),
+    });
+    return { snapshots, fingerprint };
+  };
+  const captureReviewWorkspace = async (
+    resolved: {
+      manifestRepositoryIds: string[];
+      selectedRepositoryIds: string[];
+      repositories: Array<{ id: string; path: string }>;
+    },
+    snapshotInput: GitSnapshotInput,
+  ) => {
+    const captures = await Promise.all(resolved.repositories.map(async (repository) => ({
+      repositoryId: repository.id,
+      materialization: await captureReviewMaterialization(repository.path, reviewSnapshotInputForRepository(repository.path, snapshotInput)),
+    })));
+    const sourceFingerprint = fingerprintReviewSourceScope({
+      manifestRepositoryIds: resolved.manifestRepositoryIds,
+      selectedRepositoryIds: resolved.selectedRepositoryIds,
+      snapshots: captures.map(({ repositoryId, materialization }) => ({
+        repositoryId,
+        fingerprint: materialization.snapshot.fingerprint,
+      })),
+    });
+    const materializedFingerprint = fingerprintReviewRepositoryMaterializations(
+      captures.map(({ repositoryId, materialization }) => ({ repositoryId, fingerprint: materialization.fingerprint })),
+    );
+    return { captures, sourceFingerprint, materializedFingerprint };
+  };
+  const createDashReviewRunId = (): string => {
+    return `dash-review-${randomUUID()}`;
   };
   const createHiveCommandContext = () => {
     const currentConfig = configService.get();
@@ -1448,7 +1548,21 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       await backgroundJobAdapter.event(input);
       const event = input.event as { type: string; properties?: { sessionID?: string } };
       if (event.type === 'session.deleted' && event.properties?.sessionID) {
-        dashReviewPendingCommandSessions.delete(event.properties.sessionID);
+        const sessionID = event.properties.sessionID;
+        dashReviewPendingCommandSessions.delete(sessionID);
+        for (const [runId, state] of [...dashReviewWorkspaces]) {
+          if (state.ownerSessionID !== sessionID) continue;
+          try {
+            const cleanup = await reviewWorkspaceService.cleanup(runId, state.ownershipToken);
+            if (!cleanup.cleaned) {
+              await reviewWorkspaceService.releaseClaim(runId, state.ownershipToken, sessionID).catch(() => undefined);
+            }
+          } catch {
+            await reviewWorkspaceService.releaseClaim(runId, state.ownershipToken, sessionID).catch(() => undefined);
+          } finally {
+            dashReviewWorkspaces.delete(runId);
+          }
+        }
         return;
       }
       if (input.event.type !== 'session.compacted') {
@@ -1632,15 +1746,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
     "tool.execute.before": async (input, output) => {
       const caller = input.sessionID ? sessionService.getGlobal(input.sessionID)?.agent : undefined;
-      const allowedTools = caller ? dashReviewAllowedTools(caller) : undefined;
+      const allowedHiveTools = caller ? dashReviewAllowedHiveTools(caller) : undefined;
       const pendingDashReviewCommand = dashReviewPendingCommandSessions.has(input.sessionID);
-      if (pendingDashReviewCommand || allowedTools) {
-        if (!caller || !allowedTools) {
-          throw new Error('dash-review tool authorization failed closed: caller identity is unavailable.');
-        }
-        if (!allowedTools.has(input.tool)) {
-          throw new Error(`dash-review tool is not authorized: ${input.tool}`);
-        }
+      if (pendingDashReviewCommand && !caller) {
+        throw new Error('dash-review tool authorization failed closed: caller identity is unavailable.');
+      }
+      if (allowedHiveTools) {
         if (input.tool === 'task') {
           const target = typeof output.args?.subagent_type === 'string'
             ? output.args.subagent_type
@@ -1649,7 +1760,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           if (caller !== DASH_REVIEW_PRIMARY_AGENT || !target || !authorizedTargets.has(target)) {
             throw new Error('dash-review task target is not authorized.');
           }
+        } else if ((HIVE_TOOL_NAMES as readonly string[]).includes(input.tool) && !allowedHiveTools.has(input.tool)) {
+          throw new Error(`dash-review tool is not authorized: ${input.tool}`);
         }
+      } else if (pendingDashReviewCommand && !caller) {
+          throw new Error('dash-review tool authorization failed closed: caller identity is unavailable.');
       }
 
       if (input.tool === 'task' && input.sessionID) {
@@ -1754,6 +1869,173 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         },
       }),
 
+      hive_review_workspace_create: tool({
+        description: 'Create and materialize one disposable frozen dash-review workspace from a structured Git snapshot scope. Scope aliases only.',
+        args: {
+          repositoryIds: tool.schema.array(tool.schema.string()).optional(),
+          baseRef: tool.schema.string().optional(),
+          targetRef: tool.schema.string().optional(),
+          range: tool.schema.string().optional(),
+          paths: tool.schema.array(tool.schema.string()).optional(),
+          maxFiles: tool.schema.number().optional(),
+          maxPatchBytes: tool.schema.number().optional(),
+        },
+        async execute(input, context) {
+          requireSnapshotScopeAlias(context);
+        const { repositoryIds, ...snapshotInput } = input;
+        const resolved = await resolveSnapshotRepositories(repositoryIds);
+          await reviewWorkspaceService.cleanupExpired();
+          let lastFingerprint = '';
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const capture = await captureReviewWorkspace(resolved, snapshotInput);
+            lastFingerprint = capture.sourceFingerprint;
+            const runId = createDashReviewRunId();
+            let workspace: Awaited<ReturnType<typeof reviewWorkspaceService.create>> | undefined;
+            try {
+              workspace = await reviewWorkspaceService.create({
+                runId,
+                composite: resolved.composite,
+                repositories: capture.captures.map(({ repositoryId, materialization }) => ({
+                  id: repositoryId,
+                  sourcePath: materialization.snapshot.repository.root,
+                  commit: materialization.snapshot.scope.comparisonTarget,
+                })),
+              });
+              for (const { repositoryId, materialization } of capture.captures) {
+                await materializeReviewWorkspace(workspace.repositories[repositoryId]!.path, materialization);
+              }
+              await reviewWorkspaceService.seal(runId, workspace.ownershipToken);
+              const revalidation = await reviewSnapshotSet(resolved, snapshotInput);
+              if (revalidation.fingerprint !== capture.sourceFingerprint) {
+                await reviewWorkspaceService.cleanup(runId, workspace.ownershipToken);
+                continue;
+              }
+              const state: DashReviewWorkspaceState = {
+                ownershipToken: workspace.ownershipToken,
+                sourceScope: { ...(repositoryIds ? { repositoryIds } : {}), snapshot: snapshotInput },
+                sourceFingerprint: capture.sourceFingerprint,
+                materializedFingerprint: capture.materializedFingerprint,
+                materializedEntries: Object.fromEntries(capture.captures.map(({ repositoryId, materialization }) => [
+                  repositoryId,
+                  compactMaterializationDescriptors(materialization.entries),
+                ])),
+                workspacePaths: Object.fromEntries(Object.entries(workspace.repositories).map(([id, repository]) => [id, repository.path])),
+              };
+              dashReviewWorkspaces.set(runId, state);
+              return JSON.stringify({
+                state: 'READY',
+                runId,
+                ownershipToken: workspace.ownershipToken,
+                workspacePath: workspace.workspacePath,
+                repositories: workspace.repositories,
+                sourceFingerprint: capture.sourceFingerprint,
+                materializedFingerprint: capture.materializedFingerprint,
+                excludedRepositoryIds: resolved.excludedRepositoryIds,
+                truncated: capture.captures.some(({ materialization }) => materialization.snapshot.omissions.patch.truncated),
+                snapshots: capture.captures.map(({ repositoryId, materialization }) => ({ repositoryId, snapshot: materialization.snapshot })),
+              }, null, 2);
+            } catch (error) {
+              if (workspace) await reviewWorkspaceService.cleanup(workspace.runId, workspace.ownershipToken);
+              throw error;
+            }
+          }
+          return JSON.stringify({
+            state: 'NEEDS_DISCUSSION',
+            stale: true,
+            sourceFingerprint: lastFingerprint,
+            recovery: 'Source changed during review workspace materialization twice. Rerun /dash-review from a fresh snapshot; no source changes were reverted.',
+          }, null, 2);
+        },
+      }),
+
+      hive_review_workspace_claim: tool({
+        description: 'Claim a disposable dash-review workspace for the current private primary session. Requires the ownership token returned by create.',
+        args: {
+          runId: tool.schema.string(),
+          ownershipToken: tool.schema.string(),
+        },
+        async execute({ runId, ownershipToken }, context) {
+          requireDashReviewPrimary(context);
+          const state = dashReviewWorkspaces.get(runId);
+          const sessionID = (context as ToolContext | undefined)?.sessionID;
+          if (!state || !sessionID || state.ownershipToken !== ownershipToken) {
+            throw new Error('Dash-review workspace ownership claim was denied.');
+          }
+          if (state.ownerSessionID && state.ownerSessionID !== sessionID) {
+            throw new Error('Dash-review workspace is already claimed by another primary session.');
+          }
+          await reviewWorkspaceService.claim(runId, ownershipToken, sessionID);
+          state.ownerSessionID = sessionID;
+          return JSON.stringify({ runId }, null, 2);
+        },
+      }),
+
+      hive_review_workspace_inspect: tool({
+        description: 'Inspect a frozen dash-review workspace, compare it with its materialized baseline, and revalidate live source identity. Private review primary only.',
+        args: {
+          runId: tool.schema.string(),
+          ownershipToken: tool.schema.string(),
+        },
+        async execute({ runId, ownershipToken }, context) {
+          requireDashReviewPrimary(context);
+          const state = dashReviewWorkspaces.get(runId);
+          const sessionID = (context as ToolContext | undefined)?.sessionID;
+          if (!state || !sessionID || state.ownershipToken !== ownershipToken || state.ownerSessionID !== sessionID) {
+            throw new Error('Dash-review workspace inspection was denied.');
+          }
+          const inspection = await reviewWorkspaceService.inspect(runId, ownershipToken);
+          let source: { fingerprint?: string; stable: boolean; error?: string };
+          try {
+            const resolved = await resolveSnapshotRepositories(state.sourceScope.repositoryIds);
+            const revalidation = await reviewSnapshotSet(resolved, state.sourceScope.snapshot);
+            source = {
+              fingerprint: revalidation.fingerprint,
+              stable: revalidation.fingerprint === state.sourceFingerprint,
+            };
+          } catch (error) {
+            source = { stable: false, error: (error as Error).message };
+          }
+          let materialized: { fingerprint?: string; matches: boolean; error?: string };
+          try {
+            const fingerprints = await Promise.all(Object.entries(state.materializedEntries).map(async ([repositoryId, descriptors]) => ({
+              repositoryId,
+              fingerprint: await fingerprintReviewWorkspace(state.workspacePaths[repositoryId]!, descriptors),
+            })));
+            const fingerprint = fingerprintReviewRepositoryMaterializations(fingerprints);
+            materialized = { fingerprint, matches: fingerprint === state.materializedFingerprint };
+          } catch (error) {
+            materialized = { matches: false, error: (error as Error).message };
+          }
+          return JSON.stringify({
+            ...inspection,
+            source,
+            materialized,
+            reviewIntegrity: inspection.integrity.baselineClean && materialized.matches,
+          }, null, 2);
+        },
+      }),
+
+      hive_review_workspace_cleanup: tool({
+        description: 'Unconditionally discard one disposable dash-review workspace. Private review primary only.',
+        args: {
+          runId: tool.schema.string(),
+          ownershipToken: tool.schema.string(),
+        },
+        async execute({ runId, ownershipToken }, context) {
+          requireDashReviewPrimary(context);
+          const state = dashReviewWorkspaces.get(runId);
+          const sessionID = (context as ToolContext | undefined)?.sessionID;
+          if (!state || !sessionID || state.ownershipToken !== ownershipToken || state.ownerSessionID !== sessionID) {
+            throw new Error('Dash-review workspace cleanup was denied.');
+          }
+          const result = await reviewWorkspaceService.cleanup(runId, ownershipToken);
+          if (result.cleaned) {
+            dashReviewWorkspaces.delete(runId);
+          }
+          return JSON.stringify(result, null, 2);
+        },
+      }),
+
       hive_git_snapshot: tool({
         description: 'Inspect an atomic read-only Git snapshot set with structured refs, ranges, repository-relative paths, and bounded patch material. Composite workspaces snapshot every manifest repository unless repositoryIds narrows the declared scope. Does not accept shell commands or Git flags.',
         args: {
@@ -1776,13 +2058,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             repositoryId: repository.id,
             snapshot: await inspectGitSnapshot(repository.path, snapshotInput),
           })));
-          const fingerprint = createHash('sha256')
-            .update(JSON.stringify({
-              manifestRepositoryIds: resolved.manifestRepositoryIds,
-              selectedRepositoryIds: resolved.selectedRepositoryIds,
-              snapshots: snapshots.map(({ repositoryId, snapshot }) => ({ repositoryId, fingerprint: snapshot.fingerprint })),
-            }))
-            .digest('hex');
+          const fingerprint = fingerprintReviewSourceScope({
+            manifestRepositoryIds: resolved.manifestRepositoryIds,
+            selectedRepositoryIds: resolved.selectedRepositoryIds,
+            snapshots: snapshots.map(({ repositoryId, snapshot }) => ({ repositoryId, fingerprint: snapshot.fingerprint })),
+          });
           return JSON.stringify({
             composite: true,
             manifestRepositoryIds: resolved.manifestRepositoryIds,
@@ -2908,17 +3188,6 @@ NEXT: Ask your first clarifying question about this feature.`;
         }
         return result;
       }
-      function dashReviewTools(allowed: string[]): Record<string, boolean> {
-        const allowedTools = new Set(allowed);
-        const result: Record<string, boolean> = { '*': false };
-        for (const toolName of ['read', 'glob', 'grep', 'task', 'bash']) {
-          result[toolName] = allowedTools.has(toolName);
-        }
-        for (const toolName of HIVE_TOOL_NAMES) {
-          result[toolName] = allowedTools.has(toolName);
-        }
-        return result;
-      }
       // Auto-generate config file with defaults if it doesn't exist
       configService.init();
       const existingSkillsConfig =
@@ -3192,10 +3461,14 @@ Do not choose a custom subagent only because the task is important, complex, or 
         mode: 'primary' as const,
         description: 'Dash Reviewer - Read-only implementation review orchestrator for frozen-snapshot review commands.',
         prompt: DASH_REVIEWER_PROMPT + HIVE_SYSTEM_PROMPT,
-        tools: dashReviewTools(['read', 'glob', 'grep', 'task']),
+        tools: {
+          ...agentTools([]),
+          hive_review_workspace_claim: true,
+          hive_review_workspace_inspect: true,
+          hive_review_workspace_cleanup: true,
+        },
         permission: {
           edit: 'deny',
-          bash: 'deny',
           task: dashReviewTaskPermission,
           delegate: 'deny',
           question: 'allow',
@@ -3350,16 +3623,15 @@ Do not choose a custom subagent only because the task is important, complex, or 
         ...Object.keys(customSubagents),
         ...Object.keys((opencodeConfig.agent as Record<string, unknown> | undefined) ?? {}),
       ];
-      const dashReviewSafeLanes = buildDashReviewSafeLanes({
+      const dashReviewLanes = buildDashReviewLanes({
         sources: dashReviewSources,
         existingNames: existingAgentNames,
-        tools: dashReviewTools(['read', 'glob', 'grep']),
-        scopeTools: dashReviewTools(['read', 'glob', 'grep', 'hive_repositories_status', 'hive_git_snapshot']),
+        hiveTools: HIVE_TOOL_NAMES,
       });
-      for (const lane of dashReviewSafeLanes.lanes) {
+      for (const lane of dashReviewLanes.lanes) {
         dashReviewTaskPermission[lane.taskTarget] = 'allow';
       }
-      runtimeDashReviewLanes = dashReviewSafeLanes.lanes;
+      runtimeDashReviewLanes = dashReviewLanes.lanes;
 
       // Build agents map based on agentMode
       const allAgents: Record<string, unknown> = {};
@@ -3387,7 +3659,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
       allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
       allAgents[DASH_REVIEW_PRIMARY_AGENT] = builtInAgentConfigs[DASH_REVIEW_PRIMARY_AGENT];
 
-      Object.assign(allAgents, customSubagents, dashReviewSafeLanes.agents);
+      Object.assign(allAgents, customSubagents, dashReviewLanes.agents);
 
       runtimeCommandAgents = Object.fromEntries(
         Object.entries(allAgents).map(([agentName, agentConfig]) => {

@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { inspectGitSnapshot } from './git-snapshot.js';
+import {
+  captureReviewMaterialization,
+  fingerprintReviewRepositoryMaterializations,
+  fingerprintReviewSourceScope,
+  fingerprintReviewWorkspace,
+  serializeReviewSourceScopeFingerprint,
+  inspectGitSnapshot,
+  materializeReviewWorkspace,
+  parseNameStatusPaths,
+} from './git-snapshot.js';
 
 let repository = '';
 
@@ -93,6 +103,46 @@ describe('inspectGitSnapshot', () => {
     expect(snapshot.changedPaths.comparison).toEqual(['src/one.ts']);
     expect(snapshot.changedPaths.comparison).not.toContain('src/two.ts');
     expect(snapshot.fingerprint).toBe(revalidation.fingerprint);
+  });
+
+  it('excludes unrelated dirty state from a committed target snapshot', async () => {
+    const target = git(['rev-parse', 'HEAD']);
+    const clean = await inspectGitSnapshot(repository, { targetRef: target });
+    write('src/one.ts', 'export const one = 99;\n');
+    write('untracked.txt', 'unrelated dirty state\n');
+
+    const committed = await inspectGitSnapshot(repository, { targetRef: target });
+
+    expect(committed.changedPaths.staged).toEqual([]);
+    expect(committed.changedPaths.unstaged).toEqual([]);
+    expect(committed.changedPaths.untracked).toEqual([]);
+    expect(committed.fingerprint).toBe(clean.fingerprint);
+  });
+
+  it('excludes the private review workspace root from untracked capture', async () => {
+    mkdirSync(path.join(repository, '.hive', '.worktrees', 'review', 'run'), { recursive: true });
+    writeFileSync(path.join(repository, '.hive', '.worktrees', 'review', 'run', 'marker'), 'private\n');
+
+    const snapshot = await inspectGitSnapshot(repository, { excludePaths: ['.hive/.worktrees/review'] });
+
+    expect(snapshot.changedPaths.untracked).toEqual([]);
+  });
+
+  it('parses multiple NUL-delimited name-status records before sorting their paths', () => {
+    const paths = parseNameStatusPaths(Buffer.from('M\0z.ts\0M\0a.ts\0R100\0before.ts\0after.ts\0D\0gone.ts\0'));
+
+    expect(paths).toEqual(['a.ts', 'after.ts', 'before.ts', 'gone.ts', 'z.ts']);
+  });
+
+  it('changes the fingerprint when a target ref moves to an otherwise identical commit', async () => {
+    git(['checkout', '-b', 'moving-ref']);
+    git(['commit', '--allow-empty', '-m', 'first empty target']);
+    const first = await inspectGitSnapshot(repository, { targetRef: 'moving-ref' });
+    git(['commit', '--allow-empty', '-m', 'second empty target']);
+    const second = await inspectGitSnapshot(repository, { targetRef: 'moving-ref' });
+
+    expect(first.patch).toBe(second.patch);
+    expect(first.fingerprint).not.toBe(second.fingerprint);
   });
 
   it('bounds returned paths and patch material while disclosing omissions', async () => {
@@ -360,6 +410,100 @@ describe('inspectGitSnapshot', () => {
       write(`total-${index}.txt`, 'x'.repeat(2 * 1024 * 1024));
     }
     await expect(inspectGitSnapshot(repository, {})).rejects.toThrow(/total untracked byte limit exceeded/);
+  });
+
+  it('fingerprints source scope snapshots with stable ordered serialization', () => {
+    const first = fingerprintReviewSourceScope({
+      manifestRepositoryIds: ['api', 'web'],
+      selectedRepositoryIds: ['api'],
+      snapshots: [
+        { repositoryId: 'web', fingerprint: 'bbb' },
+        { repositoryId: 'api', fingerprint: 'aaa' },
+      ],
+    });
+    const second = fingerprintReviewSourceScope({
+      manifestRepositoryIds: ['api', 'web'],
+      selectedRepositoryIds: ['api'],
+      snapshots: [
+        { repositoryId: 'api', fingerprint: 'aaa' },
+        { repositoryId: 'web', fingerprint: 'bbb' },
+      ],
+    });
+
+    expect(first).toBe(second);
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('serializes source scope fingerprints with stable repository ordering', () => {
+    const input = {
+      manifestRepositoryIds: ['api', 'web'],
+      selectedRepositoryIds: ['api'],
+      snapshots: [
+        { repositoryId: 'web', fingerprint: 'bbb' },
+        { repositoryId: 'api', fingerprint: 'aaa' },
+      ],
+    };
+    const first = serializeReviewSourceScopeFingerprint(input);
+    const second = serializeReviewSourceScopeFingerprint({
+      ...input,
+      snapshots: [
+        { repositoryId: 'api', fingerprint: 'aaa' },
+        { repositoryId: 'web', fingerprint: 'bbb' },
+      ],
+    });
+    expect(first).toBe(second);
+    expect(fingerprintReviewSourceScope(input)).toBe(createHash('sha256').update(first).digest('hex'));
+  });
+
+  it('fingerprints repository materializations with stable repository ordering', () => {
+    const captures = [
+      { repositoryId: 'web', fingerprint: 'bbb' },
+      { repositoryId: 'api', fingerprint: 'aaa' },
+    ];
+    const first = fingerprintReviewRepositoryMaterializations(captures);
+    const second = fingerprintReviewRepositoryMaterializations([
+      { repositoryId: 'api', fingerprint: 'aaa' },
+      { repositoryId: 'web', fingerprint: 'bbb' },
+    ]);
+    expect(first).toBe(second);
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('materializes the final dirty tree with deletions, renames, binaries, modes, and symlinks', async () => {
+    if (process.platform === 'win32') return;
+    const workspace = mkdtempSync(path.join(os.tmpdir(), 'hive-git-materialization-'));
+    rmSync(workspace, { recursive: true, force: true });
+    try {
+      git(['mv', 'src/one.ts', 'src/renamed.ts']);
+      git(['add', '-A']);
+      unlinkSync(path.join(repository, 'src', 'two.ts'));
+      writeFileSync(path.join(repository, 'binary.bin'), Buffer.from([0, 255, 1, 254]));
+      chmodSync(path.join(repository, 'binary.bin'), 0o755);
+      symlinkSync('src/renamed.ts', path.join(repository, 'link-to-renamed'));
+
+      const materialization = await captureReviewMaterialization(repository, {});
+      git(['worktree', 'add', '--detach', workspace, 'HEAD']);
+      await materializeReviewWorkspace(workspace, materialization);
+
+      expect(existsSync(path.join(workspace, 'src', 'one.ts'))).toBe(false);
+      expect(readFileSync(path.join(workspace, 'src', 'renamed.ts'), 'utf8')).toBe('export const one = 2;\n');
+      expect(existsSync(path.join(workspace, 'src', 'two.ts'))).toBe(false);
+      expect(readFileSync(path.join(workspace, 'binary.bin'))).toEqual(Buffer.from([0, 255, 1, 254]));
+      expect((readFileSync(path.join(workspace, 'binary.bin')).byteLength)).toBe(4);
+      expect(lstatSync(path.join(workspace, 'binary.bin')).mode & 0o777).toBe(0o755);
+      expect(readlinkSync(path.join(workspace, 'link-to-renamed'))).toBe('src/renamed.ts');
+      expect(await fingerprintReviewWorkspace(workspace, materialization.entries)).toBe(materialization.fingerprint);
+    } finally {
+      git(['worktree', 'remove', '--force', workspace]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed instead of materializing a truncated dirty scope', async () => {
+    write('src/one.ts', 'export const one = 101;\n');
+    write('src/two.ts', 'export const two = 102;\n');
+
+    await expect(captureReviewMaterialization(repository, { maxFiles: 1 })).rejects.toThrow('partial materialization');
   });
 
   it('uses fixed execFile argument arrays instead of a raw shell API', () => {

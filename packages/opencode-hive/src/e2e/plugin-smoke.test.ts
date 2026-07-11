@@ -606,7 +606,9 @@ Do it
     const agents = opencodeConfig.agent as Record<string, unknown>;
 
     expect(configCommands['dash-review'].agent).toBe('__hive_dash_review_primary');
-    expect(configCommands['dash-review'].template).toContain('No files changed');
+    expect(configCommands['dash-review'].template).toContain('No implementation files');
+    expect(configCommands['dash-review'].template).toContain('hive_review_workspace_claim');
+    expect(configCommands['dash-review'].template).toContain('before deep review lanes');
     expect(agents['__hive_dash_review_primary']).toBeDefined();
   });
 

@@ -27,7 +27,12 @@ export interface AdhocWorkspaceManifest extends WorkspaceManifestBase {
   runId: string;
 }
 
-export type CompositeWorkspaceManifest = TaskWorkspaceManifest | AdhocWorkspaceManifest;
+export interface ReviewWorkspaceManifest extends WorkspaceManifestBase {
+  mode: 'review-composite';
+  runId: string;
+}
+
+export type CompositeWorkspaceManifest = TaskWorkspaceManifest | AdhocWorkspaceManifest | ReviewWorkspaceManifest;
 
 const SAFE_REPOSITORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -83,7 +88,7 @@ export async function readCompositeWorkspaceManifest(workspaceRoot: string): Pro
   const manifest = JSON.parse(raw) as Partial<CompositeWorkspaceManifest>;
   if (
     manifest.schemaVersion !== 1
-    || (manifest.mode !== 'composite' && manifest.mode !== 'adhoc-composite')
+    || (manifest.mode !== 'composite' && manifest.mode !== 'adhoc-composite' && manifest.mode !== 'review-composite')
   ) {
     throw new Error(`Invalid composite workspace manifest: ${manifestPath}`);
   }

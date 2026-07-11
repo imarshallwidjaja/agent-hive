@@ -316,21 +316,30 @@ describe('hive command renderers', () => {
     expect(output).not.toContain('Council aliases:');
   });
 
-  it('renders dash-review as a frozen, read-only multi-lane implementation review', () => {
+  it('renders dash-review as a frozen disposable-workspace implementation review', () => {
     const output = render('dash-review', 'feature/retry-restore');
 
     expect(output).toContain('Target: feature/retry-restore');
-    expect(output).toContain('frozen change manifest');
+    expect(output).toContain('frozen disposable review workspace');
     expect(output).toContain('scope/lead scout');
-    expect(output).toContain('fresh read-only scope revalidation lane');
-    expect(output).toContain('fresh base falsifier is mandatory');
+    expect(output).toContain('materialize');
+    expect(output).toContain('serialized verification');
+    expect(output).toContain('unconditional falsifier');
+    expect(output).toContain('post-review inspection');
+    expect(output).toContain('unconditional cleanup');
     expect(output).toContain('description, base agent, model, and variant');
     expect(output).toContain('parallel blocking `task()` calls only');
     expect(output).toContain('Scope Reviewed');
     expect(output).toContain('REQUEST_CHANGES');
-    expect(output).toContain('No files changed');
+    expect(output).toContain('No implementation files');
     expect(output).toContain('wait for operator instruction');
-    expect(output).toContain('fresh base falsifier is mandatory even when the baseline reports no candidates');
+    expect(output).toContain('Review Execution Integrity');
+    expect(output).toContain('self-reported');
+    expect(output).toContain('non-attributable');
+    expect(output).toContain('generic rollback');
+    expect(output).toContain('structured command transcript');
+    expect(output).toContain('hive_review_workspace_claim');
+    expect(output).toContain('before deep review lanes');
   });
 
   it('renders dash-review routing from configured reviewer descriptors without hardcoded specialist names', () => {
@@ -375,27 +384,26 @@ describe('hive command renderers', () => {
     }
   });
 
-  it('keeps Stage A bootstrap separate from downstream manifest contracts', () => {
+  it('keeps workspace materialization separate from downstream workspace-only review contracts', () => {
     const output = render('dash-review', 'api change');
     const bootstrap = output.slice(
-      output.indexOf('Stage A, mandatory scope/lead scout:'),
+      output.indexOf('Workspace execution contract:'),
       output.indexOf('Downstream read-only lane contract:'),
     );
     const downstream = output.slice(output.indexOf('Downstream read-only lane contract:'));
 
-    expect(bootstrap).toContain('You do not receive a manifest');
-    expect(bootstrap).toContain('construct the initial frozen change manifest');
+    expect(bootstrap).toContain('construct the frozen manifest');
     expect(bootstrap).toContain('hive_git_snapshot');
     expect(bootstrap).toContain('hive_repositories_status');
     expect(bootstrap).toContain('workspace.json');
     expect(bootstrap).toContain('repositoryIds');
-    expect(bootstrap).toContain('one atomic `hive_git_snapshot` invocation');
-    expect(bootstrap).not.toContain('shell access');
+    expect(bootstrap).toContain('hive_review_workspace_create');
+    expect(bootstrap).toContain('materialized workspace fingerprint');
     expect(bootstrap).not.toContain('supplied frozen manifest');
-    expect(downstream).toContain('supplied frozen manifest and snapshot ID');
-    expect(downstream).toContain('fresh read-only scope revalidation lane');
-    expect(downstream).toContain('No dash-review lane may use Bash');
-    expect(downstream).toContain('do not receive `hive_git_snapshot`');
+    expect(downstream).toContain('supplied frozen manifest, workspace paths, and snapshot ID');
+    expect(downstream).toContain('local CLI and retrieval tools');
+    expect(downstream).toContain('Do not inspect live source paths');
+    expect(downstream).toContain('Remote mutation');
   });
 
   it('documents that dash-review scope is appended after command expansion as inert data', () => {

@@ -1,8 +1,8 @@
 import { describe, expect, it, spyOn, afterEach, mock } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
-import { ConfigService } from 'hive-core';
+import { ConfigService, ReviewWorkspaceService } from 'hive-core';
 import * as path from 'path';
 import plugin from '../index';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
@@ -511,7 +511,7 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('gives dash-reviewer only generated safe review lanes and preserves configured review identities', async () => {
+  it('gives dash-reviewer generated review lanes with normal local tools and denied Hive lifecycle mutation', async () => {
     const agents = await buildConfig('unified', {
       'scout-audit': {
         baseAgent: 'scout-researcher',
@@ -562,31 +562,27 @@ describe('Per-agent tool filtering', () => {
     const reviewer = agents['__hive_dash_review_primary'];
     const tools = reviewer?.tools;
     const taskPermissions = reviewer?.permission?.task as Record<string, string>;
-    const safeLanes = Object.entries(agents).filter(([, config]) => {
-      return config.description?.startsWith('Dash Review Safe Lane -');
+    const reviewLanes = Object.entries(agents).filter(([, config]) => {
+      return config.description?.startsWith('Dash Review Lane -');
     });
 
     expect(reviewer).toBeTruthy();
     expect(tools).toBeTruthy();
-    expect(tools!['*']).toBe(false);
-    expect(tools!.read).toBe(true);
-    expect(tools!.glob).toBe(true);
-    expect(tools!.grep).toBe(true);
-    expect(tools!.task).toBe(true);
-    expect(resolveToolPermission(tools!, 'unknown_custom_tool')).toBe(false);
-    expect(resolveToolPermission(tools!, 'unknown_mcp_tool')).toBe(false);
-    expect(resolveToolPermission(tools!, 'process')).toBe(false);
+    expect(tools!['*']).toBeUndefined();
+    expect(resolveToolPermission(tools!, 'unknown_custom_tool')).toBeUndefined();
+    expect(resolveToolPermission(tools!, 'unknown_mcp_tool')).toBeUndefined();
+    expect(resolveToolPermission(tools!, 'bash')).toBeUndefined();
     for (const toolName of HIVE_TOOL_NAMES) {
-      expect(tools![toolName]).toBe(false);
+      expect(tools![toolName]).toBe(['hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup'].includes(toolName));
     }
     expect(reviewer?.permission?.edit).toBe('deny');
-    expect(reviewer?.permission?.bash).toBe('deny');
+    expect(reviewer?.permission?.bash).toBeUndefined();
     expect(taskPermissions['*']).toBe('deny');
     expect(Object.keys(taskPermissions)[0]).toBe('*');
-    expect(safeLanes).toHaveLength(10);
-    expect(safeLanes.map(([name]) => name)).not.toContain('__hive_dash_review_lane_scope_1');
-    expect(safeLanes.map(([name]) => name)).toContain('__hive_dash_review_lane_scope_2');
-    for (const [name] of safeLanes) {
+    expect(reviewLanes).toHaveLength(10);
+    expect(reviewLanes.map(([name]) => name)).not.toContain('__hive_dash_review_lane_scope_1');
+    expect(reviewLanes.map(([name]) => name)).toContain('__hive_dash_review_lane_scope_2');
+    for (const [name] of reviewLanes) {
       expect(resolveTaskPermission(taskPermissions, name)).toBe('allow');
     }
     for (const name of [
@@ -603,49 +599,47 @@ describe('Per-agent tool filtering', () => {
     expect(taskPermissions['42']).toBeUndefined();
     expect(reviewer?.permission?.delegate).toBe('deny');
 
-    for (const [name, lane] of safeLanes) {
-      expect(lane.tools?.['*']).toBe(false);
-      expect(lane.tools?.read).toBe(true);
-      expect(lane.tools?.glob).toBe(true);
-      expect(lane.tools?.grep).toBe(true);
-      expect(lane.tools?.task).toBe(false);
-      expect(resolveToolPermission(lane.tools!, 'unknown_custom_tool')).toBe(false);
-      expect(resolveToolPermission(lane.tools!, 'unknown_mcp_tool')).toBe(false);
+    for (const [name, lane] of reviewLanes) {
+      expect(lane.tools?.['*']).toBeUndefined();
+      expect(resolveToolPermission(lane.tools!, 'unknown_custom_tool')).toBeUndefined();
+      expect(resolveToolPermission(lane.tools!, 'unknown_mcp_tool')).toBeUndefined();
       expect(lane.tools?.['hive_context_write']).toBe(false);
       for (const toolName of HIVE_TOOL_NAMES) {
-        if (name.includes('_scope_') && (toolName === 'hive_git_snapshot' || toolName === 'hive_repositories_status')) continue;
+        if (name.includes('_scope_') && ['hive_git_snapshot', 'hive_repositories_status', 'hive_review_workspace_create'].includes(toolName)) continue;
         expect(lane.tools?.[toolName]).toBe(false);
       }
       expect(lane.permission?.edit).toBe('deny');
       expect(lane.permission?.task).toBe('deny');
       expect(lane.permission?.delegate).toBe('deny');
-      expect(lane.permission?.bash).toBe('deny');
+      expect(lane.permission?.bash).toBeUndefined();
       if (name.includes('_scope_')) {
         expect(lane.tools?.['hive_git_snapshot']).toBe(true);
         expect(lane.tools?.['hive_repositories_status']).toBe(true);
+        expect(lane.tools?.['hive_review_workspace_create']).toBe(true);
       } else {
         expect(lane.tools?.['hive_git_snapshot']).toBe(false);
         expect(lane.tools?.['hive_repositories_status']).toBe(false);
+        expect(lane.tools?.['hive_review_workspace_create']).toBe(false);
       }
-      expect(lane.prompt).toContain('Dash Review Safe Lane');
+      expect(lane.prompt).toContain('Dash Review Lane');
       expect(lane.prompt).not.toContain('hive_context_write');
     }
 
-    const scopeLane = safeLanes.find(([name]) => name === '__hive_dash_review_lane_scope_2')?.[1];
-    const securityLane = safeLanes.find(([, lane]) => lane.model === 'provider/security-model')?.[1];
+    const scopeLane = reviewLanes.find(([name]) => name === '__hive_dash_review_lane_scope_2')?.[1];
+    const securityLane = reviewLanes.find(([, lane]) => lane.model === 'provider/security-model')?.[1];
     expect(scopeLane?.prompt).not.toContain('## Persistence');
     expect(scopeLane?.tools?.['hive_git_snapshot']).toBe(true);
     expect(scopeLane?.prompt).toContain('hive_git_snapshot');
-    expect(scopeLane?.prompt).toContain('structured repositoryIds, refs, ranges, paths, and output bounds');
+    expect(scopeLane?.prompt).toContain('hive_review_workspace_create');
     expect(securityLane?.variant).toBe('xhigh');
     expect(securityLane?.description).toContain('Security implementation reviewer');
     expect(securityLane?.prompt).toContain('Security implementation reviewer');
-    expect(securityLane?.permission?.bash).toBe('deny');
+    expect(securityLane?.permission?.bash).toBeUndefined();
     expect(securityLane?.tools?.['hive_git_snapshot']).toBe(false);
     for (const sourceName of ['reviewer-*', 'reviewer/security', 'reviewer\\security', '42']) {
-      expect(safeLanes.some(([, lane]) => lane.description?.includes(`- ${sourceName}:`))).toBe(true);
+      expect(reviewLanes.some(([, lane]) => lane.description?.includes(`- ${sourceName}:`))).toBe(true);
     }
-    expect(safeLanes.some(([, lane]) => lane.description?.includes('forager-ui'))).toBe(false);
+    expect(reviewLanes.some(([, lane]) => lane.description?.includes('forager-ui'))).toBe(false);
   });
 
   it('enforces snapshot callers at runtime after generated scope aliases are registered', async () => {
@@ -674,6 +668,130 @@ describe('Per-agent tool filtering', () => {
       await expect(execute({}, snapshotContext('external-agent'))).rejects.toThrow('not authorized');
       await expect(execute({}, snapshotContext('__hive_dash_review_lane_code_1'))).rejects.toThrow('not authorized');
       expect(JSON.parse(await execute({}, snapshotContext(scopeAlias))).repository.root).toBe(repository);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes a disposable review workspace for the scope lane and lets only the primary inspect or clean it', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-tool-'));
+    createGitRepository(repository);
+    writeFileSync(path.join(repository, 'README.md'), 'dirty source\n');
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string; template: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+      const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
+      const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
+      const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-inspect' };
+
+      await expect(create({}, snapshotContext(primary))).rejects.toThrow('not authorized');
+      const created = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      expect(created.state).toBe('READY');
+      expect(readFileSync(path.join(created.workspacePath, 'README.md'), 'utf8')).toBe('dirty source\n');
+      expect(readFileSync(path.join(repository, 'README.md'), 'utf8')).toBe('dirty source\n');
+      await hooks['chat.message']?.({ sessionID: 'dash-primary-inspect', agent: primary }, { message: {}, parts: [] } as any);
+      await expect(inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext)).rejects.toThrow('inspection was denied');
+      await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
+      const initialInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
+      expect(initialInspection.source.stable).toBe(true);
+      writeFileSync(path.join(created.workspacePath, 'README.md'), 'review workspace drift\n');
+      expect(JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext).then((result) => result)).reviewIntegrity).toBe(false);
+      expect(JSON.parse(await cleanup({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext).then((result) => result)).cleaned).toBe(true);
+      expect(existsSync(created.workspacePath)).toBe(false);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans a review workspace when its primary session is deleted', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-session-'));
+    createGitRepository(repository);
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string; template: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      const created = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, {
+        ...snapshotContext(primary),
+        sessionID: 'dash-primary-cleanup',
+      });
+      await hooks.event?.({ event: { type: 'session.deleted', properties: { sessionID: 'dash-primary-cleanup' } } } as any);
+
+      expect(existsSync(created.workspacePath)).toBe(false);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('continues session-deletion cleanup after one owned workspace throws or another reports failure', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-session-errors-'));
+    createGitRepository(repository);
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string; template: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+      const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-errors' };
+      const first = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const second = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const third = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      await claim({ runId: first.runId, ownershipToken: first.ownershipToken }, primaryContext);
+      await claim({ runId: second.runId, ownershipToken: second.ownershipToken }, primaryContext);
+      await claim({ runId: third.runId, ownershipToken: third.ownershipToken }, primaryContext);
+      const cleanup = spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockImplementation(async (runId: string) => {
+        if (runId === first.runId) throw new Error('injected cleanup failure');
+        if (runId === second.runId) return { runId, cleaned: false, workspacePath: second.workspacePath, errors: ['injected cleanup result'] };
+        return { runId, cleaned: true, workspacePath: third.workspacePath, errors: [] };
+      });
+      const releaseClaim = spyOn(ReviewWorkspaceService.prototype, 'releaseClaim').mockResolvedValue(undefined);
+
+      await expect(hooks.event?.({ event: { type: 'session.deleted', properties: { sessionID: 'dash-primary-errors' } } } as any)).resolves.toBeUndefined();
+
+      expect(cleanup).toHaveBeenCalledTimes(3);
+      expect(releaseClaim).toHaveBeenCalledWith(first.runId, first.ownershipToken, 'dash-primary-errors');
+      expect(releaseClaim).toHaveBeenCalledWith(second.runId, second.ownershipToken, 'dash-primary-errors');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps two fresh review runs isolated by primary ownership tokens', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-owners-'));
+    createGitRepository(repository);
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string; template: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+      const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
+      const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
+      const first = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const second = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const firstContext = { ...snapshotContext(primary), sessionID: 'dash-primary-first' };
+      const secondContext = { ...snapshotContext(primary), sessionID: 'dash-primary-second' };
+      await hooks['chat.message']?.({ sessionID: 'dash-primary-first', agent: primary }, { message: {}, parts: [] } as any);
+      await hooks['chat.message']?.({ sessionID: 'dash-primary-second', agent: primary }, { message: {}, parts: [] } as any);
+      await claim({ runId: first.runId, ownershipToken: first.ownershipToken }, firstContext);
+      await claim({ runId: second.runId, ownershipToken: second.ownershipToken }, secondContext);
+
+      await expect(inspect({ runId: first.runId, ownershipToken: first.ownershipToken }, secondContext)).rejects.toThrow('inspection was denied');
+      await expect(cleanup({ runId: first.runId, ownershipToken: first.ownershipToken }, secondContext)).rejects.toThrow('cleanup was denied');
+      await hooks.event?.({ event: { type: 'session.deleted', properties: { sessionID: 'dash-primary-first' } } } as any);
+      expect(existsSync(first.workspacePath)).toBe(false);
+      expect(existsSync(second.workspacePath)).toBe(true);
+      await cleanup({ runId: second.runId, ownershipToken: second.ownershipToken }, secondContext);
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -715,7 +833,7 @@ describe('Per-agent tool filtering', () => {
       } as any);
       await expect(taskHook({ tool: 'bash', sessionID: 'untracked-dash-session', callID: 'unexpected-primary' }, {
         args: { command: 'touch should-not-run' },
-      })).rejects.toThrow('caller identity is unavailable');
+      })).resolves.toBeUndefined();
       await messageHook({ sessionID: 'untracked-dash-session', agent: dashPrimary }, {
         message: {},
         parts: [],
@@ -741,7 +859,7 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('enforces exact dash runtime tool allowlists despite session-level overrides', async () => {
+  it('keeps dash task targets and Hive lifecycle tools bounded without blocking local CLI or retrieval tools', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-tool-auth-'));
     createGitRepository(repository);
     try {
@@ -758,27 +876,32 @@ describe('Per-agent tool filtering', () => {
       };
 
       await messageHook({ sessionID: 'dash-primary', agent: dashPrimary }, { message: {}, parts: [] } as any);
-      for (const tool of ['read', 'glob', 'grep']) {
+      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool']) {
         await expect(invoke('dash-primary', tool)).resolves.toBeUndefined();
       }
       await expect(invoke('dash-primary', 'task', { subagent_type: scopeAlias })).resolves.toBeUndefined();
-      for (const tool of ['bash', 'edit', 'hive_feature_create', 'hive_git_snapshot', 'mutating_mcp_tool']) {
+      for (const tool of ['hive_feature_create', 'hive_git_snapshot', 'hive_review_workspace_create']) {
         await expect(invoke('dash-primary', tool, { command: 'touch should-not-run' })).rejects.toThrow('dash-review tool is not authorized');
+      }
+      for (const tool of ['hive_review_workspace_inspect', 'hive_review_workspace_cleanup']) {
+        await expect(invoke('dash-primary', tool)).resolves.toBeUndefined();
       }
 
       await messageHook({ sessionID: 'dash-scope', agent: scopeAlias }, { message: {}, parts: [] } as any);
-      for (const tool of ['read', 'glob', 'grep', 'hive_repositories_status', 'hive_git_snapshot']) {
+      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool', 'hive_repositories_status', 'hive_git_snapshot', 'hive_review_workspace_create']) {
         await expect(invoke('dash-scope', tool)).resolves.toBeUndefined();
       }
-      for (const tool of ['task', 'bash', 'edit', 'hive_feature_create', 'mutating_mcp_tool']) {
+      await expect(invoke('dash-scope', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review task target is not authorized');
+      for (const tool of ['hive_feature_create', 'hive_review_workspace_cleanup']) {
         await expect(invoke('dash-scope', tool, { subagent_type: scopeAlias })).rejects.toThrow('dash-review tool is not authorized');
       }
 
       await messageHook({ sessionID: 'dash-code', agent: codeAlias }, { message: {}, parts: [] } as any);
-      for (const tool of ['read', 'glob', 'grep']) {
+      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool']) {
         await expect(invoke('dash-code', tool)).resolves.toBeUndefined();
       }
-      for (const tool of ['task', 'bash', 'edit', 'hive_git_snapshot', 'hive_feature_create', 'mutating_mcp_tool']) {
+      await expect(invoke('dash-code', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review task target is not authorized');
+      for (const tool of ['hive_git_snapshot', 'hive_feature_create', 'hive_review_workspace_create']) {
         await expect(invoke('dash-code', tool, { subagent_type: scopeAlias })).rejects.toThrow('dash-review tool is not authorized');
       }
     } finally {

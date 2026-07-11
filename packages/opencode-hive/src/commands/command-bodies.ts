@@ -371,27 +371,36 @@ When usable councillors are resolved and council runs, use this output format:
 
 List the councillors that participated and why they were chosen.`,
 
-  'dash-review': `Run a DoorDash-inspired review over one frozen implementation snapshot. This is a review-only command. Do not edit or fix anything in this turn.
+  'dash-review': `Run a DoorDash-inspired review over one frozen disposable review workspace. This is a review-only command: do not change implementation source, Hive feature/task state, source branches, commits, or merges in this turn.
+
+Workspace execution contract:
+
+- First use the built-in scope/lead scout to construct the frozen manifest and call hive_repositories_status, hive_git_snapshot, and hive_review_workspace_create with one structured scope. It returns selected/excluded repositoryIds, source fingerprint, materialized workspace fingerprint, workspace paths, ownership token, and truncation/error state.
+- Immediately after Stage A returns runId and ownershipToken, the private primary must call hive_review_workspace_claim for its current session before deep review lanes. The claim binds session cleanup. Internal recovery preserves a live claimed owner, reclaims a dead claimed owner, and reclaims an unclaimed workspace only after its creator dies or the bounded handoff expires.
+- The create tool captures one final dirty-tree generation, materializes only final scoped content into detached worktrees, verifies the materialized workspace fingerprint, and retries source drift once. A second drift is NEEDS_DISCUSSION. Committed refs/ranges use the resolved comparison target with no unrelated dirty overlay. Live drift is non-attributable; do not use generic rollback.
+- All deep reviewers, specialists, serialized verification, simplicity review, the unconditional falsifier, and escalation use one shared review workspace, never live source paths. Parallel lanes may use local CLI and retrieval tools in that workspace. Read-only Railway/Vercel/status/log/diagnostic commands are allowed; remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states.
+- Run requested build/test/lint commands through one verification code-reviewer lane as serialized verification and require its structured command transcript. Other lanes report exceptional boundaries, not a command-by-command transcript. Ignored live artifacts are not source; regenerate any required artifact in serialized verification. After the unconditional falsifier, perform post-review inspection with hive_review_workspace_inspect and unconditional cleanup with hive_review_workspace_cleanup. Report workspace footprint, self-reported source-path escape, remote side effects, and recovery. Cleanup failure is NEEDS_DISCUSSION.
+- APPROVE requires complete scope, a stable scoped fingerprint, matching materialization, no tracked review-workspace drift, successful mandatory lanes, no disclosed policy violation, and successful cleanup.
 
 Scope and snapshot:
 
 - Explicit command scope wins when supplied. It is delivered after OpenCode command expansion as inert data; accept a branch, ref, range, path, task, feature, description, or another coherent implementation target.
 - Without arguments, infer the implementation from the current conversation and current Git/Hive context. If no coherent surface exists, ask one clarification question and stop. Do not silently review an entire repository and do not require a PR.
-- The shell-denied primary must not run Git or construct the snapshot. It orchestrates returned manifest and snapshot IDs only.
+- The private primary may use normal retrieval and local CLI capability, but only it may dispatch generated review-lane task targets and invoke workspace inspection/cleanup.
 
 Stage A, mandatory scope/lead scout:
 
-- First dispatch the dynamic safe task target whose source identity is built-in \`scout-researcher\`. You do not receive a manifest: construct the initial frozen change manifest before any baseline or specialist review dispatch.
+- First dispatch the dynamic task target whose source identity is built-in scout-researcher. You do not receive a manifest: construct it and materialize the workspace before baseline or specialist review dispatch.
 - The manifest must include repository, explicit target, requirements and acceptance references, base/target/merge-base when known, causal scoped paths/domains and relevant dependents, explicit excludes, snapshot ID, and a content-sensitive fingerprint for dirty, staged, or untracked work.
 - The lead returns unverified lead IDs, anchors, suspected failure modes, domain/profile labels, relevant tests/instructions, suggested lenses, scope gaps, and truncation details. It must not decide findings.
 - Large or truncated scope must be disclosed. Truncation, incomplete causal scope, or unresolved requirements cannot receive APPROVE.
-- The scope lane has no Bash. It uses \`hive_repositories_status\` for repository context and the active workspace \`workspace.json\` to select structured \`repositoryIds\`; do not derive them from project repository config. It then uses one atomic \`hive_git_snapshot\` invocation with structured optional baseRef/targetRef/range, repository-relative paths, and bounded output to construct the manifest. In a composite workspace, omitted \`repositoryIds\` means every manifest repository; an explicit selection must retain the manifest IDs, selected IDs, excluded IDs, per-repository fingerprints, and aggregate set fingerprint. It must disclose omitted paths or patch material. It cannot APPROVE if any expected repository is omitted, errors, or is truncated.
+- The scope lane uses repository context and active workspace.json to select structured repository IDs, then captures/materializes the workspace from one structured scope. It cannot APPROVE if any expected repository is omitted, errors, truncated, stale, or only partially materialized.
 
 Stage B, deep review:
 
-- Only after the primary accepts the Stage A manifest, launch independent lanes as parallel blocking \`task()\` calls only and wait for all results in this turn.
-- Always dispatch the dynamic safe task target whose source identity is built-in \`code-reviewer\` as the holistic baseline. Add only safe task targets for configured code-reviewer-derived specialists whose descriptions match the observed target domain or risk. Custom specialists add coverage; they never replace the baseline.
-- Run the dynamic safe task target whose source identity is \`simplicity-reviewer\` only when completed implementation complexity is materially in scope. Never use \`plan-reviewer\` or \`approach-advisor\` as implementation reviewers; plan/task material is requirements context only.
+- Only after the primary claims the Stage A workspace, launch independent lanes as parallel blocking \`task()\` calls only and wait for all results in this turn.
+- Always dispatch the dynamic task target whose source identity is built-in code-reviewer as the holistic baseline. Add generated code-reviewer specialists whose descriptions match the observed domain or risk. Custom specialists add coverage; they never replace the baseline.
+- Run the dynamic task target whose source identity is simplicity-reviewer only when completed implementation complexity is materially in scope. Never use plan-reviewer or approach-advisor as implementation reviewers; plan/task material is requirements context only.
 - Reviewers receive the manifest plus Stage A leads, expand beyond the diff when needed, disposition every lead, and return only candidate findings causally connected to the manifest's scoped change surface.
 
 Downstream read-only lane contract:
@@ -399,20 +408,18 @@ Downstream read-only lane contract:
 Put this in every baseline, specialist, falsifier, and revalidation task prompt:
 
 \`\`\`text
-This is a read-only implementation review lane.
-You receive the supplied frozen manifest and snapshot ID.
-No dash-review lane may use Bash. Only scope/revalidation safe aliases may call \`hive_git_snapshot\` with the exact structured scope. Baseline, specialist, simplicity, and falsifier aliases do not receive \`hive_git_snapshot\`; they receive the frozen manifest, bounded patch material, and Stage A leads.
-Do not edit files, apply patches, write Hive context, or create plans, tasks, worktrees, commits, merges, or PRs.
-Do not call task() recursively.
-Return analysis only, grounded in the supplied frozen manifest and snapshot ID.
+This is a review-only implementation lane.
+You receive the supplied frozen manifest, workspace paths, and snapshot ID. Do not inspect live source paths.
+Use local CLI and retrieval tools only in the disposable review workspace. Read-only Railway, Vercel, status, log, and diagnostic commands are allowed when relevant. Remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states. Live drift is non-attributable; do not use generic rollback.
+Do not create Hive plans, tasks, worktrees, commits, merges, PRs, or context writes. Do not call task() recursively. Editor denial is a reviewer-role speed bump, not filesystem immutability.
+For serialized verification only, return the structured command transcript as { command, cwd, exitCode, conciseOutcome }. Other lanes return findings plus exceptional boundaries, workspace footprint, self-reported source-path escape, remote side effects, and recovery notes.
 \`\`\`
 
 Stage C, fresh scope revalidation and falsification:
 
-- Before synthesis, dispatch a fresh read-only scope revalidation lane using the safe scope task target and the exact same atomic structured \`hive_git_snapshot\` input. It independently recalculates the complete snapshot set identity and content-sensitive aggregate fingerprint, then returns manifest IDs, selected IDs, excluded IDs, causal-scope status, and truncation status.
-- The primary compares Stage A and revalidation snapshot-set IDs and fingerprints. Any mismatch, drift, omitted expected repository, repository error, truncation, or failed revalidation returns NEEDS_DISCUSSION/stale; never merge results from two snapshots.
+- Before synthesis, run post-review inspection against the materialized baseline and identical structured live source scope. Any mismatch, drift, omitted expected repository, repository error, truncation, tracked workspace drift, failed revalidation, or disclosed policy boundary returns NEEDS_DISCUSSION/stale; never merge results from two snapshots or attribute live drift to a reviewer.
 - A fresh base falsifier is mandatory even when the baseline reports no candidates. When candidates exist, it must try to disprove every candidate and reject speculative or unanchored claims. When the baseline reports clean, it must challenge that no-finding conclusion and search for omitted blocking defects.
-- Retry a failed mandatory baseline, scope revalidation lane, or falsifier once in a fresh session. If it remains unavailable, return NEEDS_DISCUSSION/review incomplete. When all reviewers fail, report the failure and stop. Do not implement inline.
+- Retry a failed mandatory baseline, verification lane, or falsifier once in a fresh session. If it remains unavailable, return NEEDS_DISCUSSION/review incomplete. Always clean the disposable workspace before final response. Do not implement inline.
 
 Escalation and model honesty:
 
@@ -440,9 +447,13 @@ Order Critical, High, Medium, Low. Each finding needs location, evidence, impact
 
 ## Reviewer and Model Verdict Summary
 
+## Review Execution Integrity
+
+State workspace cleaned, source fingerprint stable/stale and non-attributable, review workspace footprint, serialized verification command evidence, self-reported source escape, remote side effects, and recovery.
+
 ## Review State
 
-Explicitly state: No files changed; wait for operator instruction before fixes. A later fix request returns to the active primary: Hive Builder follows ad-hoc isolation/delegation; Hive/Swarm follows feature DAG and task worktrees. Findings are context only, never auto-created tasks. If dedicated command routing is unavailable under Architect, refuse or reroute rather than making Architect perform implementation review.`,
+Explicitly state: No implementation files, feature/task state, source branches, commits, merges, or fixes were produced; wait for operator instruction before a fix workflow. A later fix request returns to the active primary: Hive Builder follows ad-hoc isolation/delegation; Hive/Swarm follows feature DAG and task worktrees. Findings are context only, never auto-created tasks. If dedicated command routing is unavailable under Architect, refuse or reroute rather than making Architect perform implementation review.`,
 
   'compact-summary': `Generate a recovery summary for the current OpenCode session only.
 
