@@ -4,6 +4,11 @@ import simpleGit, { type SimpleGit } from 'simple-git';
 import type { ResolvedRepository } from '../types.js';
 import type { MergeMessageSource } from '../utils/mergeMessage.js';
 import { selectMergeCommitMessage } from '../utils/mergeMessage.js';
+import type {
+  AdhocWorkspaceManifest as AdhocCompositeManifest,
+  WorkspaceManifestEntry as AdhocCompositeManifestEntry,
+} from './workspaceManifest.js';
+import { readCompositeWorkspaceManifest } from './workspaceManifest.js';
 
 export interface RepositoryResolver {
   resolveRepositories(): ResolvedRepository[];
@@ -125,26 +130,6 @@ export interface AdhocCleanupResult {
   pruned: boolean;
 }
 
-interface AdhocCompositeManifestEntry {
-  /** Workspace-relative path under the composite root (e.g., 'repos/api'). */
-  path: string;
-  /** Absolute path to the source repository git root. */
-  repoRoot: string;
-  /** Stable absolute source repo path as configured in the manifest. */
-  repoPath: string;
-  branch: string;
-  commit: string;
-}
-
-interface AdhocCompositeManifest {
-  schemaVersion: 1;
-  mode: 'adhoc-composite';
-  runId: string;
-  repos: Record<string, AdhocCompositeManifestEntry>;
-  baseCommits: Record<string, string>;
-  createdAt: string;
-}
-
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const REPO_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -205,14 +190,8 @@ export class AdhocWorktreeService {
   }
 
   private async readCompositeManifest(runId: string): Promise<AdhocCompositeManifest | null> {
-    try {
-      const raw = await fs.readFile(this.getWorkspaceManifestPath(runId), 'utf-8');
-      return JSON.parse(raw) as AdhocCompositeManifest;
-    } catch (error: unknown) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code === 'ENOENT') return null;
-      throw error;
-    }
+    const manifest = await readCompositeWorkspaceManifest(this.getCompositeRoot(runId));
+    return manifest?.mode === 'adhoc-composite' ? manifest : null;
   }
 
   private async isRegisteredCompositeRepo(

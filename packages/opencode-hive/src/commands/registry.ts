@@ -37,6 +37,12 @@ export const HIVE_COMMANDS = [
     description: 'Run a read-only council and synthesize a recommendation',
   },
   {
+    key: 'dash-review',
+    name: '/dash-review',
+    description: 'Review an implementation snapshot without changing files',
+    agent: '__hive_dash_review_primary',
+  },
+  {
     key: 'compact-summary',
     name: '/compact-summary',
     description: 'Produce a recovery summary for the current OpenCode session',

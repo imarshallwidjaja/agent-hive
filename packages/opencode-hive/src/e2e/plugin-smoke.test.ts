@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { execSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import type { PluginInput } from "@opencode-ai/plugin";
 import { createOpencodeClient } from "@opencode-ai/sdk";
@@ -127,6 +128,44 @@ async function createHooksForTest(testRoot: string, sessionID: string): Promise<
     hooks: await plugin(ctx),
     toolContext: createToolContext(sessionID),
   };
+}
+
+async function runOpenCodeV114CommandPath(input: {
+  hooks: PluginHooks;
+  command: string;
+  sessionID: string;
+  arguments: string;
+  template: string;
+  cwd: string;
+}): Promise<Array<{ type: 'text'; text: string }>> {
+  const args = input.arguments.match(/(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi) ?? [];
+  const placeholders = input.template.match(/\$(\d+)/g) ?? [];
+  let last = 0;
+  for (const placeholder of placeholders) {
+    last = Math.max(last, Number(placeholder.slice(1)));
+  }
+  let template = input.template.replace(/\$(\d+)/g, (_match, index) => {
+    const position = Number(index);
+    const argumentIndex = position - 1;
+    if (argumentIndex >= args.length) return '';
+    return position === last ? args.slice(argumentIndex).join(' ') : args[argumentIndex];
+  });
+  if (!input.template.includes('$ARGUMENTS') && placeholders.length === 0 && input.arguments.trim()) {
+    template = `${template}\n\n${input.arguments}`;
+  }
+  const shellMatches = [...template.matchAll(/!`([^`]+)`/g)];
+  for (const match of shellMatches) {
+    execSync(match[1], { cwd: input.cwd, stdio: 'ignore' });
+  }
+
+  const parts: Array<{ type: 'text'; text: string }> = [{ type: 'text', text: template }];
+  const commandBefore = (input.hooks as any)['command.execute.before'] as (hookInput: unknown, output: { parts: typeof parts }) => Promise<void>;
+  await commandBefore({
+    command: input.command,
+    sessionID: input.sessionID,
+    arguments: input.arguments,
+  }, { parts } as any);
+  return parts;
 }
 
 async function createSingleTaskWorktree(
@@ -534,7 +573,7 @@ Do it
 
     await hooks.config!(opencodeConfig);
 
-    const configCommands = opencodeConfig.command as Record<string, { description?: string; template?: string }>;
+    const configCommands = opencodeConfig.command as Record<string, { description?: string; template?: string; agent?: string }>;
     const registryKeys = HIVE_COMMANDS.map((command) => command.key);
 
     expect(Object.keys(configCommands).sort()).toEqual([...registryKeys].sort());
@@ -555,6 +594,54 @@ Do it
     expect(configCommands.council.template).not.toContain('Group: decision');
     expect(configCommands.council.template).not.toContain('Directive: $ARGUMENTS');
     expect(configCommands.council.template).not.toContain('forager-smart');
+  });
+
+  it('binds dash-review through config.command to the dedicated review orchestrator', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_dash_review_command');
+    const opencodeConfig: Record<string, unknown> = {};
+
+    await hooks.config!(opencodeConfig);
+
+    const configCommands = opencodeConfig.command as Record<string, { agent?: string; template?: string }>;
+    const agents = opencodeConfig.agent as Record<string, unknown>;
+
+    expect(configCommands['dash-review'].agent).toBe('__hive_dash_review_primary');
+    expect(configCommands['dash-review'].template).toContain('No files changed');
+    expect(agents['__hive_dash_review_primary']).toBeDefined();
+  });
+
+  it('keeps dash-review command arguments inert until the post-expansion command hook appends them', async () => {
+    const dashRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-e2e-dash-review-'));
+    try {
+      execSync('git init', { cwd: dashRoot });
+      execSync('git config user.email "test@example.com"', { cwd: dashRoot });
+      execSync('git config user.name "Test"', { cwd: dashRoot });
+      fs.writeFileSync(path.join(dashRoot, 'README.md'), 'dash review test');
+      execSync('git add README.md', { cwd: dashRoot });
+      execSync('git commit -m "init"', { cwd: dashRoot });
+      const { hooks } = await createHooksForTest(dashRoot, 'sess_dash_review_arguments');
+      const config: Record<string, any> = {};
+      const marker = path.join(dashRoot, 'dash-review-argument-marker');
+      const rawArguments = `!\`touch "${marker}"\` explicit/scope`;
+
+      await hooks.config!(config);
+
+      const template = config.command['dash-review'].template as string;
+      const parts = await runOpenCodeV114CommandPath({
+        hooks,
+        command: 'dash-review',
+        sessionID: 'sess_dash_review_arguments',
+        arguments: rawArguments,
+        template,
+        cwd: dashRoot,
+      });
+
+      expect(fs.existsSync(marker)).toBe(false);
+      expect(template).not.toContain('$ARGUMENTS');
+      expect(parts.map((part) => part.text).join('\n')).toContain(rawArguments);
+    } finally {
+      fs.rmSync(dashRoot, { recursive: true, force: true });
+    }
   });
 
   it('preserves existing non-Hive OpenCode config commands while injecting Hive commands', async () => {
@@ -4055,6 +4142,7 @@ Original plan task four content must stay isolated from any append-only manual f
       'chat.message',
       'experimental.chat.system.transform',
       'experimental.chat.messages.transform',
+      'command.execute.before',
       'tool.execute.before',
       'tool.execute.after',
     ]);

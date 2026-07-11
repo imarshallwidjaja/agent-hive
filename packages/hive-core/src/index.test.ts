@@ -24,6 +24,12 @@ describe("hive-core", () => {
     expect(BUILT_IN_AGENT_NAMES).toContain('hive-builder');
   });
 
+  it('keeps dash-reviewer available only for legacy custom agents', () => {
+    expect(BUILT_IN_AGENT_NAMES).not.toContain('dash-reviewer');
+    expect(CUSTOM_AGENT_RESERVED_NAMES).not.toContain('dash-reviewer');
+    expect(DEFAULT_HIVE_CONFIG.agents).not.toHaveProperty('dash-reviewer');
+  });
+
   it("includes simplicity-reviewer as built-in and as a custom-agent base", () => {
     expect(BUILT_IN_AGENT_NAMES).toContain('simplicity-reviewer');
     expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('simplicity-reviewer');

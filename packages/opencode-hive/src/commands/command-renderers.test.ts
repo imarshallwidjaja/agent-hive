@@ -72,6 +72,12 @@ const builtInAgents: Record<string, HiveCommandAgentDescriptor> = {
     description: 'Ad-hoc executor',
     readOnlyCouncilEligible: false,
   },
+  'dash-reviewer': {
+    baseAgent: 'dash-reviewer',
+    available: true,
+    description: 'Read-only implementation review orchestrator',
+    readOnlyCouncilEligible: false,
+  },
 };
 
 function createContext(
@@ -82,6 +88,7 @@ function createContext(
     backgroundGuidance: { available: false, reason: 'experiment-disabled' },
     council: DEFAULT_COUNCIL_CONFIG,
     agents: builtInAgents,
+    dashReviewLanes: [],
     ...overrides,
   };
 }
@@ -136,7 +143,7 @@ describe('hive command renderers', () => {
       expect(output).toMatch(/independent .*background/i);
     }
 
-    for (const command of ['approve-sync-plan', 'compact-summary', 'council-directive'] as const) {
+    for (const command of ['approve-sync-plan', 'compact-summary', 'council-directive', 'dash-review'] as const) {
       const output = render(command, 'Investigate command routing', context);
 
       expect(output).not.toContain('Background:');
@@ -307,6 +314,95 @@ describe('hive command renderers', () => {
     expect(output).toContain('## Agreement');
     expect(output).toContain('## Suggested Next Step');
     expect(output).not.toContain('Council aliases:');
+  });
+
+  it('renders dash-review as a frozen, read-only multi-lane implementation review', () => {
+    const output = render('dash-review', 'feature/retry-restore');
+
+    expect(output).toContain('Target: feature/retry-restore');
+    expect(output).toContain('frozen change manifest');
+    expect(output).toContain('scope/lead scout');
+    expect(output).toContain('fresh read-only scope revalidation lane');
+    expect(output).toContain('fresh base falsifier is mandatory');
+    expect(output).toContain('description, base agent, model, and variant');
+    expect(output).toContain('parallel blocking `task()` calls only');
+    expect(output).toContain('Scope Reviewed');
+    expect(output).toContain('REQUEST_CHANGES');
+    expect(output).toContain('No files changed');
+    expect(output).toContain('wait for operator instruction');
+    expect(output).toContain('fresh base falsifier is mandatory even when the baseline reports no candidates');
+  });
+
+  it('renders dash-review routing from configured reviewer descriptors without hardcoded specialist names', () => {
+    const specialistName = ['reviewer', 'security'].join('-');
+    const context = createContext({
+      dashReviewLanes: [{
+        taskTarget: '__hive_dash_review_lane_code_1',
+        sourceAgent: specialistName,
+        baseAgent: 'code-reviewer',
+        description: 'Security and public API risk reviewer',
+        model: 'provider/reasoning',
+        variant: 'xhigh',
+      }],
+    });
+
+    const output = render('dash-review', 'api change', context);
+
+    expect(output).toContain(specialistName);
+    expect(output).toContain('Security and public API risk reviewer');
+    expect(output).toContain('provider/reasoning');
+    expect(output).toContain('xhigh');
+    expect(output).toContain('__hive_dash_review_lane_code_1');
+    expect(output).toContain('Task target');
+  });
+
+  it('keeps dash-review blocking-only and leaves fixed policy to COMMAND_BEHAVIOR in both gate modes', () => {
+    for (const backgroundGuidance of [{ available: false, reason: 'experiment-disabled' } as const, { available: true }]) {
+      const output = render('dash-review', 'api change', createContext({ backgroundGuidance }));
+      const [wrapper, behavior] = output.split('\n\n---\n\n');
+
+      expect(wrapper).toContain('Target: api change');
+      expect(wrapper).toContain('appended canonical review contract');
+      expect(wrapper).not.toContain('parallel blocking `task()` calls only');
+      expect(wrapper).not.toContain('primary-side Git inspection');
+      expect(wrapper).not.toContain('Stage A');
+      expect(wrapper).not.toContain('REQUEST_CHANGES');
+      expect(behavior).toContain('Stage A');
+      expect(behavior).toContain('Stage C');
+      expect(output).not.toContain('task({ background: true');
+      expect(output).not.toContain('hive_background_');
+      expect(output).not.toContain('native completion');
+    }
+  });
+
+  it('keeps Stage A bootstrap separate from downstream manifest contracts', () => {
+    const output = render('dash-review', 'api change');
+    const bootstrap = output.slice(
+      output.indexOf('Stage A, mandatory scope/lead scout:'),
+      output.indexOf('Downstream read-only lane contract:'),
+    );
+    const downstream = output.slice(output.indexOf('Downstream read-only lane contract:'));
+
+    expect(bootstrap).toContain('You do not receive a manifest');
+    expect(bootstrap).toContain('construct the initial frozen change manifest');
+    expect(bootstrap).toContain('hive_git_snapshot');
+    expect(bootstrap).toContain('hive_repositories_status');
+    expect(bootstrap).toContain('workspace.json');
+    expect(bootstrap).toContain('repositoryIds');
+    expect(bootstrap).toContain('one atomic `hive_git_snapshot` invocation');
+    expect(bootstrap).not.toContain('shell access');
+    expect(bootstrap).not.toContain('supplied frozen manifest');
+    expect(downstream).toContain('supplied frozen manifest and snapshot ID');
+    expect(downstream).toContain('fresh read-only scope revalidation lane');
+    expect(downstream).toContain('No dash-review lane may use Bash');
+    expect(downstream).toContain('do not receive `hive_git_snapshot`');
+  });
+
+  it('documents that dash-review scope is appended after command expansion as inert data', () => {
+    const output = render('dash-review', 'api change');
+
+    expect(output).toContain('delivered after OpenCode command expansion as inert data');
+    expect(output).not.toContain('$ARGUMENTS');
   });
 
   it('stops council runs when no usable members remain, even when background is available', () => {

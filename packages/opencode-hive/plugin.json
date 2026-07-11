@@ -33,6 +33,10 @@
       "description": "Run a read-only council and synthesize a recommendation"
     },
     {
+      "name": "/dash-review",
+      "description": "Review an implementation snapshot without changing files"
+    },
+    {
       "name": "/compact-summary",
       "description": "Produce a recovery summary for the current OpenCode session"
     }
@@ -64,6 +68,7 @@
     "hive_background_reconcile_batch",
     "hive_background_cancel",
     "hive_context_write",
-    "hive_status"
+    "hive_status",
+    "hive_git_snapshot"
   ]
 }

@@ -1,4 +1,5 @@
 import { HIVE_COMMANDS, type HiveCommandKey } from './registry.js';
+import type { HiveCommandMetadata } from './types.js';
 import type {
   HiveCommandContextFactory,
   HiveCommandRenderers,
@@ -14,6 +15,7 @@ export function buildHiveCommandMap(
       command.key,
       {
         description: command.description,
+        ...((command as HiveCommandMetadata).agent ? { agent: (command as HiveCommandMetadata).agent } : {}),
         run(args: string) {
           return renderers[command.key](args, createContext());
         },

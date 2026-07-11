@@ -5,10 +5,12 @@ export interface HiveCommandMetadata {
   key: string;
   name: string;
   description: string;
+  agent?: string;
 }
 
 export interface HiveRuntimeCommand {
   description: string;
+  agent?: string;
   run(args: string): Promise<string> | string;
 }
 
@@ -19,6 +21,16 @@ export interface HiveCommandContext {
   backgroundGuidance: BackgroundDelegationAvailability;
   council: CouncilConfig;
   agents: Record<string, HiveCommandAgentDescriptor>;
+  dashReviewLanes: HiveCommandDashReviewLane[];
+}
+
+export interface HiveCommandDashReviewLane {
+  taskTarget: string;
+  sourceAgent: string;
+  baseAgent: 'scout-researcher' | 'code-reviewer' | 'simplicity-reviewer';
+  description: string;
+  model?: string;
+  variant?: string;
 }
 
 export interface HiveCommandAgentDescriptor {
@@ -26,6 +38,8 @@ export interface HiveCommandAgentDescriptor {
   available: boolean;
   description: string;
   readOnlyCouncilEligible: boolean;
+  model?: string;
+  variant?: string;
 }
 
 export type HiveCommandContextFactory = () => HiveCommandContext;

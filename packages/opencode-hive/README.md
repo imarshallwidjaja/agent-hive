@@ -45,7 +45,7 @@ Modern plans sync numbered tasks only from `## Tasks`. Keep pure release or suit
 
 ### Operator Commands
 
-`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools, switch agents automatically, or make unavailable tools available to the current agent.
+`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. `/dash-review` is the exception: its generated OpenCode command binds to a private review primary.
 
 | Command | Purpose |
 |---------|---------|
@@ -56,6 +56,7 @@ Modern plans sync numbered tasks only from `## Tasks`. Keep pure release or suit
 | `/start-execution` | Start execution for an approved and synced plan. |
 | `/council-directive` | Turn rough input into a reusable directive for a council run. |
 | `/council` | Run a read-only council and synthesize a recommendation. |
+| `/dash-review [scope]` | Review one frozen implementation snapshot without changing files. |
 | `/compact-summary` | Produce a compact recovery summary for the current session. |
 
 `/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by `hive_plan_write`, review, approval, task sync, execution, and merge.
@@ -68,11 +69,28 @@ Routing depends on `agentMode`:
 |-------------|--------------|----------------|
 | `/interview`, `/implementation-brief`, `/hive-plan`, `/council-directive`, `/council` | Use `hive-master`. | Route or delegate to `architect-planner`. |
 | `/approve-sync-plan`, `/start-execution` | Use `hive-master`. | Route or delegate to `swarm-orchestrator`. |
+| `/dash-review` | Bound by `config.command` to a private review primary. | Bound by `config.command` to a private review primary. |
 | `/compact-summary` | Use `hive-master`. | Route or delegate to `scout-researcher`. |
 
-In dedicated mode, slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
+Except for `/dash-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
 
-Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set and the bundled background protocol is available. Use the existing Background Orchestration section and the `background-delegation` skill for the scheduler protocol; command text only points at it when the gate is open.
+`/dash-review` accepts a branch/ref/range/path/task/feature/description or another coherent implementation target. Arguments win. Without one, it infers the current implementation only when the conversation and Git/Hive context identify a coherent surface; otherwise it asks one clarification question and stops. OpenCode substitutes command templates and expands `!\`...\`` before plugin command hooks run. `/dash-review` therefore never interpolates raw arguments into its template. Its command hook appends the original argument string after expansion as inert review scope data. Shell-style argument fragments are not evaluated.
+
+The inert transport requires `@opencode-ai/plugin >=1.14.48`, which exposes OpenCode's `command.execute.before` hook. Earlier runtimes are not supported because they expand command templates before any safe plugin interception point.
+
+A mandatory read-only scope/lead scout constructs the frozen change manifest, causal scope, and content-sensitive fingerprint before the primary dispatches baseline or specialist reviewers. The scope lane uses `hive_repositories_status` for repository context, then reads the active composite workspace `workspace.json` to select `repositoryIds`; it does not trust the project repository config for workspace selection. It calls `hive_git_snapshot` once with optional refs/range, repository-relative paths, and output bounds, and cannot run Bash. In a composite workspace, omitting `repositoryIds` snapshots every manifest repository atomically. An explicit selection reports excluded IDs. A Git root with an unrelated or invalid `workspace.json` remains single-root; a Git root with a valid Hive composite manifest is rejected as ambiguous. The response includes per-repository snapshots and an aggregate fingerprint; any expected repository omission, error, drift, or truncation returns `NEEDS_DISCUSSION`. A fresh scope lane repeats the exact structured input before synthesis. The first response is findings only: it reports scope, coverage gaps, reviewer/model verdicts, and `APPROVE`, `REQUEST_CHANGES`, or `NEEDS_DISCUSSION`; it never creates Hive state or starts fixes.
+
+Untracked content is read sequentially with a 100-file, 2 MiB per-file, 8 MiB aggregate, and five-second capture limit. Crossing a limit fails the snapshot as incomplete; nothing is silently omitted from its fingerprint.
+
+Review lanes are generated as internal safe aliases from the built-in and eligible configured scout/code/simplicity sources. The aliases preserve each source's model, variant, prompt-derived review lens, and skills guidance while removing Hive context writes, mutation-capable Hive tools, and task recursion. The command renders each alias as a task target alongside the original source identity, description, model, and variant. `/dash-review` uses parallel blocking native `task()` calls only, even when the global background gate is open.
+
+Every dash-review safe alias, including scope/revalidation, uses a `'*': false` tool map. The primary enables only `read`, `glob`, `grep`, and native `task`; review lanes enable only the read tools; scope lanes additionally enable `hive_repositories_status` and `hive_git_snapshot`. The runtime guard runs before background or sandbox adapters and rechecks every primary and lane tool call against this exact allowlist. It denies Bash, edits, custom or MCP tools, Hive mutations, downstream snapshot access, and lane task recursion even if another session policy enables them. A primary task call must target a generated alias; missing dash caller or target metadata fails closed. `hive_git_snapshot` accepts no raw commands or flags, checks Gitlinks and concealed index paths, and executes fixed read-only Git argument arrays with bounded filesystem hashing. This constrains normal OpenCode permission evaluation but cannot prove an absolute filesystem boundary against a provider or tool implementation that ignores permissions.
+
+The runtime command agent is the private `__hive_dash_review_primary` identity so a pre-existing `customAgents.dash-reviewer` keeps its public model and variant behavior. The private primary uses the normal OpenCode model resolution path and has no public Hive configuration alias.
+
+For a Hive Builder ad-hoc run, review the existing run or branch, then give a later fix instruction to Hive Builder so it resumes the normal ad-hoc isolation and delegation flow. For a Hive feature run, review the task/feature or branch, then give the active Hive/Swarm primary a later fix instruction so it uses the feature DAG and task worktrees. Findings are review context, never auto-created tasks.
+
+Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set and the bundled background protocol is available. Use the existing Background Orchestration section and the `background-delegation` skill for the scheduler protocol; command text only points at it when the gate is open. `/dash-review` is a deliberate exception and remains blocking-only.
 
 ### Planning-mode delegation
 

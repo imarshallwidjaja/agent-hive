@@ -41,6 +41,12 @@ const EXPECTED_COMMANDS = [
     description: 'Run a read-only council and synthesize a recommendation',
   },
   {
+    key: 'dash-review',
+    name: '/dash-review',
+    description: 'Review an implementation snapshot without changing files',
+    agent: '__hive_dash_review_primary',
+  },
+  {
     key: 'compact-summary',
     name: '/compact-summary',
     description: 'Produce a recovery summary for the current OpenCode session',
@@ -54,7 +60,7 @@ function uniqueCount(values: string[]): number {
 describe('HIVE_COMMANDS', () => {
   it('defines the canonical command metadata in stable order', () => {
     expect(HIVE_COMMANDS).toEqual(EXPECTED_COMMANDS);
-    expect(HIVE_COMMANDS).toHaveLength(8);
+    expect(HIVE_COMMANDS).toHaveLength(9);
     expect(HIVE_COMMANDS.map((command) => command.name)).not.toContain('/hive');
   });
 

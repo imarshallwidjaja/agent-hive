@@ -4,6 +4,8 @@ import * as path from 'node:path';
 
 const schemaPath = path.resolve(import.meta.dir, '..', '..', 'schema', 'agent_hive.schema.json');
 const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf-8')) as Record<string, any>;
+const packageJsonPath = path.resolve(import.meta.dir, '..', '..', 'package.json');
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as { peerDependencies?: Record<string, string> };
 
 const validateConfigShape = (config: Record<string, any>): boolean => {
   if (Object.keys(config).some((key) => !Object.hasOwn(schema.properties, key))) {
@@ -54,6 +56,10 @@ const expectReservedNameToFail = (name: string): void => {
 };
 
 describe('agent_hive schema customAgents contract', () => {
+  it('requires the verified OpenCode command hook runtime', () => {
+    expect(packageJson.peerDependencies?.['@opencode-ai/plugin']).toBe('>=1.14.48');
+  });
+
   it('defines customAgents map and custom agent schema', () => {
     expect(schema.properties.customAgents).toBeDefined();
     expect(schema.properties.customAgents.additionalProperties).toEqual({
@@ -106,6 +112,13 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('code');
     expectReservedNameToFail('hive-builder');
     expectReservedNameToFail('builder');
+  });
+
+  it('keeps dash-reviewer exclusively available to existing custom agents', () => {
+    const reservedNames = schema.properties?.customAgents?.propertyNames?.not?.enum;
+
+    expect(reservedNames).not.toContain('dash-reviewer');
+    expect(schema.properties.agents.properties).not.toHaveProperty('dash-reviewer');
   });
 });
 

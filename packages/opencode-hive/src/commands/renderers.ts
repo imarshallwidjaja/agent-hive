@@ -73,6 +73,16 @@ function configuredGroupNames(context: HiveCommandContext): string {
   return names.length > 0 ? names.join(', ') : 'none configured';
 }
 
+function configuredDashReviewCandidates(context: HiveCommandContext): string {
+  const candidates = context.dashReviewLanes
+    .map((lane) => {
+      const model = lane.model ?? 'unknown';
+      const variant = lane.variant ?? 'unknown';
+      return `${lane.sourceAgent} (base: ${lane.baseAgent}; model: ${model}; variant: ${variant}; ${lane.description}; Task target: ${lane.taskTarget})`;
+    });
+  return candidates.length > 0 ? candidates.join('\n') : 'none registered';
+}
+
 function tokenizeArgs(args: string): string[] {
   const tokens: string[] = [];
   const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
@@ -312,6 +322,24 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     }
 
     return renderHybridCommand('council', context, councilInput);
+  },
+
+  'dash-review'(args, context) {
+    return renderHybridCommand('dash-review', context, {
+      details: [
+        `Target: ${topicOrCurrent(args, 'infer the coherent implementation from the current conversation and Git/Hive context')}`,
+        `Configured reviewer candidates:\n${configuredDashReviewCandidates(context)}`,
+      ],
+      doItems: [
+        'Follow the appended canonical review contract.',
+      ],
+      doNotItems: [
+        'Do not depart from the appended review-only contract.',
+      ],
+      outputItems: [
+        'The canonical review response described in the appended contract.',
+      ],
+    });
   },
 
   'compact-summary'(args, context) {

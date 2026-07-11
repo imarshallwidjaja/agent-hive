@@ -531,7 +531,7 @@ describe("ConfigService defaults", () => {
     expect(config.autoLoadSkills).toEqual(["verification", "custom-skill"]);
   });
 
-  it("skips hive-builder reserved custom agent name", () => {
+  it("preserves legacy custom dash-reviewer while skipping reserved custom agent names", () => {
     const service = new ConfigService();
     const configPath = service.getPath();
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
@@ -542,6 +542,12 @@ describe("ConfigService defaults", () => {
       JSON.stringify(
         {
           customAgents: {
+            "dash-reviewer": {
+              baseAgent: "code-reviewer",
+              description: "Existing custom reviewer.",
+              model: "provider/custom-reviewer",
+              variant: "high",
+            },
             "hive-builder": {
               baseAgent: "forager-worker",
               description: "Should be skipped as reserved.",
@@ -558,10 +564,20 @@ describe("ConfigService defaults", () => {
     );
 
     const custom = service.getCustomAgentConfigs();
+    expect(custom).toHaveProperty("dash-reviewer");
+    expect(service.getAgentConfig("dash-reviewer")).toMatchObject({
+      model: "provider/custom-reviewer",
+      variant: "high",
+    });
     expect(custom).not.toHaveProperty("hive-builder");
     expect(custom).not.toHaveProperty("builder");
 
     const warnedLines = warnSpy.mock.calls.map((call) => call.join(" "));
+    expect(
+      warnedLines.some(
+        (line) => line.includes("reserved") && line.includes('"dash-reviewer"'),
+      ),
+    ).toBe(false);
     expect(
       warnedLines.some(
         (line) => line.includes("reserved") && line.includes('"hive-builder"'),

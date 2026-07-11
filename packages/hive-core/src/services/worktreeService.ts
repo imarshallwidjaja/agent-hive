@@ -5,6 +5,11 @@ import type { ResolvedRepository, TaskStatus } from "../types.js";
 import type { MergeMessageSource } from '../utils/mergeMessage.js';
 import { selectMergeCommitMessage } from '../utils/mergeMessage.js';
 import { resolveFeatureDirectoryName } from "../utils/paths.js";
+import type {
+  TaskWorkspaceManifest as WorkspaceManifest,
+  WorkspaceManifestEntry,
+} from './workspaceManifest.js';
+import { readCompositeWorkspaceManifest } from './workspaceManifest.js';
 
 export type WorktreeMode = 'legacy' | 'composite';
 
@@ -139,27 +144,6 @@ export interface WorktreeConfig {
   repositoryResolver?: RepositoryResolver | (() => ResolvedRepository[]);
   /** Optional task-to-repoIds resolver. Defaults to reading from .hive/features/.../status.json when omitted. */
   taskRepoResolver?: TaskRepoResolver | ((feature: string, step: string) => string[] | undefined);
-}
-
-interface WorkspaceManifestEntry {
-  /** Worktree-relative path under the composite root (e.g., 'repos/api'). */
-  path: string;
-  /** Absolute path to the source repository git root (used to invoke git for this repo). */
-  repoRoot: string;
-  /** Stable absolute source repo path as configured in the repository manifest. */
-  repoPath: string;
-  branch: string;
-  commit: string;
-}
-
-interface WorkspaceManifest {
-  schemaVersion: 1;
-  feature: string;
-  task: string;
-  mode: 'composite';
-  repos: Record<string, WorkspaceManifestEntry>;
-  baseCommits: Record<string, string>;
-  createdAt: string;
 }
 
 interface RemoveOptions {
@@ -496,12 +480,8 @@ export class WorktreeService {
   }
 
   private async readWorkspaceManifest(feature: string, step: string): Promise<WorkspaceManifest | null> {
-    try {
-      const raw = await fs.readFile(this.getWorkspaceManifestPath(feature, step), 'utf-8');
-      return JSON.parse(raw) as WorkspaceManifest;
-    } catch {
-      return null;
-    }
+    const manifest = await readCompositeWorkspaceManifest(this.getCompositeRoot(feature, step));
+    return manifest?.mode === 'composite' ? manifest : null;
   }
 
   async get(feature: string, step: string): Promise<WorktreeInfo | null> {

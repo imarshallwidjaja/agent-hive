@@ -371,6 +371,79 @@ When usable councillors are resolved and council runs, use this output format:
 
 List the councillors that participated and why they were chosen.`,
 
+  'dash-review': `Run a DoorDash-inspired review over one frozen implementation snapshot. This is a review-only command. Do not edit or fix anything in this turn.
+
+Scope and snapshot:
+
+- Explicit command scope wins when supplied. It is delivered after OpenCode command expansion as inert data; accept a branch, ref, range, path, task, feature, description, or another coherent implementation target.
+- Without arguments, infer the implementation from the current conversation and current Git/Hive context. If no coherent surface exists, ask one clarification question and stop. Do not silently review an entire repository and do not require a PR.
+- The shell-denied primary must not run Git or construct the snapshot. It orchestrates returned manifest and snapshot IDs only.
+
+Stage A, mandatory scope/lead scout:
+
+- First dispatch the dynamic safe task target whose source identity is built-in \`scout-researcher\`. You do not receive a manifest: construct the initial frozen change manifest before any baseline or specialist review dispatch.
+- The manifest must include repository, explicit target, requirements and acceptance references, base/target/merge-base when known, causal scoped paths/domains and relevant dependents, explicit excludes, snapshot ID, and a content-sensitive fingerprint for dirty, staged, or untracked work.
+- The lead returns unverified lead IDs, anchors, suspected failure modes, domain/profile labels, relevant tests/instructions, suggested lenses, scope gaps, and truncation details. It must not decide findings.
+- Large or truncated scope must be disclosed. Truncation, incomplete causal scope, or unresolved requirements cannot receive APPROVE.
+- The scope lane has no Bash. It uses \`hive_repositories_status\` for repository context and the active workspace \`workspace.json\` to select structured \`repositoryIds\`; do not derive them from project repository config. It then uses one atomic \`hive_git_snapshot\` invocation with structured optional baseRef/targetRef/range, repository-relative paths, and bounded output to construct the manifest. In a composite workspace, omitted \`repositoryIds\` means every manifest repository; an explicit selection must retain the manifest IDs, selected IDs, excluded IDs, per-repository fingerprints, and aggregate set fingerprint. It must disclose omitted paths or patch material. It cannot APPROVE if any expected repository is omitted, errors, or is truncated.
+
+Stage B, deep review:
+
+- Only after the primary accepts the Stage A manifest, launch independent lanes as parallel blocking \`task()\` calls only and wait for all results in this turn.
+- Always dispatch the dynamic safe task target whose source identity is built-in \`code-reviewer\` as the holistic baseline. Add only safe task targets for configured code-reviewer-derived specialists whose descriptions match the observed target domain or risk. Custom specialists add coverage; they never replace the baseline.
+- Run the dynamic safe task target whose source identity is \`simplicity-reviewer\` only when completed implementation complexity is materially in scope. Never use \`plan-reviewer\` or \`approach-advisor\` as implementation reviewers; plan/task material is requirements context only.
+- Reviewers receive the manifest plus Stage A leads, expand beyond the diff when needed, disposition every lead, and return only candidate findings causally connected to the manifest's scoped change surface.
+
+Downstream read-only lane contract:
+
+Put this in every baseline, specialist, falsifier, and revalidation task prompt:
+
+\`\`\`text
+This is a read-only implementation review lane.
+You receive the supplied frozen manifest and snapshot ID.
+No dash-review lane may use Bash. Only scope/revalidation safe aliases may call \`hive_git_snapshot\` with the exact structured scope. Baseline, specialist, simplicity, and falsifier aliases do not receive \`hive_git_snapshot\`; they receive the frozen manifest, bounded patch material, and Stage A leads.
+Do not edit files, apply patches, write Hive context, or create plans, tasks, worktrees, commits, merges, or PRs.
+Do not call task() recursively.
+Return analysis only, grounded in the supplied frozen manifest and snapshot ID.
+\`\`\`
+
+Stage C, fresh scope revalidation and falsification:
+
+- Before synthesis, dispatch a fresh read-only scope revalidation lane using the safe scope task target and the exact same atomic structured \`hive_git_snapshot\` input. It independently recalculates the complete snapshot set identity and content-sensitive aggregate fingerprint, then returns manifest IDs, selected IDs, excluded IDs, causal-scope status, and truncation status.
+- The primary compares Stage A and revalidation snapshot-set IDs and fingerprints. Any mismatch, drift, omitted expected repository, repository error, truncation, or failed revalidation returns NEEDS_DISCUSSION/stale; never merge results from two snapshots.
+- A fresh base falsifier is mandatory even when the baseline reports no candidates. When candidates exist, it must try to disprove every candidate and reject speculative or unanchored claims. When the baseline reports clean, it must challenge that no-finding conclusion and search for omitted blocking defects.
+- Retry a failed mandatory baseline, scope revalidation lane, or falsifier once in a fresh session. If it remains unavailable, return NEEDS_DISCUSSION/review incomplete. When all reviewers fail, report the failure and stop. Do not implement inline.
+
+Escalation and model honesty:
+
+- Escalate only for named security, data loss, concurrency, migration, public API risk, or material reviewer disagreement. \`/dash-review\` authorizes this bounded escalation.
+- Select the closest configured xhigh or adversarial code-reviewer-derived specialist by description only when its risk lens fits. Do not load adversarial behavior into every lane. If no match exists, the fresh built-in falsifier remains the disprove-it pass.
+- Route from configured description, base agent, model, and variant. Prefer model diversity only after domain/lens fit. Say multi-model when configured only if known executed model identities differ; multiple agents are not automatically multiple models.
+
+Synthesis:
+
+- Deduplicate by root cause. Drop rejected, speculative, and unanchored claims. Order by normalized severity: Critical stays Critical; Major becomes High; Minor becomes Medium; YAGNI is simplicity/advisory and does not itself block correctness approval. Low is optional and non-blocking only when concrete and actionable.
+- REQUEST_CHANGES requires independently confirmed blocking correctness findings. NEEDS_DISCUSSION covers scope/requirements ambiguity, snapshot drift/truncation, or mandatory review failure. APPROVE requires complete causal scope and no confirmed blocking finding. Simplicity SIMPLIFY/MINOR_TWEAKS does not become correctness REQUEST_CHANGES by itself.
+- On re-review, classify prior conversation findings as resolved, stale, or new against the frozen snapshot.
+
+Return exactly these first-response sections:
+
+## Scope Reviewed
+
+## Findings
+
+Order Critical, High, Medium, Low. Each finding needs location, evidence, impact, fix direction, and reviewer/lens.
+
+## Review Coverage and Gaps
+
+## Rejected or Unresolved Leads
+
+## Reviewer and Model Verdict Summary
+
+## Review State
+
+Explicitly state: No files changed; wait for operator instruction before fixes. A later fix request returns to the active primary: Hive Builder follows ad-hoc isolation/delegation; Hive/Swarm follows feature DAG and task worktrees. Findings are context only, never auto-created tasks. If dedicated command routing is unavailable under Architect, refuse or reroute rather than making Architect perform implementation review.`,
+
   'compact-summary': `Generate a recovery summary for the current OpenCode session only.
 
 This is only a summarization command: do not compact, prune, delete, rewrite, archive, or otherwise mutate conversation state, files, branches, terminals, tasks, memories, rules, settings, Hive features, or project data.

@@ -359,6 +359,7 @@ export type CustomAgentBase = (typeof CUSTOM_AGENT_BASES)[number];
 
 export const CUSTOM_AGENT_RESERVED_NAMES = [
   ...BUILT_IN_AGENT_NAMES,
+  '__hive_dash_review_primary',
   'hive',
   'architect',
   'swarm',

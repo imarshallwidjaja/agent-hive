@@ -48,6 +48,7 @@ export const HIVE_TOOL_NAMES = [
   'hive_background_cancel',
   'hive_context_write',
   'hive_status',
+  'hive_git_snapshot',
 ] as const;
 
 export const SUPPORTED_PLUGIN_HOOKS = [
@@ -56,6 +57,7 @@ export const SUPPORTED_PLUGIN_HOOKS = [
   'chat.message',
   'experimental.chat.system.transform',
   'experimental.chat.messages.transform',
+  'command.execute.before',
   'tool.execute.before',
   'tool.execute.after',
 ] as const;

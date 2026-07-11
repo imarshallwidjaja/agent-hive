@@ -12,6 +12,7 @@ import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
 import { CODE_REVIEWER_PROMPT } from './code-reviewer';
 import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
+import { DASH_REVIEWER_PROMPT } from './dash-reviewer';
 import { buildWorkerPrompt } from '../utils/worker-prompt';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 
@@ -202,6 +203,19 @@ describe('Scout ast-grep references', () => {
 });
 
 describe('Specialized reviewer prompts', () => {
+  it('keeps dash-reviewer as a read-only review orchestrator rather than a reviewer or fixer', () => {
+    expect(DASH_REVIEWER_PROMPT).toContain('review orchestrator');
+    expect(DASH_REVIEWER_PROMPT).toContain('not a reviewer or fixer');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not edit files');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not use shell tools');
+    expect(DASH_REVIEWER_PROMPT).toContain('You do not have `hive_git_snapshot`');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not create or mutate Hive state');
+    expect(DASH_REVIEWER_PROMPT).toContain('native `task()`');
+    expect(DASH_REVIEWER_PROMPT).toContain('safe lane task targets');
+    expect(DASH_REVIEWER_PROMPT).not.toContain('scope/lead scout');
+    expect(DASH_REVIEWER_PROMPT).not.toContain('Do not run Git');
+  });
+
   it('keeps plan-reviewer focused on executable plans, not approach review', () => {
     expect(PLAN_REVIEWER_PROMPT).toContain('Can a capable Hive worker execute this plan without getting stuck?');
     expect(PLAN_REVIEWER_PROMPT).toContain('Do not judge whether the architecture or approach is optimal');
