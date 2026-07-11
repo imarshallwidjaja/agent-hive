@@ -3459,6 +3459,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
       const dashReviewerConfig = {
         temperature: 0.3,
         mode: 'primary' as const,
+        hidden: true,
         description: 'Dash Reviewer - Read-only implementation review orchestrator for frozen-snapshot review commands.',
         prompt: DASH_REVIEWER_PROMPT + HIVE_SYSTEM_PROMPT,
         tools: {

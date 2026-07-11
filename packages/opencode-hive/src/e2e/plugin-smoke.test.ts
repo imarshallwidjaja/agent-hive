@@ -603,13 +603,19 @@ Do it
     await hooks.config!(opencodeConfig);
 
     const configCommands = opencodeConfig.command as Record<string, { agent?: string; template?: string }>;
-    const agents = opencodeConfig.agent as Record<string, unknown>;
+    const agents = opencodeConfig.agent as Record<string, {
+      mode?: string;
+      hidden?: boolean;
+    }>;
+    const dashPrimary = agents['__hive_dash_review_primary'];
 
     expect(configCommands['dash-review'].agent).toBe('__hive_dash_review_primary');
     expect(configCommands['dash-review'].template).toContain('No implementation files');
     expect(configCommands['dash-review'].template).toContain('hive_review_workspace_claim');
     expect(configCommands['dash-review'].template).toContain('before deep review lanes');
-    expect(agents['__hive_dash_review_primary']).toBeDefined();
+    expect(dashPrimary).toBeDefined();
+    expect(dashPrimary.mode).toBe('primary');
+    expect(dashPrimary.hidden).toBe(true);
   });
 
   it('keeps dash-review command arguments inert until the post-expansion command hook appends them', async () => {
