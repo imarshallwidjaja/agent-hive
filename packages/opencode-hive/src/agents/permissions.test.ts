@@ -1289,11 +1289,19 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('hive-master has no tools filter (all tools allowed)', async () => {
+  it('hive-master allows all non-dash-review Hive tools and denies dash-review-only tools', async () => {
     const agents = await buildConfig('unified');
     const hiveTools = agents['hive-master']?.tools;
-    expect(hiveTools).toBeUndefined();
+    expect(hiveTools).toBeTruthy();
     expect(agents['hive-master']?.prompt).toBeUndefined();
+
+    expect(hiveTools).toEqual({
+      hive_git_snapshot: false,
+      hive_review_workspace_create: false,
+      hive_review_workspace_claim: false,
+      hive_review_workspace_inspect: false,
+      hive_review_workspace_cleanup: false,
+    });
   });
 
   it('hive-builder gets ad-hoc + repo manifest tools and disables task-backed worktree/plan tools by default', async () => {

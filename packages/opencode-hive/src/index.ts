@@ -3257,6 +3257,17 @@ Do not choose a custom subagent only because the task is important, complex, or 
         variant: hiveUserConfig.variant,
         temperature: hiveUserConfig.temperature ?? 0.5,
         description: 'Hive (Hybrid) - Plans + orchestrates. Detects phase, loads skills on-demand.',
+        tools: agentTools([
+          'hive_feature_create', 'hive_feature_complete',
+          'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
+          'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_plan_approve',
+          'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
+          'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_commit', 'hive_worktree_discard',
+          'hive_merge',
+          'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
+          'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
+          'hive_context_write', 'hive_status',
+        ]),
         permission: {
           question: "allow",
           skill: "allow",
