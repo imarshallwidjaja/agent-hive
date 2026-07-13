@@ -273,7 +273,7 @@ Task-backed worktree tools create feature/task records and appear in `hive_statu
 - **Scout** — hive_plan_read, hive_context_write, hive_status (3 tools)
 - **Hygienic** — hive_plan_read, hive_context_write, hive_status (3 tools)
 
-Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `skills.urls`, or `.opencode`/`.claude` discovery), not through a Hive plugin tool. Hive bundles are materialized into `.hive/generated/opencode-skills/` and registered ahead of user paths.
+Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `skills.urls`, or `.opencode`/`.claude` discovery), not through a Hive plugin tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered ahead of user paths.
 
 ### Workflow
 

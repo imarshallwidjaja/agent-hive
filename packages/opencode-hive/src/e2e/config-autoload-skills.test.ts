@@ -153,18 +153,22 @@ function getCurrentHiveManagedPath(opencodeConfig: Record<string, unknown>): str
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' });
 const TEST_ROOT_BASE = '/tmp/hive-config-autoload-skills-test';
-const HIVE_GENERATED_SEGMENT = path.join('.hive', 'generated', 'opencode-skills');
+const HIVE_GENERATED_SEGMENT = path.join('.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills');
 const PACKAGED_SKILLS_DIR = fileURLToPath(new URL('../../skills', import.meta.url));
 
 describe('config hook autoLoadSkills guidance', () => {
   let testRoot: string;
   let originalHome: string | undefined;
+  let originalOpenCodeConfigDir: string | undefined;
+  let originalXdgConfigHome: string | undefined;
   let originalExperimentalBackgroundSubagents: string | undefined;
   let originalExperimental: string | undefined;
   let originalFetch: typeof fetch;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalOpenCodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
     originalExperimentalBackgroundSubagents = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     originalExperimental = process.env.OPENCODE_EXPERIMENTAL;
     originalFetch = globalThis.fetch;
@@ -172,6 +176,8 @@ describe('config hook autoLoadSkills guidance', () => {
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'project-'));
     process.env.HOME = testRoot;
+    delete process.env.OPENCODE_CONFIG_DIR;
+    delete process.env.XDG_CONFIG_HOME;
     delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     delete process.env.OPENCODE_EXPERIMENTAL;
   });
@@ -183,6 +189,16 @@ describe('config hook autoLoadSkills guidance', () => {
       delete process.env.HOME;
     } else {
       process.env.HOME = originalHome;
+    }
+    if (originalOpenCodeConfigDir === undefined) {
+      delete process.env.OPENCODE_CONFIG_DIR;
+    } else {
+      process.env.OPENCODE_CONFIG_DIR = originalOpenCodeConfigDir;
+    }
+    if (originalXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
     }
     if (originalExperimentalBackgroundSubagents === undefined) {
       delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
@@ -630,12 +646,16 @@ describe('config hook autoLoadSkills guidance', () => {
 describe('config hook native skill registration', () => {
   let testRoot: string;
   let originalHome: string | undefined;
+  let originalOpenCodeConfigDir: string | undefined;
+  let originalXdgConfigHome: string | undefined;
   let originalExperimentalBackgroundSubagents: string | undefined;
   let originalExperimental: string | undefined;
   let originalFetch: typeof fetch;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalOpenCodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
     originalExperimentalBackgroundSubagents = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     originalExperimental = process.env.OPENCODE_EXPERIMENTAL;
     originalFetch = globalThis.fetch;
@@ -643,6 +663,8 @@ describe('config hook native skill registration', () => {
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'project-'));
     process.env.HOME = testRoot;
+    delete process.env.OPENCODE_CONFIG_DIR;
+    delete process.env.XDG_CONFIG_HOME;
     delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     delete process.env.OPENCODE_EXPERIMENTAL;
   });
@@ -654,6 +676,16 @@ describe('config hook native skill registration', () => {
       delete process.env.HOME;
     } else {
       process.env.HOME = originalHome;
+    }
+    if (originalOpenCodeConfigDir === undefined) {
+      delete process.env.OPENCODE_CONFIG_DIR;
+    } else {
+      process.env.OPENCODE_CONFIG_DIR = originalOpenCodeConfigDir;
+    }
+    if (originalXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
     }
     if (originalExperimentalBackgroundSubagents === undefined) {
       delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
@@ -671,7 +703,7 @@ describe('config hook native skill registration', () => {
     writeHiveConfig(testRoot, { agentMode: 'unified' });
     const userPathOne = path.join(testRoot, 'user-path-one');
     const userPathTwo = path.join(testRoot, 'user-path-two');
-    const staleHivePath = path.join(testRoot, '.hive', 'generated', 'opencode-skills', 'old-hash');
+    const staleHivePath = path.join(testRoot, HIVE_GENERATED_SEGMENT, 'old-hash');
     fs.mkdirSync(userPathOne, { recursive: true });
     fs.mkdirSync(userPathTwo, { recursive: true });
     fs.mkdirSync(staleHivePath, { recursive: true });
@@ -834,7 +866,7 @@ description: URL conflict
   it('preserves user paths and urls but skips Hive materialization when URL conflict scanning is incomplete', async () => {
     writeHiveConfig(testRoot, { agentMode: 'unified' });
     const userPath = path.join(testRoot, 'user-skill-path');
-    const staleHivePath = path.join(testRoot, '.hive', 'generated', 'opencode-skills', 'stale-hash');
+    const staleHivePath = path.join(testRoot, HIVE_GENERATED_SEGMENT, 'stale-hash');
     fs.mkdirSync(userPath, { recursive: true });
     createFileSkill(
       userPath,

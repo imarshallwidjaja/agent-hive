@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
@@ -6,8 +6,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
 
-const PARSER_VERSION = 'native-skill-parser-v1';
-const GENERATED_SKILLS_SEGMENTS = ['.hive', 'generated', 'opencode-skills'] as const;
 const DEFAULT_URL_FETCH_TIMEOUT_MS = 1500;
 
 export interface ParsedNativeSkill {
@@ -75,6 +73,10 @@ type BundledSkillSource = {
   skillPath: string;
   parsed: ParsedNativeSkill;
 };
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 
 function fallbackSanitization(content: string): string {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -208,32 +210,15 @@ function isTruthyEnv(value: string | undefined): boolean {
   return normalized !== '' && normalized !== '0' && normalized !== 'false' && normalized !== 'no';
 }
 
-function isFilesystemRoot(candidatePath: string): boolean {
-  const resolved = path.resolve(candidatePath);
-  return resolved === path.parse(resolved).root;
-}
-
-function generatedSkillsRoot(
-  worktree: string,
-  homeDir: string,
-  env: Record<string, string | undefined>,
-): string {
-  if (isFilesystemRoot(worktree)) {
-    return path.join(getGlobalOpenCodeConfigDir(env, homeDir), 'agent-hive', 'generated', 'opencode-skills');
-  }
-
-  return path.join(worktree, ...GENERATED_SKILLS_SEGMENTS);
-}
-
 function isHiveManagedSkillsPath(
   candidatePath: string,
-  worktree: string,
-  homeDir: string,
-  env: Record<string, string | undefined>,
+  generatedRoot: string,
+  legacyGeneratedRoot: string,
 ): boolean {
-  const root = generatedSkillsRoot(path.resolve(worktree), homeDir, env);
   const resolved = path.resolve(candidatePath);
-  return resolved === root || resolved.startsWith(`${root}${path.sep}`);
+  return [generatedRoot, legacyGeneratedRoot].some(
+    (root) => resolved === root || resolved.startsWith(`${root}${path.sep}`),
+  );
 }
 
 function resolveConfiguredSkillPath(rawPath: string, directory: string, homeDir: string): string {
@@ -292,7 +277,7 @@ async function scanSkillMarkdownFiles(rootDir: string): Promise<string[]> {
     }
   }
 
-  return matches.sort();
+  return matches.sort(compareCodeUnits);
 }
 
 async function scanOpenCodeSkillDirs(opencodeDir: string): Promise<string[]> {
@@ -334,7 +319,7 @@ async function readBundledSkills(packagedSkillsDir: string, logger: Logger): Pro
     }
   }
 
-  return skills.sort((left, right) => left.directoryName.localeCompare(right.directoryName));
+  return skills.sort((left, right) => compareCodeUnits(left.directoryName, right.directoryName));
 }
 
 function setNativeSkill(
@@ -559,27 +544,66 @@ function mergeNativeSkills(
   return merged;
 }
 
-function buildGeneratedHash(
-  bundledSkills: BundledSkillSource[],
-  disabledSkills: Set<string>,
-  conflicts: Map<string, string>,
-): string {
+async function buildGeneratedHash(stagedRoot: string): Promise<string> {
   const hash = createHash('sha256');
-  hash.update(PARSER_VERSION);
+  const entriesToHash: Array<{
+    outputPath: string;
+    sourcePath: string;
+    type: 'directory' | 'file' | 'symlink';
+    mode?: number;
+  }> = [];
 
-  for (const skill of bundledSkills) {
-    hash.update(skill.parsed.name);
-    hash.update(skill.directoryName);
-    hash.update(skill.parsed.description);
-    hash.update(skill.parsed.content);
+  const queue = (await fsp.readdir(stagedRoot)).map((childName) => ({
+    sourcePath: path.join(stagedRoot, childName),
+    outputPath: childName,
+  }));
+
+  while (queue.length > 0) {
+    const current = queue.pop()!;
+    const stats = await fsp.lstat(current.sourcePath);
+
+    if (stats.isDirectory()) {
+      entriesToHash.push({ ...current, type: 'directory', mode: stats.mode & 0o7777 });
+      for (const childName of await fsp.readdir(current.sourcePath)) {
+        queue.push({
+          sourcePath: path.join(current.sourcePath, childName),
+          outputPath: path.posix.join(current.outputPath, childName),
+        });
+      }
+      continue;
+    }
+
+    if (stats.isFile()) {
+      entriesToHash.push({ ...current, type: 'file', mode: stats.mode & 0o7777 });
+      continue;
+    }
+
+    if (stats.isSymbolicLink()) {
+      entriesToHash.push({ ...current, type: 'symlink' });
+      continue;
+    }
+
+    throw new Error(`Unsupported bundled skill filesystem entry: ${current.outputPath}`);
   }
 
-  for (const skillName of [...disabledSkills].sort()) {
-    hash.update(`disabled:${skillName}`);
-  }
+  entriesToHash.sort((left, right) => compareCodeUnits(left.outputPath, right.outputPath));
+  const updateField = (value: string | Buffer): void => {
+    const bytes = typeof value === 'string' ? Buffer.from(value) : value;
+    hash.update(`${bytes.byteLength}:`);
+    hash.update(bytes);
+  };
 
-  for (const [skillName, source] of [...conflicts.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    hash.update(`conflict:${skillName}:${source}`);
+  for (const entry of entriesToHash) {
+    updateField(entry.outputPath);
+    updateField(entry.type);
+    if (entry.mode !== undefined) {
+      updateField(entry.mode.toString(8));
+    }
+    if (entry.type === 'file') {
+      updateField(await fsp.readFile(entry.sourcePath));
+    } else if (entry.type === 'symlink') {
+      updateField(await fsp.readlink(entry.sourcePath));
+    }
   }
 
   return hash.digest('hex').slice(0, 16);
@@ -587,68 +611,65 @@ function buildGeneratedHash(
 
 async function materializeSkills(
   generatedRoot: string,
-  hash: string,
   bundledSkills: BundledSkillSource[],
+  logger: Logger,
 ): Promise<{ materializedPath: string; skillsByName: Map<string, PreparedHiveSkill> }> {
-  const materializedPath = path.join(generatedRoot, hash);
-  const tempPath = path.join(generatedRoot, `${hash}.tmp-${process.pid}-${Date.now()}`);
-  const skillsByName = new Map<string, PreparedHiveSkill>();
+  await fsp.mkdir(generatedRoot, { recursive: true });
+  const tempPath = path.join(generatedRoot, `.tmp-${randomUUID()}`);
+  await fsp.mkdir(tempPath);
 
-  for (const skill of bundledSkills) {
-    skillsByName.set(skill.parsed.name, {
-      name: skill.parsed.name,
-      description: skill.parsed.description,
-      content: skill.parsed.content,
-      sourceDir: skill.sourceDir,
-      materializedDir: path.join(materializedPath, skill.directoryName),
-    });
-  }
+  try {
+    for (const skill of bundledSkills) {
+      const destinationDir = path.join(tempPath, skill.directoryName);
+      await fsp.cp(skill.sourceDir, destinationDir, { recursive: true, verbatimSymlinks: true });
+    }
 
-  if (await isDirectory(materializedPath)) {
+    const stagedSkills: Array<{ source: BundledSkillSource; parsed: ParsedNativeSkill }> = [];
+    for (const skill of bundledSkills) {
+      const stagedSkillPath = path.join(tempPath, skill.directoryName, 'SKILL.md');
+      const parsed = parseNativeSkillMarkdown(stagedSkillPath, await fsp.readFile(stagedSkillPath, 'utf8'), logger);
+      if (!parsed) {
+        throw new Error(
+          `Bundled skill source changed during materialization: staged SKILL.md for expected name "${skill.parsed.name}" in folder "${skill.directoryName}" is invalid.`,
+        );
+      }
+      if (parsed.name !== skill.parsed.name) {
+        throw new Error(
+          `Bundled skill source changed during materialization: expected name "${skill.parsed.name}" in folder "${skill.directoryName}", staged name was "${parsed.name}".`,
+        );
+      }
+      stagedSkills.push({ source: skill, parsed });
+    }
+
+    const hash = await buildGeneratedHash(tempPath);
+    const materializedPath = path.join(generatedRoot, hash);
+    if (!(await isDirectory(materializedPath))) {
+      try {
+        await fsp.rename(tempPath, materializedPath);
+      } catch (error) {
+        if (!(await isDirectory(materializedPath))) {
+          throw error;
+        }
+      }
+    }
+
+    const skillsByName = new Map<string, PreparedHiveSkill>();
+    for (const skill of stagedSkills) {
+      skillsByName.set(skill.parsed.name, {
+        name: skill.parsed.name,
+        description: skill.parsed.description,
+        content: skill.parsed.content,
+        sourceDir: skill.source.sourceDir,
+        materializedDir: path.join(materializedPath, skill.source.directoryName),
+      });
+    }
+
     return {
       materializedPath,
       skillsByName,
     };
-  }
-
-  await fsp.rm(tempPath, { recursive: true, force: true });
-  await fsp.mkdir(tempPath, { recursive: true });
-
-  for (const skill of bundledSkills) {
-    const destinationDir = path.join(tempPath, skill.directoryName);
-    await fsp.cp(skill.sourceDir, destinationDir, { recursive: true });
-  }
-
-  await fsp.mkdir(generatedRoot, { recursive: true });
-  try {
-    await fsp.rename(tempPath, materializedPath);
-  } catch (error) {
-    if (await isDirectory(materializedPath)) {
-      await fsp.rm(tempPath, { recursive: true, force: true });
-    } else {
-      throw error;
-    }
-  }
-
-  return {
-    materializedPath,
-    skillsByName,
-  };
-}
-
-async function cleanupTempMaterializations(generatedRoot: string): Promise<void> {
-  try {
-    const entries = await fsp.readdir(generatedRoot, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue;
-      }
-      if (!entry.name.includes('.tmp-')) {
-        continue;
-      }
-      await fsp.rm(path.join(generatedRoot, entry.name), { recursive: true, force: true });
-    }
-  } catch {
+  } finally {
+    await fsp.rm(tempPath, { recursive: true, force: true });
   }
 }
 
@@ -658,12 +679,19 @@ export async function prepareNativeHiveSkills(
   const logger = getLogger(input.logger);
   const homeDir = getHomeDir(input);
   const env = { ...process.env, ...input.env };
+  const generatedRoot = path.join(
+    getGlobalOpenCodeConfigDir(env, homeDir),
+    'agent-hive',
+    'generated',
+    'opencode-skills',
+  );
+  const legacyGeneratedRoot = path.resolve(input.worktree, '.hive', 'generated', 'opencode-skills');
   const packagedSkillsDir = input.packagedSkillsDir ?? resolvePackagedSkillsDir(input.moduleUrl);
   const bundledSkills = await readBundledSkills(packagedSkillsDir, logger);
   const disabledSkills = new Set(input.disableSkills ?? []);
   const resolvedUserPaths = (input.opencodeConfig?.skills?.paths ?? [])
     .map((skillPath) => resolveConfiguredSkillPath(skillPath, input.directory, homeDir))
-    .filter((skillPath) => !isHiveManagedSkillsPath(skillPath, input.worktree, homeDir, env));
+    .filter((skillPath) => !isHiveManagedSkillsPath(skillPath, generatedRoot, legacyGeneratedRoot));
   const localNativeSkills = await scanLocalNativeSkills(input, resolvedUserPaths, logger);
   const urlScan = await scanUrlNativeSkills(input, logger);
 
@@ -713,10 +741,7 @@ export async function prepareNativeHiveSkills(
     };
   }
 
-  const hash = buildGeneratedHash(eligibleSkills, disabledSkills, allConflicts);
-  const generatedRoot = generatedSkillsRoot(input.worktree, homeDir, env);
-  const { materializedPath, skillsByName } = await materializeSkills(generatedRoot, hash, eligibleSkills);
-  await cleanupTempMaterializations(generatedRoot);
+  const { materializedPath, skillsByName } = await materializeSkills(generatedRoot, eligibleSkills, logger);
 
   return {
     materializedPath,

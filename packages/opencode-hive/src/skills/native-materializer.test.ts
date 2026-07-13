@@ -1,5 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
+import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
@@ -40,6 +42,8 @@ description:
 `;
 
 let tempDirs: string[] = [];
+let originalOpenCodeConfigDir: string | undefined;
+let originalXdgConfigHome: string | undefined;
 
 function createTempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-materializer-test-'));
@@ -130,6 +134,10 @@ function createWarningRecorder(): WarningRecorder {
 
 beforeEach(() => {
   tempDirs = [];
+  originalOpenCodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
+  originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+  delete process.env.OPENCODE_CONFIG_DIR;
+  delete process.env.XDG_CONFIG_HOME;
 });
 
 afterEach(() => {
@@ -137,6 +145,16 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   tempDirs = [];
+  if (originalOpenCodeConfigDir === undefined) {
+    delete process.env.OPENCODE_CONFIG_DIR;
+  } else {
+    process.env.OPENCODE_CONFIG_DIR = originalOpenCodeConfigDir;
+  }
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME;
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+  }
 });
 
 describe('parseNativeSkillMarkdown', () => {
@@ -243,6 +261,313 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
     ]);
   });
 
+  it('uses nested support-file bytes in the materialized cache identity', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'cache-me');
+    const supportFile = createSkillFile(skillDir, 'reference/nested/example.md', '# First version\n');
+
+    const firstResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    fs.writeFileSync(supportFile, '# Second version\n', 'utf8');
+
+    const secondResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    expect(secondResult.materializedPath).not.toBe(firstResult.materializedPath);
+    expect(
+      fs.readFileSync(path.join(secondResult.materializedPath!, 'cache-me', 'reference', 'nested', 'example.md'), 'utf8'),
+    ).toBe('# Second version\n');
+  });
+
+  it('publishes copied bytes under their own cache identity when the source changes at the copy boundary', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'cache-me');
+    const supportFile = createSkillFile(skillDir, 'reference/example.md', 'before\n');
+    const originalCp = fsp.cp;
+    let mutated = false;
+    const cpSpy = spyOn(fsp, 'cp').mockImplementation(async (...args: Parameters<typeof fsp.cp>) => {
+      if (!mutated) {
+        mutated = true;
+        fs.writeFileSync(supportFile, 'after\n', 'utf8');
+      }
+      return originalCp(...args);
+    });
+
+    let firstResult: Awaited<ReturnType<typeof prepareNativeHiveSkills>>;
+    try {
+      firstResult = await prepareNativeHiveSkills({
+        directory: worktree,
+        worktree,
+        packagedSkillsDir: bundledSkillsDir,
+        env: { HOME: worktree },
+      });
+    } finally {
+      cpSpy.mockRestore();
+    }
+
+    const secondResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    expect(
+      fs.readFileSync(path.join(firstResult.materializedPath!, 'cache-me', 'reference', 'example.md'), 'utf8'),
+    ).toBe('after\n');
+    expect(firstResult.materializedPath).toBe(secondResult.materializedPath);
+  });
+
+  it('uses staged SKILL.md metadata and body when they change at the copy boundary', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'metadata-skill', 'metadata-skill', 'Before description');
+    const skillPath = path.join(skillDir, 'SKILL.md');
+    const stagedContent = `---
+name: metadata-skill
+description: After description
+---
+# After body
+`;
+    const originalCp = fsp.cp;
+    const cpSpy = spyOn(fsp, 'cp').mockImplementation(async (...args: Parameters<typeof fsp.cp>) => {
+      fs.writeFileSync(skillPath, stagedContent, 'utf8');
+      return originalCp(...args);
+    });
+
+    let firstResult: Awaited<ReturnType<typeof prepareNativeHiveSkills>>;
+    try {
+      firstResult = await prepareNativeHiveSkills({
+        directory: worktree,
+        worktree,
+        packagedSkillsDir: bundledSkillsDir,
+        env: { HOME: worktree },
+      });
+    } finally {
+      cpSpy.mockRestore();
+    }
+
+    const secondResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+    const firstSkill = firstResult.skillsByName.get('metadata-skill');
+    const secondSkill = secondResult.skillsByName.get('metadata-skill');
+
+    expect(fs.readFileSync(path.join(firstResult.materializedPath!, 'metadata-skill', 'SKILL.md'), 'utf8'))
+      .toBe(stagedContent);
+    expect(firstSkill).toMatchObject({
+      name: 'metadata-skill',
+      description: 'After description',
+      content: '# After body\n',
+    });
+    expect(firstSkill).toEqual(secondSkill);
+    expect(firstResult.materializedPath).toBe(secondResult.materializedPath);
+  });
+
+  it('rejects a staged skill name changed to a native conflict before publication', async () => {
+    const homeDir = createTempDir();
+    const bundledSkillsDir = path.join(homeDir, 'fixtures', 'bundled-skills');
+    const nativeSkillsDir = path.join(homeDir, 'native-skills');
+    const opencodeConfigDir = path.join(homeDir, 'opencode-config');
+    const generatedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
+    const foreignTempPath = path.join(generatedRoot, 'foreign.tmp-owner');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'renamed-skill', 'renamed-skill');
+    const skillPath = path.join(skillDir, 'SKILL.md');
+    createNativeSkill(nativeSkillsDir, 'native-conflict/SKILL.md', 'native-conflict');
+    fs.mkdirSync(foreignTempPath, { recursive: true });
+
+    const originalCp = fsp.cp;
+    const cpSpy = spyOn(fsp, 'cp').mockImplementation(async (...args: Parameters<typeof fsp.cp>) => {
+      fs.writeFileSync(skillPath, `---
+name: native-conflict
+description: Changed to a native conflict
+---
+# Changed name
+`, 'utf8');
+      return originalCp(...args);
+    });
+
+    try {
+      await expect(
+        prepareNativeHiveSkills({
+          directory: homeDir,
+          worktree: homeDir,
+          packagedSkillsDir: bundledSkillsDir,
+          env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+          opencodeConfig: { skills: { paths: [nativeSkillsDir] } },
+        }),
+      ).rejects.toThrow(
+        'Bundled skill source changed during materialization: expected name "renamed-skill" in folder "renamed-skill", staged name was "native-conflict".',
+      );
+    } finally {
+      cpSpy.mockRestore();
+    }
+
+    expect(fs.readdirSync(generatedRoot)).toEqual(['foreign.tmp-owner']);
+  });
+
+  it('uses symlink targets in the materialized cache identity', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'linked-skill');
+    const linkPath = path.join(skillDir, 'current-reference');
+
+    createSkillFile(skillDir, 'references/first.md', '# Same content\n');
+    createSkillFile(skillDir, 'references/second.md', '# Same content\n');
+    fs.symlinkSync(path.join('references', 'first.md'), linkPath);
+
+    const firstResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    fs.unlinkSync(linkPath);
+    fs.symlinkSync(path.join('references', 'second.md'), linkPath);
+
+    const secondResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    expect(secondResult.materializedPath).not.toBe(firstResult.materializedPath);
+    expect(fs.readlinkSync(path.join(secondResult.materializedPath!, 'linked-skill', 'current-reference'))).toBe(
+      path.join('references', 'second.md'),
+    );
+  });
+
+  it('uses copied file mode bits in the materialized cache identity', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'executable-skill');
+    const executablePath = createSkillFile(skillDir, 'scripts/run.sh', '#!/bin/sh\n');
+
+    fs.chmodSync(executablePath, 0o644);
+    const firstResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    fs.chmodSync(executablePath, 0o755);
+    const secondResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    expect(secondResult.materializedPath).not.toBe(firstResult.materializedPath);
+    expect(fs.statSync(path.join(secondResult.materializedPath!, 'executable-skill', 'scripts', 'run.sh')).mode & 0o777)
+      .toBe(0o755);
+  });
+
+  it('uses empty directories in the materialized cache identity', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'empty-directory-skill');
+
+    const firstResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    fs.mkdirSync(path.join(skillDir, 'empty-reference'));
+    const secondResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+    });
+
+    expect(secondResult.materializedPath).not.toBe(firstResult.materializedPath);
+    expect(fs.statSync(path.join(secondResult.materializedPath!, 'empty-directory-skill', 'empty-reference')).isDirectory())
+      .toBe(true);
+  });
+
+  it('rejects unsupported staged entries and removes its temporary directory', async () => {
+    const homeDir = createTempDir();
+    const bundledSkillsDir = path.join(homeDir, 'fixtures', 'bundled-skills');
+    const opencodeConfigDir = path.join(homeDir, 'opencode-config');
+    const generatedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
+    createBundledSkillDir(bundledSkillsDir, 'special-entry-skill');
+
+    const originalCp = fsp.cp;
+    const server = net.createServer();
+    const cpSpy = spyOn(fsp, 'cp').mockImplementation(async (...args: Parameters<typeof fsp.cp>) => {
+      await originalCp(...args);
+      const destinationDir = String(args[1]);
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(path.join(destinationDir, 'local.socket'), resolve);
+      });
+    });
+
+    try {
+      await expect(
+        prepareNativeHiveSkills({
+          directory: homeDir,
+          worktree: homeDir,
+          packagedSkillsDir: bundledSkillsDir,
+          env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+        }),
+      ).rejects.toThrow('Unsupported bundled skill filesystem entry: special-entry-skill/local.socket');
+    } finally {
+      cpSpy.mockRestore();
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      }
+    }
+
+    expect(fs.readdirSync(generatedRoot).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
+  });
+
+  it('removes only its temporary directory when staging fails', async () => {
+    const homeDir = createTempDir();
+    const bundledSkillsDir = path.join(homeDir, 'fixtures', 'bundled-skills');
+    const opencodeConfigDir = path.join(homeDir, 'opencode-config');
+    const generatedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
+    const foreignTempPath = path.join(generatedRoot, 'foreign.tmp-owner');
+    createBundledSkillDir(bundledSkillsDir, 'copy-failure-skill');
+    fs.mkdirSync(foreignTempPath, { recursive: true });
+
+    const cpSpy = spyOn(fsp, 'cp').mockRejectedValue(new Error('injected copy failure'));
+    try {
+      await expect(
+        prepareNativeHiveSkills({
+          directory: homeDir,
+          worktree: homeDir,
+          packagedSkillsDir: bundledSkillsDir,
+          env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+        }),
+      ).rejects.toThrow('injected copy failure');
+    } finally {
+      cpSpy.mockRestore();
+    }
+
+    expect(fs.readdirSync(generatedRoot)).toEqual(['foreign.tmp-owner']);
+  });
+
   it('excludes disabled Hive skills without affecting native path permissions', async () => {
     const worktree = createTempDir();
     const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
@@ -273,17 +598,53 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
     expect(fs.readdirSync(result.materializedPath!)).toEqual(['enabled-skill']);
   });
 
+  it('reuses output identity when only exclusion reporting changes', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const userSkillRoot = path.join(worktree, 'user-skills');
+
+    createBundledSkillDir(bundledSkillsDir, 'included-skill');
+    createBundledSkillDir(bundledSkillsDir, 'excluded-skill');
+    const conflictSource = createNativeSkill(userSkillRoot, 'excluded-skill/SKILL.md', 'excluded-skill');
+
+    const firstResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+      opencodeConfig: { skills: { paths: [userSkillRoot] } },
+    });
+    const secondResult = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      disableSkills: ['excluded-skill'],
+      env: { HOME: worktree },
+      opencodeConfig: { skills: { paths: [userSkillRoot] } },
+    });
+
+    expect(secondResult.materializedPath).toBe(firstResult.materializedPath);
+    expect(firstResult.skipped).toContainEqual({
+      name: 'excluded-skill',
+      reason: 'conflict',
+      source: conflictSource,
+    });
+    expect(secondResult.skipped).toContainEqual({ name: 'excluded-skill', reason: 'disabled' });
+  });
+
   it('preserves user skill paths, removes stale Hive paths from config, and prepends the current generated path', async () => {
     const worktree = createTempDir();
     const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
     const userPathOne = path.join(worktree, 'user-path-one');
     const userPathTwo = path.join(worktree, 'user-path-two');
     const staleHivePath = path.join(worktree, '.hive', 'generated', 'opencode-skills', 'old-hash');
+    const nearbyHivePath = path.join(worktree, '.hive', 'generated', 'user-skills');
 
     createBundledSkillDir(bundledSkillsDir, 'new-skill');
     fs.mkdirSync(userPathOne, { recursive: true });
     fs.mkdirSync(userPathTwo, { recursive: true });
     fs.mkdirSync(staleHivePath, { recursive: true });
+    fs.mkdirSync(nearbyHivePath, { recursive: true });
 
     const result = await prepareNativeHiveSkills({
       directory: worktree,
@@ -292,19 +653,19 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
       env: { HOME: worktree },
       opencodeConfig: {
         skills: {
-          paths: [staleHivePath, userPathOne, userPathTwo],
+          paths: [staleHivePath, nearbyHivePath, userPathOne, userPathTwo],
         },
       },
     });
 
     expect(result.materializedPath).toBeDefined();
-    expect(result.skillPaths).toEqual([result.materializedPath!, userPathOne, userPathTwo]);
+    expect(result.skillPaths).toEqual([result.materializedPath!, nearbyHivePath, userPathOne, userPathTwo]);
   });
 
   it('keeps old generated hash directories available for already-running sessions', async () => {
     const worktree = createTempDir();
     const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
-    const oldHashPath = path.join(worktree, '.hive', 'generated', 'opencode-skills', 'old-hash');
+    const oldHashPath = path.join(worktree, '.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills', 'old-hash');
 
     createBundledSkillDir(bundledSkillsDir, 'current-skill');
     createSkillFile(oldHashPath, 'old-skill/SKILL.md', `---
@@ -357,25 +718,167 @@ description: Old generated skill
     expect(fs.existsSync(sessionMarker)).toBe(true);
   });
 
-  it('uses the OpenCode config directory when the resolved worktree is the filesystem root', async () => {
+  it('uses the OpenCode config directory for an ordinary worktree', async () => {
     const homeDir = createTempDir();
+    const worktree = path.join(homeDir, 'project');
     const bundledSkillsDir = path.join(homeDir, 'fixtures', 'bundled-skills');
     const opencodeConfigDir = path.join(homeDir, 'opencode-config');
     const expectedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
 
+    fs.mkdirSync(worktree, { recursive: true });
     createBundledSkillDir(bundledSkillsDir, 'safe-skill');
 
     const result = await prepareNativeHiveSkills({
-      directory: path.parse(process.cwd()).root,
-      worktree: path.parse(process.cwd()).root,
+      directory: worktree,
+      worktree,
       packagedSkillsDir: bundledSkillsDir,
       env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
     });
 
     expect(result.materializedPath).toBeDefined();
     expect(result.materializedPath!.startsWith(`${expectedRoot}${path.sep}`)).toBe(true);
-    expect(result.materializedPath!.startsWith(path.join(path.parse(process.cwd()).root, '.hive'))).toBe(false);
     expect(result.skillPaths[0]).toBe(result.materializedPath!);
+  });
+
+  it('does not remove temporary materializations owned by another process', async () => {
+    const homeDir = createTempDir();
+    const bundledSkillsDir = path.join(homeDir, 'fixtures', 'bundled-skills');
+    const opencodeConfigDir = path.join(homeDir, 'opencode-config');
+    const generatedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
+    const foreignTempPath = path.join(generatedRoot, 'foreign-hash.tmp-999999-1');
+
+    createBundledSkillDir(bundledSkillsDir, 'safe-skill');
+    fs.mkdirSync(foreignTempPath, { recursive: true });
+
+    await prepareNativeHiveSkills({
+      directory: path.parse(process.cwd()).root,
+      worktree: path.parse(process.cwd()).root,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+    });
+
+    expect(fs.existsSync(foreignTempPath)).toBe(true);
+  });
+
+  it('converges concurrent same-hash materializations without owned temporary directories', async () => {
+    const homeDir = createTempDir();
+    const bundledSkillsDir = path.join(homeDir, 'fixtures', 'bundled-skills');
+    const opencodeConfigDir = path.join(homeDir, 'opencode-config');
+    const generatedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'concurrent-skill');
+    createSkillFile(skillDir, 'reference/nested/example.md', '# Complete support file\n');
+    const input = {
+      directory: homeDir,
+      worktree: homeDir,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+    };
+
+    const [firstResult, secondResult] = await Promise.all([
+      prepareNativeHiveSkills(input),
+      prepareNativeHiveSkills(input),
+    ]);
+
+    expect(secondResult.materializedPath).toBe(firstResult.materializedPath);
+    expect(listRelativeFiles(firstResult.materializedPath!)).toEqual([
+      'concurrent-skill/SKILL.md',
+      'concurrent-skill/reference/nested/example.md',
+    ]);
+    expect(fs.readdirSync(generatedRoot).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
+  });
+
+  it('accepts EPERM from rename when the destination directory exists', async () => {
+    const homeDir = createTempDir();
+    const bundledSkillsDir = path.join(homeDir, 'fixtures', 'bundled-skills');
+    const opencodeConfigDir = path.join(homeDir, 'opencode-config');
+    const generatedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
+
+    createBundledSkillDir(bundledSkillsDir, 'eperm-resilient-skill');
+
+    // First call: determine the content-addressed hash path
+    const firstResult = await prepareNativeHiveSkills({
+      directory: homeDir,
+      worktree: homeDir,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+    });
+
+    const materializedPath = firstResult.materializedPath!;
+    expect(materializedPath.startsWith(generatedRoot)).toBe(true);
+
+    // Delete hash dir so the second call tries to publish again
+    fs.rmSync(materializedPath, { recursive: true });
+
+    // Spy on rename: simulate a concurrent winner creating the destination
+    // and the OS returning EPERM instead of EEXIST (Windows behavior)
+    const originalRename = fsp.rename;
+    const renameSpy = spyOn(fsp, 'rename').mockImplementation(
+      async (src: string, dest: string) => {
+        if (dest === materializedPath) {
+          fs.mkdirSync(materializedPath, { recursive: true });
+          const winnerMarker = path.join(materializedPath, 'winner-marker');
+          fs.writeFileSync(winnerMarker, 'placed by concurrent winner', 'utf8');
+          const err = new Error('permission denied') as NodeJS.ErrnoException;
+          err.code = 'EPERM';
+          throw err;
+        }
+        return originalRename(src, dest);
+      },
+    );
+
+    try {
+      const secondResult = await prepareNativeHiveSkills({
+        directory: homeDir,
+        worktree: homeDir,
+        packagedSkillsDir: bundledSkillsDir,
+        env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+      });
+
+      // Must accept the race loss and reuse the winner's directory
+      expect(secondResult.materializedPath).toBe(materializedPath);
+      expect(fs.existsSync(path.join(materializedPath, 'winner-marker'))).toBe(true);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  it('rejects EPERM from rename when the destination directory does not exist and removes the temporary directory', async () => {
+    const homeDir = createTempDir();
+    const bundledSkillsDir = path.join(homeDir, 'fixtures', 'bundled-skills');
+    const opencodeConfigDir = path.join(homeDir, 'opencode-config');
+    const generatedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
+
+    createBundledSkillDir(bundledSkillsDir, 'eperm-reject-skill');
+
+    const firstResult = await prepareNativeHiveSkills({
+      directory: homeDir,
+      worktree: homeDir,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+    });
+
+    const materializedPath = firstResult.materializedPath!;
+    expect(materializedPath.startsWith(generatedRoot)).toBe(true);
+
+    fs.rmSync(materializedPath, { recursive: true });
+
+    const epermError = Object.assign(new Error('permission denied'), { code: 'EPERM' });
+    const renameSpy = spyOn(fsp, 'rename').mockRejectedValue(epermError);
+
+    try {
+      await expect(
+        prepareNativeHiveSkills({
+          directory: homeDir,
+          worktree: homeDir,
+          packagedSkillsDir: bundledSkillsDir,
+          env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+        }),
+      ).rejects.toThrow(epermError);
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(fs.readdirSync(generatedRoot).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
   });
 });
 
@@ -620,7 +1123,7 @@ description: Project native skill
   it('ignores stale Hive generated paths during conflict scanning and removes them from returned paths', async () => {
     const worktree = createTempDir();
     const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
-    const staleHivePath = path.join(worktree, '.hive', 'generated', 'opencode-skills', 'stale-hash');
+    const staleHivePath = path.join(worktree, '.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills', 'stale-hash');
 
     createBundledSkillDir(bundledSkillsDir, 'stale-conflict');
     createNativeSkill(staleHivePath, 'stale-conflict/SKILL.md', 'stale-conflict');
