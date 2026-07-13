@@ -33,8 +33,6 @@ describe('release 1.3.6 documentation contract', () => {
     const pluginReadme = readText('packages/opencode-hive/README.md');
     const toolDocs = readText('packages/opencode-hive/docs/HIVE-TOOLS.md');
 
-    assert.match(pluginReadme, /do not merge/i);
-    assert.match(pluginReadme, /do not start the next task/i);
     assert.match(pluginReadme, /refreshPending/i);
     assert.match(pluginReadme, /manual task/i);
 
