@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-13
+
+### Fixed
+
+- Bundled Hive skills now materialize under `agent-hive/generated/opencode-skills/` in the global OpenCode config directory. Legacy project-local `.hive/generated/opencode-skills/` paths are filtered from non-Hive skill resolution.
+- Materialization cache identity now comes from staged files, directories, symlinks, mode bits, and relative paths, so support files and structure changes invalidate the cache.
+- Each staged `SKILL.md` is reparsed before storage. Its skill name must match the bundled name discovered at startup; changes to its description or body are accepted.
+- Concurrent materializations use UUID-owned staging directories, clean up only their own staging directory, and accept an existing content-addressed destination created by a competing rename, including when Windows reports `EPERM`.
+
 ## [2.0.0] - 2026-07-13
 
 ### Breaking
