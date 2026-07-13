@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-13
+
+### Breaking
+- Agent Hive runtime configuration now comes only from `~/.config/opencode/agent_hive.json`. Project-local `.hive/agent-hive.json` and legacy `.opencode/agent_hive.json` files are ignored, including malformed files. Move any active settings into the global file before upgrading.
+- Global repository manifests now require an absolute `repositoryRoot` matching the active checkout. Repository paths remain relative to that root and must stay inside it, preventing one global manifest from activating composite mode in unrelated projects.
+
+### Added
+- `/dash-review` now runs an orchestrated, findings-only review against one frozen disposable workspace. It supports single and composite repositories, captures dirty file state without mutating the implementation source, checks source identity before synthesis, and cleans up through an ownership-scoped private review primary.
+- Dash review lanes are generated from eligible scout, code-review, and simplicity-review sources while preserving their model, variant, review lens, and skill guidance.
+- Native delegation now uses one fresh terminal subagent session per primary goal. Returned task IDs are board handles only; blocked continuation starts a new worker in the existing worktree, while failed or retry work starts a fresh worker with a self-contained handoff.
+
+### Changed
+- Omitted Hive merge and squash messages are derived from source branch commits and returned with their message source. Explicit merge/squash messages remain supported; rebase continues to reject custom messages.
+- Primary-agent guidance now treats delegation as the baseline for non-trivial work, keeps numbered plan tasks at worker-branch granularity, and reserves direct work for bounded coordination and integration checks.
+- Brainstorming keeps validated designs in the current session unless the user or repository workflow explicitly requires a tracked document.
+- The VS Code Tracked Repositories view now reads the global manifest only when its `repositoryRoot` matches the open workspace.
+- Version-bearing package, lockfile, plugin manifest, changelog, and release-note surfaces are refreshed to `2.0.0`.
+
+### Fixed
+- XML background-task notifications now derive runtime state only from the opening `<task>` tag, tolerate attribute order changes, and do not mistake `status:` text inside task results for terminal state.
+- Dash review internals no longer leak the private command agent or review-only tools into the public Hive agent surface.
+- Dash review scope, lane permissions, source-drift checks, cleanup ownership, and frozen-workspace path handling now fail closed instead of silently widening review authority or reading live source.
+- Orchestration prompts no longer split one implementation assignment into micro-tasks or treat background wait mode as the definition of delegation.
+
 ## [1.7.1] - 2026-06-29
 
 ### Fixed
