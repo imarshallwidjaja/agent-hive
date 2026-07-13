@@ -29,7 +29,7 @@ Watches `.hive/` for changes and refreshes automatically.
 Viewer + limited operator archive tree for `.hive/background-jobs.json`. It shows scoped background job state written by `oc-arkive`, including runtime state and coordination metadata. Right-clicking a non-archived job (Running, Stale, etc.) shows **Archive Background Job**, which moves it to the collapsed Ignored group without cancelling or killing any running process.
 
 ### Tracked Repositories
-Viewer-only tree for `.hive/agent-hive.json` repository manifests. It shows the project-relative repositories that `oc-arkive` uses for manifest-backed workspaces.
+Viewer-only tree for the repository manifest in `~/.config/opencode/agent_hive.json` when its `repositoryRoot` matches the current workspace. It shows the project-relative repositories that `oc-arkive` uses for manifest-backed workspaces.
 
 ## Usage
 

@@ -456,7 +456,7 @@ export interface HiveConfig {
     'hive-builder'?: AgentModelConfig;
   };
   customAgents?: Record<string, CustomAgentConfig>;
-  /** Global council command group configuration. Project-local values are ignored by runtime merge. */
+  /** Global council command group configuration. */
   council?: CouncilConfig;
   /** Sandbox mode for worker isolation */
   sandbox?: 'none' | 'docker';
@@ -464,7 +464,9 @@ export interface HiveConfig {
   dockerImage?: string;
   /** Reuse Docker containers per worktree (default: true when sandbox is 'docker') */
   persistentContainers?: boolean;
-  /** Project-scoped repository manifest. Ignored when loaded only from global config for orchestration. */
+  /** Absolute project root to which the global repository manifest applies. */
+  repositoryRoot?: string;
+  /** Repository manifest with paths relative to repositoryRoot. */
   repositories?: RepositoryConfig[];
   /** Hook execution cadence (number of turns between hook invocations). Key = hook name, Value = cadence (1 = every turn, 3 = every 3rd turn) */
   hook_cadence?: Record<string, number>;

@@ -258,7 +258,7 @@ describe("ConfigService defaults", () => {
     expect(service.get().agentMode).toBe('unified');
   });
 
-  it("does not fall back to legacy project config when the new project config is invalid", () => {
+  it("ignores both project config filenames", () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-local-config-test-'));
     try {
       const service = new ConfigService(projectDir);
@@ -266,13 +266,13 @@ describe("ConfigService defaults", () => {
       const legacyProjectConfigPath = path.join(projectDir, '.opencode', 'agent_hive.json');
 
       fs.mkdirSync(path.dirname(newProjectConfigPath), { recursive: true });
-      fs.writeFileSync(newProjectConfigPath, JSON.stringify(['invalid-config-shape']));
+      fs.writeFileSync(newProjectConfigPath, '{invalid json');
 
       fs.mkdirSync(path.dirname(legacyProjectConfigPath), { recursive: true });
       fs.writeFileSync(
         legacyProjectConfigPath,
         JSON.stringify({
-          agentMode: 'dedicated',
+          sandbox: 'docker',
         }),
       );
 
@@ -280,19 +280,13 @@ describe("ConfigService defaults", () => {
 
       expect(config).toEqual(DEFAULT_HIVE_CONFIG);
       expect(service.getActiveReadSourceType()).toBe('global');
-      expect(service.getLastFallbackWarning()).toEqual({
-        message: `Failed to read project config at ${newProjectConfigPath}; global config at ${service.getPath()} is missing; using defaults`,
-        sourceType: 'project',
-        sourcePath: newProjectConfigPath,
-        fallbackType: 'defaults',
-        reason: 'validation_error',
-      });
+      expect(service.getLastFallbackWarning()).toBeNull();
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true });
     }
   });
 
-  it('init() preserves project-local config and does not write global defaults', () => {
+  it('init() writes global defaults even when a project root is supplied', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-init-config-test-'));
     try {
       const service = new ConfigService(projectDir);
@@ -308,9 +302,9 @@ describe("ConfigService defaults", () => {
 
       const config = service.init();
 
-      expect(config.sandbox).toBe('docker');
-      expect(service.getActiveReadSourceType()).toBe('project');
-      expect(fs.existsSync(service.getPath())).toBe(false);
+      expect(config).toEqual(DEFAULT_HIVE_CONFIG);
+      expect(service.getActiveReadSourceType()).toBe('global');
+      expect(fs.existsSync(service.getPath())).toBe(true);
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true });
     }
@@ -979,10 +973,11 @@ describe("ConfigService sandbox config", () => {
   });
 });
 
-describe('ConfigService project-aware read source selection', () => {
-  it('reads from project config when project config exists and is valid', () => {
+describe('ConfigService global-only read source selection', () => {
+  it('ignores both project config filenames and reads all runtime policy from global config', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
     const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
+    const legacyProjectConfigPath = path.join(projectRoot, '.opencode', 'agent_hive.json');
     const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
 
     fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
@@ -990,293 +985,25 @@ describe('ConfigService project-aware read source selection', () => {
       projectConfigPath,
       JSON.stringify({
         sandbox: 'docker',
+        customAgents: {
+          'project-agent': { baseAgent: 'forager-worker', description: 'Project agent' },
+        },
       }),
     );
+    fs.mkdirSync(path.dirname(legacyProjectConfigPath), { recursive: true });
+    fs.writeFileSync(legacyProjectConfigPath, '{malformed project config');
 
     fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
     fs.writeFileSync(
       globalConfigPath,
       JSON.stringify({
         sandbox: 'none',
-      }),
-    );
-
-    const service = new ConfigService(projectRoot);
-    const config = service.get();
-
-    expect(config.sandbox).toBe('docker');
-    expect(service.getActiveReadSourceType()).toBe('project');
-    expect(service.getActiveReadPath()).toBe(projectConfigPath);
-    expect(service.getLastFallbackWarning()).toBeNull();
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it('keeps global-only settings from global config when project config exists', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
-    const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
-    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
-
-    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
-    fs.writeFileSync(
-      projectConfigPath,
-      JSON.stringify({
-        agentMode: 'unified',
-        disableMcps: ['project-mcp'],
         agents: {
-          'forager-worker': { variant: 'low' },
-        },
-        council: {
-          defaultGroup: 'project-review',
-          groups: {
-            'project-review': {
-              members: ['project-agent'],
-            },
-          },
-        },
-        sandbox: 'docker',
-        repositories: [{ id: 'api', path: './api' }],
-      }),
-    );
-
-    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
-    fs.writeFileSync(
-      globalConfigPath,
-      JSON.stringify({
-        agentMode: 'dedicated',
-        disableMcps: ['global-mcp'],
-        agents: {
-          'forager-worker': { variant: 'high' },
+          'forager-worker': { autoLoadSkills: ['global-skill'] },
         },
         customAgents: {
-          'forager-ui': {
-            baseAgent: 'forager-worker',
-            description: 'Use for UI-heavy implementation tasks.',
-            autoLoadSkills: ['react-best-practices'],
-          },
+          'global-agent': { baseAgent: 'forager-worker', description: 'Global agent' },
         },
-        council: {
-          defaultGroup: 'global-review',
-          groups: {
-            'global-review': {
-              members: ['global-agent'],
-            },
-          },
-        },
-        sandbox: 'none',
-      }),
-    );
-
-    const service = new ConfigService(projectRoot);
-    const config = service.get();
-
-    expect(config.agentMode).toBe('dedicated');
-    expect(config.disableMcps).toEqual(['global-mcp']);
-    expect(config.agents?.['forager-worker']?.variant).toBe('high');
-    expect(config.council?.defaultGroup).toBe('global-review');
-    expect(config.council?.groups?.['global-review']).toEqual({ members: ['global-agent'] });
-    expect(config.council?.groups).not.toHaveProperty('project-review');
-    expect(config.customAgents?.['forager-ui']).toEqual({
-      baseAgent: 'forager-worker',
-      description: 'Use for UI-heavy implementation tasks.',
-      autoLoadSkills: ['react-best-practices'],
-    });
-    expect(config.sandbox).toBe('docker');
-    expect(config.repositories).toEqual([{ id: 'api', path: './api' }]);
-    expect(service.getActiveReadSourceType()).toBe('project');
-    expect(service.getActiveReadPath()).toBe(projectConfigPath);
-    expect(service.getLastFallbackWarning()).toBeNull();
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it('falls back to legacy project config when the new project config is missing', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
-    const legacyProjectConfigPath = path.join(projectRoot, '.opencode', 'agent_hive.json');
-
-    fs.mkdirSync(path.dirname(legacyProjectConfigPath), { recursive: true });
-    fs.writeFileSync(
-      legacyProjectConfigPath,
-      JSON.stringify({
-        sandbox: 'docker',
-      }),
-    );
-
-    const service = new ConfigService(projectRoot);
-    const config = service.get();
-
-    expect(config.sandbox).toBe('docker');
-    expect(service.getActiveReadSourceType()).toBe('project');
-    expect(service.getActiveReadPath()).toBe(legacyProjectConfigPath);
-    expect(service.getLastFallbackWarning()).toBeNull();
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it('falls back to global config when project config is missing', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
-    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
-
-    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
-    fs.writeFileSync(
-      globalConfigPath,
-      JSON.stringify({
-        sandbox: 'docker',
-      }),
-    );
-
-    const service = new ConfigService(projectRoot);
-    const config = service.get();
-
-    expect(config.sandbox).toBe('docker');
-    expect(service.getActiveReadSourceType()).toBe('global');
-    expect(service.getActiveReadPath()).toBe(globalConfigPath);
-    expect(service.getLastFallbackWarning()).toBeNull();
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it('falls back to global config and records warning metadata when project config is invalid', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
-    const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
-    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
-
-    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
-    fs.writeFileSync(projectConfigPath, JSON.stringify(['invalid-config-shape']));
-
-    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
-    fs.writeFileSync(
-      globalConfigPath,
-      JSON.stringify({
-        sandbox: 'docker',
-      }),
-    );
-
-    const service = new ConfigService(projectRoot);
-    const config = service.get();
-
-    expect(config.sandbox).toBe('docker');
-    expect(service.getActiveReadSourceType()).toBe('global');
-    expect(service.getActiveReadPath()).toBe(globalConfigPath);
-    expect(service.getLastFallbackWarning()).toEqual({
-      message: `Failed to read project config at ${projectConfigPath}; using global config at ${globalConfigPath}`,
-      sourceType: 'project',
-      sourcePath: projectConfigPath,
-      fallbackType: 'global',
-      fallbackPath: globalConfigPath,
-      reason: 'validation_error',
-    });
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it('falls back to global config when project config has invalid object field types', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
-    const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
-    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
-
-    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
-    fs.writeFileSync(
-      projectConfigPath,
-      JSON.stringify({
-        sandbox: 123,
-      }),
-    );
-
-    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
-    fs.writeFileSync(
-      globalConfigPath,
-      JSON.stringify({
-        sandbox: 'docker',
-      }),
-    );
-
-    const service = new ConfigService(projectRoot);
-    const config = service.get();
-
-    expect(config.sandbox).toBe('docker');
-    expect(service.getActiveReadSourceType()).toBe('global');
-    expect(service.getActiveReadPath()).toBe(globalConfigPath);
-    expect(service.getLastFallbackWarning()).toEqual({
-      message: `Failed to read project config at ${projectConfigPath}; using global config at ${globalConfigPath}`,
-      sourceType: 'project',
-      sourcePath: projectConfigPath,
-      fallbackType: 'global',
-      fallbackPath: globalConfigPath,
-      reason: 'validation_error',
-    });
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it('falls back to global config when project config has invalid nested built-in agent fields', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
-    const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
-    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
-
-    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
-    fs.writeFileSync(
-      projectConfigPath,
-      JSON.stringify({
-        agents: {
-          'forager-worker': {
-            autoLoadSkills: 'bad-skill-shape',
-          },
-        },
-      }),
-    );
-
-    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
-    fs.writeFileSync(
-      globalConfigPath,
-      JSON.stringify({
-        sandbox: 'docker',
-      }),
-    );
-
-    const service = new ConfigService(projectRoot);
-    const config = service.get();
-
-    expect(config.sandbox).toBe('docker');
-    expect(service.getActiveReadSourceType()).toBe('global');
-    expect(service.getActiveReadPath()).toBe(globalConfigPath);
-    expect(service.getLastFallbackWarning()).toEqual({
-      message: `Failed to read project config at ${projectConfigPath}; using global config at ${globalConfigPath}`,
-      sourceType: 'project',
-      sourcePath: projectConfigPath,
-      fallbackType: 'global',
-      fallbackPath: globalConfigPath,
-      reason: 'validation_error',
-    });
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  it('falls back to global config when project config has malformed council structure', () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
-    const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
-    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
-
-    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
-    fs.writeFileSync(
-      projectConfigPath,
-      JSON.stringify({
-        sandbox: 'docker',
-        council: {
-          groups: {
-            review: {
-              members: 'bad-member-shape',
-            },
-          },
-        },
-      }),
-    );
-
-    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
-    fs.writeFileSync(
-      globalConfigPath,
-      JSON.stringify({
-        sandbox: 'none',
       }),
     );
 
@@ -1284,16 +1011,35 @@ describe('ConfigService project-aware read source selection', () => {
     const config = service.get();
 
     expect(config.sandbox).toBe('none');
+    expect(service.getAgentConfig('forager-worker').autoLoadSkills).toContain('global-skill');
+    expect(service.getCustomAgentConfigs()).toHaveProperty('global-agent');
+    expect(service.getCustomAgentConfigs()).not.toHaveProperty('project-agent');
     expect(service.getActiveReadSourceType()).toBe('global');
     expect(service.getActiveReadPath()).toBe(globalConfigPath);
-    expect(service.getLastFallbackWarning()).toEqual({
-      message: `Failed to read project config at ${projectConfigPath}; using global config at ${globalConfigPath}`,
-      sourceType: 'project',
-      sourcePath: projectConfigPath,
-      fallbackType: 'global',
-      fallbackPath: globalConfigPath,
-      reason: 'validation_error',
-    });
+    expect(service.getLastFallbackWarning()).toBeNull();
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it('reads global config when project config is missing', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
+    const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
+
+    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+    fs.writeFileSync(
+      globalConfigPath,
+      JSON.stringify({
+        sandbox: 'docker',
+      }),
+    );
+
+    const service = new ConfigService(projectRoot);
+    const config = service.get();
+
+    expect(config.sandbox).toBe('docker');
+    expect(service.getActiveReadSourceType()).toBe('global');
+    expect(service.getActiveReadPath()).toBe(globalConfigPath);
+    expect(service.getLastFallbackWarning()).toBeNull();
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
@@ -1372,7 +1118,7 @@ describe('ConfigService project-aware read source selection', () => {
     expect(service.getLastFallbackWarning()).toBeNull();
   });
 
-  it('falls back to defaults when both project and global configs are invalid', () => {
+  it('reports only the global failure when project and global configs are invalid', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
     const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
     const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
@@ -1404,9 +1150,9 @@ describe('ConfigService project-aware read source selection', () => {
     expect(service.getActiveReadSourceType()).toBe('global');
     expect(service.getActiveReadPath()).toBe(globalConfigPath);
     expect(service.getLastFallbackWarning()).toEqual({
-      message: `Failed to read project config at ${projectConfigPath}; global config at ${globalConfigPath} is also invalid; using defaults`,
-      sourceType: 'project',
-      sourcePath: projectConfigPath,
+      message: `Failed to read global config at ${globalConfigPath}; using defaults`,
+      sourceType: 'global',
+      sourcePath: globalConfigPath,
       fallbackType: 'defaults',
       reason: 'validation_error',
     });
@@ -1414,7 +1160,7 @@ describe('ConfigService project-aware read source selection', () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it('falls back to defaults when project config is invalid and global config is missing', () => {
+  it('uses defaults without warning when project config is invalid and global config is missing', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-'));
     const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
     const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
@@ -1437,13 +1183,7 @@ describe('ConfigService project-aware read source selection', () => {
     expect(config).toEqual(DEFAULT_HIVE_CONFIG);
     expect(service.getActiveReadSourceType()).toBe('global');
     expect(service.getActiveReadPath()).toBe(globalConfigPath);
-    expect(service.getLastFallbackWarning()).toEqual({
-      message: `Failed to read project config at ${projectConfigPath}; global config at ${globalConfigPath} is missing; using defaults`,
-      sourceType: 'project',
-      sourcePath: projectConfigPath,
-      fallbackType: 'defaults',
-      reason: 'validation_error',
-    });
+    expect(service.getLastFallbackWarning()).toBeNull();
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
@@ -1453,16 +1193,17 @@ describe('ConfigService repository manifest validation', () => {
   it('accepts repositories as an array of repository ID and path entries', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-repositories-'));
     try {
-      const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
-      fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+      const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
+      fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
       fs.writeFileSync(
-        projectConfigPath,
+        globalConfigPath,
         JSON.stringify({
+          repositoryRoot: projectRoot,
           repositories: [
             { id: 'api', path: 'api' },
             { id: 'web-ui', path: './web-ui' },
-            { id: 'data.v2', path: '/tmp/data-v2' },
-            { id: 'api_v2', path: '/tmp/api-v2' },
+            { id: 'data.v2', path: './data-v2' },
+            { id: 'api_v2', path: './api-v2' },
           ],
         }),
       );
@@ -1472,8 +1213,8 @@ describe('ConfigService repository manifest validation', () => {
       expect(config.repositories).toEqual([
         { id: 'api', path: 'api' },
         { id: 'web-ui', path: './web-ui' },
-        { id: 'data.v2', path: '/tmp/data-v2' },
-        { id: 'api_v2', path: '/tmp/api-v2' },
+        { id: 'data.v2', path: './data-v2' },
+        { id: 'api_v2', path: './api-v2' },
       ]);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -1481,18 +1222,20 @@ describe('ConfigService repository manifest validation', () => {
   });
 
   it.each([
+    { name: 'an empty array', repositories: [] },
     { name: 'a non-array value', repositories: { id: 'api', path: 'api' } },
     { name: 'an invalid repository ID', repositories: [{ id: 'Api', path: 'api' }] },
     { name: 'a double-dot repository ID', repositories: [{ id: 'api..v2', path: 'api' }] },
     { name: 'a non-string repository path', repositories: [{ id: 'api', path: 123 }] },
     { name: 'an empty repository path', repositories: [{ id: 'api', path: '' }] },
+    { name: 'a repository path outside repositoryRoot', repositories: [{ id: 'api', path: '../outside' }] },
     { name: 'a repository entry with extra fields', repositories: [{ id: 'api', path: 'api', branch: 'main' }] },
   ])('falls back when repositories contains $name', ({ repositories }) => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-repositories-'));
     try {
-      const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
-      fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
-      fs.writeFileSync(projectConfigPath, JSON.stringify({ repositories }));
+      const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
+      fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+      fs.writeFileSync(globalConfigPath, JSON.stringify({ repositoryRoot: projectRoot, repositories }));
 
       const service = new ConfigService(projectRoot);
 
@@ -1501,5 +1244,98 @@ describe('ConfigService repository manifest validation', () => {
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+
+  it('rejects raw parent repository path segments on read and set without changing stored state', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-repositories-'));
+    try {
+      const service = new ConfigService(projectRoot);
+      const configPath = service.getPath();
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({
+        repositoryRoot: projectRoot,
+        repositories: [{ id: 'api', path: 'packages/../api' }],
+      }));
+
+      expect(service.get()).toEqual(DEFAULT_HIVE_CONFIG);
+      expect(service.getLastFallbackWarning()?.reason).toBe('validation_error');
+
+      const original = `${JSON.stringify({
+        sandbox: 'docker',
+        repositoryRoot: projectRoot,
+        repositories: [{ id: 'api', path: './api' }],
+      }, null, 2)}\n`;
+      fs.writeFileSync(configPath, original);
+      const writeService = new ConfigService(projectRoot);
+      const cached = writeService.get();
+
+      expect(() => writeService.set({
+        repositories: [{ id: 'api', path: 'packages/../api' }],
+      })).toThrow('Invalid global Agent Hive config');
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+      expect(writeService.get()).toBe(cached);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ConfigService write validation and persistence', () => {
+  it('rejects an invalid merged config without changing the stored file', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    const original = `${JSON.stringify({ sandbox: 'docker' }, null, 2)}\n`;
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, original);
+
+    expect(() => service.set({ repositories: [] })).toThrow('Invalid global Agent Hive config');
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+
+  it('rejects unknown top-level fields and non-positive hook cadence on read', () => {
+    const configPath = new ConfigService().getPath();
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+    for (const invalid of [{ unknown: true }, { hook_cadence: { 'chat.message': 0 } }]) {
+      fs.writeFileSync(configPath, JSON.stringify(invalid));
+      const service = new ConfigService();
+      expect(service.get()).toEqual(DEFAULT_HIVE_CONFIG);
+      expect(service.getLastFallbackWarning()?.reason).toBe('validation_error');
+    }
+  });
+
+  it('keeps the existing file and cache when atomic persistence fails', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    const original = `${JSON.stringify({ sandbox: 'docker' }, null, 2)}\n`;
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, original);
+    expect(service.get().sandbox).toBe('docker');
+
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('rename failed');
+    });
+    try {
+      expect(() => service.set({ sandbox: 'none' })).toThrow('rename failed');
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+    expect(service.get().sandbox).toBe('docker');
+  });
+
+  it('rejects writing a manifest whose active repository root does not exist', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    const original = `${JSON.stringify({ sandbox: 'none' }, null, 2)}\n`;
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, original);
+
+    expect(() => service.set({
+      repositoryRoot: path.join(tempHome, 'missing-project'),
+      repositories: [{ id: 'api', path: './api' }],
+    })).toThrow('Repository root does not exist');
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
   });
 });

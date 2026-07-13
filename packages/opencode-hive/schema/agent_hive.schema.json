@@ -2,9 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "title": "Agent Hive Configuration",
-  "description": "Configuration schema for Agent Hive config files. User/session policy is read from ~/.config/opencode/agent_hive.json. Project files at <project>/.hive/agent-hive.json, or legacy <project>/.opencode/agent_hive.json, are overlays for project-scoped fields only: sandbox, dockerImage, persistentContainers, and repositories. If the project config is invalid, Hive surfaces a runtime warning and uses the global config/defaults.",
+  "description": "Configuration schema for ~/.config/opencode/agent_hive.json, the only Agent Hive runtime configuration source. Project-local .hive/agent-hive.json and .opencode/agent_hive.json files are ignored.",
   "type": "object",
   "additionalProperties": false,
+  "dependentRequired": {
+    "repositoryRoot": ["repositories"],
+    "repositories": ["repositoryRoot"]
+  },
   "properties": {
     "$schema": {
       "type": "string",
@@ -14,20 +18,30 @@
       "type": "string",
       "enum": ["none", "docker"],
       "default": "none",
-      "description": "Project-scoped sandbox isolation mode. 'none' runs commands directly; 'docker' wraps bash commands in Docker containers."
+      "description": "Global sandbox isolation mode. 'none' runs commands directly; 'docker' wraps bash commands in Docker containers."
     },
     "dockerImage": {
       "type": "string",
-      "description": "Project-scoped Docker image to use for sandbox. Auto-detected from project files if omitted (e.g., node:22-slim for Node.js projects)."
+      "description": "Global Docker image override. Auto-detected from active project files if omitted (e.g., node:22-slim for Node.js projects)."
     },
     "persistentContainers": {
       "type": "boolean",
       "default": true,
       "description": "Reuse Docker containers per worktree (docker exec) instead of creating new ones per command (docker run --rm). Default: true when sandbox is 'docker'."
     },
+    "omoSlimEnabled": {
+      "type": "boolean",
+      "description": "Enable compatibility with the oh-my-opencode slim agent profile."
+    },
+    "repositoryRoot": {
+      "type": "string",
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)",
+      "description": "Absolute project root to which repositories applies. The manifest activates only when this value and the active project root resolve to the same checkout. Required when repositories is present."
+    },
     "repositories": {
       "type": "array",
-      "description": "Project-scoped repository manifest. Entries identify git repositories by a safe lowercase ID and a project-relative or absolute path. Global manifests are ignored for orchestration.",
+      "minItems": 1,
+      "description": "Globally stored repository manifest scoped by repositoryRoot. Entry paths are relative to repositoryRoot and must stay inside it.",
       "items": {
         "$ref": "#/$defs/repositoryConfig"
       }
@@ -37,21 +51,21 @@
       "items": {
         "type": "string"
       },
-      "description": "Globally enable hive tools for specific features. Read from the global user config; project-local values are ignored by runtime config resolution."
+      "description": "Globally enable hive tools for specific features."
     },
     "disableSkills": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "Globally disable specific Hive bundled skills (e.g., ['brainstorming', 'writing-plans']). Read from the global user config; project-local values are ignored by runtime config resolution. Disabled skills are excluded from Hive materialization and Hive bundled autoload. Does not block user or native skills with the same name."
+      "description": "Globally disable specific Hive bundled skills (e.g., ['brainstorming', 'writing-plans']). Disabled skills are excluded from Hive materialization and Hive bundled autoload. Does not block user or native skills with the same name."
     },
     "disableMcps": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "Globally disable specific MCP servers (e.g., ['websearch', 'ast_grep']). Read from the global user config; project-local values are ignored by runtime config resolution. Available: websearch, context7, grep_app, ast_grep"
+      "description": "Globally disable specific MCP servers (e.g., ['websearch', 'ast_grep']). Available: websearch, context7, grep_app, ast_grep"
     },
     "agentMode": {
       "type": "string",
@@ -60,11 +74,11 @@
         "dedicated"
       ],
       "default": "unified",
-      "description": "Agent specialization mode. Read from the global user config; project-local values are ignored by runtime config resolution. 'unified' (default) uses a single hybrid agent for all roles; 'dedicated' uses specialized agents for each role."
+      "description": "Agent specialization mode. 'unified' (default) uses a single hybrid agent for all roles; 'dedicated' uses specialized agents for each role."
     },
     "hook_cadence": {
       "type": "object",
-      "description": "Global hook execution cadence configuration. Read from the global user config; project-local values are ignored by runtime config resolution. Key = hook name, Value = number of turns between invocations (1 = every turn, 3 = every 3rd turn). All hooks default to 1.",
+      "description": "Global hook execution cadence configuration. Key = hook name, Value = number of turns between invocations (1 = every turn, 3 = every 3rd turn). All hooks default to 1.",
       "additionalProperties": {
         "type": "integer",
         "minimum": 1,
@@ -80,11 +94,11 @@
     },
     "council": {
       "$ref": "#/$defs/councilConfig",
-      "description": "Global council command group configuration. Read from the global user config; structurally valid project-local values are ignored by runtime config resolution, while malformed project-local values make the project config invalid before they can be ignored."
+      "description": "Global council command group configuration."
     },
     "agents": {
       "type": "object",
-      "description": "Global agent model configuration overrides. Project-local values are ignored by runtime config resolution.",
+      "description": "Global agent model configuration overrides.",
       "additionalProperties": false,
       "properties": {
         "hive-master": {
@@ -175,7 +189,7 @@
     "councilConfig": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Global-only council command settings. Project-local council values are ignored by runtime merge after the project file passes structural validation.",
+      "description": "Global council command settings.",
       "properties": {
         "defaultGroup": {
           "type": "string",
@@ -245,8 +259,8 @@
         "path": {
           "type": "string",
           "minLength": 1,
-          "pattern": "\\S",
-          "description": "Project-relative or absolute path to a git repository."
+          "pattern": "^(?![A-Za-z]:[\\\\/])(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).*\\S.*$",
+          "description": "Project-relative path to a git repository."
         }
       }
     },

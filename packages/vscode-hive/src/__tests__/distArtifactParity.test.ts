@@ -24,9 +24,20 @@ describe('shipped extension artifact parity', () => {
 
   it('includes the background jobs and tracked repositories viewers in dist', () => {
     expect(bundle).toContain('background-jobs.json');
-    expect(bundle).toContain('agent-hive.json');
+    expect(bundle).toContain('agent_hive.json');
     expect(bundle).toContain('hive.backgroundJobs');
     expect(bundle).toContain('hive.repositories');
+  });
+
+  it('does not contain obsolete project-config overlay identifiers', () => {
+    for (const identifier of [
+      'projectConfigPath',
+      'legacyProjectConfigPath',
+      'readGlobalConfigForProjectOverlay',
+      'mergeProjectScopedConfig',
+    ]) {
+      expect(bundle).not.toContain(identifier);
+    }
   });
 
   it('does not ship operational background job commands in dist', () => {

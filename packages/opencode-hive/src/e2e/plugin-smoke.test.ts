@@ -4195,11 +4195,12 @@ describe('e2e: opencode-hive multi-repo composite workspaces', () => {
   });
 
   function writeManifest(repoIds: string[]): void {
-    const hiveDir = path.join(testRoot, '.hive');
-    fs.mkdirSync(hiveDir, { recursive: true });
+    const configDir = path.join(testRoot, '.config', 'opencode');
+    fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
-      path.join(hiveDir, 'agent-hive.json'),
+      path.join(configDir, 'agent_hive.json'),
       JSON.stringify({
+        repositoryRoot: testRoot,
         repositories: repoIds.map((id) => ({ id, path: `./repos/${id}` })),
       }, null, 2),
     );
@@ -4275,7 +4276,8 @@ describe('e2e: opencode-hive multi-repo composite workspaces', () => {
     expect(update.added).toEqual(['api']);
     expect(update.repositories).toEqual([expect.objectContaining({ id: 'api', path: './api' })]);
 
-    const manifest = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'agent-hive.json'), 'utf-8'));
+    const manifest = JSON.parse(fs.readFileSync(path.join(testRoot, '.config', 'opencode', 'agent_hive.json'), 'utf-8'));
+    expect(manifest.repositoryRoot).toBe(testRoot);
     expect(manifest.repositories).toEqual([{ id: 'api', path: './api' }]);
   });
 
@@ -4471,22 +4473,23 @@ Do it.
     expect(start.workspacePath).toBe(start.worktreePath);
   });
 
-  it('ignores ~/.config/opencode/agent_hive.json repositories: global manifests are not used for orchestration', async () => {
+  it('ignores a global repository manifest scoped to another project', async () => {
     initBareRepo(testRoot);
     // testRoot doubles as HOME during this suite; write a global manifest that
     // would set up bogus repositories. RepositoryService must ignore it.
     const globalDir = path.join(testRoot, '.config', 'opencode');
+    fs.mkdirSync(path.join(testRoot, 'another-project'), { recursive: true });
     fs.mkdirSync(globalDir, { recursive: true });
     fs.writeFileSync(
       path.join(globalDir, 'agent_hive.json'),
-      JSON.stringify({ repositories: [{ id: 'bogus', path: './does-not-exist' }] }, null, 2),
+      JSON.stringify({ repositoryRoot: path.join(testRoot, 'another-project'), repositories: [{ id: 'bogus', path: './does-not-exist' }] }, null, 2),
     );
 
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_repos_global_ignored');
 
     await hooks.tool!.hive_feature_create.execute({ name: 'ignore-global' }, toolContext);
     await hooks.tool!.hive_plan_write.execute(
-      { content: createSingleTaskPlan('Ignore Global', 'Yes, this regression test validates that global ~/.config/opencode/agent_hive.json repositories are not used to drive orchestration: only project-scoped manifests enable composite worktrees.'), feature: 'ignore-global' },
+      { content: createSingleTaskPlan('Ignore Unscoped Global', 'Yes, this regression test validates that a global manifest scoped to another project does not enable composite worktrees.'), feature: 'ignore-global' },
       toolContext,
     );
     await hooks.tool!.hive_plan_approve.execute({ feature: 'ignore-global' }, toolContext);
@@ -4507,11 +4510,12 @@ Do it.
     // missing on-disk path so RepositoryService.resolveRepositories() throws.
     initBareRepo(testRoot);
     initBareRepo(path.join(testRoot, 'repos', 'api'));
-    const hiveDir = path.join(testRoot, '.hive');
+    const hiveDir = path.join(testRoot, '.config', 'opencode');
     fs.mkdirSync(hiveDir, { recursive: true });
     fs.writeFileSync(
-      path.join(hiveDir, 'agent-hive.json'),
+      path.join(hiveDir, 'agent_hive.json'),
       JSON.stringify({
+        repositoryRoot: testRoot,
         repositories: [
           { id: 'api', path: './repos/api' },
           { id: 'web', path: './repos/web-missing-on-disk' },
@@ -4926,9 +4930,9 @@ Do it.
 
   // --- Task 10: final end-to-end smoke coverage ---
 
-  it('end-to-end smoke: non-git workspace with project manifest and two child repos runs start -> commit -> merge with per-repo results', async () => {
+  it('end-to-end smoke: non-git workspace with scoped global manifest and two child repos runs start -> commit -> merge with per-repo results', async () => {
     // Project root is a plain directory (no `git init`), declared composite via
-    // a project-scoped manifest that points to two real child git repos.
+    // a globally stored manifest scoped to this root and two real child repos.
     initBareRepo(path.join(testRoot, 'repos', 'api'));
     initBareRepo(path.join(testRoot, 'repos', 'web'));
     writeManifest(['api', 'web']);
@@ -4943,7 +4947,7 @@ Do it.
 ## Discovery
 
 **Q: ok?**
-A: Yes, this regression test validates the full start -> commit -> merge composite path on a non-git project root that is declared multi-repo via a project-scoped manifest of two child repos.
+A: Yes, this regression test validates the full start -> commit -> merge composite path on a non-git project root declared by a scoped global manifest of two child repos.
 
 ## Tasks
 
@@ -5115,27 +5119,24 @@ Do it.
     expect(fs.existsSync(path.join(testRoot, 'legacy-note.txt'))).toBe(true);
   });
 
-  it('end-to-end smoke: non-git project with global config repositories but no project manifest fails manifest-required and never auto-selects', async () => {
-    // No `git init` on testRoot, no project-scoped manifest.
-    // testRoot doubles as HOME during this suite, so write a global config that
-    // declares repositories. RepositoryService must ignore global manifests for
-    // orchestration and the OpenCode resolver must fail loud with the explicit
-    // manifest-required wording.
+  it('end-to-end smoke: non-git project with a removed manifest root fails manifest-required and never auto-selects', async () => {
     expect(fs.existsSync(path.join(testRoot, '.git'))).toBe(false);
     initBareRepo(path.join(testRoot, 'repos', 'api'));
     const globalDir = path.join(testRoot, '.config', 'opencode');
+    fs.mkdirSync(path.join(testRoot, 'another-project'), { recursive: true });
     fs.mkdirSync(globalDir, { recursive: true });
     fs.writeFileSync(
       path.join(globalDir, 'agent_hive.json'),
-      JSON.stringify({ repositories: [{ id: 'api', path: path.join(testRoot, 'repos', 'api') }] }, null, 2),
+      JSON.stringify({ repositoryRoot: path.join(testRoot, 'another-project'), repositories: [{ id: 'api', path: './repos/api' }] }, null, 2),
     );
+    fs.rmSync(path.join(testRoot, 'another-project'), { recursive: true });
 
     const feature = 'no-manifest-global-ignored';
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_no_manifest_global_ignored');
 
     await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
     await hooks.tool!.hive_plan_write.execute(
-      { content: createSingleTaskPlan('No Manifest Global Ignored', 'Yes, this regression test validates that non-git project roots without a project-scoped repository manifest fail with manifest-required wording even when a global ~/.config/opencode/agent_hive.json declares repositories, and that no fallback auto-selection of a global repo happens.'), feature },
+      { content: createSingleTaskPlan('No Matching Manifest', 'Yes, this regression test validates that a non-git project without a matching global repositoryRoot fails with manifest-required wording and never auto-selects repositories scoped elsewhere.'), feature },
       toolContext,
     );
     await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);

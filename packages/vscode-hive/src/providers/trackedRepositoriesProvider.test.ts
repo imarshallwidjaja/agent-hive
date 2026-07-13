@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -51,17 +52,26 @@ const { TrackedRepositoriesProvider } = await import('./trackedRepositoriesProvi
 
 const TEST_ROOT_BASE = `/tmp/vscode-hive-repositories-test-${process.pid}`;
 
+const initGitRepo = (root: string): void => {
+  fs.mkdirSync(root, { recursive: true });
+  execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
+};
+
 describe('TrackedRepositoriesProvider', () => {
   let testRoot: string;
+  let originalHome: string | undefined;
 
   beforeEach(() => {
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'workspace-'));
+    originalHome = process.env.HOME;
+    process.env.HOME = path.join(TEST_ROOT_BASE, 'home');
   });
 
   afterEach(() => {
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
+    process.env.HOME = originalHome;
   });
 
   it('shows a legacy root state when the manifest is missing', async () => {
@@ -70,23 +80,36 @@ describe('TrackedRepositoriesProvider', () => {
     const children = await provider.getChildren();
 
     expect(children.map(item => item.label)).toEqual(['Legacy single-root workspace']);
-    expect((children[0] as any).description).toBe('Missing .hive/agent-hive.json');
+    expect((children[0] as any).description).toBe('Missing global Agent Hive config');
     expect((children[0] as any).command).toBeUndefined();
   });
 
-  it('shows a legacy root state when no repositories are configured', async () => {
-    writeManifest({ sandbox: 'none', repositories: [] });
+  it('shows an invalid config state when the scoped manifest is empty', async () => {
+    writeManifest({ sandbox: 'none', repositoryRoot: testRoot, repositories: [] });
     const provider = new TrackedRepositoriesProvider(testRoot);
 
     const children = await provider.getChildren();
 
+    expect(children.map(item => item.label)).toEqual(['Unable to read tracked repositories']);
+    expect((children[0] as any).description).toBe('Invalid global Agent Hive config');
+  });
+
+  it('treats a manifest whose stored repository root was removed as inactive', async () => {
+    const removedRoot = path.join(TEST_ROOT_BASE, 'removed-workspace');
+    fs.mkdirSync(removedRoot);
+    writeManifest({ repositoryRoot: removedRoot, repositories: [{ id: 'api', path: './api' }] });
+    fs.rmSync(removedRoot, { recursive: true });
+
+    const children = await new TrackedRepositoriesProvider(testRoot).getChildren();
+
     expect(children.map(item => item.label)).toEqual(['Legacy single-root workspace']);
-    expect((children[0] as any).description).toBe('No tracked repositories configured');
+    expect((children[0] as any).description).toBe('No manifest scoped to this workspace');
   });
 
   it('shows configured repositories with resolved paths', async () => {
-    fs.mkdirSync(path.join(testRoot, 'packages', 'api'), { recursive: true });
-    writeManifest({ repositories: [{ id: 'api', path: './packages/api' }, { id: 'web', path: './packages/web' }] });
+    initGitRepo(path.join(testRoot, 'packages', 'api'));
+    initGitRepo(path.join(testRoot, 'packages', 'web'));
+    writeManifest({ repositoryRoot: testRoot, repositories: [{ id: 'api', path: './packages/api' }, { id: 'web', path: './packages/web' }] });
     const provider = new TrackedRepositoriesProvider(testRoot);
 
     const children = await provider.getChildren();
@@ -97,18 +120,51 @@ describe('TrackedRepositoriesProvider', () => {
     expect((children[1] as any).tooltip).toContain(path.join(testRoot, 'packages', 'web'));
   });
 
+  it('shows repositories when the workspace is a symlink alias of repositoryRoot', async () => {
+    const workspaceAlias = path.join(TEST_ROOT_BASE, 'workspace-alias');
+    initGitRepo(path.join(testRoot, 'packages', 'api'));
+    fs.symlinkSync(testRoot, workspaceAlias);
+    writeManifest({ repositoryRoot: testRoot, repositories: [{ id: 'api', path: './packages/api' }] });
+
+    const children = await new TrackedRepositoriesProvider(workspaceAlias).getChildren();
+
+    expect(children.map(item => item.label)).toEqual(['api']);
+  });
+
   it('shows invalid JSON as an error state', async () => {
-    fs.mkdirSync(path.join(testRoot, '.hive'), { recursive: true });
-    fs.writeFileSync(path.join(testRoot, '.hive', 'agent-hive.json'), '{ invalid json');
+    const configPath = path.join(process.env.HOME!, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, '{ invalid json');
     const provider = new TrackedRepositoriesProvider(testRoot);
 
     const children = await provider.getChildren();
     expect(children.map(item => item.label)).toEqual(['Unable to read tracked repositories']);
-    expect((children[0] as any).description).toBe('Invalid .hive/agent-hive.json');
+    expect((children[0] as any).description).toBe('Invalid global Agent Hive config');
+  });
+
+  it('shows a whole-file validation error instead of accepting repository data', async () => {
+    writeManifest({ sandbox: 'bogus', repositoryRoot: testRoot, repositories: [{ id: 'api', path: './api' }] });
+    const children = await new TrackedRepositoriesProvider(testRoot).getChildren();
+
+    expect(children.map(item => item.label)).toEqual(['Unable to read tracked repositories']);
+    expect((children[0] as any).description).toBe('Invalid global Agent Hive config');
+  });
+
+  it('does not expose an open command for a repository symlink outside the workspace', async () => {
+    const externalRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'external-'));
+    execFileSync('git', ['init'], { cwd: externalRoot, stdio: 'ignore' });
+    fs.symlinkSync(externalRoot, path.join(testRoot, 'external'));
+    writeManifest({ repositoryRoot: testRoot, repositories: [{ id: 'external', path: './external' }] });
+
+    const children = await new TrackedRepositoriesProvider(testRoot).getChildren();
+
+    expect(children.map(item => item.label)).toEqual(['Unable to read tracked repositories']);
+    expect((children[0] as any).command).toMatchObject({ arguments: [expect.stringContaining('agent_hive.json')] });
   });
 
   it('exposes safe repo path and repo ID command metadata', async () => {
-    writeManifest({ repositories: [{ id: 'core', path: './packages/hive-core' }] });
+    initGitRepo(path.join(testRoot, 'packages', 'hive-core'));
+    writeManifest({ repositoryRoot: testRoot, repositories: [{ id: 'core', path: './packages/hive-core' }] });
     const provider = new TrackedRepositoriesProvider(testRoot);
 
     const children = await provider.getChildren();
@@ -125,7 +181,8 @@ describe('TrackedRepositoriesProvider', () => {
   });
 
   function writeManifest(data: unknown): void {
-    fs.mkdirSync(path.join(testRoot, '.hive'), { recursive: true });
-    fs.writeFileSync(path.join(testRoot, '.hive', 'agent-hive.json'), JSON.stringify(data, null, 2));
+    const configPath = path.join(process.env.HOME!, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(data, null, 2));
   }
 });

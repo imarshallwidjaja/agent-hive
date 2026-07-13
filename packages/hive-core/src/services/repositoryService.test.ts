@@ -6,33 +6,151 @@ import * as path from 'path';
 import { ConfigService } from './configService';
 import { RepositoryService } from './repositoryService';
 
-const makeTempProject = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hive-repos-'));
-
-const writeProjectConfig = (projectRoot: string, config: unknown) => {
-  const configPath = path.join(projectRoot, '.hive', 'agent-hive.json');
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+const initGitRepo = (root: string) => {
+  fs.mkdirSync(root, { recursive: true });
+  execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
 };
 
-const writeGlobalConfig = (homeDir: string, config: unknown) => {
-  const configPath = path.join(homeDir, '.config', 'opencode', 'agent_hive.json');
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-};
-
-const initGitRepo = (repoRoot: string) => {
-  fs.mkdirSync(repoRoot, { recursive: true });
-  execFileSync('git', ['init'], { cwd: repoRoot, stdio: 'ignore' });
-};
-
-const withTempProject = (run: (projectRoot: string) => void) => {
-  const projectRoot = makeTempProject();
+const withTempEnvironment = (run: (projectRoot: string, home: string) => void) => {
+  const originalHome = process.env.HOME;
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-repos-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-repos-home-'));
+  process.env.HOME = home;
   try {
-    run(projectRoot);
+    run(projectRoot, home);
   } finally {
+    process.env.HOME = originalHome;
     fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
   }
 };
+
+const writeGlobalConfig = (home: string, config: unknown) => {
+  const configPath = path.join(home, '.config', 'opencode', 'agent_hive.json');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+};
+
+describe('RepositoryService manifest resolution', () => {
+  it('resolves a global manifest only when repositoryRoot matches the active project', () => {
+    withTempEnvironment((projectRoot, home) => {
+      const apiRoot = path.join(projectRoot, 'api');
+      initGitRepo(apiRoot);
+      writeGlobalConfig(home, {
+        repositoryRoot: projectRoot,
+        repositories: [{ id: 'api', path: './api' }],
+      });
+
+      expect(new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toEqual([
+        { id: 'api', path: apiRoot, root: apiRoot },
+      ]);
+    });
+  });
+
+  it('resolves a manifest scoped through a symlink alias of the active project', () => {
+    withTempEnvironment((projectRoot, home) => {
+      const projectAlias = path.join(home, 'project-alias');
+      const apiRoot = path.join(projectRoot, 'api');
+      initGitRepo(apiRoot);
+      fs.symlinkSync(projectRoot, projectAlias);
+      writeGlobalConfig(home, {
+        repositoryRoot: projectRoot,
+        repositories: [{ id: 'api', path: './api' }],
+      });
+
+      expect(new RepositoryService(projectAlias).resolveRepositories()).toEqual([
+        { id: 'api', path: apiRoot, root: apiRoot },
+      ]);
+    });
+  });
+
+  it('ignores a global manifest scoped to another project', () => {
+    withTempEnvironment((projectRoot, home) => {
+      const otherProjectRoot = path.join(home, 'another-project');
+      fs.mkdirSync(otherProjectRoot);
+      initGitRepo(path.join(projectRoot, 'api'));
+      writeGlobalConfig(home, {
+        repositoryRoot: otherProjectRoot,
+        repositories: [{ id: 'api', path: './api' }],
+      });
+
+      expect(() => new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toThrow(
+        `Repository manifest is required because project root is not a git repository: ${projectRoot}`,
+      );
+    });
+  });
+
+  it('treats a manifest whose stored repository root was removed as inactive', () => {
+    withTempEnvironment((projectRoot, home) => {
+      const removedProjectRoot = path.join(home, 'removed-project');
+      fs.mkdirSync(removedProjectRoot);
+      writeGlobalConfig(home, {
+        repositoryRoot: removedProjectRoot,
+        repositories: [{ id: 'api', path: './api' }],
+      });
+      fs.rmSync(removedProjectRoot, { recursive: true });
+      initGitRepo(projectRoot);
+
+      expect(new RepositoryService(projectRoot).resolveRepositories()).toEqual([
+        { id: 'root', path: projectRoot, root: projectRoot },
+      ]);
+    });
+  });
+
+  it('ignores project config manifests', () => {
+    withTempEnvironment((projectRoot) => {
+      const apiRoot = path.join(projectRoot, 'api');
+      initGitRepo(apiRoot);
+      const projectConfigPath = path.join(projectRoot, '.hive', 'agent-hive.json');
+      fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+      fs.writeFileSync(projectConfigPath, JSON.stringify({ repositories: [{ id: 'api', path: './api' }] }));
+
+      expect(() => new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toThrow(
+        `Repository manifest is required because project root is not a git repository: ${projectRoot}`,
+      );
+    });
+  });
+
+  it('uses an implicit root repository for an unscoped git project', () => {
+    withTempEnvironment((projectRoot) => {
+      initGitRepo(projectRoot);
+      expect(new RepositoryService(projectRoot).resolveRepositories()).toEqual([
+        { id: 'root', path: projectRoot, root: projectRoot },
+      ]);
+    });
+  });
+
+  it('rejects duplicate repository IDs in the active global manifest', () => {
+    withTempEnvironment((projectRoot, home) => {
+      initGitRepo(path.join(projectRoot, 'api'));
+      initGitRepo(path.join(projectRoot, 'other'));
+      writeGlobalConfig(home, {
+        repositoryRoot: projectRoot,
+        repositories: [{ id: 'api', path: './api' }, { id: 'api', path: './other' }],
+      });
+
+      expect(() => new RepositoryService(projectRoot).resolveRepositories()).toThrow('Duplicate repository ID: api');
+    });
+  });
+
+  it('rejects a repository symlink whose canonical git root escapes the project root', () => {
+    withTempEnvironment((projectRoot, home) => {
+      const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-external-repo-'));
+      try {
+        initGitRepo(externalRoot);
+        fs.symlinkSync(externalRoot, path.join(projectRoot, 'external'));
+        writeGlobalConfig(home, {
+          repositoryRoot: projectRoot,
+          repositories: [{ id: 'external', path: './external' }],
+        });
+
+        expect(() => new RepositoryService(projectRoot).resolveRepositories()).toThrow('must stay inside project root');
+      } finally {
+        fs.rmSync(externalRoot, { recursive: true, force: true });
+      }
+    });
+  });
+});
 
 describe('RepositoryService repository ID validation', () => {
   it.each(['api', 'web-ui', 'data.v2', 'api_v2'])('accepts safe repository ID %s', (id) => {
@@ -41,154 +159,5 @@ describe('RepositoryService repository ID validation', () => {
 
   it.each(['Api', '../api', 'api/web', 'api web', '..', 'api..v2', 'api.lock'])('rejects unsafe repository ID %s', (id) => {
     expect(RepositoryService.isValidRepositoryId(id)).toBe(false);
-  });
-});
-
-describe('RepositoryService manifest resolution', () => {
-  it('resolves project-relative repository paths to git roots', () => {
-    withTempProject((projectRoot) => {
-      const apiRoot = path.join(projectRoot, 'api');
-      const webRoot = path.join(projectRoot, 'web-ui');
-      initGitRepo(apiRoot);
-      initGitRepo(webRoot);
-      writeProjectConfig(projectRoot, {
-        repositories: [
-          { id: 'api', path: 'api' },
-          { id: 'web-ui', path: './web-ui' },
-        ],
-      });
-
-      const repositories = new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories();
-
-      expect(repositories).toEqual([
-        { id: 'api', path: path.resolve(projectRoot, 'api'), root: apiRoot },
-        { id: 'web-ui', path: path.resolve(projectRoot, 'web-ui'), root: webRoot },
-      ]);
-    });
-  });
-
-  it('resolves absolute repository paths after git validation', () => {
-    withTempProject((projectRoot) => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-absolute-repo-'));
-      try {
-        initGitRepo(repoRoot);
-        writeProjectConfig(projectRoot, {
-          repositories: [{ id: 'api', path: repoRoot }],
-        });
-
-        const repositories = new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories();
-
-        expect(repositories).toEqual([{ id: 'api', path: repoRoot, root: repoRoot }]);
-      } finally {
-        fs.rmSync(repoRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  it('rejects duplicate repository IDs', () => {
-    withTempProject((projectRoot) => {
-      const apiRoot = path.join(projectRoot, 'api');
-      const secondRoot = path.join(projectRoot, 'second-api');
-      initGitRepo(apiRoot);
-      initGitRepo(secondRoot);
-      writeProjectConfig(projectRoot, {
-        repositories: [
-          { id: 'api', path: 'api' },
-          { id: 'api', path: 'second-api' },
-        ],
-      });
-
-      expect(() => new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toThrow(
-        'Duplicate repository ID: api',
-      );
-    });
-  });
-
-  it('rejects duplicate resolved git roots', () => {
-    withTempProject((projectRoot) => {
-      const apiRoot = path.join(projectRoot, 'api');
-      initGitRepo(apiRoot);
-      fs.mkdirSync(path.join(apiRoot, 'src'));
-      writeProjectConfig(projectRoot, {
-        repositories: [
-          { id: 'api', path: 'api' },
-          { id: 'web', path: 'api/src' },
-        ],
-      });
-
-      expect(() => new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toThrow(
-        `Duplicate repository root: ${apiRoot}`,
-      );
-    });
-  });
-
-  it('rejects missing repository paths', () => {
-    withTempProject((projectRoot) => {
-      writeProjectConfig(projectRoot, {
-        repositories: [{ id: 'api', path: 'missing-api' }],
-      });
-
-      expect(() => new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toThrow(
-        `Repository path does not exist: ${path.join(projectRoot, 'missing-api')}`,
-      );
-    });
-  });
-
-  it('rejects repository paths that are not inside a git repository', () => {
-    withTempProject((projectRoot) => {
-      const apiPath = path.join(projectRoot, 'api');
-      fs.mkdirSync(apiPath);
-      writeProjectConfig(projectRoot, {
-        repositories: [{ id: 'api', path: 'api' }],
-      });
-
-      expect(() => new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toThrow(
-        `Repository path is not inside a git repository: ${apiPath}`,
-      );
-    });
-  });
-
-  it('uses an implicit root repository when no project manifest exists and the project root is a git repository', () => {
-    withTempProject((projectRoot) => {
-      initGitRepo(projectRoot);
-
-      const repositories = new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories();
-
-      expect(repositories).toEqual([{ id: 'root', path: projectRoot, root: projectRoot }]);
-    });
-  });
-
-  it('requires a project manifest when no project manifest exists and the project root is not a git repository', () => {
-    withTempProject((projectRoot) => {
-      expect(() => new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toThrow(
-        `Repository manifest is required because project root is not a git repository: ${projectRoot}`,
-      );
-    });
-  });
-
-  it('ignores global repository manifests for project-scoped repository resolution', () => {
-    const originalHome = process.env.HOME;
-    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-repos-home-'));
-    try {
-      process.env.HOME = tempHome;
-      withTempProject((projectRoot) => {
-        const apiRoot = path.join(projectRoot, 'api');
-        initGitRepo(apiRoot);
-        writeGlobalConfig(tempHome, {
-          repositories: [{ id: 'api', path: apiRoot }],
-        });
-
-        expect(() => new RepositoryService(projectRoot, new ConfigService(projectRoot)).resolveRepositories()).toThrow(
-          `Repository manifest is required because project root is not a git repository: ${projectRoot}`,
-        );
-      });
-    } finally {
-      if (originalHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = originalHome;
-      }
-      fs.rmSync(tempHome, { recursive: true, force: true });
-    }
   });
 });

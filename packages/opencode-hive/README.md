@@ -115,7 +115,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 ### Local skill and model use cases
 
 - **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then load it with OpenCode's native `skill` tool, reference it in agent instructions, or list its frontmatter `name` in `autoLoadSkills`. User file skills are discovered through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, and `skills.urls` mechanisms.
-- **Local model tuning:** set per-agent models or variants in `~/.config/opencode/agent_hive.json`. Project `.hive/agent-hive.json` is reserved for project-scoped sandbox and repository-manifest settings.
+- **Global runtime config:** set agent models, variants, sandbox policy, custom agents, skill auto-load settings, and scoped repository manifests in `~/.config/opencode/agent_hive.json`.
 
 #### Canonical Delegation Threshold
 
@@ -279,17 +279,13 @@ Description.
 
 ## Configuration
 
-Hive reads user/session policy from `~/.config/opencode/agent_hive.json`, then overlays project-scoped fields from the first project config file that exists:
+Hive reads runtime configuration only from `~/.config/opencode/agent_hive.json`. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files are ignored, including malformed files. Global config failures still produce a runtime warning and fall back to defaults.
 
-1. `<project>/.hive/agent-hive.json` (preferred project overlay)
-2. `<project>/.opencode/agent_hive.json` (legacy fallback, used only when the new file is missing)
-3. defaults for anything not set globally or by the project overlay
-
-Project config only affects `sandbox`, `dockerImage`, `persistentContainers`, and `repositories`. Agent models, variants, routing, custom agents, council groups, disabled MCPs, disabled skills, and hook cadence are global user settings. If `.hive/agent-hive.json` exists but is invalid JSON or an invalid shape, Hive warns, skips the legacy project file, and uses the global config and defaults.
+All runtime policy, agent definitions, and auto-load skill settings use the global file. A repository manifest is also stored there, but activates only when its absolute `repositoryRoot` resolves to the same checkout as the active OpenCode project root. Repository entry paths remain relative to that root and cannot escape it. This scope prevents one global manifest from enabling composite mode in unrelated checkouts.
 
 ### Council config
 
-Council settings are global-only and live in `~/.config/opencode/agent_hive.json`. Structurally valid project-local `council` values are ignored during runtime merge. Malformed project-local `council` values still make the project config invalid before they can be ignored, so the normal invalid-project fallback applies: Hive warns and uses global config/defaults.
+Council settings live in `~/.config/opencode/agent_hive.json`.
 
 Built-in council defaults are read-only and portable:
 
@@ -328,14 +324,15 @@ Partial global overrides merge with the built-in defaults. Declaring a group rep
 
 Council resolution preserves configured order, deduplicates by first occurrence, filters unusable seats before applying the cap, and uses `group.maxMembers ?? council.maxMembers ?? 4`. It skips unavailable agents, explicitly excluded agents, starter template custom agents, mutable-base agents, and duplicates with warnings. If a requested group has no usable seats, `/council` falls back to `council.defaultGroup`; if the fallback also has no usable seats, the command stops with an error instead of running an unsafe council.
 
-### Project-local config example
+### Scoped repository manifest example
 
-Create `.hive/agent-hive.json`:
+Add the manifest to `~/.config/opencode/agent_hive.json`:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "sandbox": "docker",
+  "repositoryRoot": "/absolute/path/to/project",
   "repositories": [
     { "id": "api", "path": "./api" }
   ]

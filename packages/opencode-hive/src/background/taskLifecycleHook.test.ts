@@ -44,6 +44,7 @@ describe('background task lifecycle hook support', () => {
     const testRoot = `/tmp/hive-background-hook-test-${process.pid}`;
     const originalBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     fs.rmSync(testRoot, { recursive: true, force: true });
+    fs.mkdirSync(testRoot, { recursive: true });
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
 
     const hooks = await plugin({
@@ -161,6 +162,7 @@ describe('background task lifecycle hook support', () => {
     const testRoot = `/tmp/hive-fresh-session-task-id-reject-${process.pid}`;
     const originalBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     fs.rmSync(testRoot, { recursive: true, force: true });
+    fs.mkdirSync(testRoot, { recursive: true });
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
 
     const hooks = await plugin({

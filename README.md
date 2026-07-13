@@ -58,9 +58,9 @@ Add the plugin to `opencode.json` — OpenCode handles npm resolution automatica
 }
 ```
 
-### Optional config — `.hive/agent-hive.json`
+### Optional config - `~/.config/opencode/agent_hive.json`
 
-Project-scoped config (preferred); falls back to `.opencode/agent_hive.json` or `~/.config/opencode/agent_hive.json`.
+Agent Hive reads runtime configuration only from this global file. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files are ignored.
 
 ```json
 {
@@ -104,7 +104,7 @@ Download `vscode-arkive.vsix` from the GitHub Release first.
 ### What you get
 
 - **Hive sidebar** (activity-bar view) — features tree, per-task status, inline comments on `plan.md` and `overview.md`.
-- **Background Jobs and Tracked Repositories views** - viewer-only state for `.hive/background-jobs.json` and `.hive/agent-hive.json`.
+- **Background Jobs and Tracked Repositories views** - viewer-only state for `.hive/background-jobs.json` and the global repository manifest scoped to the workspace.
 - **Plan and overview review** — opens docs from the sidebar, lets you add/resolve inline comments, Done Review button marks the review as complete.
 - **Task detail** — open `spec.md` (what the worker was told) and `report.md` (what it did).
 - **File watching** — tracks changes to `.hive/` and refreshes the sidebar in real time.

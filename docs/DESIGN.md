@@ -31,7 +31,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 │       ├── workspace.json  <- Repo manifest, branches, base commits (composite only)
 │       └── repos/          <- Per-repo git worktrees (composite only)
 │           └── {repoId}/
-└── agent-hive.json       <- Optional project config (sandbox, repositories manifest)
+└── ...                   <- Runtime state only; Agent Hive config is global
 
 packages/
 ├── hive-core/            <- Shared logic (services, types, utils)
@@ -189,13 +189,14 @@ Agents edit only the task workspace. `hive_worktree_commit` collects the task di
 
 ### Multi-Repo Composite Workspaces
 
-When a project defines a `repositories` manifest in `.hive/agent-hive.json`, tasks with a `Repos:` annotation use composite workspaces. Each declared repo gets its own git worktree under the composite root.
+When the global config defines a `repositories` manifest whose `repositoryRoot` resolves to the same checkout as the active project root, tasks with a `Repos:` annotation use composite workspaces. Each declared repo gets its own git worktree under the composite root.
 
-**Project manifest example:**
+**Scoped global manifest example:**
 
 ```json
 {
   "sandbox": "none",
+  "repositoryRoot": "/absolute/path/to/project",
   "repositories": [
     { "id": "api", "path": "./packages/api" },
     { "id": "web", "path": "./packages/web-ui" }
@@ -210,14 +211,15 @@ When a project defines a `repositories` manifest in `.hive/agent-hive.json`, tas
 - Must pass `git check-ref-format --branch hive/<repoId>/<feature>/<task>`
 
 **Manifest source rule:**
-- Repository manifests are read only from project-local config (`<project>/.hive/agent-hive.json` or legacy `<project>/.opencode/agent_hive.json`)
-- Global `~/.config/opencode/agent_hive.json` `repositories` are ignored for project orchestration
-- Non-git project root without a project manifest fails worktree/commit/merge tools with a manifest-required error
+- Repository manifests are read only from `~/.config/opencode/agent_hive.json`
+- A manifest activates only when its absolute `repositoryRoot` resolves to the same checkout as the active project root
+- Repository paths are relative to `repositoryRoot` and must stay inside it
+- A non-git project root without a matching manifest fails worktree/commit/merge tools with a manifest-required error
 
 **Manifest management tools:**
 - `hive_repositories_status` reports whether the project is using a manifest, legacy single-root mode, or is missing a required manifest
 - `hive_repositories_discover` scans only inside the OpenCode project root for candidate git repositories; it is read-only, bounded to depth 4, capped at 50 candidates, and skips `.git`, `.hive`, `.opencode`, `node_modules`, build outputs, coverage, and temp folders
-- `hive_repositories_update` is add-only and atomic: it accepts project-relative paths only, validates all requested repositories, preserves existing project config fields, writes only `.hive/agent-hive.json`, and writes nothing if any requested repo is invalid
+- `hive_repositories_update` is add-only and atomic for the active scope: it accepts project-relative paths only, validates all requested repositories, preserves other global config fields, writes `repositoryRoot` plus `repositories` to `~/.config/opencode/agent_hive.json`, and writes nothing if any requested repo is invalid
 - Agents add only repositories they have decided to work in; discovery does not bulk-register every candidate repo
 
 **Composite workspace layout:**

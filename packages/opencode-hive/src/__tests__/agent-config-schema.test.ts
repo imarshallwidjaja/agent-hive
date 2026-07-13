@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import Ajv2020 from 'ajv/dist/2020.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -7,47 +8,7 @@ const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf-8')) as Record<string
 const packageJsonPath = path.resolve(import.meta.dir, '..', '..', 'package.json');
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as { peerDependencies?: Record<string, string> };
 
-const validateConfigShape = (config: Record<string, any>): boolean => {
-  if (Object.keys(config).some((key) => !Object.hasOwn(schema.properties, key))) {
-    return false;
-  }
-
-  const council = config.council;
-  if (council === undefined) {
-    return true;
-  }
-  if (council === null || typeof council !== 'object' || Array.isArray(council)) {
-    return false;
-  }
-  if (council.defaultGroup !== undefined && typeof council.defaultGroup !== 'string') {
-    return false;
-  }
-  if (council.maxMembers !== undefined && (!Number.isInteger(council.maxMembers) || council.maxMembers < 1)) {
-    return false;
-  }
-  if (council.excludedAgents !== undefined && (!Array.isArray(council.excludedAgents) || council.excludedAgents.some((agent: unknown) => typeof agent !== 'string'))) {
-    return false;
-  }
-  if (council.groups === undefined) {
-    return true;
-  }
-  if (council.groups === null || typeof council.groups !== 'object' || Array.isArray(council.groups)) {
-    return false;
-  }
-
-  return Object.values(council.groups).every((group) => {
-    if (group === null || typeof group !== 'object' || Array.isArray(group)) {
-      return false;
-    }
-
-    const declaration = group as Record<string, unknown>;
-    return Array.isArray(declaration.members)
-      && declaration.members.length > 0
-      && declaration.members.every((member) => typeof member === 'string')
-      && (declaration.description === undefined || typeof declaration.description === 'string')
-      && (declaration.maxMembers === undefined || (typeof declaration.maxMembers === 'number' && Number.isInteger(declaration.maxMembers) && declaration.maxMembers >= 1));
-  });
-};
+const validateConfigShape = new Ajv2020({ strict: false }).compile(schema);
 
 const expectReservedNameToFail = (name: string): void => {
   const reservedNames = schema.properties?.customAgents?.propertyNames?.not?.enum;
@@ -126,10 +87,39 @@ describe('agent_hive schema council contract', () => {
   it('defines council as a documented global-only config section', () => {
     expect(schema.properties.council).toEqual({
       $ref: '#/$defs/councilConfig',
-      description: 'Global council command group configuration. Read from the global user config; structurally valid project-local values are ignored by runtime config resolution, while malformed project-local values make the project config invalid before they can be ignored.',
+      description: 'Global council command group configuration.',
     });
     expect(schema.$defs.councilConfig).toBeDefined();
     expect(schema.$defs.councilGroupConfig).toBeDefined();
+  });
+
+  it('defines an exact project-root scope for globally stored repository manifests', () => {
+    expect(schema.properties.repositoryRoot.pattern).toBeDefined();
+    expect(schema.properties.repositories.minItems).toBe(1);
+    expect(schema.properties.repositories.description).toContain('scoped by repositoryRoot');
+    expect(schema.$defs.repositoryConfig.properties.path.description).toBe('Project-relative path to a git repository.');
+    expect(schema.$defs.councilConfig.description).toBe('Global council command settings.');
+  });
+
+  it('validates the relevant global config contract through the published schema', () => {
+    expect(validateConfigShape({
+      omoSlimEnabled: true,
+      hook_cadence: { 'chat.message': 1 },
+      repositoryRoot: '/tmp/project',
+      repositories: [{ id: 'api', path: './api' }],
+    })).toBe(true);
+
+    for (const invalid of [
+      { unknown: true },
+      { hook_cadence: { 'chat.message': 0 } },
+      { repositoryRoot: '/tmp/project', repositories: [] },
+      { repositoryRoot: 'relative/project', repositories: [{ id: 'api', path: './api' }] },
+      { repositoryRoot: '/tmp/project', repositories: [{ id: 'api', path: '/tmp/api' }] },
+      { repositoryRoot: '/tmp/project', repositories: [{ id: 'api', path: '../api' }] },
+      { repositoryRoot: '/tmp/project', repositories: [{ id: 'api', path: 'packages/../api' }] },
+    ]) {
+      expect(validateConfigShape(invalid)).toBe(false);
+    }
   });
 
   it('accepts a valid default-like council shape', () => {

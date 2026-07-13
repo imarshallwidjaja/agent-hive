@@ -3,27 +3,34 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { RepositoryConfig, ResolvedRepository } from '../types.js';
 import { isValidRepositoryId } from '../utils/repositoryIds.js';
+import { canonicalProjectRoot, projectRootsMatch } from '../utils/repositoryConfig.js';
 import { ConfigService } from './configService.js';
 
 export class RepositoryService {
+  private readonly projectRoot: string;
+
   constructor(
-    private readonly projectRoot: string,
+    projectRoot: string,
     private readonly configService = new ConfigService(projectRoot),
-  ) {}
+  ) {
+    this.projectRoot = canonicalProjectRoot(projectRoot);
+  }
 
   static isValidRepositoryId(id: string): boolean {
     return isValidRepositoryId(id);
   }
 
   resolveRepositories(): ResolvedRepository[] {
-    const projectConfig = this.configService.getProjectConfig();
-    const manifest = projectConfig?.repositories;
+    const config = this.configService.get();
+    const manifest = config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot)
+      ? config.repositories
+      : undefined;
 
     if (manifest !== undefined) {
       return this.resolveManifest(manifest);
     }
 
-    const resolvedProjectRoot = path.resolve(this.projectRoot);
+    const resolvedProjectRoot = this.projectRoot;
     if (!fs.existsSync(resolvedProjectRoot)) {
       throw new Error(`Repository manifest is required because project root is not a git repository: ${resolvedProjectRoot}`);
     }
@@ -36,10 +43,11 @@ export class RepositoryService {
     return [{ id: 'root', path: resolvedProjectRoot, root: gitRoot }];
   }
 
-  private resolveManifest(manifest: RepositoryConfig[]): ResolvedRepository[] {
+  resolveManifest(manifest: RepositoryConfig[]): ResolvedRepository[] {
     const ids = new Set<string>();
     const roots = new Set<string>();
     const repositories: ResolvedRepository[] = [];
+    const resolvedProjectRoot = this.projectRoot;
 
     for (const repository of manifest) {
       if (ids.has(repository.id)) {
@@ -47,9 +55,10 @@ export class RepositoryService {
       }
       ids.add(repository.id);
 
-      const resolvedPath = path.isAbsolute(repository.path)
-        ? path.resolve(repository.path)
-        : path.resolve(this.projectRoot, repository.path);
+      const resolvedPath = path.resolve(resolvedProjectRoot, repository.path);
+      if (resolvedPath !== resolvedProjectRoot && !resolvedPath.startsWith(`${resolvedProjectRoot}${path.sep}`)) {
+        throw new Error(`Repository path must stay inside project root: ${repository.path}`);
+      }
 
       if (!fs.existsSync(resolvedPath)) {
         throw new Error(`Repository path does not exist: ${resolvedPath}`);
@@ -59,13 +68,17 @@ export class RepositoryService {
       if (gitRoot === null) {
         throw new Error(`Repository path is not inside a git repository: ${resolvedPath}`);
       }
-
-      if (roots.has(gitRoot)) {
-        throw new Error(`Duplicate repository root: ${gitRoot}`);
+      const canonicalGitRoot = fs.realpathSync(gitRoot);
+      if (canonicalGitRoot !== resolvedProjectRoot && !canonicalGitRoot.startsWith(`${resolvedProjectRoot}${path.sep}`)) {
+        throw new Error(`Repository path must stay inside project root: ${repository.path}`);
       }
-      roots.add(gitRoot);
 
-      repositories.push({ id: repository.id, path: resolvedPath, root: gitRoot });
+      if (roots.has(canonicalGitRoot)) {
+        throw new Error(`Duplicate repository root: ${canonicalGitRoot}`);
+      }
+      roots.add(canonicalGitRoot);
+
+      repositories.push({ id: repository.id, path: resolvedPath, root: canonicalGitRoot });
     }
 
     return repositories;

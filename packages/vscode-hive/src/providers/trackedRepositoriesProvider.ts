@@ -1,6 +1,7 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
+import { ConfigService, projectRootsMatch, RepositoryService } from 'hive-core'
 
 interface RepositoryConfig {
   id: string
@@ -13,7 +14,7 @@ class TrackedRepositoryItem extends vscode.TreeItem {
   public readonly copyCommand: vscode.Command
 
   constructor(repo: RepositoryConfig, workspaceRoot: string) {
-    const resolvedPath = path.isAbsolute(repo.path) ? repo.path : path.resolve(workspaceRoot, repo.path)
+    const resolvedPath = path.resolve(workspaceRoot, repo.path)
     super(repo.id, vscode.TreeItemCollapsibleState.None)
     this.description = repo.path
     this.tooltip = `Configured path: ${repo.path}\nResolved path: ${resolvedPath}`
@@ -67,27 +68,30 @@ export class TrackedRepositoriesProvider implements vscode.TreeDataProvider<Trac
       return []
     }
 
-    const manifestPath = this.manifestPath()
+    const configService = new ConfigService(this.workspaceRoot)
+    const manifestPath = configService.getPath()
     if (!fs.existsSync(manifestPath)) {
-      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'Missing .hive/agent-hive.json')]
+      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'Missing global Agent Hive config')]
     }
 
-    let manifest: { repositories?: RepositoryConfig[] }
+    let manifest: { repositoryRoot?: string; repositories?: RepositoryConfig[] }
     try {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'))
+      manifest = configService.readStored()
     } catch {
-      return [new TrackedRepositoriesStateItem('Unable to read tracked repositories', 'Invalid .hive/agent-hive.json', manifestPath)]
+      return [new TrackedRepositoriesStateItem('Unable to read tracked repositories', 'Invalid global Agent Hive config', manifestPath)]
     }
 
-    const repositories = Array.isArray(manifest.repositories) ? manifest.repositories : []
-    if (repositories.length === 0) {
-      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'No tracked repositories configured', manifestPath)]
+    if (manifest.repositoryRoot === undefined || !projectRootsMatch(manifest.repositoryRoot, this.workspaceRoot)) {
+      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'No manifest scoped to this workspace', manifestPath)]
     }
 
-    return repositories.map(repo => new TrackedRepositoryItem(repo, this.workspaceRoot))
-  }
+    const repositories = manifest.repositories!
 
-  private manifestPath(): string {
-    return path.join(this.workspaceRoot, '.hive', 'agent-hive.json')
+    try {
+      new RepositoryService(this.workspaceRoot).resolveManifest(repositories)
+      return repositories.map(repo => new TrackedRepositoryItem(repo, this.workspaceRoot))
+    } catch {
+      return [new TrackedRepositoriesStateItem('Unable to read tracked repositories', 'Invalid repository manifest', manifestPath)]
+    }
   }
 }

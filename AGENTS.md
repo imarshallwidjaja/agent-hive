@@ -331,13 +331,14 @@ Failed or retry work starts a new worker with a concise self-contained handoff. 
 
 **Docker sandbox** provides isolated test environments for workers:
 
-- **Config read precedence**: user/session policy comes from `~/.config/opencode/agent_hive.json`; project `.hive/agent-hive.json` and legacy `.opencode/agent_hive.json` only overlay project-scoped fields.
-- **Invalid project config behavior**: Uses global config/defaults and surfaces a runtime warning.
-- **Project-scoped fields**:
+- **Config source**: all Agent Hive runtime configuration comes only from `~/.config/opencode/agent_hive.json`; project `.hive/agent-hive.json` and `.opencode/agent_hive.json` files are ignored.
+- **Repository scope**: a global `repositories` manifest activates only when absolute `repositoryRoot` resolves to the same checkout as the active project root; entry paths are relative to and contained by that root.
+- **Runtime fields**:
   - `sandbox: 'none' | 'docker'` — Isolation mode (default: 'none')
   - `dockerImage?: string` — Custom Docker image (optional, auto-detects if omitted)
   - `persistentContainers?: boolean` — Reuse Docker containers per worktree
-  - `repositories?: { id: string; path: string }[]` — Project repository manifest
+  - `repositoryRoot?: string` — Absolute active-project scope for `repositories`
+  - `repositories?: { id: string; path: string }[]` — Scoped repository manifest
 - **Auto-detection**: Detects runtime from project files:
   - `package.json` → `node:22-slim`
   - `requirements.txt` / `pyproject.toml` → `python:3.12-slim`

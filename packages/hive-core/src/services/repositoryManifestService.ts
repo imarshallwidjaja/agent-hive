@@ -2,8 +2,10 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { RepositoryConfig } from '../types.js';
-import { writeAtomic } from '../utils/paths.js';
+import { canonicalProjectRoot, isValidRepositoryConfig, projectRootsMatch } from '../utils/repositoryConfig.js';
 import { isValidRepositoryId } from '../utils/repositoryIds.js';
+import { ConfigService } from './configService.js';
+import { RepositoryService } from './repositoryService.js';
 
 export type RepositoryManifestMode = 'manifest' | 'legacy-root' | 'missing-manifest';
 
@@ -52,33 +54,39 @@ const EXCLUDED_DIRS = new Set([
 ]);
 
 export class RepositoryManifestService {
+  private readonly projectRoot: string;
   private readonly configPath: string;
+  private readonly configService: ConfigService;
+  private readonly repositoryService: RepositoryService;
 
-  constructor(private readonly projectRoot: string) {
-    this.configPath = path.join(projectRoot, '.hive', 'agent-hive.json');
+  constructor(projectRoot: string) {
+    this.projectRoot = canonicalProjectRoot(projectRoot);
+    this.configService = new ConfigService(this.projectRoot);
+    this.configPath = this.configService.getPath();
+    this.repositoryService = new RepositoryService(this.projectRoot, this.configService);
   }
 
   getStatus(): RepositoryManifestStatus {
-    const stored = this.readProjectConfig();
-    if (Array.isArray(stored.config.repositories)) {
+    const config = this.configService.readStored();
+    if (config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot) && Array.isArray(config.repositories)) {
       try {
         return {
           mode: 'manifest',
-          configPath: stored.path,
-          repositories: this.resolveManifestEntries(stored.config.repositories),
+          configPath: this.configPath,
+          repositories: this.resolveManifestEntries(config.repositories),
         };
       } catch (error) {
         return {
           mode: 'manifest',
-          configPath: stored.path,
-          repositories: stored.config.repositories.map((repository) => ({ ...repository })),
+          configPath: this.configPath,
+          repositories: config.repositories.map((repository) => ({ ...repository })),
           error: error instanceof Error ? error.message : String(error),
         };
       }
     }
 
     const gitRoot = this.readGitRoot(this.projectRoot);
-    if (gitRoot === path.resolve(this.projectRoot)) {
+    if (gitRoot === this.projectRoot) {
       return {
         mode: 'legacy-root',
         configPath: this.configPath,
@@ -90,7 +98,7 @@ export class RepositoryManifestService {
       mode: 'missing-manifest',
       configPath: this.configPath,
       repositories: [],
-      error: `Repository manifest is required because project root is not a git repository: ${path.resolve(this.projectRoot)}`,
+      error: `Repository manifest is required because project root is not a git repository: ${this.projectRoot}`,
     };
   }
 
@@ -105,7 +113,7 @@ export class RepositoryManifestService {
       }
 
       const gitRoot = this.readGitRoot(dir);
-      if (gitRoot === path.resolve(dir)) {
+      if (gitRoot === canonicalProjectRoot(dir)) {
         const relativePath = this.toProjectRelativePath(dir);
         candidates.push({
           id: this.suggestRepositoryId(dir, usedIds),
@@ -133,10 +141,10 @@ export class RepositoryManifestService {
       }
     };
 
-    visit(path.resolve(this.projectRoot), 0);
+    visit(this.projectRoot, 0);
 
     return {
-      projectRoot: path.resolve(this.projectRoot),
+      projectRoot: this.projectRoot,
       maxDepth: DISCOVERY_MAX_DEPTH,
       maxCandidates: DISCOVERY_MAX_CANDIDATES,
       truncated,
@@ -145,9 +153,15 @@ export class RepositoryManifestService {
   }
 
   add(repositories: RepositoryConfig[]): RepositoryManifestUpdateResult {
-    const stored = this.readProjectConfig();
-    const currentRepositories = Array.isArray(stored.config.repositories)
-      ? stored.config.repositories
+    for (const repository of repositories) {
+      if (!isValidRepositoryConfig(repository)) {
+        throw new Error(`Invalid repository entry: ${JSON.stringify(repository)}`);
+      }
+    }
+
+    const config = this.configService.readStored();
+    const currentRepositories = config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot) && Array.isArray(config.repositories)
+      ? config.repositories
       : [];
     const existingIds = new Set(currentRepositories.map((repository) => repository.id));
     const skipped = repositories.filter((repository) => existingIds.has(repository.id)).map((repository) => repository.id);
@@ -155,11 +169,10 @@ export class RepositoryManifestService {
     const nextRepositories = [...currentRepositories, ...additions];
     const resolvedRepositories = this.resolveManifestEntries(nextRepositories);
 
-    const nextConfig = {
-      ...stored.config,
+    this.configService.set({
+      repositoryRoot: this.projectRoot,
       repositories: nextRepositories,
-    };
-    writeAtomic(this.configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
+    });
 
     return {
       configPath: this.configPath,
@@ -170,67 +183,12 @@ export class RepositoryManifestService {
   }
 
   private resolveManifestEntries(repositories: RepositoryConfig[]): RepositoryManifestEntry[] {
-    const ids = new Set<string>();
-    const roots = new Set<string>();
-    const resolved: RepositoryManifestEntry[] = [];
-    for (const repository of repositories) {
-      if (repository === null || typeof repository !== 'object') {
-        throw new Error('Repository manifest entries must be objects');
-      }
-      if (!isValidRepositoryId(repository.id)) {
-        throw new Error(`Invalid repository ID: ${repository.id}`);
-      }
-      if (typeof repository.path !== 'string' || repository.path.trim().length === 0) {
-        throw new Error(`Repository path must be a non-empty string for repository ID: ${repository.id}`);
-      }
-      if (path.isAbsolute(repository.path)) {
-        throw new Error(`Repository path must be project-relative: ${repository.path}`);
-      }
-      if (ids.has(repository.id)) {
-        throw new Error(`Duplicate repository ID: ${repository.id}`);
-      }
-      ids.add(repository.id);
-
-      const repositoryPath = this.resolveRepositoryPath(repository.path);
-      if (!fs.existsSync(repositoryPath)) {
-        throw new Error(`Repository path does not exist: ${repositoryPath}`);
-      }
-      const gitRoot = this.readGitRoot(repositoryPath);
-      if (gitRoot === null) {
-        throw new Error(`Repository path is not inside a git repository: ${repositoryPath}`);
-      }
-      if (roots.has(gitRoot)) {
-        throw new Error(`Duplicate repository root: ${gitRoot}`);
-      }
-      roots.add(gitRoot);
-      resolved.push({ id: repository.id, path: repository.path, root: gitRoot });
-    }
-    return resolved;
-  }
-
-  private readProjectConfig(): { path: string; config: Record<string, unknown> & { repositories?: RepositoryConfig[] } } {
-    if (!fs.existsSync(this.configPath)) {
-      return { path: this.configPath, config: {} };
-    }
-
-    const parsed = JSON.parse(fs.readFileSync(this.configPath, 'utf-8')) as unknown;
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(`Project config must be a JSON object: ${this.configPath}`);
-    }
-    const config = parsed as Record<string, unknown> & { repositories?: RepositoryConfig[] };
-    if (config.repositories !== undefined && !Array.isArray(config.repositories)) {
-      throw new Error(`Project config repositories must be an array: ${this.configPath}`);
-    }
-    return { path: this.configPath, config };
-  }
-
-  private resolveRepositoryPath(repositoryPath: string): string {
-    const resolvedPath = path.resolve(this.projectRoot, repositoryPath);
-    const resolvedProjectRoot = path.resolve(this.projectRoot);
-    if (resolvedPath !== resolvedProjectRoot && !resolvedPath.startsWith(`${resolvedProjectRoot}${path.sep}`)) {
-      throw new Error(`Repository path must stay inside project root: ${repositoryPath}`);
-    }
-    return resolvedPath;
+    const resolved = this.repositoryService.resolveManifest(repositories);
+    return resolved.map((repository, index) => ({
+      id: repository.id,
+      path: repositories[index]!.path,
+      root: repository.root,
+    }));
   }
 
   private toProjectRelativePath(repositoryPath: string): string {
@@ -260,7 +218,7 @@ export class RepositoryManifestService {
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'ignore'],
       });
-      return path.resolve(output.trim());
+      return canonicalProjectRoot(output.trim());
     } catch {
       return null;
     }
