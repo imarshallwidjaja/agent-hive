@@ -398,7 +398,8 @@ describe('hive command renderers', () => {
     expect(bootstrap).toContain('hive_repositories_status');
     expect(bootstrap).toContain('first tool call must be hive_repositories_status');
     expect(bootstrap).not.toContain('first Hive tool');
-    expect(bootstrap).toContain('do not call hive_status');
+    expect(bootstrap).toContain('hive_status');
+    expect(bootstrap).not.toContain('do not call hive_status');
     expect(bootstrap).toContain('omit repositoryIds');
     expect(bootstrap).toContain('workspace.json');
     expect(bootstrap).toContain('repositoryIds');

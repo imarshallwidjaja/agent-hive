@@ -25,6 +25,7 @@ type DashReviewLaneConfig = {
 
 const MAX_ALIAS_LENGTH = 64;
 export const DASH_REVIEW_LANE_DESCRIPTION_PREFIX = 'Frozen Workspace Review Lane - ';
+export const UNIVERSAL_METADATA_HIVE_TOOLS = ['hive_repositories_status', 'hive_plan_read', 'hive_status'] as const;
 
 function withoutScoutPersistence(prompt: string): string {
   return prompt.replace(/(?:^|\n)## Persistence\n[\s\S]*?(?=\n## |$)/, '\n');
@@ -66,8 +67,8 @@ function lanePrompt(source: DashReviewLaneSource): string {
     .join('\n');
   const scopeBoundary = source.baseAgent === 'scout-researcher'
     ? [
-      'This scope lane may use `hive_repositories_status`, `hive_git_snapshot`, and `hive_review_workspace_create` with structured scope data only. It captures and materializes the frozen review workspace before any deep review runs.',
-      'Scope contract overrides any inherited guidance: the first tool call must be `hive_repositories_status`; do not call `hive_status`; for legacy single-root omit `repositoryIds` entirely from snapshot/create; for composite use manifest IDs consistently; this lane may only status/snapshot/create and must return run ID/token without claim/inspect/cleanup.',
+      'This scope lane may use the universal metadata tools (`hive_repositories_status`, `hive_plan_read`, `hive_status`), plus `hive_git_snapshot` and `hive_review_workspace_create` with structured scope data only. It captures and materializes the frozen review workspace before any deep review runs.',
+      'Scope contract overrides any inherited guidance: the first tool call must be `hive_repositories_status`; for legacy single-root omit `repositoryIds` entirely from snapshot/create; for composite use manifest IDs consistently; this lane may only use universal metadata, snapshot, and create tools and must return run ID/token without claim/inspect/cleanup.',
     ].join(' ')
     : [
       'Use only the supplied frozen review workspace paths and identity. Do not inspect or write to the live source workspace.',
@@ -106,8 +107,10 @@ export function buildDashReviewLanes(input: {
   for (const source of input.sources) {
     const taskTarget = aliasBySourceName.get(source.name)!;
     const tools = Object.fromEntries(input.hiveTools.map((tool) => [tool, false]));
+    for (const tool of UNIVERSAL_METADATA_HIVE_TOOLS) {
+      tools[tool] = true;
+    }
     if (source.baseAgent === 'scout-researcher') {
-      tools.hive_repositories_status = true;
       tools.hive_git_snapshot = true;
       tools.hive_review_workspace_create = true;
     }

@@ -14,7 +14,7 @@ describe('buildDashReviewLanes', () => {
         description: 'Verification reviewer',
       }],
       existingNames: ['review-scout-researcher'],
-      hiveTools: ['hive_feature_create', 'hive_context_write', 'hive_git_snapshot', 'hive_review_workspace_create', 'hive_repositories_status', 'hive_status'],
+      hiveTools: ['hive_feature_create', 'hive_context_write', 'hive_git_snapshot', 'hive_review_workspace_create', 'hive_repositories_status', 'hive_plan_read', 'hive_status'],
     });
 
     const scope = agents['review-scout-researcher-2'];
@@ -24,16 +24,20 @@ describe('buildDashReviewLanes', () => {
     expect(lanes[1]?.taskTarget).toBe('review-code-reviewer');
     expect(scope?.tools).not.toHaveProperty('*');
     expect(scope?.tools?.hive_repositories_status).toBe(true);
+    expect(scope?.tools?.hive_plan_read).toBe(true);
+    expect(scope?.tools?.hive_status).toBe(true);
     expect(scope?.tools?.hive_git_snapshot).toBe(true);
     expect(scope?.tools?.hive_review_workspace_create).toBe(true);
     expect(scope?.tools?.hive_feature_create).toBe(false);
-    expect(scope?.tools?.hive_status).toBe(false);
     expect(scope?.permission?.bash).toBeUndefined();
     expect(scope?.permission?.edit).toBe('deny');
     expect(scope?.permission?.task).toBe('deny');
     expect(scope?.permission?.delegate).toBe('deny');
     expect(code?.tools?.hive_git_snapshot).toBe(false);
     expect(code?.tools?.hive_review_workspace_create).toBe(false);
+    expect(code?.tools?.hive_repositories_status).toBe(true);
+    expect(code?.tools?.hive_plan_read).toBe(true);
+    expect(code?.tools?.hive_status).toBe(true);
     expect(code?.permission?.bash).toBeUndefined();
     expect(code?.prompt).toContain('local CLI and retrieval tools');
     expect(code?.prompt).toContain('Remote mutation');
@@ -141,7 +145,9 @@ describe('buildDashReviewLanes', () => {
     expect(scope.prompt).toContain('hive_repositories_status');
     expect(scope.prompt).toContain('first tool call must be `hive_repositories_status`');
     expect(scope.prompt).not.toContain('first Hive tool');
-    expect(scope.prompt).toContain('do not call `hive_status`');
+    expect(scope.prompt).toContain('universal metadata tools');
+    expect(scope.prompt).toContain('`hive_status`');
+    expect(scope.prompt).not.toContain('do not call `hive_status`');
     expect(scope.prompt).toContain('omit `repositoryIds`');
     expect(scope.prompt).toContain('without claim');
     expect(scope.prompt).toContain('inspect');

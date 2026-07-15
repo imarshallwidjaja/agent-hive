@@ -17,7 +17,7 @@ import { CODE_REVIEWER_PROMPT } from './agents/code-reviewer.js';
 import { SIMPLICITY_REVIEWER_PROMPT } from './agents/simplicity-reviewer.js';
 import { APPROACH_ADVISOR_PROMPT } from './agents/approach-advisor.js';
 import { DASH_REVIEWER_PROMPT } from './agents/dash-reviewer.js';
-import { buildDashReviewLanes } from './agents/dash-review-lanes.js';
+import { buildDashReviewLanes, UNIVERSAL_METADATA_HIVE_TOOLS as UNIVERSAL_METADATA_HIVE_TOOLS_TUPLE } from './agents/dash-review-lanes.js';
 import type { DashReviewLaneSource } from './agents/dash-review-lanes.js';
 import {
   captureReviewMaterialization,
@@ -371,6 +371,7 @@ const RUNTIME_ID = `pid-${process.pid}-${Date.now().toString(36)}-${Math.random(
 const DASH_REVIEW_PRIMARY_AGENT = '__hive_dash_review_primary';
 const DASH_REVIEW_ARGUMENT_GUARD_PLACEHOLDER = '$2147483647';
 const MAX_COMPOSITE_SNAPSHOT_REPOSITORIES = 32;
+const UNIVERSAL_METADATA_HIVE_TOOLS = new Set<string>(UNIVERSAL_METADATA_HIVE_TOOLS_TUPLE);
 
 type DashReviewWorkspaceState = {
   ownershipToken: string;
@@ -440,13 +441,13 @@ const plugin: Plugin = async (ctx) => {
   const dashReviewWorkspaces = new Map<string, DashReviewWorkspaceState>();
   const dashReviewAllowedHiveTools = (agent: string): ReadonlySet<string> | undefined => {
     if (agent === DASH_REVIEW_PRIMARY_AGENT) {
-      return new Set(['hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']);
+      return new Set([...UNIVERSAL_METADATA_HIVE_TOOLS, 'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']);
     }
     const lane = runtimeDashReviewLanes.find((candidate) => candidate.taskTarget === agent);
     if (!lane) return undefined;
     return lane.baseAgent === 'scout-researcher'
-      ? new Set(['hive_repositories_status', 'hive_git_snapshot', 'hive_review_workspace_create'])
-      : new Set();
+      ? new Set([...UNIVERSAL_METADATA_HIVE_TOOLS, 'hive_git_snapshot', 'hive_review_workspace_create'])
+      : new Set(UNIVERSAL_METADATA_HIVE_TOOLS);
   };
   const disabledMcps = configService.getDisabledMcps();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message ?? null;
@@ -3178,7 +3179,7 @@ NEXT: Ask your first clarifying question about this feature.`;
       function agentTools(allowed: string[]): Record<string, boolean> {
         const result: Record<string, boolean> = {};
         for (const tool of HIVE_TOOL_NAMES) {
-          if (!allowed.includes(tool)) {
+          if (!UNIVERSAL_METADATA_HIVE_TOOLS.has(tool) && !allowed.includes(tool)) {
             result[tool] = false;
           }
         }

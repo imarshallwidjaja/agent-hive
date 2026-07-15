@@ -343,7 +343,7 @@ describe('Agent permissions', () => {
     expect(helper?.tools?.['hive_task_create']).toBeUndefined();
     expect(helper?.tools?.[removedHiveSkillTool]).toBeUndefined();
     expect(helper?.tools?.['hive_task_update']).toBe(false);
-    expect(helper?.tools?.['hive_plan_read']).toBe(false);
+    expect(helper?.tools?.['hive_plan_read']).toBeUndefined();
     expect(helper?.tools?.['hive_tasks_sync']).toBe(false);
     expect(helper?.tools?.['hive_worktree_start']).toBe(false);
     expect(helper?.tools?.['hive_worktree_create']).toBe(false);
@@ -443,11 +443,11 @@ describe('Per-agent tool filtering', () => {
     expect(foragerTools!['hive_worktree_start']).toBe(false);
   });
 
-  it('forager tool list keeps only its worktree-read/write hive tools and excludes hive_status', async () => {
+  it('forager tool list keeps its worktree tools and universal metadata inspection tools', async () => {
     const agents = await buildConfig('unified');
     const foragerTools = agents['forager-worker']?.tools;
     expect(foragerTools).toBeTruthy();
-    expect(foragerTools!['hive_status']).toBe(false);
+    expect(foragerTools!['hive_status']).toBeUndefined();
     expect(foragerTools!['hive_plan_read']).toBeUndefined();
     expect(foragerTools!['hive_worktree_commit']).toBeUndefined();
     expect(foragerTools!['hive_context_write']).toBeUndefined();
@@ -464,7 +464,7 @@ describe('Per-agent tool filtering', () => {
     expect(helperTools!['hive_task_create']).toBeUndefined();
     expect(helperTools![removedHiveSkillTool]).toBeUndefined();
     expect(helperTools!['hive_task_update']).toBe(false);
-    expect(helperTools!['hive_plan_read']).toBe(false);
+    expect(helperTools!['hive_plan_read']).toBeUndefined();
     expect(helperTools!['hive_worktree_commit']).toBe(false);
     expect(helperTools!['hive_worktree_start']).toBe(false);
     expect(helperTools!['hive_worktree_create']).toBe(false);
@@ -481,7 +481,7 @@ describe('Per-agent tool filtering', () => {
     expect(scoutTools!['hive_context_write']).toBeUndefined();
   });
 
-  it('repository manifest tools are available to planners and orchestrators but not workers or read-only agents', async () => {
+  it('repository status is universal while repository mutation stays limited to planners and orchestrators', async () => {
     const agents = await buildConfig('dedicated');
     const architectTools = agents['architect-planner']?.tools;
     const swarmTools = agents['swarm-orchestrator']?.tools;
@@ -494,12 +494,37 @@ describe('Per-agent tool filtering', () => {
     expect(swarmTools!['hive_repositories_status']).toBeUndefined();
     expect(swarmTools!['hive_repositories_discover']).toBeUndefined();
     expect(swarmTools!['hive_repositories_update']).toBeUndefined();
-    expect(scoutTools!['hive_repositories_status']).toBe(false);
+    expect(scoutTools!['hive_repositories_status']).toBeUndefined();
     expect(scoutTools!['hive_repositories_discover']).toBe(false);
     expect(scoutTools!['hive_repositories_update']).toBe(false);
-    expect(foragerTools!['hive_repositories_status']).toBe(false);
+    expect(foragerTools!['hive_repositories_status']).toBeUndefined();
     expect(foragerTools!['hive_repositories_discover']).toBe(false);
     expect(foragerTools!['hive_repositories_update']).toBe(false);
+  });
+
+  it('allows universal metadata inspection for every built-in, custom, and generated agent', async () => {
+    const customAgents = {
+      'forager-custom': {
+        baseAgent: 'forager-worker',
+        description: 'Custom worker',
+      },
+      'reviewer-custom': {
+        baseAgent: 'code-reviewer',
+        description: 'Custom reviewer',
+      },
+    };
+    const agentSets = [
+      await buildConfig('unified', customAgents),
+      await buildConfig('dedicated', customAgents),
+    ];
+
+    for (const agents of agentSets) {
+      for (const [name, agent] of Object.entries(agents)) {
+        for (const tool of ['hive_repositories_status', 'hive_plan_read', 'hive_status']) {
+          expect(agent.tools?.[tool], `${name} must not deny ${tool}`).not.toBe(false);
+        }
+      }
+    }
   });
 
   it('background management tools are available only to primary orchestration agents', async () => {
@@ -591,7 +616,13 @@ describe('Per-agent tool filtering', () => {
     expect(resolveToolPermission(tools!, 'unknown_mcp_tool')).toBeUndefined();
     expect(resolveToolPermission(tools!, 'bash')).toBeUndefined();
     for (const toolName of HIVE_TOOL_NAMES) {
-      expect(tools![toolName]).toBe(['hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup'].includes(toolName));
+      if (['hive_repositories_status', 'hive_plan_read', 'hive_status'].includes(toolName)) {
+        expect(tools![toolName]).toBeUndefined();
+      } else {
+        expect(tools![toolName]).toBe([
+          'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup',
+        ].includes(toolName));
+      }
     }
     expect(reviewer?.permission?.edit).toBe('deny');
     expect(reviewer?.permission?.bash).toBeUndefined();
@@ -625,9 +656,13 @@ describe('Per-agent tool filtering', () => {
       expect(resolveToolPermission(lane.tools!, 'unknown_custom_tool')).toBeUndefined();
       expect(resolveToolPermission(lane.tools!, 'unknown_mcp_tool')).toBeUndefined();
       expect(lane.tools?.['hive_context_write']).toBe(false);
+      for (const toolName of ['hive_repositories_status', 'hive_plan_read', 'hive_status']) {
+        expect(lane.tools?.[toolName]).toBe(true);
+      }
       const isScopeLane = lane.tools?.hive_review_workspace_create === true;
       for (const toolName of HIVE_TOOL_NAMES) {
-        if (isScopeLane && ['hive_git_snapshot', 'hive_repositories_status', 'hive_review_workspace_create'].includes(toolName)) continue;
+        if (['hive_repositories_status', 'hive_plan_read', 'hive_status'].includes(toolName)) continue;
+        if (isScopeLane && ['hive_git_snapshot', 'hive_review_workspace_create'].includes(toolName)) continue;
         expect(lane.tools?.[toolName]).toBe(false);
       }
       expect(lane.permission?.edit).toBe('deny');
@@ -640,7 +675,6 @@ describe('Per-agent tool filtering', () => {
         expect(lane.tools?.['hive_review_workspace_create']).toBe(true);
       } else {
         expect(lane.tools?.['hive_git_snapshot']).toBe(false);
-        expect(lane.tools?.['hive_repositories_status']).toBe(false);
         expect(lane.tools?.['hive_review_workspace_create']).toBe(false);
       }
       expect(lane.prompt).toContain('Frozen Workspace Review Lane');
@@ -656,7 +690,8 @@ describe('Per-agent tool filtering', () => {
     expect(scopeLane?.prompt).toContain('hive_git_snapshot');
     expect(scopeLane?.prompt).toContain('hive_review_workspace_create');
     expect(scopeLane?.prompt).toContain('first tool call must be `hive_repositories_status`');
-    expect(scopeLane?.prompt).toContain('do not call `hive_status`');
+    expect(scopeLane?.prompt).toContain('`hive_status`');
+    expect(scopeLane?.prompt).not.toContain('do not call `hive_status`');
     expect(securityLane?.variant).toBe('xhigh');
     expect(securityLane?.description).toContain('Security implementation reviewer');
     expect(securityLane?.prompt).toContain('Security implementation reviewer');
@@ -987,6 +1022,9 @@ describe('Per-agent tool filtering', () => {
       for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool']) {
         await expect(invoke('dash-primary', tool)).resolves.toBeUndefined();
       }
+      for (const tool of ['hive_repositories_status', 'hive_plan_read', 'hive_status']) {
+        await expect(invoke('dash-primary', tool)).resolves.toBeUndefined();
+      }
       await expect(invoke('dash-primary', 'task', { subagent_type: scopeAlias })).resolves.toBeUndefined();
       for (const tool of ['hive_feature_create', 'hive_git_snapshot', 'hive_review_workspace_create']) {
         await expect(invoke('dash-primary', tool, { command: 'touch should-not-run' })).rejects.toThrow('dash-review tool is not authorized');
@@ -996,7 +1034,7 @@ describe('Per-agent tool filtering', () => {
       }
 
       await messageHook({ sessionID: 'dash-scope', agent: scopeAlias }, { message: {}, parts: [] } as any);
-      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool', 'hive_repositories_status', 'hive_git_snapshot', 'hive_review_workspace_create']) {
+      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool', 'hive_repositories_status', 'hive_plan_read', 'hive_status', 'hive_git_snapshot', 'hive_review_workspace_create']) {
         await expect(invoke('dash-scope', tool)).resolves.toBeUndefined();
       }
       await expect(invoke('dash-scope', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review task target is not authorized');
@@ -1005,7 +1043,7 @@ describe('Per-agent tool filtering', () => {
       }
 
       await messageHook({ sessionID: 'dash-code', agent: codeAlias }, { message: {}, parts: [] } as any);
-      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool']) {
+      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool', 'hive_repositories_status', 'hive_plan_read', 'hive_status']) {
         await expect(invoke('dash-code', tool)).resolves.toBeUndefined();
       }
       await expect(invoke('dash-code', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review task target is not authorized');
@@ -1329,7 +1367,7 @@ describe('Per-agent tool filtering', () => {
     expect(tools['hive_worktree_create']).toBe(false);
     expect(tools['hive_worktree_commit']).toBe(false);
     expect(tools['hive_merge']).toBe(false);
-    expect(tools['hive_status']).toBe(false);
+    expect(tools['hive_status']).toBeUndefined();
     expect(tools['hive_feature_create']).toBe(false);
     expect(tools['hive_plan_write']).toBe(false);
     expect(tools['hive_tasks_sync']).toBe(false);

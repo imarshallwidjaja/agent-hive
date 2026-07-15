@@ -285,7 +285,7 @@ describe("agentMode gating", () => {
     expect(helper.tools?.["hive_task_create"]).toBeUndefined();
     expect(helper.tools?.[removedHiveSkillTool]).toBeUndefined();
     expect(helper.tools?.["hive_task_update"]).toBe(false);
-    expect(helper.tools?.["hive_plan_read"]).toBe(false);
+    expect(helper.tools?.["hive_plan_read"]).toBeUndefined();
     expect(helper.tools?.["hive_tasks_sync"]).toBe(false);
     expect(helper.tools?.["hive_worktree_start"]).toBe(false);
     expect(helper.tools?.["hive_worktree_create"]).toBe(false);

@@ -268,10 +268,10 @@ Task-backed worktree tools create feature/task records and appear in `hive_statu
 - **Hive** — all 27 tools (hybrid agent)
 - **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_merge, hive_context_write, hive_status (20 tools — excludes hive_worktree_commit, hive_plan_write, hive_plan_patch, and ad-hoc worktree tools)
 - **Architect** — hive_feature_create, hive_plan_write, hive_plan_patch, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write, hive_status (13 tools)
-- **Hive Builder** — hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write (12 tools — ad-hoc worktree + repo manifest + background board + context; denied task-backed worktree, plan, feature, and status tools)
-- **Forager** — hive_plan_read, hive_worktree_commit, hive_context_write (3 tools)
-- **Scout** — hive_plan_read, hive_context_write, hive_status (3 tools)
-- **Hygienic** — hive_plan_read, hive_context_write, hive_status (3 tools)
+- **Hive Builder** — hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_plan_read, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write, hive_status (14 tools — ad-hoc worktree + repo manifest + metadata inspection + background board + context; denied task-backed worktree, plan mutation, and feature tools)
+- **Forager** — hive_repositories_status, hive_plan_read, hive_status, hive_worktree_commit, hive_context_write (5 tools)
+- **Scout** — hive_repositories_status, hive_plan_read, hive_context_write, hive_status (4 tools)
+- **Hygienic** — hive_repositories_status, hive_plan_read, hive_context_write, hive_status (4 tools)
 
 Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `skills.urls`, or `.opencode`/`.claude` discovery), not through a Hive plugin tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered ahead of user paths.
 
