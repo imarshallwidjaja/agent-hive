@@ -11,7 +11,9 @@ Core rule: delegation first, independence second. Delegation-first orchestration
 
 Background is a wait mode, not the definition of parallelism. Independent subagent tasks can run in parallel when the primary agent emits all `task()` calls in the same assistant message. Background mode answers a separate scheduling question: can the primary agent keep doing unrelated foreground work while those subagents run?
 
-Default: When `## Background-First Orchestration` is present, background-delegation governs scheduling and wait mode; other skills govern domain workflow and safety. Safety, dependency, user, risk, simplicity, and ownership gates may still force blocking. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict. If the next decision depends on the result, use blocking `task()` and name the escape reason in the handoff.
+Lane count never selects wait mode. Dependency, risk, simplicity, user interaction, ownership, and whether useful independent foreground work exists select it.
+
+Default: When `## Background-First Orchestration` is present, background-delegation governs scheduling and wait mode; other skills govern domain workflow and safety. Safety, dependency, user, risk, simplicity, ownership, and lifecycle/board gates may still force blocking. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns. If the next decision depends on the result, use blocking `task()` and name the escape reason in the handoff.
 
 Gate-closed sessions use normal blocking `task()` wait mode. Do not simulate background orchestration from this skill alone.
 
@@ -34,9 +36,9 @@ Keep pure final verification outside `## Tasks` in `## Final Verification` when 
 - Writing/change: managed tasks with ownership boundaries, dependencies, expected outputs, verification obligations, and an integration path.
 - Execution: highest-management tasks with lifecycle/state, merge or cleanup handling, verification routing, and outcome reporting.
 
-Prefer more smaller targeted background tasks over broad ambiguous tasks, especially for exploratory/read-only and review work. Start with a 2-4 initial lanes fan-out unless there is a clear reason for more, synthesize the results, then dispatch another wave if needed.
+Prefer targeted background tasks over broad ambiguous tasks, especially for exploratory/read-only and review work.
 
-Smallest meaningful non-feature delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+Smallest meaningful non-feature delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.
 
 ## Fresh-Session Launch Contract
 
@@ -110,7 +112,7 @@ hive_background_reconcile_batch({
 
 Action: start independent codebase research while you read another bounded area in the foreground.
 
-Decision: use background when the foreground read does not need the research answer. Use a blocking escape only when dependency, risk, simplicity, user interaction, or ownership conflict makes foreground scheduling wrong.
+Decision: use background when the foreground read does not need the research answer. Use a blocking escape only when dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns makes foreground scheduling wrong.
 
 Result: continue foreground work, wait for the native background completion notification, then refresh `hive_background_status` before using the findings.
 

@@ -251,36 +251,23 @@ describe('config hook autoLoadSkills guidance', () => {
     const customPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-background', { trackMessage: false });
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
-    expect(hiveMasterPrompt).toContain('## Background-First Orchestration');
-    expect(hiveMasterPrompt).not.toContain(backgroundSkill.template);
-    expect(hiveMasterPrompt).toContain('skill({ name: "background-delegation" })');
-    expect(hiveMasterPrompt).toContain('look for independent background lanes');
-    expect(hiveMasterPrompt).toContain('background-delegation governs scheduling and wait mode');
-    expect(hiveMasterPrompt).toContain('Gate-closed sessions keep normal blocking task() wait mode');
-    expect(hiveMasterPrompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
-    expect(hiveMasterPrompt).toContain('hive_background_status');
-    expect(hiveMasterPrompt).toContain('hive_background_reconcile');
-    expect(hiveMasterPrompt).toContain('hive_background_reconcile_batch');
-    expect(hiveMasterPrompt).toContain('hive_background_cancel');
-    expect(hiveMasterPrompt).toContain('task({ background: true');
-    expect(hiveMasterPrompt).toContain('native completion notification');
-    expect(hiveMasterPrompt).not.toContain('task_status');
-    expect(builderPrompt).toContain('## Background-First Orchestration');
-    expect(builderPrompt).not.toContain(backgroundSkill.template);
-    expect(builderPrompt).toContain('skill({ name: "background-delegation" })');
-    expect(builderPrompt).toContain('look for independent background lanes');
-    expect(builderPrompt).toContain('background-delegation governs scheduling and wait mode');
-    expect(builderPrompt).toContain('Gate-closed sessions keep normal blocking task() wait mode');
-    expect(builderPrompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
-    expect(builderPrompt).toContain('hive_background_status');
-    expect(builderPrompt).toContain('hive_background_reconcile');
-    expect(builderPrompt).toContain('hive_background_reconcile_batch');
-    expect(builderPrompt).toContain('hive_background_cancel');
-    expect(builderPrompt).toContain('task({ background: true');
-    expect(builderPrompt).toContain('native completion notification');
-    expect(builderPrompt).not.toContain('task_status');
-    expect(builderPrompt).toContain('## Hive Builder Gate-Open Delegation');
-    expect(builderPrompt).toContain('wait-mode and board protocol');
+    for (const prompt of [hiveMasterPrompt, builderPrompt]) {
+      expect(prompt).toContain('## Background-First Orchestration');
+      expect(prompt).not.toContain(backgroundSkill.template);
+      expect(prompt).toContain('skill({ name: "background-delegation" })');
+      expect(prompt).toContain('Before launching or managing background lanes, load/use skill({ name: "background-delegation" })');
+      expect(prompt).toContain('background-delegation governs scheduling and wait mode');
+      expect(prompt).toContain('useful unrelated foreground work');
+      expect(prompt).toMatch(/otherwise use blocking/i);
+      expect(prompt).toContain('Detailed safety overrides and board protocol live in that skill');
+      expect(prompt).toContain('Gate-closed sessions keep normal blocking task() wait mode');
+      expect(prompt).not.toContain('safe foreground work');
+      expect(prompt).not.toContain('look for independent background lanes');
+      expect(prompt).not.toContain(
+        'Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.'
+      );
+      expect(prompt).not.toContain('task_status');
+    }
     for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, codeReviewerPrompt, customPrompt]) {
       expect(prompt).not.toContain('skill({ name: "background-delegation" })');
       expect(prompt).not.toContain('task({ background: true');
@@ -302,23 +289,20 @@ describe('config hook autoLoadSkills guidance', () => {
     const codeReviewerPrompt = getAgentPrompt(opencodeConfig, 'code-reviewer');
     const backgroundSkill = requireBuiltinSkill('background-delegation');
 
-    expect(builderPrompt).toContain('## Hive Builder Gate-Open Delegation');
-    for (const prompt of [architectPrompt, swarmPrompt]) {
-      expect(prompt).not.toContain('## Hive Builder Gate-Open Delegation');
-    }
     for (const prompt of [architectPrompt, swarmPrompt, builderPrompt]) {
       expect(prompt).toContain('## Background-First Orchestration');
       expect(prompt).toContain('skill({ name: "background-delegation" })');
-      expect(prompt).toContain('look for independent background lanes');
+      expect(prompt).toContain('Before launching or managing background lanes, load/use skill({ name: "background-delegation" })');
       expect(prompt).toContain('background-delegation governs scheduling and wait mode');
+      expect(prompt).toContain('useful unrelated foreground work');
+      expect(prompt).toMatch(/otherwise use blocking/i);
+      expect(prompt).toContain('Detailed safety overrides and board protocol live in that skill');
       expect(prompt).toContain('Gate-closed sessions keep normal blocking task() wait mode');
-      expect(prompt).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
-      expect(prompt).toContain('hive_background_status');
-      expect(prompt).toContain('hive_background_reconcile');
-      expect(prompt).toContain('hive_background_reconcile_batch');
-      expect(prompt).toContain('hive_background_cancel');
-      expect(prompt).toContain('task({ background: true');
-      expect(prompt).toContain('native completion notification');
+      expect(prompt).not.toContain('safe foreground work');
+      expect(prompt).not.toContain('look for independent background lanes');
+      expect(prompt).not.toContain(
+        'Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.'
+      );
       expect(prompt).not.toContain('task_status');
       expect(prompt).not.toContain(backgroundSkill.template);
     }
@@ -347,7 +331,6 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(hiveMasterPrompt).not.toContain('task({ background: true');
     expect(builderPrompt).not.toContain('\n\n## Background-First Orchestration\n');
     expect(builderPrompt).not.toContain('skill({ name: "background-delegation" })');
-    expect(builderPrompt).not.toContain('## Hive Builder Gate-Open Delegation');
     for (const leaked of gateClosedLeakStrings) {
       expect(builderPrompt).not.toContain(leaked);
     }
@@ -369,7 +352,6 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(hiveMasterPrompt).not.toContain('skill({ name: "background-delegation" })');
     expect(builderPrompt).not.toContain('\n\n## Background-First Orchestration\n');
     expect(builderPrompt).not.toContain('skill({ name: "background-delegation" })');
-    expect(builderPrompt).not.toContain('## Hive Builder Gate-Open Delegation');
     expect(builderPrompt).not.toContain('specialist-default');
     expect(generatedPath).toBeDefined();
     expect(fs.existsSync(path.join(generatedPath!, 'background-delegation'))).toBe(false);

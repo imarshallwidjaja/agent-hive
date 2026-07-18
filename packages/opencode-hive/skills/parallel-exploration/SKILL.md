@@ -9,7 +9,7 @@ description: "Agent Hive workflow skill for Scout fan-out. Use when a Hive agent
 
 When you need to answer "where/how does X work?" across multiple domains (codebase, tests, docs, OSS), investigating sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Decompose into independent sub-questions that fit in one context window, then start one fresh subagent session per primary question and synthesize the bounded results.
+**Core principle:** Use one independently answerable, non-overlapping, context-bounded question per fresh Scout session. Launch every currently known, necessary, non-duplicative independent question in the same assistant message, then synthesize the bounded results.
 
 **Delegation kind:** This is exploratory/read-only lightweight delegation. For kind-based scheduling under the gate, load `background-delegation` and let it govern foreground/blocking vs background wait mode.
 
@@ -19,19 +19,16 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 ## When to Use
 
-**Default to this skill when:**
 **Use when:**
 - Investigation spans multiple domains (code + tests + docs)
-- User asks **2+ questions across different domains** (e.g., code + tests, code + docs/OSS, code + config/runtime)
 - Questions are independent (answer to A doesn't affect B)
-- User asks **3+ independent questions** (often as a numbered list or separate bullets)
 - No edits needed (read-only exploration)
 - User asks for an exploration that likely spans multiple files/packages
 - The work is read-only and the questions can be investigated independently
 
 **Only skip this skill when:**
 - Investigation requires shared state or context between questions
-- It's a single focused question that is genuinely answerable with **one quick grep + one file read**
+- It's a focused question that the primary agent can answer with a bounded direct lookup
 - Questions are dependent (answer A materially changes what to ask for B)
 - Work involves file edits (use Hive tasks / Forager instead)
 
@@ -53,7 +50,7 @@ If the only reason for serializing is `task()` is blocking, that is incorrect. B
 
 ### 1. Decompose Into Independent Questions
 
-Split your investigation into 2-4 independent sub-questions. Each sub-question should fit in one context window. If a request will not fit in one context window, narrow the slice, capture bounded findings, and return to Hive with recommended next steps instead of pushing toward an oversized final report. Good decomposition:
+Split the investigation into independently answerable, non-overlapping questions. Each question should fit in one context window. If a request will not fit in one context window, narrow the slice, capture bounded findings, and return to Hive with recommended next steps instead of pushing toward an oversized final report. Good decomposition:
 
 | Domain | Question Example |
 |--------|------------------|
@@ -67,17 +64,17 @@ Split your investigation into 2-4 independent sub-questions. Each sub-question s
 - "Find the bug" then "Fix the bug" (not read-only)
 
 **Stop and return to Hive when:**
-- one more fan-out would broaden scope too far
+- another question would expand beyond the assigned objective
 - a sub-question no longer fits in one context window
 - the next useful step is implementation rather than exploration
 
 ### 2. Spawn Tasks (Fan-Out)
 
-Launch all tasks before waiting for any results:
+Launch every currently known, necessary, non-duplicative independent question before waiting for any results. Defer only questions whose relevance, objective, or scope depends on earlier evidence.
 
 Choose the researcher per slice. Use the scout researcher whose description best fits the research slice, including configured scout-derived custom subagents when their domain or workflow is a closer match. Use `scout-researcher` when no configured custom description is a closer fit.
 
-Each prompt needs a Context Packet: objective, known facts, references, prior failures, constraints, expected output, and how the Scout should find missing context. Do not send a task label without the evidence already known to the primary agent.
+Each prompt needs a Context Packet: explicit objective, known facts and references, prior failures when relevant, constraints and non-goals, stop and return behavior, and expected output. Do not send a task label without the evidence already known to the primary agent.
 
 Each native `task()` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. Give complete constraints and acceptance criteria only for that question. Never pass `task_id` to `task()`; returned task IDs are observe-only board handles for status, reconcile, and cancel. Do not send a follow-up prompt to a completed, failed, or blocked session. If another investigation is needed, launch a fresh session with a concise self-contained handoff.
 
@@ -125,6 +122,8 @@ After the fan-out message, collect the task results through the normal `task()` 
 ### 4. Synthesize Findings
 
 When each task completes, its result is returned directly. Collect the outputs from each task and proceed to synthesis.
+
+Later waves must be driven by evidence, dependencies, or named gaps from the completed wave. Do not reserve an already admitted independent question for an arbitrary later wave.
 
 ### 5. Cleanup (If Needed)
 
@@ -233,10 +232,6 @@ task({ ... });
 task({ ... });
 task({ ... });
 ```
-
-**Too many tasks (diminishing returns):**
-- 2-4 tasks: Good parallelization
-- 5+ tasks: Overhead exceeds benefit, harder to synthesize
 
 **Dependent questions:**
 - Don't spawn task B if it needs task A's answer

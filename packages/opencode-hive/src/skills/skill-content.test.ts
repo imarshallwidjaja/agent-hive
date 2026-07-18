@@ -103,7 +103,6 @@ describe('skill content', () => {
     );
     expect(skill!.template).toContain('fit in one context window');
     expect(skill!.template).toContain('return to Hive');
-    expect(skill!.template).toContain('one more fan-out would broaden scope too far');
     expect(skill!.template).toContain('Dependency decides serial vs parallel');
     expect(skill!.template).toContain('Wait mode decides blocking foreground vs background');
     expect(skill!.template).toContain('Blocking does not mean serial');
@@ -114,6 +113,17 @@ describe('skill content', () => {
     expect(skill!.template).toContain('one terminal handoff');
   });
 
+  it('launches every admitted Scout question in one wave and makes later waves evidence-driven', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
+
+    expect(skill).toBeDefined();
+    expect(skill!.template).toContain(
+      'Launch every currently known, necessary, non-duplicative independent question in the same assistant message'
+    );
+    expect(skill!.template).toContain('one independently answerable, non-overlapping, context-bounded question per fresh Scout session');
+    expect(skill!.template).toContain('Later waves must be driven by evidence, dependencies, or named gaps from the completed wave');
+  });
+
   it('positions parallel-exploration as lightweight read-only delegation under the background scheduler', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
 
@@ -122,7 +132,21 @@ describe('skill content', () => {
     expect(skill!.template).toContain('For kind-based scheduling under the gate, load `background-delegation`');
     expect(skill!.template).toContain('Context Packet');
     expect(skill!.template).toContain('known facts');
+    expect(skill!.template).toContain('constraints and non-goals');
+    expect(skill!.template).toContain('stop and return behavior');
     expect(skill!.template).toContain('expected output');
+  });
+
+  it('removes numeric fan-out policy from Scout and background delegation skills', () => {
+    const numericFanOutPolicy =
+      /three Scouts|up to\s+\d+\s+lanes?|\b\d+\s+tasks?\b(?=[^\n]{0,80}(?:fan-out|parallel|dispatch))|\b2-4\b|\b5\+/i;
+
+    for (const name of ['parallel-exploration', 'background-delegation']) {
+      const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
+
+      expect(skill).toBeDefined();
+      expect(skill!.template, name).not.toMatch(numericFanOutPolicy);
+    }
   });
 
   it('keeps executing-plans sequential guidance subordinate to background-delegation when gate-open', () => {
@@ -152,6 +176,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('one primary goal');
     expect(skill!.template).toContain('fresh subagent session');
     expect(skill!.template).toContain('disjoint path ownership or sequence overlapping writers');
+    expect(skill!.template).toContain('parallel-exploration');
+    expect(skill!.template).not.toMatch(/Treat unresolved lanes as blockers/i);
   });
 
   it('does not keep stale synchronous-exploration wording in delegation skills', () => {
@@ -187,7 +213,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('descriptor is a closer match');
     expect(skill!.template).toContain('Orchestrator owns final confidence');
     expect(skill!.template).toContain('terminal-unreconciled');
-    expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict.');
+    expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns.');
     expect(skill!.template).toContain('Gate-closed sessions use normal blocking `task()` wait mode');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Do not call `task()` from subagents');
@@ -210,8 +236,13 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Never pass `task_id` to `task()`');
     expect(skill!.template).toContain('observe-only board handles');
     expect(skill!.template).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
-    expect(skill!.template).toContain('Normal fan-out is 2-4 lanes');
-    expect(skill!.template).toContain('synthesize before dispatching more');
+    expect(skill!.template).toContain('Lane count never selects wait mode');
+    expect(skill!.template).toContain(
+      'Treat waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes as blockers'
+    );
+    expect(skill!.template).not.toContain('Treat unresolved lanes as blockers.');
+    expect(skill!.template).toContain('tightly coupled code, tests, docs, and multiple files');
+    expect(skill!.template).toContain('disjoint path ownership or sequence overlapping writers');
     expect(skill!.template).toContain('second patch/test loop');
     expect(skill!.template).toContain('behavior-contract change');
     expect(skill!.template).toContain('manual task/plan amendment');

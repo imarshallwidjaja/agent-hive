@@ -73,15 +73,15 @@ For a blocked feature task, collect the operator decision, then use \`hive_workt
 Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
 
 - If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
+- For read-only Scout fan-out, load and use \`parallel-exploration\`.
 - If task B needs task A's result, run them serially.
-- When the env-gated appendix is present, use background-first scheduler mode: look for independent background lanes on non-trivial work, then continue only foreground work that does not depend on the subagent result.
-- Under the env-gated appendix, exploratory/read-only and review lanes may be background-launched freely when independent. writing/change and execution lanes need file ownership, dependency sequencing, task ID/state tracking, integration plans, and unresolved-lane checks before dependent decisions. Prefer multiple smaller targeted tasks over one broad ambiguous worker prompt, with a normal initial fan-out of 2-4 lanes.
-- Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
+- When the env-gated appendix is present, load and use \`background-delegation\` for wait mode and board protocol.
+- Load \`dispatching-parallel-agents\` for writing/change parallelism.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
-Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.
 
-During Planning, use Scout via \`task()\` for exploration. When the env-gated appendix is present, treat independent Scout work as a background-first scheduler candidate; otherwise \`task()\` returns when done. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. For parallel exploration, issue multiple \`task()\` calls in the same message.
+During Planning, use Scout via \`task()\` for exploration. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. For parallel exploration, issue multiple \`task()\` calls in the same message.
 
 **Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include objective, known facts, references, prior failures, constraints, expected output, file paths, line ranges when known, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 

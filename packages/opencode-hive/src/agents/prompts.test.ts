@@ -7,7 +7,7 @@ import { SWARM_BEE_PROMPT } from './swarm';
 import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
-import { HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL, HIVE_BUILDER_PROMPT } from './hive-builder';
+import { HIVE_BUILDER_PROMPT } from './hive-builder';
 import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
 import { CODE_REVIEWER_PROMPT } from './code-reviewer';
 import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
@@ -49,6 +49,17 @@ describe('Orchestrator synthesis-before-delegation', () => {
   });
 });
 
+const DELEGATION_POLICY_NUMERIC_FANOUT =
+  /three Scouts|up to\s+\d+\s+lanes?|\b\d+\s+tasks?\b(?=[^\n]{0,80}(?:fan-out|parallel|dispatch))|\b2-4\b|\b5\+/i;
+
+function subagentConcurrencySection(prompt: string): string {
+  const start = prompt.indexOf('### Subagent Concurrency');
+  if (start < 0) return '';
+  const rest = prompt.slice(start);
+  const next = rest.search(/\n### |\n## /);
+  return next < 0 ? rest : rest.slice(0, next);
+}
+
 describe('Primary agent subagent concurrency guidance', () => {
   const primaryPrompts = [
     ['Hive', QUEEN_BEE_PROMPT],
@@ -57,10 +68,46 @@ describe('Primary agent subagent concurrency guidance', () => {
     ['Hive Builder', HIVE_BUILDER_PROMPT],
   ] as const;
 
+  const backgroundPrimaries = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Architect', ARCHITECT_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+  ] as const;
+
   it('does not keep stale synchronous-exploration wording in primary prompts', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).not.toContain('default to synchronous exploration');
       expect(prompt, name).not.toContain('synchronous exploration');
+    }
+  });
+
+  it('routes Scout fan-out to parallel-exploration without copying canonical detail or numeric caps', () => {
+    for (const [name, prompt] of primaryPrompts) {
+      const policy = subagentConcurrencySection(prompt);
+      expect(policy, name).toMatch(/load and use [`']?parallel-exploration/i);
+      expect(policy, name).not.toContain('one independently answerable question per Scout');
+      expect(policy, name).not.toMatch(
+        /launch all currently admitted independent Scout questions together/i
+      );
+      expect(policy, name).not.toMatch(/defer only evidence-dependent Scout questions/i);
+      expect(policy, name).not.toMatch(DELEGATION_POLICY_NUMERIC_FANOUT);
+    }
+  });
+
+  it('routes background wait mode to background-delegation without copying eligibility detail', () => {
+    for (const [name, prompt] of backgroundPrimaries) {
+      const policy = subagentConcurrencySection(prompt);
+      expect(policy, name).toMatch(/load and use [`']?background-delegation/i);
+      expect(policy, name).not.toMatch(/useful unrelated foreground work/i);
+      expect(policy, name).not.toMatch(
+        /otherwise launch independent lanes together in blocking mode/i
+      );
+      expect(policy, name).not.toMatch(
+        /foreground\/blocking escape for dependency, risk, simplicity/i
+      );
+      expect(policy, name).not.toMatch(
+        /background-launched freely when independent|run in background when independent|freely when independent/i
+      );
     }
   });
 });
@@ -157,7 +204,7 @@ describe('Scout operating contract', () => {
 
   it('includes speed and efficiency rules', () => {
     expect(SCOUT_BEE_PROMPT).toContain('### Speed and Efficiency');
-    expect(SCOUT_BEE_PROMPT).toContain('independent sub-parts');
+    expect(SCOUT_BEE_PROMPT).toContain('independent evidence');
     expect(SCOUT_BEE_PROMPT).toContain('answer immediately');
   });
 
@@ -165,6 +212,18 @@ describe('Scout operating contract', () => {
     expect(SCOUT_BEE_PROMPT).toContain('## Synthesis Rules');
     expect(SCOUT_BEE_PROMPT).toContain('do not speculate about its contents');
     expect(SCOUT_BEE_PROMPT).toContain('cited synthesis');
+  });
+
+  it('forbids Scout from delegating or orchestrating other agents', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('Do not delegate or orchestrate other agents');
+  });
+
+  it('answers only the assigned primary question and returns partial findings before expanding scope', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('Answer the assigned primary question');
+    expect(SCOUT_BEE_PROMPT).toContain('Follow subordinate evidence needed to answer it');
+    expect(SCOUT_BEE_PROMPT).toContain('Do not investigate adjacent questions');
+    expect(SCOUT_BEE_PROMPT).toContain('fresh-lane recommendations');
+    expect(SCOUT_BEE_PROMPT).toMatch(/return partial findings if further progress requires scope expansion/i);
   });
 });
 
@@ -266,20 +325,13 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).not.toContain("- Don't execute - plan only");
     });
 
-    it('explains background-first scheduler mode when the env-gated appendix is present', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('background-first scheduler mode');
-      expect(QUEEN_BEE_PROMPT).toContain('look for independent background lanes');
-      expect(QUEEN_BEE_PROMPT).toContain('foreground/blocking escape');
-      expect(QUEEN_BEE_PROMPT).toContain('exploratory/read-only and review lanes may be background-launched freely');
-      expect(QUEEN_BEE_PROMPT).toContain('writing/change and execution lanes need file ownership');
-      expect(QUEEN_BEE_PROMPT).toContain('normal initial fan-out of 2-4 lanes');
-    });
-
     it('separates subagent concurrency from foreground wait mode', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
       expect(QUEEN_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
       expect(QUEEN_BEE_PROMPT).toContain('Blocking does not mean serial');
-      expect(QUEEN_BEE_PROMPT).toContain('If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message');
+      expect(QUEEN_BEE_PROMPT).toContain(
+        'If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message'
+      );
     });
 
     it('includes internal codebase exploration in Research intent', () => {
@@ -481,11 +533,7 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('Architect should not invoke it during planning');
     });
 
-    it('explains env-gated background-first scheduling', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('background-first scheduler mode');
-      expect(ARCHITECT_BEE_PROMPT).toContain('look for independent background lanes');
-      expect(ARCHITECT_BEE_PROMPT).toContain('foreground/blocking escape');
-      expect(ARCHITECT_BEE_PROMPT).toContain('read-only and plan-review lanes can run in background when independent');
+    it('tells planners to hand Scouts known findings instead of rediscovery', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('Provide known findings and references');
     });
 
@@ -493,7 +541,9 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
       expect(ARCHITECT_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
       expect(ARCHITECT_BEE_PROMPT).toContain('Blocking does not mean serial');
-      expect(ARCHITECT_BEE_PROMPT).toContain('If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message');
+      expect(ARCHITECT_BEE_PROMPT).toContain(
+        'If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message'
+      );
     });
   });
 
@@ -593,20 +643,13 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_worktree_start');
     });
 
-    it('explains env-gated background-first scheduling for delegation', () => {
-      expect(SWARM_BEE_PROMPT).toContain('background-first scheduler mode');
-      expect(SWARM_BEE_PROMPT).toContain('look for independent background lanes');
-      expect(SWARM_BEE_PROMPT).toContain('foreground/blocking escape');
-      expect(SWARM_BEE_PROMPT).toContain('exploratory/read-only and review lanes may be background-launched freely');
-      expect(SWARM_BEE_PROMPT).toContain('writing/change and execution lanes need file ownership');
-      expect(SWARM_BEE_PROMPT).toContain('normal initial fan-out of 2-4 lanes');
-    });
-
     it('separates subagent concurrency from foreground wait mode', () => {
       expect(SWARM_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
       expect(SWARM_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
       expect(SWARM_BEE_PROMPT).toContain('Blocking does not mean serial');
-      expect(SWARM_BEE_PROMPT).toContain('If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message');
+      expect(SWARM_BEE_PROMPT).toContain(
+        'If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message'
+      );
       expect(SWARM_BEE_PROMPT).not.toContain('During planning, default to synchronous exploration');
     });
 
@@ -1294,8 +1337,6 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('verification requirements');
     expect(HIVE_BUILDER_PROMPT).toContain('one independently answerable question or one primary goal');
     expect(HIVE_BUILDER_PROMPT).toContain('one owner, one expected output, and one verification/return contract');
-    expect(HIVE_BUILDER_PROMPT).toContain('Normal fan-out is 2-4 lanes');
-    expect(HIVE_BUILDER_PROMPT).toContain('synthesize before dispatching more');
   });
 
   it('requires write-conflict boundaries and lane tracking in the base prompt', () => {
@@ -1306,21 +1347,19 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('unresolved lanes');
   });
 
-  it('keeps background scheduler guidance out of Builder base while Builder rail points to wait-mode protocol', () => {
-    for (const prompt of [QUEEN_BEE_PROMPT, ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT]) {
-      expect(prompt).toContain('background-first scheduler mode');
-      expect(prompt).toContain('dependency, risk, simplicity, user interaction, or ownership conflict');
-    }
+  it('keeps background scheduler guidance out of Builder base prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('background-first scheduler mode');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('background-delegation');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('wait-mode and board protocol');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('## Background-First Orchestration');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('skill({ name: "background-delegation" })');
   });
 
   it('separates subagent concurrency from foreground wait mode', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('Dependency decides serial vs parallel');
     expect(HIVE_BUILDER_PROMPT).toContain('Wait mode decides blocking foreground vs background');
     expect(HIVE_BUILDER_PROMPT).toContain('Blocking does not mean serial');
-    expect(HIVE_BUILDER_PROMPT).toContain('If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message');
+    expect(HIVE_BUILDER_PROMPT).toContain(
+      'If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message'
+    );
   });
 
   it('says subagents must not call task() recursively', () => {
@@ -1341,29 +1380,10 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_background_output');
   });
 
-  it('does not embed the gate-open wait-mode rail in the base prompt', () => {
+  it('does not embed runtime background wait-mode details in the base prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('## Hive Builder Gate-Open Delegation');
     expect(HIVE_BUILDER_PROMPT).not.toContain('task({ background: true');
-  });
-
-  it('defines a Builder gate-open rail as wait-mode and board protocol only', () => {
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('## Hive Builder Gate-Open Delegation');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('## Background-First Orchestration');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('wait-mode and board protocol');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('task({ background: true');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_background_status');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('native completion notification');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('overrides the base lifecycle execution default');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('specialist-default');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('state the escape reason before direct implementation');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).not.toContain('Depends on:');
-  });
-
-  it('keeps background scheduler protocol details owned by the background-delegation skill', () => {
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('background-delegation');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('wait-mode and board protocol');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_background_reconcile');
-    expect(HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL).toContain('hive_background_cancel');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('## Background-First Orchestration');
   });
 
   it('does not keep the old equal-choice execution lifecycle wording', () => {

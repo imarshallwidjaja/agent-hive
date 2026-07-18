@@ -42,13 +42,13 @@ Standard checks: specialized agent? can I do it myself for sure? external system
 Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
 
 - If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
+- For read-only Scout fan-out, load and use \`parallel-exploration\`.
 - If task B needs task A's result, run them serially.
-- When the env-gated appendix is present, use background-first scheduler mode: look for independent background lanes on non-trivial orchestration work, then continue only foreground work that does not depend on the subagent result.
-- Under the env-gated appendix, exploratory/read-only and review lanes may be background-launched freely when independent. writing/change and execution lanes need file ownership, dependency sequencing, task ID/state tracking, integration plans, and unresolved-lane checks before dependent decisions. Prefer multiple smaller targeted tasks over one broad ambiguous worker prompt, with a normal initial fan-out of 2-4 lanes.
-- Use a foreground/blocking escape only for dependency, risk, simplicity, user interaction, or ownership conflict.
+- When the env-gated appendix is present, load and use \`background-delegation\` for wait mode and board protocol.
+- Load \`dispatching-parallel-agents\` for writing/change parallelism.
 - Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
-Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Normal fan-out is 2-4 lanes; synthesize before dispatching more.
+Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.
 
 
 **When NOT to delegate:** Only what fits **Direct Work Boundary** above. Sequential operations where step N+1 needs step N's result still use blocking delegation when implementation is non-trivial.

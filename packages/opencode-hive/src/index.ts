@@ -11,7 +11,7 @@ import { SWARM_BEE_PROMPT } from './agents/swarm.js';
 import { SCOUT_BEE_PROMPT } from './agents/scout.js';
 import { FORAGER_BEE_PROMPT } from './agents/forager.js';
 import { HIVE_HELPER_PROMPT } from './agents/hive-helper.js';
-import { HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL, HIVE_BUILDER_PROMPT } from './agents/hive-builder.js';
+import { HIVE_BUILDER_PROMPT } from './agents/hive-builder.js';
 import { PLAN_REVIEWER_PROMPT } from './agents/plan-reviewer.js';
 import { CODE_REVIEWER_PROMPT } from './agents/code-reviewer.js';
 import { SIMPLICITY_REVIEWER_PROMPT } from './agents/simplicity-reviewer.js';
@@ -230,7 +230,7 @@ function buildBackgroundDelegationPromptAppendix(
   );
 
   if (availability.available) {
-    return `\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. On non-trivial work, operate in background-first scheduler mode: first look for independent background lanes that can run through native task({ background: true, ... }) while you continue safe foreground work. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Track work with hive_background_status, wait for native completion notification before dependent decisions, reconcile terminal native jobs with hive_background_reconcile or hive_background_reconcile_batch, and request cancellation with hive_background_cancel. Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, or ownership conflict. Gate-closed sessions keep normal blocking task() wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.`;
+    return `\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Background mode is available only when useful unrelated foreground work can continue; otherwise use blocking. Detailed safety overrides and board protocol live in that skill. Gate-closed sessions keep normal blocking task() wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.`;
   }
 
   if (availability.reason === 'experiment-disabled') {
@@ -3499,8 +3499,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const builderGateOpenDelegationRailAppendix = builderBackgroundDelegationAppendix ? HIVE_BUILDER_GATE_OPEN_DELEGATION_RAIL : '';
-      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadSkillsAppendix + builderBackgroundDelegationAppendix + builderGateOpenDelegationRailAppendix + customSubagentAppendix;
+      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadSkillsAppendix + builderBackgroundDelegationAppendix + customSubagentAppendix;
       runtimeAgentPrompts.set('hive-builder', builderPrompt);
       const builderConfig = {
         model: builderUserConfig.model,

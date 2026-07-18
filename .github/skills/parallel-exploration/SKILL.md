@@ -9,7 +9,7 @@ description: Use when you need parallel, read-only exploration with the agent to
 
 When you need to answer "where/how does X work?" across multiple domains (codebase, tests, docs, OSS), investigating sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Decompose into independent sub-questions, invoke one scout agent per sub-question, and synthesize the results together.
+**Core principle:** Use one independently answerable, non-overlapping, context-bounded question per fresh Scout session. Launch every currently known, necessary, non-duplicative independent question together, then synthesize the results.
 
 **Safe in Planning mode:** This is read-only exploration. It is OK to use during exploratory research even when there is no feature, no plan, and no approved tasks.
 
@@ -17,19 +17,16 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 ## When to Use
 
-**Default to this skill when:**
 **Use when:**
 - Investigation spans multiple domains (code + tests + docs)
-- User asks **2+ questions across different domains** (e.g., code + tests, code + docs/OSS, code + config/runtime)
 - Questions are independent (answer to A doesn't affect B)
-- User asks **3+ independent questions** (often as a numbered list or separate bullets)
 - No edits needed (read-only exploration)
 - User asks for an exploration that likely spans multiple files/packages
 - The work is read-only and the questions can be investigated independently
 
 **Only skip this skill when:**
 - Investigation requires shared state or context between questions
-- It's a single focused question that is genuinely answerable with **one quick grep + one file read**
+- It's a focused question that the primary agent can answer with a bounded direct lookup
 - Questions are dependent (answer A materially changes what to ask for B)
 - Work involves file edits (use Hive tasks / Forager instead)
 
@@ -48,7 +45,7 @@ Load this skill before any multi-domain, read-only investigation that benefits f
 
 ### 1. Decompose Into Independent Questions
 
-Split your investigation into 2-4 independent sub-questions. Good decomposition:
+Split the investigation into independently answerable, non-overlapping questions. Good decomposition:
 
 | Domain | Question Example |
 |--------|------------------|
@@ -63,7 +60,7 @@ Split your investigation into 2-4 independent sub-questions. Good decomposition:
 
 ### 2. Invoke Scout Agents in Parallel
 
-Start all independent scout requests before waiting on any result.
+Start every currently known, necessary, non-duplicative independent Scout request before waiting on any result. Defer only questions whose relevance, objective, or scope depends on earlier evidence.
 
 ```text
 Invoke the @scout agent via the agent tool for question 1.
@@ -74,7 +71,7 @@ Invoke the @scout agent via the agent tool for question 3.
 **Key points:**
 - Invoke the @scout agent via the agent tool for read-only exploration
 - Give each invocation a clear, focused scope
-- Make prompts specific about what evidence to return
+- Include the objective, known facts and references, constraints and non-goals, stop and return behavior, and expected output
 
 ### 3. Continue Working (Optional)
 
@@ -88,6 +85,8 @@ Each scout result returns to the parent chat when it completes.
 ### 4. Collect Results
 
 When each task completes, its result is returned directly. Collect the outputs from each task and proceed to synthesis.
+
+Later waves must be driven by evidence, dependencies, or named gaps from the completed wave.
 
 ### 5. Synthesize Findings
 
@@ -177,10 +176,6 @@ Bad: invoke one scout agent, wait, then decide whether to invoke the next.
 ```text
 Good: issue all independent scout invocations in the same response.
 ```
-
-**Too many tasks (diminishing returns):**
-- 2-4 tasks: Good parallelization
-- 5+ tasks: Overhead exceeds benefit, harder to synthesize
 
 **Dependent questions:**
 - Don't spawn task B if it needs task A's answer
