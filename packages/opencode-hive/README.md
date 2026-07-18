@@ -417,11 +417,11 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 |-------|------------------------|
 | `hive-master` | `parallel-exploration` |
 | `forager-worker` | `test-driven-development`, `verification` |
-| `hive-builder` | `verification` |
+| `hive-builder` | `verification`, `parallel-exploration` |
 | `hive-helper` | (none) |
 | `scout-researcher` | (none) |
 | `architect-planner` | `parallel-exploration` |
-| `swarm-orchestrator` | (none) |
+| `swarm-orchestrator` | `parallel-exploration` |
 | `plan-reviewer` | (none) |
 | `code-reviewer` | (none) |
 | `approach-advisor` | (none) |

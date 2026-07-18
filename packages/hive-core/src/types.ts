@@ -553,7 +553,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
     'swarm-orchestrator': {
       model: DEFAULT_AGENT_MODELS['swarm-orchestrator'],
       temperature: 0.5,
-      autoLoadSkills: [],
+      autoLoadSkills: ['parallel-exploration'],
     },
     'scout-researcher': {
       model: DEFAULT_AGENT_MODELS['scout-researcher'],
@@ -593,7 +593,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
     'hive-builder': {
       model: DEFAULT_AGENT_MODELS['hive-builder'],
       temperature: 0.4,
-      autoLoadSkills: ['verification'],
+      autoLoadSkills: ['verification', 'parallel-exploration'],
     },
   },
 };

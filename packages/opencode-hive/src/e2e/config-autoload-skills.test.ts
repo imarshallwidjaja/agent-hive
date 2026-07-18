@@ -410,7 +410,8 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
     expect(builderGuidance).toContain(skillToolCall('verification'));
     expect(builderGuidance).not.toContain(skillToolCall('dispatching-parallel-agents'));
-    expect(builderGuidance).not.toContain(skillToolCall('parallel-exploration'));
+    expect(builderGuidance).toContain(skillToolCall('parallel-exploration'));
+    expect(builderPrompt).not.toContain(parallelExplorationSkill.template);
     expect(builderPrompt).not.toContain('hive_worktree_start');
     expect(builderPrompt).not.toContain('hive_tasks_sync');
     expect(builderPrompt).not.toContain('runnable tasks');
@@ -579,7 +580,7 @@ describe('config hook autoLoadSkills guidance', () => {
 
     expect(architectGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(architectPrompt).not.toContain(parallelExplorationSkill.template);
-    expect(swarmGuidance).not.toContain(skillToolCall('parallel-exploration'));
+    expect(swarmGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(swarmPrompt).not.toContain(parallelExplorationSkill.template);
   });
 

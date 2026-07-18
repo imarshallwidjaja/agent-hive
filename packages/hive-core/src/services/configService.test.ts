@@ -472,7 +472,7 @@ describe("ConfigService defaults", () => {
 
     expect(config.model).toBe("github-copilot/gpt-5.2-codex");
     expect(config.temperature).toBe(0.4);
-    expect(config.autoLoadSkills).toEqual(["verification"]);
+    expect(config.autoLoadSkills).toEqual(["verification", "parallel-exploration"]);
   });
 
   it("deep-merges hive-builder overrides with defaults", () => {
@@ -497,7 +497,7 @@ describe("ConfigService defaults", () => {
     expect(config.temperature).toBe(0.6);
     expect(config.variant).toBe("high");
     expect(config.model).toBe("github-copilot/gpt-5.2-codex");
-    expect(config.autoLoadSkills).toEqual(["verification"]);
+    expect(config.autoLoadSkills).toEqual(["verification", "parallel-exploration"]);
   });
 
   it("hive-builder merges safe default autoLoadSkills with user overrides", () => {
@@ -522,7 +522,7 @@ describe("ConfigService defaults", () => {
 
     const config = service.getAgentConfig("hive-builder");
     // Non-planner agents get their defaults merged with user overrides
-    expect(config.autoLoadSkills).toEqual(["verification", "custom-skill"]);
+    expect(config.autoLoadSkills).toEqual(["verification", "parallel-exploration", "custom-skill"]);
   });
 
   it("preserves legacy custom dash-reviewer while skipping reserved custom agent names", () => {
