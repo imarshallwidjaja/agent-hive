@@ -36,21 +36,11 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 ## The Pattern
 
-### 0. Separate Dependency From Wait Mode
-
-Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background.
-
-Blocking does not mean serial. Blocking only means the primary agent waits after dispatch. If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message, then wait for the batch results.
-
-- Serial: one `task()` call, wait for the result, then decide whether to call another. Use this only when a later prompt needs an earlier result.
-- Blocking parallel fan-out: multiple `task()` calls in one assistant message, then wait for all results before continuing.
-- Background parallel fan-out: background-mode task calls only when the primary agent can do unrelated foreground work. Follow the `background-delegation` skill before using background mode.
-
-If the only reason for serializing is `task()` is blocking, that is incorrect. Blocking applies after dispatch, not between independent dispatches.
-
 ### 1. Decompose Into Independent Questions
 
 Split the investigation into independently answerable, non-overlapping questions. Each question should fit in one context window. If a request will not fit in one context window, narrow the slice, capture bounded findings, and return to Hive with recommended next steps instead of pushing toward an oversized final report. Good decomposition:
+
+Breadth, ambiguity, multi-domain or multi-repository scope, whole-incident RCA, and unknown targets are decomposition signals, not capable/custom Scout selection signals. When these signals are present, split the work into bounded slices before choosing any researcher.
 
 | Domain | Question Example |
 |--------|------------------|
@@ -68,11 +58,23 @@ Split the investigation into independently answerable, non-overlapping questions
 - a sub-question no longer fits in one context window
 - the next useful step is implementation rather than exploration
 
-### 2. Spawn Tasks (Fan-Out)
+### 2. Select Researcher For Each Bounded Slice
+
+Choose the researcher only after each slice passes the one-window bound check. Use `scout-researcher` by default for each bounded exploratory slice. Use `scout-researcher-capable` only when one already-bounded question needs stronger synthesis, such as conflicting evidence or dense evidence on a named surface, or when the operator explicitly names it. Other configured scout-derived custom subagents remain valid when their domain or workflow clearly matches an already-bounded question. Capable or custom Scouts do not relax the one-window boundary and never replace decomposition or fan-out.
+
+### 3. Decide Wait Mode And Dispatch
+
+Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background.
+
+Blocking does not mean serial. Blocking only means the primary agent waits after dispatch. If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message, then wait for the batch results.
+
+- Serial: one `task()` call, wait for the result, then decide whether to call another. Use this only when a later prompt needs an earlier result.
+- Blocking parallel fan-out: multiple `task()` calls in one assistant message, then wait for all results before continuing.
+- Background parallel fan-out: background-mode task calls only when the primary agent can do unrelated foreground work. Follow the `background-delegation` skill before using background mode.
+
+If the only reason for serializing is `task()` is blocking, that is incorrect. Blocking applies after dispatch, not between independent dispatches.
 
 Launch every currently known, necessary, non-duplicative independent question before waiting for any results. Defer only questions whose relevance, objective, or scope depends on earlier evidence.
-
-Choose the researcher per slice. Use the scout researcher whose description best fits the research slice, including configured scout-derived custom subagents when their domain or workflow is a closer match. Use `scout-researcher` when no configured custom description is a closer fit.
 
 Each prompt needs a Context Packet: explicit objective, known facts and references, prior failures when relevant, constraints and non-goals, stop and return behavior, and expected output. Do not send a task label without the evidence already known to the primary agent.
 
@@ -109,23 +111,24 @@ task({
 ```
 
 **Key points:**
-- Use `subagent_type: 'scout-researcher'` for read-only exploration unless a configured scout-derived custom subagent is a better match
+- Decompose and bound each slice before choosing any built-in or custom researcher
+- Use `subagent_type: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist
 - Give each task a clear, focused `description`
 - Make prompts specific about what evidence to return, including known facts and expected output
 - Dispatch dependency-independent slices together, even though normal `task()` is blocking
 - When the env-gated appendix is present, follow `background-delegation` for wait mode; otherwise use the normal blocking return flow
 
-### 3. Collect Results
+### 4. Collect Results
 
 After the fan-out message, collect the task results through the normal `task()` return flow. Do not invent background polling or a separate async workflow.
 
-### 4. Synthesize Findings
+### 5. Synthesize Findings
 
 When each task completes, its result is returned directly. Collect the outputs from each task and proceed to synthesis.
 
 Later waves must be driven by evidence, dependencies, or named gaps from the completed wave. Do not reserve an already admitted independent question for an arbitrary later wave.
 
-### 5. Cleanup (If Needed)
+### 6. Cleanup (If Needed)
 
 Combine results from all tasks:
 - Cross-reference findings (file X mentioned by tasks A and B)

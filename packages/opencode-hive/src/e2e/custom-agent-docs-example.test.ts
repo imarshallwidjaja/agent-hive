@@ -115,6 +115,9 @@ describe('e2e: published custom-agent docs example', () => {
     const hivePrompt = hiveOutput.system[0];
     expect(hivePrompt).toContain('## Configured Custom Subagents');
     expect(hivePrompt).toContain('Custom subagents are scoped specialists, not automatic model upgrades.');
+    expect(hivePrompt).toContain(
+      'For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.'
+    );
     expect(hivePrompt).toContain("Choose a custom subagent when its description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names it.");
     expect(hivePrompt).toContain('Use the built-in base agent when no configured custom description is a closer task fit.');
     expect(hivePrompt).toContain('Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.');

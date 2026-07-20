@@ -124,6 +124,48 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Later waves must be driven by evidence, dependencies, or named gaps from the completed wave');
   });
 
+  it('bounds Scout slices before researcher selection and reserves capable Scouts for bounded synthesis', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
+    const template = skill!.template;
+
+    expect(skill).toBeDefined();
+
+    for (const signal of [
+      'breadth',
+      'ambiguity',
+      'multi-domain',
+      'multi-repository',
+      'whole-incident RCA',
+      'unknown targets',
+    ]) {
+      expect(template.toLowerCase(), signal).toContain(signal.toLowerCase());
+    }
+    expect(template).toContain('decomposition signals');
+    expect(template).toContain('Use `scout-researcher` by default for each bounded exploratory slice');
+    expect(template).toContain(
+      '`scout-researcher-capable` only when one already-bounded question needs stronger synthesis'
+    );
+    expect(template).toContain(
+      'Capable or custom Scouts do not relax the one-window boundary and never replace decomposition or fan-out'
+    );
+
+    const patternSection = template.match(/## The Pattern\n([\s\S]*?)(?=\n## )/)?.[1] ?? '';
+    expect(patternSection.length).toBeGreaterThan(0);
+    const headings = [...patternSection.matchAll(/^### .+$/gm)].map((match) => match[0]);
+    const decomposeHeadingIdx = headings.findIndex((heading) => /decompos/i.test(heading));
+    const selectHeadingIdx = headings.findIndex(
+      (heading) => /researcher/i.test(heading) && /select|choose/i.test(heading)
+    );
+    const waitDispatchHeadingIdx = headings.findIndex((heading) =>
+      /wait mode|dispatch/i.test(heading)
+    );
+    expect(decomposeHeadingIdx).toBeGreaterThanOrEqual(0);
+    expect(selectHeadingIdx).toBeGreaterThanOrEqual(0);
+    expect(waitDispatchHeadingIdx).toBeGreaterThanOrEqual(0);
+    expect(decomposeHeadingIdx).toBeLessThan(selectHeadingIdx);
+    expect(selectHeadingIdx).toBeLessThan(waitDispatchHeadingIdx);
+  });
+
   it('positions parallel-exploration as lightweight read-only delegation under the background scheduler', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
 
