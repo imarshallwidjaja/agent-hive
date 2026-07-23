@@ -312,8 +312,6 @@ import {
   ConfigService,
   RepositoryService,
   RepositoryManifestService,
-  canonicalProjectRoot,
-  projectRootsMatch,
   readCompositeWorkspaceManifest,
   CUSTOM_AGENT_BASES,
   DockerSandboxService,
@@ -455,7 +453,6 @@ const plugin: Plugin = async (ctx) => {
     emitConfigWarning(configFallbackWarning);
   }
   const builtinMcps = createBuiltinMcps(disabledMcps);
-  const repositoryService = new RepositoryService(directory, configService);
   const repositoryManifestService = new RepositoryManifestService(directory);
   const resolveSnapshotRepositories = async (repositoryIds: string[] | undefined): Promise<{
     composite: boolean;
@@ -691,11 +688,7 @@ const plugin: Plugin = async (ctx) => {
       : template;
   };
   const hasRepositoryManifest = (): boolean => {
-    const config = configService.get();
-    return config.repositoryRoot !== undefined
-      && projectRootsMatch(config.repositoryRoot, directory)
-      && Array.isArray(config.repositories)
-      && config.repositories.length > 0;
+    return repositoryManifestService.getStatus().mode === 'manifest';
   };
   const isProjectRootGitRepo = (): boolean => {
     // `.git` may be a directory (normal repo) or a file (git worktree link).
@@ -716,12 +709,12 @@ const plugin: Plugin = async (ctx) => {
       // produce a cryptic git error.
       resolveRepositories: () => {
         if (hasRepositoryManifest()) {
-          return repositoryService.resolveRepositories();
+          return repositoryManifestService.resolveRepositories();
         }
         if (!isProjectRootGitRepo()) {
           throw new Error(
             `Repository manifest is required: project root is not a git repository (${directory}). ` +
-            `Add a globally configured "repositories" manifest scoped by "repositoryRoot": "${canonicalProjectRoot(directory)}" before creating worktrees.`,
+            'Add .hive/repositories.json before creating worktrees.',
           );
         }
         return [];
@@ -739,7 +732,7 @@ const plugin: Plugin = async (ctx) => {
     baseDir: directory,
     hiveDir: path.join(directory, '.hive'),
     repositoryResolver: {
-      resolveRepositories: () => hasRepositoryManifest() ? repositoryService.resolveRepositories() : [],
+      resolveRepositories: () => hasRepositoryManifest() ? repositoryManifestService.resolveRepositories() : [],
     },
   });
 
@@ -1838,7 +1831,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }),
 
       hive_repositories_status: tool({
-        description: 'Inspect project repository mode and the global manifest scoped to this project root.',
+        description: 'Inspect project repository mode and the project-local repository manifest.',
         args: {},
         async execute() {
           return JSON.stringify(repositoryManifestService.getStatus(), null, 2);
@@ -1854,12 +1847,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }),
 
       hive_repositories_update: tool({
-        description: 'Add project-relative repositories to the global manifest scoped to this project root. Add-only and atomic; preserves other global config fields.',
+        description: 'Add project-relative repositories to .hive/repositories.json. Add-only and atomic; migrates matching legacy global topology.',
         args: {
           repositories: tool.schema.array(tool.schema.object({
             id: tool.schema.string().describe('Stable repository ID, e.g. api or web-ui'),
             path: tool.schema.string().describe('Project-relative repository path, such as ./api'),
-          })).describe('Repositories to add to ~/.config/opencode/agent_hive.json for this project root'),
+          })).describe('Repositories to add to .hive/repositories.json for this project root'),
         },
         async execute({ repositories }) {
           return JSON.stringify(repositoryManifestService.add(repositories), null, 2);
@@ -2250,7 +2243,7 @@ NEXT: Ask your first clarifying question about this feature.`;
           dependsOn: tool.schema.array(tool.schema.string()).optional().describe('Task folder names this task depends on (default: [] for no dependencies). Explicit dependsOn is allowed only when every dependency already exists and is done; review-sourced tasks must omit it.'),
           reason: tool.schema.string().optional().describe('Why this task was created'),
           source: tool.schema.string().optional().describe('Origin: review, operator, or ad_hoc'),
-          repos: tool.schema.array(tool.schema.string()).optional().describe('Repository IDs this task targets (must match the global manifest scoped to this project root). Required for manifest-backed projects; omit for legacy single-root projects.'),
+          repos: tool.schema.array(tool.schema.string()).optional().describe('Repository IDs this task targets (must match .hive/repositories.json). Required for manifest-backed projects; omit for legacy single-root projects.'),
         },
         async execute({ name, order, feature: explicitFeature, description, goal, acceptanceCriteria, references, files, dependsOn, reason, source, repos }) {
           const feature = resolveFeature(explicitFeature);
@@ -2270,7 +2263,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             // violations are surfaced by taskService.create() with the
             // canonical "Invalid repository ID" wording.
             const grammarValid = repos.filter(id => RepositoryService.isValidRepositoryId(id));
-            const knownIds = new Set(repositoryService.resolveRepositories().map(r => r.id));
+            const knownIds = new Set(repositoryManifestService.resolveRepositories().map(r => r.id));
             const unknown = grammarValid.filter(id => !knownIds.has(id));
             if (unknown.length > 0) {
               throw new Error(
@@ -2644,8 +2637,8 @@ NEXT: Ask your first clarifying question about this feature.`;
               reason: 'repo_manifest_required',
               error:
                 `Repository manifest is required: project root is not a git repository (${directory}). ` +
-                `Add a global "repositories" manifest with "repositoryRoot": "${canonicalProjectRoot(directory)}" before creating ad-hoc worktrees.`,
-              nextAction: 'Add a matching repositoryRoot and repositories manifest to ~/.config/opencode/agent_hive.json, then retry hive_adhoc_worktree_create.',
+                'Add .hive/repositories.json before creating ad-hoc worktrees.',
+              nextAction: 'Add a project-local .hive/repositories.json manifest, then retry hive_adhoc_worktree_create.',
             });
           }
           try {

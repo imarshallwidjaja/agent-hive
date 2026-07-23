@@ -11,9 +11,9 @@
 ### Repository Manifest (3 tools)
 | Tool | Purpose |
 |------|---------|
-| `hive_repositories_status` | Inspect project repository mode and the global manifest scoped to this project root |
+| `hive_repositories_status` | Inspect project repository mode and `.hive/repositories.json` |
 | `hive_repositories_discover` | Discover in-workspace git repositories without mutating the manifest |
-| `hive_repositories_update` | Add project-relative repositories to the scoped manifest in `~/.config/opencode/agent_hive.json` atomically while preserving other global config fields |
+| `hive_repositories_update` | Add project-relative repositories to `.hive/repositories.json` atomically; matching legacy global topology is migration-only |
 
 #### Repository manifest notes
 

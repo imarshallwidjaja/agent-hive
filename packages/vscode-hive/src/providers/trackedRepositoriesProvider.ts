@@ -1,7 +1,7 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import { ConfigService, projectRootsMatch, RepositoryService } from 'hive-core'
+import { RepositoryManifestService } from 'hive-core'
 
 interface RepositoryConfig {
   id: string
@@ -68,30 +68,13 @@ export class TrackedRepositoriesProvider implements vscode.TreeDataProvider<Trac
       return []
     }
 
-    const configService = new ConfigService(this.workspaceRoot)
-    const manifestPath = configService.getPath()
-    if (!fs.existsSync(manifestPath)) {
-      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'Missing global Agent Hive config')]
+    const status = new RepositoryManifestService(this.workspaceRoot).getStatus()
+    if (status.error) {
+      return [new TrackedRepositoriesStateItem('Unable to read tracked repositories', 'Invalid repository manifest', status.configPath)]
     }
-
-    let manifest: { repositoryRoot?: string; repositories?: RepositoryConfig[] }
-    try {
-      manifest = configService.readStored()
-    } catch {
-      return [new TrackedRepositoriesStateItem('Unable to read tracked repositories', 'Invalid global Agent Hive config', manifestPath)]
+    if (status.mode !== 'manifest') {
+      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'Missing project repository manifest')]
     }
-
-    if (manifest.repositoryRoot === undefined || !projectRootsMatch(manifest.repositoryRoot, this.workspaceRoot)) {
-      return [new TrackedRepositoriesStateItem('Legacy single-root workspace', 'No manifest scoped to this workspace', manifestPath)]
-    }
-
-    const repositories = manifest.repositories!
-
-    try {
-      new RepositoryService(this.workspaceRoot).resolveManifest(repositories)
-      return repositories.map(repo => new TrackedRepositoryItem(repo, this.workspaceRoot))
-    } catch {
-      return [new TrackedRepositoriesStateItem('Unable to read tracked repositories', 'Invalid repository manifest', manifestPath)]
-    }
+    return status.repositories.map(repo => new TrackedRepositoryItem(repo, this.workspaceRoot))
   }
 }

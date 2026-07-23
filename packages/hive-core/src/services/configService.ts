@@ -7,7 +7,7 @@ import {
   DEFAULT_HIVE_CONFIG,
 } from '../types.js';
 import { isValidRepositoryConfig } from '../utils/repositoryConfig.js';
-import { writeAtomic } from '../utils/paths.js';
+import { acquireLockSync, writeAtomic } from '../utils/paths.js';
 import type {
   AgentModelConfig,
   BuiltInAgentName,
@@ -122,6 +122,33 @@ export class ConfigService {
     return stored.value;
   }
 
+  removeLegacyRepositoryManifestIfMatches(
+    repositoryRoot: string,
+    repositories: NonNullable<HiveConfig['repositories']>,
+  ): 'removed' | 'skipped' {
+    const release = acquireLockSync(this.configPath);
+    try {
+      const stored = this.readStored();
+      if (
+        stored.repositoryRoot !== repositoryRoot
+        || JSON.stringify(stored.repositories) !== JSON.stringify(repositories)
+      ) {
+        this.cachedConfig = null;
+        this.cachedCustomAgentConfigs = null;
+        return 'skipped';
+      }
+      const next = { ...stored } as Record<string, unknown>;
+      delete next.repositoryRoot;
+      delete next.repositories;
+      writeAtomic(this.configPath, JSON.stringify(next, null, 2));
+      this.cachedConfig = null;
+      this.cachedCustomAgentConfigs = null;
+      return 'removed';
+    } finally {
+      release();
+    }
+  }
+
   getLastFallbackWarning(): {
     message: string;
     sourceType: 'project' | 'global';
@@ -137,34 +164,38 @@ export class ConfigService {
    * Update config (partial merge).
    */
   set(updates: Partial<HiveConfig>): HiveConfig {
-    const current = this.get();
-    
-    const merged: HiveConfig = {
-      ...current,
-      ...updates,
-      agents: updates.agents ? {
-        ...current.agents,
-        ...updates.agents,
-      } : current.agents,
-      customAgents: updates.customAgents
-        ? {
-            ...current.customAgents,
-            ...updates.customAgents,
-          }
-        : current.customAgents,
-    };
+    const release = acquireLockSync(this.configPath);
+    try {
+      const current = this.mergeWithDefaults(this.readStored());
+      const merged: HiveConfig = {
+        ...current,
+        ...updates,
+        agents: updates.agents ? {
+          ...current.agents,
+          ...updates.agents,
+        } : current.agents,
+        customAgents: updates.customAgents
+          ? {
+              ...current.customAgents,
+              ...updates.customAgents,
+            }
+          : current.customAgents,
+      };
 
-    if (!this.isValidStoredConfig(merged)) {
-      throw new Error('Invalid global Agent Hive config');
-    }
-    if (merged.repositoryRoot !== undefined && !fs.existsSync(merged.repositoryRoot)) {
-      throw new Error(`Repository root does not exist: ${merged.repositoryRoot}`);
-    }
+      if (!this.isValidStoredConfig(merged)) {
+        throw new Error('Invalid global Agent Hive config');
+      }
+      if (merged.repositoryRoot !== undefined && !fs.existsSync(merged.repositoryRoot)) {
+        throw new Error(`Repository root does not exist: ${merged.repositoryRoot}`);
+      }
 
-    writeAtomic(this.configPath, JSON.stringify(merged, null, 2));
-    this.cachedConfig = merged;
-    this.cachedCustomAgentConfigs = null;
-    return merged;
+      writeAtomic(this.configPath, JSON.stringify(merged, null, 2));
+      this.cachedConfig = merged;
+      this.cachedCustomAgentConfigs = null;
+      return merged;
+    } finally {
+      release();
+    }
   }
 
   /**

@@ -2,10 +2,13 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { RepositoryConfig } from '../types.js';
-import { canonicalProjectRoot, isValidRepositoryConfig, projectRootsMatch } from '../utils/repositoryConfig.js';
+import type { ResolvedRepository } from '../types.js';
+import { assertRepositoryManifestContained, canonicalProjectRoot, isValidRepositoryConfig, parseProjectRepositoryManifest, projectRootsMatch } from '../utils/repositoryConfig.js';
+import { acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
 import { isValidRepositoryId } from '../utils/repositoryIds.js';
 import { ConfigService } from './configService.js';
 import { RepositoryService } from './repositoryService.js';
+import { parseCompositeWorkspaceManifest } from './workspaceManifest.js';
 
 export type RepositoryManifestMode = 'manifest' | 'legacy-root' | 'missing-manifest';
 
@@ -18,6 +21,7 @@ export interface RepositoryManifestStatus {
   configPath: string;
   repositories: RepositoryManifestEntry[];
   error?: string;
+  source?: 'local' | 'legacy-global' | 'generated-workspace' | 'single-root';
 }
 
 export interface RepositoryDiscoveryCandidate extends RepositoryConfig {
@@ -37,6 +41,8 @@ export interface RepositoryManifestUpdateResult {
   added: string[];
   skipped: string[];
   repositories: RepositoryManifestEntry[];
+  legacyCleanup?: 'removed' | 'skipped' | 'failed';
+  legacyCleanupError?: string;
 }
 
 const DISCOVERY_MAX_DEPTH = 4;
@@ -62,11 +68,32 @@ export class RepositoryManifestService {
   constructor(projectRoot: string) {
     this.projectRoot = canonicalProjectRoot(projectRoot);
     this.configService = new ConfigService(this.projectRoot);
-    this.configPath = this.configService.getPath();
+    this.configPath = path.join(this.projectRoot, '.hive', 'repositories.json');
     this.repositoryService = new RepositoryService(this.projectRoot, this.configService);
   }
 
   getStatus(): RepositoryManifestStatus {
+    const generated = this.readGeneratedWorkspaceEntries();
+    if (generated) {
+      return { mode: 'manifest', configPath: path.join(this.projectRoot, 'workspace.json'), repositories: this.resolveManifestEntries(generated), source: 'generated-workspace' };
+    }
+
+    try {
+      assertRepositoryManifestContained(this.projectRoot, this.configPath);
+      if (fs.existsSync(this.configPath)) {
+        const repositories = this.readLocalManifest();
+        return { mode: 'manifest', configPath: this.configPath, repositories: this.resolveManifestEntries(repositories), source: 'local' };
+      }
+    } catch (error) {
+      return {
+        mode: 'manifest',
+        configPath: this.configPath,
+        repositories: [],
+        error: error instanceof Error ? error.message : String(error),
+        source: 'local',
+      };
+    }
+
     const config = this.configService.readStored();
     if (config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot) && Array.isArray(config.repositories)) {
       try {
@@ -74,6 +101,7 @@ export class RepositoryManifestService {
           mode: 'manifest',
           configPath: this.configPath,
           repositories: this.resolveManifestEntries(config.repositories),
+          source: 'legacy-global',
         };
       } catch (error) {
         return {
@@ -81,6 +109,7 @@ export class RepositoryManifestService {
           configPath: this.configPath,
           repositories: config.repositories.map((repository) => ({ ...repository })),
           error: error instanceof Error ? error.message : String(error),
+          source: 'legacy-global',
         };
       }
     }
@@ -91,6 +120,7 @@ export class RepositoryManifestService {
         mode: 'legacy-root',
         configPath: this.configPath,
         repositories: [{ id: 'root', path: '.', root: gitRoot }],
+        source: 'single-root',
       };
     }
 
@@ -159,27 +189,98 @@ export class RepositoryManifestService {
       }
     }
 
-    const config = this.configService.readStored();
-    const currentRepositories = config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot) && Array.isArray(config.repositories)
-      ? config.repositories
-      : [];
-    const existingIds = new Set(currentRepositories.map((repository) => repository.id));
-    const skipped = repositories.filter((repository) => existingIds.has(repository.id)).map((repository) => repository.id);
-    const additions = repositories.filter((repository) => !existingIds.has(repository.id));
-    const nextRepositories = [...currentRepositories, ...additions];
-    const resolvedRepositories = this.resolveManifestEntries(nextRepositories);
+    if (this.readGeneratedWorkspaceEntries()) {
+      throw new Error('Repository topology cannot be updated from a generated composite workspace');
+    }
+    this.assertManifestParentContained();
 
-    this.configService.set({
-      repositoryRoot: this.projectRoot,
-      repositories: nextRepositories,
-    });
+    let legacyRepositories: RepositoryConfig[] | undefined;
+    let legacyRepositoryRoot: string | undefined;
+    let additions: RepositoryConfig[];
+    let skipped: string[];
+    let resolvedRepositories: RepositoryManifestEntry[];
+    const release = acquireLockSync(this.configPath);
+    try {
+      if (this.readGeneratedWorkspaceEntries()) {
+        throw new Error('Repository topology cannot be updated from a generated composite workspace');
+      }
+      let currentRepositories: RepositoryConfig[];
+      if (fs.existsSync(this.configPath)) {
+        currentRepositories = this.readLocalManifest();
+      } else {
+        const config = this.configService.readStored();
+        legacyRepositories = config.repositoryRoot !== undefined
+          && projectRootsMatch(config.repositoryRoot, this.projectRoot)
+          && Array.isArray(config.repositories)
+          ? config.repositories
+          : undefined;
+        legacyRepositoryRoot = legacyRepositories ? config.repositoryRoot : undefined;
+        currentRepositories = legacyRepositories ?? [];
+      }
+      const existingIds = new Set(currentRepositories.map((repository) => repository.id));
+      skipped = repositories.filter((repository) => existingIds.has(repository.id)).map((repository) => repository.id);
+      additions = repositories.filter((repository) => !existingIds.has(repository.id));
+      const nextRepositories = [...currentRepositories, ...additions];
+      if (nextRepositories.length === 0) {
+        throw new Error('Repository manifest must contain at least one repository');
+      }
+      resolvedRepositories = this.resolveManifestEntries(nextRepositories);
+      writeJsonAtomic(this.configPath, { schemaVersion: 1, repositories: nextRepositories });
+    } finally {
+      release();
+    }
+    let legacyCleanup: RepositoryManifestUpdateResult['legacyCleanup'];
+    let legacyCleanupError: string | undefined;
+    if (legacyRepositories) {
+      try {
+        legacyCleanup = this.configService.removeLegacyRepositoryManifestIfMatches(legacyRepositoryRoot!, legacyRepositories);
+      } catch (error) {
+        legacyCleanup = 'failed';
+        legacyCleanupError = error instanceof Error ? error.message : String(error);
+      }
+    }
 
     return {
       configPath: this.configPath,
       added: additions.map((repository) => repository.id),
       skipped,
       repositories: resolvedRepositories,
+      legacyCleanup,
+      legacyCleanupError,
     };
+  }
+
+  resolveRepositories(): ResolvedRepository[] {
+    const status = this.getStatus();
+    if (status.error) throw new Error(status.error);
+    return status.repositories.map((repository) => ({ id: repository.id, path: path.resolve(this.projectRoot, repository.path), root: repository.root! }));
+  }
+
+  private readLocalManifest(): RepositoryConfig[] {
+    assertRepositoryManifestContained(this.projectRoot, this.configPath);
+    try {
+      return parseProjectRepositoryManifest(JSON.parse(fs.readFileSync(this.configPath, 'utf-8'))).repositories;
+    } catch (error) {
+      throw new Error(`Invalid project repository manifest at ${this.configPath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private readGeneratedWorkspaceEntries(): RepositoryConfig[] | null {
+    const workspacePath = path.join(this.projectRoot, 'workspace.json');
+    if (!fs.existsSync(workspacePath)) return null;
+    if (this.readGitRoot(this.projectRoot) === this.projectRoot) return null;
+    try {
+      const manifest = parseCompositeWorkspaceManifest(JSON.parse(fs.readFileSync(workspacePath, 'utf-8')), workspacePath);
+      return Object.entries(manifest.repos).map(([id, entry]) => ({ id, path: entry.path }));
+    } catch (error) {
+      throw new Error(`Invalid generated composite workspace manifest: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private assertManifestParentContained(): void {
+    const hiveDir = path.dirname(this.configPath);
+    fs.mkdirSync(hiveDir, { recursive: true });
+    assertRepositoryManifestContained(this.projectRoot, this.configPath);
   }
 
   private resolveManifestEntries(repositories: RepositoryConfig[]): RepositoryManifestEntry[] {

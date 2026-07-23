@@ -115,7 +115,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 ### Local skill and model use cases
 
 - **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then load it with OpenCode's native `skill` tool, reference it in agent instructions, or list its frontmatter `name` in `autoLoadSkills`. User file skills are discovered through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, and `skills.urls` mechanisms.
-- **Global runtime config:** set agent models, variants, sandbox policy, custom agents, skill auto-load settings, and scoped repository manifests in `~/.config/opencode/agent_hive.json`.
+- **Runtime configuration:** set global agent models, variants, sandbox policy, custom agents, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. Repository topology lives in `<project>/.hive/repositories.json`; legacy global topology fields are migration-only.
 
 #### Canonical Delegation Threshold
 
@@ -281,7 +281,7 @@ Description.
 
 Hive reads runtime configuration only from `~/.config/opencode/agent_hive.json`. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files are ignored, including malformed files. Global config failures still produce a runtime warning and fall back to defaults.
 
-All runtime policy, agent definitions, and auto-load skill settings use the global file. A repository manifest is also stored there, but activates only when its absolute `repositoryRoot` resolves to the same checkout as the active OpenCode project root. Repository entry paths remain relative to that root and cannot escape it. This scope prevents one global manifest from enabling composite mode in unrelated checkouts.
+All runtime policy, agent definitions, and auto-load skill settings use the global file. Repository topology is project-local in `<project>/.hive/repositories.json`; entry paths are relative to the canonical project root and cannot escape it. Legacy global `repositoryRoot` and `repositories` fields remain accepted only as migration input for `hive_repositories_update`.
 
 ### Council config
 
@@ -324,15 +324,13 @@ Partial global overrides merge with the built-in defaults. Declaring a group rep
 
 Council resolution preserves configured order, deduplicates by first occurrence, filters unusable seats before applying the cap, and uses `group.maxMembers ?? council.maxMembers ?? 4`. It skips unavailable agents, explicitly excluded agents, starter template custom agents, mutable-base agents, and duplicates with warnings. If a requested group has no usable seats, `/council` falls back to `council.defaultGroup`; if the fallback also has no usable seats, the command stops with an error instead of running an unsafe council.
 
-### Scoped repository manifest example
+### Project-local repository manifest example
 
-Add the manifest to `~/.config/opencode/agent_hive.json`:
+Add the manifest to `<project>/.hive/repositories.json`:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
-  "sandbox": "docker",
-  "repositoryRoot": "/absolute/path/to/project",
+  "schemaVersion": 1,
   "repositories": [
     { "id": "api", "path": "./api" }
   ]

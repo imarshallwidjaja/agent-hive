@@ -464,9 +464,9 @@ export interface HiveConfig {
   dockerImage?: string;
   /** Reuse Docker containers per worktree (default: true when sandbox is 'docker') */
   persistentContainers?: boolean;
-  /** Absolute project root to which the global repository manifest applies. */
+  /** @deprecated Migration-only root for legacy globally stored repository topology. */
   repositoryRoot?: string;
-  /** Repository manifest with paths relative to repositoryRoot. */
+  /** @deprecated Migration-only topology. New manifests live in .hive/repositories.json. */
   repositories?: RepositoryConfig[];
   /** Hook execution cadence (number of turns between hook invocations). Key = hook name, Value = cadence (1 = every turn, 3 = every 3rd turn) */
   hook_cadence?: Record<string, number>;

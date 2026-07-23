@@ -1281,6 +1281,79 @@ describe('ConfigService repository manifest validation', () => {
 });
 
 describe('ConfigService write validation and persistence', () => {
+  it('conditionally removes matching legacy topology from a fresh read and preserves unrelated settings', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    const repositoryRoot = path.join(tempHome, 'project');
+    fs.mkdirSync(repositoryRoot);
+    const repositories = [{ id: 'api', path: './api' }];
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'docker', repositoryRoot, repositories }));
+    service.get();
+    new ConfigService().set({ disableSkills: ['example'] });
+
+    expect(service.removeLegacyRepositoryManifestIfMatches(repositoryRoot, repositories)).toBe('removed');
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toMatchObject({ sandbox: 'docker', disableSkills: ['example'] });
+  });
+
+  it('skips conditional legacy cleanup when a fresh global read no longer matches', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    const repositoryRoot = path.join(tempHome, 'project');
+    const changedRoot = path.join(tempHome, 'changed');
+    fs.mkdirSync(repositoryRoot);
+    fs.mkdirSync(changedRoot);
+    const repositories = [{ id: 'api', path: './api' }];
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ repositoryRoot, repositories }));
+    service.get();
+    fs.writeFileSync(configPath, JSON.stringify({ repositoryRoot: changedRoot, repositories }));
+
+    expect(service.removeLegacyRepositoryManifestIfMatches(repositoryRoot, repositories)).toBe('skipped');
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).repositoryRoot).toBe(changedRoot);
+    expect(service.get().repositoryRoot).toBe(changedRoot);
+  });
+
+  it('merges a preference update with fresh stored config instead of a stale instance cache', () => {
+    const staleService = new ConfigService();
+    const configPath = staleService.getPath();
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'none', disableSkills: ['existing'] }));
+    staleService.get();
+
+    new ConfigService().set({ disableMcps: ['context7'] });
+    const updated = staleService.set({ sandbox: 'docker' });
+
+    expect(updated.disableMcps).toEqual(['context7']);
+    expect(updated.disableSkills).toEqual(['existing']);
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toMatchObject({
+      sandbox: 'docker',
+      disableSkills: ['existing'],
+      disableMcps: ['context7'],
+    });
+  });
+
+  it('does not reintroduce legacy topology from a writer cached before cleanup', () => {
+    const writer = new ConfigService();
+    const configPath = writer.getPath();
+    const repositoryRoot = path.join(tempHome, 'project');
+    const repositories = [{ id: 'api', path: './api' }];
+    fs.mkdirSync(repositoryRoot);
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'none', repositoryRoot, repositories }));
+    writer.get();
+
+    expect(new ConfigService().removeLegacyRepositoryManifestIfMatches(repositoryRoot, repositories)).toBe('removed');
+    const updated = writer.set({ sandbox: 'docker' });
+    const stored = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+    expect(updated.repositoryRoot).toBeUndefined();
+    expect(updated.repositories).toBeUndefined();
+    expect(stored.repositoryRoot).toBeUndefined();
+    expect(stored.repositories).toBeUndefined();
+    expect(stored.sandbox).toBe('docker');
+  });
+
   it('rejects an invalid merged config without changing the stored file', () => {
     const service = new ConfigService();
     const configPath = service.getPath();

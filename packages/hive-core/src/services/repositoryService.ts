@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { RepositoryConfig, ResolvedRepository } from '../types.js';
 import { isValidRepositoryId } from '../utils/repositoryIds.js';
-import { canonicalProjectRoot, projectRootsMatch } from '../utils/repositoryConfig.js';
+import { assertRepositoryManifestContained, canonicalProjectRoot, parseProjectRepositoryManifest, projectRootsMatch } from '../utils/repositoryConfig.js';
 import { ConfigService } from './configService.js';
 
 export class RepositoryService {
@@ -21,6 +21,16 @@ export class RepositoryService {
   }
 
   resolveRepositories(): ResolvedRepository[] {
+    const localManifestPath = path.join(this.projectRoot, '.hive', 'repositories.json');
+    assertRepositoryManifestContained(this.projectRoot, localManifestPath);
+    if (fs.existsSync(localManifestPath)) {
+      try {
+        const manifest = parseProjectRepositoryManifest(JSON.parse(fs.readFileSync(localManifestPath, 'utf-8')));
+        return this.resolveManifest(manifest.repositories);
+      } catch (error) {
+        throw new Error(`Invalid project repository manifest at ${localManifestPath}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const config = this.configService.get();
     const manifest = config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot)
       ? config.repositories

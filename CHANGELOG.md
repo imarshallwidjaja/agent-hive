@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Repository topology now persists per project in `.hive/repositories.json`. `hive_repositories_update` explicitly migrates matching legacy global topology and conditionally removes only the legacy keys while preserving global preferences.
+
 ## [2.0.1] - 2026-07-13
 
 ### Fixed

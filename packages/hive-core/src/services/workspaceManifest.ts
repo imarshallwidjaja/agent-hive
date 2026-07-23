@@ -75,6 +75,21 @@ function assertValidManifestEntries(manifestPath: string, manifest: Partial<Comp
   }
 }
 
+export function parseCompositeWorkspaceManifest(value: unknown, manifestPath: string): CompositeWorkspaceManifest {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid composite workspace manifest: ${manifestPath}`);
+  }
+  const manifest = value as Partial<CompositeWorkspaceManifest>;
+  if (
+    manifest.schemaVersion !== 1
+    || (manifest.mode !== 'composite' && manifest.mode !== 'adhoc-composite' && manifest.mode !== 'review-composite')
+  ) {
+    throw new Error(`Invalid composite workspace manifest: ${manifestPath}`);
+  }
+  assertValidManifestEntries(manifestPath, manifest);
+  return manifest as CompositeWorkspaceManifest;
+}
+
 export async function readCompositeWorkspaceManifest(workspaceRoot: string): Promise<CompositeWorkspaceManifest | null> {
   const manifestPath = path.join(workspaceRoot, 'workspace.json');
   let raw: string;
@@ -85,13 +100,5 @@ export async function readCompositeWorkspaceManifest(workspaceRoot: string): Pro
     throw error;
   }
 
-  const manifest = JSON.parse(raw) as Partial<CompositeWorkspaceManifest>;
-  if (
-    manifest.schemaVersion !== 1
-    || (manifest.mode !== 'composite' && manifest.mode !== 'adhoc-composite' && manifest.mode !== 'review-composite')
-  ) {
-    throw new Error(`Invalid composite workspace manifest: ${manifestPath}`);
-  }
-  assertValidManifestEntries(manifestPath, manifest);
-  return manifest as CompositeWorkspaceManifest;
+  return parseCompositeWorkspaceManifest(JSON.parse(raw), manifestPath);
 }

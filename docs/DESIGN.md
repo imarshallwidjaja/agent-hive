@@ -189,14 +189,13 @@ Agents edit only the task workspace. `hive_worktree_commit` collects the task di
 
 ### Multi-Repo Composite Workspaces
 
-When the global config defines a `repositories` manifest whose `repositoryRoot` resolves to the same checkout as the active project root, tasks with a `Repos:` annotation use composite workspaces. Each declared repo gets its own git worktree under the composite root.
+When `.hive/repositories.json` defines project repositories, tasks with a `Repos:` annotation use composite workspaces. Each declared repo gets its own git worktree under the composite root.
 
-**Scoped global manifest example:**
+**Project-local manifest example:**
 
 ```json
 {
-  "sandbox": "none",
-  "repositoryRoot": "/absolute/path/to/project",
+  "schemaVersion": 1,
   "repositories": [
     { "id": "api", "path": "./packages/api" },
     { "id": "web", "path": "./packages/web-ui" }
@@ -211,15 +210,15 @@ When the global config defines a `repositories` manifest whose `repositoryRoot` 
 - Must pass `git check-ref-format --branch hive/<repoId>/<feature>/<task>`
 
 **Manifest source rule:**
-- Repository manifests are read only from `~/.config/opencode/agent_hive.json`
-- A manifest activates only when its absolute `repositoryRoot` resolves to the same checkout as the active project root
-- Repository paths are relative to `repositoryRoot` and must stay inside it
+- Repository manifests are read from `<canonical-project-root>/.hive/repositories.json`
+- Repository paths are relative to the project root and must stay inside it
+- Matching legacy `repositoryRoot`/`repositories` global data is migration-only and is copied on explicit update, never during status or startup
 - A non-git project root without a matching manifest fails worktree/commit/merge tools with a manifest-required error
 
 **Manifest management tools:**
 - `hive_repositories_status` reports whether the project is using a manifest, legacy single-root mode, or is missing a required manifest
 - `hive_repositories_discover` scans only inside the OpenCode project root for candidate git repositories; it is read-only, bounded to depth 4, capped at 50 candidates, and skips `.git`, `.hive`, `.opencode`, `node_modules`, build outputs, coverage, and temp folders
-- `hive_repositories_update` is add-only and atomic for the active scope: it accepts project-relative paths only, validates all requested repositories, preserves other global config fields, writes `repositoryRoot` plus `repositories` to `~/.config/opencode/agent_hive.json`, and writes nothing if any requested repo is invalid
+- `hive_repositories_update` is add-only and atomic: it accepts project-relative paths, validates the merged topology, writes `.hive/repositories.json`, and then conditionally removes matching legacy global topology while preserving global preferences
 - Agents add only repositories they have decided to work in; discovery does not bulk-register every candidate repo
 
 **Composite workspace layout:**

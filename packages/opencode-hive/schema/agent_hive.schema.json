@@ -36,12 +36,12 @@
     "repositoryRoot": {
       "type": "string",
       "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)",
-      "description": "Absolute project root to which repositories applies. The manifest activates only when this value and the active project root resolve to the same checkout. Required when repositories is present."
+      "description": "Deprecated migration-only absolute project root for legacy globally stored repository topology. Use <project>/.hive/repositories.json."
     },
     "repositories": {
       "type": "array",
       "minItems": 1,
-      "description": "Globally stored repository manifest scoped by repositoryRoot. Entry paths are relative to repositoryRoot and must stay inside it.",
+      "description": "Deprecated migration-only globally stored repository topology scoped by repositoryRoot. New writes use <project>/.hive/repositories.json.",
       "items": {
         "$ref": "#/$defs/repositoryConfig"
       }

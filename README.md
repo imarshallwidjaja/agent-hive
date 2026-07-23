@@ -104,7 +104,7 @@ Download `vscode-arkive.vsix` from the GitHub Release first.
 ### What you get
 
 - **Hive sidebar** (activity-bar view) — features tree, per-task status, inline comments on `plan.md` and `overview.md`.
-- **Background Jobs and Tracked Repositories views** - viewer-only state for `.hive/background-jobs.json` and the global repository manifest scoped to the workspace.
+- **Background Jobs and Tracked Repositories views** - viewer-only state for `.hive/background-jobs.json` and `.hive/repositories.json`.
 - **Plan and overview review** — opens docs from the sidebar, lets you add/resolve inline comments, Done Review button marks the review as complete.
 - **Task detail** — open `spec.md` (what the worker was told) and `report.md` (what it did).
 - **File watching** — tracks changes to `.hive/` and refreshes the sidebar in real time.

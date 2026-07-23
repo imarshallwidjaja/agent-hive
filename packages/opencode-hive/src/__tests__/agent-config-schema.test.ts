@@ -93,10 +93,11 @@ describe('agent_hive schema council contract', () => {
     expect(schema.$defs.councilGroupConfig).toBeDefined();
   });
 
-  it('defines an exact project-root scope for globally stored repository manifests', () => {
+  it('retains legacy global repository topology for one migration window', () => {
     expect(schema.properties.repositoryRoot.pattern).toBeDefined();
     expect(schema.properties.repositories.minItems).toBe(1);
-    expect(schema.properties.repositories.description).toContain('scoped by repositoryRoot');
+    expect(schema.properties.repositoryRoot.description).toContain('Deprecated migration-only');
+    expect(schema.properties.repositories.description).toContain('Deprecated migration-only');
     expect(schema.$defs.repositoryConfig.properties.path.description).toBe('Project-relative path to a git repository.');
     expect(schema.$defs.councilConfig.description).toBe('Global council command settings.');
   });

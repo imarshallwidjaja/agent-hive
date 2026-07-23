@@ -4195,12 +4195,12 @@ describe('e2e: opencode-hive multi-repo composite workspaces', () => {
   });
 
   function writeManifest(repoIds: string[]): void {
-    const configDir = path.join(testRoot, '.config', 'opencode');
+    const configDir = path.join(testRoot, '.hive');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
-      path.join(configDir, 'agent_hive.json'),
+      path.join(configDir, 'repositories.json'),
       JSON.stringify({
-        repositoryRoot: testRoot,
+        schemaVersion: 1,
         repositories: repoIds.map((id) => ({ id, path: `./repos/${id}` })),
       }, null, 2),
     );
@@ -4276,8 +4276,8 @@ describe('e2e: opencode-hive multi-repo composite workspaces', () => {
     expect(update.added).toEqual(['api']);
     expect(update.repositories).toEqual([expect.objectContaining({ id: 'api', path: './api' })]);
 
-    const manifest = JSON.parse(fs.readFileSync(path.join(testRoot, '.config', 'opencode', 'agent_hive.json'), 'utf-8'));
-    expect(manifest.repositoryRoot).toBe(testRoot);
+    const manifest = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'repositories.json'), 'utf-8'));
+    expect(manifest.schemaVersion).toBe(1);
     expect(manifest.repositories).toEqual([{ id: 'api', path: './api' }]);
   });
 
