@@ -166,8 +166,8 @@ export class ConfigService {
   set(updates: Partial<HiveConfig>): HiveConfig {
     const release = acquireLockSync(this.configPath);
     try {
-      const current = this.mergeWithDefaults(this.readStored());
-      const merged: HiveConfig = {
+      const current = this.readStored();
+      const stored: Partial<HiveConfig> = {
         ...current,
         ...updates,
         agents: updates.agents ? {
@@ -182,14 +182,15 @@ export class ConfigService {
           : current.customAgents,
       };
 
-      if (!this.isValidStoredConfig(merged)) {
+      if (!this.isValidStoredConfig(stored)) {
         throw new Error('Invalid global Agent Hive config');
       }
-      if (merged.repositoryRoot !== undefined && !fs.existsSync(merged.repositoryRoot)) {
-        throw new Error(`Repository root does not exist: ${merged.repositoryRoot}`);
+      if (stored.repositoryRoot !== undefined && !fs.existsSync(stored.repositoryRoot)) {
+        throw new Error(`Repository root does not exist: ${stored.repositoryRoot}`);
       }
 
-      writeAtomic(this.configPath, JSON.stringify(merged, null, 2));
+      writeAtomic(this.configPath, JSON.stringify(stored, null, 2));
+      const merged = this.mergeWithDefaults(stored);
       this.cachedConfig = merged;
       this.cachedCustomAgentConfigs = null;
       return merged;

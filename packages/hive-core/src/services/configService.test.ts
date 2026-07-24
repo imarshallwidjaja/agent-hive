@@ -1281,6 +1281,63 @@ describe('ConfigService repository manifest validation', () => {
 });
 
 describe('ConfigService write validation and persistence', () => {
+  it('persists only stored values and requested updates without restoring omitted defaults', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      agents: {
+        'hive-master': { model: 'user/hive-model' },
+      },
+      customAgents: {
+        'forager-ui': {
+          baseAgent: 'forager-worker',
+          description: 'User-defined UI implementer',
+        },
+      },
+    }));
+
+    const updated = service.set({
+      sandbox: 'docker',
+      agents: {
+        'forager-worker': { variant: 'high' },
+      },
+      customAgents: {
+        'reviewer-local': {
+          baseAgent: 'code-reviewer',
+          description: 'User-defined local reviewer',
+        },
+      },
+    });
+
+    const expectedStored = {
+      sandbox: 'docker',
+      agents: {
+        'hive-master': { model: 'user/hive-model' },
+        'forager-worker': { variant: 'high' },
+      },
+      customAgents: {
+        'forager-ui': {
+          baseAgent: 'forager-worker',
+          description: 'User-defined UI implementer',
+        },
+        'reviewer-local': {
+          baseAgent: 'code-reviewer',
+          description: 'User-defined local reviewer',
+        },
+      },
+    };
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(expectedStored);
+    expect(updated.agents?.['hive-master']?.temperature).toBe(
+      DEFAULT_HIVE_CONFIG.agents?.['hive-master']?.temperature,
+    );
+    expect(updated.customAgents?.['forager-example-template']).toEqual(
+      DEFAULT_HIVE_CONFIG.customAgents?.['forager-example-template'],
+    );
+    expect(service.get()).toEqual(updated);
+    expect(new ConfigService().get()).toEqual(updated);
+  });
+
   it('conditionally removes matching legacy topology from a fresh read and preserves unrelated settings', () => {
     const service = new ConfigService();
     const configPath = service.getPath();
