@@ -81,9 +81,10 @@ Chat with OpenCode. Ask it to "create a feature for user authentication" and Hiv
 
 - **Runtime agents** - Unified mode: `hive-master` handles planning + orchestration. Dedicated mode uses `architect-planner` + `swarm-orchestrator`; specialist agents handle research, implementation, review, approach advice, helper recovery, ad-hoc execution, and simplicity review. Background-first orchestration adds no new agents; custom derived agents keep their configured base-agent inheritance.
 - **Hive tools** - Full lifecycle: feature, plan, tasks, worktrees, ad-hoc worktrees, background status/reconcile/cancel, context, merge, and status.
+- **Read-only vulnerability review** - `/vuln-review` runs a findings-first, static review over a frozen disposable workspace and leaves remediation to a separately authorized workflow.
 - **15 skills** — Loaded via OpenCode's native `skill` tool.
 - **Compaction recovery** — OpenCode sessions compact on long runs; Hive stores durable session metadata in `.hive/sessions.json` so agents re-anchor with the correct role after compaction.
-- **Optional research MCPs** — Exa web search, Context7 docs, grep.app, ast-grep. Disable individually via `disableMcps`.
+- **Optional research MCPs** — Exa web search, Context7 docs, grep.app, ast-grep. Disable individually via `disableMcps`; `/vuln-review` reports an unavailable approved MCP as a coverage gap rather than adding a scanner dependency.
 
 See [`packages/opencode-hive/README.md`](packages/opencode-hive/README.md) for per-agent model routing, derived subagents, and DCP safety.
 

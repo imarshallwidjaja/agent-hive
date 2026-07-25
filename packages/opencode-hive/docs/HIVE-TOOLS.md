@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Tools (27 total)
+## Standard Hive Tools (27 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -191,6 +191,27 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 - `helperStatus.mergeEligibility` is the canonical operator surface for whether completed task work has a live worktree and can be considered for merge or cleanup.
 - Background board state is intentionally separate. Reconcile terminal background jobs first, then refresh `hive_status` before making dependent task or merge decisions.
 
+## Private Review Workspace Tools (4 workflow-only tools)
+
+`/dash-review` and `/vuln-review` share a persisted disposable review-workspace lifecycle. These tools are registered with the plugin but are not general-purpose operator or agent tools. Exact workflow identity, private-agent identity, pending-session state, ownership token, and lifecycle state provide runtime gates for each call.
+
+| Tool | Purpose | Authorized caller |
+|------|---------|-------------------|
+| `hive_review_workspace_create` | Materialize one frozen disposable workspace from structured repository/ref/path scope and return its run ID, ownership token, paths, and fingerprints | The active workflow's generated private scope lane |
+| `hive_review_workspace_claim` | Bind a created workspace to the active private primary session | The same workflow's private primary, with the returned token |
+| `hive_review_workspace_inspect` | Compare the workspace with its materialized baseline and revalidate the live source identity | The owning private primary |
+| `hive_review_workspace_cleanup` | Remove the disposable workspace and release its persisted run state | The owning private primary |
+
+### Review workspace lifecycle and gates
+
+- Create accepts structured scope aliases only. It does not accept raw Git commands or arbitrary Git flags. Repository IDs, paths, refs, and optional Hive task/feature identity are validated before materialization.
+- The scope lane returns the ownership token to the private primary but cannot claim, inspect, or clean the run. Deep review lanes cannot call any lifecycle tool. The private primary can claim, inspect, and clean but cannot create the workspace.
+- Claim must succeed before deep lanes start. Inspection runs after review and before cleanup. Cleanup is attempted even after lane, drift, or integrity failure.
+- Inspection compares tracked content, untracked additions, and the materialized fingerprint, then checks whether the corresponding live source identity stayed stable. A mismatch is reported; it is not repaired or rolled back.
+- Persisted lease metadata supports bounded handoff, session-deletion cleanup, dead-owner recovery, and stale-run sweeping. Recovery validates recorded Git identity before removing a registered worktree and preserves anomalies it cannot safely attribute.
+- Workflow agent registration, per-role tool permissions, exact private task targets, caller inference, and persisted ownership checks are separate runtime gates. A prompt instruction alone is not the authorization boundary.
+- A frozen Git worktree is not an OS sandbox and does not make files immutable. Workspace inspection detects review-local drift and live-source instability; it cannot prove that an external process or a tool available to another workflow had no side effects. Each review workflow therefore documents its own narrower tool and effect policy.
+
 ### Skill Loading
 Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered through `skills.paths`. No Hive plugin tool is used for skill loading. The `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` env flag enables the primary-agent background-first scheduler contract and background management tools for sessions where OpenCode exposes native background subagents.
 
@@ -209,7 +230,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 
 ---
 
-## Tool Categories Summary
+## Standard Tool Categories Summary
 
 | Category | Count | Tools |
 |----------|-------|-------|

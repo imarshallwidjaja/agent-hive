@@ -45,7 +45,7 @@ Modern plans sync numbered tasks only from `## Tasks`. Keep pure release or suit
 
 ### Operator Commands
 
-`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. `/dash-review` is the exception: its generated OpenCode command binds to a private review primary.
+`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. `/dash-review` and `/vuln-review` are exceptions: their generated OpenCode commands bind to separate private review primaries.
 
 | Command | Purpose |
 |---------|---------|
@@ -57,6 +57,7 @@ Modern plans sync numbered tasks only from `## Tasks`. Keep pure release or suit
 | `/council-directive` | Turn rough input into a reusable directive for a council run. |
 | `/council` | Run a read-only council and synthesize a recommendation. |
 | `/dash-review [scope]` | Review one frozen disposable workspace without changing implementation source. |
+| `/vuln-review [flags]` | Run a findings-first static vulnerability review over one frozen disposable workspace. |
 | `/compact-summary` | Produce a compact recovery summary for the current session. |
 
 `/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by `hive_plan_write`, review, approval, task sync, execution, and merge.
@@ -70,9 +71,10 @@ Routing depends on `agentMode`:
 | `/interview`, `/implementation-brief`, `/hive-plan`, `/council-directive`, `/council` | Use `hive-master`. | Route or delegate to `architect-planner`. |
 | `/approve-sync-plan`, `/start-execution` | Use `hive-master`. | Route or delegate to `swarm-orchestrator`. |
 | `/dash-review` | Bound by `config.command` to a private review primary. | Bound by `config.command` to a private review primary. |
+| `/vuln-review` | Bound by `config.command` to a private vulnerability-review primary. | Bound by `config.command` to a private vulnerability-review primary. |
 | `/compact-summary` | Use `hive-master`. | Route or delegate to `scout-researcher`. |
 
-Except for `/dash-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
+Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
 
 `/dash-review` accepts a branch/ref/range/path/task/feature/description or another coherent implementation target. Arguments win. Without one, it infers the current implementation only when the conversation and Git/Hive context identify a coherent surface; otherwise it asks one clarification question and stops. OpenCode substitutes command templates and expands `!\`...\`` before plugin command hooks run. `/dash-review` therefore never interpolates raw arguments into its template. Its command hook appends the original argument string after expansion as inert review scope data. Shell-style argument fragments are not evaluated.
 
@@ -99,6 +101,104 @@ The runtime command agent is the private `__hive_dash_review_primary` identity s
 For a Hive Builder ad-hoc run, review the existing run or branch, then give a later fix instruction to Hive Builder so it resumes the normal ad-hoc isolation and delegation flow. For a Hive feature run, review the task/feature or branch, then give the active Hive/Swarm primary a later fix instruction so it uses the feature DAG and task worktrees. Findings are review context, never auto-created tasks.
 
 Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set and the bundled background protocol is available. Use the existing Background Orchestration section and the `background-delegation` skill for the scheduler protocol; command text only points at it when the gate is open. `/dash-review` is a deliberate exception and remains blocking-only.
+
+### Vulnerability Review
+
+`/vuln-review` is for authorized use against source the operator is permitted to assess. It performs a bounded static/local review and does not establish compliance, replace SAST or DAST, prove exhaustive coverage, or establish repository security.
+
+#### Scope and examples
+
+The command accepts flags only. Current change is the default and includes captured in-progress state; whole-repository review is never inferred. Exact examples:
+
+- Current change: `/vuln-review`
+- Current change narrowed by repository and path: `/vuln-review --repo api --path src/auth`
+- Git range: `/vuln-review --range main...HEAD`
+- Git refs: `/vuln-review --base main --target HEAD`
+- Hive task: `/vuln-review --task 03-implement-auth`
+- Hive feature: `/vuln-review --feature authentication`
+- Whole repository: `/vuln-review --whole-repo`
+- Current change compared with a prior report: `/vuln-review --compare approved/prior-review.md`
+
+Legal combinations:
+
+| Mode | Required mode flag | Other allowed flags |
+|------|--------------------|---------------------|
+| Current change | None | Repeatable `--repo <id>`, repeatable `--path <relative-path>`, one `--compare <local-prior-report.md>` |
+| Git range | One `--range <base>...<target>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
+| Git refs | One `--base <ref>` | Optional `--target <ref>`, repeatable `--repo`, repeatable `--path`, one `--compare` |
+| Hive task | One `--task <task-folder>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
+| Hive feature | One `--feature <feature-name>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
+| Whole repository | `--whole-repo` | Repeatable `--repo`, one `--compare`; `--path` is not allowed |
+
+`--range` cannot be combined with `--base` or `--target`; `--target` requires `--base`. Git mode, task mode, feature mode, and whole-repository mode are mutually exclusive. Singleton flags cannot be repeated. PR numbers, PR URLs, `--pr`, and positional scope are unsupported. Fetch or check out the relevant refs locally, then use local `--base` and optional `--target` refs; the workflow does not call `gh` or another provider CLI.
+
+If the scope is ambiguous, crosses an unexpected repository boundary, or needs more specialist coverage than the adaptive cap permits, the workflow asks one clarification question before deep review. Declining a required expansion produces `INCOMPLETE`.
+
+#### Authorized-use and safety boundary
+
+The workflow performs source review only: no active exploitation, no network scanning or probing, no credential use, no package installation, no shell commands, no scanner execution, no source edits, no external-state mutation, no recursive delegation, and no Hive lifecycle mutation. No product-source, report, SARIF, remediation, or Hive feature/task files are created. Frame does create a disposable frozen workspace and persisted lease metadata for lifecycle safety; cleanup removes the workspace and releases the persisted run state. The workflow produces no automatic fix, remediation, plan, task, worktree outside that disposable review workspace, commit, merge, or patch. Remediation requires separate operator authorization after the review.
+
+The private roles use an exact allowlist:
+
+- The primary can call only `task`, `question`, `hive_review_workspace_claim`, `hive_review_workspace_inspect`, and `hive_review_workspace_cleanup`. Task targets are restricted to the generated private lanes.
+- The scope scout can call `read`, `glob`, `grep`, `hive_repositories_status`, `hive_status`, `hive_plan_read`, `hive_review_workspace_create`, and the approved MCP tools listed below. Its only permitted pre-freeze local file read is the optional prior report.
+- Baseline, specialist, and falsifier lanes can call only `read`, `glob`, `grep`, and the approved MCP tools. Every local operation must use a supplied frozen absolute workspace path, never the live source or process cwd.
+- Approved MCP calls are `ast_grep_dump_syntax_tree`, `ast_grep_find_code`, `ast_grep_find_code_by_rule`, `ast_grep_test_match_code_rule`, `context7_resolve-library-id`, `context7_query-docs`, `grep_app_searchGitHub`, and `websearch_web_search_exa`.
+
+External queries may contain only public dependency names and versions or public advisory identifiers such as CVE or GHSA IDs. They must not contain proprietary source, symbols, paths, configuration, logs, or stack traces. Optional MCP unavailability is a coverage gap, not permission to add another tool. The workflow adds zero new scanner dependencies and requires no scanner setup.
+
+Sensitive findings remain in OpenCode session history. No report file or SARIF is written. Operators must apply appropriate session retention and access controls, or manually export the report to an approved location under their own data-handling policy.
+
+#### Stages and evidence
+
+The stages run in this order:
+
+1. **Frame** resolves repository, path, ref, task, or feature scope; builds threat context; reads an optional prior report; chooses zero to two specialist lenses; and creates the frozen workspace.
+2. **Claim** binds that workspace to the private primary session before deep review starts.
+3. **Investigate** runs the mandatory cross-cutting baseline and zero to two selected specialists as fresh blocking lanes. Specialists supplement the baseline and are selected from the observed attack surface, not model prestige.
+4. **Challenge** gives every normalized candidate to the fixed falsifier. With no candidates, it tests the bounded hypothesis that no actionable vulnerability exists in the reviewed scope. A falsifier-originated suspicion remains unresolved and cannot become a confirmed finding in that run.
+5. **Inspect and cleanup** checks the materialized baseline, new-untracked state, and live-source stability, then attempts cleanup unconditionally. Drift, unavailable integrity evidence, policy violations, omitted scope, truncation, or cleanup uncertainty makes the run `INCOMPLETE` without discarding already confirmed evidence.
+6. **Synthesize and report** groups confirmed findings by root cause, orders them by severity, records coverage and integrity limits, and returns the report in the session only.
+
+A failed mandatory baseline or falsifier gets one fresh retry. A repeated mandatory failure, any selected specialist failure, declined required expansion, integrity failure, or cleanup uncertainty produces `INCOMPLETE`.
+
+#### Report contract
+
+The report starts with these case-sensitive metadata lines:
+
+```text
+Schema: hive-vuln-review/v1
+Scope mode: <current-change|git-comparison|hive-task|hive-feature|whole-repository>
+Scope fingerprint: sha256:<64 lowercase hex>
+Source fingerprint: sha256:<64 lowercase hex>
+Repositories: <sorted comma-separated IDs>
+Paths: <canonical JSON string array>
+Comparison base: <selector-or-none>
+Hive scope: <task:name|feature:name|none>
+Selected lenses: <canonical JSON string array>
+Prior comparison: <not-requested|skipped:reason|comparable>
+```
+
+Canonical arrays are JSON-escaped, code-point sorted, deduplicated, and contain no extra whitespace. The scope fingerprint hashes canonical scope identity in this key order: schema, mode, repositories, paths, comparison base, and Hive scope. The source fingerprint separately covers resolved commits and captured dirty content. The report then contains `Scope`, `Threat Context`, `Findings`, `Coverage Gaps`, `Rejected Leads`, `Unresolved Leads`, `Re-review Classification`, `Review Lanes`, `Integrity`, and `State`, in that order. Scope metadata records normalized selectors, repositories, refs, paths, fingerprints, Hive identity, and prior-report status. Review-lane metadata lists only agents, models, variants, and lenses that actually ran.
+
+Every confirmed finding includes a display ID, Root-cause key, severity, locations, evidence, attacker-to-impact path, impact, exploitability stance, confidence, fix direction without a patch, variants, producing lens, and falsifier disposition. The Root-cause key has four `::`-separated, `encodeURIComponent`-encoded segments: manifest repository ID; POSIX-normalized repository-relative primary path; trimmed case-preserving symbol or boundary; and lowercase ASCII missing-control slug. To build the slug, each non-`[a-z0-9]` run becomes one hyphen and edge hyphens are removed. The key excludes line numbers and run-local display IDs.
+
+Prior comparison runs only for a supported `hive-vuln-review/v1` report with complete scope/source/lens metadata and Root-cause keys. Scope mode, repositories, paths, comparison base, and task/feature identity must match exactly. Otherwise the report says `comparison skipped` with a reason and assigns no per-finding classification. For comparable reports, `new` is a current key not present before and `unchanged` is a key still confirmed. `resolved` requires changed source plus explicit re-examination of the prior location, exploit preconditions, and prior or equivalent coverage. An absent prior key is `stale` when any resolution precondition is missing; same-source or nondeterministic absence never proves resolution.
+
+The report ends with exactly one state: `CONFIRMED_FINDINGS`, `NO_CONFIRMED_FINDINGS_IN_REVIEWED_SCOPE`, or `INCOMPLETE`. `INCOMPLETE` takes precedence over a clean state, but confirmed findings remain visible when attribution or cleanup later fails.
+
+#### Models and specialists
+
+The four built-in specialist lenses are:
+
+- `trust-and-identity`: authentication, authorization, tenant/object isolation, session, and privilege boundaries.
+- `untrusted-data`: parsing, injection, deserialization, path, process, template, and database boundaries.
+- `secrets-and-platform`: cryptography, secrets/configuration, dependencies, CI/IaC, cloud, and container exposure.
+- `stateful-abuse`: replay, races/TOCTOU, workflow bypass, business logic, and state-transition invariants.
+
+The workflow uses OpenCode's normal provider/model resolution. It adds no model-provider SDK, credential setup, or provider-specific CLI dependency beyond the operator's existing OpenCode configuration. A different configured model or variant is allowed, but the report says multi-model only when different model identities actually ran.
+
+Custom agents with `baseAgent: "vulnerability-reviewer"` become selectable private specialists when their descriptions match the observed risk. They inherit the configured base model, variant, and temperature unless overridden. They cannot replace the mandatory baseline or the fixed falsifier, change the tool allowlist, or bypass workspace and report gates.
 
 ### Planning-mode delegation
 
@@ -476,7 +576,7 @@ The `variant` value must match a key in your OpenCode config at `provider.<provi
 
 Define plugin-only custom subagents with `customAgents`. Freshly initialized `agent_hive.json` files already include starter template entries under `customAgents`; those seeded `*-example-template` entries are placeholders only, should be renamed or deleted before real use, and are intentionally worded so planners/orchestrators are unlikely to select them as configured. Each custom agent must declare:
 
-- `baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, or `approach-advisor`
+- `baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, or `vulnerability-reviewer`
 - `description`: delegation guidance injected into primary planner/orchestrator prompts
 
 Custom subagents are scoped routing specialists, not model-upgrade switches. Primary agents choose them when their description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names them. They keep the built-in base agent when no configured description is a closer fit. A stronger model alone is not a routing reason.
@@ -484,6 +584,8 @@ Custom subagents are scoped routing specialists, not model-upgrade switches. Pri
 `hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/`.
 
 `simplicity-reviewer` is a custom base agent for specialized cleanup passes. Primary agents still use the built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match.
+
+`vulnerability-reviewer` is a custom base agent for selectable `/vuln-review` specialist lenses. Its private wrapper preserves the configured description, model, variant, and temperature while enforcing the vulnerability workflow's read-only tool policy. A custom specialist cannot replace the mandatory baseline or fixed falsifier.
 
 `hive-helper` is also not a network consumer; planning, orchestration, and review roles get network access first.
 
@@ -541,7 +643,7 @@ Compaction classification follows the base agent:
 
 - `scout-researcher` derivatives are treated as `subagent`
 - `forager-worker` derivatives are treated as `task-worker`
-- `plan-reviewer`, `code-reviewer`, and `approach-advisor` derivatives are treated as `subagent`
+- `plan-reviewer`, `code-reviewer`, `approach-advisor`, and `vulnerability-reviewer` derivatives are treated as `subagent`
 
 This ensures custom workers recover with the same execution constraints as their base role.
 
