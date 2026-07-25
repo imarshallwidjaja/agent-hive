@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { DEFAULT_COUNCIL_CONFIG, type CouncilConfig } from 'hive-core';
 import { HIVE_COMMANDS, type HiveCommandKey } from './registry.js';
-import { hiveCommandRenderers } from './renderers.js';
+import {
+  hiveCommandRenderers,
+  parseVulnerabilityReviewArgs,
+  serializeVulnerabilityReviewScope,
+} from './renderers.js';
 import { resolveCouncilMembers } from './council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './types.js';
 
@@ -100,6 +104,36 @@ function render(command: HiveCommandKey, args = '', context: HiveCommandContext 
 }
 
 describe('hive command renderers', () => {
+  it('rejects non-canonical vulnerability review Hive identifiers', () => {
+    for (const args of [
+      '--task ../01-review',
+      '--task 01-review/../01-review',
+      '--feature .',
+      '--feature feature\\name',
+      '--feature "feature\0name"',
+    ]) {
+      expect(parseVulnerabilityReviewArgs(args).error).toContain('canonical single-segment identifier');
+    }
+
+    expect(parseVulnerabilityReviewArgs('--task 01-review').error).toBeUndefined();
+    expect(parseVulnerabilityReviewArgs('--feature vulnerability-review').error).toBeUndefined();
+  });
+
+  it('sorts vulnerability review scope arrays by Unicode code point', () => {
+    const privateUse = '\uE000';
+    const supplementary = '\u{10000}';
+    const serialized = JSON.parse(serializeVulnerabilityReviewScope({
+      mode: 'current-change',
+      repositories: [supplementary, privateUse],
+      paths: [`${supplementary}/path`, `${privateUse}/path`],
+      comparisonBase: null,
+      hiveScope: null,
+    }));
+
+    expect(serialized.repositories).toEqual([privateUse, supplementary]);
+    expect(serialized.paths).toEqual([`${privateUse}/path`, `${supplementary}/path`]);
+  });
+
   it('returns structured non-empty guidance for every command with empty and non-empty args', () => {
     for (const command of HIVE_COMMANDS) {
       for (const args of ['', 'Investigate the flaky restore path']) {

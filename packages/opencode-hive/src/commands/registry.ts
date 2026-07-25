@@ -43,6 +43,12 @@ export const HIVE_COMMANDS = [
     agent: '__hive_dash_review_primary',
   },
   {
+    key: 'vuln-review',
+    name: '/vuln-review',
+    description: 'Assess a frozen scope for evidenced vulnerabilities without changing files',
+    agent: '__hive_vulnerability_review_primary',
+  },
+  {
     key: 'compact-summary',
     name: '/compact-summary',
     description: 'Produce a recovery summary for the current OpenCode session',

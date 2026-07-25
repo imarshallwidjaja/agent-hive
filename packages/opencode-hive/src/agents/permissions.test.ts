@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn, afterEach, mock } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
-import { ConfigService, ReviewWorkspaceService } from 'hive-core';
+import { ConfigService, FeatureService, ReviewWorkspaceService, TaskService } from 'hive-core';
 import * as path from 'path';
 import plugin from '../index';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
@@ -107,6 +107,7 @@ function gitAt(repository: string, args: string[]): string {
 async function createSnapshotPlugin(directory: string): Promise<{
   hooks: Awaited<ReturnType<typeof plugin>>;
   scopeAlias: string;
+  vulnerabilityScopeAlias: string;
 }> {
   spyOn(ConfigService.prototype, 'get').mockReturnValue({ agentMode: 'unified', agents: {} } as any);
   const hooks = await plugin({
@@ -119,12 +120,15 @@ async function createSnapshotPlugin(directory: string): Promise<{
   } as any);
   const config: { agent?: Record<string, AgentConfig> } = {};
   await hooks.config?.(config);
-  const scopeAlias = Object.keys(config.agent ?? {}).find((name) => {
-    const agent = config.agent?.[name];
-    return agent?.tools?.hive_review_workspace_create === true;
-  });
+  const scopeAlias = findDashScopeAlias(config.agent);
   if (!scopeAlias) throw new Error('Expected a generated dash scope alias');
-  return { hooks, scopeAlias };
+  const vulnerabilityScopeAlias = Object.keys(config.agent ?? {}).find((name) => {
+    const agent = config.agent?.[name];
+    return name.startsWith('__hive_vulnerability_review_')
+      && agent?.tools?.hive_review_workspace_create === true;
+  });
+  if (!vulnerabilityScopeAlias) throw new Error('Expected a generated vulnerability-review scope alias');
+  return { hooks, scopeAlias, vulnerabilityScopeAlias };
 }
 
 function findDashReviewLanes(agents: Record<string, AgentConfig> | undefined): Array<[string, AgentConfig]> {
@@ -856,6 +860,38 @@ describe('Per-agent tool filtering', () => {
       expect(workspaceDriftInspection.reviewIntegrity).toBe(false);
       expect(JSON.parse(await cleanup({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext).then((result) => result)).cleaned).toBe(true);
       expect(existsSync(created.workspacePath)).toBe(false);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects non-canonical or non-member Hive scope aliases before review workspace creation', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-scope-membership-'));
+    createGitRepository(repository);
+    try {
+      new FeatureService(repository).create('scope-feature');
+      const taskFolder = new TaskService(repository).create('scope-feature', 'scope-task');
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
+      const context = snapshotContext(vulnerabilityScopeAlias);
+      const featureAlias = '01_scope-feature/../01_scope-feature';
+      const physicalFeatureAlias = '01_scope-feature';
+      const taskAlias = `${taskFolder}/../${taskFolder}`;
+
+      await expect(create({
+        scopeMode: 'hive-feature',
+        hiveScope: `feature:${featureAlias}`,
+      }, context)).rejects.toThrow(`Unresolved Hive feature metadata: feature:${featureAlias}.`);
+      await expect(create({
+        scopeMode: 'hive-feature',
+        hiveScope: `feature:${physicalFeatureAlias}`,
+      }, context)).rejects.toThrow(`Unresolved Hive feature metadata: feature:${physicalFeatureAlias}.`);
+      await expect(create({
+        scopeMode: 'hive-task',
+        hiveScope: `task:${taskAlias}`,
+      }, context)).rejects.toThrow(`Unresolved Hive task metadata: task:${taskAlias}.`);
+      expect(createWorkspace).not.toHaveBeenCalled();
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }

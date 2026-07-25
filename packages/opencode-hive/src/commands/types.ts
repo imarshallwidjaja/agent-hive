@@ -22,6 +22,7 @@ export interface HiveCommandContext {
   council: CouncilConfig;
   agents: Record<string, HiveCommandAgentDescriptor>;
   dashReviewLanes: HiveCommandDashReviewLane[];
+  vulnerabilityReviewLanes: HiveCommandVulnerabilityReviewLane[];
 }
 
 export interface HiveCommandDashReviewLane {
@@ -31,6 +32,16 @@ export interface HiveCommandDashReviewLane {
   description: string;
   model?: string;
   variant?: string;
+}
+
+export interface HiveCommandVulnerabilityReviewLane {
+  taskTarget: string;
+  role: 'scope-scout' | 'baseline' | 'specialist' | 'falsifier';
+  sourceAgent: string;
+  description: string;
+  model?: string;
+  variant?: string;
+  lens?: string;
 }
 
 export interface HiveCommandAgentDescriptor {

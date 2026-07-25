@@ -37,6 +37,10 @@
       "description": "Review an implementation snapshot without changing files"
     },
     {
+      "name": "/vuln-review",
+      "description": "Assess a frozen scope for evidenced vulnerabilities without changing files"
+    },
+    {
       "name": "/compact-summary",
       "description": "Produce a recovery summary for the current OpenCode session"
     }
