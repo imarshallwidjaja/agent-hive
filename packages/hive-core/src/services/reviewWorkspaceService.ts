@@ -20,10 +20,50 @@ export interface ReviewWorkspaceRepositoryInput {
   commit: string;
 }
 
+export type ReviewWorkspaceWorkflow = 'dash-review' | 'vulnerability-review';
+
+export interface ReviewWorkspaceCaller {
+  workflow: ReviewWorkspaceWorkflow;
+  role: 'creator' | 'primary';
+  agent: string;
+  sessionId: string;
+  pid: number;
+}
+
+export interface ReviewWorkspaceSourceScope {
+  repositoryIds: string[];
+  snapshot: {
+    baseRef?: string;
+    targetRef?: string;
+    range?: string;
+    paths: string[];
+    maxFiles?: number;
+    maxPatchBytes?: number;
+  };
+}
+
+export interface ReviewWorkspaceMaterializedEntryDescriptor {
+  path: string;
+  kind: 'regular' | 'symlink' | 'delete';
+}
+
+export interface ReviewWorkspaceLeaseInput {
+  workflow: ReviewWorkspaceWorkflow;
+  creatorAgent: string;
+  creatorSessionId: string;
+  sourceScope: ReviewWorkspaceSourceScope;
+  selectedRepositoryIds: string[];
+  scopeFingerprint: string;
+  sourceFingerprint: string;
+  materializedFingerprint: string;
+  materializedEntries: Record<string, ReviewWorkspaceMaterializedEntryDescriptor[]>;
+}
+
 export interface ReviewWorkspaceCreateOptions {
   runId: string;
   repositories: ReviewWorkspaceRepositoryInput[];
   composite?: boolean;
+  lease: ReviewWorkspaceLeaseInput;
 }
 
 export interface ReviewWorkspaceRepositoryInfo {
@@ -52,6 +92,7 @@ export interface ReviewWorkspaceRepositoryInspection {
 export interface ReviewWorkspaceInspection {
   runId: string;
   workspacePath: string;
+  lease: ReviewWorkspaceLease;
   repositories: Record<string, ReviewWorkspaceRepositoryInspection>;
   integrity: {
     trackedClean: boolean;
@@ -60,11 +101,21 @@ export interface ReviewWorkspaceInspection {
   };
 }
 
-interface ReviewWorkspaceCleanupResult {
+export interface ReviewWorkspaceCleanupResult {
   runId: string;
   cleaned: boolean;
   workspacePath: string;
   errors: string[];
+}
+
+export interface ReviewWorkspaceLease extends ReviewWorkspaceLeaseInput {
+  schemaVersion: 1;
+  runId: string;
+  creatorPid: number;
+  ownerAgent?: string;
+  ownerSessionId?: string;
+  ownerPid?: number;
+  ownerRecoveryExpiresAt?: number;
 }
 
 interface BaselineEntry {
@@ -83,10 +134,19 @@ interface ReviewWorkspaceBaseline {
 }
 
 interface ReviewWorkspaceMetadata {
+  schemaVersion: 1;
   state: 'creating' | 'recovery' | 'sealed';
   runId: string;
+  workflow: ReviewWorkspaceWorkflow;
+  creatorAgent: string;
+  creatorSessionId: string;
+  sourceScope: ReviewWorkspaceSourceScope;
+  selectedRepositoryIds: string[];
+  scopeFingerprint: string;
+  sourceFingerprint: string;
+  materializedFingerprint: string;
+  materializedEntries: Record<string, ReviewWorkspaceMaterializedEntryDescriptor[]>;
   composite: boolean;
-  repositoryIds: string[];
   commits: Record<string, string>;
   baseline?: Record<string, ReviewWorkspaceBaseline>;
   worktreeRepositoryIds?: string[];
@@ -96,14 +156,15 @@ interface ReviewWorkspaceMetadata {
   creatorPid: number;
   handoffExpiresAt?: number;
   removedRepositoryIds?: string[];
+  ownerAgent?: string;
   ownerSessionId?: string;
   ownerPid?: number;
+  ownerRecoveryExpiresAt?: number;
 }
 
 interface ReviewWorkspaceCleanupIdentity {
   sourcePath: string;
   commonDir: string;
-  worktreePath: string;
 }
 
 interface ReviewWorkspaceLock {
@@ -126,6 +187,7 @@ const BASELINE_CAPTURE_TIMEOUT_MS = 5_000;
 const REVIEW_WORKSPACE_HANDOFF_MS = 5 * 60 * 1000;
 const METADATA_DIRECTORY = '.runs';
 const LOCK_DIRECTORY = '.locks';
+export const REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION = 1;
 
 function isSafeRunId(runId: string): boolean {
   return RUN_ID_PATTERN.test(runId) && !runId.includes('..');
@@ -145,6 +207,13 @@ function isSafeWorkspaceRelativePath(relativePath: string): boolean {
     && normalized !== '.'
     && normalized !== '..'
     && !normalized.startsWith(`..${path.sep}`);
+}
+
+function isSafeSourceScopePath(relativePath: string): boolean {
+  if (!relativePath || relativePath.startsWith('-') || relativePath.startsWith(':') || relativePath.includes('\\')) return false;
+  if (relativePath.includes('\0') || path.posix.isAbsolute(relativePath)) return false;
+  const normalized = path.posix.normalize(relativePath);
+  return normalized === relativePath && normalized !== '..' && !normalized.startsWith('../');
 }
 
 function isSafeAbsolutePath(value: unknown): value is string {
@@ -187,6 +256,14 @@ function fingerprintBaselineUntracked(entries: readonly BaselineEntry[]): string
     hash.update('\0');
   }
   return hash.digest('hex');
+}
+
+export function fingerprintReviewWorkspaceSourceScope(sourceScope: ReviewWorkspaceSourceScope): string {
+  return createHash('sha256').update(JSON.stringify({
+    schema: 'hive-review-workspace-scope/v1',
+    repositoryIds: sourceScope.repositoryIds,
+    snapshot: sourceScope.snapshot,
+  })).digest('hex');
 }
 
 export class ReviewWorkspaceService {
@@ -370,16 +447,28 @@ export class ReviewWorkspaceService {
   private validateMetadata(runId: string, metadata: unknown): ReviewWorkspaceMetadata {
     if (!isRecord(metadata)) throw this.metadataError(runId);
     const allowedFields = new Set([
-      'state', 'runId', 'composite', 'repositoryIds', 'commits', 'baseline', 'worktreeRepositoryIds',
-      'creatingRepositoryId', 'cleanupIdentities', 'ownershipTokenHash', 'creatorPid', 'handoffExpiresAt',
-      'removedRepositoryIds', 'ownerSessionId', 'ownerPid',
+      'schemaVersion', 'state', 'runId', 'workflow', 'creatorAgent', 'creatorSessionId', 'creatorPid',
+      'sourceScope', 'selectedRepositoryIds', 'scopeFingerprint', 'sourceFingerprint',
+      'materializedFingerprint', 'materializedEntries', 'composite', 'commits', 'baseline',
+      'worktreeRepositoryIds', 'creatingRepositoryId', 'cleanupIdentities', 'ownershipTokenHash',
+      'handoffExpiresAt', 'removedRepositoryIds', 'ownerAgent', 'ownerSessionId', 'ownerPid',
+      'ownerRecoveryExpiresAt',
     ]);
     if (
-      (metadata.state !== 'creating' && metadata.state !== 'recovery' && metadata.state !== 'sealed')
+      metadata.schemaVersion !== REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION
+      || (metadata.state !== 'creating' && metadata.state !== 'recovery' && metadata.state !== 'sealed')
       || metadata.runId !== runId
+      || (metadata.workflow !== 'dash-review' && metadata.workflow !== 'vulnerability-review')
+      || typeof metadata.creatorAgent !== 'string' || !metadata.creatorAgent
+      || typeof metadata.creatorSessionId !== 'string' || !metadata.creatorSessionId
       || typeof metadata.composite !== 'boolean'
-      || !Array.isArray(metadata.repositoryIds)
+      || !Array.isArray(metadata.selectedRepositoryIds)
+      || !isRecord(metadata.sourceScope)
+      || !isRecord(metadata.materializedEntries)
       || !isRecord(metadata.commits)
+      || typeof metadata.scopeFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.scopeFingerprint)
+      || typeof metadata.sourceFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.sourceFingerprint)
+      || typeof metadata.materializedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.materializedFingerprint)
       || typeof metadata.ownershipTokenHash !== 'string'
       || !/^[a-f0-9]{64}$/.test(metadata.ownershipTokenHash)
       || typeof metadata.creatorPid !== 'number' || !Number.isSafeInteger(metadata.creatorPid) || metadata.creatorPid < 1
@@ -387,38 +476,103 @@ export class ReviewWorkspaceService {
     ) {
       throw this.metadataError(runId);
     }
-    const repositoryIds = [...metadata.repositoryIds];
+    const selectedRepositoryIds = [...metadata.selectedRepositoryIds];
     if (
-      (metadata.state !== 'recovery' && repositoryIds.length === 0)
-      || new Set(repositoryIds).size !== repositoryIds.length
-      || repositoryIds.some((repositoryId) => typeof repositoryId !== 'string' || !isSafeRepositoryId(repositoryId))
-      || (!metadata.composite && repositoryIds.length > 1)
+      selectedRepositoryIds.length === 0
+      || new Set(selectedRepositoryIds).size !== selectedRepositoryIds.length
+      || selectedRepositoryIds.some((repositoryId) => typeof repositoryId !== 'string' || !isSafeRepositoryId(repositoryId))
+      || JSON.stringify([...selectedRepositoryIds].sort()) !== JSON.stringify(selectedRepositoryIds)
+      || (!metadata.composite && selectedRepositoryIds.length > 1)
     ) {
       throw this.metadataError(runId);
     }
+    const sourceScope = metadata.sourceScope;
+    if (
+      Object.keys(sourceScope).some((field) => field !== 'repositoryIds' && field !== 'snapshot')
+      || !Array.isArray(sourceScope.repositoryIds)
+      || !isRecord(sourceScope.snapshot)
+      || sourceScope.repositoryIds.some((repositoryId) => typeof repositoryId !== 'string' || !isSafeRepositoryId(repositoryId))
+      || new Set(sourceScope.repositoryIds).size !== sourceScope.repositoryIds.length
+      || JSON.stringify([...sourceScope.repositoryIds].sort()) !== JSON.stringify(sourceScope.repositoryIds)
+    ) {
+      throw this.metadataError(runId);
+    }
+    const snapshot = sourceScope.snapshot;
+    const snapshotFields = new Set(['baseRef', 'targetRef', 'range', 'paths', 'maxFiles', 'maxPatchBytes']);
+    if (
+      Object.keys(snapshot).some((field) => !snapshotFields.has(field))
+      || !Array.isArray(snapshot.paths)
+      || snapshot.paths.some((entry) => typeof entry !== 'string' || !isSafeSourceScopePath(entry))
+      || new Set(snapshot.paths).size !== snapshot.paths.length
+      || JSON.stringify([...snapshot.paths].sort()) !== JSON.stringify(snapshot.paths)
+      || ['baseRef', 'targetRef', 'range'].some((field) => snapshot[field] !== undefined && (typeof snapshot[field] !== 'string' || !snapshot[field]))
+      || ['maxFiles', 'maxPatchBytes'].some((field) => snapshot[field] !== undefined && (typeof snapshot[field] !== 'number' || !Number.isSafeInteger(snapshot[field]) || snapshot[field] < 1))
+      || (snapshot.range !== undefined && (snapshot.baseRef !== undefined || snapshot.targetRef !== undefined))
+    ) {
+      throw this.metadataError(runId);
+    }
+    const canonicalSourceScope: ReviewWorkspaceSourceScope = {
+      repositoryIds: [...sourceScope.repositoryIds] as string[],
+      snapshot: {
+        ...(typeof snapshot.baseRef === 'string' ? { baseRef: snapshot.baseRef } : {}),
+        ...(typeof snapshot.targetRef === 'string' ? { targetRef: snapshot.targetRef } : {}),
+        ...(typeof snapshot.range === 'string' ? { range: snapshot.range } : {}),
+        paths: [...snapshot.paths] as string[],
+        ...(typeof snapshot.maxFiles === 'number' ? { maxFiles: snapshot.maxFiles } : {}),
+        ...(typeof snapshot.maxPatchBytes === 'number' ? { maxPatchBytes: snapshot.maxPatchBytes } : {}),
+      },
+    };
+    const expectedScopeFingerprint = fingerprintReviewWorkspaceSourceScope(canonicalSourceScope);
+    if (metadata.scopeFingerprint !== expectedScopeFingerprint) throw this.metadataError(runId);
+    const materializedEntries: Record<string, ReviewWorkspaceMaterializedEntryDescriptor[]> = {};
+    if (JSON.stringify(Object.keys(metadata.materializedEntries).sort()) !== JSON.stringify(selectedRepositoryIds)) {
+      throw this.metadataError(runId);
+    }
+    for (const repositoryId of selectedRepositoryIds) {
+      const entries = metadata.materializedEntries[repositoryId];
+      if (!Array.isArray(entries)) throw this.metadataError(runId);
+      const paths = new Set<string>();
+      materializedEntries[repositoryId] = entries.map((entry) => {
+        if (
+          !isRecord(entry)
+          || Object.keys(entry).some((field) => field !== 'path' && field !== 'kind')
+          || typeof entry.path !== 'string'
+          || !isSafeWorkspaceRelativePath(entry.path)
+          || paths.has(entry.path)
+          || (entry.kind !== 'regular' && entry.kind !== 'symlink' && entry.kind !== 'delete')
+        ) {
+          throw this.metadataError(runId);
+        }
+        paths.add(entry.path);
+        return { path: entry.path, kind: entry.kind };
+      });
+      if (JSON.stringify([...paths].sort()) !== JSON.stringify([...paths])) throw this.metadataError(runId);
+    }
+    const hasOwnerAgent = metadata.ownerAgent !== undefined;
     const hasOwnerSession = metadata.ownerSessionId !== undefined;
     const hasOwnerPid = metadata.ownerPid !== undefined;
     if (
-      hasOwnerSession !== hasOwnerPid
+      hasOwnerAgent !== hasOwnerSession || hasOwnerSession !== hasOwnerPid
+      || (hasOwnerAgent && (typeof metadata.ownerAgent !== 'string' || !metadata.ownerAgent))
       || (hasOwnerSession && (typeof metadata.ownerSessionId !== 'string' || !metadata.ownerSessionId))
       || (hasOwnerPid && (typeof metadata.ownerPid !== 'number' || !Number.isSafeInteger(metadata.ownerPid) || metadata.ownerPid < 1))
+      || (metadata.ownerRecoveryExpiresAt !== undefined && (!hasOwnerPid || typeof metadata.ownerRecoveryExpiresAt !== 'number' || !Number.isFinite(metadata.ownerRecoveryExpiresAt)))
     ) {
       throw this.metadataError(runId);
     }
-    repositoryIds.sort();
     const removedRepositoryIds = metadata.removedRepositoryIds === undefined ? [] : metadata.removedRepositoryIds;
     if (
       !Array.isArray(removedRepositoryIds)
       || new Set(removedRepositoryIds).size !== removedRepositoryIds.length
-      || removedRepositoryIds.some((repositoryId) => typeof repositoryId !== 'string' || !repositoryIds.includes(repositoryId))
+      || removedRepositoryIds.some((repositoryId) => typeof repositoryId !== 'string' || !selectedRepositoryIds.includes(repositoryId))
     ) {
       throw this.metadataError(runId);
     }
     const commits = metadata.commits;
-    if (JSON.stringify(Object.keys(commits).sort()) !== JSON.stringify(repositoryIds)) {
+    if (JSON.stringify(Object.keys(commits).sort()) !== JSON.stringify(selectedRepositoryIds)) {
       throw this.metadataError(runId);
     }
-    for (const repositoryId of repositoryIds) {
+    for (const repositoryId of selectedRepositoryIds) {
       if (typeof commits[repositoryId] !== 'string' || !/^[a-f0-9]{40,64}$/.test(commits[repositoryId] as string)) {
         throw this.metadataError(runId);
       }
@@ -427,21 +581,37 @@ export class ReviewWorkspaceService {
     const cleanupIdentities: Record<string, ReviewWorkspaceCleanupIdentity> = {};
     for (const [repositoryId, identity] of Object.entries(metadata.cleanupIdentities)) {
       if (
-        !repositoryIds.includes(repositoryId)
+        !selectedRepositoryIds.includes(repositoryId)
         || !isRecord(identity)
-        || Object.keys(identity).some((field) => field !== 'sourcePath' && field !== 'commonDir' && field !== 'worktreePath')
+        || Object.keys(identity).some((field) => field !== 'sourcePath' && field !== 'commonDir')
         || !isSafeAbsolutePath(identity.sourcePath)
         || !isSafeAbsolutePath(identity.commonDir)
-        || !isSafeAbsolutePath(identity.worktreePath)
       ) {
         throw this.metadataError(runId);
       }
       cleanupIdentities[repositoryId] = {
         sourcePath: identity.sourcePath,
         commonDir: identity.commonDir,
-        worktreePath: identity.worktreePath,
       };
     }
+    const common = {
+      schemaVersion: REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,
+      runId,
+      workflow: metadata.workflow,
+      creatorAgent: metadata.creatorAgent,
+      creatorSessionId: metadata.creatorSessionId,
+      creatorPid: metadata.creatorPid,
+      sourceScope: canonicalSourceScope,
+      selectedRepositoryIds,
+      scopeFingerprint: metadata.scopeFingerprint,
+      sourceFingerprint: metadata.sourceFingerprint,
+      materializedFingerprint: metadata.materializedFingerprint,
+      materializedEntries,
+      composite: metadata.composite,
+      commits: Object.fromEntries(selectedRepositoryIds.map((repositoryId) => [repositoryId, commits[repositoryId] as string])),
+      cleanupIdentities,
+      ownershipTokenHash: metadata.ownershipTokenHash,
+    } satisfies Omit<ReviewWorkspaceMetadata, 'state'>;
     const state = metadata.state;
     if (state === 'creating' || state === 'recovery') {
       if (
@@ -449,6 +619,7 @@ export class ReviewWorkspaceService {
         || metadata.baseline !== undefined
         || removedRepositoryIds.length > 0
         || hasOwnerSession
+        || metadata.ownerRecoveryExpiresAt !== undefined
         || metadata.handoffExpiresAt !== undefined
         || (state === 'recovery' && metadata.creatingRepositoryId !== undefined)
       ) {
@@ -456,7 +627,7 @@ export class ReviewWorkspaceService {
       }
       if (
         new Set(metadata.worktreeRepositoryIds).size !== metadata.worktreeRepositoryIds.length
-        || metadata.worktreeRepositoryIds.some((repositoryId) => typeof repositoryId !== 'string' || !repositoryIds.includes(repositoryId))
+        || metadata.worktreeRepositoryIds.some((repositoryId) => typeof repositoryId !== 'string' || !selectedRepositoryIds.includes(repositoryId))
       ) {
         throw this.metadataError(runId);
       }
@@ -464,16 +635,13 @@ export class ReviewWorkspaceService {
         metadata.creatingRepositoryId !== undefined
         && (
           typeof metadata.creatingRepositoryId !== 'string'
-          || !repositoryIds.includes(metadata.creatingRepositoryId)
+          || !selectedRepositoryIds.includes(metadata.creatingRepositoryId)
           || metadata.worktreeRepositoryIds.includes(metadata.creatingRepositoryId)
         )
       ) {
         throw this.metadataError(runId);
       }
       const worktreeRepositoryIds = [...metadata.worktreeRepositoryIds].sort();
-      if (state === 'recovery' && JSON.stringify(worktreeRepositoryIds) !== JSON.stringify(repositoryIds)) {
-        throw this.metadataError(runId);
-      }
       const cleanupRepositoryIds = [...new Set([
         ...worktreeRepositoryIds,
         ...(typeof metadata.creatingRepositoryId === 'string' ? [metadata.creatingRepositoryId] : []),
@@ -482,16 +650,11 @@ export class ReviewWorkspaceService {
         throw this.metadataError(runId);
       }
       return {
+        ...common,
         state,
-        runId,
-        composite: metadata.composite,
-        repositoryIds,
-        commits: Object.fromEntries(repositoryIds.map((repositoryId) => [repositoryId, commits[repositoryId] as string])),
         worktreeRepositoryIds,
         ...(typeof metadata.creatingRepositoryId === 'string' ? { creatingRepositoryId: metadata.creatingRepositoryId } : {}),
         cleanupIdentities,
-        ownershipTokenHash: metadata.ownershipTokenHash,
-        creatorPid: metadata.creatorPid,
       };
     }
     if (
@@ -502,14 +665,14 @@ export class ReviewWorkspaceService {
     ) {
       throw this.metadataError(runId);
     }
-    if (JSON.stringify(Object.keys(cleanupIdentities).sort()) !== JSON.stringify(repositoryIds)) {
+    if (JSON.stringify(Object.keys(cleanupIdentities).sort()) !== JSON.stringify(selectedRepositoryIds)) {
       throw this.metadataError(runId);
     }
     const baselines = metadata.baseline;
-    if (JSON.stringify(Object.keys(baselines).sort()) !== JSON.stringify(repositoryIds)) {
+    if (JSON.stringify(Object.keys(baselines).sort()) !== JSON.stringify(selectedRepositoryIds)) {
       throw this.metadataError(runId);
     }
-    for (const repositoryId of repositoryIds) {
+    for (const repositoryId of selectedRepositoryIds) {
       const baseline = baselines[repositoryId];
       if (!isRecord(baseline) || typeof baseline.head !== 'string' || !/^[a-f0-9]{40,64}$/.test(baseline.head) || typeof baseline.trackedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(baseline.trackedFingerprint) || typeof baseline.untrackedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(baseline.untrackedFingerprint) || !Array.isArray(baseline.untracked)) {
         throw this.metadataError(runId);
@@ -535,20 +698,16 @@ export class ReviewWorkspaceService {
       }
     }
     return {
+      ...common,
       state,
-      runId,
-      composite: metadata.composite,
-      repositoryIds,
-      commits: Object.fromEntries(repositoryIds.map((repositoryId) => [repositoryId, commits[repositoryId] as string])),
-      baseline: Object.fromEntries(repositoryIds.map((repositoryId) => [repositoryId, baselines[repositoryId] as ReviewWorkspaceBaseline])),
-      cleanupIdentities,
-      ownershipTokenHash: metadata.ownershipTokenHash,
-      creatorPid: metadata.creatorPid,
+      baseline: Object.fromEntries(selectedRepositoryIds.map((repositoryId) => [repositoryId, baselines[repositoryId] as ReviewWorkspaceBaseline])),
       handoffExpiresAt: metadata.handoffExpiresAt,
       ...(removedRepositoryIds.length > 0 ? { removedRepositoryIds: [...removedRepositoryIds].sort() } : {}),
       ...(typeof metadata.ownerSessionId === 'string' ? {
+        ownerAgent: metadata.ownerAgent as string,
         ownerSessionId: metadata.ownerSessionId,
         ownerPid: metadata.ownerPid as number,
+        ...(typeof metadata.ownerRecoveryExpiresAt === 'number' ? { ownerRecoveryExpiresAt: metadata.ownerRecoveryExpiresAt } : {}),
       } : {}),
     };
   }
@@ -589,7 +748,11 @@ export class ReviewWorkspaceService {
     if (stat.isSymbolicLink() || !stat.isFile()) throw this.metadataError(metadata.runId);
     const temporaryPath = path.join(path.dirname(metadataPath), `.metadata-${randomUUID()}`);
     await fs.writeFile(temporaryPath, JSON.stringify(validated, null, 2), { encoding: 'utf8', flag: 'wx' });
-    await fs.rename(temporaryPath, metadataPath);
+    try {
+      await fs.rename(temporaryPath, metadataPath);
+    } finally {
+      await fs.rm(temporaryPath, { force: true });
+    }
   }
 
   private async readRunLock(lockPath: string): Promise<ReviewWorkspaceLock> {
@@ -689,6 +852,57 @@ export class ReviewWorkspaceService {
     }
   }
 
+  private callerPid(caller: ReviewWorkspaceCaller): number {
+    const pid = caller.pid;
+    if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Review workspace caller process is required.');
+    return pid;
+  }
+
+  private assertCreatorCaller(metadata: ReviewWorkspaceMetadata, caller: ReviewWorkspaceCaller): void {
+    if (
+      caller.role !== 'creator'
+      || metadata.workflow !== caller.workflow
+      || metadata.creatorAgent !== caller.agent
+      || metadata.creatorSessionId !== caller.sessionId
+    ) {
+      throw new Error('Review workspace creator capability was denied.');
+    }
+  }
+
+  private assertOwnerCaller(metadata: ReviewWorkspaceMetadata, caller: ReviewWorkspaceCaller): void {
+    if (
+      caller.role !== 'primary'
+      || metadata.workflow !== caller.workflow
+      || metadata.ownerAgent !== caller.agent
+      || metadata.ownerSessionId !== caller.sessionId
+    ) {
+      throw new Error('Review workspace owner capability was denied.');
+    }
+  }
+
+  private lease(metadata: ReviewWorkspaceMetadata): ReviewWorkspaceLease {
+    return {
+      schemaVersion: metadata.schemaVersion,
+      runId: metadata.runId,
+      workflow: metadata.workflow,
+      creatorAgent: metadata.creatorAgent,
+      creatorSessionId: metadata.creatorSessionId,
+      creatorPid: metadata.creatorPid,
+      sourceScope: metadata.sourceScope,
+      selectedRepositoryIds: metadata.selectedRepositoryIds,
+      scopeFingerprint: metadata.scopeFingerprint,
+      sourceFingerprint: metadata.sourceFingerprint,
+      materializedFingerprint: metadata.materializedFingerprint,
+      materializedEntries: metadata.materializedEntries,
+      ...(metadata.ownerAgent ? {
+        ownerAgent: metadata.ownerAgent,
+        ownerSessionId: metadata.ownerSessionId,
+        ownerPid: metadata.ownerPid,
+        ...(metadata.ownerRecoveryExpiresAt === undefined ? {} : { ownerRecoveryExpiresAt: metadata.ownerRecoveryExpiresAt }),
+      } : {}),
+    };
+  }
+
   private async resolveRepositories(
     metadata: ReviewWorkspaceMetadata,
     workspacePath: string,
@@ -708,7 +922,7 @@ export class ReviewWorkspaceService {
       }
     }
     const repositoryIds = metadata.state === 'sealed'
-      ? metadata.repositoryIds.filter((repositoryId) => !metadata.removedRepositoryIds?.includes(repositoryId))
+      ? metadata.selectedRepositoryIds.filter((repositoryId) => !metadata.removedRepositoryIds?.includes(repositoryId))
       : [...new Set([...(metadata.worktreeRepositoryIds ?? []), ...(metadata.creatingRepositoryId ? [metadata.creatingRepositoryId] : [])])].sort();
     for (const repositoryId of repositoryIds) {
       const repositoryPath = metadata.composite ? path.join(reposRoot, repositoryId) : workspacePath;
@@ -858,10 +1072,9 @@ export class ReviewWorkspaceService {
   private cleanupIdentity(
     metadata: ReviewWorkspaceMetadata,
     repositoryId: string,
-    worktreePath: string,
   ): ReviewWorkspaceCleanupIdentity {
     const identity = metadata.cleanupIdentities?.[repositoryId];
-    if (!identity || identity.worktreePath !== worktreePath) throw this.metadataError(metadata.runId);
+    if (!identity) throw this.metadataError(metadata.runId);
     return identity;
   }
 
@@ -901,14 +1114,15 @@ export class ReviewWorkspaceService {
 
   private async removeMissingWorktreeRegistration(
     runId: string,
+    worktreePath: string,
     identity: ReviewWorkspaceCleanupIdentity,
   ): Promise<void> {
     const git = await this.verifiedCleanupGit(runId, identity);
-    if (!await this.isRegisteredWorktree(git, identity.worktreePath)) return;
-    await git.raw(['worktree', 'remove', '--force', identity.worktreePath]).catch(async () => {
+    if (!await this.isRegisteredWorktree(git, worktreePath)) return;
+    await git.raw(['worktree', 'remove', '--force', worktreePath]).catch(async () => {
       await git.raw(['worktree', 'prune']);
     });
-    await this.assertWorktreeDeregistered(git, identity.worktreePath, 'recovery');
+    await this.assertWorktreeDeregistered(git, worktreePath, 'recovery');
   }
 
   private async removeContainedWorktree(
@@ -959,34 +1173,43 @@ export class ReviewWorkspaceService {
     composite: boolean,
     repositories: readonly ResolvedSourceRepository[],
     ownershipToken: string,
+    lease: ReviewWorkspaceLeaseInput,
   ): ReviewWorkspaceMetadata {
     return {
+      schemaVersion: REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,
       state: 'creating',
       runId,
+      workflow: lease.workflow,
+      creatorAgent: lease.creatorAgent,
+      creatorSessionId: lease.creatorSessionId,
+      creatorPid: process.pid,
+      sourceScope: lease.sourceScope,
+      selectedRepositoryIds: lease.selectedRepositoryIds,
+      scopeFingerprint: lease.scopeFingerprint,
+      sourceFingerprint: lease.sourceFingerprint,
+      materializedFingerprint: lease.materializedFingerprint,
+      materializedEntries: lease.materializedEntries,
       composite,
-      repositoryIds: repositories.map((repository) => repository.id).sort(),
       commits: Object.fromEntries(repositories.map((repository) => [repository.id, repository.commit])),
       worktreeRepositoryIds: [],
       cleanupIdentities: {},
       ownershipTokenHash: createHash('sha256').update(ownershipToken).digest('hex'),
-      creatorPid: process.pid,
     };
   }
 
   private transitionToRecovery(metadata: ReviewWorkspaceMetadata, survivingRepositoryIds: Iterable<string>): void {
     const repositoryIds = [...new Set(survivingRepositoryIds)].sort();
-    const commits = metadata.commits;
     metadata.state = 'recovery';
-    metadata.repositoryIds = repositoryIds;
-    metadata.commits = Object.fromEntries(repositoryIds.map((repositoryId) => [repositoryId, commits[repositoryId]!]));
     metadata.worktreeRepositoryIds = repositoryIds;
     metadata.cleanupIdentities = Object.fromEntries(repositoryIds.map((repositoryId) => [repositoryId, metadata.cleanupIdentities![repositoryId]!]));
     delete metadata.creatingRepositoryId;
     delete metadata.baseline;
     delete metadata.handoffExpiresAt;
     delete metadata.removedRepositoryIds;
+    delete metadata.ownerAgent;
     delete metadata.ownerSessionId;
     delete metadata.ownerPid;
+    delete metadata.ownerRecoveryExpiresAt;
   }
 
   private async worktreePathExists(worktreePath: string): Promise<boolean> {
@@ -1006,16 +1229,26 @@ export class ReviewWorkspaceService {
     if (repositoryIds.size !== options.repositories.length) throw new Error('Review workspace repository IDs must be unique.');
     const composite = options.composite === true;
     if (!composite && options.repositories.length !== 1) throw new Error('A multi-repository review workspace must use composite mode.');
+    const lease = options.lease;
+    if (!lease) throw new Error('Review workspace lease descriptor is required.');
+    const selectedRepositoryIds = [...repositoryIds].sort();
+    if (JSON.stringify(selectedRepositoryIds) !== JSON.stringify(lease.selectedRepositoryIds)) {
+      throw new Error('Review workspace lease repositories must match materialized repositories.');
+    }
 
     const sourceRepositories = await Promise.all(options.repositories.map((repository) => this.resolveRepository(repository)));
+    const ownershipToken = randomUUID();
+    const initialMetadata = this.validateMetadata(
+      options.runId,
+      this.createCreatingMetadata(options.runId, composite, sourceRepositories, ownershipToken, lease),
+    );
     const reviewRoot = await this.ensureReviewRoot();
     const lock = await this.acquireRunLock(reviewRoot, options.runId);
     const workspacePath = this.getWorkspacePath(reviewRoot, options.runId);
     const created: Array<{ id: string; path: string }> = [];
     const repositories: Record<string, ReviewWorkspaceRepositoryInfo> = {};
-    const ownershipToken = randomUUID();
     let workspaceCreated = false;
-    let metadata: ReviewWorkspaceMetadata | undefined;
+    let metadata: ReviewWorkspaceMetadata | undefined = initialMetadata;
     try {
       try {
         await fs.lstat(workspacePath);
@@ -1024,7 +1257,6 @@ export class ReviewWorkspaceService {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
       if (await this.readMetadata(options.runId)) throw new Error(`Review workspace metadata already exists for ${options.runId}`);
-      metadata = this.createCreatingMetadata(options.runId, composite, sourceRepositories, ownershipToken);
       await this.writeNewMetadata(reviewRoot, metadata);
 
       if (composite) {
@@ -1047,7 +1279,6 @@ export class ReviewWorkspaceService {
           [repository.id]: {
             sourcePath: repository.sourcePath,
             commonDir: repository.commonDir,
-            worktreePath: targetPath,
           },
         };
         await this.writeMetadata(reviewRoot, metadata);
@@ -1099,9 +1330,9 @@ export class ReviewWorkspaceService {
       const survivingRepositoryIds = new Set(rollbackWorktrees.keys());
       for (const worktree of [...rollbackWorktrees.values()].reverse()) {
         try {
-          const identity = metadata ? this.cleanupIdentity(metadata, worktree.id, worktree.path) : undefined;
+          const identity = metadata ? this.cleanupIdentity(metadata, worktree.id) : undefined;
           if (!await this.worktreePathExists(worktree.path)) {
-            if (identity) await this.removeMissingWorktreeRegistration(options.runId, identity);
+            if (identity) await this.removeMissingWorktreeRegistration(options.runId, worktree.path, identity);
             survivingRepositoryIds.delete(worktree.id);
             continue;
           }
@@ -1145,48 +1376,77 @@ export class ReviewWorkspaceService {
     }
   }
 
-  async claim(runId: string, ownershipToken: string, ownerSessionId: string, ownerPid = process.pid): Promise<void> {
+  async claim(
+    runId: string,
+    ownershipToken: string,
+    caller: ReviewWorkspaceCaller,
+  ): Promise<void> {
     this.assertSafeRunId(runId);
-    if (!ownerSessionId) throw new Error('Review workspace owner session is required.');
-    if (!Number.isSafeInteger(ownerPid) || ownerPid < 1) throw new Error('Review workspace owner process is required.');
+    if (caller.role !== 'primary') throw new Error('Review workspace claim requires primary capability.');
+    const ownerPid = this.callerPid(caller);
     await this.withRunLock(runId, async (reviewRoot) => {
       const metadata = await this.readMetadata(runId);
       if (!metadata) throw new Error(`Review workspace not found: ${runId}`);
       if (metadata.state !== 'sealed') throw this.metadataError(runId);
       this.assertOwnershipToken(metadata, ownershipToken);
-      if (metadata.ownerSessionId && metadata.ownerSessionId !== ownerSessionId) {
-        throw new Error('Review workspace is already claimed by another session.');
+      if (metadata.workflow !== caller.workflow) throw new Error('Review workspace workflow claim was denied.');
+      if (metadata.ownerSessionId) {
+        if (metadata.ownerSessionId !== caller.sessionId || metadata.ownerAgent !== caller.agent) {
+          throw new Error('Review workspace is already claimed by another owner.');
+        }
+        if (metadata.ownerRecoveryExpiresAt !== undefined && this.now >= metadata.ownerRecoveryExpiresAt) {
+          throw new Error('Review workspace owner recovery lease has expired.');
+        }
+        if (metadata.ownerPid !== ownerPid && this.isProcessAlive(metadata.ownerPid!)) {
+          throw new Error('Review workspace is already claimed by a live owner process.');
+        }
       }
       await this.resolveRepositories(metadata, await this.resolveContainedWorkspaceAtRoot(reviewRoot, runId));
-      metadata.ownerSessionId = ownerSessionId;
+      metadata.ownerAgent = caller.agent;
+      metadata.ownerSessionId = caller.sessionId;
       metadata.ownerPid = ownerPid;
+      delete metadata.ownerRecoveryExpiresAt;
       await this.writeMetadata(reviewRoot, metadata);
     });
   }
 
-  async releaseClaim(runId: string, ownershipToken: string, ownerSessionId: string): Promise<void> {
+  async releaseClaim(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<void> {
     this.assertSafeRunId(runId);
     await this.withRunLock(runId, async (reviewRoot) => {
       const metadata = await this.readMetadata(runId);
       if (!metadata) throw new Error(`Review workspace not found: ${runId}`);
       if (metadata.state !== 'sealed') throw this.metadataError(runId);
       this.assertOwnershipToken(metadata, ownershipToken);
-      if (metadata.ownerSessionId !== ownerSessionId) {
-        throw new Error('Review workspace claim does not belong to this session.');
-      }
+      this.assertOwnerCaller(metadata, caller);
+      delete metadata.ownerAgent;
       delete metadata.ownerSessionId;
       delete metadata.ownerPid;
+      delete metadata.ownerRecoveryExpiresAt;
       await this.writeMetadata(reviewRoot, metadata);
     });
   }
 
-  async inspect(runId: string, ownershipToken: string): Promise<ReviewWorkspaceInspection> {
+  async read(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceLease> {
+    this.assertSafeRunId(runId);
+    return this.withRunLock(runId, async (reviewRoot) => {
+      const metadata = await this.readMetadata(runId);
+      if (!metadata) throw new Error(`Review workspace not found: ${runId}`);
+      this.assertOwnershipToken(metadata, ownershipToken);
+      if (metadata.ownerSessionId) this.assertOwnerCaller(metadata, caller);
+      else this.assertCreatorCaller(metadata, caller);
+      await this.resolveRepositories(metadata, await this.resolveContainedWorkspaceAtRoot(reviewRoot, runId));
+      return this.lease(metadata);
+    });
+  }
+
+  async inspect(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceInspection> {
     this.assertSafeRunId(runId);
     return this.withRunLock(runId, async (reviewRoot) => {
       const metadata = await this.readMetadata(runId);
       if (!metadata) throw new Error(`Review workspace not found: ${runId}`);
       if (metadata.state !== 'sealed' || !metadata.baseline) throw this.metadataError(runId);
       this.assertOwnershipToken(metadata, ownershipToken);
+      this.assertOwnerCaller(metadata, caller);
       const workspacePath = await this.resolveContainedWorkspaceAtRoot(reviewRoot, runId);
       const repositories = await this.resolveRepositories(metadata, workspacePath);
       const inspections: Record<string, ReviewWorkspaceRepositoryInspection> = {};
@@ -1223,6 +1483,7 @@ export class ReviewWorkspaceService {
       return {
         runId,
         workspacePath,
+        lease: this.lease(metadata),
         repositories: inspections,
         integrity: {
           trackedClean: Object.values(inspections).every((repository) => !repository.trackedDrift),
@@ -1233,13 +1494,15 @@ export class ReviewWorkspaceService {
     });
   }
 
-  async seal(runId: string, ownershipToken: string): Promise<void> {
+  async seal(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<void> {
     this.assertSafeRunId(runId);
     await this.withRunLock(runId, async (reviewRoot) => {
       const metadata = await this.readMetadata(runId);
       if (!metadata) throw new Error(`Review workspace not found: ${runId}`);
       if (metadata.state !== 'sealed') throw this.metadataError(runId);
       this.assertOwnershipToken(metadata, ownershipToken);
+      this.assertCreatorCaller(metadata, caller);
+      if (metadata.ownerSessionId) throw new Error('Claimed review workspace cannot be resealed by its creator.');
       const workspacePath = await this.resolveContainedWorkspaceAtRoot(reviewRoot, runId);
       metadata.baseline = await this.captureBaseline(await this.resolveRepositories(metadata, workspacePath));
       await this.writeMetadata(reviewRoot, metadata);
@@ -1260,11 +1523,11 @@ export class ReviewWorkspaceService {
     const errors: string[] = [];
     for (const [repositoryId, repository] of Object.entries(repositories)) {
       try {
-        const identity = this.cleanupIdentity(metadata, repositoryId, repository.path);
+        const identity = this.cleanupIdentity(metadata, repositoryId);
         if (await this.worktreePathExists(repository.path)) {
           await this.removeContainedWorktree(metadata.runId, repository.path, identity);
         } else {
-          await this.removeMissingWorktreeRegistration(metadata.runId, identity);
+          await this.removeMissingWorktreeRegistration(metadata.runId, repository.path, identity);
         }
         if (metadata.state === 'sealed') {
           metadata.removedRepositoryIds = [...new Set([...(metadata.removedRepositoryIds ?? []), repositoryId])].sort();
@@ -1330,15 +1593,9 @@ export class ReviewWorkspaceService {
       .map((entry) => entry.name);
   }
 
-  private shouldRecoverSealedWorkspace(metadata: ReviewWorkspaceMetadata): boolean {
-    if (metadata.ownerPid !== undefined) return !this.isProcessAlive(metadata.ownerPid);
-    return !this.isProcessAlive(metadata.creatorPid) || this.now >= metadata.handoffExpiresAt!;
-  }
-
   private async recoverWorkspace(
     reviewRoot: string,
     runId: string,
-    metadata: ReviewWorkspaceMetadata,
   ): Promise<void> {
     let lock: HeldReviewWorkspaceLock;
     try {
@@ -1349,7 +1606,21 @@ export class ReviewWorkspaceService {
     }
     try {
       const current = await this.readMetadata(runId);
-      if (!current || (current.state === 'sealed' && !this.shouldRecoverSealedWorkspace(current))) return;
+      if (!current) return;
+      if (current.state === 'sealed') {
+        if (current.ownerPid !== undefined) {
+          if (current.ownerRecoveryExpiresAt !== undefined) {
+            if (this.now < current.ownerRecoveryExpiresAt) return;
+          } else {
+            if (this.isProcessAlive(current.ownerPid)) return;
+            current.ownerRecoveryExpiresAt = this.now + this.handoffMs;
+            await this.writeMetadata(reviewRoot, current);
+            return;
+          }
+        } else if (this.isProcessAlive(current.creatorPid) && this.now < current.handoffExpiresAt!) {
+          return;
+        }
+      }
       const workspacePath = await this.resolveContainedWorkspaceOrNull(reviewRoot, runId) ?? this.getWorkspacePath(reviewRoot, runId);
       const result = await this.cleanupValidated(reviewRoot, current, workspacePath);
       if (!result.cleaned) {
@@ -1360,7 +1631,7 @@ export class ReviewWorkspaceService {
     }
   }
 
-  async cleanup(runId: string, ownershipToken: string): Promise<ReviewWorkspaceCleanupResult> {
+  async cleanup(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceCleanupResult> {
     this.assertSafeRunId(runId);
     const reviewRoot = await this.inspectReviewRoot(false);
     const workspacePath = reviewRoot
@@ -1384,10 +1655,50 @@ export class ReviewWorkspaceService {
         return { runId, cleaned: true, workspacePath, errors: [] };
       }
       this.assertOwnershipToken(metadata, ownershipToken);
+      if (metadata.ownerSessionId) this.assertOwnerCaller(metadata, caller);
+      else this.assertCreatorCaller(metadata, caller);
       return this.cleanupValidated(reviewRoot, metadata, containedWorkspace ?? workspacePath);
     } finally {
       await this.releaseRunLock(lock);
     }
+  }
+
+  async cleanupOwnedBySession(
+    ownerSessionId: string,
+    allowedWorkflows: readonly ReviewWorkspaceWorkflow[],
+  ): Promise<ReviewWorkspaceCleanupResult[]> {
+    if (!ownerSessionId) throw new Error('Review workspace owner session is required.');
+    const allowed = new Set<ReviewWorkspaceWorkflow>(allowedWorkflows);
+    const reviewRoot = await this.inspectReviewRoot(false);
+    if (!reviewRoot) return [];
+    const runIds = new Set([
+      ...await this.listWorkspaceRunIds(reviewRoot),
+      ...await this.listPrivateRunIds(reviewRoot, METADATA_DIRECTORY, '.json'),
+      ...await this.listPrivateRunIds(reviewRoot, LOCK_DIRECTORY, '.lock'),
+    ]);
+    const results: ReviewWorkspaceCleanupResult[] = [];
+    for (const runId of [...runIds].sort()) {
+      const workspacePath = this.getWorkspacePath(reviewRoot, runId);
+      let lock: HeldReviewWorkspaceLock | undefined;
+      try {
+        lock = await this.acquireRunLock(reviewRoot, runId);
+        const metadata = await this.readMetadata(runId);
+        if (!metadata) throw new Error(`Review workspace ${runId} exists without valid metadata; preserved.`);
+        if (metadata.ownerSessionId !== ownerSessionId) {
+          throw new Error(`Review workspace ${runId} belongs to another session; preserved.`);
+        }
+        if (!allowed.has(metadata.workflow)) {
+          throw new Error(`Review workspace ${runId} belongs to a disallowed workflow; preserved.`);
+        }
+        const containedWorkspace = await this.resolveContainedWorkspaceOrNull(reviewRoot, runId);
+        results.push(await this.cleanupValidated(reviewRoot, metadata, containedWorkspace ?? workspacePath));
+      } catch (error) {
+        results.push({ runId, cleaned: false, workspacePath, errors: [(error as Error).message] });
+      } finally {
+        if (lock) await this.releaseRunLock(lock).catch(() => undefined);
+      }
+    }
+    return results;
   }
 
   async cleanupExpired(): Promise<void> {
@@ -1402,7 +1713,7 @@ export class ReviewWorkspaceService {
       try {
         const metadata = await this.readMetadata(runId);
         if (!metadata) throw new Error(`Review workspace ${runId} exists without valid metadata; preserved.`);
-        await this.recoverWorkspace(reviewRoot, runId, metadata);
+        await this.recoverWorkspace(reviewRoot, runId);
       } catch (error) {
         this.config.onSweepError?.(runId, error as Error);
       }

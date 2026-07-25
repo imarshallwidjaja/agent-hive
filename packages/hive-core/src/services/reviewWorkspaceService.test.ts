@@ -3,9 +3,32 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import simpleGit, { type SimpleGit } from 'simple-git';
-import { ReviewWorkspaceService } from './reviewWorkspaceService.js';
+import {
+  fingerprintReviewWorkspaceSourceScope,
+  ReviewWorkspaceService,
+  type ReviewWorkspaceCaller,
+  type ReviewWorkspaceCreateOptions,
+  type ReviewWorkspaceLeaseInput,
+} from './reviewWorkspaceService.js';
 
 const tempDirs: string[] = [];
+const creatorCaller: ReviewWorkspaceCaller = {
+  workflow: 'dash-review',
+  role: 'creator',
+  agent: '__hive_dash_review_scope',
+  sessionId: 'dash-review-scope-session',
+  pid: process.pid,
+};
+
+function primaryCaller(sessionId = 'dash-review-primary-session', pid = process.pid): ReviewWorkspaceCaller {
+  return {
+    workflow: 'dash-review',
+    role: 'primary',
+    agent: '__hive_dash_review_primary',
+    sessionId,
+    pid,
+  };
+}
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
@@ -31,12 +54,38 @@ function createReviewWorkspaceService(projectRoot: string, overrides: Record<str
   } as any);
 }
 
+function createLease(repositoryIds: readonly string[]): ReviewWorkspaceLeaseInput {
+  const selectedRepositoryIds = [...repositoryIds].sort();
+  const sourceScope = { repositoryIds: [], snapshot: { paths: [] } };
+  return {
+    workflow: creatorCaller.workflow,
+    creatorAgent: creatorCaller.agent,
+    creatorSessionId: creatorCaller.sessionId,
+    sourceScope,
+    selectedRepositoryIds,
+    scopeFingerprint: fingerprintReviewWorkspaceSourceScope(sourceScope),
+    sourceFingerprint: '0'.repeat(64),
+    materializedFingerprint: '1'.repeat(64),
+    materializedEntries: Object.fromEntries(selectedRepositoryIds.map((repositoryId) => [repositoryId, []])),
+  };
+}
+
+function createWorkspace(
+  service: ReviewWorkspaceService,
+  options: Omit<ReviewWorkspaceCreateOptions, 'lease'>,
+) {
+  return service.create({
+    ...options,
+    lease: createLease(options.repositories.map((repository) => repository.id)),
+  });
+}
+
 describe('ReviewWorkspaceService', () => {
   it('creates a detached disposable workspace and reports its tracked and generated footprint', async () => {
     const source = await createRepository('single');
     const service = createReviewWorkspaceService(source.path);
 
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-single',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -47,14 +96,15 @@ describe('ReviewWorkspaceService', () => {
 
     await fs.writeFile(path.join(workspace.workspacePath, 'tracked.txt'), 'changed\n');
     await fs.writeFile(path.join(workspace.workspacePath, 'generated.log'), 'generated\n');
-    const inspection = await service.inspect('review-single', workspace.ownershipToken);
+    await service.claim(workspace.runId, workspace.ownershipToken, primaryCaller());
+    const inspection = await service.inspect('review-single', workspace.ownershipToken, primaryCaller());
 
     expect(inspection.integrity.trackedClean).toBe(false);
     expect(inspection.repositories.root.trackedChanges).toContain('tracked.txt');
     expect(inspection.repositories.root.untrackedChanges).toContain('generated.log');
     expect(await fs.readFile(path.join(source.path, 'tracked.txt'), 'utf8')).toBe('single\n');
 
-    expect(await service.cleanup('review-single', workspace.ownershipToken)).toMatchObject({ cleaned: true });
+    expect(await service.cleanup('review-single', workspace.ownershipToken, primaryCaller())).toMatchObject({ cleaned: true });
     await expect(fs.access(workspace.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -65,7 +115,7 @@ describe('ReviewWorkspaceService', () => {
     tempDirs.push(root);
     const service = createReviewWorkspaceService(root);
 
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-composite',
       composite: true,
       repositories: [
@@ -79,23 +129,24 @@ describe('ReviewWorkspaceService', () => {
     expect(manifest.mode).toBe('review-composite');
     expect(manifest.runId).toBe('review-composite');
 
-    await service.cleanup(workspace.runId, workspace.ownershipToken);
+    await service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller);
   });
 
   it('uses the sealed materialized tree as the inspection baseline', async () => {
     const source = await createRepository('sealed');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-sealed',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
 
     await fs.writeFile(path.join(workspace.workspacePath, 'tracked.txt'), 'materialized baseline\n');
-    await service.seal('review-sealed', workspace.ownershipToken);
-    expect((await service.inspect('review-sealed', workspace.ownershipToken)).integrity.trackedClean).toBe(true);
+    await service.seal('review-sealed', workspace.ownershipToken, creatorCaller);
+    await service.claim(workspace.runId, workspace.ownershipToken, primaryCaller());
+    expect((await service.inspect('review-sealed', workspace.ownershipToken, primaryCaller())).integrity.trackedClean).toBe(true);
 
     await fs.writeFile(path.join(workspace.workspacePath, 'tracked.txt'), 'reviewer drift\n');
-    expect((await service.inspect('review-sealed', workspace.ownershipToken)).integrity.trackedClean).toBe(false);
+    expect((await service.inspect('review-sealed', workspace.ownershipToken, primaryCaller())).integrity.trackedClean).toBe(false);
   });
 
   it('rolls back registered worktree when add removes checkout then throws', async () => {
@@ -110,7 +161,7 @@ describe('ReviewWorkspaceService', () => {
       },
     });
 
-    await expect(service.create({
+    await expect(createWorkspace(service, {
       runId,
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     })).rejects.toThrow('injected post-add failure');
@@ -126,7 +177,7 @@ describe('ReviewWorkspaceService', () => {
     const missing = path.join(source.path, 'missing-repository');
     const service = createReviewWorkspaceService(source.path);
 
-    await expect(service.create({
+    await expect(createWorkspace(service, {
       runId: 'review-rollback',
       composite: true,
       repositories: [
@@ -142,13 +193,13 @@ describe('ReviewWorkspaceService', () => {
   it('rejects an invalid ownership token without removing a workspace', async () => {
     const source = await createRepository('token');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-token',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
 
-    await expect(service.inspect('review-token', 'wrong-token')).rejects.toThrow('ownership token');
-    await expect(service.cleanup('review-token', 'wrong-token')).rejects.toThrow('ownership token');
+    await expect(service.inspect('review-token', 'wrong-token', primaryCaller())).rejects.toThrow('ownership token');
+    await expect(service.cleanup('review-token', 'wrong-token', creatorCaller)).rejects.toThrow('ownership token');
     expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
   });
 
@@ -161,29 +212,29 @@ describe('ReviewWorkspaceService', () => {
     };
 
     const attempts = await Promise.allSettled([
-      service.create(options),
-      service.create(options),
+      createWorkspace(service, options),
+      createWorkspace(service, options),
     ]);
     const created = attempts.filter((attempt): attempt is PromiseFulfilledResult<Awaited<ReturnType<typeof service.create>>> => attempt.status === 'fulfilled');
 
     expect(created).toHaveLength(1);
     expect((await fs.stat(created[0]!.value.workspacePath)).isDirectory()).toBe(true);
-    await expect(service.cleanup(created[0]!.value.runId, created[0]!.value.ownershipToken)).resolves.toMatchObject({ cleaned: true });
+    await expect(service.cleanup(created[0]!.value.runId, created[0]!.value.ownershipToken, creatorCaller)).resolves.toMatchObject({ cleaned: true });
   });
 
   it('rejects malformed run and repository IDs before creating a workspace', async () => {
     const source = await createRepository('malformed-id');
     const service = createReviewWorkspaceService(source.path);
 
-    await expect(service.create({
+    await expect(createWorkspace(service, {
       runId: '../review-escape',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     })).rejects.toThrow('Invalid review runId');
-    await expect(service.create({
+    await expect(createWorkspace(service, {
       runId: 'review..escape',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     })).rejects.toThrow('Invalid review runId');
-    await expect(service.create({
+    await expect(createWorkspace(service, {
       runId: 'review-malformed-repository',
       repositories: [{ id: '../root', sourcePath: source.path, commit: 'HEAD' }],
     })).rejects.toThrow('Invalid review repository id');
@@ -193,7 +244,7 @@ describe('ReviewWorkspaceService', () => {
   it('fails closed when a review workspace is replaced with a symlink', async () => {
     const source = await createRepository('workspace-symlink');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-workspace-symlink',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -203,14 +254,14 @@ describe('ReviewWorkspaceService', () => {
     await source.git.raw(['worktree', 'remove', '--force', workspace.workspacePath]);
     await fs.symlink(outside, workspace.workspacePath);
 
-    await expect(service.cleanup(workspace.runId, workspace.ownershipToken)).rejects.toThrow('not a real directory');
+    await expect(service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller)).rejects.toThrow('not a real directory');
     expect(await fs.readFile(path.join(outside, 'sentinel'), 'utf8')).toBe('must survive\n');
   });
 
   it('fails closed when metadata has no repository IDs', async () => {
     const source = await createRepository('empty-metadata-repos');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-empty-metadata-repos',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -221,14 +272,14 @@ describe('ReviewWorkspaceService', () => {
     metadata.baseline = {};
     await fs.writeFile(metadataPath, JSON.stringify(metadata), 'utf8');
 
-    await expect(service.cleanup(workspace.runId, workspace.ownershipToken)).rejects.toThrow('Invalid review workspace metadata');
+    await expect(service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller)).rejects.toThrow('Invalid review workspace metadata');
     expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
   });
 
   it('fails closed on corrupt metadata without deleting an external path', async () => {
     const source = await createRepository('corrupt');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-corrupt',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -240,27 +291,28 @@ describe('ReviewWorkspaceService', () => {
     metadata.workspacePath = outside;
     await fs.writeFile(metadataPath, JSON.stringify(metadata), 'utf8');
 
-    await expect(service.cleanup('review-corrupt', workspace.ownershipToken)).rejects.toThrow('Invalid review workspace metadata');
+    await expect(service.cleanup('review-corrupt', workspace.ownershipToken, creatorCaller)).rejects.toThrow('Invalid review workspace metadata');
     expect(await fs.readFile(path.join(outside, 'sentinel'), 'utf8')).toBe('must survive\n');
   });
 
   it('detects a mutation or deletion of a sealed baseline untracked entry', async () => {
     const source = await createRepository('baseline-untracked');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-baseline-untracked',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
     await fs.writeFile(path.join(workspace.workspacePath, 'baseline.bin'), 'first\n');
     await fs.symlink('baseline.bin', path.join(workspace.workspacePath, 'baseline-link'));
-    await service.seal('review-baseline-untracked', workspace.ownershipToken);
+    await service.seal('review-baseline-untracked', workspace.ownershipToken, creatorCaller);
+    await service.claim(workspace.runId, workspace.ownershipToken, primaryCaller());
     const metadata = JSON.parse(await fs.readFile(path.join(source.path, '.hive', '.worktrees', 'review', '.runs', 'review-baseline-untracked.json'), 'utf8'));
     expect(metadata.baseline.root.untrackedFingerprint).toMatch(/^[a-f0-9]{64}$/);
 
     await fs.writeFile(path.join(workspace.workspacePath, 'baseline.bin'), 'second\n');
     await fs.unlink(path.join(workspace.workspacePath, 'baseline-link'));
 
-    expect((await service.inspect('review-baseline-untracked', workspace.ownershipToken)).integrity.baselineClean).toBe(false);
+    expect((await service.inspect('review-baseline-untracked', workspace.ownershipToken, primaryCaller())).integrity.baselineClean).toBe(false);
   });
 
   it('rejects a symlinked project .hive component without touching its target', async () => {
@@ -271,7 +323,7 @@ describe('ReviewWorkspaceService', () => {
     await fs.symlink(outside, path.join(source.path, '.hive'));
     const service = createReviewWorkspaceService(source.path);
 
-    await expect(service.create({
+    await expect(createWorkspace(service, {
       runId: 'review-symlinked-hive',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     })).rejects.toThrow(/Review workspace/);
@@ -293,7 +345,7 @@ describe('ReviewWorkspaceService', () => {
   it('preserves a sealed workspace during incomplete-workspace recovery', async () => {
     const source = await createRepository('sealed-recovery');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-sealed-recovery',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -301,22 +353,30 @@ describe('ReviewWorkspaceService', () => {
     await service.cleanupExpired();
 
     expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
-    await service.cleanup(workspace.runId, workspace.ownershipToken);
+    await service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller);
   });
 
-  it('sweeps a sealed workspace when its claimed owner PID is dead', async () => {
+  it('starts recovery grace before sweeping a sealed workspace whose claimed owner PID is dead', async () => {
     const source = await createRepository('sealed-owner-dead');
+    let now = 1_000;
     const service = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
       isProcessAlive: (pid: number) => pid === process.pid,
     });
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-sealed-owner-dead',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
-    await service.claim(workspace.runId, workspace.ownershipToken, 'dead-owner-session', 4242);
+    await service.claim(workspace.runId, workspace.ownershipToken, primaryCaller('dead-owner-session', 4242));
+    const metadataPath = path.join(source.path, '.hive', '.worktrees', 'review', '.runs', 'review-sealed-owner-dead.json');
 
     await service.cleanupExpired();
 
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf8')).ownerRecoveryExpiresAt).toBe(1_100);
+    expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
+    now += 101;
+    await service.cleanupExpired();
     await expect(fs.access(workspace.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -325,18 +385,19 @@ describe('ReviewWorkspaceService', () => {
     const service = createReviewWorkspaceService(source.path, {
       isProcessAlive: (pid: number) => pid === 4242,
     });
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-sealed-owner-live',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
-    await service.claim(workspace.runId, workspace.ownershipToken, 'live-owner-session', 4242);
+    const owner = primaryCaller('live-owner-session', 4242);
+    await service.claim(workspace.runId, workspace.ownershipToken, owner);
     const metadataPath = path.join(source.path, '.hive', '.worktrees', 'review', '.runs', 'review-sealed-owner-live.json');
 
     await service.cleanupExpired();
 
     expect(JSON.parse(await fs.readFile(metadataPath, 'utf8')).ownerPid).toBe(4242);
     expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
-    await service.cleanup(workspace.runId, workspace.ownershipToken);
+    await service.cleanup(workspace.runId, workspace.ownershipToken, owner);
   });
 
   it('sweeps an unclaimed sealed workspace after its creator handoff expires', async () => {
@@ -347,7 +408,7 @@ describe('ReviewWorkspaceService', () => {
       reviewWorkspaceHandoffMs: 100,
       isProcessAlive: (pid: number) => pid === process.pid,
     });
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-sealed-handoff-expiry',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -361,7 +422,7 @@ describe('ReviewWorkspaceService', () => {
   it('sweeps an unclaimed sealed workspace when its creator PID is dead', async () => {
     const source = await createRepository('sealed-creator-dead');
     const service = createReviewWorkspaceService(source.path, { isProcessAlive: () => false });
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-sealed-creator-dead',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -411,13 +472,13 @@ describe('ReviewWorkspaceService', () => {
         throw new Error('injected deregistration failure');
       },
     });
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-cleanup-failure',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
     const metadataPath = path.join(source.path, '.hive', '.worktrees', 'review', '.runs', 'review-cleanup-failure.json');
 
-    const result = await service.cleanup(workspace.runId, workspace.ownershipToken);
+    const result = await service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller);
 
     expect(result.cleaned).toBe(false);
     expect(result.errors).toEqual([expect.stringContaining(workspace.workspacePath)]);
@@ -441,7 +502,7 @@ describe('ReviewWorkspaceService', () => {
         await simpleGit(path.dirname(path.resolve(workspacePath, commonDir))).raw(['worktree', 'remove', '--force', workspacePath]);
       },
     });
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-cleanup-retry',
       composite: true,
       repositories: [
@@ -450,13 +511,13 @@ describe('ReviewWorkspaceService', () => {
       ],
     });
 
-    const first = await service.cleanup(workspace.runId, workspace.ownershipToken);
+    const first = await service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller);
     expect(first.cleaned).toBe(false);
     await expect(fs.access(path.join(workspace.workspacePath, 'repos', 'api'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await fs.stat(path.join(workspace.workspacePath, 'repos', 'web'))).isDirectory()).toBe(true);
 
     failWeb = false;
-    await expect(service.cleanup(workspace.runId, workspace.ownershipToken)).resolves.toMatchObject({ cleaned: true });
+    await expect(service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller)).resolves.toMatchObject({ cleaned: true });
   });
 
   it('keeps only rollback survivors in recovery metadata and removes them on a later retry', async () => {
@@ -485,7 +546,7 @@ describe('ReviewWorkspaceService', () => {
     const workspacePath = path.join(root, '.hive', '.worktrees', 'review', 'review-rollback-failure');
     const metadataPath = path.join(root, '.hive', '.worktrees', 'review', '.runs', 'review-rollback-failure.json');
 
-    await expect(service.create({
+    await expect(createWorkspace(service, {
       runId: 'review-rollback-failure',
       composite: true,
       repositories: [
@@ -500,7 +561,7 @@ describe('ReviewWorkspaceService', () => {
     const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
     expect(metadata).toMatchObject({
       state: 'recovery',
-      repositoryIds: ['web'],
+      selectedRepositoryIds: ['api', 'web', 'worker'],
       commits: { web: expect.any(String) },
       worktreeRepositoryIds: ['web'],
     });
@@ -522,7 +583,7 @@ describe('ReviewWorkspaceService', () => {
       },
     });
 
-    await expect(service.create({
+    await expect(createWorkspace(service, {
       runId: 'review-creating-metadata',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     })).rejects.toThrow('injected first add failure');
@@ -533,7 +594,7 @@ describe('ReviewWorkspaceService', () => {
   it('reconciles a creating worktree registration after its checkout disappears', async () => {
     const source = await createRepository('missing-checkout-registration');
     const service = createReviewWorkspaceService(source.path, { isProcessAlive: () => false });
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-missing-checkout-registration',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -560,7 +621,7 @@ describe('ReviewWorkspaceService', () => {
       isProcessAlive: () => false,
       onSweepError: (_runId: string, error: Error) => errors.push(error.message),
     });
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-tampered-cleanup-identity',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -600,7 +661,7 @@ describe('ReviewWorkspaceService', () => {
     await fs.mkdir(workspacePath);
     const lockPath = await internal.getLockPath(reviewRoot, 'review-missing-metadata', true);
     await fs.writeFile(lockPath, JSON.stringify({ ownerToken: 'dead-owner', ownerPid: 4242 }), 'utf8');
-    const recoverable = await service.create({
+    const recoverable = await createWorkspace(service, {
       runId: 'review-independent-recovery',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
@@ -616,36 +677,36 @@ describe('ReviewWorkspaceService', () => {
     expect(errors).toEqual([expect.stringContaining('review-missing-metadata:')]);
     expect((await fs.stat(workspacePath)).isDirectory()).toBe(true);
     await expect(fs.access(recoverable.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
-    const later = await service.create({
+    const later = await createWorkspace(service, {
       runId: 'review-after-missing-metadata',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
-    await service.cleanup(later.runId, later.ownershipToken);
+    await service.cleanup(later.runId, later.ownershipToken, creatorCaller);
   });
 
   it('returns already-clean success when a repeated cleanup has no metadata or workspace', async () => {
     const source = await createRepository('repeat-cleanup');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-repeat-cleanup',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
 
-    await expect(service.cleanup(workspace.runId, workspace.ownershipToken)).resolves.toMatchObject({ cleaned: true });
-    await expect(service.cleanup(workspace.runId, workspace.ownershipToken)).resolves.toMatchObject({ cleaned: true });
+    await expect(service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller)).resolves.toMatchObject({ cleaned: true });
+    await expect(service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller)).resolves.toMatchObject({ cleaned: true });
   });
 
   it('fails closed and preserves a workspace when cleanup finds no metadata', async () => {
     const source = await createRepository('missing-metadata-cleanup');
     const service = createReviewWorkspaceService(source.path);
-    const workspace = await service.create({
+    const workspace = await createWorkspace(service, {
       runId: 'review-missing-metadata-cleanup',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
     });
     const metadataPath = path.join(source.path, '.hive', '.worktrees', 'review', '.runs', 'review-missing-metadata-cleanup.json');
     await fs.rm(metadataPath);
 
-    await expect(service.cleanup(workspace.runId, workspace.ownershipToken)).rejects.toThrow('without valid metadata');
+    await expect(service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller)).rejects.toThrow('without valid metadata');
     expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
   });
 });

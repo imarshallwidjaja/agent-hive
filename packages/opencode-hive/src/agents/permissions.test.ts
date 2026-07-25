@@ -871,7 +871,7 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('continues session-deletion cleanup after one owned workspace throws or another reports failure', async () => {
+  it('reports every workspace preserved by session-deletion cleanup', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-session-errors-'));
     createGitRepository(repository);
     try {
@@ -888,18 +888,19 @@ describe('Per-agent tool filtering', () => {
       await claim({ runId: first.runId, ownershipToken: first.ownershipToken }, primaryContext);
       await claim({ runId: second.runId, ownershipToken: second.ownershipToken }, primaryContext);
       await claim({ runId: third.runId, ownershipToken: third.ownershipToken }, primaryContext);
-      const cleanup = spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockImplementation(async (runId: string) => {
-        if (runId === first.runId) throw new Error('injected cleanup failure');
-        if (runId === second.runId) return { runId, cleaned: false, workspacePath: second.workspacePath, errors: ['injected cleanup result'] };
-        return { runId, cleaned: true, workspacePath: third.workspacePath, errors: [] };
-      });
-      const releaseClaim = spyOn(ReviewWorkspaceService.prototype, 'releaseClaim').mockResolvedValue(undefined);
+      const cleanupOwnedBySession = spyOn(ReviewWorkspaceService.prototype, 'cleanupOwnedBySession').mockResolvedValue([
+        { runId: first.runId, cleaned: false, workspacePath: first.workspacePath, errors: ['injected cleanup failure'] },
+        { runId: second.runId, cleaned: false, workspacePath: second.workspacePath, errors: ['injected cleanup result'] },
+        { runId: third.runId, cleaned: true, workspacePath: third.workspacePath, errors: [] },
+      ]);
+      const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
 
       await expect(hooks.event?.({ event: { type: 'session.deleted', properties: { sessionID: 'dash-primary-errors' } } } as any)).resolves.toBeUndefined();
 
-      expect(cleanup).toHaveBeenCalledTimes(3);
-      expect(releaseClaim).toHaveBeenCalledWith(first.runId, first.ownershipToken, 'dash-primary-errors');
-      expect(releaseClaim).toHaveBeenCalledWith(second.runId, second.ownershipToken, 'dash-primary-errors');
+      expect(cleanupOwnedBySession).toHaveBeenCalledWith('dash-primary-errors', ['dash-review']);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${first.runId}: injected cleanup failure`));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${second.runId}: injected cleanup result`));
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
