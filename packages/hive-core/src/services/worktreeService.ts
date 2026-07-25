@@ -2,8 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import simpleGit, { SimpleGit } from "simple-git";
 import type { ResolvedRepository, TaskStatus } from "../types.js";
-import type { MergeMessageSource } from '../utils/mergeMessage.js';
-import { selectMergeCommitMessage } from '../utils/mergeMessage.js';
+import { normalizeCommitMessage } from '../utils/mergeMessage.js';
 import { resolveFeatureDirectoryName } from "../utils/paths.js";
 import type {
   TaskWorkspaceManifest as WorkspaceManifest,
@@ -84,7 +83,6 @@ export interface MergeResult {
   strategy: 'merge' | 'squash' | 'rebase';
   sha?: string;
   commitMessage?: string;
-  messageSource?: MergeMessageSource;
   reason?: string;
   reasonCode?: 'NO_TRACKED_CHANGES';
   cleanupEligible?: boolean;
@@ -113,7 +111,6 @@ export interface RepoMergeResult {
   merged: boolean;
   sha?: string;
   commitMessage?: string;
-  messageSource?: MergeMessageSource;
   reason?: string;
   reasonCode?: 'NO_TRACKED_CHANGES';
   cleanupEligible?: boolean;
@@ -1051,8 +1048,7 @@ export class WorktreeService {
     for (const repoId of repoIds) {
       const entry = manifest.repos[repoId];
       const repoWtPath = path.join(compositeRoot, entry.path);
-      const commitMessage = message || `hive(${step}): task changes`;
-      const repoResult = await this.commitOneRepo(repoWtPath, commitMessage);
+      const repoResult = await this.commitOneRepo(repoWtPath, message);
       repos[repoId] = repoResult;
 
       if (repoResult.committed) {
@@ -1065,7 +1061,13 @@ export class WorktreeService {
 
     const partial = anyCommitted && anyFailed;
     const committed = anyCommitted && !anyFailed;
-    const firstResult = repos[repoIds[0]];
+    const firstCommitted = repoIds.map((repoId) => repos[repoId]).find((repoResult) => repoResult.committed);
+    const firstFailed = repoIds
+      .map((repoId) => repos[repoId])
+      .find((repoResult) => !repoResult.committed && repoResult.message !== 'No changes to commit');
+    const firstResult = firstCommitted
+      ?? (anyFailed && firstFailed ? firstFailed : undefined)
+      ?? repos[repoIds[0]];
 
     const result: CommitResult = {
       committed,
@@ -1078,7 +1080,7 @@ export class WorktreeService {
     return result;
   }
 
-  private async commitOneRepo(repoWtPath: string, commitMessage: string): Promise<RepoCommitResult> {
+  private async commitOneRepo(repoWtPath: string, commitMessage: string | undefined): Promise<RepoCommitResult> {
     try {
       await fs.access(repoWtPath);
     } catch {
@@ -1086,8 +1088,8 @@ export class WorktreeService {
     }
 
     const git = this.getGit(repoWtPath);
+    let startingHead: string | undefined;
     try {
-      await git.add('-A');
       const status = await git.status();
       const hasChanges =
         status.staged.length > 0 ||
@@ -1101,28 +1103,44 @@ export class WorktreeService {
         return { committed: false, sha: currentSha, message: 'No changes to commit' };
       }
 
-      const result = await git.commit(commitMessage, ['--allow-empty-message']);
-      return { committed: true, sha: result.commit, message: commitMessage };
+      const message = normalizeCommitMessage(commitMessage);
+      startingHead = (await git.revparse(['HEAD'])).trim();
+
+      await git.add('-A');
+      await git.commit(message);
+      const head = (await git.revparse(['HEAD'])).trim();
+      if (head === startingHead) throw new Error('Commit failed');
+      const createdMessage = await this.readValidatedCommitMessage(git, head);
+      return { committed: true, sha: head, message: createdMessage };
     } catch (error: unknown) {
       const err = error as { message?: string };
+      let rollbackError: string | undefined;
+      if (startingHead) {
+        try {
+          await git.raw(['reset', '--mixed', startingHead]);
+        } catch (restoreError: unknown) {
+          rollbackError = (restoreError as { message?: string }).message ?? 'reset failed';
+        }
+      }
       const currentSha = (await git.revparse(['HEAD']).catch(() => '')).trim();
       return {
         committed: false,
         sha: currentSha,
-        message: err.message || 'Commit failed',
+        message: rollbackError
+          ? `${err.message || 'Commit failed'}; failed to restore worktree HEAD: ${rollbackError}`
+          : err.message || 'Commit failed',
       };
     }
   }
 
   private async commitLegacy(feature: string, step: string, message?: string): Promise<CommitResult> {
-    const commitMessage = message || `hive(${step}): task changes`;
-    return this.commitOneRepo(this.getWorktreePath(feature, step), commitMessage);
+    return this.commitOneRepo(this.getWorktreePath(feature, step), message);
   }
 
   async merge(
     feature: string,
     step: string,
-    strategy: "merge" | "squash" | "rebase" = "merge",
+    strategy: "merge" | "squash" | "rebase" = "squash",
     message?: string,
     options: MergeOptions = {},
   ): Promise<MergeResult> {
@@ -1162,7 +1180,6 @@ export class WorktreeService {
       branchName,
       strategy,
       message,
-      step,
       preserveConflicts,
       cleanupMode,
       cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch, { allowUnmergedCommits: true }),
@@ -1173,7 +1190,6 @@ export class WorktreeService {
       strategy,
       ...(repoResult.sha !== undefined ? { sha: repoResult.sha } : {}),
       ...(repoResult.commitMessage !== undefined ? { commitMessage: repoResult.commitMessage } : {}),
-      ...(repoResult.messageSource !== undefined ? { messageSource: repoResult.messageSource } : {}),
       ...(repoResult.reason !== undefined ? { reason: repoResult.reason } : {}),
       ...(repoResult.reasonCode !== undefined ? { reasonCode: repoResult.reasonCode } : {}),
       ...(repoResult.cleanupEligible !== undefined ? { cleanupEligible: repoResult.cleanupEligible } : {}),
@@ -1270,6 +1286,16 @@ export class WorktreeService {
           // not present -> ok
         }
       }
+
+      const currentBranch = (await repoGit.branch()).current;
+      const targetHead = (await repoGit.revparse(['HEAD'])).trim();
+      const changedFiles = (await repoGit.diff([targetHead, entry.branch, '--name-only'])).trim();
+      if (changedFiles) {
+        if (strategy !== 'squash') {
+          const sourceError = await this.validateSourceCommitMessages(repoGit, currentBranch, entry.branch);
+          if (sourceError) return preflightFailure(repoId, sourceError);
+        }
+      }
     }
 
     // Execute per-repo merges in stable order
@@ -1279,7 +1305,6 @@ export class WorktreeService {
     let anyActualMerge = false;
     let firstActualSha: string | undefined;
     let firstActualCommitMessage: string | undefined;
-    let firstActualMessageSource: MergeMessageSource | undefined;
     let stoppedRepoId: string | undefined;
     let firstError: string | undefined;
     let lastConflictState: 'none' | 'aborted' | 'preserved' = 'none';
@@ -1293,7 +1318,6 @@ export class WorktreeService {
         branchName: entry.branch,
         strategy,
         message,
-        step,
         preserveConflicts: options.preserveConflicts,
         cleanupMode: 'none', // defer cleanup until after all repos succeed
         cleanupFn: async () => ({ worktreeRemoved: false, branchDeleted: false, pruned: false }),
@@ -1324,7 +1348,6 @@ export class WorktreeService {
       anyActualMerge = true;
       firstActualSha ??= repoResult.sha;
       firstActualCommitMessage ??= repoResult.commitMessage;
-      firstActualMessageSource ??= repoResult.messageSource;
     }
 
     if (stoppedRepoId !== undefined) {
@@ -1404,7 +1427,6 @@ export class WorktreeService {
       strategy,
       ...(firstActualSha !== undefined ? { sha: firstActualSha } : {}),
       ...(firstActualCommitMessage !== undefined ? { commitMessage: firstActualCommitMessage } : {}),
-      ...(firstActualMessageSource !== undefined ? { messageSource: firstActualMessageSource } : {}),
       filesChanged: flattenedFiles,
       conflicts: flattenedConflicts,
       conflictState: 'none',
@@ -1421,6 +1443,30 @@ export class WorktreeService {
     } catch {
       return path.join(repoRoot, '.git', name);
     }
+  }
+
+  private async validateSourceCommitMessages(
+    git: SimpleGit,
+    currentBranch: string,
+    branchName: string,
+  ): Promise<string | null> {
+    const output = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${branchName}`])).trim();
+    const hashes = output ? output.split('\n').filter(Boolean) : [];
+    for (const hash of hashes) {
+      const rawMessage = await git.raw(['show', '-s', '--format=%B', hash]);
+      try {
+        normalizeCommitMessage(rawMessage);
+      } catch (error: unknown) {
+        const message = (error as { message?: string }).message ?? 'Invalid commit message';
+        return `Source commit ${hash.slice(0, 7)} has an invalid commit message. ${message}`;
+      }
+    }
+    return null;
+  }
+
+  private async readValidatedCommitMessage(git: SimpleGit, hash: string): Promise<string> {
+    const rawMessage = await git.raw(['show', '-s', '--format=%B', hash]);
+    return normalizeCommitMessage(rawMessage);
   }
 
   private async removeCompositeRepo(
@@ -1484,12 +1530,11 @@ export class WorktreeService {
     branchName: string;
     strategy: 'merge' | 'squash' | 'rebase';
     message: string | undefined;
-    step: string;
     preserveConflicts: boolean;
     cleanupMode: 'none' | 'worktree' | 'worktree+branch';
     cleanupFn: (deleteBranch: boolean) => Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }>;
   }): Promise<RepoMergeResult> {
-    const { git, branchName, strategy, message, step, preserveConflicts, cleanupMode, cleanupFn } = opts;
+    const { git, branchName, strategy, message, preserveConflicts, cleanupMode, cleanupFn } = opts;
     const emptyCleanup = {
       worktreeRemoved: false,
       branchDeleted: false,
@@ -1497,6 +1542,7 @@ export class WorktreeService {
     };
 
     let filesChanged: string[] = [];
+    let startingHead: string | undefined;
 
     try {
       const branches = await git.branch();
@@ -1540,7 +1586,21 @@ export class WorktreeService {
         }
       }
 
-      const diffNames = await git.diff([`${currentBranch}...${branchName}`, "--name-only"]);
+      const targetStatus = await git.status();
+      if (!targetStatus.isClean()) {
+        return {
+          success: false,
+          merged: false,
+          filesChanged: [],
+          conflicts: [],
+          conflictState: 'none',
+          cleanup: emptyCleanup,
+          error: 'Target repo has uncommitted (dirty) changes',
+        };
+      }
+      startingHead = (await git.revparse(['HEAD'])).trim();
+
+      const diffNames = await git.diff([startingHead, branchName, '--name-only']);
       filesChanged = diffNames
         .split("\n")
         .map(l => l.trim())
@@ -1562,36 +1622,36 @@ export class WorktreeService {
         };
       }
 
-      const sourceCommits = strategy === 'rebase'
-        ? []
-        : [...(await git.log([`${currentBranch}..${branchName}`])).all].reverse();
+      const commitMessage = strategy === 'rebase' ? undefined : normalizeCommitMessage(message);
+      if (strategy !== 'squash') {
+        const sourceError = await this.validateSourceCommitMessages(git, currentBranch, branchName);
+        if (sourceError) throw new Error(sourceError);
+      }
 
       if (strategy === "squash") {
         await git.raw(["merge", "--squash", branchName]);
-        const selectedMessage = selectMergeCommitMessage({
-          explicitMessage: message,
-          commits: sourceCommits,
-          fallbackMessage: `hive: merge ${step} (squashed)`,
-          strategy: 'squash',
-        });
-        const result = await git.commit(selectedMessage.message);
+        await git.commit(commitMessage!);
+        const head = (await git.revparse(["HEAD"])).trim();
+        if (head === startingHead) throw new Error('Failed to create squash commit');
+        const createdCommitMessage = await this.readValidatedCommitMessage(git, head);
         const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
         return {
           success: true,
           merged: true,
-          sha: result.commit,
-          commitMessage: selectedMessage.message,
-          messageSource: selectedMessage.source,
+          sha: head,
+          commitMessage: createdCommitMessage,
           filesChanged,
           conflicts: [],
           conflictState: 'none',
           cleanup,
         };
       } else if (strategy === "rebase") {
-        const commits = await git.log([`${currentBranch}..${branchName}`]);
-        const commitsToApply = [...commits.all].reverse();
-        for (const commit of commitsToApply) {
-          await git.raw(["cherry-pick", commit.hash]);
+        const sourceHashesOutput = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${branchName}`])).trim();
+        const sourceHashes = sourceHashesOutput ? sourceHashesOutput.split('\n').filter(Boolean) : [];
+        for (const hash of sourceHashes) {
+          await git.raw(["cherry-pick", hash]);
+          const cherryPickedHead = (await git.revparse(['HEAD'])).trim();
+          await this.readValidatedCommitMessage(git, cherryPickedHead);
         }
         const head = (await git.revparse(["HEAD"])).trim();
         const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
@@ -1605,21 +1665,16 @@ export class WorktreeService {
           cleanup,
         };
       } else {
-        const selectedMessage = selectMergeCommitMessage({
-          explicitMessage: message,
-          commits: sourceCommits,
-          fallbackMessage: `hive: merge ${step}`,
-          strategy: 'merge',
-        });
-        const result = await git.merge([branchName, "--no-ff", "-m", selectedMessage.message]);
+        const result = await git.merge([branchName, "--no-ff", "-m", commitMessage!]);
         const head = (await git.revparse(["HEAD"])).trim();
+        if (result.failed || head === startingHead) throw new Error('Failed to create merge commit');
+        const createdCommitMessage = await this.readValidatedCommitMessage(git, head);
         const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
         return {
           success: true,
-          merged: !result.failed,
+          merged: true,
           sha: head,
-          commitMessage: selectedMessage.message,
-          messageSource: selectedMessage.source,
+          commitMessage: createdCommitMessage,
           filesChanged,
           conflicts: result.conflicts?.map(c => c.file || String(c)) || [],
           conflictState: 'none',
@@ -1628,25 +1683,38 @@ export class WorktreeService {
       }
     } catch (error: unknown) {
       const err = error as { message?: string };
+      const conflicts = await this.getActiveConflictFiles(git);
+      const isConflict = conflicts.length > 0;
+      const preserveConflictState = isConflict && preserveConflicts;
+      let rollbackError: string | undefined;
 
-      if (err.message?.includes("CONFLICT") || err.message?.includes("conflict")) {
-        const conflicts = await this.getActiveConflictFiles(git, err.message || '');
-        const conflictState = preserveConflicts ? 'preserved' : 'aborted';
-
-        if (!preserveConflicts) {
-          await git.raw(["merge", "--abort"]).catch(() => {});
-          await git.raw(["rebase", "--abort"]).catch(() => {});
-          await git.raw(["cherry-pick", "--abort"]).catch(() => {});
+      if (!preserveConflictState && startingHead) {
+        if (strategy === 'merge') {
+          await git.raw(['merge', '--abort']).catch(() => {});
+        } else if (strategy === 'rebase') {
+          await git.raw(['cherry-pick', '--abort']).catch(() => {});
         }
+        try {
+          await git.raw(['reset', '--hard', startingHead]);
+        } catch (restoreError: unknown) {
+          rollbackError = (restoreError as { message?: string }).message ?? 'reset failed';
+        }
+        try {
+          await git.raw(['clean', '-fd']);
+        } catch (cleanError: unknown) {
+          rollbackError ??= (cleanError as { message?: string }).message ?? 'clean failed';
+        }
+      }
 
+      if (isConflict) {
         return {
           success: false,
           merged: false,
           filesChanged,
           conflicts,
-          conflictState,
+          conflictState: preserveConflictState ? 'preserved' : 'aborted',
           cleanup: emptyCleanup,
-          error: "Merge conflicts detected",
+          error: rollbackError ? `Merge conflicts detected; failed to restore target: ${rollbackError}` : "Merge conflicts detected",
         };
       }
 
@@ -1657,7 +1725,9 @@ export class WorktreeService {
         conflicts: [],
         conflictState: 'none',
         cleanup: emptyCleanup,
-        error: err.message || "Merge failed",
+        error: rollbackError
+          ? `${err.message || "Merge failed"}; failed to restore target: ${rollbackError}`
+          : err.message || "Merge failed",
       };
     }
   }
@@ -1701,29 +1771,13 @@ export class WorktreeService {
     }
   }
 
-  private parseConflictsFromError(errorMessage: string): string[] {
-    const conflicts: string[] = [];
-    const lines = errorMessage.split("\n");
-    for (const line of lines) {
-      if (line.includes("CONFLICT") && line.includes("Merge conflict in")) {
-        const match = line.match(/Merge conflict in (.+)/);
-        if (match) conflicts.push(match[1]);
-      }
-    }
-    return conflicts;
-  }
-
-  private async getActiveConflictFiles(git: SimpleGit, errorMessage: string): Promise<string[]> {
+  private async getActiveConflictFiles(git: SimpleGit): Promise<string[]> {
     try {
-      const status = await git.status();
-      if (status.conflicted.length > 0) {
-        return [...new Set(status.conflicted)];
-      }
+      const output = (await git.raw(['diff', '--name-only', '--diff-filter=U'])).trim();
+      return output ? [...new Set(output.split('\n').filter(Boolean))] : [];
     } catch {
-      /* intentional */
+      return [];
     }
-
-    return this.parseConflictsFromError(errorMessage);
   }
 }
 

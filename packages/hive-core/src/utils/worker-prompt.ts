@@ -186,14 +186,14 @@ hive_worktree_commit({
   feature: "${feature}",
   status: "completed",
   summary: "Concise summary of what you accomplished",
-  message: "Optional git commit subject\\n\\nOptional body"
+  message: "type(scope): concise subject\\n\\nDescribe what changed and why."
 })
 \`\`\`
 
 - Use summary for task/report context.
-- Use optional message only to control git commit/merge text.
-- Multi-line message is supported where a new commit is created.
-- Omit message (or pass empty string) to use existing defaults.
+- A message is required when changes will be committed, including completed, failed, and partial handoffs.
+- The message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
+- Omit message only when the worktree has no changes to commit.
 
 Then inspect the tool response fields:
 - If \`terminal=true\` (regardless of \`ok\`): stop immediately. This call is final and must not be retried with the same parameters.
@@ -220,7 +220,8 @@ hive_worktree_commit({
   task: "${task}",
   feature: "${feature}",
   status: "failed",
-  summary: "What went wrong and what was attempted"
+  summary: "What went wrong and what was attempted",
+  message: "type(scope): concise subject\\n\\nDescribe what changed and why."
 })
 \`\`\`
 
@@ -231,7 +232,8 @@ hive_worktree_commit({
   task: "${task}",
   feature: "${feature}",
   status: "partial",
-  summary: "What was completed and what remains"
+  summary: "What was completed and what remains",
+  message: "type(scope): concise subject\\n\\nDescribe what changed and why."
 })
 \`\`\`
 

@@ -59,15 +59,15 @@
 |------|---------|
 | `hive_worktree_start` | Create worktree and begin normal work |
 | `hive_worktree_create` | Launch blocked-task continuation in existing worktree |
-| `hive_worktree_commit` | Commit changes, write report (does NOT merge), optional `message` controls git commit text |
+| `hive_worktree_commit` | Commit changes with an explicit structured `message`, write report (does NOT merge) |
 | `hive_worktree_discard` | Discard changes, reset status |
 
 #### hive_worktree_commit input notes
 
 - `summary`: task/report summary.
-- `message` (optional): git commit message text.
-- Multi-line `message` is allowed when creating a commit.
-- Omit `message` (or pass `''`) to use the task commit default. This applies to the worker commit only, not the later merge commit.
+- `message`: required whenever the worktree has changes to commit, including `completed`, `failed`, and `partial` handoffs.
+- Every created commit message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
+- `message` may be omitted only when the worktree has no changes to commit. There is no default or derived commit message.
 
 #### hive_worktree_commit output
 
@@ -106,9 +106,11 @@ These tools are for isolated ad-hoc orchestration work (Hive Builder). They oper
 - For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers. Do not use a returned task ID to continue a prior session.
 - `hive_adhoc_worktree_create` returns `runId`, `workspacePath`, and `branch`. It accepts optional `runId`, `label`, `baseBranch`, `repoIds`, and `autoSpawnWorker`; `repoIds` selects manifest-backed composite workspaces. On non-git project roots without a project repository manifest, it returns `reason: "repo_manifest_required"` before any git command.
 - `autoSpawnWorker` defaults to `true`. With the background gate closed, create returns a blocking `taskToolCall`; launch it instead of working directly in the ad-hoc worktree. In background-enabled sessions, create returns both `taskToolCall` (blocking) and `backgroundTaskCall` (same prompt/description/subagent except `background: true`); register pending board state applies to the background launch path. Use blocking when the next step depends on the worker; use background only for independent lanes. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only ad-hoc worktrees; the response sets `launchMode: "suppressed"` and omits launch payloads.
-- `hive_adhoc_worktree_commit` requires `runId`, `workspacePath`, `branch`, and `message`; `workspacePath` and `branch` must match the run returned by create.
-- `hive_adhoc_merge` accepts `runId`, optional `strategy` (`merge`, `squash`, `rebase`), optional `message`, optional `preserveConflicts`, and optional `cleanup` (`none`, `worktree`, `worktree+branch`).
-- `hive_adhoc_merge` returns `commitMessage` and `messageSource` (`explicit`, `derived`, or `fallback`) when it creates a merge/squash commit.
+- `hive_adhoc_worktree_commit` requires `runId`, `workspacePath`, `branch`, and a structured `message`; `workspacePath` and `branch` must match the run returned by create.
+- `hive_adhoc_merge` defaults to `squash`. Both `squash` and normal `merge` require an explicit polished aggregate `message` with the same subject, separator, and body structure.
+- `rebase` is an explicit history-preservation exception, accepts no aggregate message, and validates the exact raw message of every source commit before mutation. Normal merge performs the same source validation.
+- `hive_adhoc_merge` returns `commitMessage` when it creates a merge/squash commit.
+- A failed non-preserved integration restores the affected target repository to its original HEAD and clean state. `preserveConflicts: true` retains only an actual conflict state.
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID.
 
 ### Background Orchestration (4 tools)
@@ -144,15 +146,16 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 ### Merge (1 tool)
 | Tool | Purpose |
 |------|---------|
-| `hive_merge` | Merge task branch (strategies: merge/squash/rebase); optional helper-friendly conflict preservation, cleanup, and `message` for merge/squash |
+| `hive_merge` | Integrate a task branch; defaults to one squash commit with an explicit aggregate message |
 
 #### hive_merge input notes
 
 - `preserveConflicts?: boolean` defaults to `false`; when `true`, merge conflicts stay in place for an isolated helper session instead of being auto-aborted.
 - `cleanup?: 'none' | 'worktree' | 'worktree+branch'` defaults to `'none'`; successful merges can keep the worktree, remove only the worktree, or remove the worktree and delete the task branch.
-- `message` is optional and applies to `merge`/`squash` strategies. Use it when the merge commit needs a specific self-descriptive project-history subject or body.
+- `squash` is the default and creates one polished integration commit. `message` is required for both `squash` and normal `merge` and must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
+- Use `rebase` or normal `merge` only when preserving independently valuable source commits or branch topology is intentional. Hive validates every exact raw source commit message before mutation.
 - Do not provide a non-blank `message` with `strategy: 'rebase'`.
-- Omit `message` (or pass `''`) only when the merge commit should derive its message from the source branch commits.
+- Failed integrations restore the target to its original HEAD and clean state unless an actual conflict is explicitly preserved.
 
 #### hive_merge output
 
@@ -163,7 +166,6 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
   - `strategy`
   - `sha?`
   - `commitMessage?` when a merge/squash commit is created
-  - `messageSource?` (`explicit`, `derived`, or `fallback`) when a merge/squash commit is created
   - `filesChanged`
   - `conflicts`
   - `conflictState` (`none`, `aborted`, or `preserved`)

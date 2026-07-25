@@ -611,7 +611,8 @@ describe("e2e: Forager compaction loop mitigation (in-process)", () => {
     execSync('git config user.email "test@example.com"', { cwd: testRoot });
     execSync('git config user.name "Test"', { cwd: testRoot });
     fs.writeFileSync(path.join(testRoot, "README.md"), "test");
-    execSync("git add README.md", { cwd: testRoot });
+    fs.writeFileSync(path.join(testRoot, '.gitignore'), '.hive/\n');
+    execSync("git add README.md .gitignore", { cwd: testRoot });
     execSync('git commit -m "init"', { cwd: testRoot });
 
     const ctx: PluginInput = {
@@ -659,6 +660,7 @@ Test compaction resume flow.
         task: "01-compaction-task",
         status: "completed",
         summary: "Compaction resume test complete. Tests pass (bun test).",
+        message: "test: record compaction resume flow\n\nRecord the verified compaction resume behavior.",
       },
       toolContext,
     );

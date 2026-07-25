@@ -113,17 +113,21 @@ Use **Conventional Commits**:
 
 ```
 feat: add parallel task execution
+
+Run independent task branches concurrently while preserving deterministic integration order.
+```
+
+```
 fix: handle missing worktree gracefully
-docs: update skill documentation
-chore: upgrade dependencies
-refactor: extract worktree logic to service
-test: add feature service unit tests
-perf: cache resolved paths
+
+Return a structured failure before attempting Git operations on an absent worktree.
 ```
 
 Breaking changes use `!`:
 ```
 feat!: change plan format to support subtasks
+
+Require explicit dependency metadata for every generated subtask.
 ```
 
 ## Architecture Principles
@@ -289,9 +293,9 @@ Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `s
 **Important:** `hive_worktree_commit` commits changes to task branch but does NOT merge.
 Use `hive_merge` to explicitly integrate changes. Worktrees persist until manually removed.
 
-`summary` remains task/report context; optional `message` controls git commit/merge text.
-Multi-line `message` is supported where a new commit is created.
-For `hive_merge` with `merge` or `squash`, pass `message` when you need a specific self-descriptive project-history subject or body; omit `message` (or pass `''`) to derive from source branch commits (single commit: subject only; multiple: first subject plus strategy heading and short hashes). Do not rely on generic hive/task/run IDs in project history.
+`summary` remains task/report context; `message` controls git commit/merge text and is required whenever the operation creates a commit.
+Every created commit message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
+Feature and ad-hoc integration default to squash with an explicit polished aggregate message. Use rebase or normal merge only for intentionally structured history where every preserved source commit is independently valuable and satisfies the same message contract; normal merge also requires a valid aggregate message. Do not rely on generic hive/task/run IDs in project history.
 Do not provide a non-blank `message` when using `hive_merge(..., strategy: 'rebase')`.
 
 If a completed task branch has no net tracked changes, `hive_merge` returns `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, and no `sha`; requested cleanup can still run when safe. Use `hive_status.helperStatus.mergeEligibility` as the task/worktree-aware state surface before merge or cleanup decisions.

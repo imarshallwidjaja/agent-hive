@@ -2,8 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import type { ResolvedRepository } from '../types.js';
-import type { MergeMessageSource } from '../utils/mergeMessage.js';
-import { selectMergeCommitMessage } from '../utils/mergeMessage.js';
+import { normalizeCommitMessage } from '../utils/mergeMessage.js';
 import type {
   AdhocWorkspaceManifest as AdhocCompositeManifest,
   WorkspaceManifestEntry as AdhocCompositeManifestEntry,
@@ -84,7 +83,6 @@ export interface AdhocRepoMergeResult {
   merged: boolean;
   sha?: string;
   commitMessage?: string;
-  messageSource?: MergeMessageSource;
   reason?: string;
   reasonCode?: 'NO_TRACKED_CHANGES';
   cleanupEligible?: boolean;
@@ -105,7 +103,6 @@ export interface AdhocMergeResult {
   strategy: AdhocMergeStrategy;
   sha?: string;
   commitMessage?: string;
-  messageSource?: MergeMessageSource;
   reason?: string;
   reasonCode?: 'NO_TRACKED_CHANGES';
   cleanupEligible?: boolean;
@@ -631,7 +628,13 @@ export class AdhocWorktreeService {
 
     const partial = anyCommitted && anyFailed;
     const committed = anyCommitted && !anyFailed;
-    const firstResult = repos[repoIds[0]];
+    const firstCommitted = repoIds.map((repoId) => repos[repoId]).find((repoResult) => repoResult.committed);
+    const firstFailed = repoIds
+      .map((repoId) => repos[repoId])
+      .find((repoResult) => !repoResult.committed && repoResult.message !== 'No changes to commit');
+    const firstResult = firstCommitted
+      ?? (anyFailed && firstFailed ? firstFailed : undefined)
+      ?? repos[repoIds[0]];
 
     const result: AdhocCommitResult = {
       committed,
@@ -652,8 +655,8 @@ export class AdhocWorktreeService {
     }
 
     const git = this.getGit(repoWtPath);
+    let startingHead: string | undefined;
     try {
-      await git.add('-A');
       const status = await git.status();
       const hasChanges =
         status.staged.length > 0 ||
@@ -667,15 +670,32 @@ export class AdhocWorktreeService {
         return { committed: false, sha: currentSha, message: 'No changes to commit' };
       }
 
-      const result = await git.commit(message, ['--allow-empty-message']);
-      return { committed: true, sha: result.commit, message };
+      const commitMessage = normalizeCommitMessage(message);
+      startingHead = (await git.revparse(['HEAD'])).trim();
+
+      await git.add('-A');
+      await git.commit(commitMessage);
+      const head = (await git.revparse(['HEAD'])).trim();
+      if (head === startingHead) throw new Error('Commit failed');
+      const createdMessage = await this.readValidatedCommitMessage(git, head);
+      return { committed: true, sha: head, message: createdMessage };
     } catch (error: unknown) {
       const err = error as { message?: string };
+      let rollbackError: string | undefined;
+      if (startingHead) {
+        try {
+          await git.raw(['reset', '--mixed', startingHead]);
+        } catch (restoreError: unknown) {
+          rollbackError = (restoreError as { message?: string }).message ?? 'reset failed';
+        }
+      }
       const currentSha = (await git.revparse(['HEAD']).catch(() => '')).trim();
       return {
         committed: false,
         sha: currentSha,
-        message: err.message || 'Commit failed',
+        message: rollbackError
+          ? `${err.message || 'Commit failed'}; failed to restore worktree HEAD: ${rollbackError}`
+          : err.message || 'Commit failed',
       };
     }
   }
@@ -740,8 +760,6 @@ export class AdhocWorktreeService {
       branchName,
       strategy,
       message,
-      defaultMessage: `hive(adhoc/${runId}): merge`,
-      defaultSquashMessage: `hive(adhoc/${runId}): merge (squashed)`,
       preserveConflicts: options.preserveConflicts,
       cleanupMode: options.cleanup,
       cleanupFn: async (deleteBranch: boolean) => this.cleanup(runId, deleteBranch),
@@ -753,7 +771,6 @@ export class AdhocWorktreeService {
       strategy,
       ...(repoResult.sha !== undefined ? { sha: repoResult.sha } : {}),
       ...(repoResult.commitMessage !== undefined ? { commitMessage: repoResult.commitMessage } : {}),
-      ...(repoResult.messageSource !== undefined ? { messageSource: repoResult.messageSource } : {}),
       ...(repoResult.reason !== undefined ? { reason: repoResult.reason } : {}),
       ...(repoResult.reasonCode !== undefined ? { reasonCode: repoResult.reasonCode } : {}),
       ...(repoResult.cleanupEligible !== undefined ? { cleanupEligible: repoResult.cleanupEligible } : {}),
@@ -846,6 +863,16 @@ export class AdhocWorktreeService {
           /* not present -> ok */
         }
       }
+
+      const currentBranch = (await repoGit.branch()).current;
+      const targetHead = (await repoGit.revparse(['HEAD'])).trim();
+      const changedFiles = (await repoGit.diff([targetHead, entry.branch, '--name-only'])).trim();
+      if (changedFiles) {
+        if (strategy !== 'squash') {
+          const sourceError = await this.validateSourceCommitMessages(repoGit, currentBranch, entry.branch);
+          if (sourceError) return preflightFailure(repoId, sourceError);
+        }
+      }
     }
 
     // Execute per-repo merges in stable id order
@@ -855,7 +882,6 @@ export class AdhocWorktreeService {
     let anyActualMerge = false;
     let firstActualSha: string | undefined;
     let firstActualCommitMessage: string | undefined;
-    let firstActualMessageSource: MergeMessageSource | undefined;
     let stoppedRepoId: string | undefined;
     let firstError: string | undefined;
     let lastConflictState: 'none' | 'aborted' | 'preserved' = 'none';
@@ -869,8 +895,6 @@ export class AdhocWorktreeService {
         branchName: entry.branch,
         strategy,
         message,
-        defaultMessage: `hive(adhoc/${runId}/${repoId}): merge`,
-        defaultSquashMessage: `hive(adhoc/${runId}/${repoId}): merge (squashed)`,
         preserveConflicts: options.preserveConflicts,
         cleanupMode: 'none',
         cleanupFn: async () => ({ worktreeRemoved: false, branchDeleted: false, pruned: false }),
@@ -901,7 +925,6 @@ export class AdhocWorktreeService {
       anyActualMerge = true;
       firstActualSha ??= repoResult.sha;
       firstActualCommitMessage ??= repoResult.commitMessage;
-      firstActualMessageSource ??= repoResult.messageSource;
     }
 
     if (stoppedRepoId !== undefined) {
@@ -973,7 +996,6 @@ export class AdhocWorktreeService {
       strategy,
       ...(firstActualSha !== undefined ? { sha: firstActualSha } : {}),
       ...(firstActualCommitMessage !== undefined ? { commitMessage: firstActualCommitMessage } : {}),
-      ...(firstActualMessageSource !== undefined ? { messageSource: firstActualMessageSource } : {}),
       filesChanged: flattenedFiles,
       conflicts: flattenedConflicts,
       conflictState: 'none',
@@ -990,6 +1012,30 @@ export class AdhocWorktreeService {
     } catch {
       return path.join(repoRoot, '.git', name);
     }
+  }
+
+  private async validateSourceCommitMessages(
+    git: SimpleGit,
+    currentBranch: string,
+    branchName: string,
+  ): Promise<string | null> {
+    const output = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${branchName}`])).trim();
+    const hashes = output ? output.split('\n').filter(Boolean) : [];
+    for (const hash of hashes) {
+      const rawMessage = await git.raw(['show', '-s', '--format=%B', hash]);
+      try {
+        normalizeCommitMessage(rawMessage);
+      } catch (error: unknown) {
+        const message = (error as { message?: string }).message ?? 'Invalid commit message';
+        return `Source commit ${hash.slice(0, 7)} has an invalid commit message. ${message}`;
+      }
+    }
+    return null;
+  }
+
+  private async readValidatedCommitMessage(git: SimpleGit, hash: string): Promise<string> {
+    const rawMessage = await git.raw(['show', '-s', '--format=%B', hash]);
+    return normalizeCommitMessage(rawMessage);
   }
 
   private async removeCompositeRepo(
@@ -1046,8 +1092,6 @@ export class AdhocWorktreeService {
     branchName: string;
     strategy: AdhocMergeStrategy;
     message: string | undefined;
-    defaultMessage: string;
-    defaultSquashMessage: string;
     preserveConflicts: boolean;
     cleanupMode: 'none' | 'worktree' | 'worktree+branch';
     cleanupFn: (deleteBranch: boolean) => Promise<{
@@ -1061,8 +1105,6 @@ export class AdhocWorktreeService {
       branchName,
       strategy,
       message,
-      defaultMessage,
-      defaultSquashMessage,
       preserveConflicts,
       cleanupMode,
       cleanupFn,
@@ -1074,6 +1116,7 @@ export class AdhocWorktreeService {
     };
 
     let filesChanged: string[] = [];
+    let startingHead: string | undefined;
 
     try {
       const branches = await git.branch();
@@ -1117,7 +1160,21 @@ export class AdhocWorktreeService {
         }
       }
 
-      const diffNames = await git.diff([`${currentBranch}...${branchName}`, '--name-only']);
+      const targetStatus = await git.status();
+      if (!targetStatus.isClean()) {
+        return {
+          success: false,
+          merged: false,
+          filesChanged: [],
+          conflicts: [],
+          conflictState: 'none',
+          cleanup: emptyCleanup,
+          error: 'Target repo has uncommitted (dirty) changes',
+        };
+      }
+      startingHead = (await git.revparse(['HEAD'])).trim();
+
+      const diffNames = await git.diff([startingHead, branchName, '--name-only']);
       filesChanged = diffNames
         .split('\n')
         .map((l) => l.trim())
@@ -1139,37 +1196,37 @@ export class AdhocWorktreeService {
         };
       }
 
-      const sourceCommits = strategy === 'rebase'
-        ? []
-        : [...(await git.log([`${currentBranch}..${branchName}`])).all].reverse();
+      const commitMessage = strategy === 'rebase' ? undefined : normalizeCommitMessage(message);
+      if (strategy !== 'squash') {
+        const sourceError = await this.validateSourceCommitMessages(git, currentBranch, branchName);
+        if (sourceError) throw new Error(sourceError);
+      }
 
       if (strategy === 'squash') {
         await git.raw(['merge', '--squash', branchName]);
-        const selectedMessage = selectMergeCommitMessage({
-          explicitMessage: message,
-          commits: sourceCommits,
-          fallbackMessage: defaultSquashMessage,
-          strategy: 'squash',
-        });
-        const result = await git.commit(selectedMessage.message);
+        await git.commit(commitMessage!);
+        const head = (await git.revparse(['HEAD'])).trim();
+        if (head === startingHead) throw new Error('Failed to create squash commit');
+        const createdCommitMessage = await this.readValidatedCommitMessage(git, head);
         const cleanup =
           cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
         return {
           success: true,
           merged: true,
-          sha: result.commit,
-          commitMessage: selectedMessage.message,
-          messageSource: selectedMessage.source,
+          sha: head,
+          commitMessage: createdCommitMessage,
           filesChanged,
           conflicts: [],
           conflictState: 'none',
           cleanup,
         };
       } else if (strategy === 'rebase') {
-        const commits = await git.log([`${currentBranch}..${branchName}`]);
-        const commitsToApply = [...commits.all].reverse();
-        for (const commit of commitsToApply) {
-          await git.raw(['cherry-pick', commit.hash]);
+        const sourceHashesOutput = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${branchName}`])).trim();
+        const sourceHashes = sourceHashesOutput ? sourceHashesOutput.split('\n').filter(Boolean) : [];
+        for (const hash of sourceHashes) {
+          await git.raw(['cherry-pick', hash]);
+          const cherryPickedHead = (await git.revparse(['HEAD'])).trim();
+          await this.readValidatedCommitMessage(git, cherryPickedHead);
         }
         const head = (await git.revparse(['HEAD'])).trim();
         const cleanup =
@@ -1184,22 +1241,17 @@ export class AdhocWorktreeService {
           cleanup,
         };
       } else {
-        const selectedMessage = selectMergeCommitMessage({
-          explicitMessage: message,
-          commits: sourceCommits,
-          fallbackMessage: defaultMessage,
-          strategy: 'merge',
-        });
-        const result = await git.merge([branchName, '--no-ff', '-m', selectedMessage.message]);
+        const result = await git.merge([branchName, '--no-ff', '-m', commitMessage!]);
         const head = (await git.revparse(['HEAD'])).trim();
+        if (result.failed || head === startingHead) throw new Error('Failed to create merge commit');
+        const createdCommitMessage = await this.readValidatedCommitMessage(git, head);
         const cleanup =
           cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
         return {
           success: true,
-          merged: !result.failed,
+          merged: true,
           sha: head,
-          commitMessage: selectedMessage.message,
-          messageSource: selectedMessage.source,
+          commitMessage: createdCommitMessage,
           filesChanged,
           conflicts: result.conflicts?.map((c) => c.file || String(c)) || [],
           conflictState: 'none',
@@ -1208,25 +1260,38 @@ export class AdhocWorktreeService {
       }
     } catch (error: unknown) {
       const err = error as { message?: string };
+      const conflicts = await this.getActiveConflictFiles(git);
+      const isConflict = conflicts.length > 0;
+      const preserveConflictState = isConflict && preserveConflicts;
+      let rollbackError: string | undefined;
 
-      if (err.message?.includes('CONFLICT') || err.message?.includes('conflict')) {
-        const conflicts = await this.getActiveConflictFiles(git, err.message || '');
-        const conflictState = preserveConflicts ? 'preserved' : 'aborted';
-
-        if (!preserveConflicts) {
+      if (!preserveConflictState && startingHead) {
+        if (strategy === 'merge') {
           await git.raw(['merge', '--abort']).catch(() => {});
-          await git.raw(['rebase', '--abort']).catch(() => {});
+        } else if (strategy === 'rebase') {
           await git.raw(['cherry-pick', '--abort']).catch(() => {});
         }
+        try {
+          await git.raw(['reset', '--hard', startingHead]);
+        } catch (restoreError: unknown) {
+          rollbackError = (restoreError as { message?: string }).message ?? 'reset failed';
+        }
+        try {
+          await git.raw(['clean', '-fd']);
+        } catch (cleanError: unknown) {
+          rollbackError ??= (cleanError as { message?: string }).message ?? 'clean failed';
+        }
+      }
 
+      if (isConflict) {
         return {
           success: false,
           merged: false,
           filesChanged,
           conflicts,
-          conflictState,
+          conflictState: preserveConflictState ? 'preserved' : 'aborted',
           cleanup: emptyCleanup,
-          error: 'Merge conflicts detected',
+          error: rollbackError ? `Merge conflicts detected; failed to restore target: ${rollbackError}` : 'Merge conflicts detected',
         };
       }
 
@@ -1237,7 +1302,9 @@ export class AdhocWorktreeService {
         conflicts: [],
         conflictState: 'none',
         cleanup: emptyCleanup,
-        error: err.message || 'Merge failed',
+        error: rollbackError
+          ? `${err.message || 'Merge failed'}; failed to restore target: ${rollbackError}`
+          : err.message || 'Merge failed',
       };
     }
   }
@@ -1312,22 +1379,12 @@ export class AdhocWorktreeService {
     return { worktreeRemoved, branchDeleted, pruned };
   }
 
-  private async getActiveConflictFiles(git: SimpleGit, errorMessage: string): Promise<string[]> {
+  private async getActiveConflictFiles(git: SimpleGit): Promise<string[]> {
     try {
-      const status = await git.status();
-      if (status.conflicted.length > 0) {
-        return [...new Set(status.conflicted)];
-      }
+      const output = (await git.raw(['diff', '--name-only', '--diff-filter=U'])).trim();
+      return output ? [...new Set(output.split('\n').filter(Boolean))] : [];
     } catch {
-      /* intentional */
+      return [];
     }
-    const conflicts: string[] = [];
-    for (const line of errorMessage.split('\n')) {
-      if (line.includes('CONFLICT') && line.includes('Merge conflict in')) {
-        const m = line.match(/Merge conflict in (.+)/);
-        if (m) conflicts.push(m[1]);
-      }
-    }
-    return conflicts;
   }
 }

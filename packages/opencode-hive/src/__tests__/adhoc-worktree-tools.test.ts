@@ -653,7 +653,7 @@ describe('ad-hoc worktree plugin tools', () => {
         runId: created.runId,
         workspacePath: created.workspacePath,
         branch: created.branch,
-        message: 'feat: adhoc note',
+        message: 'feat: adhoc note\n\nRecord the ad-hoc note in test history.',
       },
       toolContext,
     );
@@ -695,6 +695,89 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(commit.reason).toBe('adhoc_run_mismatch');
   });
 
+  it('ad-hoc composite commit: first repo unchanged and later repo failure is rejected via error, not no-change success', async () => {
+    initGitRoot(testRoot);
+    for (const id of ['api', 'web']) {
+      const repoPath = path.join(testRoot, 'repos', id);
+      fs.mkdirSync(repoPath, { recursive: true });
+      execSync('git init', { cwd: repoPath });
+      execSync('git config user.email "test@example.com"', { cwd: repoPath });
+      execSync('git config user.name "Test"', { cwd: repoPath });
+      fs.writeFileSync(path.join(repoPath, 'README.md'), `${id}\n`);
+      execSync('git add README.md', { cwd: repoPath });
+      execSync('git commit -m "init"', { cwd: repoPath });
+    }
+    fs.mkdirSync(path.join(testRoot, '.hive'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testRoot, '.hive', 'repositories.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        repositories: [
+          { id: 'api', path: './repos/api' },
+          { id: 'web', path: './repos/web' },
+        ],
+      }),
+    );
+
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_commit_later_fail');
+    const createRaw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { runId: 'later-fail', repoIds: ['api', 'web'], autoSpawnWorker: false },
+      toolContext,
+    );
+    const created = parseToolJson<{
+      success?: boolean;
+      runId: string;
+      workspacePath: string;
+      branch: string;
+      repos?: Record<string, { path: string }>;
+    }>(createRaw);
+    expect(created.success).toBe(true);
+    expect(created.repos).toBeDefined();
+
+    fs.writeFileSync(path.join(created.repos!.web.path, 'web-only.txt'), 'web\n');
+    const webHookDir = path.join(testRoot, 'repos', 'web', '.git', 'hooks');
+    fs.mkdirSync(webHookDir, { recursive: true });
+    const webHookPath = path.join(webHookDir, 'pre-commit');
+    fs.writeFileSync(webHookPath, '#!/bin/sh\necho "web hook rejected commit" >&2\nexit 1\n');
+    fs.chmodSync(webHookPath, 0o755);
+    execSync(`git config core.hooksPath ${JSON.stringify(webHookDir)}`, {
+      cwd: path.join(testRoot, 'repos', 'web'),
+    });
+
+    const commitRaw = await hooks.tool!.hive_adhoc_worktree_commit.execute(
+      {
+        runId: created.runId,
+        workspacePath: created.workspacePath,
+        branch: created.branch,
+        message: 'feat: later fail\n\nSurface later-repo failure after earlier no-change.',
+      },
+      toolContext,
+    );
+    const commit = parseToolJson<{
+      success?: boolean;
+      error?: string;
+      reason?: string;
+      commit?: {
+        committed?: boolean;
+        partial?: boolean;
+        error?: string;
+        message?: string;
+        repos?: Record<string, { committed: boolean; message?: string }>;
+      };
+      nextAction?: string;
+    }>(commitRaw);
+
+    expect(commit.success).toBe(false);
+    expect(commit.commit?.committed).toBe(false);
+    expect(commit.commit?.partial).toBeFalsy();
+    expect(commit.commit?.error).toContain('web');
+    expect(commit.commit?.message).not.toBe('No changes to commit');
+    expect(commit.commit?.repos!.api.committed).toBe(false);
+    expect(commit.commit?.repos!.web.committed).toBe(false);
+    expect(commit.nextAction ?? '').toMatch(/fail|resolve|retry/i);
+  });
+
   it('ad-hoc merge response contains workspacePath, branch, and nextAction', async () => {
     initGitRoot(testRoot);
     const hooks = await loadHooks(testRoot);
@@ -716,13 +799,13 @@ describe('ad-hoc worktree plugin tools', () => {
         runId: created.runId,
         workspacePath: created.workspacePath,
         branch: created.branch,
-        message: 'feat: adhoc note',
+        message: 'feat: adhoc note\n\nRecord the ad-hoc note in test history.',
       },
       toolContext,
     );
 
     const mergeRaw = await hooks.tool!.hive_adhoc_merge.execute(
-      { runId: created.runId },
+      { runId: created.runId, message: 'feat: integrate ad-hoc note\n\nIntegrate verified ad-hoc work as one commit.' },
       toolContext,
     );
     const merge = parseToolJson<{
@@ -735,13 +818,13 @@ describe('ad-hoc worktree plugin tools', () => {
     expectWorktreeResponseShape(merge);
   });
 
-  it('ad-hoc squash merge with omitted message derives from the source commit', async () => {
+  it('ad-hoc squash merge rejects an omitted aggregate message', async () => {
     initGitRoot(testRoot);
     const hooks = await loadHooks(testRoot);
-    const toolContext = createToolContext('sess_adhoc_merge_derived_message');
+    const toolContext = createToolContext('sess_adhoc_merge_omitted_message');
 
     const createRaw = await hooks.tool!.hive_adhoc_worktree_create.execute(
-      { label: 'derived-message' },
+      { label: 'omitted-message' },
       toolContext,
     );
     const created = parseToolJson<{
@@ -769,16 +852,11 @@ describe('ad-hoc worktree plugin tools', () => {
       success: boolean;
       merged: boolean;
       commitMessage?: string;
-      messageSource?: string;
     }>(mergeRaw);
 
-    expect(merge.success).toBe(true);
-    expect(merge.merged).toBe(true);
-    expect(merge.messageSource).toBe('derived');
-    expect(merge.commitMessage).toBe('feat: preserve adhoc source narrative');
-    expect(execSync('git log -1 --format=%B', { cwd: testRoot, encoding: 'utf-8' }).trimEnd()).toBe(
-      'feat: preserve adhoc source narrative',
-    );
+    expect(merge.success).toBe(false);
+    expect(merge.merged).toBe(false);
+    expect(merge.commitMessage).toBeUndefined();
   });
 
   it('ad-hoc cleanup response contains workspacePath, branch, and nextAction', async () => {

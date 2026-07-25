@@ -68,6 +68,7 @@ Treat reserved names like \`overview\`, \`draft\`, and \`execution-decisions\` a
 
 ## Working Rules
 
+- Commit Policy: create one meaningful commit per feature task. Its message must have a non-empty one-line subject, a blank line, and a descriptive body. The integration squash folds provisional implementation, review, and fix iterations into the final task commit.
 - DRY/Search First: look for existing helpers before adding new code
 - Convention Following: check neighboring files and package.json, then follow existing patterns
 - Efficient Edits: read enough context before editing, batch logical edits
@@ -113,7 +114,8 @@ If you have tried 3 approaches and still cannot finish safely, report as blocked
 hive_worktree_commit({
   task: "current-task",
   summary: "Implemented X. Tests pass.",
-  status: "completed"
+  status: "completed",
+  message: "type(scope): concise subject\\n\\nDescribe what changed and why."
 })
 \`\`\`
 

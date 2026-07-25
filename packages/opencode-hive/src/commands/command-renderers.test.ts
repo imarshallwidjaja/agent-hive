@@ -274,12 +274,11 @@ describe('hive command renderers', () => {
     expect(output).toContain('hive_worktree_start');
     expect(output).toContain('hive_merge');
     expect(output).toContain('todo list');
-    expect(output).toContain('Prefer `strategy: "rebase"`');
+    expect(output).toContain('Default to `strategy: "squash"`');
     expect(output).toContain('Preserve one root commit per completed task');
-    expect(output).toContain('Do not squash a whole feature or merge batch into one commit');
-    expect(output).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
-    expect(output).toContain('Pass an explicit `message` for merge or squash when you need a specific self-descriptive project-history subject or body');
-    expect(output).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
+    expect(output).toContain('review and fix iterations into that squash commit');
+    expect(output).toContain('subject, a blank line, and a descriptive body');
+    expect(output).not.toContain('Prefer `strategy: "rebase"`');
     expect(output).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
     expect(output).toContain('new worker session in the same worktree');
     expect(output).toContain('concise self-contained handoff');

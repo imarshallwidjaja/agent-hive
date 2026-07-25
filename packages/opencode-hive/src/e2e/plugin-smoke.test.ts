@@ -40,6 +40,8 @@ const LEGACY_IDLE_CHILD_REPLAY = ['child-session', ' idle'].join('');
 const TEST_ROOT_BASE = "/tmp/hive-e2e-plugin";
 const TEST_PROCESS_CWD = process.cwd();
 const FIRST_TASK = "01-first-task";
+const TEST_COMMIT_MESSAGE = 'test: record task implementation\n\nRecord verified task work for the integration test.';
+const TEST_MERGE_MESSAGE = 'test: integrate task implementation\n\nIntegrate verified task work as project history.';
 
 function createStubShell(): PluginInput["$"] {
   let shell: PluginInput["$"];
@@ -222,7 +224,8 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     execSync('git config user.email "test@example.com"', { cwd: testRoot });
     execSync('git config user.name "Test"', { cwd: testRoot });
     fs.writeFileSync(path.join(testRoot, "README.md"), "smoke test");
-    execSync("git add README.md", { cwd: testRoot });
+    fs.writeFileSync(path.join(testRoot, '.gitignore'), '.hive/\n');
+    execSync("git add README.md .gitignore", { cwd: testRoot });
     execSync('git commit -m "init"', { cwd: testRoot });
   });
 
@@ -2505,20 +2508,26 @@ Do it
         ? 'Parser changes are preserved; the response assertion still fails.'
         : 'Parser changes and unit coverage are complete; the integration fixture remains.';
       fs.writeFileSync(path.join(worktreePath, `${attemptStatus}-progress.txt`), `${summary}\n`);
+      const beforeHead = execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8' }).trim();
 
       const terminalRaw = await hooks.tool!.hive_worktree_commit.execute(
-        { feature, task: FIRST_TASK, status: attemptStatus, summary },
+        { feature, task: FIRST_TASK, status: attemptStatus, summary, message: TEST_COMMIT_MESSAGE },
         toolContext,
       );
       const terminal = JSON.parse(terminalRaw as string) as {
         terminal?: boolean;
         taskState?: string;
         nextAction?: string;
+        commit?: { committed?: boolean; message?: string; sha?: string };
       };
       expect(terminal.terminal).toBe(true);
       expect(terminal.taskState).toBe(attemptStatus);
       expect(terminal.nextAction).toMatch(/hive_worktree_start/i);
       expect(terminal.nextAction).not.toMatch(/hive_merge/i);
+      expect(terminal.commit).toMatchObject({ committed: true, message: TEST_COMMIT_MESSAGE });
+      expect(execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8' }).trim()).not.toBe(beforeHead);
+      expect(readHeadBody(worktreePath)).toBe(TEST_COMMIT_MESSAGE);
+      expect(execSync('git status --porcelain', { cwd: worktreePath, encoding: 'utf-8' })).toBe('');
 
       const retryRaw = await hooks.tool!.hive_worktree_start.execute(
         { feature, task: FIRST_TASK },
@@ -2633,6 +2642,7 @@ Do it
         task: FIRST_TASK,
         status: "completed",
         summary: "Added expected-path note file. Tests pass (bun test). Build succeeds (bun run build).",
+        message: TEST_COMMIT_MESSAGE,
       },
       toolContext
     );
@@ -2791,20 +2801,20 @@ Do it
     expect(readHeadBody(worktreePath)).toBe(customMessage);
   });
 
-  it("falls back when hive_worktree_commit message is empty string", async () => {
+  it("rejects an empty hive_worktree_commit message without creating a commit", async () => {
     const feature = "commit-empty-message-feature";
     const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
       testRoot,
       "sess_commit_empty_message",
       feature,
       "Commit Empty Message Feature",
-      "Yes, this test validates empty-string message fallback in hive_worktree_commit.",
+      "Yes, this test validates empty-string message rejection in hive_worktree_commit.",
     );
 
-    fs.writeFileSync(path.join(worktreePath, "task-note.txt"), "empty message fallback\n");
+    fs.writeFileSync(path.join(worktreePath, "task-note.txt"), "empty message rejection\n");
 
-    const summary = "Added fallback check for empty message. Tests pass (bun test).";
-    const expectedMessage = `hive(${FIRST_TASK}): ${summary.slice(0, 50)}`;
+    const summary = "Added rejection check for empty message. Tests pass (bun test).";
+    const beforeHead = execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8' }).trim();
 
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
       {
@@ -2824,12 +2834,55 @@ Do it
       commit?: { message?: string };
     };
 
-    expect(commitResult.ok).toBe(true);
-    expect(commitResult.terminal).toBe(true);
-    expect(commitResult.status).toBe("completed");
-    expect(commitResult.commit?.message).toBe(expectedMessage);
-    expect(readHeadBody(worktreePath)).toBe(expectedMessage);
+    expect(commitResult.ok).toBe(false);
+    expect(commitResult.terminal).toBe(false);
+    expect(commitResult.commit?.message).toMatch(/subject.*blank line.*body/i);
+    expect(execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8' }).trim()).toBe(beforeHead);
   });
+
+  for (const { status, message } of [
+    { status: 'failed' as const, message: undefined },
+    { status: 'partial' as const, message: 'subject only' },
+  ]) {
+    it(`keeps ${status} handoff non-terminal when dirty progress lacks a valid commit message`, async () => {
+      const feature = `commit-${status}-invalid-message-feature`;
+      const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
+        testRoot,
+        `sess_commit_${status}_invalid_message`,
+        feature,
+        `Commit ${status} Invalid Message Feature`,
+        `Yes, this test validates ${status} handoff behavior when dirty progress lacks a valid commit message.`,
+      );
+      fs.writeFileSync(path.join(worktreePath, 'task-note.txt'), `${status} progress\n`);
+      const beforeHead = execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8' }).trim();
+
+      const raw = await hooks.tool!.hive_worktree_commit.execute(
+        {
+          feature,
+          task: FIRST_TASK,
+          status,
+          summary: `${status} progress could not continue. Tests pass (bun test).`,
+          ...(message !== undefined ? { message } : {}),
+        },
+        toolContext,
+      );
+      const result = JSON.parse(raw as string) as {
+        ok: boolean;
+        terminal: boolean;
+        reason?: string;
+        taskState?: string;
+        commit?: { committed?: boolean; message?: string };
+      };
+
+      expect(result.ok).toBe(false);
+      expect(result.terminal).toBe(false);
+      expect(result.reason).toBe('commit_failed');
+      expect(result.taskState).toBe('in_progress');
+      expect(result.commit?.committed).toBe(false);
+      expect(result.commit?.message).toMatch(/subject.*blank line.*body/i);
+      expect(execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8' }).trim()).toBe(beforeHead);
+    });
+  }
 
   it("returns helper-friendly merge JSON for merge strategy", async () => {
     const feature = "merge-custom-message-feature";
@@ -2849,6 +2902,7 @@ Do it
         task: FIRST_TASK,
         status: "completed",
         summary: "Prepared merge message test. Tests pass (bun test).",
+        message: TEST_COMMIT_MESSAGE,
       },
       toolContext
     );
@@ -2882,7 +2936,6 @@ Do it
       cleanup: { worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean };
       message: string;
       commitMessage?: string;
-      messageSource?: string;
     };
 
     expect(mergeResult).toMatchObject({
@@ -2900,47 +2953,35 @@ Do it
       message: 'Task "01-first-task" merged successfully using merge strategy.',
     });
     expect(typeof mergeResult.sha).toBe('string');
-    expect(mergeResult.messageSource).toBe('explicit');
     expect(mergeResult.commitMessage).toBe(customMessage);
     expect(readHeadBody(testRoot)).toBe(customMessage);
   });
 
-  it('derives squash merge message from multiple source commits when omitted', async () => {
-    const feature = 'merge-derived-squash-feature';
+  it('rejects squash merge with omitted aggregate message before mutation', async () => {
+    const feature = 'merge-omitted-squash-message-feature';
     const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
       testRoot,
-      'sess_merge_derived_squash',
+      'sess_merge_omitted_squash_message',
       feature,
-      'Merge Derived Squash Feature',
-      'Yes, this test validates derived squash merge commit messages from task branch history.',
+      'Merge Omitted Squash Message Feature',
+      'Yes, this test validates rejection when a squash aggregate message is omitted.',
     );
 
-    fs.writeFileSync(path.join(worktreePath, 'first.txt'), 'first\n');
-    execSync('git add first.txt && git commit -m "feat: first source change"', { cwd: worktreePath });
-    fs.writeFileSync(path.join(worktreePath, 'second.txt'), 'second\n');
-    execSync('git add second.txt && git commit -m "fix: second source change"', { cwd: worktreePath });
+    fs.writeFileSync(path.join(worktreePath, 'task-note.txt'), 'squash without aggregate message\n');
 
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
       {
         feature,
         task: FIRST_TASK,
         status: 'completed',
-        summary: 'Marked pre-committed worktree done. Tests pass (bun test).',
+        summary: 'Prepared omitted squash merge message test. Tests pass (bun test).',
+        message: TEST_COMMIT_MESSAGE,
       },
       toolContext,
     );
     const commitResult = JSON.parse(commitRaw as string) as { ok: boolean; taskState?: string };
     expect(commitResult.ok).toBe(true);
     expect(commitResult.taskState).toBe('done');
-
-    const baseBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: testRoot, encoding: 'utf-8' }).trim();
-    const sourceLog = execSync(`git log --reverse --format=%h%x00%s ${baseBranch}..HEAD`, {
-      cwd: worktreePath,
-      encoding: 'utf-8',
-    }).trim().split('\n');
-    const [firstHash, firstSubject] = sourceLog[0].split('\0');
-    const [secondHash, secondSubject] = sourceLog[1].split('\0');
-    const expectedMessage = `feat: first source change\n\nSquashed commits:\n- ${firstHash} ${firstSubject}\n- ${secondHash} ${secondSubject}`;
 
     const mergeRaw = await hooks.tool!.hive_merge.execute(
       { feature, task: FIRST_TASK, strategy: 'squash' },
@@ -2950,34 +2991,31 @@ Do it
       success: boolean;
       merged: boolean;
       commitMessage?: string;
-      messageSource?: string;
     };
 
-    expect(mergeResult.success).toBe(true);
-    expect(mergeResult.merged).toBe(true);
-    expect(mergeResult.messageSource).toBe('derived');
-    expect(mergeResult.commitMessage).toBe(expectedMessage);
-    expect(readHeadBody(testRoot)).toBe(expectedMessage);
+    expect(mergeResult.success).toBe(false);
+    expect(mergeResult.merged).toBe(false);
+    expect(mergeResult.commitMessage).toBeUndefined();
   });
 
-  it('derives normal merge commit message from single source commit subject when omitted', async () => {
-    const feature = 'merge-derived-normal-feature';
+  it('rejects normal merge with omitted aggregate message before mutation', async () => {
+    const feature = 'merge-omitted-normal-message-feature';
     const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
       testRoot,
-      'sess_merge_derived_normal',
+      'sess_merge_omitted_normal_message',
       feature,
-      'Merge Derived Normal Feature',
-      'Yes, this test validates derived normal merge commit messages from task branch history.',
+      'Merge Omitted Normal Message Feature',
+      'Yes, this test validates rejection when a normal merge aggregate message is omitted.',
     );
 
-    fs.writeFileSync(path.join(worktreePath, 'task-note.txt'), 'normal derived merge\n');
+    fs.writeFileSync(path.join(worktreePath, 'task-note.txt'), 'normal merge without aggregate message\n');
     const sourceMessage = 'feat: normal source narrative\n\nNormal merge body from task branch.';
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
       {
         feature,
         task: FIRST_TASK,
         status: 'completed',
-        summary: 'Prepared normal merge derivation test. Tests pass (bun test).',
+        summary: 'Prepared omitted normal merge message test. Tests pass (bun test).',
         message: sourceMessage,
       },
       toolContext,
@@ -2994,69 +3032,11 @@ Do it
       success: boolean;
       merged: boolean;
       commitMessage?: string;
-      messageSource?: string;
     };
 
-    expect(mergeResult.success).toBe(true);
-    expect(mergeResult.merged).toBe(true);
-    expect(mergeResult.messageSource).toBe('derived');
-    expect(mergeResult.commitMessage).toBe('feat: normal source narrative');
-    expect(readHeadBody(testRoot)).toBe('feat: normal source narrative');
-  });
-
-  it('derives normal merge commit message from multiple source commits when omitted', async () => {
-    const feature = 'merge-derived-normal-multi-feature';
-    const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
-      testRoot,
-      'sess_merge_derived_normal_multi',
-      feature,
-      'Merge Derived Normal Multi Feature',
-      'Yes, this test validates derived normal merge commit messages from multiple task branch commits.',
-    );
-
-    fs.writeFileSync(path.join(worktreePath, 'first.txt'), 'first\n');
-    execSync('git add first.txt && git commit -m "feat: first normal change"', { cwd: worktreePath });
-    fs.writeFileSync(path.join(worktreePath, 'second.txt'), 'second\n');
-    execSync('git add second.txt && git commit -m "fix: second normal change"', { cwd: worktreePath });
-
-    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
-      {
-        feature,
-        task: FIRST_TASK,
-        status: 'completed',
-        summary: 'Marked pre-committed worktree done. Tests pass (bun test).',
-      },
-      toolContext,
-    );
-    const commitResult = JSON.parse(commitRaw as string) as { ok: boolean; taskState?: string };
-    expect(commitResult.ok).toBe(true);
-    expect(commitResult.taskState).toBe('done');
-
-    const baseBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: testRoot, encoding: 'utf-8' }).trim();
-    const sourceLog = execSync(`git log --reverse --format=%h%x00%s ${baseBranch}..HEAD`, {
-      cwd: worktreePath,
-      encoding: 'utf-8',
-    }).trim().split('\n');
-    const [firstHash, firstSubject] = sourceLog[0].split('\0');
-    const [secondHash, secondSubject] = sourceLog[1].split('\0');
-    const expectedMessage = `feat: first normal change\n\nMerged commits:\n- ${firstHash} ${firstSubject}\n- ${secondHash} ${secondSubject}`;
-
-    const mergeRaw = await hooks.tool!.hive_merge.execute(
-      { feature, task: FIRST_TASK, strategy: 'merge' },
-      toolContext,
-    );
-    const mergeResult = JSON.parse(mergeRaw as string) as {
-      success: boolean;
-      merged: boolean;
-      commitMessage?: string;
-      messageSource?: string;
-    };
-
-    expect(mergeResult.success).toBe(true);
-    expect(mergeResult.merged).toBe(true);
-    expect(mergeResult.messageSource).toBe('derived');
-    expect(mergeResult.commitMessage).toBe(expectedMessage);
-    expect(readHeadBody(testRoot)).toBe(expectedMessage);
+    expect(mergeResult.success).toBe(false);
+    expect(mergeResult.merged).toBe(false);
+    expect(mergeResult.commitMessage).toBeUndefined();
   });
 
   it("rejects custom merge message for rebase strategy", async () => {
@@ -3077,6 +3057,7 @@ Do it
         task: FIRST_TASK,
         status: "completed",
         summary: "Prepared rebase rejection test. Tests pass (bun test).",
+        message: TEST_COMMIT_MESSAGE,
       },
       toolContext
     );
@@ -3618,6 +3599,7 @@ Also wait for task one.
         task: FIRST_TASK,
         status: "completed",
         summary: "Finished the first task. Regression test recorded wrap-up state.",
+        message: TEST_COMMIT_MESSAGE,
       },
       createToolContext("sess_helper_status_worker")
     );
@@ -3816,6 +3798,7 @@ Original plan task four content must stay isolated from any append-only manual f
         task: '03-third-task',
         status: 'completed',
         summary: 'Completed 03-third-task. Targeted issue-72 regression setup test recorded local wrap-up state.',
+        message: TEST_COMMIT_MESSAGE,
       },
       createToolContext('sess_issue_72_worker_03-third-task'),
     );
@@ -4167,7 +4150,8 @@ function initBareRepo(p: string): void {
   execSync('git config user.email "test@example.com"', { cwd: p });
   execSync('git config user.name "Test"', { cwd: p });
   fs.writeFileSync(path.join(p, 'README.md'), `repo at ${path.basename(p)}\n`);
-  execSync('git add README.md', { cwd: p });
+  fs.writeFileSync(path.join(p, '.gitignore'), '.hive/\n');
+  execSync('git add README.md .gitignore', { cwd: p });
   execSync('git commit -m "init"', { cwd: p });
 }
 
@@ -4633,7 +4617,7 @@ Do it.
     fs.writeFileSync(path.join(repos.api.path, 'note.txt'), 'single-repo composite commit\n');
 
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite single-repo commit. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite single-repo commit. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
     const commitResult = JSON.parse(commitRaw as string) as {
@@ -4662,7 +4646,7 @@ Do it.
     fs.writeFileSync(path.join(repos.web.path, 'web-note.txt'), 'web change\n');
 
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite multi-repo commit. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite multi-repo commit. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
     const commitResult = JSON.parse(commitRaw as string) as {
@@ -4726,7 +4710,7 @@ Do it.
     fs.rmSync(repos.web.path, { recursive: true, force: true });
 
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite partial failure attempt. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite partial failure attempt. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
     const commitResult = JSON.parse(commitRaw as string) as {
@@ -4753,18 +4737,57 @@ Do it.
     expect(commitResult.nextAction ?? '').toMatch(/resolve|blocked|failed/i);
   });
 
+  it('hive_worktree_commit (composite): first repo unchanged and later repo failure is rejected via error, not treated as no-change success', async () => {
+    const feature = 'mr-commit-later-fail';
+    const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_commit_later_fail');
+
+    fs.writeFileSync(path.join(repos.web.path, 'web-note.txt'), 'web only\n');
+    fs.rmSync(repos.web.path, { recursive: true, force: true });
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Later-repo failure after earlier no-change. Tests pass.', message: TEST_COMMIT_MESSAGE },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      taskState?: string;
+      reportPath?: string;
+      commit?: {
+        committed?: boolean;
+        partial?: boolean;
+        error?: string;
+        message?: string;
+        repos?: Record<string, { committed: boolean; message?: string }>;
+      };
+      message?: string;
+    };
+
+    expect(commitResult.ok).toBe(false);
+    expect(commitResult.terminal).toBe(false);
+    expect(commitResult.taskState).toBe('in_progress');
+    expect(commitResult.commit?.committed).toBe(false);
+    expect(commitResult.commit?.partial).toBeFalsy();
+    expect(commitResult.commit?.error).toContain('web');
+    expect(commitResult.commit?.repos!.api.committed).toBe(false);
+    expect(commitResult.commit?.repos!.web.committed).toBe(false);
+    expect(commitResult.commit?.message).not.toBe('No changes to commit');
+    expect(commitResult.reportPath).toBeUndefined();
+    expect(commitResult.message ?? '').toMatch(/fail|error|worktree/i);
+  });
+
   it('hive_merge (composite single-repo): returns aggregate repos and success', async () => {
     const feature = 'mr-merge-single';
     const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api'], feature, 'sess_mr_merge_single');
 
     fs.writeFileSync(path.join(repos.api.path, 'merge-note.txt'), 'composite single merge\n');
     await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite single merge. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite single merge. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
 
     const mergeRaw = await hooks.tool!.hive_merge.execute(
-      { feature, task: '01-composite-task', strategy: 'merge' },
+      { feature, task: '01-composite-task', strategy: 'merge', message: TEST_MERGE_MESSAGE },
       toolContext,
     );
     const mergeResult = JSON.parse(mergeRaw as string) as {
@@ -4793,12 +4816,12 @@ Do it.
     fs.writeFileSync(path.join(repos.api.path, 'api-merge.txt'), 'api merge\n');
     fs.writeFileSync(path.join(repos.web.path, 'web-merge.txt'), 'web merge\n');
     await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite multi merge. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite multi merge. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
 
     const mergeRaw = await hooks.tool!.hive_merge.execute(
-      { feature, task: '01-composite-task', strategy: 'merge' },
+      { feature, task: '01-composite-task', strategy: 'merge', message: TEST_MERGE_MESSAGE },
       toolContext,
     );
     const mergeResult = JSON.parse(mergeRaw as string) as {
@@ -4826,7 +4849,7 @@ Do it.
     fs.writeFileSync(path.join(repos.api.path, 'api-pre.txt'), 'api pre\n');
     fs.writeFileSync(path.join(repos.web.path, 'web-pre.txt'), 'web pre\n');
     await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite preflight merge. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite preflight merge. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
 
@@ -4834,7 +4857,7 @@ Do it.
     fs.writeFileSync(path.join(testRoot, 'repos', 'web', 'dirty.txt'), 'dirty target\n');
 
     const mergeRaw = await hooks.tool!.hive_merge.execute(
-      { feature, task: '01-composite-task', strategy: 'merge' },
+      { feature, task: '01-composite-task', strategy: 'merge', message: TEST_MERGE_MESSAGE },
       toolContext,
     );
     const mergeResult = JSON.parse(mergeRaw as string) as {
@@ -4867,12 +4890,12 @@ Do it.
     fs.writeFileSync(path.join(repos.api.path, 'api-ok.txt'), 'api ok\n');
     fs.writeFileSync(path.join(repos.web.path, 'conflict.txt'), 'task version\n');
     await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite conflict merge. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite conflict merge. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
 
     const mergeRaw = await hooks.tool!.hive_merge.execute(
-      { feature, task: '01-composite-task', strategy: 'merge' },
+      { feature, task: '01-composite-task', strategy: 'merge', message: TEST_MERGE_MESSAGE },
       toolContext,
     );
     const mergeResult = JSON.parse(mergeRaw as string) as {
@@ -4899,7 +4922,7 @@ Do it.
     fs.writeFileSync(path.join(repos.api.path, 'api-r.txt'), 'api r\n');
     fs.writeFileSync(path.join(repos.web.path, 'web-r.txt'), 'web r\n');
     await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite rebase rejection. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Prepare composite rebase rejection. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
 
@@ -4987,7 +5010,7 @@ Do it.
 
     // Commit: aggregate success with per-repo entries and repo-qualified report files.
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Non-git composite e2e. Tests pass.' },
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Non-git composite e2e. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
     const commit = JSON.parse(commitRaw as string) as {
@@ -5013,7 +5036,7 @@ Do it.
 
     // Merge: aggregate success with per-repo entries and repoId-qualified filesChanged.
     const mergeRaw = await hooks.tool!.hive_merge.execute(
-      { feature, task: '01-composite-task', strategy: 'merge' },
+      { feature, task: '01-composite-task', strategy: 'merge', message: TEST_MERGE_MESSAGE },
       toolContext,
     );
     const merge = JSON.parse(mergeRaw as string) as {
@@ -5074,7 +5097,7 @@ Do it.
     fs.writeFileSync(path.join(start.worktreePath, 'legacy-note.txt'), 'legacy e2e\n');
 
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: FIRST_TASK, status: 'completed', summary: 'Legacy single-root e2e. Tests pass.' },
+      { feature, task: FIRST_TASK, status: 'completed', summary: 'Legacy single-root e2e. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
     );
     const commit = JSON.parse(commitRaw as string) as {
@@ -5093,7 +5116,7 @@ Do it.
     expect(commit.nextAction).toContain('hive_merge');
 
     const mergeRaw = await hooks.tool!.hive_merge.execute(
-      { feature, task: FIRST_TASK, strategy: 'merge' },
+      { feature, task: FIRST_TASK, strategy: 'merge', message: TEST_MERGE_MESSAGE },
       toolContext,
     );
     const merge = JSON.parse(mergeRaw as string) as {

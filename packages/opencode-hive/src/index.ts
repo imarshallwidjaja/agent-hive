@@ -2325,7 +2325,7 @@ NEXT: Ask your first clarifying question about this feature.`;
         args: {
           task: tool.schema.string().describe('Task folder name'),
           summary: tool.schema.string().describe('Summary of what was done'),
-          message: tool.schema.string().optional().describe('Optional git commit message. Empty uses default.'),
+          message: tool.schema.string().optional().describe('Required when changes will be committed. Must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.'),
           status: tool.schema.enum(['completed', 'blocked', 'failed', 'partial']).optional().default('completed').describe('Task completion status'),
           blocker: tool.schema.object({
             reason: tool.schema.string().describe('Why the task is blocked'),
@@ -2422,14 +2422,13 @@ NEXT: Ask your first clarifying question about this feature.`;
           }
 
           // For failed/partial, still commit what we have
-          const commitMessage = message || `hive(${task}): ${summary.slice(0, 50)}`;
-          const commitResult = await worktreeService.commitChanges(feature, task, commitMessage);
+          const commitResult = await worktreeService.commitChanges(feature, task, message);
 
           // Aggregate composite partial failure: at least one repo committed, at
           // least one repo failed. Do not let this silently become `done`; keep
           // task state and surface the per-repo breakdown so the worker can
           // resolve, retry, or explicitly report blocked/failed.
-          if (status === 'completed' && commitResult.partial) {
+          if (commitResult.partial) {
             return respond({
               ok: false,
               terminal: false,
@@ -2452,7 +2451,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
           }
 
-          if (status === 'completed' && !commitResult.committed && commitResult.message !== 'No changes to commit') {
+          if (commitResult.error || (!commitResult.committed && commitResult.message !== 'No changes to commit')) {
             return respond({
               ok: false,
               terminal: false,
@@ -2466,9 +2465,10 @@ NEXT: Ask your first clarifying question about this feature.`;
                 committed: commitResult.committed,
                 sha: commitResult.sha,
                 message: commitResult.message,
+                ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
                 ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
               },
-              message: `Commit failed: ${commitResult.message || 'unknown error'}`,
+              message: `Commit failed: ${commitResult.error || commitResult.message || 'unknown error'}`,
               nextAction: 'Resolve git/worktree issue, then call hive_worktree_commit again.',
             });
           }
@@ -2572,13 +2572,13 @@ NEXT: Ask your first clarifying question about this feature.`;
         description: 'Merge completed task branch into current branch (explicit integration)',
         args: {
           task: tool.schema.string().describe('Task folder name to merge'),
-          strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional().describe('Merge strategy (default: merge)'),
-          message: tool.schema.string().optional().describe('Self-descriptive project-history commit message for merge/squash. Omit only to derive from source branch commits. Rebase disallows custom messages.'),
+          strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional().describe('Merge strategy (default: squash). Rebase and normal merge are explicit exceptions for intentionally preserved history.'),
+          message: tool.schema.string().optional().describe('Required for merge/squash. Must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body. Rebase disallows custom messages.'),
           preserveConflicts: tool.schema.boolean().optional().describe('Keep merge conflict state intact instead of auto-aborting (default: false).'),
           cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional().describe('Cleanup mode after a successful merge (default: none).'),
           feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
         },
-        async execute({ task, strategy = 'merge', message, preserveConflicts, cleanup, feature: explicitFeature }) {
+        async execute({ task, strategy = 'squash', message, preserveConflicts, cleanup, feature: explicitFeature }) {
           const failure = (error: string) => respond({
             success: false,
             merged: false,
@@ -2732,7 +2732,7 @@ NEXT: Ask your first clarifying question about this feature.`;
           runId: tool.schema.string().describe('Ad-hoc run identifier returned from hive_adhoc_worktree_create.'),
           workspacePath: tool.schema.string().describe('Workspace path returned from hive_adhoc_worktree_create.'),
           branch: tool.schema.string().describe('Branch returned from hive_adhoc_worktree_create.'),
-          message: tool.schema.string().describe('Git commit message.'),
+          message: tool.schema.string().describe('Git commit message with a non-empty one-line subject, a blank line, and a non-empty descriptive body.'),
         },
         async execute({ runId, workspacePath: expectedWorkspacePath, branch: expectedBranch, message }) {
           try {
@@ -2759,8 +2759,12 @@ NEXT: Ask your first clarifying question about this feature.`;
               });
             }
             const result: AdhocCommitResult = await adhocWorktreeService.commit(runId, message);
+            const isPartial = result.partial === true;
+            const hasError = Boolean(result.error) || isPartial;
+            const isNoChange = !result.committed && result.message === 'No changes to commit' && !hasError;
+            const success = !hasError && (result.committed || isNoChange);
             return respond({
-              success: result.committed || result.message === 'No changes to commit',
+              success,
               runId,
               workspacePath,
               branch: info.branch,
@@ -2772,9 +2776,12 @@ NEXT: Ask your first clarifying question about this feature.`;
                 ...(result.error !== undefined ? { error: result.error } : {}),
                 ...(result.repos !== undefined ? { repos: result.repos } : {}),
               },
-              nextAction: result.committed
-                ? 'Call hive_adhoc_merge with message when a specific project-history subject is needed, omit message only to derive from branch commits, pass strategy: "merge" when needed, or call hive_adhoc_cleanup to discard.'
-                : (result.message === 'No changes to commit'
+              ...(hasError && result.error !== undefined ? { error: result.error } : {}),
+              nextAction: isPartial
+                ? 'Resolve the failed repo, then call hive_adhoc_worktree_commit again.'
+                : result.committed
+                ? 'Call hive_adhoc_merge with an explicit valid aggregate message. Keep the default squash strategy unless preserved multi-commit history is intentionally valuable, or call hive_adhoc_cleanup to discard.'
+                : (isNoChange
                   ? 'No changes were committed. Modify the worktree and retry hive_adhoc_worktree_commit.'
                   : 'Resolve the commit failure (per-repo error or git state) and retry hive_adhoc_worktree_commit.'),
             });
@@ -2796,7 +2803,7 @@ NEXT: Ask your first clarifying question about this feature.`;
         args: {
           runId: tool.schema.string().describe('Ad-hoc run identifier.'),
           strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional().describe('Merge strategy (default: squash). Use merge explicitly when preserving branch topology is more important than minimizing commit churn.'),
-          message: tool.schema.string().optional().describe('Self-descriptive project-history commit message for merge/squash. Omit only to derive from source branch commits. Rebase disallows custom messages.'),
+          message: tool.schema.string().optional().describe('Required for merge/squash. Must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body. Rebase disallows custom messages.'),
           preserveConflicts: tool.schema.boolean().optional().describe('Keep merge conflict state intact instead of auto-aborting (default: false).'),
           cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional().describe('Cleanup mode after a successful merge (default: none).'),
         },

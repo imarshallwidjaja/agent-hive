@@ -415,14 +415,13 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('bun run test');
     });
 
-    it('requires self-descriptive merge messages and linear history preference', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Pass an explicit `message` when you need a specific self-descriptive project-history subject or body');
-      expect(QUEEN_BEE_PROMPT).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
+    it('defaults to one polished squash commit per task', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('Default to `strategy: "squash"`');
+      expect(QUEEN_BEE_PROMPT).toContain('subject, a blank line, and a descriptive body');
       expect(QUEEN_BEE_PROMPT).toContain('Preserve one root commit per completed task');
-      expect(QUEEN_BEE_PROMPT).toContain('Do not squash a whole feature or merge batch into one commit');
-      expect(QUEEN_BEE_PROMPT).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
+      expect(QUEEN_BEE_PROMPT).toContain('review and fix iterations into that squash commit');
       expect(QUEEN_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
-      expect(QUEEN_BEE_PROMPT).toContain('Prefer `strategy: "rebase"`');
+      expect(QUEEN_BEE_PROMPT).not.toContain('Prefer `strategy: "rebase"`');
     });
 
     it('teaches Hive to delegate bounded hard-task cleanup and safe follow-up handling to hive-helper', () => {
@@ -739,14 +738,13 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('bun run test');
     });
 
-    it('requires self-descriptive merge messages and linear history preference', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Pass an explicit `message` when you need a specific self-descriptive project-history subject or body');
-      expect(SWARM_BEE_PROMPT).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
+    it('defaults to one polished squash commit per task', () => {
+      expect(SWARM_BEE_PROMPT).toContain('Default to `strategy: "squash"`');
+      expect(SWARM_BEE_PROMPT).toContain('subject, a blank line, and a descriptive body');
       expect(SWARM_BEE_PROMPT).toContain('Preserve one root commit per completed task');
-      expect(SWARM_BEE_PROMPT).toContain('Do not squash a whole feature or merge batch into one commit');
-      expect(SWARM_BEE_PROMPT).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
+      expect(SWARM_BEE_PROMPT).toContain('review and fix iterations into that squash commit');
       expect(SWARM_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
-      expect(SWARM_BEE_PROMPT).toContain('Prefer `strategy: "rebase"`');
+      expect(SWARM_BEE_PROMPT).not.toContain('Prefer `strategy: "rebase"`');
     });
 
     it('teaches Swarm to delegate bounded hard-task cleanup and safe follow-up handling to hive-helper', () => {
@@ -820,6 +818,12 @@ describe('Swarm (Orchestrator) prompt', () => {
 });
 
 describe('Forager (Worker/Coder) prompt', () => {
+  it('requires one meaningful task commit with a subject and body', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('one meaningful commit per feature task');
+    expect(FORAGER_BEE_PROMPT).toContain('subject, a blank line, and a descriptive body');
+    expect(FORAGER_BEE_PROMPT).toContain('message: "type(scope): concise subject\\n\\nDescribe what changed and why."');
+  });
+
   it('contains resolve before blocking', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Resolve Before Blocking');
     expect(FORAGER_BEE_PROMPT).toContain('tried 3');
@@ -917,12 +921,11 @@ describe('Hive Helper prompt', () => {
 
   it('requires explicit self-descriptive hive_merge messages', () => {
     expect(HIVE_HELPER_PROMPT).toContain('Preserve one root commit per completed task');
-    expect(HIVE_HELPER_PROMPT).toContain('Do not squash a whole feature or merge batch into one commit');
-    expect(HIVE_HELPER_PROMPT).toContain('Keep review follow-up and integration fixes as separate self-descriptive commits');
-    expect(HIVE_HELPER_PROMPT).toContain('Pass an explicit `message` when you need a specific self-descriptive project-history subject or body');
-    expect(HIVE_HELPER_PROMPT).toContain('omit `message` (or pass `\'\'`) to derive from source branch commits');
+    expect(HIVE_HELPER_PROMPT).toContain('Default to `strategy: "squash"`');
+    expect(HIVE_HELPER_PROMPT).toContain('review and fix iterations into that squash commit');
+    expect(HIVE_HELPER_PROMPT).toContain('subject, a blank line, and a descriptive body');
     expect(HIVE_HELPER_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
-    expect(HIVE_HELPER_PROMPT).toContain('Prefer `strategy: "rebase"`');
+    expect(HIVE_HELPER_PROMPT).not.toContain('Prefer `strategy: "rebase"`');
   });
 
   it('does not auto-load a Hive Skill appendix into the helper prompt', () => {

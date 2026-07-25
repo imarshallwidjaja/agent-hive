@@ -156,15 +156,13 @@ Before merge or interrupted wrap-up decisions, call \`hive_status()\` and read \
 Swarm decides when to merge, then normally routes eligible merge batches, state clarification, and safe wrap-up assistance through \`hive-helper\` by helper merge delegation/state clarification, for example:
 
 \`\`\`
-task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: merge completed tasks 01-task-name and 02-task-name into the current branch. Preserve one root commit per completed task, keep review follow-up and integration fixes as separate self-descriptive commits, prefer linear history when possible, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })
+task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: squash each completed task branch into one polished root commit, fold review and fix iterations into that task commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })
 \`\`\`
 
-Root history should show task-level progress, not feature-level compaction. Preserve one root commit per completed task. Keep review follow-up and integration fixes as separate self-descriptive commits. Do not squash a whole feature or merge batch into one commit.
+Root history should show task-level progress. Preserve one root commit per completed task and fold provisional implementation, review and fix iterations into that squash commit.
 Merge commits must read like normal project history. Helper should choose the strategy deliberately for each task branch:
-- Prefer \`strategy: "rebase"\` when the task branch has clean, well-written commits and replaying them preserves useful linear root history.
-- Use \`strategy: "squash"\` only to collapse worker-internal churn within one task branch.
-- Use \`strategy: "merge"\` only when preserving a task branch topology is more important than linear history.
-- Pass an explicit \`message\` when you need a specific self-descriptive project-history subject or body; omit \`message\` (or pass \`''\`) to derive from source branch commits (single commit: subject only; multiple: first subject plus strategy heading and short hashes).
+- Default to \`strategy: "squash"\` with an explicit polished aggregate message containing a non-empty one-line subject, a blank line, and a descriptive body.
+- Use \`strategy: "rebase"\` or \`strategy: "merge"\` only when preserving independently valuable commits or branch topology is intentional. Every preserved commit must independently satisfy the same subject-and-body contract; normal merge also requires a valid aggregate message.
 - Do not use \`hive\`, task numbers, task folder names, run IDs, or "merge task" prose in project history. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
 - Do not provide a non-blank \`message\` when using \`strategy: "rebase"\`.
 

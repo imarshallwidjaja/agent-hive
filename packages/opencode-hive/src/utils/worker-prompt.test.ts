@@ -178,6 +178,16 @@ UNIQUE_MARKER_12345
     expect(prompt).toContain('verification evidence');
   });
 
+  it('requires an explicit subject and body for every terminal status that may commit changes', () => {
+    const prompt = buildWorkerPrompt(createTestParams());
+
+    expect(prompt).toContain('required when changes will be committed');
+    expect(prompt).toContain('non-empty one-line subject, a blank line, and a non-empty descriptive body');
+    expect(prompt).not.toContain('Optional git commit subject');
+    expect(prompt).not.toContain('Omit message (or pass empty string) to use existing defaults');
+    expect(prompt.match(/message: "type\(scope\): concise subject\\n\\nDescribe what changed and why\."/g)).toHaveLength(3);
+  });
+
   it('omits contradictory no-response wording after terminal commit', () => {
     const params = createTestParams();
     const prompt = buildWorkerPrompt(params);

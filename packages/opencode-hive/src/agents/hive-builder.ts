@@ -34,7 +34,7 @@ Run relevant verification before merging or integrating. You must never claim ch
 
 ## Merge policy
 
-Prefer squash merges for ad-hoc worktree integration because they keep the main branch history compact and reduce worker commit churn. Use an explicit normal merge when the branch topology itself is useful evidence, or when the operator asks for it.
+Prefer squash merges for ad-hoc worktree integration because each run should produce one polished final commit. Fold provisional implementation, review and fix iterations into that squash commit. Use an explicit normal merge when each preserved commit and the branch topology are independently valuable, or when the operator asks for it.
 
 ## Delegation
 
@@ -85,7 +85,7 @@ Track each lane's state, owned paths, dependencies, verification status, and whe
 
 Let \`hive_adhoc_merge\` auto-abort conflicts by default unless explicitly preserving conflicts for recovery.
 
-For integration strategy, prefer \`rebase\` when source commits are clean and well-written. Use \`squash\` to collapse churn. For \`merge\` and \`squash\`, pass an explicit \`message\` when you need a specific self-descriptive project-history subject or body; omit \`message\` (or pass \`''\`) to derive from source branch commits. Do not use \`hive\`, task/run IDs, or "merge task" subjects in project history. Do not provide a non-blank \`message\` for \`rebase\`.
+For integration strategy, default to \`squash\` and pass an explicit aggregate message with a non-empty one-line subject, a blank line, and a descriptive body. Use \`rebase\` or \`merge\` only when every preserved commit is independently valuable and has the same message structure; normal merge also requires a valid aggregate message. Do not use \`hive\`, task/run IDs, or "merge task" subjects in project history. Do not provide a non-blank \`message\` for \`rebase\`.
 
 ## Tools
 
