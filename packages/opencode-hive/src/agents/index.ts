@@ -11,6 +11,7 @@
  * - Code Reviewer: Reviews implementation changes
  * - Simplicity Reviewer: Reviews implementation changes for deletion-biased cleanup
  * - Approach Advisor: Reviews technical direction
+ * - Vulnerability Reviewer: Reviews evidenced attacker-to-impact paths
  * - Hive Builder: Ad-hoc orchestrator for non-feature work
  */
 
@@ -26,6 +27,8 @@ export { planReviewerAgent, PLAN_REVIEWER_PROMPT } from './plan-reviewer';
 export { codeReviewerAgent, CODE_REVIEWER_PROMPT } from './code-reviewer';
 export { simplicityReviewerAgent, SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 export { approachAdvisorAgent, APPROACH_ADVISOR_PROMPT } from './approach-advisor';
+export { vulnerabilityReviewerAgent, VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
+export { VULNERABILITY_REVIEW_PRIMARY_AGENT, VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-primary';
 
 
 /**
@@ -41,6 +44,7 @@ export { approachAdvisorAgent, APPROACH_ADVISOR_PROMPT } from './approach-adviso
  * - code-reviewer: Reviews implementation changes
  * - simplicity-reviewer: Reviews implementation changes for deletion-biased cleanup
  * - approach-advisor: Reviews technical direction
+ * - vulnerability-reviewer: Reviews evidenced attacker-to-impact paths
    * - hive-builder: Primary general-purpose Hive-aware orchestrator for ad-hoc work
  */
 export const hiveAgents = {
@@ -93,6 +97,11 @@ export const hiveAgents = {
   'approach-advisor': {
     name: 'Approach Advisor',
     description: 'Read-only technical advisor for approach, architecture, and tradeoffs.',
+    mode: 'subagent' as const,
+  },
+  'vulnerability-reviewer': {
+    name: 'Vulnerability Reviewer',
+    description: 'Reviews evidenced attacker-to-impact paths and application-security root causes.',
     mode: 'subagent' as const,
   },
   'hive-builder': {

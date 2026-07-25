@@ -19,6 +19,22 @@ import { APPROACH_ADVISOR_PROMPT } from './agents/approach-advisor.js';
 import { DASH_REVIEWER_PROMPT } from './agents/dash-reviewer.js';
 import { buildDashReviewLanes, UNIVERSAL_METADATA_HIVE_TOOLS as UNIVERSAL_METADATA_HIVE_TOOLS_TUPLE } from './agents/dash-review-lanes.js';
 import type { DashReviewLaneSource } from './agents/dash-review-lanes.js';
+import { VULNERABILITY_REVIEWER_PROMPT } from './agents/vulnerability-reviewer.js';
+import {
+  VULNERABILITY_REVIEW_PRIMARY_AGENT,
+  VULNERABILITY_REVIEW_PRIMARY_PROMPT,
+} from './agents/vulnerability-review-primary.js';
+import {
+  buildVulnerabilityReviewLanes,
+  buildVulnerabilityReviewPermission,
+  buildVulnerabilityReviewToolConfig,
+  isVulnerabilityReviewToolAllowed,
+  vulnerabilityReviewRoleForAgent,
+} from './agents/vulnerability-review-lanes.js';
+import type {
+  VulnerabilityReviewLane,
+  VulnerabilityReviewLaneSource,
+} from './agents/vulnerability-review-lanes.js';
 import {
   captureReviewMaterialization,
   fingerprintReviewRepositoryMaterializations,
@@ -426,14 +442,24 @@ const plugin: Plugin = async (ctx) => {
   let runtimeBackgroundGuidance: BackgroundDelegationAvailability = { available: false, reason: 'availability-unknown' };
   let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
   let runtimeDashReviewLanes: HiveCommandDashReviewLane[] = [];
+  let runtimeVulnerabilityReviewLanes: VulnerabilityReviewLane[] = [];
   const dashReviewPendingCommandSessions = new Set<string>();
-  const reviewWorkspaceWorkflowAliases = (): ReviewWorkspaceWorkflowAliases[] => [{
-    workflow: 'dash-review',
-    primaryAgent: DASH_REVIEW_PRIMARY_AGENT,
-    creatorAgents: runtimeDashReviewLanes
-      .filter((lane) => lane.baseAgent === 'scout-researcher')
-      .map((lane) => lane.taskTarget),
-  }];
+  const reviewWorkspaceWorkflowAliases = (): ReviewWorkspaceWorkflowAliases[] => [
+    {
+      workflow: 'dash-review',
+      primaryAgent: DASH_REVIEW_PRIMARY_AGENT,
+      creatorAgents: runtimeDashReviewLanes
+        .filter((lane) => lane.baseAgent === 'scout-researcher')
+        .map((lane) => lane.taskTarget),
+    },
+    {
+      workflow: 'vulnerability-review',
+      primaryAgent: VULNERABILITY_REVIEW_PRIMARY_AGENT,
+      creatorAgents: runtimeVulnerabilityReviewLanes
+        .filter((lane) => lane.role === 'scope-scout')
+        .map((lane) => lane.taskTarget),
+    },
+  ];
   const dashReviewAllowedHiveTools = (agent: string): ReadonlySet<string> | undefined => {
     if (agent === DASH_REVIEW_PRIMARY_AGENT) {
       return new Set([...UNIVERSAL_METADATA_HIVE_TOOLS, 'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']);
@@ -537,20 +563,6 @@ const plugin: Plugin = async (ctx) => {
       repositories,
     };
   };
-  const requireSnapshotScopeAlias = (context: { agent?: unknown } | undefined): void => {
-    if (runtimeDashReviewLanes.length === 0) {
-      throw new Error('Dash snapshot aliases are not registered yet.');
-    }
-    const agent = typeof context?.agent === 'string' ? context.agent : undefined;
-    const allowedAliases = new Set(
-      runtimeDashReviewLanes
-        .filter((lane) => lane.baseAgent === 'scout-researcher')
-        .map((lane) => lane.taskTarget),
-    );
-    if (!agent || !allowedAliases.has(agent)) {
-      throw new Error('Caller is not authorized to inspect dash-review snapshots.');
-    }
-  };
   const reviewSnapshotInputForRepository = (
     repositoryPath: string,
     snapshotInput: GitSnapshotInput,
@@ -609,8 +621,8 @@ const plugin: Plugin = async (ctx) => {
     );
     return { captures, sourceFingerprint, materializedFingerprint };
   };
-  const createDashReviewRunId = (): string => {
-    return `dash-review-${randomUUID()}`;
+  const createReviewRunId = (workflow: 'dash-review' | 'vulnerability-review'): string => {
+    return `${workflow}-${randomUUID()}`;
   };
   const createHiveCommandContext = () => {
     const currentConfig = configService.get();
@@ -1533,7 +1545,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         const sessionID = event.properties.sessionID;
         dashReviewPendingCommandSessions.delete(sessionID);
         try {
-          const results = await reviewWorkspaceService.cleanupOwnedBySession(sessionID, ['dash-review']);
+          const results = await reviewWorkspaceService.cleanupOwnedBySession(sessionID, ['dash-review', 'vulnerability-review']);
           for (const result of results) {
             if (!result.cleaned) {
               console.warn(`[hive:review] session cleanup preserved ${result.runId}: ${result.errors.join('; ')}`);
@@ -1726,6 +1738,9 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     "tool.execute.before": async (input, output) => {
       const caller = input.sessionID ? sessionService.getGlobal(input.sessionID)?.agent : undefined;
       const allowedHiveTools = caller ? dashReviewAllowedHiveTools(caller) : undefined;
+      const vulnerabilityReviewRole = caller
+        ? vulnerabilityReviewRoleForAgent(caller, runtimeVulnerabilityReviewLanes)
+        : undefined;
       const pendingDashReviewCommand = dashReviewPendingCommandSessions.has(input.sessionID);
       if (pendingDashReviewCommand && !caller) {
         throw new Error('dash-review tool authorization failed closed: caller identity is unavailable.');
@@ -1744,6 +1759,24 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         }
       } else if (pendingDashReviewCommand && !caller) {
           throw new Error('dash-review tool authorization failed closed: caller identity is unavailable.');
+      }
+      if (vulnerabilityReviewRole) {
+        if (!isVulnerabilityReviewToolAllowed(vulnerabilityReviewRole, input.tool)) {
+          throw new Error(`vulnerability-review tool is not authorized: ${input.tool}`);
+        }
+        if (input.tool === 'task') {
+          const target = typeof output.args?.subagent_type === 'string'
+            ? output.args.subagent_type
+            : undefined;
+          const authorizedTargets = new Set(runtimeVulnerabilityReviewLanes.map((lane) => lane.taskTarget));
+          if (
+            caller !== VULNERABILITY_REVIEW_PRIMARY_AGENT
+            || !target
+            || !authorizedTargets.has(target)
+          ) {
+            throw new Error('vulnerability-review task target is not authorized.');
+          }
+        }
       }
 
       if (input.tool === 'task' && input.sessionID) {
@@ -1860,7 +1893,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           maxPatchBytes: tool.schema.number().optional(),
         },
         async execute(input, context) {
-          requireSnapshotScopeAlias(context);
           const caller = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
           const { repositoryIds, ...snapshotInput } = input;
           const resolved = await resolveSnapshotRepositories(repositoryIds);
@@ -1869,7 +1901,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           for (let attempt = 0; attempt < 2; attempt += 1) {
             const capture = await captureReviewWorkspace(resolved, snapshotInput);
             lastFingerprint = capture.sourceFingerprint;
-            const runId = createDashReviewRunId();
+            const runId = createReviewRunId(caller.workflow);
             let workspace: Awaited<ReturnType<typeof reviewWorkspaceService.create>> | undefined;
             try {
               workspace = await reviewWorkspaceService.create({
@@ -1922,7 +1954,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             state: 'NEEDS_DISCUSSION',
             stale: true,
             sourceFingerprint: lastFingerprint,
-            recovery: 'Source changed during review workspace materialization twice. Rerun /dash-review from a fresh snapshot; no source changes were reverted.',
+            recovery: `Source changed during review workspace materialization twice. Rerun the ${caller.workflow} command from a fresh snapshot; no source changes were reverted.`,
           }, null, 2);
         },
       }),
@@ -2017,7 +2049,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           maxPatchBytes: tool.schema.number().optional().describe('Maximum patch material bytes returned, capped by the tool.'),
         },
         async execute(input, context) {
-          requireSnapshotScopeAlias(context);
+          inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
           const { repositoryIds, ...snapshotInput } = input;
           const resolved = await resolveSnapshotRepositories(repositoryIds);
           if (!resolved.composite) {
@@ -3201,6 +3233,9 @@ NEXT: Ask your first clarifying question about this feature.`;
       const dashReviewTaskPermission: Record<string, 'allow' | 'deny'> = {
         '*': 'deny',
       };
+      const vulnerabilityReviewTaskPermission: Record<string, 'allow' | 'deny'> = {
+        '*': 'deny',
+      };
       const customSubagentAppendix = Object.keys(customAgentConfigs).length === 0
         ? ''
         : `\n\n## Configured Custom Subagents\nCustom subagents are scoped specialists, not automatic model upgrades.
@@ -3399,7 +3434,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
       };
 
       function buildReviewerConfig(
-        agentName: 'plan-reviewer' | 'code-reviewer' | 'simplicity-reviewer' | 'approach-advisor',
+        agentName: 'plan-reviewer' | 'code-reviewer' | 'simplicity-reviewer' | 'approach-advisor' | 'vulnerability-reviewer',
         prompt: string,
         description: string,
       ) {
@@ -3443,6 +3478,11 @@ Do not choose a custom subagent only because the task is important, complex, or 
         APPROACH_ADVISOR_PROMPT,
         'Approach Advisor - Read-only technical advisor for approach, architecture, hard debugging direction, and tradeoffs.',
       );
+      const vulnerabilityReviewerConfig = buildReviewerConfig(
+        'vulnerability-reviewer',
+        VULNERABILITY_REVIEWER_PROMPT,
+        'Vulnerability Reviewer - Read-only application-security reviewer focused on evidenced attacker-to-impact paths and root-cause triage.',
+      );
 
       const dashReviewerConfig = {
         temperature: 0.3,
@@ -3463,6 +3503,17 @@ Do not choose a custom subagent only because the task is important, complex, or 
           question: 'allow',
           skill: 'allow',
         },
+      };
+      const vulnerabilityReviewPrimaryPermission = buildVulnerabilityReviewPermission('primary');
+      vulnerabilityReviewPrimaryPermission.task = vulnerabilityReviewTaskPermission;
+      const vulnerabilityReviewPrimaryConfig = {
+        temperature: 0.1,
+        mode: 'primary' as const,
+        hidden: true,
+        description: 'Private vulnerability review orchestrator for frozen-snapshot application-security assessment.',
+        prompt: VULNERABILITY_REVIEW_PRIMARY_PROMPT,
+        tools: buildVulnerabilityReviewToolConfig('primary', HIVE_TOOL_NAMES),
+        permission: vulnerabilityReviewPrimaryPermission,
       };
 
       const builderUserConfig = configService.getAgentConfig('hive-builder');
@@ -3512,8 +3563,10 @@ Do not choose a custom subagent only because the task is important, complex, or 
         'code-reviewer': codeReviewerConfig,
         'simplicity-reviewer': simplicityReviewerConfig,
         'approach-advisor': approachAdvisorConfig,
+        'vulnerability-reviewer': vulnerabilityReviewerConfig,
         'hive-builder': builderConfig,
         [DASH_REVIEW_PRIMARY_AGENT]: dashReviewerConfig,
+        [VULNERABILITY_REVIEW_PRIMARY_AGENT]: vulnerabilityReviewPrimaryConfig,
       };
 
       const customAutoLoadSkillsAppendices = Object.fromEntries(
@@ -3546,6 +3599,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
           'code-reviewer': codeReviewerConfig,
           'simplicity-reviewer': simplicityReviewerConfig,
           'approach-advisor': approachAdvisorConfig,
+          'vulnerability-reviewer': vulnerabilityReviewerConfig,
         },
         baseRuntimePrompts: {
           'forager-worker': foragerPrompt,
@@ -3610,6 +3664,9 @@ Do not choose a custom subagent only because the task is important, complex, or 
       for (const priorTarget of runtimeDashReviewLanes.map((lane) => lane.taskTarget)) {
         delete configAgentRecord[priorTarget];
       }
+      for (const priorTarget of runtimeVulnerabilityReviewLanes.map((lane) => lane.taskTarget)) {
+        delete configAgentRecord[priorTarget];
+      }
       const existingAgentNames = [
         ...Object.keys(builtInAgentConfigs),
         ...Object.keys(customSubagents),
@@ -3624,6 +3681,45 @@ Do not choose a custom subagent only because the task is important, complex, or 
         dashReviewTaskPermission[lane.taskTarget] = 'allow';
       }
       runtimeDashReviewLanes = dashReviewLanes.lanes;
+      const vulnerabilityReviewCustomSpecialists: VulnerabilityReviewLaneSource[] = Object.entries(customAgentConfigs)
+        .flatMap(([agentName, agentConfig]) => {
+          if (agentConfig.baseAgent !== 'vulnerability-reviewer') return [];
+          const sourceConfig = customSubagents[agentName];
+          if (!sourceConfig) return [];
+          return [{
+            name: agentName,
+            description: agentConfig.description,
+            model: sourceConfig.model,
+            variant: sourceConfig.variant,
+            temperature: sourceConfig.temperature,
+          }];
+        });
+      const vulnerabilityReviewLanes = buildVulnerabilityReviewLanes({
+        scopeScout: {
+          name: 'scout-researcher',
+          description: 'Built-in scope and attack-surface scout',
+          model: scoutConfig.model,
+          variant: scoutConfig.variant,
+          temperature: scoutConfig.temperature,
+        },
+        reviewer: {
+          name: 'vulnerability-reviewer',
+          description: 'Built-in application-security reviewer',
+          model: vulnerabilityReviewerConfig.model,
+          variant: vulnerabilityReviewerConfig.variant,
+          temperature: vulnerabilityReviewerConfig.temperature,
+        },
+        customSpecialists: vulnerabilityReviewCustomSpecialists,
+        existingNames: [
+          ...existingAgentNames,
+          ...dashReviewLanes.lanes.map((lane) => lane.taskTarget),
+        ],
+        hiveTools: HIVE_TOOL_NAMES,
+      });
+      for (const lane of vulnerabilityReviewLanes.lanes) {
+        vulnerabilityReviewTaskPermission[lane.taskTarget] = 'allow';
+      }
+      runtimeVulnerabilityReviewLanes = vulnerabilityReviewLanes.lanes;
 
       // Build agents map based on agentMode
       const allAgents: Record<string, unknown> = {};
@@ -3637,6 +3733,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         allAgents['code-reviewer'] = builtInAgentConfigs['code-reviewer'];
         allAgents['simplicity-reviewer'] = builtInAgentConfigs['simplicity-reviewer'];
         allAgents['approach-advisor'] = builtInAgentConfigs['approach-advisor'];
+        allAgents['vulnerability-reviewer'] = builtInAgentConfigs['vulnerability-reviewer'];
       } else {
         allAgents['architect-planner'] = builtInAgentConfigs['architect-planner'];
         allAgents['swarm-orchestrator'] = builtInAgentConfigs['swarm-orchestrator'];
@@ -3647,11 +3744,13 @@ Do not choose a custom subagent only because the task is important, complex, or 
         allAgents['code-reviewer'] = builtInAgentConfigs['code-reviewer'];
         allAgents['simplicity-reviewer'] = builtInAgentConfigs['simplicity-reviewer'];
         allAgents['approach-advisor'] = builtInAgentConfigs['approach-advisor'];
+        allAgents['vulnerability-reviewer'] = builtInAgentConfigs['vulnerability-reviewer'];
       }
       allAgents['hive-builder'] = builtInAgentConfigs['hive-builder'];
       allAgents[DASH_REVIEW_PRIMARY_AGENT] = builtInAgentConfigs[DASH_REVIEW_PRIMARY_AGENT];
+      allAgents[VULNERABILITY_REVIEW_PRIMARY_AGENT] = builtInAgentConfigs[VULNERABILITY_REVIEW_PRIMARY_AGENT];
 
-      Object.assign(allAgents, customSubagents, dashReviewLanes.agents);
+      Object.assign(allAgents, customSubagents, dashReviewLanes.agents, vulnerabilityReviewLanes.agents);
 
       runtimeCommandAgents = Object.fromEntries(
         Object.entries(allAgents).map(([agentName, agentConfig]) => {
@@ -3720,6 +3819,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         delete (configAgent as Record<string, unknown>)['code-reviewer'];
         delete (configAgent as Record<string, unknown>)['simplicity-reviewer'];
         delete (configAgent as Record<string, unknown>)['approach-advisor'];
+        delete (configAgent as Record<string, unknown>)['vulnerability-reviewer'];
         delete (configAgent as Record<string, unknown>).receiver;
         // Clean up old kebab-case names (in case they exist)
         delete (configAgent as Record<string, unknown>)['hive-master'];

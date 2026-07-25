@@ -796,7 +796,7 @@ describe('Per-agent tool filtering', () => {
       } as any);
       const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
 
-      await expect(execute({}, snapshotContext('review-scout-researcher-unregistered'))).rejects.toThrow('not registered');
+      await expect(execute({}, snapshotContext('review-scout-researcher-unregistered'))).rejects.toThrow('not authorized');
 
       const config: { agent?: Record<string, AgentConfig> } = {};
       await hooks.config?.(config);

@@ -348,18 +348,28 @@ export const BUILT_IN_AGENT_NAMES = [
   'code-reviewer',
   'simplicity-reviewer',
   'approach-advisor',
+  'vulnerability-reviewer',
   'hive-builder',
 ] as const;
 
 export type BuiltInAgentName = (typeof BUILT_IN_AGENT_NAMES)[number];
 
-export const CUSTOM_AGENT_BASES = ['scout-researcher', 'forager-worker', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor'] as const;
+export const CUSTOM_AGENT_BASES = [
+  'scout-researcher',
+  'forager-worker',
+  'plan-reviewer',
+  'code-reviewer',
+  'simplicity-reviewer',
+  'approach-advisor',
+  'vulnerability-reviewer',
+] as const;
 
 export type CustomAgentBase = (typeof CUSTOM_AGENT_BASES)[number];
 
 export const CUSTOM_AGENT_RESERVED_NAMES = [
   ...BUILT_IN_AGENT_NAMES,
   '__hive_dash_review_primary',
+  '__hive_vulnerability_review_primary',
   'hive',
   'architect',
   'swarm',
@@ -452,6 +462,8 @@ export interface HiveConfig {
     'simplicity-reviewer'?: AgentModelConfig;
     /** Approach Advisor */
     'approach-advisor'?: AgentModelConfig;
+    /** Vulnerability Reviewer */
+    'vulnerability-reviewer'?: AgentModelConfig;
     /** Hive Builder (ad-hoc executor) */
     'hive-builder'?: AgentModelConfig;
   };
@@ -484,6 +496,7 @@ export const DEFAULT_AGENT_MODELS = {
   'code-reviewer': 'github-copilot/gpt-5.2-codex',
   'simplicity-reviewer': 'github-copilot/gpt-5.2-codex',
   'approach-advisor': 'github-copilot/gpt-5.2-codex',
+  'vulnerability-reviewer': 'github-copilot/gpt-5.2-codex',
   'hive-builder': 'github-copilot/gpt-5.2-codex',
 } as const;
 
@@ -587,6 +600,11 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
     },
     'approach-advisor': {
       model: DEFAULT_AGENT_MODELS['approach-advisor'],
+      temperature: 0.3,
+      autoLoadSkills: [],
+    },
+    'vulnerability-reviewer': {
+      model: DEFAULT_AGENT_MODELS['vulnerability-reviewer'],
       temperature: 0.3,
       autoLoadSkills: [],
     },

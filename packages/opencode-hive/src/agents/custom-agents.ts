@@ -13,7 +13,7 @@ export type RuntimeSubagentConfig = {
 
 type BuildCustomSubagentsInput = {
   customAgents: Record<string, ResolvedCustomAgentConfig>;
-  baseAgents: Record<CustomAgentBase, RuntimeSubagentConfig>;
+  baseAgents: Partial<Record<CustomAgentBase, RuntimeSubagentConfig>>;
   baseRuntimePrompts?: Partial<Record<CustomAgentBase, string>>;
   autoLoadSkillAppendices?: Record<string, string>;
   registerRuntimePrompt?: (agentName: string, prompt: string) => void;

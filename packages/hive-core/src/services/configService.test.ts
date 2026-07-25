@@ -43,6 +43,7 @@ describe("ConfigService defaults", () => {
       "scout-researcher",
       "simplicity-reviewer",
       "swarm-orchestrator",
+      "vulnerability-reviewer",
     ]);
     expect(config.agents?.["architect-planner"]?.model).toBe(
       "github-copilot/gpt-5.2-codex",

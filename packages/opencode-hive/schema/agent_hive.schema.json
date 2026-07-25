@@ -141,6 +141,10 @@
           "$ref": "#/$defs/agentConfig",
           "description": "Approach Advisor"
         },
+        "vulnerability-reviewer": {
+          "$ref": "#/$defs/agentConfig",
+          "description": "Vulnerability Reviewer"
+        },
         "hive-builder": {
           "$ref": "#/$defs/agentConfig",
           "description": "Hive Builder (ad-hoc orchestrator)"
@@ -149,7 +153,7 @@
     },
     "customAgents": {
       "type": "object",
-      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, or approach-advisor. Project-local values are ignored by runtime config resolution. IDs cannot reuse built-in or plugin-reserved names. dash-reviewer remains available for existing custom configuration because the command uses a private runtime identity.",
+      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local values are ignored by runtime config resolution. IDs cannot reuse built-in or plugin-reserved names. dash-reviewer remains available for existing custom configuration because the command uses a private runtime identity.",
       "propertyNames": {
         "not": {
           "enum": [
@@ -163,8 +167,10 @@
             "code-reviewer",
             "simplicity-reviewer",
             "approach-advisor",
+            "vulnerability-reviewer",
             "hive-builder",
             "__hive_dash_review_primary",
+            "__hive_vulnerability_review_primary",
             "hive",
             "architect",
             "swarm",
@@ -314,7 +320,8 @@
             "plan-reviewer",
             "code-reviewer",
             "simplicity-reviewer",
-            "approach-advisor"
+            "approach-advisor",
+            "vulnerability-reviewer"
           ],
           "description": "Built-in Hive agent to inherit prompt/tools/permissions from"
         },

@@ -38,6 +38,7 @@ describe('agent_hive schema customAgents contract', () => {
       'code-reviewer',
       'simplicity-reviewer',
       'approach-advisor',
+      'vulnerability-reviewer',
     ]);
   });
 
