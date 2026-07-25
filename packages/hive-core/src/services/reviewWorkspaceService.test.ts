@@ -73,11 +73,21 @@ function createLease(repositoryIds: readonly string[]): ReviewWorkspaceLeaseInpu
 function createWorkspace(
   service: ReviewWorkspaceService,
   options: Omit<ReviewWorkspaceCreateOptions, 'lease'>,
+  leaseCreator: ReviewWorkspaceCaller = creatorCaller,
 ) {
   return service.create({
     ...options,
-    lease: createLease(options.repositories.map((repository) => repository.id)),
+    lease: {
+      ...createLease(options.repositories.map((repository) => repository.id)),
+      workflow: leaseCreator.workflow,
+      creatorAgent: leaseCreator.agent,
+      creatorSessionId: leaseCreator.sessionId,
+    },
   });
+}
+
+function reviewMetadataPath(projectRoot: string, runId: string): string {
+  return path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${runId}.json`);
 }
 
 describe('ReviewWorkspaceService', () => {
@@ -375,7 +385,11 @@ describe('ReviewWorkspaceService', () => {
 
     expect(JSON.parse(await fs.readFile(metadataPath, 'utf8')).ownerRecoveryExpiresAt).toBe(1_100);
     expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
-    now += 101;
+    now += 50;
+    await service.cleanupExpired();
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf8')).ownerRecoveryExpiresAt).toBe(1_100);
+    expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
+    now += 51;
     await service.cleanupExpired();
     await expect(fs.access(workspace.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -708,5 +722,240 @@ describe('ReviewWorkspaceService', () => {
 
     await expect(service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller)).rejects.toThrow('without valid metadata');
     expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
+  });
+
+  it('validates the persisted descriptor version and exact shape before returning a lease', async () => {
+    const source = await createRepository('descriptor-validation');
+    const service = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(service, {
+      runId: 'review-descriptor-validation',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    const metadataPath = reviewMetadataPath(source.path, workspace.runId);
+    const original = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+    const lease = await service.read(workspace.runId, workspace.ownershipToken, creatorCaller);
+
+    expect(original.schemaVersion).toBe(1);
+    expect(original).not.toHaveProperty('workspacePath');
+    expect(await fs.readFile(metadataPath, 'utf8')).not.toContain(workspace.ownershipToken);
+    expect(lease).not.toHaveProperty('ownershipTokenHash');
+    expect(lease).not.toHaveProperty('cleanupIdentities');
+    expect(JSON.stringify(lease)).not.toContain(source.path);
+
+    const invalidDescriptors: unknown[] = [
+      { ...original, schemaVersion: 2 },
+      { ...original, workspacePath: workspace.workspacePath },
+      { ...original, scopeFingerprint: 'f'.repeat(64) },
+      {
+        ...original,
+        materializedEntries: {
+          root: [{ path: 'tracked.txt', kind: 'regular', content: 'not-compact' }],
+        },
+      },
+    ];
+    for (const invalid of invalidDescriptors) {
+      await fs.writeFile(metadataPath, JSON.stringify(invalid), 'utf8');
+      await expect(service.read(workspace.runId, workspace.ownershipToken, creatorCaller)).rejects.toThrow(
+        'Invalid review workspace metadata',
+      );
+    }
+
+    await fs.writeFile(metadataPath, JSON.stringify(original), 'utf8');
+    await service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller);
+  });
+
+  it('atomically replaces metadata while preserving readers of the previous descriptor', async () => {
+    const source = await createRepository('atomic-metadata');
+    const service = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(service, {
+      runId: 'review-atomic-metadata',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    const metadataPath = reviewMetadataPath(source.path, workspace.runId);
+    const previousHandle = await fs.open(metadataPath, 'r');
+    const previousInode = (await previousHandle.stat()).ino;
+
+    try {
+      await service.claim(workspace.runId, workspace.ownershipToken, primaryCaller('atomic-owner'));
+      const previous = JSON.parse(await previousHandle.readFile('utf8'));
+      const current = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+
+      expect(previous).not.toHaveProperty('ownerSessionId');
+      expect(current.ownerSessionId).toBe('atomic-owner');
+      expect((await fs.stat(metadataPath)).ino).not.toBe(previousInode);
+      expect((await fs.readdir(path.dirname(metadataPath))).filter((entry) => entry.startsWith('.metadata-'))).toEqual([]);
+    } finally {
+      await previousHandle.close();
+    }
+
+    await service.cleanup(workspace.runId, workspace.ownershipToken, primaryCaller('atomic-owner'));
+  });
+
+  it('reconstructs token-authenticated inspect and cleanup after a service restart', async () => {
+    const source = await createRepository('restart');
+    const firstService = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(firstService, {
+      runId: 'review-restart',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    const owner = primaryCaller('restart-owner');
+    await firstService.claim(workspace.runId, workspace.ownershipToken, owner);
+
+    const restartedService = createReviewWorkspaceService(source.path);
+    const inspection = await restartedService.inspect(workspace.runId, workspace.ownershipToken, owner);
+    expect(inspection.lease).toMatchObject({
+      schemaVersion: 1,
+      runId: workspace.runId,
+      ownerSessionId: owner.sessionId,
+      ownerPid: owner.pid,
+    });
+    expect(inspection.integrity).toEqual({ trackedClean: true, baselineClean: true, untrackedFiles: false });
+    await expect(restartedService.cleanup(workspace.runId, workspace.ownershipToken, owner)).resolves.toMatchObject({ cleaned: true });
+    await expect(fs.access(workspace.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('adopts a dead owner only for the same session, workflow, agent, and valid token', async () => {
+    const source = await createRepository('dead-owner-adoption');
+    let now = 1_000;
+    const service = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+      isProcessAlive: (pid: number) => pid === process.pid,
+    });
+    const workspace = await createWorkspace(service, {
+      runId: 'review-dead-owner-adoption',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    await service.claim(workspace.runId, workspace.ownershipToken, primaryCaller('adoption-owner', 4242));
+    await service.cleanupExpired();
+    expect(JSON.parse(await fs.readFile(reviewMetadataPath(source.path, workspace.runId), 'utf8')).ownerRecoveryExpiresAt).toBe(1_100);
+
+    now = 1_050;
+    const adoptedOwner = primaryCaller('adoption-owner', process.pid);
+    const restartedService = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+      isProcessAlive: (pid: number) => pid === process.pid,
+    });
+    await restartedService.claim(workspace.runId, workspace.ownershipToken, adoptedOwner);
+    expect(await restartedService.read(workspace.runId, workspace.ownershipToken, adoptedOwner)).toMatchObject({
+      ownerSessionId: 'adoption-owner',
+      ownerPid: process.pid,
+    });
+    expect(await restartedService.read(workspace.runId, workspace.ownershipToken, adoptedOwner)).not.toHaveProperty('ownerRecoveryExpiresAt');
+    await restartedService.cleanup(workspace.runId, workspace.ownershipToken, adoptedOwner);
+  });
+
+  it('rejects owner adoption by a live competing PID or mismatched capability', async () => {
+    const source = await createRepository('owner-adoption-denied');
+    const service = createReviewWorkspaceService(source.path, {
+      isProcessAlive: (pid: number) => pid === 4242,
+    });
+    const workspace = await createWorkspace(service, {
+      runId: 'review-owner-adoption-denied',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    const owner = primaryCaller('owned-session', 4242);
+    await service.claim(workspace.runId, workspace.ownershipToken, owner);
+
+    await expect(service.claim(workspace.runId, 'wrong-token', owner)).rejects.toThrow('ownership token');
+    await expect(service.claim(workspace.runId, workspace.ownershipToken, primaryCaller('wrong-session', 4343))).rejects.toThrow('another owner');
+    await expect(service.claim(workspace.runId, workspace.ownershipToken, { ...primaryCaller('owned-session', 4343), agent: 'wrong-agent' })).rejects.toThrow('another owner');
+    await expect(service.claim(workspace.runId, workspace.ownershipToken, { ...primaryCaller('owned-session', 4343), workflow: 'vulnerability-review' })).rejects.toThrow('workflow claim');
+    await expect(service.claim(workspace.runId, workspace.ownershipToken, primaryCaller('owned-session', 4343))).rejects.toThrow('live owner process');
+    await service.cleanup(workspace.runId, workspace.ownershipToken, owner);
+  });
+
+  it('trusted session cleanup preserves failures and continues to later eligible runs', async () => {
+    const source = await createRepository('trusted-session-cleanup');
+    const setupService = createReviewWorkspaceService(source.path);
+    const targetOwner = primaryCaller('cleanup-session');
+    const otherOwner = primaryCaller('other-session');
+    const vulnerabilityCreator: ReviewWorkspaceCaller = {
+      workflow: 'vulnerability-review',
+      role: 'creator',
+      agent: '__hive_vulnerability_review_scope',
+      sessionId: 'vulnerability-scope-session',
+      pid: process.pid,
+    };
+    const vulnerabilityOwner: ReviewWorkspaceCaller = {
+      workflow: 'vulnerability-review',
+      role: 'primary',
+      agent: '__hive_vulnerability_review_primary',
+      sessionId: targetOwner.sessionId,
+      pid: process.pid,
+    };
+    const createClaimed = async (
+      runId: string,
+      owner: ReviewWorkspaceCaller,
+      creator: ReviewWorkspaceCaller = creatorCaller,
+    ) => {
+      const workspace = await createWorkspace(setupService, {
+        runId,
+        repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+      }, creator);
+      await setupService.claim(runId, workspace.ownershipToken, owner);
+      return workspace;
+    };
+
+    const corrupt = await createClaimed('a-corrupt', targetOwner);
+    const eligible = await createClaimed('b-eligible', targetOwner);
+    const invalidIdentity = await createClaimed('c-invalid-identity', targetOwner);
+    const missingMetadata = await createClaimed('d-missing-metadata', targetOwner);
+    const busy = await createClaimed('e-busy-lock', targetOwner);
+    const wrongSession = await createClaimed('f-wrong-session', otherOwner);
+    const wrongWorkflow = await createClaimed('g-wrong-workflow', vulnerabilityOwner, vulnerabilityCreator);
+    const laterEligible = await createClaimed('z-eligible-after-errors', targetOwner);
+
+    await fs.writeFile(reviewMetadataPath(source.path, corrupt.runId), '{', 'utf8');
+    const invalidIdentityMetadataPath = reviewMetadataPath(source.path, invalidIdentity.runId);
+    const invalidIdentityMetadata = JSON.parse(await fs.readFile(invalidIdentityMetadataPath, 'utf8'));
+    invalidIdentityMetadata.cleanupIdentities.root.commonDir = path.join(source.path, '.git', 'objects');
+    await fs.writeFile(invalidIdentityMetadataPath, JSON.stringify(invalidIdentityMetadata), 'utf8');
+    await fs.rm(reviewMetadataPath(source.path, missingMetadata.runId));
+    await fs.writeFile(
+      path.join(source.path, '.hive', '.worktrees', 'review', '.locks', `${busy.runId}.lock`),
+      JSON.stringify({ ownerToken: 'busy-owner', ownerPid: 9001 }),
+      'utf8',
+    );
+
+    const cleanupService = createReviewWorkspaceService(source.path, {
+      isProcessAlive: (pid: number) => pid === 9001,
+    });
+    const results = await cleanupService.cleanupOwnedBySession(targetOwner.sessionId, ['dash-review']);
+    const byRunId = Object.fromEntries(results.map((result) => [result.runId, result]));
+
+    expect(byRunId[eligible.runId]).toMatchObject({ cleaned: true, errors: [] });
+    expect(byRunId[laterEligible.runId]).toMatchObject({ cleaned: true, errors: [] });
+    expect(byRunId[corrupt.runId]).toMatchObject({ cleaned: false, errors: [expect.stringContaining('Invalid review workspace metadata')] });
+    expect(byRunId[invalidIdentity.runId]).toMatchObject({ cleaned: false, errors: [expect.stringContaining('identity')] });
+    expect(byRunId[missingMetadata.runId]).toMatchObject({ cleaned: false, errors: [expect.stringContaining('without valid metadata')] });
+    expect(byRunId[busy.runId]).toMatchObject({ cleaned: false, errors: [expect.stringContaining('busy')] });
+    expect(byRunId[wrongSession.runId]).toMatchObject({ cleaned: false, errors: [expect.stringContaining('another session')] });
+    expect(byRunId[wrongWorkflow.runId]).toMatchObject({ cleaned: false, errors: [expect.stringContaining('disallowed workflow')] });
+    await expect(fs.access(eligible.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.access(laterEligible.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const preserved of [corrupt, invalidIdentity, missingMetadata, busy, wrongSession, wrongWorkflow]) {
+      expect((await fs.stat(preserved.workspacePath)).isDirectory()).toBe(true);
+    }
+  });
+
+  it('reports a new untracked entry as a workspace delta distinct from source identity', async () => {
+    const source = await createRepository('new-untracked-integrity');
+    const service = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(service, {
+      runId: 'review-new-untracked-integrity',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    const owner = primaryCaller('new-untracked-owner');
+    await service.claim(workspace.runId, workspace.ownershipToken, owner);
+    const initial = await service.inspect(workspace.runId, workspace.ownershipToken, owner);
+    await fs.writeFile(path.join(workspace.workspacePath, 'new-untracked.txt'), 'workspace delta\n');
+
+    const changed = await service.inspect(workspace.runId, workspace.ownershipToken, owner);
+    expect(changed.integrity).toEqual({ trackedClean: true, baselineClean: true, untrackedFiles: true });
+    expect(changed.integrity.baselineClean && !changed.integrity.untrackedFiles).toBe(false);
+    expect(changed.lease.sourceFingerprint).toBe(initial.lease.sourceFingerprint);
+    await service.cleanup(workspace.runId, workspace.ownershipToken, owner);
   });
 });

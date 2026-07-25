@@ -838,8 +838,22 @@ describe('Per-agent tool filtering', () => {
       await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
       const initialInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
       expect(initialInspection.source.stable).toBe(true);
+      writeFileSync(path.join(created.workspacePath, 'new-untracked.txt'), 'workspace delta\n');
+      const untrackedInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
+      expect(untrackedInspection.integrity).toMatchObject({ baselineClean: true, untrackedFiles: true });
+      expect(untrackedInspection.reviewIntegrity).toBe(false);
+      rmSync(path.join(created.workspacePath, 'new-untracked.txt'));
+      writeFileSync(path.join(repository, 'README.md'), 'live source drift\n');
+      const sourceDriftInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
+      expect(sourceDriftInspection.integrity).toMatchObject({ baselineClean: true, untrackedFiles: false });
+      expect(sourceDriftInspection.materialized.matches).toBe(true);
+      expect(sourceDriftInspection.source.stable).toBe(false);
+      expect(sourceDriftInspection.reviewIntegrity).toBe(false);
+      writeFileSync(path.join(repository, 'README.md'), 'dirty source\n');
       writeFileSync(path.join(created.workspacePath, 'README.md'), 'review workspace drift\n');
-      expect(JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext).then((result) => result)).reviewIntegrity).toBe(false);
+      const workspaceDriftInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
+      expect(workspaceDriftInspection.source.stable).toBe(true);
+      expect(workspaceDriftInspection.reviewIntegrity).toBe(false);
       expect(JSON.parse(await cleanup({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext).then((result) => result)).cleaned).toBe(true);
       expect(existsSync(created.workspacePath)).toBe(false);
     } finally {
