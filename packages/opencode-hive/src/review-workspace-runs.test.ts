@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import type { ReviewWorkspaceCaller } from 'hive-core';
 import {
   createReviewWorkspaceLeaseInput,
@@ -79,6 +80,75 @@ describe('review workspace run descriptors', () => {
     expect(JSON.stringify(lease)).not.toContain('/trusted/target');
     expect(lease.scopeFingerprint).toBe(fingerprintReviewWorkspaceScope(lease.sourceScope));
     expect(lease.sourceFingerprint).not.toBe(lease.materializedFingerprint);
+  });
+
+  it('constructs the exact canonical vulnerability scope descriptor and keeps its fingerprint separate', () => {
+    const scopeDescriptor = {
+      schema: 'hive-vuln-review-scope/v1',
+      mode: 'hive-task',
+      repositories: ['api', 'web'],
+      paths: ['src/api.ts', 'src/web.ts'],
+      comparisonBase: null,
+      hiveScope: 'task:05-review',
+    };
+    const lease = createReviewWorkspaceLeaseInput({
+      caller: {
+        ...creator,
+        workflow: 'vulnerability-review',
+        agent: '__hive_vulnerability_review_scope',
+      },
+      repositoryIds: ['web', 'api'],
+      snapshot: { paths: ['src/web.ts', 'src/../src/api.ts'] },
+      selectedRepositoryIds: ['web', 'api'],
+      vulnerabilityScope: {
+        mode: 'hive-task',
+        repositories: ['web', 'api', 'web'],
+        paths: ['src/web.ts', 'src/../src/api.ts', 'src/web.ts'],
+        comparisonBase: null,
+        hiveScope: 'task:05-review',
+      },
+      sourceFingerprint: '2'.repeat(64),
+      materializedFingerprint: '3'.repeat(64),
+      materializations: [],
+    });
+
+    expect(lease.scopeDescriptor).toEqual(scopeDescriptor);
+    expect(lease.scopeFingerprint).toBe(createHash('sha256').update(JSON.stringify(scopeDescriptor)).digest('hex'));
+    expect(new Set([
+      lease.scopeFingerprint,
+      lease.sourceFingerprint,
+      lease.materializedFingerprint,
+    ]).size).toBe(3);
+  });
+
+  it('sorts lease scope arrays by Unicode code point order', () => {
+    const privateUse = '\uE000';
+    const supplementary = '\u{10000}';
+    const lease = createReviewWorkspaceLeaseInput({
+      caller: {
+        ...creator,
+        workflow: 'vulnerability-review',
+        agent: '__hive_vulnerability_review_scope',
+      },
+      repositoryIds: [supplementary, privateUse],
+      snapshot: { paths: [`${supplementary}/path`, `${privateUse}/path`] },
+      selectedRepositoryIds: [supplementary, privateUse],
+      vulnerabilityScope: {
+        mode: 'current-change',
+        repositories: [supplementary, privateUse],
+        paths: [`${supplementary}/path`, `${privateUse}/path`],
+        comparisonBase: null,
+        hiveScope: null,
+      },
+      sourceFingerprint: '2'.repeat(64),
+      materializedFingerprint: '3'.repeat(64),
+      materializations: [],
+    });
+
+    expect(lease.selectedRepositoryIds).toEqual([privateUse, supplementary]);
+    expect(lease.scopeDescriptor?.repositories).toEqual([privateUse, supplementary]);
+    expect(lease.scopeDescriptor?.paths).toEqual([`${privateUse}/path`, `${supplementary}/path`]);
+    expect(lease.sourceScope.snapshot.paths).toEqual([`${privateUse}/path`, `${supplementary}/path`]);
   });
 
   it('requires creator capability when constructing a persisted lease', () => {

@@ -3,10 +3,8 @@ import { DEFAULT_COUNCIL_CONFIG, type CouncilConfig } from 'hive-core';
 import path from 'node:path';
 import { HIVE_COMMANDS, type HiveCommandKey } from './registry.js';
 import {
-  fingerprintVulnerabilityReviewScope,
   hiveCommandRenderers,
   parseVulnerabilityReviewArgs,
-  serializeVulnerabilityReviewScope,
 } from './renderers.js';
 import { resolveCouncilMembers } from './council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './types.js';
@@ -180,45 +178,6 @@ describe('hive command renderers', () => {
 
     expect(parseVulnerabilityReviewArgs('--task 01-review').error).toBeUndefined();
     expect(parseVulnerabilityReviewArgs('--feature vulnerability-review').error).toBeUndefined();
-  });
-
-  it('sorts vulnerability review scope arrays by Unicode code point', () => {
-    const privateUse = '\uE000';
-    const supplementary = '\u{10000}';
-    const serialized = JSON.parse(serializeVulnerabilityReviewScope({
-      mode: 'current-change',
-      repositories: [supplementary, privateUse],
-      paths: [`${supplementary}/path`, `${privateUse}/path`],
-      comparisonBase: null,
-      hiveScope: null,
-    }));
-
-    expect(serialized.repositories).toEqual([privateUse, supplementary]);
-    expect(serialized.paths).toEqual([`${privateUse}/path`, `${supplementary}/path`]);
-  });
-
-  it('serializes and fingerprints only canonical scope identity', () => {
-    const input = {
-      mode: 'hive-task' as const,
-      repositories: ['web', 'api', 'web'],
-      paths: ['src/web.ts', 'src/../src/api.ts', 'src/web.ts'],
-      comparisonBase: null,
-      hiveScope: 'task:05-review',
-    };
-    const serialized = serializeVulnerabilityReviewScope(input);
-
-    expect(serialized).toBe('{"schema":"hive-vuln-review-scope/v1","mode":"hive-task","repositories":["api","web"],"paths":["src/api.ts","src/web.ts"],"comparisonBase":null,"hiveScope":"task:05-review"}');
-    expect(fingerprintVulnerabilityReviewScope(input)).toBe('0d2338abe940b2a1799163b6e604649d4f1c69b7b909dc3e7f4e67e9294dfe65');
-    expect(fingerprintVulnerabilityReviewScope(input)).toMatch(/^[a-f0-9]{64}$/);
-    expect(fingerprintVulnerabilityReviewScope({ ...input, hiveScope: 'task:06-review' })).not.toBe(fingerprintVulnerabilityReviewScope(input));
-    expect(fingerprintVulnerabilityReviewScope({ ...input, comparisonBase: 'main' })).not.toBe(fingerprintVulnerabilityReviewScope(input));
-    expect(fingerprintVulnerabilityReviewScope({
-      ...input,
-      resolvedTarget: 'first-content',
-    } as typeof input)).toBe(fingerprintVulnerabilityReviewScope({
-      ...input,
-      resolvedTarget: 'second-content',
-    } as typeof input));
   });
 
   it('returns structured non-empty guidance for every command with empty and non-empty args', () => {

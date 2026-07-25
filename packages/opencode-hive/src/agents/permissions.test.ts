@@ -869,6 +869,7 @@ describe('Per-agent tool filtering', () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-tool-'));
     createGitRepository(repository);
     writeFileSync(path.join(repository, 'README.md'), 'dirty source\n');
+    writeFileSync(path.join(repository, '.gitignore'), '*.ignored\n');
     try {
       const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
       const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string; template: string }> } = {};
@@ -895,6 +896,12 @@ describe('Per-agent tool filtering', () => {
       expect(untrackedInspection.integrity).toMatchObject({ baselineClean: true, untrackedFiles: true });
       expect(untrackedInspection.reviewIntegrity).toBe(false);
       rmSync(path.join(created.workspacePath, 'new-untracked.txt'));
+      writeFileSync(path.join(created.workspacePath, 'new.ignored'), 'ignored workspace delta\n');
+      const ignoredInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
+      expect(ignoredInspection.repositories.root.ignoredChanges).toEqual(['new.ignored']);
+      expect(ignoredInspection.integrity).toMatchObject({ baselineClean: true, ignoredFiles: true });
+      expect(ignoredInspection.reviewIntegrity).toBe(false);
+      rmSync(path.join(created.workspacePath, 'new.ignored'));
       writeFileSync(path.join(repository, 'README.md'), 'live source drift\n');
       const sourceDriftInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
       expect(sourceDriftInspection.integrity).toMatchObject({ baselineClean: true, untrackedFiles: false });
@@ -1122,6 +1129,19 @@ describe('Per-agent tool filtering', () => {
       const create = firstPlugin.hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
       const claim = firstPlugin.hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
       const created = JSON.parse(await create({ scopeMode: 'current-change' }, snapshotContext(firstPlugin.vulnerabilityScopeAlias)));
+      expect(created.scopeDescriptor).toEqual({
+        schema: 'hive-vuln-review-scope/v1',
+        mode: 'current-change',
+        repositories: ['root'],
+        paths: [],
+        comparisonBase: null,
+        hiveScope: null,
+      });
+      expect(new Set([
+        created.scopeFingerprint,
+        created.sourceFingerprint,
+        created.materializedFingerprint,
+      ]).size).toBe(3);
       const ownerContext = { ...snapshotContext(vulnerabilityPrimary), sessionID: 'vulnerability-restart-session' };
       await firstPlugin.hooks['chat.message']?.({ sessionID: 'vulnerability-restart-session', agent: vulnerabilityPrimary }, { message: {}, parts: [] } as any);
       await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, ownerContext);
@@ -1137,6 +1157,10 @@ describe('Per-agent tool filtering', () => {
         ownershipToken: created.ownershipToken,
       }, ownerContext));
       expect(reconstructed).toMatchObject({ reviewIntegrity: true, source: { stable: true }, materialized: { matches: true } });
+      expect(reconstructed.scopeDescriptor).toEqual(created.scopeDescriptor);
+      expect(reconstructed.scopeFingerprint).toBe(created.scopeFingerprint);
+      expect(reconstructed.sourceFingerprint).toBe(created.sourceFingerprint);
+      expect(reconstructed.materializedFingerprint).toBe(created.materializedFingerprint);
       await expect(inspect({
         runId: created.runId,
         ownershipToken: created.ownershipToken,

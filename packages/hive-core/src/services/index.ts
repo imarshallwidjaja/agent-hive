@@ -35,6 +35,7 @@ export {
   ReviewWorkspaceService,
   REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,
   fingerprintReviewWorkspaceSourceScope,
+  fingerprintReviewWorkspaceVulnerabilityScope,
 } from './reviewWorkspaceService.js';
 export type {
   ReviewWorkspaceConfig,
@@ -49,6 +50,7 @@ export type {
   ReviewWorkspaceLeaseInput,
   ReviewWorkspaceMaterializedEntryDescriptor,
   ReviewWorkspaceSourceScope,
+  ReviewWorkspaceVulnerabilityScopeDescriptor,
   ReviewWorkspaceWorkflow,
 } from './reviewWorkspaceService.js';
 export { ContextService } from './contextService.js';

@@ -42,6 +42,15 @@ export interface ReviewWorkspaceSourceScope {
   };
 }
 
+export interface ReviewWorkspaceVulnerabilityScopeDescriptor {
+  schema: 'hive-vuln-review-scope/v1';
+  mode: 'current-change' | 'git-comparison' | 'hive-task' | 'hive-feature' | 'whole-repository';
+  repositories: string[];
+  paths: string[];
+  comparisonBase: string | null;
+  hiveScope: string | null;
+}
+
 export interface ReviewWorkspaceMaterializedEntryDescriptor {
   path: string;
   kind: 'regular' | 'symlink' | 'delete';
@@ -52,6 +61,7 @@ export interface ReviewWorkspaceLeaseInput {
   creatorAgent: string;
   creatorSessionId: string;
   sourceScope: ReviewWorkspaceSourceScope;
+  scopeDescriptor: ReviewWorkspaceVulnerabilityScopeDescriptor | null;
   selectedRepositoryIds: string[];
   scopeFingerprint: string;
   sourceFingerprint: string;
@@ -85,8 +95,10 @@ export interface ReviewWorkspaceRepositoryInspection {
   commits: string[];
   trackedChanges: string[];
   untrackedChanges: string[];
+  ignoredChanges: string[];
   trackedDrift: boolean;
   baselineUntrackedDrift: boolean;
+  baselineIgnoredDrift: boolean;
 }
 
 export interface ReviewWorkspaceInspection {
@@ -98,6 +110,7 @@ export interface ReviewWorkspaceInspection {
     trackedClean: boolean;
     baselineClean: boolean;
     untrackedFiles: boolean;
+    ignoredFiles: boolean;
   };
 }
 
@@ -131,6 +144,8 @@ interface ReviewWorkspaceBaseline {
   trackedFingerprint: string;
   untracked: BaselineEntry[];
   untrackedFingerprint: string;
+  ignored: BaselineEntry[];
+  ignoredFingerprint: string;
 }
 
 interface ReviewWorkspaceMetadata {
@@ -141,6 +156,7 @@ interface ReviewWorkspaceMetadata {
   creatorAgent: string;
   creatorSessionId: string;
   sourceScope: ReviewWorkspaceSourceScope;
+  scopeDescriptor: ReviewWorkspaceVulnerabilityScopeDescriptor | null;
   selectedRepositoryIds: string[];
   scopeFingerprint: string;
   sourceFingerprint: string;
@@ -181,6 +197,7 @@ type ResolvedSourceRepository = ReviewWorkspaceRepositoryInput & { sourcePath: s
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const REPOSITORY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const HIVE_SCOPE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const MAX_BASELINE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_BASELINE_TOTAL_BYTES = 8 * 1024 * 1024;
 const BASELINE_CAPTURE_TIMEOUT_MS = 5_000;
@@ -198,6 +215,15 @@ function isSafeRepositoryId(repositoryId: string): boolean {
     && repositoryId !== '.'
     && repositoryId !== '..'
     && !repositoryId.includes('..');
+}
+
+function isCanonicalHiveScopeIdentifier(value: string): boolean {
+  return HIVE_SCOPE_IDENTIFIER_PATTERN.test(value) && !value.includes('..');
+}
+
+function isCanonicalHiveScope(hiveScope: string | null, prefix: 'task:' | 'feature:'): boolean {
+  if (typeof hiveScope !== 'string' || !hiveScope.startsWith(prefix)) return false;
+  return isCanonicalHiveScopeIdentifier(hiveScope.slice(prefix.length));
 }
 
 function isSafeWorkspaceRelativePath(relativePath: string): boolean {
@@ -240,9 +266,19 @@ function sameFileIdentity(
     && left.ctimeMs === right.ctimeMs;
 }
 
-function fingerprintBaselineUntracked(entries: readonly BaselineEntry[]): string {
+function compareUnicodeCodePoints(left: string, right: string): number {
+  const leftPoints = Array.from(left, (character) => character.codePointAt(0)!);
+  const rightPoints = Array.from(right, (character) => character.codePointAt(0)!);
+  const sharedLength = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (leftPoints[index] !== rightPoints[index]) return leftPoints[index]! - rightPoints[index]!;
+  }
+  return leftPoints.length - rightPoints.length;
+}
+
+function fingerprintBaselineEntries(category: 'untracked' | 'ignored', entries: readonly BaselineEntry[]): string {
   const hash = createHash('sha256');
-  hash.update('hive-review-baseline-untracked-v1\0');
+  hash.update(`hive-review-baseline-${category}-v1\0`);
   for (const entry of [...entries].sort((left, right) => left.path.localeCompare(right.path))) {
     hash.update(entry.path);
     hash.update('\0');
@@ -264,6 +300,12 @@ export function fingerprintReviewWorkspaceSourceScope(sourceScope: ReviewWorkspa
     repositoryIds: sourceScope.repositoryIds,
     snapshot: sourceScope.snapshot,
   })).digest('hex');
+}
+
+export function fingerprintReviewWorkspaceVulnerabilityScope(
+  scopeDescriptor: ReviewWorkspaceVulnerabilityScopeDescriptor,
+): string {
+  return createHash('sha256').update(JSON.stringify(scopeDescriptor)).digest('hex');
 }
 
 export class ReviewWorkspaceService {
@@ -448,7 +490,7 @@ export class ReviewWorkspaceService {
     if (!isRecord(metadata)) throw this.metadataError(runId);
     const allowedFields = new Set([
       'schemaVersion', 'state', 'runId', 'workflow', 'creatorAgent', 'creatorSessionId', 'creatorPid',
-      'sourceScope', 'selectedRepositoryIds', 'scopeFingerprint', 'sourceFingerprint',
+      'sourceScope', 'scopeDescriptor', 'selectedRepositoryIds', 'scopeFingerprint', 'sourceFingerprint',
       'materializedFingerprint', 'materializedEntries', 'composite', 'commits', 'baseline',
       'worktreeRepositoryIds', 'creatingRepositoryId', 'cleanupIdentities', 'ownershipTokenHash',
       'handoffExpiresAt', 'removedRepositoryIds', 'ownerAgent', 'ownerSessionId', 'ownerPid',
@@ -464,6 +506,7 @@ export class ReviewWorkspaceService {
       || typeof metadata.composite !== 'boolean'
       || !Array.isArray(metadata.selectedRepositoryIds)
       || !isRecord(metadata.sourceScope)
+      || (metadata.scopeDescriptor !== null && !isRecord(metadata.scopeDescriptor))
       || !isRecord(metadata.materializedEntries)
       || !isRecord(metadata.commits)
       || typeof metadata.scopeFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.scopeFingerprint)
@@ -504,7 +547,7 @@ export class ReviewWorkspaceService {
       || !Array.isArray(snapshot.paths)
       || snapshot.paths.some((entry) => typeof entry !== 'string' || !isSafeSourceScopePath(entry))
       || new Set(snapshot.paths).size !== snapshot.paths.length
-      || JSON.stringify([...snapshot.paths].sort()) !== JSON.stringify(snapshot.paths)
+      || JSON.stringify([...snapshot.paths].sort(compareUnicodeCodePoints)) !== JSON.stringify(snapshot.paths)
       || ['baseRef', 'targetRef', 'range'].some((field) => snapshot[field] !== undefined && (typeof snapshot[field] !== 'string' || !snapshot[field]))
       || ['maxFiles', 'maxPatchBytes'].some((field) => snapshot[field] !== undefined && (typeof snapshot[field] !== 'number' || !Number.isSafeInteger(snapshot[field]) || snapshot[field] < 1))
       || (snapshot.range !== undefined && (snapshot.baseRef !== undefined || snapshot.targetRef !== undefined))
@@ -522,8 +565,65 @@ export class ReviewWorkspaceService {
         ...(typeof snapshot.maxPatchBytes === 'number' ? { maxPatchBytes: snapshot.maxPatchBytes } : {}),
       },
     };
-    const expectedScopeFingerprint = fingerprintReviewWorkspaceSourceScope(canonicalSourceScope);
-    if (metadata.scopeFingerprint !== expectedScopeFingerprint) throw this.metadataError(runId);
+    let scopeDescriptor: ReviewWorkspaceVulnerabilityScopeDescriptor | null = null;
+    if (metadata.workflow === 'dash-review') {
+      if (
+        metadata.scopeDescriptor !== null
+        || metadata.scopeFingerprint !== fingerprintReviewWorkspaceSourceScope(canonicalSourceScope)
+      ) {
+        throw this.metadataError(runId);
+      }
+    } else {
+      const descriptor = metadata.scopeDescriptor;
+      if (
+        !isRecord(descriptor)
+        || Object.keys(descriptor).join(',') !== 'schema,mode,repositories,paths,comparisonBase,hiveScope'
+        || descriptor.schema !== 'hive-vuln-review-scope/v1'
+        || !['current-change', 'git-comparison', 'hive-task', 'hive-feature', 'whole-repository'].includes(descriptor.mode as string)
+        || !Array.isArray(descriptor.repositories)
+        || descriptor.repositories.some((repositoryId) => typeof repositoryId !== 'string' || !isSafeRepositoryId(repositoryId))
+        || JSON.stringify(descriptor.repositories) !== JSON.stringify(selectedRepositoryIds)
+        || !Array.isArray(descriptor.paths)
+        || descriptor.paths.some((entry) => typeof entry !== 'string' || !isSafeSourceScopePath(entry))
+        || new Set(descriptor.paths).size !== descriptor.paths.length
+        || JSON.stringify([...descriptor.paths].sort(compareUnicodeCodePoints)) !== JSON.stringify(descriptor.paths)
+        || JSON.stringify(descriptor.paths) !== JSON.stringify(canonicalSourceScope.snapshot.paths)
+        || (descriptor.comparisonBase !== null && (typeof descriptor.comparisonBase !== 'string' || !descriptor.comparisonBase))
+        || (descriptor.hiveScope !== null && (typeof descriptor.hiveScope !== 'string' || !descriptor.hiveScope))
+      ) {
+        throw this.metadataError(runId);
+      }
+      scopeDescriptor = {
+        schema: descriptor.schema,
+        mode: descriptor.mode as ReviewWorkspaceVulnerabilityScopeDescriptor['mode'],
+        repositories: [...descriptor.repositories] as string[],
+        paths: [...descriptor.paths] as string[],
+        comparisonBase: descriptor.comparisonBase as string | null,
+        hiveScope: descriptor.hiveScope as string | null,
+      };
+      const rangeMatch = canonicalSourceScope.snapshot.range?.match(/^(.+)\.\.\.(.+)$/) ?? null;
+      const hasGitComparison = canonicalSourceScope.snapshot.range !== undefined
+        || canonicalSourceScope.snapshot.baseRef !== undefined;
+      const expectedComparisonBase = rangeMatch?.[1] ?? canonicalSourceScope.snapshot.baseRef ?? null;
+      const expectedHiveScopePrefix = scopeDescriptor.mode === 'hive-task'
+        ? 'task:'
+        : scopeDescriptor.mode === 'hive-feature'
+          ? 'feature:'
+          : null;
+      if (
+        (canonicalSourceScope.snapshot.range !== undefined && rangeMatch === null)
+        || (canonicalSourceScope.snapshot.targetRef !== undefined && canonicalSourceScope.snapshot.baseRef === undefined)
+        || (scopeDescriptor.mode === 'git-comparison') !== hasGitComparison
+        || scopeDescriptor.comparisonBase !== expectedComparisonBase
+        || (expectedHiveScopePrefix === null
+          ? scopeDescriptor.hiveScope !== null
+          : !isCanonicalHiveScope(scopeDescriptor.hiveScope, expectedHiveScopePrefix))
+        || (scopeDescriptor.mode === 'whole-repository' && scopeDescriptor.paths.length > 0)
+        || metadata.scopeFingerprint !== fingerprintReviewWorkspaceVulnerabilityScope(scopeDescriptor)
+      ) {
+        throw this.metadataError(runId);
+      }
+    }
     const materializedEntries: Record<string, ReviewWorkspaceMaterializedEntryDescriptor[]> = {};
     if (JSON.stringify(Object.keys(metadata.materializedEntries).sort()) !== JSON.stringify(selectedRepositoryIds)) {
       throw this.metadataError(runId);
@@ -602,6 +702,7 @@ export class ReviewWorkspaceService {
       creatorSessionId: metadata.creatorSessionId,
       creatorPid: metadata.creatorPid,
       sourceScope: canonicalSourceScope,
+      scopeDescriptor,
       selectedRepositoryIds,
       scopeFingerprint: metadata.scopeFingerprint,
       sourceFingerprint: metadata.sourceFingerprint,
@@ -674,27 +775,32 @@ export class ReviewWorkspaceService {
     }
     for (const repositoryId of selectedRepositoryIds) {
       const baseline = baselines[repositoryId];
-      if (!isRecord(baseline) || typeof baseline.head !== 'string' || !/^[a-f0-9]{40,64}$/.test(baseline.head) || typeof baseline.trackedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(baseline.trackedFingerprint) || typeof baseline.untrackedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(baseline.untrackedFingerprint) || !Array.isArray(baseline.untracked)) {
+      if (!isRecord(baseline) || typeof baseline.head !== 'string' || !/^[a-f0-9]{40,64}$/.test(baseline.head) || typeof baseline.trackedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(baseline.trackedFingerprint) || typeof baseline.untrackedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(baseline.untrackedFingerprint) || !Array.isArray(baseline.untracked) || typeof baseline.ignoredFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(baseline.ignoredFingerprint) || !Array.isArray(baseline.ignored)) {
         throw this.metadataError(runId);
       }
-      const untrackedPaths = new Set<string>();
-      for (const entry of baseline.untracked) {
-        if (
-          !isRecord(entry)
-          || typeof entry.path !== 'string'
-          || !isSafeWorkspaceRelativePath(entry.path)
-          || untrackedPaths.has(entry.path)
-          || (entry.fileType !== 'regular' && entry.fileType !== 'symlink')
-          || typeof entry.mode !== 'number' || !Number.isSafeInteger(entry.mode)
-          || typeof entry.byteLength !== 'number' || !Number.isSafeInteger(entry.byteLength) || entry.byteLength < 0
-          || typeof entry.digest !== 'string' || !/^[a-f0-9]{64}$/.test(entry.digest)
-        ) {
+      for (const [category, entries, fingerprint] of [
+        ['untracked', baseline.untracked, baseline.untrackedFingerprint],
+        ['ignored', baseline.ignored, baseline.ignoredFingerprint],
+      ] as const) {
+        const paths = new Set<string>();
+        for (const entry of entries) {
+          if (
+            !isRecord(entry)
+            || typeof entry.path !== 'string'
+            || !isSafeWorkspaceRelativePath(entry.path)
+            || paths.has(entry.path)
+            || (entry.fileType !== 'regular' && entry.fileType !== 'symlink')
+            || typeof entry.mode !== 'number' || !Number.isSafeInteger(entry.mode)
+            || typeof entry.byteLength !== 'number' || !Number.isSafeInteger(entry.byteLength) || entry.byteLength < 0
+            || typeof entry.digest !== 'string' || !/^[a-f0-9]{64}$/.test(entry.digest)
+          ) {
+            throw this.metadataError(runId);
+          }
+          paths.add(entry.path);
+        }
+        if (fingerprintBaselineEntries(category, entries as BaselineEntry[]) !== fingerprint) {
           throw this.metadataError(runId);
         }
-        untrackedPaths.add(entry.path);
-      }
-      if (fingerprintBaselineUntracked(baseline.untracked as BaselineEntry[]) !== baseline.untrackedFingerprint) {
-        throw this.metadataError(runId);
       }
     }
     return {
@@ -889,6 +995,7 @@ export class ReviewWorkspaceService {
       creatorSessionId: metadata.creatorSessionId,
       creatorPid: metadata.creatorPid,
       sourceScope: metadata.sourceScope,
+      scopeDescriptor: metadata.scopeDescriptor,
       selectedRepositoryIds: metadata.selectedRepositoryIds,
       scopeFingerprint: metadata.scopeFingerprint,
       sourceFingerprint: metadata.sourceFingerprint,
@@ -1026,11 +1133,12 @@ export class ReviewWorkspaceService {
     const baseline: Record<string, ReviewWorkspaceBaseline> = {};
     for (const [repositoryId, repository] of Object.entries(repositories)) {
       const git = this.getGit(repository.path);
-      const [head, unstaged, staged, untracked] = await Promise.all([
+      const [head, unstaged, staged, untracked, ignored] = await Promise.all([
         git.raw(['rev-parse', 'HEAD']),
         git.raw(['diff', '--binary', '--no-ext-diff', '--no-textconv']),
         git.raw(['diff', '--binary', '--no-ext-diff', '--no-textconv', '--cached']),
         git.raw(['ls-files', '--others', '--exclude-standard', '-z']),
+        git.raw(['ls-files', '--others', '--ignored', '--exclude-standard', '-z']),
       ]);
       const deadline = this.now + BASELINE_CAPTURE_TIMEOUT_MS;
       let remainingBytes = MAX_BASELINE_TOTAL_BYTES;
@@ -1040,24 +1148,34 @@ export class ReviewWorkspaceService {
         remainingBytes -= entry.byteLength;
         entries.push(entry);
       }
+      const ignoredEntries: BaselineEntry[] = [];
+      for (const relativePath of ignored.split('\0').filter(Boolean).sort()) {
+        const entry = await this.captureBaselineEntry(repository.path, relativePath, deadline, remainingBytes);
+        remainingBytes -= entry.byteLength;
+        ignoredEntries.push(entry);
+      }
       baseline[repositoryId] = {
         head: head.trim(),
         trackedFingerprint: createHash('sha256').update(unstaged).update('\0').update(staged).digest('hex'),
         untracked: entries,
-        untrackedFingerprint: fingerprintBaselineUntracked(entries),
+        untrackedFingerprint: fingerprintBaselineEntries('untracked', entries),
+        ignored: ignoredEntries,
+        ignoredFingerprint: fingerprintBaselineEntries('ignored', ignoredEntries),
       };
     }
     return baseline;
   }
 
-  private async hasBaselineUntrackedDrift(
+  private async hasBaselineEntryDrift(
     workspacePath: string,
-    baseline: ReviewWorkspaceBaseline,
+    category: 'untracked' | 'ignored',
+    expectedEntries: readonly BaselineEntry[],
+    expectedFingerprint: string,
   ): Promise<boolean> {
     const deadline = this.now + BASELINE_CAPTURE_TIMEOUT_MS;
     let remainingBytes = MAX_BASELINE_TOTAL_BYTES;
     const actualEntries: BaselineEntry[] = [];
-    for (const expected of baseline.untracked) {
+    for (const expected of expectedEntries) {
       try {
         const actual = await this.captureBaselineEntry(workspacePath, expected.path, deadline, remainingBytes);
         remainingBytes -= actual.byteLength;
@@ -1066,7 +1184,7 @@ export class ReviewWorkspaceService {
         return true;
       }
     }
-    return fingerprintBaselineUntracked(actualEntries) !== baseline.untrackedFingerprint;
+    return fingerprintBaselineEntries(category, actualEntries) !== expectedFingerprint;
   }
 
   private cleanupIdentity(
@@ -1184,6 +1302,7 @@ export class ReviewWorkspaceService {
       creatorSessionId: lease.creatorSessionId,
       creatorPid: process.pid,
       sourceScope: lease.sourceScope,
+      scopeDescriptor: lease.scopeDescriptor,
       selectedRepositoryIds: lease.selectedRepositoryIds,
       scopeFingerprint: lease.scopeFingerprint,
       sourceFingerprint: lease.sourceFingerprint,
@@ -1452,11 +1571,12 @@ export class ReviewWorkspaceService {
       const inspections: Record<string, ReviewWorkspaceRepositoryInspection> = {};
       for (const [repositoryId, repository] of Object.entries(repositories)) {
         const git = this.getGit(repository.path);
-        const [status, head, unstaged, staged] = await Promise.all([
+        const [status, head, unstaged, staged, ignored] = await Promise.all([
           git.raw(['status', '--porcelain=v1', '--untracked-files=all']),
           git.raw(['rev-parse', 'HEAD']),
           git.raw(['diff', '--binary', '--no-ext-diff', '--no-textconv']),
           git.raw(['diff', '--binary', '--no-ext-diff', '--no-textconv', '--cached']),
+          git.raw(['ls-files', '--others', '--ignored', '--exclude-standard', '-z']),
         ]);
         const trackedChanges: string[] = [];
         const untrackedChanges: string[] = [];
@@ -1468,7 +1588,12 @@ export class ReviewWorkspaceService {
         const baseline = metadata.baseline[repositoryId]!;
         const trackedFingerprint = createHash('sha256').update(unstaged).update('\0').update(staged).digest('hex');
         const trackedDrift = baseline.head !== head.trim() || baseline.trackedFingerprint !== trackedFingerprint;
-        const baselineUntrackedDrift = await this.hasBaselineUntrackedDrift(repository.path, baseline);
+        const [baselineUntrackedDrift, baselineIgnoredDrift] = await Promise.all([
+          this.hasBaselineEntryDrift(repository.path, 'untracked', baseline.untracked, baseline.untrackedFingerprint),
+          this.hasBaselineEntryDrift(repository.path, 'ignored', baseline.ignored, baseline.ignoredFingerprint),
+        ]);
+        const ignoredChanges = ignored.split('\0').filter(Boolean)
+          .filter((file) => !baseline.ignored.some((entry) => entry.path === file));
         inspections[repositoryId] = {
           path: repository.path,
           baselineCommit: repository.commit,
@@ -1476,8 +1601,10 @@ export class ReviewWorkspaceService {
           commits: (await git.raw(['log', '--format=%H', `${repository.commit}..HEAD`])).split('\n').filter(Boolean),
           trackedChanges,
           untrackedChanges: untrackedChanges.filter((file) => !baseline.untracked.some((entry) => entry.path === file)),
+          ignoredChanges,
           trackedDrift,
           baselineUntrackedDrift,
+          baselineIgnoredDrift,
         };
       }
       return {
@@ -1487,8 +1614,9 @@ export class ReviewWorkspaceService {
         repositories: inspections,
         integrity: {
           trackedClean: Object.values(inspections).every((repository) => !repository.trackedDrift),
-          baselineClean: Object.values(inspections).every((repository) => !repository.trackedDrift && !repository.baselineUntrackedDrift),
+          baselineClean: Object.values(inspections).every((repository) => !repository.trackedDrift && !repository.baselineUntrackedDrift && !repository.baselineIgnoredDrift),
           untrackedFiles: Object.values(inspections).some((repository) => repository.untrackedChanges.length > 0),
+          ignoredFiles: Object.values(inspections).some((repository) => repository.ignoredChanges.length > 0),
         },
       };
     });

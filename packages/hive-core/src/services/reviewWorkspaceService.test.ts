@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -62,6 +63,7 @@ function createLease(repositoryIds: readonly string[]): ReviewWorkspaceLeaseInpu
     creatorAgent: creatorCaller.agent,
     creatorSessionId: creatorCaller.sessionId,
     sourceScope,
+    scopeDescriptor: null,
     selectedRepositoryIds,
     scopeFingerprint: fingerprintReviewWorkspaceSourceScope(sourceScope),
     sourceFingerprint: '0'.repeat(64),
@@ -75,13 +77,28 @@ function createWorkspace(
   options: Omit<ReviewWorkspaceCreateOptions, 'lease'>,
   leaseCreator: ReviewWorkspaceCaller = creatorCaller,
 ) {
+  const baseLease = createLease(options.repositories.map((repository) => repository.id));
+  const scopeDescriptor = leaseCreator.workflow === 'vulnerability-review'
+    ? {
+        schema: 'hive-vuln-review-scope/v1' as const,
+        mode: 'current-change' as const,
+        repositories: baseLease.selectedRepositoryIds,
+        paths: [],
+        comparisonBase: null,
+        hiveScope: null,
+      }
+    : null;
   return service.create({
     ...options,
     lease: {
-      ...createLease(options.repositories.map((repository) => repository.id)),
+      ...baseLease,
       workflow: leaseCreator.workflow,
       creatorAgent: leaseCreator.agent,
       creatorSessionId: leaseCreator.sessionId,
+      scopeDescriptor,
+      scopeFingerprint: scopeDescriptor
+        ? createHash('sha256').update(JSON.stringify(scopeDescriptor)).digest('hex')
+        : baseLease.scopeFingerprint,
     },
   });
 }
@@ -809,9 +826,145 @@ describe('ReviewWorkspaceService', () => {
       ownerSessionId: owner.sessionId,
       ownerPid: owner.pid,
     });
-    expect(inspection.integrity).toEqual({ trackedClean: true, baselineClean: true, untrackedFiles: false });
+    expect(inspection.integrity).toEqual({ trackedClean: true, baselineClean: true, untrackedFiles: false, ignoredFiles: false });
     await expect(restartedService.cleanup(workspace.runId, workspace.ownershipToken, owner)).resolves.toMatchObject({ cleaned: true });
     await expect(fs.access(workspace.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('persists and validates the exact vulnerability scope descriptor across restart', async () => {
+    const source = await createRepository('vulnerability-scope-restart');
+    const firstService = createReviewWorkspaceService(source.path);
+    const scopeDescriptor = {
+      schema: 'hive-vuln-review-scope/v1' as const,
+      mode: 'current-change' as const,
+      repositories: ['root'],
+      paths: ['tracked.txt'],
+      comparisonBase: null,
+      hiveScope: null,
+    };
+    const sourceScope = { repositoryIds: [], snapshot: { paths: ['tracked.txt'] } };
+    const vulnerabilityCreator: ReviewWorkspaceCaller = {
+      workflow: 'vulnerability-review',
+      role: 'creator',
+      agent: '__hive_vulnerability_review_scope',
+      sessionId: 'vulnerability-scope-session',
+      pid: process.pid,
+    };
+    const vulnerabilityOwner: ReviewWorkspaceCaller = {
+      workflow: 'vulnerability-review',
+      role: 'primary',
+      agent: '__hive_vulnerability_review_primary',
+      sessionId: 'vulnerability-primary-session',
+      pid: process.pid,
+    };
+    const workspace = await firstService.create({
+      runId: 'review-vulnerability-scope-restart',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+      lease: {
+        workflow: vulnerabilityCreator.workflow,
+        creatorAgent: vulnerabilityCreator.agent,
+        creatorSessionId: vulnerabilityCreator.sessionId,
+        sourceScope,
+        scopeDescriptor,
+        selectedRepositoryIds: ['root'],
+        scopeFingerprint: createHash('sha256').update(JSON.stringify(scopeDescriptor)).digest('hex'),
+        sourceFingerprint: '2'.repeat(64),
+        materializedFingerprint: '3'.repeat(64),
+        materializedEntries: { root: [] },
+      },
+    });
+    await firstService.claim(workspace.runId, workspace.ownershipToken, vulnerabilityOwner);
+
+    const restartedService = createReviewWorkspaceService(source.path);
+    const inspection = await restartedService.inspect(workspace.runId, workspace.ownershipToken, vulnerabilityOwner);
+    expect(inspection.lease.scopeDescriptor).toEqual(scopeDescriptor);
+    expect(inspection.lease.scopeFingerprint).toBe(createHash('sha256').update(JSON.stringify(scopeDescriptor)).digest('hex'));
+    expect(new Set([
+      inspection.lease.scopeFingerprint,
+      inspection.lease.sourceFingerprint,
+      inspection.lease.materializedFingerprint,
+    ]).size).toBe(3);
+
+    const metadataPath = reviewMetadataPath(source.path, workspace.runId);
+    const persistedMetadata = await fs.readFile(metadataPath, 'utf8');
+    const corrupted = JSON.parse(persistedMetadata);
+    corrupted.scopeDescriptor.paths = [];
+    await fs.writeFile(metadataPath, JSON.stringify(corrupted), 'utf8');
+    await expect(restartedService.inspect(workspace.runId, workspace.ownershipToken, vulnerabilityOwner)).rejects.toThrow('Invalid review workspace metadata');
+    await fs.writeFile(metadataPath, persistedMetadata, 'utf8');
+    await restartedService.cleanup(workspace.runId, workspace.ownershipToken, vulnerabilityOwner);
+  });
+
+  it('rejects recomputed-hash hiveScope suffixes that creation cannot produce', async () => {
+    const source = await createRepository('hive-scope-suffix-tamper');
+    const firstService = createReviewWorkspaceService(source.path);
+    const vulnerabilityCreator: ReviewWorkspaceCaller = {
+      workflow: 'vulnerability-review',
+      role: 'creator',
+      agent: '__hive_vulnerability_review_scope',
+      sessionId: 'hive-scope-suffix-session',
+      pid: process.pid,
+    };
+    const vulnerabilityOwner: ReviewWorkspaceCaller = {
+      workflow: 'vulnerability-review',
+      role: 'primary',
+      agent: '__hive_vulnerability_review_primary',
+      sessionId: 'hive-scope-suffix-primary',
+      pid: process.pid,
+    };
+    const validTaskScope = {
+      schema: 'hive-vuln-review-scope/v1' as const,
+      mode: 'hive-task' as const,
+      repositories: ['root'],
+      paths: [],
+      comparisonBase: null,
+      hiveScope: 'task:05-review',
+    };
+    const workspace = await firstService.create({
+      runId: 'review-hive-scope-suffix-tamper',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+      lease: {
+        workflow: vulnerabilityCreator.workflow,
+        creatorAgent: vulnerabilityCreator.agent,
+        creatorSessionId: vulnerabilityCreator.sessionId,
+        sourceScope: { repositoryIds: [], snapshot: { paths: [] } },
+        scopeDescriptor: validTaskScope,
+        selectedRepositoryIds: ['root'],
+        scopeFingerprint: createHash('sha256').update(JSON.stringify(validTaskScope)).digest('hex'),
+        sourceFingerprint: '2'.repeat(64),
+        materializedFingerprint: '3'.repeat(64),
+        materializedEntries: { root: [] },
+      },
+    });
+    await firstService.claim(workspace.runId, workspace.ownershipToken, vulnerabilityOwner);
+
+    const metadataPath = reviewMetadataPath(source.path, workspace.runId);
+    const original = await fs.readFile(metadataPath, 'utf8');
+    const restartedService = createReviewWorkspaceService(source.path);
+
+    for (const [mode, hiveScope] of [
+      ['hive-task', 'task:../escape'],
+      ['hive-task', 'task:01-review/../01-review'],
+      ['hive-task', 'task:bad\0name'],
+      ['hive-feature', 'feature:.'],
+      ['hive-feature', 'feature:feature\\name'],
+      ['hive-feature', 'feature:a..b'],
+    ] as const) {
+      const tampered = JSON.parse(original);
+      tampered.scopeDescriptor = {
+        ...tampered.scopeDescriptor,
+        mode,
+        hiveScope,
+      };
+      tampered.scopeFingerprint = createHash('sha256').update(JSON.stringify(tampered.scopeDescriptor)).digest('hex');
+      await fs.writeFile(metadataPath, JSON.stringify(tampered), 'utf8');
+      await expect(restartedService.inspect(workspace.runId, workspace.ownershipToken, vulnerabilityOwner)).rejects.toThrow(
+        'Invalid review workspace metadata',
+      );
+    }
+
+    await fs.writeFile(metadataPath, original, 'utf8');
+    await restartedService.cleanup(workspace.runId, workspace.ownershipToken, vulnerabilityOwner);
   });
 
   it('adopts a dead owner only for the same session, workflow, agent, and valid token', async () => {
@@ -953,9 +1106,48 @@ describe('ReviewWorkspaceService', () => {
     await fs.writeFile(path.join(workspace.workspacePath, 'new-untracked.txt'), 'workspace delta\n');
 
     const changed = await service.inspect(workspace.runId, workspace.ownershipToken, owner);
-    expect(changed.integrity).toEqual({ trackedClean: true, baselineClean: true, untrackedFiles: true });
+    expect(changed.integrity).toEqual({ trackedClean: true, baselineClean: true, untrackedFiles: true, ignoredFiles: false });
     expect(changed.integrity.baselineClean && !changed.integrity.untrackedFiles).toBe(false);
     expect(changed.lease.sourceFingerprint).toBe(initial.lease.sourceFingerprint);
+    await service.cleanup(workspace.runId, workspace.ownershipToken, owner);
+  });
+
+  it('reports new ignored entries separately and detects drift in sealed ignored entries', async () => {
+    const source = await createRepository('ignored-integrity');
+    await fs.writeFile(path.join(source.path, '.gitignore'), '*.ignored\n');
+    await source.git.add('.gitignore');
+    await source.git.commit('ignore generated review files');
+    const service = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(service, {
+      runId: 'review-ignored-integrity',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    await fs.writeFile(path.join(workspace.workspacePath, 'baseline.ignored'), 'baseline\n');
+    await service.seal(workspace.runId, workspace.ownershipToken, creatorCaller);
+    const owner = primaryCaller('ignored-owner');
+    await service.claim(workspace.runId, workspace.ownershipToken, owner);
+
+    const initial = await service.inspect(workspace.runId, workspace.ownershipToken, owner);
+    expect(initial.repositories.root).toMatchObject({
+      ignoredChanges: [],
+      baselineIgnoredDrift: false,
+    });
+    expect(initial.integrity).toEqual({
+      trackedClean: true,
+      baselineClean: true,
+      untrackedFiles: false,
+      ignoredFiles: false,
+    });
+
+    await fs.writeFile(path.join(workspace.workspacePath, 'new.ignored'), 'new ignored delta\n');
+    const added = await service.inspect(workspace.runId, workspace.ownershipToken, owner);
+    expect(added.repositories.root.ignoredChanges).toEqual(['new.ignored']);
+    expect(added.integrity).toMatchObject({ baselineClean: true, ignoredFiles: true });
+
+    await fs.writeFile(path.join(workspace.workspacePath, 'baseline.ignored'), 'mutated\n');
+    const mutated = await service.inspect(workspace.runId, workspace.ownershipToken, owner);
+    expect(mutated.repositories.root.baselineIgnoredDrift).toBe(true);
+    expect(mutated.integrity.baselineClean).toBe(false);
     await service.cleanup(workspace.runId, workspace.ownershipToken, owner);
   });
 });

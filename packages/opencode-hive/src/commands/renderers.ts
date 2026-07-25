@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import type { HiveCommandKey } from './registry.js';
 import type { HiveCommandContext, HiveCommandRenderers } from './types.js';
@@ -39,14 +38,6 @@ export type ParsedVulnerabilityReviewArgs = {
   feature?: string;
   compare?: string;
   error?: string;
-};
-
-export type VulnerabilityReviewScopeFingerprintInput = {
-  mode: VulnerabilityReviewScopeMode;
-  repositories: readonly string[];
-  paths: readonly string[];
-  comparisonBase: string | null;
-  hiveScope: string | null;
 };
 
 const COUNCIL_USAGE = 'Usage: /council [--group <group>] <directive>';
@@ -300,21 +291,6 @@ export function parseVulnerabilityReviewArgs(args: string): ParsedVulnerabilityR
     ...(feature ? { feature } : {}),
     ...(compare ? { compare } : {}),
   };
-}
-
-export function serializeVulnerabilityReviewScope(input: VulnerabilityReviewScopeFingerprintInput): string {
-  return JSON.stringify({
-    schema: 'hive-vuln-review-scope/v1',
-    mode: input.mode,
-    repositories: sortedUnique(input.repositories),
-    paths: normalizeVulnerabilityReviewPaths(input.paths),
-    comparisonBase: input.comparisonBase,
-    hiveScope: input.hiveScope,
-  });
-}
-
-export function fingerprintVulnerabilityReviewScope(input: VulnerabilityReviewScopeFingerprintInput): string {
-  return createHash('sha256').update(serializeVulnerabilityReviewScope(input)).digest('hex');
 }
 
 export function renderVulnerabilityReviewArgumentBlock(args: string): string {

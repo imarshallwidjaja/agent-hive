@@ -1,9 +1,13 @@
 import * as path from 'node:path';
-import { fingerprintReviewWorkspaceSourceScope } from 'hive-core';
+import {
+  fingerprintReviewWorkspaceSourceScope,
+  fingerprintReviewWorkspaceVulnerabilityScope,
+} from 'hive-core';
 import type {
   ReviewWorkspaceCaller,
   ReviewWorkspaceLeaseInput,
   ReviewWorkspaceSourceScope,
+  ReviewWorkspaceVulnerabilityScopeDescriptor,
   ReviewWorkspaceWorkflow,
 } from 'hive-core';
 import {
@@ -24,7 +28,15 @@ type ReviewWorkspaceToolContext = {
 };
 
 function normalizedStrings(values: readonly string[] | undefined): string[] {
-  return [...new Set(values ?? [])].sort();
+  return [...new Set(values ?? [])].sort((left, right) => {
+    const leftPoints = Array.from(left, (character) => character.codePointAt(0)!);
+    const rightPoints = Array.from(right, (character) => character.codePointAt(0)!);
+    const sharedLength = Math.min(leftPoints.length, rightPoints.length);
+    for (let index = 0; index < sharedLength; index += 1) {
+      if (leftPoints[index] !== rightPoints[index]) return leftPoints[index]! - rightPoints[index]!;
+    }
+    return leftPoints.length - rightPoints.length;
+  });
 }
 
 function normalizedScopePaths(values: readonly string[] | undefined): string[] {
@@ -37,11 +49,11 @@ function normalizedScopePaths(values: readonly string[] | undefined): string[] {
       || entry.includes('\\')
       || path.posix.isAbsolute(entry)
     ) {
-      throw new Error(`Review workspace scope path must be repository-relative: ${entry}`);
+      throw new Error(`Path must be repository-relative: ${entry}`);
     }
     const normalized = path.posix.normalize(entry);
     if (normalized === '..' || normalized.startsWith('../')) {
-      throw new Error(`Review workspace scope path must be repository-relative: ${entry}`);
+      throw new Error(`Path must be repository-relative: ${entry}`);
     }
     return normalized;
   }));
@@ -88,6 +100,7 @@ export function createReviewWorkspaceLeaseInput(input: {
   repositoryIds: readonly string[] | undefined;
   snapshot: GitSnapshotInput;
   selectedRepositoryIds: readonly string[];
+  vulnerabilityScope?: Omit<ReviewWorkspaceVulnerabilityScopeDescriptor, 'schema'>;
   sourceFingerprint: string;
   materializedFingerprint: string;
   materializations: Array<{ repositoryId: string; materialization: ReviewMaterialization }>;
@@ -95,13 +108,35 @@ export function createReviewWorkspaceLeaseInput(input: {
   if (input.caller.role !== 'creator') throw new Error('Review workspace creation requires creator capability.');
   const sourceScope = normalizeReviewWorkspaceSourceScope(input.repositoryIds, input.snapshot);
   const selectedRepositoryIds = normalizedStrings(input.selectedRepositoryIds);
+  if ((input.caller.workflow === 'vulnerability-review') !== (input.vulnerabilityScope !== undefined)) {
+    throw new Error('Vulnerability review workspace creation requires its canonical scope descriptor.');
+  }
+  const scopeDescriptor: ReviewWorkspaceVulnerabilityScopeDescriptor | null = input.vulnerabilityScope
+    ? {
+        schema: 'hive-vuln-review-scope/v1',
+        mode: input.vulnerabilityScope.mode,
+        repositories: normalizedStrings(input.vulnerabilityScope.repositories),
+        paths: normalizedScopePaths(input.vulnerabilityScope.paths),
+        comparisonBase: input.vulnerabilityScope.comparisonBase,
+        hiveScope: input.vulnerabilityScope.hiveScope,
+      }
+    : null;
+  if (scopeDescriptor && JSON.stringify(scopeDescriptor.repositories) !== JSON.stringify(selectedRepositoryIds)) {
+    throw new Error('Vulnerability review scope repositories must match materialized repositories.');
+  }
+  if (scopeDescriptor && JSON.stringify(scopeDescriptor.paths) !== JSON.stringify(sourceScope.snapshot.paths)) {
+    throw new Error('Vulnerability review scope paths must match the source scope.');
+  }
   return {
     workflow: input.caller.workflow,
     creatorAgent: input.caller.agent,
     creatorSessionId: input.caller.sessionId,
     sourceScope,
+    scopeDescriptor,
     selectedRepositoryIds,
-    scopeFingerprint: fingerprintReviewWorkspaceScope(sourceScope),
+    scopeFingerprint: scopeDescriptor
+      ? fingerprintReviewWorkspaceVulnerabilityScope(scopeDescriptor)
+      : fingerprintReviewWorkspaceScope(sourceScope),
     sourceFingerprint: input.sourceFingerprint,
     materializedFingerprint: input.materializedFingerprint,
     materializedEntries: Object.fromEntries(input.materializations.map(({ repositoryId, materialization }) => [

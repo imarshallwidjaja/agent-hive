@@ -48,6 +48,7 @@ import type { GitSnapshotInput, ReviewMaterialization } from './utils/git-snapsh
 import {
   createReviewWorkspaceLeaseInput,
   inferReviewWorkspaceCaller,
+  normalizeReviewWorkspaceSourceScope,
   type ReviewWorkspaceWorkflowAliases,
 } from './review-workspace-runs.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
@@ -365,7 +366,6 @@ import { buildHiveCommandMap } from './commands/runtime.js';
 import { HIVE_COMMANDS, type HiveCommandKey } from './commands/registry.js';
 import {
   compareUnicodeCodePoints,
-  fingerprintVulnerabilityReviewScope,
   hiveCommandRenderers,
   isCanonicalHiveScopeIdentifier,
   renderVulnerabilityReviewArgumentBlock,
@@ -2009,14 +2009,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
               hiveScope: hiveScope ?? null,
             };
           }
+          normalizeReviewWorkspaceSourceScope(repositoryIds, snapshotInput);
           const resolved = await resolveSnapshotRepositories(repositoryIds);
-          const vulnerabilityScopeFingerprint = vulnerabilityScope
-            ? fingerprintVulnerabilityReviewScope({
-                ...vulnerabilityScope,
-                repositories: resolved.repositories.map((repository) => repository.id),
-                paths: snapshotInput.paths ?? [],
-              })
-            : undefined;
           await reviewWorkspaceService.cleanupExpired();
           let lastFingerprint = '';
           for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -2038,6 +2032,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                   repositoryIds,
                   snapshot: snapshotInput,
                   selectedRepositoryIds: resolved.repositories.map((repository) => repository.id),
+                  vulnerabilityScope: vulnerabilityScope ? {
+                    ...vulnerabilityScope,
+                    repositories: resolved.repositories.map((repository) => repository.id),
+                    paths: snapshotInput.paths ?? [],
+                  } : undefined,
                   sourceFingerprint: capture.sourceFingerprint,
                   materializedFingerprint: capture.materializedFingerprint,
                   materializations: capture.captures,
@@ -2059,9 +2058,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 ownershipToken: workspace.ownershipToken,
                 workspacePath: workspace.workspacePath,
                 repositories: workspace.repositories,
-                sourceFingerprint: capture.sourceFingerprint,
-                scopeFingerprint: vulnerabilityScopeFingerprint ?? lease.scopeFingerprint,
-                materializedFingerprint: capture.materializedFingerprint,
+                scopeDescriptor: lease.scopeDescriptor,
+                scopeFingerprint: lease.scopeFingerprint,
+                sourceFingerprint: lease.sourceFingerprint,
+                materializedFingerprint: lease.materializedFingerprint,
                 excludedRepositoryIds: resolved.excludedRepositoryIds,
                 truncated: capture.captures.some(({ materialization }) => materialization.snapshot.omissions.patch.truncated),
                 snapshots: capture.captures.map(({ repositoryId, materialization }) => ({ repositoryId, snapshot: materialization.snapshot })),
@@ -2133,10 +2133,15 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           }
           return JSON.stringify({
             ...workspaceInspection,
+            scopeDescriptor: lease.scopeDescriptor,
+            scopeFingerprint: lease.scopeFingerprint,
+            sourceFingerprint: lease.sourceFingerprint,
+            materializedFingerprint: lease.materializedFingerprint,
             source,
             materialized,
             reviewIntegrity: inspection.integrity.baselineClean
               && !inspection.integrity.untrackedFiles
+              && !inspection.integrity.ignoredFiles
               && materialized.matches
               && source.stable,
           }, null, 2);

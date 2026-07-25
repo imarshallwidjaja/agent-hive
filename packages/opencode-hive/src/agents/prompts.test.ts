@@ -1110,7 +1110,7 @@ describe('README.md documentation', () => {
     it('keeps hive-helper out of custom derived subagent docs while documenting simplicity-reviewer as a custom base', () => {
       expect(readmeContent).toContain('does not appear in `.github/agents/`');
       expect(readmeContent).toContain('### Custom Derived Subagents');
-      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, or `approach-advisor`');
+      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, or `vulnerability-reviewer`');
       expect(readmeContent).not.toContain('`simplicity-reviewer` is also not a custom base agent');
       expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `code-reviewer`, or `hive-helper`');
     });
