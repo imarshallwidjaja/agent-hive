@@ -61,6 +61,9 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('code-reviewer');
     expectReservedNameToFail('simplicity-reviewer');
     expectReservedNameToFail('approach-advisor');
+    expectReservedNameToFail('vulnerability-reviewer');
+    expectReservedNameToFail('__hive_dash_review_primary');
+    expectReservedNameToFail('__hive_vulnerability_review_primary');
     expectReservedNameToFail('hive');
     expectReservedNameToFail('architect');
     expectReservedNameToFail('swarm');
@@ -81,6 +84,22 @@ describe('agent_hive schema customAgents contract', () => {
 
     expect(reservedNames).not.toContain('dash-reviewer');
     expect(schema.properties.agents.properties).not.toHaveProperty('dash-reviewer');
+  });
+
+  it('accepts vulnerability reviewer model overrides and derived specialists', () => {
+    expect(validateConfigShape({
+      agents: {
+        'vulnerability-reviewer': { model: 'provider/security', variant: 'xhigh' },
+      },
+      customAgents: {
+        'security-supply-chain': {
+          baseAgent: 'vulnerability-reviewer',
+          description: 'Dependency and build-chain attack paths',
+          model: 'provider/supply-chain',
+          variant: 'high',
+        },
+      },
+    })).toBe(true);
   });
 });
 

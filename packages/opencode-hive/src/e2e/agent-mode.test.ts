@@ -71,8 +71,10 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["code-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["simplicity-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["approach-advisor"]).toBeDefined();
+    expect(opencodeConfig.agent["vulnerability-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.agent["__hive_dash_review_primary"]).toBeDefined();
+    expect(opencodeConfig.agent["__hive_vulnerability_review_primary"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("hive-master");
   });
 
@@ -108,8 +110,10 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["code-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["simplicity-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["approach-advisor"]).toBeDefined();
+    expect(opencodeConfig.agent["vulnerability-reviewer"]).toBeDefined();
     expect(opencodeConfig.agent["hive-builder"]).toBeDefined();
     expect(opencodeConfig.agent["__hive_dash_review_primary"]).toBeDefined();
+    expect(opencodeConfig.agent["__hive_vulnerability_review_primary"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("architect-planner");
   });
 

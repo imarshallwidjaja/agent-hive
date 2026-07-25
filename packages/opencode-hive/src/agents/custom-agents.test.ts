@@ -5,6 +5,7 @@ import { CODE_REVIEWER_PROMPT } from './code-reviewer';
 import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
 import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
+import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { buildCustomSubagents } from './custom-agents';
 import { CUSTOM_AGENT_RESERVED_NAMES } from 'hive-core';
@@ -108,6 +109,16 @@ describe('buildCustomSubagents', () => {
         },
         permission: reviewerPermission,
       },
+      'vulnerability-reviewer': {
+        model: 'base/security-model',
+        temperature: 0.1,
+        variant: 'high',
+        mode: 'subagent' as const,
+        description: 'Base Vulnerability Reviewer',
+        prompt: VULNERABILITY_REVIEWER_PROMPT,
+        tools: { hive_status: false },
+        permission: reviewerPermission,
+      },
     };
 
     const customAgents: Record<string, ResolvedCustomAgentConfig> = {
@@ -139,6 +150,14 @@ describe('buildCustomSubagents', () => {
         baseAgent: 'simplicity-reviewer',
         description: 'Use for adversarial deletion-biased cleanup passes.',
         autoLoadSkills: ['adversarial-review'],
+      },
+      'security-supply-chain': {
+        baseAgent: 'vulnerability-reviewer',
+        description: 'Use for dependency and build-chain attack paths.',
+        model: 'custom/security-model',
+        temperature: 0.2,
+        variant: 'xhigh',
+        autoLoadSkills: [],
       },
     };
 
@@ -186,6 +205,16 @@ describe('buildCustomSubagents', () => {
     expect(derived['reviewer-minimalist'].tools).toEqual(baseAgents['simplicity-reviewer'].tools);
     expect(derived['reviewer-minimalist'].description).toBe('Use for adversarial deletion-biased cleanup passes.');
     expect(derived['reviewer-minimalist'].model).toBe('base/simplicity-model');
+    expect(derived['security-supply-chain']).toMatchObject({
+      mode: 'subagent',
+      description: 'Use for dependency and build-chain attack paths.',
+      model: 'custom/security-model',
+      temperature: 0.2,
+      variant: 'xhigh',
+      tools: baseAgents['vulnerability-reviewer'].tools,
+      permission: baseAgents['vulnerability-reviewer'].permission,
+    });
+    expect(derived['security-supply-chain'].prompt).toContain(VULNERABILITY_REVIEWER_PROMPT);
   });
 
   it('registers custom forager runtime prompts when the base forager prompt is runtime-only', () => {

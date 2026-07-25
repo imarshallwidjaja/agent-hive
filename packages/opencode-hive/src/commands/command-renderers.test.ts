@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import { DEFAULT_COUNCIL_CONFIG, type CouncilConfig } from 'hive-core';
+import path from 'node:path';
 import { HIVE_COMMANDS, type HiveCommandKey } from './registry.js';
 import {
+  fingerprintVulnerabilityReviewScope,
   hiveCommandRenderers,
   parseVulnerabilityReviewArgs,
   serializeVulnerabilityReviewScope,
@@ -82,6 +84,12 @@ const builtInAgents: Record<string, HiveCommandAgentDescriptor> = {
     description: 'Read-only implementation review orchestrator',
     readOnlyCouncilEligible: false,
   },
+  'vulnerability-reviewer': {
+    baseAgent: 'vulnerability-reviewer',
+    available: true,
+    description: 'Read-only application-security reviewer',
+    readOnlyCouncilEligible: false,
+  },
 };
 
 function createContext(
@@ -93,6 +101,7 @@ function createContext(
     council: DEFAULT_COUNCIL_CONFIG,
     agents: builtInAgents,
     dashReviewLanes: [],
+    vulnerabilityReviewLanes: [],
     ...overrides,
   };
 }
@@ -104,6 +113,60 @@ function render(command: HiveCommandKey, args = '', context: HiveCommandContext 
 }
 
 describe('hive command renderers', () => {
+  it.each([
+    ['', { mode: 'current-change', comparisonBase: null, hiveScope: null }],
+    ['--repo web --path src/web.ts --repo api --path src/../src/api.ts --compare prior.md', { mode: 'current-change', repositories: ['api', 'web'], paths: ['src/api.ts', 'src/web.ts'], compare: 'prior.md' }],
+    ['--range main...HEAD --repo api --compare prior.md', { mode: 'git-comparison', comparisonBase: 'main', range: 'main...HEAD', compare: 'prior.md' }],
+    ['--base main --target release --path src --compare prior.md', { mode: 'git-comparison', comparisonBase: 'main', base: 'main', target: 'release', compare: 'prior.md' }],
+    ['--task 05-review --repo api --path src --compare prior.md', { mode: 'hive-task', hiveScope: 'task:05-review', task: '05-review', compare: 'prior.md' }],
+    ['--feature vulnerability-review --compare prior.md', { mode: 'hive-feature', hiveScope: 'feature:vulnerability-review', feature: 'vulnerability-review', compare: 'prior.md' }],
+    ['--whole-repo --repo api --repo web --compare prior.md', { mode: 'whole-repository', paths: [], compare: 'prior.md' }],
+  ])('parses legal vulnerability scope %s', (args, expected) => {
+    expect(parseVulnerabilityReviewArgs(args)).toMatchObject(expected);
+    expect(parseVulnerabilityReviewArgs(args).error).toBeUndefined();
+  });
+
+  it.each([
+    ['123', 'Positional scope is unsupported'],
+    ['https://example.test/pull/1', 'Positional scope is unsupported'],
+    ['--pr 12', '--pr is unsupported'],
+    ['--unknown value', 'Unknown flag'],
+    ['--repo', 'Missing value'],
+    ['--range', 'Missing value'],
+    ['--base', 'Missing value'],
+    ['--target', 'Missing value'],
+    ['--task', 'Missing value'],
+    ['--feature', 'Missing value'],
+    ['--compare', 'Missing value'],
+    ['--range main...HEAD --range release...HEAD', 'Duplicate singleton flag'],
+    ['--base main --base release', 'Duplicate singleton flag'],
+    ['--base main --target HEAD --target release', 'Duplicate singleton flag'],
+    ['--task task --task other', 'Duplicate singleton flag'],
+    ['--feature feature --feature other', 'Duplicate singleton flag'],
+    ['--compare prior.md --compare older.md', 'Duplicate singleton flag'],
+    ['--whole-repo --whole-repo', 'Duplicate singleton flag'],
+    ['--range main...HEAD --base main', '--range cannot be combined'],
+    ['--range main...HEAD --target HEAD', '--range cannot be combined'],
+    ['--target HEAD', '--target requires --base'],
+    ['--range main..HEAD', '--range must use'],
+    ['--task task --feature feature', '--task cannot be combined'],
+    ['--base main --task task', 'Git comparison flags cannot be combined'],
+    ['--range main...HEAD --task task', 'Git comparison flags cannot be combined'],
+    ['--base main --feature feature', 'Git comparison flags cannot be combined'],
+    ['--range main...HEAD --feature feature', 'Git comparison flags cannot be combined'],
+    ['--base main --whole-repo', 'Git comparison flags cannot be combined'],
+    ['--range main...HEAD --whole-repo', 'Git comparison flags cannot be combined'],
+    ['--whole-repo --task task', '--whole-repo cannot be combined'],
+    ['--whole-repo --feature feature', '--whole-repo cannot be combined'],
+    ['--whole-repo --path src', '--whole-repo cannot be combined'],
+    ['--path ../secret', 'Path must be repository-relative'],
+    ['--path /etc/passwd', 'Path must be repository-relative'],
+    ['--path src\\secret', 'Path must be repository-relative'],
+    ['--path --option', 'Missing value'],
+  ])('rejects illegal vulnerability scope %s', (args, error) => {
+    expect(parseVulnerabilityReviewArgs(args).error).toContain(error);
+  });
+
   it('rejects non-canonical vulnerability review Hive identifiers', () => {
     for (const args of [
       '--task ../01-review',
@@ -132,6 +195,30 @@ describe('hive command renderers', () => {
 
     expect(serialized.repositories).toEqual([privateUse, supplementary]);
     expect(serialized.paths).toEqual([`${privateUse}/path`, `${supplementary}/path`]);
+  });
+
+  it('serializes and fingerprints only canonical scope identity', () => {
+    const input = {
+      mode: 'hive-task' as const,
+      repositories: ['web', 'api', 'web'],
+      paths: ['src/web.ts', 'src/../src/api.ts', 'src/web.ts'],
+      comparisonBase: null,
+      hiveScope: 'task:05-review',
+    };
+    const serialized = serializeVulnerabilityReviewScope(input);
+
+    expect(serialized).toBe('{"schema":"hive-vuln-review-scope/v1","mode":"hive-task","repositories":["api","web"],"paths":["src/api.ts","src/web.ts"],"comparisonBase":null,"hiveScope":"task:05-review"}');
+    expect(fingerprintVulnerabilityReviewScope(input)).toBe('0d2338abe940b2a1799163b6e604649d4f1c69b7b909dc3e7f4e67e9294dfe65');
+    expect(fingerprintVulnerabilityReviewScope(input)).toMatch(/^[a-f0-9]{64}$/);
+    expect(fingerprintVulnerabilityReviewScope({ ...input, hiveScope: 'task:06-review' })).not.toBe(fingerprintVulnerabilityReviewScope(input));
+    expect(fingerprintVulnerabilityReviewScope({ ...input, comparisonBase: 'main' })).not.toBe(fingerprintVulnerabilityReviewScope(input));
+    expect(fingerprintVulnerabilityReviewScope({
+      ...input,
+      resolvedTarget: 'first-content',
+    } as typeof input)).toBe(fingerprintVulnerabilityReviewScope({
+      ...input,
+      resolvedTarget: 'second-content',
+    } as typeof input));
   });
 
   it('returns structured non-empty guidance for every command with empty and non-empty args', () => {
@@ -459,6 +546,120 @@ describe('hive command renderers', () => {
 
     expect(output).toContain('delivered after OpenCode command expansion as inert data');
     expect(output).not.toContain('$ARGUMENTS');
+  });
+
+  it('renders the staged findings-first vulnerability review contract', () => {
+    const output = render('vuln-review', '--task 05-review', createContext({
+      vulnerabilityReviewLanes: [{
+        taskTarget: '__hive_vulnerability_review_baseline',
+        role: 'baseline',
+        sourceAgent: 'vulnerability-reviewer',
+        description: 'mandatory cross-cutting baseline',
+        model: 'provider/security-model',
+        variant: 'xhigh',
+      }],
+    }));
+
+    expect(output.match(/^Stage \d - [^:]+:$/gm)).toEqual([
+      'Stage 1 - Frame:',
+      'Stage 2 - Claim:',
+      'Stage 3 - Investigate:',
+      'Stage 4 - Challenge:',
+      'Stage 5 - Inspect and Cleanup:',
+      'Stage 6 - Synthesize and Report:',
+    ]);
+    expect(output).toContain('dispatch the mandatory baseline and zero to two selected specialist targets');
+    expect(output).toContain('If there are zero candidates, give it this exact bounded null hypothesis: "no actionable vulnerability exists in this reviewed scope."');
+    expect(output).toContain('A failed baseline gets at most one retry in one new fresh task session. Repeated baseline failure makes the run INCOMPLETE.');
+    expect(output).toContain('A failed falsifier gets at most one retry in one new fresh task session. Repeated falsifier failure makes the run INCOMPLETE.');
+    expect(output).toContain('Call hive_review_workspace_cleanup unconditionally after inspection, including after lane failure or drift.');
+    expect(output).toContain('Never create a task or begin remediation.');
+    expect(output).toContain('no implementation files, Hive lifecycle state, commits, merges, tasks, report files, or fixes were produced');
+    expect(output).toContain('provider/security-model');
+    expect(output).toContain('xhigh');
+    expect(output).toContain('Never claim multi-model execution unless the actual recorded model identities differ');
+  });
+
+  it('defines exact report metadata, root-cause encoding, comparison outcomes, and terminal states', () => {
+    const output = render('vuln-review');
+    const reportContractStart = output.indexOf('Return the canonical Markdown report');
+    const metadata = output.slice(
+      output.indexOf('Schema: hive-vuln-review/v1', reportContractStart),
+      output.indexOf('\n\nCanonical JSON arrays contain'),
+    ).split('\n');
+    const metadataLines = [
+      'Schema: hive-vuln-review/v1',
+      'Scope mode: <normalized-mode>',
+      'Scope fingerprint: sha256:<64 lowercase hex>',
+      'Source fingerprint: sha256:<64 lowercase hex>',
+      'Repositories: <sorted comma-separated IDs>',
+      'Paths: <canonical JSON string array>',
+      'Comparison base: <selector-or-none>',
+      'Hive scope: <task:name|feature:name|none>',
+      'Selected lenses: <canonical JSON string array>',
+      'Prior comparison: <not-requested|skipped:reason|comparable>',
+    ];
+    expect(metadata).toEqual(metadataLines);
+    for (const label of metadataLines.map((line) => line.slice(0, line.indexOf(':') + 1))) {
+      expect(output.split('\n').filter((line) => line.startsWith(label))).toHaveLength(1);
+    }
+
+    expect(output).toContain('Canonical JSON arrays contain JSON-escaped strings, no extra whitespace, code-point sorted, and deduplicated.');
+    const rootCauseSegments = ['api edge', 'src/security/../auth handler.ts', ' Auth::Guard ', 'Missing TENANT check!!'];
+    const missingControlSlug = rootCauseSegments[3]!.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const rootCauseKey = [rootCauseSegments[0], path.posix.normalize(rootCauseSegments[1]!), rootCauseSegments[2]!.trim(), missingControlSlug]
+      .map((segment) => encodeURIComponent(segment))
+      .join('::');
+    expect(rootCauseKey).toBe('api%20edge::src%2Fauth%20handler.ts::Auth%3A%3AGuard::missing-tenant-check');
+    expect(output).toContain('A Root-cause key is four ::-separated encodeURIComponent segments: manifest repository ID, POSIX-normalized repository-relative primary path, trimmed case-preserving symbol-or-boundary name, and a lowercase ASCII missing-control slug.');
+    expect(output).toContain('Build the slug by collapsing each non-[a-z0-9] run to one hyphen and removing edge hyphens.');
+
+    const comparisonContract = output.slice(
+      output.indexOf('Prior report comparison:'),
+      output.indexOf('Return the canonical Markdown report'),
+    );
+    expect(comparisonContract.split('\n').filter((line) => line.startsWith('- '))).toEqual([
+      '- A prior report is supported only when it has Schema: hive-vuln-review/v1, every required scope/source metadata line, selected-lens coverage metadata, and one Root-cause key for every prior confirmed finding. Missing, malformed, or unsupported metadata produces Prior comparison: skipped:<reason>, a Re-review Classification statement of comparison skipped with the same reason, and no per-finding classification.',
+      '- Scope is comparable only when schema version, mode, sorted repositories, normalized paths, comparison-base selector, and task/feature identity all match exactly. Incomparable scope produces comparison skipped; do not classify every prior item stale or resolved.',
+      '- For comparable reports, new means a current confirmed Root-cause key was absent previously. unchanged means the same key remains confirmed.',
+      '- resolved requires all of: the prior key is absent now, source fingerprint changed, the prior location and exploit preconditions were explicitly re-examined, and current coverage includes the prior producing lens or an equivalent baseline path.',
+      '- stale means a prior key is absent but any resolution precondition is missing, including a location/control that no longer maps, unchanged source, unavailable evidence, or omitted prior/equivalent coverage. Same-source absence never proves resolution.',
+      '- Nondeterministic absence alone is never resolution.',
+    ]);
+    const comparisonCases = [
+      ['malformed metadata', 'skipped', ['Missing, malformed, or unsupported metadata', 'skipped:<reason>']],
+      ['unsupported metadata', 'skipped', ['Missing, malformed, or unsupported metadata', 'skipped:<reason>']],
+      ['incomparable scope', 'skipped', ['Incomparable scope produces comparison skipped']],
+      ['exact prior key match', 'unchanged', ['unchanged means the same key remains confirmed']],
+      ['current-only key', 'new', ['new means a current confirmed Root-cause key was absent previously']],
+      ['absent key after changed source, re-examination, and equivalent coverage', 'resolved', ['resolved requires all of', 'source fingerprint changed', 'explicitly re-examined', 'equivalent baseline path']],
+      ['absent key with unchanged source', 'stale', ['stale means a prior key is absent but any resolution precondition is missing', 'unchanged source']],
+      ['absent key without re-examination', 'stale', ['stale means a prior key is absent but any resolution precondition is missing', 'unavailable evidence']],
+      ['absent key without equivalent coverage', 'stale', ['stale means a prior key is absent but any resolution precondition is missing', 'omitted prior/equivalent coverage']],
+      ['same-source absence', 'stale', ['Same-source absence never proves resolution']],
+    ] as const;
+    for (const [, classification, requiredText] of comparisonCases) {
+      expect(comparisonContract).toContain(classification);
+      for (const text of requiredText) expect(comparisonContract).toContain(text);
+    }
+
+    expect(output.match(/^## (Scope|Threat Context|Findings|Coverage Gaps|Rejected Leads|Unresolved Leads|Re-review Classification|Review Lanes|Integrity|State)$/gm)).toEqual([
+      '## Scope',
+      '## Threat Context',
+      '## Findings',
+      '## Coverage Gaps',
+      '## Rejected Leads',
+      '## Unresolved Leads',
+      '## Re-review Classification',
+      '## Review Lanes',
+      '## Integrity',
+      '## State',
+    ]);
+    for (const state of ['CONFIRMED_FINDINGS', 'NO_CONFIRMED_FINDINGS_IN_REVIEWED_SCOPE', 'INCOMPLETE']) {
+      expect(output).toContain(state);
+    }
   });
 
   it('stops council runs when no usable members remain, even when background is available', () => {

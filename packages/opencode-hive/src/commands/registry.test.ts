@@ -47,6 +47,12 @@ const EXPECTED_COMMANDS = [
     agent: '__hive_dash_review_primary',
   },
   {
+    key: 'vuln-review',
+    name: '/vuln-review',
+    description: 'Assess a frozen scope for evidenced vulnerabilities without changing files',
+    agent: '__hive_vulnerability_review_primary',
+  },
+  {
     key: 'compact-summary',
     name: '/compact-summary',
     description: 'Produce a recovery summary for the current OpenCode session',
@@ -60,7 +66,7 @@ function uniqueCount(values: string[]): number {
 describe('HIVE_COMMANDS', () => {
   it('defines the canonical command metadata in stable order', () => {
     expect(HIVE_COMMANDS).toEqual(EXPECTED_COMMANDS);
-    expect(HIVE_COMMANDS).toHaveLength(9);
+    expect(HIVE_COMMANDS).toHaveLength(10);
     expect(HIVE_COMMANDS.map((command) => command.name)).not.toContain('/hive');
   });
 

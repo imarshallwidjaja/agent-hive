@@ -13,6 +13,8 @@ import { CODE_REVIEWER_PROMPT } from './code-reviewer';
 import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { DASH_REVIEWER_PROMPT } from './dash-reviewer';
+import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-primary';
+import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { buildWorkerPrompt } from '../utils/worker-prompt';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 
@@ -262,6 +264,18 @@ describe('Scout ast-grep references', () => {
 });
 
 describe('Specialized reviewer prompts', () => {
+  it('keeps vulnerability review orchestration and evidence review in separate no-fix roles', () => {
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('private orchestrator');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('do not review, falsify, or fix code');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('mandatory baseline and fixed falsifier');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('report the run as INCOMPLETE');
+    expect(VULNERABILITY_REVIEWER_PROMPT).toContain('attacker-controlled input or capabilities');
+    expect(VULNERABILITY_REVIEWER_PROMPT).toContain('concrete impact');
+    expect(VULNERABILITY_REVIEWER_PROMPT).toContain('Do not edit or create files');
+    expect(VULNERABILITY_REVIEWER_PROMPT).toContain('Do not delegate');
+    expect(VULNERABILITY_REVIEWER_PROMPT).toContain('Do not propose or apply a patch');
+  });
+
   it('keeps dash-reviewer as a read-only review orchestrator rather than a reviewer or fixer', () => {
     expect(DASH_REVIEWER_PROMPT).toContain('review orchestrator');
     expect(DASH_REVIEWER_PROMPT).toContain('not a reviewer or fixer');

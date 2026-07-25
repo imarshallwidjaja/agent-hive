@@ -8,6 +8,16 @@ import plugin from '../index';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 
 const removedHiveSkillTool = ['hive', 'skill'].join('_');
+const expectedVulnerabilityReviewMcpTools = [
+  'ast_grep_dump_syntax_tree',
+  'ast_grep_find_code',
+  'ast_grep_find_code_by_rule',
+  'ast_grep_test_match_code_rule',
+  'context7_resolve-library-id',
+  'context7_query-docs',
+  'grep_app_searchGitHub',
+  'websearch_web_search_exa',
+] as const;
 
 type PluginInput = {
   directory: string;
@@ -146,6 +156,11 @@ function findDashCodeAlias(agents: Record<string, AgentConfig> | undefined): str
     return config.tools?.hive_review_workspace_create !== true
       && config.description?.includes('code-reviewer');
   })?.[0];
+}
+
+function findVulnerabilityReviewLanes(agents: Record<string, AgentConfig> | undefined): Array<[string, AgentConfig]> {
+  return Object.entries(agents ?? {}).filter(([name]) => name.startsWith('__hive_vulnerability_review_')
+    && name !== '__hive_vulnerability_review_primary');
 }
 
 function snapshotContext(agent: string): Record<string, unknown> {
@@ -524,11 +539,44 @@ describe('Per-agent tool filtering', () => {
 
     for (const agents of agentSets) {
       for (const [name, agent] of Object.entries(agents)) {
+        if (name.startsWith('__hive_vulnerability_review_')) continue;
         for (const tool of ['hive_repositories_status', 'hive_plan_read', 'hive_status']) {
           expect(agent.tools?.[tool], `${name} must not deny ${tool}`).not.toBe(false);
         }
       }
     }
+  });
+
+  it('registers exact fail-closed vulnerability review permissions and custom specialist identity', async () => {
+    const agents = await buildConfig('unified', {
+      'security-supply-chain': {
+        baseAgent: 'vulnerability-reviewer',
+        description: 'Supply-chain attack paths',
+        model: 'provider/supply-chain',
+        variant: 'xhigh',
+      },
+    });
+    const primary = agents['__hive_vulnerability_review_primary']!;
+    const lanes = findVulnerabilityReviewLanes(agents);
+    const taskRules = primary.permission?.task as Record<string, string>;
+
+    expect(primary.tools).toEqual(Object.fromEntries(HIVE_TOOL_NAMES.map((tool) => [
+      tool,
+      ['hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup'].includes(tool),
+    ])));
+    expect(taskRules['*']).toBe('deny');
+    expect(Object.keys(taskRules)[0]).toBe('*');
+    expect(lanes).toHaveLength(8);
+    for (const [target, lane] of lanes) {
+      expect(resolveTaskPermission(taskRules, target)).toBe('allow');
+      expect(lane.permission?.['*']).toBe('deny');
+    }
+    for (const target of ['scout-researcher', 'vulnerability-reviewer', 'security-supply-chain', '__hive_dash_review_primary']) {
+      expect(resolveTaskPermission(taskRules, target)).toBe('deny');
+    }
+    const custom = lanes.find(([, lane]) => lane.model === 'provider/supply-chain')?.[1];
+    expect(custom).toMatchObject({ model: 'provider/supply-chain', variant: 'xhigh' });
+    expect(custom?.description).toContain('Supply-chain attack paths');
   });
 
   it('background management tools are available only to primary orchestration agents', async () => {
@@ -865,7 +913,7 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('rejects non-canonical or non-member Hive scope aliases before review workspace creation', async () => {
+  it('rejects every invalid vulnerability scope before review workspace creation', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-scope-membership-'));
     createGitRepository(repository);
     try {
@@ -879,21 +927,95 @@ describe('Per-agent tool filtering', () => {
       const physicalFeatureAlias = '01_scope-feature';
       const taskAlias = `${taskFolder}/../${taskFolder}`;
 
-      await expect(create({
-        scopeMode: 'hive-feature',
-        hiveScope: `feature:${featureAlias}`,
-      }, context)).rejects.toThrow(`Unresolved Hive feature metadata: feature:${featureAlias}.`);
-      await expect(create({
-        scopeMode: 'hive-feature',
-        hiveScope: `feature:${physicalFeatureAlias}`,
-      }, context)).rejects.toThrow(`Unresolved Hive feature metadata: feature:${physicalFeatureAlias}.`);
-      await expect(create({
-        scopeMode: 'hive-task',
-        hiveScope: `task:${taskAlias}`,
-      }, context)).rejects.toThrow(`Unresolved Hive task metadata: task:${taskAlias}.`);
+      const invalidScopes: Array<[string, Record<string, unknown>, string]> = [
+        ['missing mode', {}, 'requires a valid normalized scopeMode'],
+        ['unknown mode', { scopeMode: 'unknown' }, 'requires a valid normalized scopeMode'],
+        ['current change with range', { scopeMode: 'current-change', range: 'HEAD...HEAD' }, 'current-change scope cannot include Git comparison refs'],
+        ['current change with Hive metadata', { scopeMode: 'current-change', hiveScope: 'feature:scope-feature' }, 'current-change scope cannot include Hive metadata'],
+        ['current change with task metadata', { scopeMode: 'current-change', hiveScope: `task:${taskFolder}` }, 'current-change scope cannot include Hive metadata'],
+        ['Git comparison without refs', { scopeMode: 'git-comparison' }, 'Git comparison scope requires range or baseRef'],
+        ['Git comparison with malformed range', { scopeMode: 'git-comparison', range: 'HEAD..HEAD' }, 'range must use <base>...<target>'],
+        ['Git comparison with range and base', { scopeMode: 'git-comparison', range: 'HEAD...HEAD', baseRef: 'HEAD' }, 'range cannot be combined'],
+        ['Git comparison with range and target', { scopeMode: 'git-comparison', range: 'HEAD...HEAD', targetRef: 'HEAD' }, 'range cannot be combined'],
+        ['Git comparison with target only', { scopeMode: 'git-comparison', targetRef: 'HEAD' }, 'targetRef requires baseRef'],
+        ['Git comparison with Hive metadata', { scopeMode: 'git-comparison', baseRef: 'HEAD', hiveScope: 'feature:scope-feature' }, 'git-comparison scope cannot include Hive metadata'],
+        ['task without metadata', { scopeMode: 'hive-task' }, 'Hive task scope requires task:<folder> metadata'],
+        ['task with feature metadata', { scopeMode: 'hive-task', hiveScope: 'feature:scope-feature' }, 'Hive task scope requires task:<folder> metadata'],
+        ['task with Git refs', { scopeMode: 'hive-task', hiveScope: `task:${taskFolder}`, baseRef: 'HEAD' }, 'hive-task scope cannot include Git comparison refs'],
+        ['task with traversal alias', { scopeMode: 'hive-task', hiveScope: `task:${taskAlias}` }, `Unresolved Hive task metadata: task:${taskAlias}.`],
+        ['task with missing member', { scopeMode: 'hive-task', hiveScope: 'task:99-missing' }, 'Unresolved Hive task metadata: task:99-missing.'],
+        ['feature without metadata', { scopeMode: 'hive-feature' }, 'Hive feature scope requires feature:<name> metadata'],
+        ['feature with task metadata', { scopeMode: 'hive-feature', hiveScope: `task:${taskFolder}` }, 'Hive feature scope requires feature:<name> metadata'],
+        ['feature with Git refs', { scopeMode: 'hive-feature', hiveScope: 'feature:scope-feature', range: 'HEAD...HEAD' }, 'hive-feature scope cannot include Git comparison refs'],
+        ['feature with traversal alias', { scopeMode: 'hive-feature', hiveScope: `feature:${featureAlias}` }, `Unresolved Hive feature metadata: feature:${featureAlias}.`],
+        ['feature with physical alias', { scopeMode: 'hive-feature', hiveScope: `feature:${physicalFeatureAlias}` }, `Unresolved Hive feature metadata: feature:${physicalFeatureAlias}.`],
+        ['whole repository with path', { scopeMode: 'whole-repository', paths: ['src'] }, 'Whole-repository scope cannot include paths or Hive scope'],
+        ['whole repository with Hive metadata', { scopeMode: 'whole-repository', hiveScope: 'feature:scope-feature' }, 'Whole-repository scope cannot include paths or Hive scope'],
+        ['whole repository with Git refs', { scopeMode: 'whole-repository', baseRef: 'HEAD' }, 'whole-repository scope cannot include Git comparison refs'],
+        ['path escape', { scopeMode: 'current-change', paths: ['../outside'] }, 'Path must be repository-relative'],
+        ['absolute path', { scopeMode: 'current-change', paths: ['/etc/passwd'] }, 'Path must be repository-relative'],
+        ['backslash path', { scopeMode: 'current-change', paths: ['src\\secret'] }, 'Path must be repository-relative'],
+        ['NUL path', { scopeMode: 'current-change', paths: ['src\0secret'] }, 'Path must be repository-relative'],
+        ['option-shaped path', { scopeMode: 'current-change', paths: ['--secret'] }, 'Path must be repository-relative'],
+        ['colon-shaped path', { scopeMode: 'current-change', paths: [':secret'] }, 'Path must be repository-relative'],
+      ];
+
+      for (const [name, input, error] of invalidScopes) {
+        await expect(create(input, context), name).rejects.toThrow(error);
+      }
       expect(createWorkspace).not.toHaveBeenCalled();
     } finally {
       rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('creates every legal runtime scope after exact task and feature resolution', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-valid-scopes-'));
+    createGitRepository(repository);
+    try {
+      new FeatureService(repository).create('scope-feature');
+      const taskFolder = new TaskService(repository).create('scope-feature', 'scope-task');
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
+      const context = snapshotContext(vulnerabilityScopeAlias);
+      const legalScopes: Array<[string, Record<string, unknown>]> = [
+        ['current change', { scopeMode: 'current-change', paths: ['README.md'] }],
+        ['Git range', { scopeMode: 'git-comparison', range: 'HEAD...HEAD', paths: ['README.md'] }],
+        ['Git base and target', { scopeMode: 'git-comparison', baseRef: 'HEAD', targetRef: 'HEAD' }],
+        ['Hive task', { scopeMode: 'hive-task', hiveScope: `task:${taskFolder}`, paths: ['README.md'] }],
+        ['Hive feature', { scopeMode: 'hive-feature', hiveScope: 'feature:scope-feature' }],
+        ['whole repository', { scopeMode: 'whole-repository' }],
+      ];
+
+      for (const [name, input] of legalScopes) {
+        const created = JSON.parse(await create(input, context));
+        expect(created.state, name).toBe('READY');
+        expect(created.scopeFingerprint, name).toMatch(/^[a-f0-9]{64}$/);
+      }
+      expect(createWorkspace).toHaveBeenCalledTimes(legalScopes.length);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an unknown repository through the workspace creation tool before service create', async () => {
+    const composite = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-unknown-repository-'));
+    const api = path.join(composite, 'repos', 'api');
+    createGitRepository(api);
+    writeCompositeWorkspaceManifest(composite, ['api']);
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(composite);
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
+
+      await expect(create({
+        scopeMode: 'current-change',
+        repositoryIds: ['missing'],
+      }, snapshotContext(vulnerabilityScopeAlias))).rejects.toThrow('Unknown repositoryId: missing');
+      expect(createWorkspace).not.toHaveBeenCalled();
+    } finally {
+      rmSync(composite, { recursive: true, force: true });
     }
   });
 
@@ -947,7 +1069,7 @@ describe('Per-agent tool filtering', () => {
 
       await expect(hooks.event?.({ event: { type: 'session.deleted', properties: { sessionID: 'dash-primary-errors' } } } as any)).resolves.toBeUndefined();
 
-      expect(cleanupOwnedBySession).toHaveBeenCalledWith('dash-primary-errors', ['dash-review']);
+      expect(cleanupOwnedBySession).toHaveBeenCalledWith('dash-primary-errors', ['dash-review', 'vulnerability-review']);
       expect(warn).toHaveBeenCalledTimes(2);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${first.runId}: injected cleanup failure`));
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${second.runId}: injected cleanup result`));
@@ -983,6 +1105,46 @@ describe('Per-agent tool filtering', () => {
       expect(existsSync(first.workspacePath)).toBe(false);
       expect(existsSync(second.workspacePath)).toBe(true);
       await cleanup({ runId: second.runId, ownershipToken: second.ownershipToken }, secondContext);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('reconstructs vulnerability workspace authorization after plugin restart without crossing workflow identity', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-restart-'));
+    createGitRepository(repository);
+    try {
+      const firstPlugin = await createSnapshotPlugin(repository);
+      const firstConfig: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await firstPlugin.hooks.config?.(firstConfig);
+      const vulnerabilityPrimary = firstConfig.command?.['vuln-review']?.agent!;
+      const dashPrimary = firstConfig.command?.['dash-review']?.agent!;
+      const create = firstPlugin.hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = firstPlugin.hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+      const created = JSON.parse(await create({ scopeMode: 'current-change' }, snapshotContext(firstPlugin.vulnerabilityScopeAlias)));
+      const ownerContext = { ...snapshotContext(vulnerabilityPrimary), sessionID: 'vulnerability-restart-session' };
+      await firstPlugin.hooks['chat.message']?.({ sessionID: 'vulnerability-restart-session', agent: vulnerabilityPrimary }, { message: {}, parts: [] } as any);
+      await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, ownerContext);
+
+      const secondPlugin = await createSnapshotPlugin(repository);
+      const secondConfig: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await secondPlugin.hooks.config?.(secondConfig);
+      const inspect = secondPlugin.hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
+      const cleanup = secondPlugin.hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
+      await secondPlugin.hooks['chat.message']?.({ sessionID: 'vulnerability-restart-session', agent: vulnerabilityPrimary }, { message: {}, parts: [] } as any);
+      const reconstructed = JSON.parse(await inspect({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, ownerContext));
+      expect(reconstructed).toMatchObject({ reviewIntegrity: true, source: { stable: true }, materialized: { matches: true } });
+      await expect(inspect({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, { ...ownerContext, agent: dashPrimary })).rejects.toThrow('inspection was denied');
+      expect(JSON.parse(await cleanup({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, ownerContext)).cleaned).toBe(true);
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -1048,6 +1210,52 @@ describe('Per-agent tool filtering', () => {
       await expect(taskHook({ tool: 'task', sessionID: 'untracked-dash-session', callID: 'after-delete' }, {
         args: { subagent_type: safeAlias },
       })).resolves.toBeUndefined();
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('enforces vulnerability role allowlists and cross-workflow task isolation at runtime', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-tool-auth-'));
+    createGitRepository(repository);
+    try {
+      const { hooks } = await createSnapshotPlugin(repository);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const dashPrimary = config.command?.['dash-review']?.agent!;
+      const vulnerabilityLanes = findVulnerabilityReviewLanes(config.agent);
+      const scope = vulnerabilityLanes.find(([, lane]) => lane.tools?.hive_review_workspace_create === true)?.[0]!;
+      const baseline = vulnerabilityLanes.find(([, lane]) => lane.prompt?.includes('mandatory cross-cutting baseline'))?.[0]!;
+      const dashScope = findDashScopeAlias(config.agent)!;
+      const message = hooks['chat.message']!;
+      const before = hooks['tool.execute.before']!;
+      const invoke = (sessionID: string, tool: string, args: Record<string, unknown> = {}) => before(
+        { tool, sessionID, callID: `${sessionID}-${tool}` },
+        { args },
+      );
+
+      await message({ sessionID: 'vuln-primary', agent: primary }, { message: {}, parts: [] } as any);
+      await expect(invoke('vuln-primary', 'task', { subagent_type: scope })).resolves.toBeUndefined();
+      await expect(invoke('vuln-primary', 'task', { subagent_type: dashScope })).rejects.toThrow('vulnerability-review task target is not authorized');
+      await expect(invoke('vuln-primary', 'bash')).rejects.toThrow('vulnerability-review tool is not authorized');
+
+      await message({ sessionID: 'vuln-scope', agent: scope }, { message: {}, parts: [] } as any);
+      for (const tool of ['read', 'glob', 'grep', 'hive_repositories_status', 'hive_status', 'hive_plan_read', 'hive_review_workspace_create', ...expectedVulnerabilityReviewMcpTools]) {
+        await expect(invoke('vuln-scope', tool)).resolves.toBeUndefined();
+      }
+      for (const tool of ['task', 'bash', 'write', 'edit', 'webfetch', 'skill', 'todowrite', 'context-mode_ctx_execute', 'gpt_imagegen', 'unknown_user_mcp', 'hive_feature_create']) {
+        await expect(invoke('vuln-scope', tool, { subagent_type: scope })).rejects.toThrow('vulnerability-review tool is not authorized');
+      }
+
+      await message({ sessionID: 'vuln-baseline', agent: baseline }, { message: {}, parts: [] } as any);
+      for (const tool of ['read', 'glob', 'grep', ...expectedVulnerabilityReviewMcpTools]) {
+        await expect(invoke('vuln-baseline', tool)).resolves.toBeUndefined();
+      }
+      await expect(invoke('vuln-baseline', 'hive_repositories_status')).rejects.toThrow('vulnerability-review tool is not authorized');
+
+      await message({ sessionID: 'dash-primary-cross', agent: dashPrimary }, { message: {}, parts: [] } as any);
+      await expect(invoke('dash-primary-cross', 'task', { subagent_type: scope })).rejects.toThrow('dash-review task target is not authorized');
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }

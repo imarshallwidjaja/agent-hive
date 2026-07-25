@@ -621,6 +621,23 @@ Do it
     expect(dashPrimary.hidden).toBe(true);
   });
 
+  it('binds vuln-review to its hidden primary and generated manifest contract', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_vuln_review_command');
+    const opencodeConfig: Record<string, unknown> = {};
+    await hooks.config!(opencodeConfig);
+
+    const commands = opencodeConfig.command as Record<string, { agent?: string; template?: string }>;
+    const agents = opencodeConfig.agent as Record<string, { mode?: string; hidden?: boolean }>;
+    expect(commands['vuln-review'].agent).toBe('__hive_vulnerability_review_primary');
+    expect(commands['vuln-review'].template).toContain('Schema: hive-vuln-review/v1');
+    expect(commands['vuln-review'].template).not.toContain('$ARGUMENTS');
+    expect(agents['__hive_vulnerability_review_primary']).toMatchObject({ mode: 'primary', hidden: true });
+    expect(buildPluginManifest().commands).toContainEqual({
+      name: '/vuln-review',
+      description: 'Assess a frozen scope for evidenced vulnerabilities without changing files',
+    });
+  });
+
   it('keeps dash-review command arguments inert until the post-expansion command hook appends them', async () => {
     const dashRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-e2e-dash-review-'));
     try {
@@ -652,6 +669,46 @@ Do it
       expect(parts.map((part) => part.text).join('\n')).toContain(rawArguments);
     } finally {
       fs.rmSync(dashRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps vuln-review shell-shaped arguments inert and appends canonical parsed data', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-e2e-vuln-review-'));
+    try {
+      execSync('git init', { cwd: root });
+      execSync('git config user.email "test@example.com"', { cwd: root });
+      execSync('git config user.name "Test"', { cwd: root });
+      fs.writeFileSync(path.join(root, 'README.md'), 'vulnerability review test');
+      execSync('git add README.md', { cwd: root });
+      execSync('git commit -m "init"', { cwd: root });
+      const { hooks } = await createHooksForTest(root, 'sess_vuln_review_arguments');
+      const config: Record<string, any> = {};
+      const marker = path.join(root, 'vuln-review-argument-marker');
+      const rawArguments = `--path '!\`touch "${marker}"\`' --repo root`;
+      await hooks.config!(config);
+
+      const parts = await runOpenCodeV114CommandPath({
+        hooks,
+        command: 'vuln-review',
+        sessionID: 'sess_vuln_review_arguments',
+        arguments: rawArguments,
+        template: config.command['vuln-review'].template,
+        cwd: root,
+      });
+      const appended = parts.map((part) => part.text).join('\n');
+      const normalizedPath = `!\`touch "${marker}"\``;
+      const normalizedFlags = {
+        mode: 'current-change',
+        repositories: ['root'],
+        paths: [normalizedPath],
+        comparisonBase: null,
+        hiveScope: null,
+      };
+      expect(fs.existsSync(marker)).toBe(false);
+      expect(appended).toContain(`Raw arguments (JSON string): ${JSON.stringify(rawArguments)}`);
+      expect(appended).toContain(`Normalized flags: ${JSON.stringify(normalizedFlags)}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
