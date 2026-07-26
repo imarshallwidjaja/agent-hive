@@ -78,21 +78,8 @@ export class RepositoryManifestService {
       return { mode: 'manifest', configPath: path.join(this.projectRoot, 'workspace.json'), repositories: this.resolveManifestEntries(generated), source: 'generated-workspace' };
     }
 
-    try {
-      assertRepositoryManifestContained(this.projectRoot, this.configPath);
-      if (fs.existsSync(this.configPath)) {
-        const repositories = this.readLocalManifest();
-        return { mode: 'manifest', configPath: this.configPath, repositories: this.resolveManifestEntries(repositories), source: 'local' };
-      }
-    } catch (error) {
-      return {
-        mode: 'manifest',
-        configPath: this.configPath,
-        repositories: [],
-        error: error instanceof Error ? error.message : String(error),
-        source: 'local',
-      };
-    }
+    const localStatus = this.getLocalManifestStatus();
+    if (localStatus) return localStatus;
 
     const config = this.configService.readStored();
     if (config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot) && Array.isArray(config.repositories)) {
@@ -130,6 +117,23 @@ export class RepositoryManifestService {
       repositories: [],
       error: `Repository manifest is required because project root is not a git repository: ${this.projectRoot}`,
     };
+  }
+
+  getLocalManifestStatus(): RepositoryManifestStatus | null {
+    try {
+      assertRepositoryManifestContained(this.projectRoot, this.configPath);
+      if (!fs.existsSync(this.configPath)) return null;
+      const repositories = this.readLocalManifest();
+      return { mode: 'manifest', configPath: this.configPath, repositories: this.resolveManifestEntries(repositories), source: 'local' };
+    } catch (error) {
+      return {
+        mode: 'manifest',
+        configPath: this.configPath,
+        repositories: [],
+        error: error instanceof Error ? error.message : String(error),
+        source: 'local',
+      };
+    }
   }
 
   discover(): RepositoryDiscoveryResult {
@@ -253,7 +257,7 @@ export class RepositoryManifestService {
   resolveRepositories(): ResolvedRepository[] {
     const status = this.getStatus();
     if (status.error) throw new Error(status.error);
-    return status.repositories.map((repository) => ({ id: repository.id, path: path.resolve(this.projectRoot, repository.path), root: repository.root! }));
+    return this.repositoryService.resolveManifest(status.repositories);
   }
 
   private readLocalManifest(): RepositoryConfig[] {

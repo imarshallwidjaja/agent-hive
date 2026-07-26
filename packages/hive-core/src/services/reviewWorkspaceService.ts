@@ -123,6 +123,7 @@ export interface ReviewWorkspaceCleanupResult {
 
 export interface ReviewWorkspaceLease extends ReviewWorkspaceLeaseInput {
   schemaVersion: 1;
+  sourceFingerprintVersion: ReviewWorkspaceSourceFingerprintVersion;
   runId: string;
   creatorPid: number;
   ownerAgent?: string;
@@ -150,6 +151,7 @@ interface ReviewWorkspaceBaseline {
 
 interface ReviewWorkspaceMetadata {
   schemaVersion: 1;
+  sourceFingerprintVersion: ReviewWorkspaceSourceFingerprintVersion;
   state: 'creating' | 'recovery' | 'sealed';
   runId: string;
   workflow: ReviewWorkspaceWorkflow;
@@ -176,6 +178,11 @@ interface ReviewWorkspaceMetadata {
   ownerSessionId?: string;
   ownerPid?: number;
   ownerRecoveryExpiresAt?: number;
+  cleanupRecovery?: {
+    state: 'required';
+    primaryAgent: string;
+    primarySessionId: string;
+  };
 }
 
 interface ReviewWorkspaceCleanupIdentity {
@@ -204,7 +211,16 @@ const BASELINE_CAPTURE_TIMEOUT_MS = 5_000;
 const REVIEW_WORKSPACE_HANDOFF_MS = 5 * 60 * 1000;
 const METADATA_DIRECTORY = '.runs';
 const LOCK_DIRECTORY = '.locks';
+const LOCK_METADATA_FILE = 'owner.json';
+const LOCK_RECOVERY_SUFFIX = '.recovery';
+const VULNERABILITY_MATERIALIZATION_LOCK_ID = 'vulnerability-materialization-boundary';
+const MAX_RUNTIME_PROCESS_ID = 0x7fffffff;
 export const REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION = 1;
+export const LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION = 1;
+const REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION = 2;
+type ReviewWorkspaceSourceFingerprintVersion =
+  | typeof LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION
+  | typeof REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION;
 
 function isSafeRunId(runId: string): boolean {
   return RUN_ID_PATTERN.test(runId) && !runId.includes('..');
@@ -309,6 +325,7 @@ export function fingerprintReviewWorkspaceVulnerabilityScope(
 }
 
 export class ReviewWorkspaceService {
+  private static readonly vulnerabilityMaterializationQueues = new Map<string, Promise<void>>();
   private readonly projectRoot: Promise<string>;
 
   constructor(private readonly config: ReviewWorkspaceConfig) {
@@ -490,11 +507,12 @@ export class ReviewWorkspaceService {
     if (!isRecord(metadata)) throw this.metadataError(runId);
     const allowedFields = new Set([
       'schemaVersion', 'state', 'runId', 'workflow', 'creatorAgent', 'creatorSessionId', 'creatorPid',
+      'sourceFingerprintVersion',
       'sourceScope', 'scopeDescriptor', 'selectedRepositoryIds', 'scopeFingerprint', 'sourceFingerprint',
       'materializedFingerprint', 'materializedEntries', 'composite', 'commits', 'baseline',
       'worktreeRepositoryIds', 'creatingRepositoryId', 'cleanupIdentities', 'ownershipTokenHash',
       'handoffExpiresAt', 'removedRepositoryIds', 'ownerAgent', 'ownerSessionId', 'ownerPid',
-      'ownerRecoveryExpiresAt',
+      'ownerRecoveryExpiresAt', 'cleanupRecovery',
     ]);
     if (
       metadata.schemaVersion !== REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION
@@ -511,6 +529,9 @@ export class ReviewWorkspaceService {
       || !isRecord(metadata.commits)
       || typeof metadata.scopeFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.scopeFingerprint)
       || typeof metadata.sourceFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.sourceFingerprint)
+      || (metadata.sourceFingerprintVersion !== undefined
+        && metadata.sourceFingerprintVersion !== LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION
+        && metadata.sourceFingerprintVersion !== REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION)
       || typeof metadata.materializedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.materializedFingerprint)
       || typeof metadata.ownershipTokenHash !== 'string'
       || !/^[a-f0-9]{64}$/.test(metadata.ownershipTokenHash)
@@ -519,6 +540,10 @@ export class ReviewWorkspaceService {
     ) {
       throw this.metadataError(runId);
     }
+    const sourceFingerprintVersion: ReviewWorkspaceSourceFingerprintVersion =
+      metadata.sourceFingerprintVersion === REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION
+        ? REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION
+        : LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION;
     const selectedRepositoryIds = [...metadata.selectedRepositoryIds];
     if (
       selectedRepositoryIds.length === 0
@@ -651,6 +676,7 @@ export class ReviewWorkspaceService {
     const hasOwnerAgent = metadata.ownerAgent !== undefined;
     const hasOwnerSession = metadata.ownerSessionId !== undefined;
     const hasOwnerPid = metadata.ownerPid !== undefined;
+    const cleanupRecovery = metadata.cleanupRecovery;
     if (
       hasOwnerAgent !== hasOwnerSession || hasOwnerSession !== hasOwnerPid
       || (hasOwnerAgent && (typeof metadata.ownerAgent !== 'string' || !metadata.ownerAgent))
@@ -659,6 +685,28 @@ export class ReviewWorkspaceService {
       || (metadata.ownerRecoveryExpiresAt !== undefined && (!hasOwnerPid || typeof metadata.ownerRecoveryExpiresAt !== 'number' || !Number.isFinite(metadata.ownerRecoveryExpiresAt)))
     ) {
       throw this.metadataError(runId);
+    }
+    let canonicalCleanupRecovery: ReviewWorkspaceMetadata['cleanupRecovery'];
+    if (cleanupRecovery !== undefined) {
+      const cleanupRecoveryFields = isRecord(cleanupRecovery) ? Object.keys(cleanupRecovery) : [];
+      if (
+        !isRecord(cleanupRecovery)
+        || cleanupRecoveryFields.length !== 3
+        || cleanupRecoveryFields.some((field) => field !== 'state' && field !== 'primaryAgent' && field !== 'primarySessionId')
+        || cleanupRecovery.state !== 'required'
+        || typeof cleanupRecovery.primaryAgent !== 'string' || !cleanupRecovery.primaryAgent
+        || typeof cleanupRecovery.primarySessionId !== 'string' || !cleanupRecovery.primarySessionId
+        || metadata.workflow !== 'vulnerability-review'
+        || metadata.state !== 'sealed'
+        || hasOwnerSession
+      ) {
+        throw this.metadataError(runId);
+      }
+      canonicalCleanupRecovery = {
+        state: cleanupRecovery.state,
+        primaryAgent: cleanupRecovery.primaryAgent,
+        primarySessionId: cleanupRecovery.primarySessionId,
+      };
     }
     const removedRepositoryIds = metadata.removedRepositoryIds === undefined ? [] : metadata.removedRepositoryIds;
     if (
@@ -696,6 +744,7 @@ export class ReviewWorkspaceService {
     }
     const common = {
       schemaVersion: REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,
+      sourceFingerprintVersion,
       runId,
       workflow: metadata.workflow,
       creatorAgent: metadata.creatorAgent,
@@ -712,6 +761,7 @@ export class ReviewWorkspaceService {
       commits: Object.fromEntries(selectedRepositoryIds.map((repositoryId) => [repositoryId, commits[repositoryId] as string])),
       cleanupIdentities,
       ownershipTokenHash: metadata.ownershipTokenHash,
+      ...(canonicalCleanupRecovery === undefined ? {} : { cleanupRecovery: canonicalCleanupRecovery }),
     } satisfies Omit<ReviewWorkspaceMetadata, 'state'>;
     const state = metadata.state;
     if (state === 'creating' || state === 'recovery') {
@@ -722,6 +772,7 @@ export class ReviewWorkspaceService {
         || hasOwnerSession
         || metadata.ownerRecoveryExpiresAt !== undefined
         || metadata.handoffExpiresAt !== undefined
+        || canonicalCleanupRecovery !== undefined
         || (state === 'recovery' && metadata.creatingRepositoryId !== undefined)
       ) {
         throw this.metadataError(runId);
@@ -862,18 +913,30 @@ export class ReviewWorkspaceService {
   }
 
   private async readRunLock(lockPath: string): Promise<ReviewWorkspaceLock> {
-    const stat = await fs.lstat(lockPath);
-    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Review workspace lock is invalid: ${lockPath}`);
-    const lock = JSON.parse(await fs.readFile(lockPath, 'utf8')) as unknown;
-    if (
-      !isRecord(lock)
-      || Object.keys(lock).some((field) => field !== 'ownerToken' && field !== 'ownerPid')
-      || typeof lock.ownerToken !== 'string' || !lock.ownerToken
-      || typeof lock.ownerPid !== 'number' || !Number.isSafeInteger(lock.ownerPid) || lock.ownerPid < 1
-    ) {
-      throw new Error(`Review workspace lock is invalid: ${lockPath}`);
+    try {
+      const stat = await fs.lstat(lockPath);
+      if (stat.isSymbolicLink() || !stat.isDirectory() || await fs.realpath(lockPath) !== lockPath) {
+        throw new Error('invalid lock directory');
+      }
+      const metadataPath = path.join(lockPath, LOCK_METADATA_FILE);
+      const metadataStat = await fs.lstat(metadataPath);
+      if (metadataStat.isSymbolicLink() || !metadataStat.isFile()) throw new Error('invalid lock metadata');
+      const lock = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as unknown;
+      if (
+        !isRecord(lock)
+        || Object.keys(lock).some((field) => field !== 'ownerToken' && field !== 'ownerPid')
+        || typeof lock.ownerToken !== 'string' || !lock.ownerToken
+        || typeof lock.ownerPid !== 'number'
+        || !Number.isSafeInteger(lock.ownerPid)
+        || lock.ownerPid < 1
+        || lock.ownerPid > MAX_RUNTIME_PROCESS_ID
+      ) {
+        throw new Error('invalid lock metadata');
+      }
+      return { ownerToken: lock.ownerToken, ownerPid: lock.ownerPid };
+    } catch (error) {
+      throw new Error(`Review workspace lock is invalid and requires manual recovery: ${lockPath}`, { cause: error });
     }
-    return { ownerToken: lock.ownerToken, ownerPid: lock.ownerPid };
   }
 
   private isProcessAlive(pid: number): boolean {
@@ -882,24 +945,36 @@ export class ReviewWorkspaceService {
       process.kill(pid, 0);
       return true;
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code === 'EPERM';
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH';
     }
   }
 
-  private async recoverDeadRunLock(lockPath: string, expected: ReviewWorkspaceLock): Promise<void> {
-    const tombstonePath = `${lockPath}.dead-${randomUUID()}`;
+  private async publishRunLock(lockPath: string, lock: ReviewWorkspaceLock): Promise<void> {
+    const metadataPath = path.join(lockPath, LOCK_METADATA_FILE);
+    const temporaryPath = path.join(lockPath, `.owner-${randomUUID()}`);
+    await fs.writeFile(temporaryPath, JSON.stringify(lock), { encoding: 'utf8', flag: 'wx' });
     try {
-      await fs.rename(lockPath, tombstonePath);
-    } catch {
-      throw new Error('Review workspace is busy.');
+      await fs.rename(temporaryPath, metadataPath);
+    } finally {
+      await fs.rm(temporaryPath, { force: true });
     }
-    const moved = await this.readRunLock(tombstonePath);
-    if (moved.ownerToken !== expected.ownerToken || moved.ownerPid !== expected.ownerPid) {
-      await fs.link(tombstonePath, lockPath).catch(() => undefined);
-      await fs.rm(tombstonePath, { force: true });
-      throw new Error('Review workspace is busy.');
+  }
+
+  private async acquireRunLockRecoveryGuard(lockPath: string, runId: string): Promise<string> {
+    const guardPath = `${lockPath}${LOCK_RECOVERY_SUFFIX}`;
+    try {
+      await fs.mkdir(guardPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new Error(`Review workspace lock recovery is busy or requires manual recovery: ${runId}`);
+      }
+      throw error;
     }
-    await fs.rm(tombstonePath);
+    const stat = await fs.lstat(guardPath);
+    if (stat.isSymbolicLink() || !stat.isDirectory() || await fs.realpath(guardPath) !== guardPath) {
+      throw new Error(`Review workspace lock recovery guard is invalid and requires manual recovery: ${guardPath}`);
+    }
+    return guardPath;
   }
 
   private async acquireRunLock(reviewRoot: string, runId: string): Promise<HeldReviewWorkspaceLock> {
@@ -907,35 +982,45 @@ export class ReviewWorkspaceService {
     const ownerToken = randomUUID();
     const ownerPid = process.pid;
     const lock: ReviewWorkspaceLock = { ownerToken, ownerPid };
+    const guardPath = await this.acquireRunLockRecoveryGuard(lockPath, runId);
+    let preserveGuard = false;
     try {
-      await fs.writeFile(lockPath, JSON.stringify(lock), { encoding: 'utf8', flag: 'wx' });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try {
+        await fs.mkdir(lockPath);
+        preserveGuard = true;
+        await this.publishRunLock(lockPath, lock);
+        preserveGuard = false;
+        return { path: lockPath, ownerToken };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
       const current = await this.readRunLock(lockPath);
       if (this.isProcessAlive(current.ownerPid)) {
         throw new Error(`Review workspace is busy: ${runId}`);
       }
-      await this.recoverDeadRunLock(lockPath, current);
-      try {
-        await fs.writeFile(lockPath, JSON.stringify(lock), { encoding: 'utf8', flag: 'wx' });
-      } catch (recoveryError) {
-        if ((recoveryError as NodeJS.ErrnoException).code === 'EEXIST') {
-          throw new Error(`Review workspace is busy: ${runId}`);
-        }
-        throw recoveryError;
-      }
+      preserveGuard = true;
+      await fs.rm(lockPath, { recursive: true });
+      await fs.mkdir(lockPath);
+      await this.publishRunLock(lockPath, lock);
+      preserveGuard = false;
+      return { path: lockPath, ownerToken };
+    } finally {
+      if (!preserveGuard) await fs.rm(guardPath, { recursive: true });
     }
-    return { path: lockPath, ownerToken };
   }
 
   private async releaseRunLock(lock: HeldReviewWorkspaceLock): Promise<void> {
+    const runId = path.basename(lock.path, '.lock');
+    const guardPath = await this.acquireRunLockRecoveryGuard(lock.path, runId);
     try {
       const current = await this.readRunLock(lock.path);
       if (current.ownerToken !== lock.ownerToken) return;
-      await fs.rm(lock.path);
+      await fs.rm(lock.path, { recursive: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
       throw error;
+    } finally {
+      await fs.rm(guardPath, { recursive: true });
     }
   }
 
@@ -947,6 +1032,38 @@ export class ReviewWorkspaceService {
       return await operation(reviewRoot!);
     } finally {
       await this.releaseRunLock(lock);
+    }
+  }
+
+  async withVulnerabilityMaterialization<T>(operation: () => Promise<T>): Promise<T> {
+    const projectRoot = await this.projectRoot;
+    const previous = ReviewWorkspaceService.vulnerabilityMaterializationQueues.get(projectRoot) ?? Promise.resolve();
+    let releaseTurn!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const queued = previous.then(() => turn);
+    ReviewWorkspaceService.vulnerabilityMaterializationQueues.set(projectRoot, queued);
+    await previous;
+
+    let lock: HeldReviewWorkspaceLock | undefined;
+    try {
+      const reviewRoot = await this.ensureReviewRoot();
+      lock = await this.acquireRunLock(reviewRoot, VULNERABILITY_MATERIALIZATION_LOCK_ID);
+      const unresolvedCleanupRunId = await this.findCleanupRecoveryRequired();
+      if (unresolvedCleanupRunId) {
+        throw new Error(`Vulnerability review must cleanup ${unresolvedCleanupRunId} before another materialization attempt.`);
+      }
+      return await operation();
+    } finally {
+      try {
+        if (lock) await this.releaseRunLock(lock);
+      } finally {
+        releaseTurn();
+        if (ReviewWorkspaceService.vulnerabilityMaterializationQueues.get(projectRoot) === queued) {
+          ReviewWorkspaceService.vulnerabilityMaterializationQueues.delete(projectRoot);
+        }
+      }
     }
   }
 
@@ -986,9 +1103,23 @@ export class ReviewWorkspaceService {
     }
   }
 
+  private assertCleanupRecoveryCaller(metadata: ReviewWorkspaceMetadata, caller: ReviewWorkspaceCaller): void {
+    if (
+      caller.role !== 'primary'
+      || metadata.workflow !== 'vulnerability-review'
+      || caller.workflow !== metadata.workflow
+      || metadata.cleanupRecovery?.state !== 'required'
+      || metadata.cleanupRecovery.primaryAgent !== caller.agent
+      || metadata.cleanupRecovery.primarySessionId !== caller.sessionId
+    ) {
+      throw new Error('Review workspace cleanup recovery was denied.');
+    }
+  }
+
   private lease(metadata: ReviewWorkspaceMetadata): ReviewWorkspaceLease {
     return {
       schemaVersion: metadata.schemaVersion,
+      sourceFingerprintVersion: metadata.sourceFingerprintVersion,
       runId: metadata.runId,
       workflow: metadata.workflow,
       creatorAgent: metadata.creatorAgent,
@@ -1295,6 +1426,7 @@ export class ReviewWorkspaceService {
   ): ReviewWorkspaceMetadata {
     return {
       schemaVersion: REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,
+      sourceFingerprintVersion: REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION,
       state: 'creating',
       runId,
       workflow: lease.workflow,
@@ -1558,6 +1690,28 @@ export class ReviewWorkspaceService {
     });
   }
 
+  async matchesSourceRepositoryRoots(
+    runId: string,
+    ownershipToken: string,
+    caller: ReviewWorkspaceCaller,
+    sourceRepositoryRoots: Record<string, string>,
+  ): Promise<boolean> {
+    this.assertSafeRunId(runId);
+    return this.withRunLock(runId, async () => {
+      const metadata = await this.readMetadata(runId);
+      if (!metadata || metadata.state !== 'sealed') throw this.metadataError(runId);
+      this.assertOwnershipToken(metadata, ownershipToken);
+      if (metadata.ownerSessionId) this.assertOwnerCaller(metadata, caller);
+      else this.assertCreatorCaller(metadata, caller);
+      if (JSON.stringify(Object.keys(sourceRepositoryRoots).sort()) !== JSON.stringify(metadata.selectedRepositoryIds)) {
+        return false;
+      }
+      return metadata.selectedRepositoryIds.every((repositoryId) => {
+        return sourceRepositoryRoots[repositoryId] === this.cleanupIdentity(metadata, repositoryId).sourcePath;
+      });
+    });
+  }
+
   async inspect(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceInspection> {
     this.assertSafeRunId(runId);
     return this.withRunLock(runId, async (reviewRoot) => {
@@ -1637,6 +1791,70 @@ export class ReviewWorkspaceService {
     });
   }
 
+  async markCleanupRecoveryRequired(
+    runId: string,
+    ownershipToken: string,
+    creator: ReviewWorkspaceCaller,
+    primary: ReviewWorkspaceCaller,
+  ): Promise<void> {
+    this.assertSafeRunId(runId);
+    await this.withRunLock(runId, async (reviewRoot) => {
+      const metadata = await this.readMetadata(runId);
+      if (!metadata || metadata.state !== 'sealed' || metadata.ownerSessionId) throw this.metadataError(runId);
+      this.assertOwnershipToken(metadata, ownershipToken);
+      this.assertCreatorCaller(metadata, creator);
+      if (
+        metadata.workflow !== 'vulnerability-review'
+        || primary.workflow !== metadata.workflow
+        || primary.role !== 'primary'
+        || !primary.agent
+        || !primary.sessionId
+      ) {
+        throw new Error('Review workspace cleanup recovery binding was denied.');
+      }
+      const recovery = {
+        state: 'required' as const,
+        primaryAgent: primary.agent,
+        primarySessionId: primary.sessionId,
+      };
+      if (metadata.cleanupRecovery && JSON.stringify(metadata.cleanupRecovery) !== JSON.stringify(recovery)) {
+        throw new Error('Review workspace cleanup recovery binding was denied.');
+      }
+      metadata.cleanupRecovery = recovery;
+      await this.writeMetadata(reviewRoot, metadata);
+    });
+  }
+
+  async findCleanupRecoveryRequired(primary?: ReviewWorkspaceCaller): Promise<string | undefined> {
+    if (
+      primary !== undefined
+      && (
+        primary.workflow !== 'vulnerability-review'
+        || primary.role !== 'primary'
+        || !primary.agent
+        || !primary.sessionId
+      )
+    ) return undefined;
+    const reviewRoot = await this.inspectReviewRoot(false);
+    if (!reviewRoot) return undefined;
+    const runIds = await this.listPrivateRunIds(reviewRoot, METADATA_DIRECTORY, '.json');
+    for (const runId of runIds.sort()) {
+      const metadata = await this.readMetadata(runId);
+      if (
+        metadata?.workflow === 'vulnerability-review'
+        && metadata.cleanupRecovery?.state === 'required'
+        && (
+          primary === undefined
+          || (
+            metadata.cleanupRecovery.primaryAgent === primary.agent
+            && metadata.cleanupRecovery.primarySessionId === primary.sessionId
+          )
+        )
+      ) return runId;
+    }
+    return undefined;
+  }
+
   private async cleanupValidated(
     reviewRoot: string,
     metadata: ReviewWorkspaceMetadata,
@@ -1711,7 +1929,8 @@ export class ReviewWorkspaceService {
     return entries
       .filter((entry) => entry.name.endsWith(suffix))
       .map((entry) => entry.name.slice(0, -suffix.length))
-      .filter(isSafeRunId);
+      .filter((runId) => isSafeRunId(runId)
+        && (directory !== LOCK_DIRECTORY || runId !== VULNERABILITY_MATERIALIZATION_LOCK_ID));
   }
 
   private async listWorkspaceRunIds(reviewRoot: string): Promise<string[]> {
@@ -1735,6 +1954,7 @@ export class ReviewWorkspaceService {
     try {
       const current = await this.readMetadata(runId);
       if (!current) return;
+      if (current.cleanupRecovery?.state === 'required') return;
       if (current.state === 'sealed') {
         if (current.ownerPid !== undefined) {
           if (current.ownerRecoveryExpiresAt !== undefined) {
@@ -1785,6 +2005,23 @@ export class ReviewWorkspaceService {
       this.assertOwnershipToken(metadata, ownershipToken);
       if (metadata.ownerSessionId) this.assertOwnerCaller(metadata, caller);
       else this.assertCreatorCaller(metadata, caller);
+      return this.cleanupValidated(reviewRoot, metadata, containedWorkspace ?? workspacePath);
+    } finally {
+      await this.releaseRunLock(lock);
+    }
+  }
+
+  async cleanupRecovery(runId: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceCleanupResult> {
+    this.assertSafeRunId(runId);
+    const reviewRoot = await this.inspectReviewRoot(false);
+    if (!reviewRoot) throw new Error('Review workspace cleanup recovery was denied.');
+    const workspacePath = this.getWorkspacePath(reviewRoot, runId);
+    const lock = await this.acquireRunLock(reviewRoot, runId);
+    try {
+      const metadata = await this.readMetadata(runId);
+      if (!metadata) throw new Error('Review workspace cleanup recovery was denied.');
+      this.assertCleanupRecoveryCaller(metadata, caller);
+      const containedWorkspace = await this.resolveContainedWorkspaceOrNull(reviewRoot, runId);
       return this.cleanupValidated(reviewRoot, metadata, containedWorkspace ?? workspacePath);
     } finally {
       await this.releaseRunLock(lock);

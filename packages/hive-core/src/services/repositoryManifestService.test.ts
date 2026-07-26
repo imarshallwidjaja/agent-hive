@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync, spawn } from 'child_process';
+import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -435,6 +436,78 @@ describe('RepositoryManifestService', () => {
         expect(() => service.add([{ id: 'root', path: '.' }])).toThrow('must stay inside project root');
       } finally {
         fs.rmSync(external, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('rejects a local repository symlink before invoking Git outside the project', () => {
+    if (process.platform === 'win32') return;
+    withTempEnvironment((projectRoot) => {
+      const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-local-manifest-external-'));
+      const realExecFileSync = execFileSync;
+      const gitCwds: string[] = [];
+      try {
+        initGitRepo(projectRoot);
+        initGitRepo(externalRoot);
+        fs.symlinkSync(externalRoot, path.join(projectRoot, 'external'));
+        fs.mkdirSync(path.join(projectRoot, '.hive'));
+        fs.writeFileSync(path.join(projectRoot, '.hive', 'repositories.json'), JSON.stringify({
+          schemaVersion: 1,
+          repositories: [{ id: 'external', path: './external' }],
+        }));
+        const gitSpy = spyOn(childProcess, 'execFileSync').mockImplementation(((command, args, options) => {
+          if (command === 'git' && options && typeof options === 'object' && 'cwd' in options && typeof options.cwd === 'string') {
+            gitCwds.push(fs.realpathSync(options.cwd));
+          }
+          return realExecFileSync(command, args, options as any);
+        }) as typeof execFileSync);
+        try {
+          const status = new RepositoryManifestService(projectRoot).getStatus();
+
+          expect(gitCwds).not.toContain(externalRoot);
+          expect(status.error).toContain('must not be a symlink');
+        } finally {
+          gitSpy.mockRestore();
+        }
+      } finally {
+        fs.rmSync(externalRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('keeps downstream Git operations on the canonical repository after a parent symlink swap', () => {
+    if (process.platform === 'win32') return;
+    withTempEnvironment((projectRoot) => {
+      const containedParent = path.join(projectRoot, 'contained');
+      const containedRepository = path.join(containedParent, 'api');
+      const externalParent = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-manifest-parent-swap-'));
+      const externalRepository = path.join(externalParent, 'api');
+      const linkedParent = path.join(projectRoot, 'repos');
+      try {
+        initGitRepo(containedRepository);
+        initGitRepo(externalRepository);
+        fs.symlinkSync(containedParent, linkedParent);
+        fs.mkdirSync(path.join(projectRoot, '.hive'));
+        fs.writeFileSync(path.join(projectRoot, '.hive', 'repositories.json'), JSON.stringify({
+          schemaVersion: 1,
+          repositories: [{ id: 'api', path: './repos/api' }],
+        }));
+        const repositories = new RepositoryManifestService(projectRoot).resolveRepositories();
+
+        fs.unlinkSync(linkedParent);
+        fs.symlinkSync(externalParent, linkedParent);
+
+        expect(execFileSync('git', ['rev-parse', '--show-toplevel'], {
+          cwd: repositories[0]!.path,
+          encoding: 'utf8',
+        }).trim()).toBe(containedRepository);
+        expect(repositories[0]).toEqual({
+          id: 'api',
+          path: containedRepository,
+          root: containedRepository,
+        });
+      } finally {
+        fs.rmSync(externalParent, { recursive: true, force: true });
       }
     });
   });

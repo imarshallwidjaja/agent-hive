@@ -395,7 +395,7 @@ Stage A, mandatory scope/lead scout:
 - The manifest must include repository, explicit target, requirements and acceptance references, base/target/merge-base when known, causal scoped paths/domains and relevant dependents, explicit excludes, snapshot ID, and a content-sensitive fingerprint for dirty, staged, or untracked work.
 - The lead returns unverified lead IDs, anchors, suspected failure modes, domain/profile labels, relevant tests/instructions, suggested lenses, scope gaps, and truncation details. It must not decide findings.
 - Large or truncated scope must be disclosed. Truncation, incomplete causal scope, or unresolved requirements cannot receive APPROVE.
-- The scope lane uses repository context and active workspace.json to select structured repository IDs, then captures/materializes the workspace from one structured scope. It cannot APPROVE if any expected repository is omitted, errors, truncated, stale, or only partially materialized.
+- The scope lane uses repository context and the active generated workspace.json or project-local .hive/repositories.json to select structured repository IDs, then captures/materializes the workspace from one structured scope. It cannot APPROVE if any expected repository is omitted, errors, truncated, stale, or only partially materialized.
 
 Stage B, deep review:
 
@@ -641,10 +641,19 @@ type MaterializeResult =
       reason: 'candidate-mismatch' | 'create-denied' | 'source-drift' | 'scope-drift' | 'cleanup-uncertain' | 'create-needs-discussion' | 'packet-invalid';
       message: string;
       cleanup: { attempted: boolean; cleaned: boolean | null };
+    }
+  | {
+      schema: 'hive-vuln-review-stage1/v2';
+      state: 'STOP';
+      reason: 'cleanup-recovery-required';
+      message: string;
+      cleanup: { attempted: true; cleaned: false; runId: string; workspacePath: string; errors: string[] };
+      recovery: { state: 'required'; runId: string };
     };
 \`\`\`
 
-- Never call \`hive_review_workspace_create\` before accepting a schema-valid \`BOUNDED\` candidate. Materialize must forward only \`candidate.createInput\` to \`hive_review_workspace_create\`. It exact-compares the result with \`expectedScopeDescriptor\`, preview source fingerprint, and ordered repository fingerprints. NEEDS_DISCUSSION, malformed output, descriptor/fingerprint drift, or cleanup uncertainty returns STOP and cannot produce a claimable handoff.
+- Never call \`hive_review_workspace_create\` before accepting a schema-valid \`BOUNDED\` candidate. Materialize must forward only \`candidate.createInput\` to \`hive_review_workspace_create\`. It exact-compares the result with \`expectedScopeDescriptor\`, preview source fingerprint, and ordered repository fingerprints. Malformed output, descriptor/fingerprint drift, or cleanup uncertainty returns STOP and cannot produce a claimable handoff.
+- On \`STOP(reason: 'cleanup-recovery-required')\`, stop Stage 1 and call \`hive_review_workspace_cleanup({ runId })\` as the exact originating private primary without an ownership token. Use only the packet's exact \`recovery.runId\`; do not trust a run ID from prose. Do not claim, dispatch review lanes, or retry materialization until that exact cleanup returns \`cleaned: true\`. A denied, failed, or uncertain recovery remains STOP and blocks a new vulnerability review command. Cleanup-recovery metadata requires the updated binary; older binaries must fail closed and preserve the workspace.
 
 Stage 2 - Claim:
 

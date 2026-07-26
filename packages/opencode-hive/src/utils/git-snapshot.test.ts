@@ -417,16 +417,16 @@ describe('inspectGitSnapshot', () => {
       manifestRepositoryIds: ['api', 'web'],
       selectedRepositoryIds: ['api'],
       snapshots: [
-        { repositoryId: 'web', fingerprint: 'bbb' },
-        { repositoryId: 'api', fingerprint: 'aaa' },
+        { repositoryId: 'web', sourceRoot: '/source/web', fingerprint: 'bbb' },
+        { repositoryId: 'api', sourceRoot: '/source/api', fingerprint: 'aaa' },
       ],
     });
     const second = fingerprintReviewSourceScope({
       manifestRepositoryIds: ['api', 'web'],
       selectedRepositoryIds: ['api'],
       snapshots: [
-        { repositoryId: 'api', fingerprint: 'aaa' },
-        { repositoryId: 'web', fingerprint: 'bbb' },
+        { repositoryId: 'api', sourceRoot: '/source/api', fingerprint: 'aaa' },
+        { repositoryId: 'web', sourceRoot: '/source/web', fingerprint: 'bbb' },
       ],
     });
 
@@ -439,16 +439,16 @@ describe('inspectGitSnapshot', () => {
       manifestRepositoryIds: ['api', 'web'],
       selectedRepositoryIds: ['api'],
       snapshots: [
-        { repositoryId: 'web', fingerprint: 'bbb' },
-        { repositoryId: 'api', fingerprint: 'aaa' },
+        { repositoryId: 'web', sourceRoot: '/source/web', fingerprint: 'bbb' },
+        { repositoryId: 'api', sourceRoot: '/source/api', fingerprint: 'aaa' },
       ],
     };
     const first = serializeReviewSourceScopeFingerprint(input);
     const second = serializeReviewSourceScopeFingerprint({
       ...input,
       snapshots: [
-        { repositoryId: 'api', fingerprint: 'aaa' },
-        { repositoryId: 'web', fingerprint: 'bbb' },
+        { repositoryId: 'api', sourceRoot: '/source/api', fingerprint: 'aaa' },
+        { repositoryId: 'web', sourceRoot: '/source/web', fingerprint: 'bbb' },
       ],
     });
     expect(first).toBe(second);

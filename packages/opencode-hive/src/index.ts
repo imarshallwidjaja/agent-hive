@@ -38,6 +38,7 @@ import type {
 } from './agents/vulnerability-review-lanes.js';
 import {
   captureReviewMaterialization,
+  fingerprintLegacyReviewSourceScope,
   fingerprintReviewRepositoryMaterializations,
   fingerprintReviewSourceScope,
   fingerprintReviewWorkspace,
@@ -327,6 +328,7 @@ import {
   WorktreeService,
   AdhocWorktreeService,
   ReviewWorkspaceService,
+  LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION,
   FeatureService,
   PlanService,
   TaskService,
@@ -501,8 +503,79 @@ const plugin: Plugin = async (ctx) => {
       creatorAgents: runtimeVulnerabilityReviewLanes
         .filter((lane) => lane.role === 'scope-scout')
         .map((lane) => lane.taskTarget),
+      },
+    ];
+  const vulnerabilityPrimaryCaller = (sessionId: string) => ({
+    workflow: 'vulnerability-review' as const,
+    role: 'primary' as const,
+    agent: VULNERABILITY_REVIEW_PRIMARY_AGENT,
+    sessionId,
+    pid: process.pid,
+  });
+  const cleanupWorkspaceWithoutReturningToken = async (
+    workspace: { runId: string; ownershipToken: string; workspacePath: string },
+    creator: ReturnType<typeof inferReviewWorkspaceCaller>,
+    recoveryPrimarySessionID?: string,
+  ) => {
+    if (creator.workflow === 'vulnerability-review') {
+      if (!recoveryPrimarySessionID) {
+        throw new Error('Vulnerability review cleanup recovery has no exact originating primary.');
+      }
+      try {
+        await reviewWorkspaceService.markCleanupRecoveryRequired(
+          workspace.runId,
+          workspace.ownershipToken,
+          creator,
+          vulnerabilityPrimaryCaller(recoveryPrimarySessionID),
+        );
+      } catch (recoveryError) {
+        const workspaceAlreadyMissing = await fs.promises.lstat(workspace.workspacePath)
+          .then(() => false)
+          .catch((error) => {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+            throw error;
+          });
+        if (!workspaceAlreadyMissing) throw recoveryError;
+        const alreadyCleaned = await reviewWorkspaceService.cleanup(
+          workspace.runId,
+          workspace.ownershipToken,
+          creator,
+        ).catch(() => undefined);
+        if (alreadyCleaned?.cleaned) return alreadyCleaned;
+        throw recoveryError;
+      }
+    }
+    try {
+      return await reviewWorkspaceService.cleanup(workspace.runId, workspace.ownershipToken, creator);
+    } catch (error) {
+      return {
+        runId: workspace.runId,
+        cleaned: false,
+        workspacePath: workspace.workspacePath,
+        errors: [`Review workspace cleanup threw: ${(error as Error).message}`],
+      };
+    }
+  };
+  const vulnerabilityCleanupRecoveryResult = (
+    cleanup: Awaited<ReturnType<typeof cleanupWorkspaceWithoutReturningToken>>,
+    message: string,
+  ) => ({
+    schema: 'hive-vuln-review-stage1/v2',
+    state: 'STOP',
+    reason: 'cleanup-recovery-required',
+    message,
+    cleanup: {
+      attempted: true,
+      cleaned: false,
+      runId: cleanup.runId,
+      workspacePath: cleanup.workspacePath,
+      errors: cleanup.errors,
     },
-  ];
+    recovery: {
+      state: 'required',
+      runId: cleanup.runId,
+    },
+  });
   const dashReviewAllowedHiveTools = (agent: string): ReadonlySet<string> | undefined => {
     if (agent === DASH_REVIEW_PRIMARY_AGENT) {
       return new Set([...UNIVERSAL_METADATA_HIVE_TOOLS, 'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']);
@@ -531,6 +604,9 @@ const plugin: Plugin = async (ctx) => {
     repositories: Array<{ id: string; path: string }>;
   }> => {
     const workspaceRoot = await fs.promises.realpath(worktree || directory);
+    // Deterministic manifest containment assumes no concurrent path mutation by a process with project write access.
+    let manifestRepositoryIds: string[];
+    let resolveSelectedRepositories: (selectedRepositoryIds: string[]) => Promise<Array<{ id: string; path: string }>>;
     if (await isExactGitTopLevel(workspaceRoot)) {
       let manifest = null;
       try {
@@ -541,31 +617,65 @@ const plugin: Plugin = async (ctx) => {
       if (manifest) {
         throw new Error('Ambiguous workspace: Git root also contains a valid Hive composite manifest.');
       }
-      if (repositoryIds !== undefined && !(allowSingleRoot && isDeepStrictEqual(repositoryIds, ['root']))) {
-        throw new Error('repositoryIds are only valid for composite workspace snapshots.');
+      const status = new RepositoryManifestService(workspaceRoot).getLocalManifestStatus();
+      if (!status) {
+        if (repositoryIds !== undefined && !(allowSingleRoot && isDeepStrictEqual(repositoryIds, ['root']))) {
+          throw new Error('repositoryIds are only valid for composite workspace snapshots.');
+        }
+        return {
+          composite: false,
+          manifestRepositoryIds: [],
+          selectedRepositoryIds: [],
+          excludedRepositoryIds: [],
+          repositories: [{ id: 'root', path: workspaceRoot }],
+        };
       }
-      return {
-        composite: false,
-        manifestRepositoryIds: [],
-        selectedRepositoryIds: [],
-        excludedRepositoryIds: [],
-        repositories: [{ id: 'root', path: workspaceRoot }],
+      if (status.error) throw new Error(status.error);
+      manifestRepositoryIds = status.repositories.map((repository) => repository.id).sort(compareUnicodeCodePoints);
+      const repositoriesById = new Map(status.repositories.map((repository) => [repository.id, repository]));
+      resolveSelectedRepositories = async (selectedRepositoryIds) => selectedRepositoryIds.map((repositoryId) => ({
+        id: repositoryId,
+        path: repositoriesById.get(repositoryId)!.root!,
+      }));
+    } else {
+      const manifest = await readCompositeWorkspaceManifest(workspaceRoot);
+      if (!manifest) {
+        if (repositoryIds !== undefined) {
+          throw new Error(`Unknown repositoryIds: ${repositoryIds.join(', ')}`);
+        }
+        return {
+          composite: false,
+          manifestRepositoryIds: [],
+          selectedRepositoryIds: [],
+          excludedRepositoryIds: [],
+          repositories: [{ id: 'root', path: workspaceRoot }],
+        };
+      }
+      manifestRepositoryIds = Object.keys(manifest.repos).sort(compareUnicodeCodePoints);
+      resolveSelectedRepositories = async (selectedRepositoryIds) => {
+        const canonicalReposRoot = await fs.promises.realpath(path.join(workspaceRoot, 'repos'));
+        if (canonicalReposRoot === workspaceRoot || !canonicalReposRoot.startsWith(`${workspaceRoot}${path.sep}`)) {
+          throw new Error('Composite repos directory escapes the workspace root.');
+        }
+        return Promise.all(selectedRepositoryIds.map(async (repositoryId) => {
+          const entry = manifest.repos[repositoryId]!;
+          const expectedPath = path.join(workspaceRoot, 'repos', repositoryId);
+          if (entry.path !== path.posix.join('repos', repositoryId)) {
+            throw new Error(`Repository ${repositoryId} does not use the authorized repos/<id> workspace path.`);
+          }
+          const stat = await fs.promises.lstat(expectedPath);
+          if (stat.isSymbolicLink()) {
+            throw new Error(`Repository ${repositoryId} must not be a symlink.`);
+          }
+          const repository = await fs.promises.realpath(expectedPath);
+          const canonicalExpectedPath = path.join(canonicalReposRoot, repositoryId);
+          if (repository !== canonicalExpectedPath || !repository.startsWith(`${canonicalReposRoot}${path.sep}`)) {
+            throw new Error(`Repository ${repositoryId} escapes the authorized composite repos directory.`);
+          }
+          return { id: repositoryId, path: repository };
+        }));
       };
     }
-    const manifest = await readCompositeWorkspaceManifest(workspaceRoot);
-    if (!manifest) {
-      if (repositoryIds !== undefined) {
-        throw new Error(`Unknown repositoryIds: ${repositoryIds.join(', ')}`);
-      }
-      return {
-        composite: false,
-        manifestRepositoryIds: [],
-        selectedRepositoryIds: [],
-        excludedRepositoryIds: [],
-        repositories: [{ id: 'root', path: workspaceRoot }],
-      };
-    }
-    const manifestRepositoryIds = Object.keys(manifest.repos).sort(compareUnicodeCodePoints);
     const selectedRepositoryIds = repositoryIds === undefined
       ? manifestRepositoryIds
       : [...new Set(repositoryIds)].sort(compareUnicodeCodePoints);
@@ -576,31 +686,11 @@ const plugin: Plugin = async (ctx) => {
       throw new Error(`Composite snapshot repository count exceeds ${MAX_COMPOSITE_SNAPSHOT_REPOSITORIES}; snapshot scope is incomplete.`);
     }
     for (const repositoryId of selectedRepositoryIds) {
-      if (!manifest.repos[repositoryId]) {
+      if (!manifestRepositoryIds.includes(repositoryId)) {
         throw new Error(`Unknown repositoryId: ${repositoryId}`);
       }
     }
-    const canonicalReposRoot = await fs.promises.realpath(path.join(workspaceRoot, 'repos'));
-    if (canonicalReposRoot === workspaceRoot || !canonicalReposRoot.startsWith(`${workspaceRoot}${path.sep}`)) {
-      throw new Error('Composite repos directory escapes the workspace root.');
-    }
-    const repositories = await Promise.all(selectedRepositoryIds.map(async (repositoryId) => {
-      const entry = manifest.repos[repositoryId]!;
-      const expectedPath = path.join(workspaceRoot, 'repos', repositoryId);
-      if (entry.path !== path.posix.join('repos', repositoryId)) {
-        throw new Error(`Repository ${repositoryId} does not use the authorized repos/<id> workspace path.`);
-      }
-      const stat = await fs.promises.lstat(expectedPath);
-      if (stat.isSymbolicLink()) {
-        throw new Error(`Repository ${repositoryId} must not be a symlink.`);
-      }
-      const repository = await fs.promises.realpath(expectedPath);
-      const canonicalExpectedPath = path.join(canonicalReposRoot, repositoryId);
-      if (repository !== canonicalExpectedPath || !repository.startsWith(`${canonicalReposRoot}${path.sep}`)) {
-        throw new Error(`Repository ${repositoryId} escapes the authorized composite repos directory.`);
-      }
-      return { id: repositoryId, path: repository };
-    }));
+    const repositories = await resolveSelectedRepositories(selectedRepositoryIds);
     return {
       composite: true,
       manifestRepositoryIds,
@@ -635,12 +725,18 @@ const plugin: Plugin = async (ctx) => {
       repositoryId: repository.id,
       snapshot: await inspectGitSnapshot(repository.path, reviewSnapshotInputForRepository(repository.path, snapshotInput)),
     })));
-    const fingerprint = fingerprintReviewSourceScope({
+    const fingerprintInput = {
       manifestRepositoryIds: resolved.manifestRepositoryIds,
       selectedRepositoryIds: resolved.selectedRepositoryIds,
-      snapshots: snapshots.map(({ repositoryId, snapshot }) => ({ repositoryId, fingerprint: snapshot.fingerprint })),
-    });
-    return { snapshots, fingerprint };
+      snapshots: snapshots.map(({ repositoryId, snapshot }) => ({
+        repositoryId,
+        sourceRoot: snapshot.repository.root,
+        fingerprint: snapshot.fingerprint,
+      })),
+    };
+    const fingerprint = fingerprintReviewSourceScope(fingerprintInput);
+    const legacyFingerprint = fingerprintLegacyReviewSourceScope(fingerprintInput);
+    return { snapshots, fingerprint, legacyFingerprint };
   };
   const captureReviewWorkspace = async (
     resolved: {
@@ -659,6 +755,7 @@ const plugin: Plugin = async (ctx) => {
       selectedRepositoryIds: resolved.selectedRepositoryIds,
       snapshots: captures.map(({ repositoryId, materialization }) => ({
         repositoryId,
+        sourceRoot: materialization.snapshot.repository.root,
         fingerprint: materialization.snapshot.fingerprint,
       })),
     });
@@ -1848,6 +1945,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         return;
       }
       if (input.command === 'vuln-review') {
+        const unresolvedCleanupRunId = await reviewWorkspaceService.findCleanupRecoveryRequired();
+        if (unresolvedCleanupRunId) {
+          throw new Error(`Vulnerability review must cleanup ${unresolvedCleanupRunId} before another materialization attempt.`);
+        }
         vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
         vulnerabilityReviewStage1Sessions.delete(input.sessionID);
         vulnerabilityReviewPendingCommandSessions.delete(input.sessionID);
@@ -1897,6 +1998,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           }
           throw new Error(message);
         };
+        const unresolvedCleanupRunId = await reviewWorkspaceService.findCleanupRecoveryRequired();
+        if (unresolvedCleanupRunId) {
+          throw new Error(`Vulnerability review must cleanup ${unresolvedCleanupRunId} before another materialization attempt.`);
+        }
         if (!input.callID) {
           rejectStage1Task('Vulnerability review Stage 1 task call is missing a fresh callID or attempts to re-arm an outstanding call.');
         }
@@ -2114,34 +2219,53 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
       const materialized = reservation ? materializeCreateResults.get(reservation) : undefined;
       const actual = materialized?.result;
-      const cleanupMaterializedWorkspace = async (): Promise<{ attempted: boolean; cleaned: boolean | null }> => {
+      const cleanupResult = actual?.cleanup && typeof actual.cleanup === 'object' && !Array.isArray(actual.cleanup)
+        ? actual.cleanup as Record<string, unknown>
+        : undefined;
+      const cleanupRecoveryCandidateRunId = actual?.schema === 'hive-vuln-review-stage1/v2'
+        && actual.state === 'STOP'
+        && actual.reason === 'cleanup-recovery-required'
+        && typeof cleanupResult?.runId === 'string'
+        ? cleanupResult.runId
+        : undefined;
+      const cleanupRecoveryRunId = cleanupRecoveryCandidateRunId
+        && await reviewWorkspaceService.findCleanupRecoveryRequired(
+          vulnerabilityPrimaryCaller(input.sessionID),
+        ) === cleanupRecoveryCandidateRunId
+        ? cleanupRecoveryCandidateRunId
+        : undefined;
+      const cleanupMaterializedWorkspace = async () => {
         if (
           !materialized
           || actual?.state !== 'READY'
           || typeof actual.runId !== 'string'
           || typeof actual.ownershipToken !== 'string'
+          || typeof actual.workspacePath !== 'string'
         ) {
-          return { attempted: false, cleaned: null };
+          return { attempted: false as const, cleaned: null };
         }
-        try {
-          const cleaned = await reviewWorkspaceService.cleanup(
-            actual.runId,
-            actual.ownershipToken,
-            materialized.caller,
-          );
-          return { attempted: true, cleaned: cleaned.cleaned };
-        } catch {
-          return { attempted: true, cleaned: null };
-        }
+        const cleanup = await cleanupWorkspaceWithoutReturningToken({
+          runId: actual.runId,
+          ownershipToken: actual.ownershipToken,
+          workspacePath: actual.workspacePath,
+        }, materialized.caller, input.sessionID);
+        return { attempted: true as const, ...cleanup };
       };
       if (output === undefined) {
+        if (cleanupRecoveryRunId) {
+          vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+          await backgroundJobAdapter['tool.execute.after'](input, output);
+          return;
+        }
         if (reservation) {
+          const cleanup = await cleanupMaterializedWorkspace();
           if (vulnerabilityReviewInvocations.revokeForFailedTaskAfter(reservation)) {
             vulnerabilityReviewStage1Sessions.delete(input.sessionID);
           }
-          const cleanup = await cleanupMaterializedWorkspace();
           if (cleanup.attempted && cleanup.cleaned !== true) {
-            console.warn(`[hive:vulnerability-review] materialized workspace cleanup was not confirmed for undefined task output: ${String(actual?.runId)}`);
+            console.warn(
+              `[hive:vulnerability-review] materialized workspace cleanup was not confirmed for undefined task output: ${cleanup.runId} at ${cleanup.workspacePath}: ${cleanup.errors.join('; ')}`,
+            );
           }
         }
         if (
@@ -2181,15 +2305,27 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         if (!result) vulnerabilityReviewStage1Sessions.delete(input.sessionID);
         return;
       }
+      if (cleanupRecoveryRunId) {
+        vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+        output.output = JSON.stringify(actual, null, 2);
+        return;
+      }
       if (!vulnerabilityReviewInvocations.isCurrentReservation(reservation)) {
         const cleanup = await cleanupMaterializedWorkspace();
-        output.output = JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
-          state: 'STOP',
-          reason: 'candidate-mismatch',
-          message: 'Materialize authority was revoked before completion.',
-          cleanup,
-        });
+        output.output = JSON.stringify(
+          cleanup.attempted && cleanup.cleaned !== true
+            ? vulnerabilityCleanupRecoveryResult(
+                cleanup,
+                'Materialize authority was revoked before completion and workspace cleanup was not confirmed.',
+              )
+            : {
+                schema: 'hive-vuln-review-stage1/v2',
+                state: 'STOP',
+                reason: 'candidate-mismatch',
+                message: 'Materialize authority was revoked before completion.',
+                cleanup,
+              },
+        );
         return;
       }
       let result: Record<string, unknown> | undefined;
@@ -2258,23 +2394,35 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           valid = false;
         }
       }
+      let cleanup: Awaited<ReturnType<typeof cleanupMaterializedWorkspace>> | undefined;
+      if (!valid) cleanup = await cleanupMaterializedWorkspace();
       const mutatedCurrentGeneration = valid
         ? vulnerabilityReviewInvocations.recordMaterializeReady(reservation, {
-          runId: actual.runId as string,
-          ownershipToken: actual.ownershipToken as string,
-        })
+            runId: actual.runId as string,
+            ownershipToken: actual.ownershipToken as string,
+          })
         : vulnerabilityReviewInvocations.revokeForFailedTaskAfter(reservation);
-      if (valid && !mutatedCurrentGeneration) valid = false;
+      if (valid && !mutatedCurrentGeneration) {
+        valid = false;
+        cleanup = await cleanupMaterializedWorkspace();
+      }
       if (mutatedCurrentGeneration) vulnerabilityReviewStage1Sessions.delete(input.sessionID);
       if (!valid) {
-        const cleanup = await cleanupMaterializedWorkspace();
-        output.output = JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
-          state: 'STOP',
-          reason: actual?.state === 'NEEDS_DISCUSSION' ? 'create-needs-discussion' : 'candidate-mismatch',
-          message: 'Materialized workspace did not preserve the accepted Stage 1 candidate and create result.',
-          cleanup,
-        });
+        const failedCleanup = cleanup ?? await cleanupMaterializedWorkspace();
+        output.output = JSON.stringify(
+          failedCleanup.attempted && failedCleanup.cleaned !== true
+            ? vulnerabilityCleanupRecoveryResult(
+                failedCleanup,
+                'Materialized workspace did not preserve the accepted Stage 1 candidate and cleanup was not confirmed.',
+              )
+            : {
+                schema: 'hive-vuln-review-stage1/v2',
+                state: 'STOP',
+                reason: actual?.state === 'NEEDS_DISCUSSION' ? 'create-needs-discussion' : 'candidate-mismatch',
+                message: 'Materialized workspace did not preserve the accepted Stage 1 candidate and create result.',
+                cleanup: failedCleanup,
+              },
+        );
       }
     },
 
@@ -2393,6 +2541,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         async execute(input, context) {
           const caller = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
           let materializeReservation: VulnerabilityTaskReservation | undefined;
+          let recoveryPrimarySessionID: string | undefined;
           if (caller.workflow === 'vulnerability-review') {
             materializeReservation = vulnerabilityConsumerReservations.get(context.sessionID);
             const createCapability = materializeReservation
@@ -2431,6 +2580,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
               vulnerabilityReviewInvocations.revokeConsumerGrant(createCapability);
               throw new Error('Vulnerability review workspace creation was denied: no exact materialize grant.');
             }
+            recoveryPrimarySessionID = response.data.parentID;
           }
           const { repositoryIds, scopeMode, hiveScope, ...snapshotInput } = input;
           let vulnerabilityScope: {
@@ -2513,10 +2663,46 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             };
           }
           normalizeReviewWorkspaceSourceScope(repositoryIds, snapshotInput);
-          const resolved = await resolveSnapshotRepositories(repositoryIds, caller.workflow === 'vulnerability-review');
           await reviewWorkspaceService.cleanupExpired();
           let lastFingerprint = '';
+          const finishMaterializeCreate = (
+            result: Record<string, unknown>,
+          ): string => {
+            if (materializeReservation) {
+              materializeCreateResults.set(materializeReservation, { caller, result });
+              vulnerabilityReviewInvocations.recordMaterializeCreateResult(
+                materializeReservation,
+                result,
+              );
+            }
+            return JSON.stringify(result, null, 2);
+          };
+          const cleanupWorkspace = async (
+            workspace: Awaited<ReturnType<typeof reviewWorkspaceService.create>>,
+          ) => {
+            return cleanupWorkspaceWithoutReturningToken(workspace, caller, recoveryPrimarySessionID);
+          };
+          const cleanupFailureResult = (
+            cleanup: Awaited<ReturnType<typeof cleanupWorkspace>>,
+            failure: string,
+          ): string => {
+            if (caller.workflow === 'vulnerability-review') {
+              return finishMaterializeCreate(vulnerabilityCleanupRecoveryResult(cleanup, failure));
+            }
+            const result = {
+              state: 'NEEDS_DISCUSSION',
+              reason: 'cleanup-failed',
+              stale: true,
+              sourceFingerprint: lastFingerprint,
+              failure,
+              cleanup,
+              recovery: `Review workspace cleanup was not confirmed for run ${cleanup.runId}. Cleanup must be resolved before retrying.`,
+            };
+            return finishMaterializeCreate(result);
+          };
+          const materialize = async (): Promise<string> => {
           for (let attempt = 0; attempt < 2; attempt += 1) {
+            const resolved = await resolveSnapshotRepositories(repositoryIds, caller.workflow === 'vulnerability-review');
             const capture = await captureReviewWorkspace(resolved, snapshotInput);
             lastFingerprint = capture.sourceFingerprint;
             const runId = createReviewRunId(caller.workflow);
@@ -2549,11 +2735,18 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 await materializeReviewWorkspace(workspace.repositories[repositoryId]!.path, materialization);
               }
               await reviewWorkspaceService.seal(runId, workspace.ownershipToken, caller);
-              const revalidation = await reviewSnapshotSet(resolved, snapshotInput);
-              if (revalidation.fingerprint !== capture.sourceFingerprint) {
-                await reviewWorkspaceService.cleanup(runId, workspace.ownershipToken, caller);
-                continue;
-              }
+               const revalidated = await resolveSnapshotRepositories(repositoryIds, caller.workflow === 'vulnerability-review');
+               const revalidation = await reviewSnapshotSet(revalidated, snapshotInput);
+               if (revalidation.fingerprint !== capture.sourceFingerprint) {
+                  const cleanup = await cleanupWorkspace(workspace);
+                   if (!cleanup.cleaned) {
+                     return cleanupFailureResult(
+                       cleanup,
+                       'Source topology changed during review workspace materialization.',
+                     );
+                   }
+                 continue;
+               }
               const lease = await reviewWorkspaceService.read(runId, workspace.ownershipToken, caller);
               const result = {
                 state: 'READY',
@@ -2573,15 +2766,14 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 truncated: capture.captures.some(({ materialization }) => materialization.snapshot.omissions.patch.truncated),
                 snapshots: capture.captures.map(({ repositoryId, materialization }) => ({ repositoryId, snapshot: materialization.snapshot })),
               };
-              if (materializeReservation) {
-                materializeCreateResults.set(materializeReservation, { caller, result });
-                vulnerabilityReviewInvocations.recordMaterializeCreateResult(materializeReservation, result);
-              }
-              return JSON.stringify(result, null, 2);
-            } catch (error) {
-              if (workspace) await reviewWorkspaceService.cleanup(workspace.runId, workspace.ownershipToken, caller);
-              throw error;
-            }
+              return finishMaterializeCreate(result);
+             } catch (error) {
+                if (workspace) {
+                  const cleanup = await cleanupWorkspace(workspace);
+                   if (!cleanup.cleaned) return cleanupFailureResult(cleanup, (error as Error).message);
+                }
+               throw error;
+             }
           }
           const result = {
             state: 'NEEDS_DISCUSSION',
@@ -2589,11 +2781,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             sourceFingerprint: lastFingerprint,
             recovery: `Source changed during review workspace materialization twice. Rerun the ${caller.workflow} command from a fresh snapshot; no source changes were reverted.`,
           };
-          if (materializeReservation) {
-            materializeCreateResults.set(materializeReservation, { caller, result });
-            vulnerabilityReviewInvocations.recordMaterializeCreateResult(materializeReservation, result);
-          }
-          return JSON.stringify(result, null, 2);
+          return finishMaterializeCreate(result);
+          };
+          return caller.workflow === 'vulnerability-review'
+            ? reviewWorkspaceService.withVulnerabilityMaterialization(materialize)
+            : materialize();
         },
       }),
 
@@ -2645,17 +2837,62 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           });
           const lease = inspection.lease;
           const { lease: _lease, ...workspaceInspection } = inspection;
-          let source: { fingerprint?: string; stable: boolean; error?: string };
+          let source: {
+            fingerprint?: string;
+            stable: boolean;
+            version: 1 | 2;
+            status: 'stable' | 'drifted' | 'legacy-incompatible' | 'unavailable';
+            error?: string;
+          };
           try {
             const repositoryIds = lease.sourceScope.repositoryIds.length > 0 ? lease.sourceScope.repositoryIds : undefined;
             const resolved = await resolveSnapshotRepositories(repositoryIds, lease.workflow === 'vulnerability-review');
             const revalidation = await reviewSnapshotSet(resolved, lease.sourceScope.snapshot);
-            source = {
-              fingerprint: revalidation.fingerprint,
-              stable: revalidation.fingerprint === lease.sourceFingerprint,
-            };
+            if (lease.sourceFingerprintVersion === LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION) {
+              const currentRoots = Object.fromEntries(revalidation.snapshots.map(({ repositoryId, snapshot }) => [
+                repositoryId,
+                snapshot.repository.root,
+              ]));
+              const sourceRootsMatch = await reviewWorkspaceService.matchesSourceRepositoryRoots(
+                runId,
+                ownershipToken,
+                caller,
+                currentRoots,
+              );
+              if (!sourceRootsMatch) {
+                source = {
+                  stable: false,
+                  version: lease.sourceFingerprintVersion,
+                  status: 'legacy-incompatible',
+                  error: 'Legacy source fingerprint cannot be securely validated because a persisted source root no longer matches.',
+                };
+              } else {
+                const stable = revalidation.legacyFingerprint === lease.sourceFingerprint;
+                source = {
+                  fingerprint: revalidation.legacyFingerprint,
+                  stable,
+                  version: lease.sourceFingerprintVersion,
+                  status: stable ? 'stable' : 'drifted',
+                };
+              }
+            } else {
+              const stable = revalidation.fingerprint === lease.sourceFingerprint;
+              source = {
+                fingerprint: revalidation.fingerprint,
+                stable,
+                version: lease.sourceFingerprintVersion,
+                status: stable ? 'stable' : 'drifted',
+              };
+            }
           } catch (error) {
-            source = { stable: false, error: (error as Error).message };
+            source = {
+              stable: false,
+              version: lease.sourceFingerprintVersion,
+              status: lease.sourceFingerprintVersion === LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION
+                ? 'legacy-incompatible'
+                : 'unavailable',
+              error: (error as Error).message,
+            };
           }
           let materialized: { fingerprint?: string; matches: boolean; error?: string };
           try {
@@ -2686,10 +2923,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }),
 
       hive_review_workspace_cleanup: tool({
-        description: 'Unconditionally discard one disposable review workspace. Authorized private primary or vulnerability creator only.',
+        description: 'Unconditionally discard one disposable review workspace. Authorized private primary or vulnerability creator only. The exact vulnerability primary may omit ownershipToken only for its pending cleanup-failed recovery run.',
         args: {
           runId: tool.schema.string(),
-          ownershipToken: tool.schema.string(),
+          ownershipToken: tool.schema.string().optional(),
         },
         async execute({ runId, ownershipToken }, context) {
           let caller: ReturnType<typeof inferReviewWorkspaceCaller>;
@@ -2698,7 +2935,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           } catch (primaryError) {
             const creator = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
             if (creator.workflow !== 'vulnerability-review') throw primaryError;
-            if (!vulnerabilityReviewInvocations.takeCreatorCleanup({
+            if (typeof ownershipToken !== 'string' || !vulnerabilityReviewInvocations.takeCreatorCleanup({
               sessionID: context.sessionID,
               agent: context.agent,
               runId,
@@ -2708,6 +2945,20 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             }
             caller = creator;
           }
+          if (
+            caller.workflow === 'vulnerability-review'
+            && caller.role === 'primary'
+            && ownershipToken === undefined
+          ) {
+            try {
+              const result = await reviewWorkspaceService.cleanupRecovery(runId, caller);
+              if (result.cleaned) vulnerabilityReviewInvocations.revokeForSession(context.sessionID);
+              return JSON.stringify(result, null, 2);
+            } catch {
+              throw new Error('Review workspace cleanup was denied.');
+            }
+          }
+          if (typeof ownershipToken !== 'string') throw new Error('Review workspace cleanup was denied.');
           if (
             caller.workflow === 'vulnerability-review'
             && caller.role === 'primary'
@@ -2759,7 +3010,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           const fingerprint = fingerprintReviewSourceScope({
             manifestRepositoryIds: resolved.manifestRepositoryIds,
             selectedRepositoryIds: resolved.selectedRepositoryIds,
-            snapshots: snapshots.map(({ repositoryId, snapshot }) => ({ repositoryId, fingerprint: snapshot.fingerprint })),
+            snapshots: snapshots.map(({ repositoryId, snapshot }) => ({
+              repositoryId,
+              sourceRoot: snapshot.repository.root,
+              fingerprint: snapshot.fingerprint,
+            })),
           });
           return JSON.stringify({
             composite: true,

@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import {
   fingerprintReviewWorkspaceSourceScope,
@@ -13,6 +15,7 @@ import {
 } from './reviewWorkspaceService.js';
 
 const tempDirs: string[] = [];
+const lockChildPath = fileURLToPath(new URL('./reviewWorkspaceLockChild.ts', import.meta.url));
 const creatorCaller: ReviewWorkspaceCaller = {
   workflow: 'dash-review',
   role: 'creator',
@@ -105,6 +108,77 @@ function createWorkspace(
 
 function reviewMetadataPath(projectRoot: string, runId: string): string {
   return path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${runId}.json`);
+}
+
+function materializationLockPath(projectRoot: string): string {
+  return path.join(
+    projectRoot,
+    '.hive',
+    '.worktrees',
+    'review',
+    '.locks',
+    'vulnerability-materialization-boundary.lock',
+  );
+}
+
+async function writeRunLock(lockPath: string, lock: { ownerToken: string; ownerPid: number }): Promise<void> {
+  await fs.mkdir(lockPath, { recursive: true });
+  await fs.writeFile(path.join(lockPath, 'owner.json'), JSON.stringify(lock), 'utf8');
+}
+
+interface LockChild {
+  process: ChildProcess;
+  completed: Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }>;
+}
+
+function startLockChild(
+  mode: 'hold' | 'once' | 'crash-owner' | 'crash-recovery',
+  projectRoot: string,
+  enteredPath: string,
+  releasePath: string,
+  startPath: string,
+  outcomePath: string,
+): LockChild {
+  const child = spawn(process.execPath, [
+    lockChildPath,
+    mode,
+    projectRoot,
+    enteredPath,
+    releasePath,
+    startPath,
+    outcomePath,
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr!.setEncoding('utf8');
+  child.stderr!.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+  return {
+    process: child,
+    completed: new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => resolve({ code, signal, stderr }));
+    }),
+  };
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function waitForCondition(condition: () => Promise<boolean>, description: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${description}`);
 }
 
 describe('ReviewWorkspaceService', () => {
@@ -479,6 +553,28 @@ describe('ReviewWorkspaceService', () => {
     await internal.releaseRunLock(firstLock);
   });
 
+  it('preserves a lock when its owner liveness probe fails unexpectedly', async () => {
+    const source = await createRepository('unknown-lock-owner-liveness');
+    const service = createReviewWorkspaceService(source.path);
+    const internal = service as any;
+    const reviewRoot = await internal.ensureReviewRoot();
+    const lockPath = await internal.getLockPath(reviewRoot, 'review-unknown-lock-owner', true);
+    const owner = { ownerToken: 'unknown-owner-token', ownerPid: 4242 };
+    await writeRunLock(lockPath, owner);
+    const processProbe = spyOn(process, 'kill').mockImplementation(() => {
+      const error = new TypeError('injected process probe failure') as NodeJS.ErrnoException;
+      error.code = 'ERR_INVALID_ARG_TYPE';
+      throw error;
+    });
+
+    try {
+      await expect(internal.acquireRunLock(reviewRoot, 'review-unknown-lock-owner')).rejects.toThrow('busy');
+    } finally {
+      processProbe.mockRestore();
+    }
+    expect(JSON.parse(await fs.readFile(path.join(lockPath, 'owner.json'), 'utf8'))).toEqual(owner);
+  });
+
   it('recovers a dead-owner lock without letting its old token release the replacement', async () => {
     const source = await createRepository('dead-lock-owner');
     const service = createReviewWorkspaceService(source.path, {
@@ -487,13 +583,158 @@ describe('ReviewWorkspaceService', () => {
     const internal = service as any;
     const reviewRoot = await internal.ensureReviewRoot();
     const lockPath = await internal.getLockPath(reviewRoot, 'review-dead-lock-owner', true);
-    await fs.writeFile(lockPath, JSON.stringify({ ownerToken: 'dead-owner-token', ownerPid: 4242 }), 'utf8');
+    await writeRunLock(lockPath, { ownerToken: 'dead-owner-token', ownerPid: 4242 });
 
     const replacement = await internal.acquireRunLock(reviewRoot, 'review-dead-lock-owner');
     await internal.releaseRunLock({ path: lockPath, ownerToken: 'dead-owner-token', ownerPid: 4242 });
 
     await expect(internal.acquireRunLock(reviewRoot, 'review-dead-lock-owner')).rejects.toThrow('busy');
     await internal.releaseRunLock(replacement);
+  });
+
+  it('allows at most one independent contender to recover the same stale materialization lock', async () => {
+    const source = await createRepository('cross-process-stale-contenders');
+    const controls = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-review-lock-controls-'));
+    tempDirs.push(controls);
+    const start = path.join(controls, 'start');
+    const deadEntered = path.join(controls, 'dead-entered');
+    const dead = startLockChild('crash-owner', source.path, deadEntered, 'unused', start, path.join(controls, 'dead-outcome'));
+    await fs.writeFile(start, 'start', 'utf8');
+    await waitForCondition(() => pathExists(deadEntered), 'stale owner entry');
+    expect((await dead.completed).signal).toBe('SIGKILL');
+
+    await fs.rm(start);
+    const firstEntered = path.join(controls, 'first-entered');
+    const secondEntered = path.join(controls, 'second-entered');
+    const firstRelease = path.join(controls, 'first-release');
+    const secondRelease = path.join(controls, 'second-release');
+    const firstOutcome = path.join(controls, 'first-outcome');
+    const secondOutcome = path.join(controls, 'second-outcome');
+    const first = startLockChild('hold', source.path, firstEntered, firstRelease, start, firstOutcome);
+    const second = startLockChild('hold', source.path, secondEntered, secondRelease, start, secondOutcome);
+    await fs.writeFile(start, 'start', 'utf8');
+    await waitForCondition(async () => {
+      const entered = Number(await pathExists(firstEntered)) + Number(await pathExists(secondEntered));
+      return entered === 2 || (entered === 1 && (await pathExists(firstOutcome) || await pathExists(secondOutcome)));
+    }, 'one stale-lock contender and the rejected contender');
+
+    const firstDidEnter = await pathExists(firstEntered);
+    const secondDidEnter = await pathExists(secondEntered);
+    expect(Number(firstDidEnter) + Number(secondDidEnter)).toBe(1);
+    const winningMetadata = await fs.readFile(firstDidEnter ? firstEntered : secondEntered, 'utf8');
+    const rejectedOutcome = JSON.parse(await fs.readFile(firstDidEnter ? secondOutcome : firstOutcome, 'utf8'));
+    expect(rejectedOutcome).toMatchObject({ status: 'error', message: expect.stringMatching(/busy|recovery/) });
+    expect(await fs.readFile(path.join(materializationLockPath(source.path), 'owner.json'), 'utf8')).toBe(winningMetadata);
+
+    await fs.writeFile(firstDidEnter ? firstRelease : secondRelease, 'release', 'utf8');
+    const [firstResult, secondResult] = await Promise.all([first.completed, second.completed]);
+    expect([firstResult.code, secondResult.code].sort()).toEqual([0, 2]);
+  });
+
+  it('never changes an independent live owner lock when a contender arrives', async () => {
+    const source = await createRepository('cross-process-live-owner');
+    const controls = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-review-lock-live-owner-'));
+    tempDirs.push(controls);
+    const start = path.join(controls, 'start');
+    const ownerEntered = path.join(controls, 'owner-entered');
+    const ownerRelease = path.join(controls, 'owner-release');
+    const ownerOutcome = path.join(controls, 'owner-outcome');
+    const owner = startLockChild('hold', source.path, ownerEntered, ownerRelease, start, ownerOutcome);
+    await fs.writeFile(start, 'start', 'utf8');
+    await waitForCondition(() => pathExists(ownerEntered), 'live owner entry');
+    const originalMetadata = await fs.readFile(path.join(materializationLockPath(source.path), 'owner.json'), 'utf8');
+
+    const contenderEntered = path.join(controls, 'contender-entered');
+    const contenderOutcome = path.join(controls, 'contender-outcome');
+    const contender = startLockChild('once', source.path, contenderEntered, 'unused', start, contenderOutcome);
+
+    expect((await contender.completed).code).toBe(2);
+    expect(await pathExists(contenderEntered)).toBe(false);
+    expect(JSON.parse(await fs.readFile(contenderOutcome, 'utf8'))).toMatchObject({
+      status: 'error',
+      message: expect.stringContaining('busy'),
+    });
+    expect(await fs.readFile(path.join(materializationLockPath(source.path), 'owner.json'), 'utf8')).toBe(originalMetadata);
+    expect(JSON.parse(originalMetadata)).toMatchObject({ ownerPid: owner.process.pid });
+
+    await fs.writeFile(ownerRelease, 'release', 'utf8');
+    expect((await owner.completed).code).toBe(0);
+  });
+
+  it('recovers a materialization lock after its independent owner dies abruptly', async () => {
+    const source = await createRepository('cross-process-owner-death');
+    const controls = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-review-lock-owner-death-'));
+    tempDirs.push(controls);
+    const start = path.join(controls, 'start');
+    const deadEntered = path.join(controls, 'dead-entered');
+    const dead = startLockChild('crash-owner', source.path, deadEntered, 'unused', start, path.join(controls, 'dead-outcome'));
+    await fs.writeFile(start, 'start', 'utf8');
+    await waitForCondition(() => pathExists(deadEntered), 'abrupt owner entry');
+    expect((await dead.completed).signal).toBe('SIGKILL');
+
+    const recoveredEntered = path.join(controls, 'recovered-entered');
+    const recovered = startLockChild('once', source.path, recoveredEntered, 'unused', start, path.join(controls, 'recovered-outcome'));
+    expect((await recovered.completed).code).toBe(0);
+    expect(await pathExists(recoveredEntered)).toBe(true);
+    expect(await pathExists(materializationLockPath(source.path))).toBe(false);
+  });
+
+  it('fails closed on missing, truncated, or invalid-PID materialization lock metadata', async () => {
+    for (const [name, metadata] of [
+      ['missing', undefined],
+      ['truncated', '{"ownerToken":'],
+      ['oversized-pid', JSON.stringify({ ownerToken: 'oversized-owner', ownerPid: 2147483648 })],
+      ['fractional-pid', JSON.stringify({ ownerToken: 'fractional-owner', ownerPid: 1.5 })],
+    ] as const) {
+      const source = await createRepository(`cross-process-${name}-metadata`);
+      const controls = await fs.mkdtemp(path.join(os.tmpdir(), `hive-review-lock-${name}-`));
+      tempDirs.push(controls);
+      const lockPath = materializationLockPath(source.path);
+      await fs.mkdir(lockPath, { recursive: true });
+      if (metadata !== undefined) await fs.writeFile(path.join(lockPath, 'owner.json'), metadata, 'utf8');
+      const start = path.join(controls, 'start');
+      await fs.writeFile(start, 'start', 'utf8');
+      const entered = path.join(controls, 'entered');
+      const outcome = path.join(controls, 'outcome');
+      const contender = startLockChild('once', source.path, entered, 'unused', start, outcome);
+
+      expect((await contender.completed).code).toBe(2);
+      expect(await pathExists(entered)).toBe(false);
+      expect(JSON.parse(await fs.readFile(outcome, 'utf8'))).toMatchObject({
+        status: 'error',
+        message: expect.stringMatching(/invalid|manual recovery/),
+      });
+      expect(await pathExists(lockPath)).toBe(true);
+      if (metadata !== undefined) {
+        expect(await fs.readFile(path.join(lockPath, 'owner.json'), 'utf8')).toBe(metadata);
+      }
+    }
+  });
+
+  it('leaves an abandoned recovery guard that blocks entry after a recovery crash', async () => {
+    const source = await createRepository('cross-process-recovery-crash');
+    const controls = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-review-lock-recovery-crash-'));
+    tempDirs.push(controls);
+    const lockPath = materializationLockPath(source.path);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(path.join(lockPath, 'owner.json'), JSON.stringify({ ownerToken: 'dead-owner', ownerPid: 2147483647 }), 'utf8');
+    const start = path.join(controls, 'start');
+    await fs.writeFile(start, 'start', 'utf8');
+    const recoveryReached = path.join(controls, 'recovery-reached');
+    const crashing = startLockChild('crash-recovery', source.path, recoveryReached, 'unused', start, path.join(controls, 'crash-outcome'));
+    await waitForCondition(() => pathExists(recoveryReached), 'guarded stale recovery');
+    expect((await crashing.completed).signal).toBe('SIGKILL');
+
+    const contenderOutcome = path.join(controls, 'contender-outcome');
+    const contenderEntered = path.join(controls, 'contender-entered');
+    const contender = startLockChild('once', source.path, contenderEntered, 'unused', start, contenderOutcome);
+    expect((await contender.completed).code).toBe(2);
+    expect(await pathExists(contenderEntered)).toBe(false);
+    expect(JSON.parse(await fs.readFile(contenderOutcome, 'utf8'))).toMatchObject({
+      status: 'error',
+      message: expect.stringMatching(/recovery.*manual|manual.*recovery/i),
+    });
+    expect(await pathExists(`${lockPath}.recovery`)).toBe(true);
   });
 
   it('keeps workspace checkout and metadata when worktree deregistration fails', async () => {
@@ -515,6 +756,80 @@ describe('ReviewWorkspaceService', () => {
     expect(result.errors).toEqual([expect.stringContaining(workspace.workspacePath)]);
     expect((await fs.stat(workspace.workspacePath)).isDirectory()).toBe(true);
     await fs.access(metadataPath);
+  });
+
+  it('persists exact-primary cleanup recovery across restart until cleanup succeeds', async () => {
+    const source = await createRepository('cleanup-recovery-restart');
+    const vulnerabilityCreator: ReviewWorkspaceCaller = {
+      workflow: 'vulnerability-review',
+      role: 'creator',
+      agent: '__hive_vulnerability_review_scope',
+      sessionId: 'cleanup-recovery-scope',
+      pid: process.pid,
+    };
+    const vulnerabilityPrimary: ReviewWorkspaceCaller = {
+      workflow: 'vulnerability-review',
+      role: 'primary',
+      agent: '__hive_vulnerability_review_primary',
+      sessionId: 'cleanup-recovery-primary',
+      pid: process.pid,
+    };
+    const setupService = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(setupService, {
+      runId: 'review-cleanup-recovery-restart',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    }, vulnerabilityCreator);
+    await setupService.markCleanupRecoveryRequired(
+      workspace.runId,
+      workspace.ownershipToken,
+      vulnerabilityCreator,
+      vulnerabilityPrimary,
+    );
+    const metadataPath = reviewMetadataPath(source.path, workspace.runId);
+    const persisted = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+
+    expect(persisted.cleanupRecovery).toEqual({
+      state: 'required',
+      primaryAgent: vulnerabilityPrimary.agent,
+      primarySessionId: vulnerabilityPrimary.sessionId,
+    });
+    expect(JSON.stringify(persisted)).not.toContain(workspace.ownershipToken);
+    persisted.cleanupRecovery = {
+      primarySessionId: vulnerabilityPrimary.sessionId,
+      state: 'required',
+      primaryAgent: vulnerabilityPrimary.agent,
+    };
+    await fs.writeFile(metadataPath, JSON.stringify(persisted), 'utf8');
+
+    const failingRestart = createReviewWorkspaceService(source.path, {
+      removeWorktree: async () => {
+        throw new Error('injected persistent recovery failure');
+      },
+    });
+    expect(await failingRestart.findCleanupRecoveryRequired()).toBe(workspace.runId);
+    expect(await failingRestart.findCleanupRecoveryRequired(vulnerabilityPrimary)).toBe(workspace.runId);
+    expect(await failingRestart.findCleanupRecoveryRequired({
+      ...vulnerabilityPrimary,
+      sessionId: 'wrong-primary',
+    })).toBeUndefined();
+    await expect(failingRestart.cleanupRecovery(workspace.runId, {
+      ...vulnerabilityPrimary,
+      sessionId: 'wrong-primary',
+    })).rejects.toThrow('cleanup recovery was denied');
+
+    const failed = await failingRestart.cleanupRecovery(workspace.runId, vulnerabilityPrimary);
+    expect(failed).toMatchObject({
+      cleaned: false,
+      errors: [expect.stringContaining('injected persistent recovery failure')],
+    });
+    expect(await failingRestart.findCleanupRecoveryRequired(vulnerabilityPrimary)).toBe(workspace.runId);
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf8')).cleanupRecovery).toEqual(persisted.cleanupRecovery);
+
+    const successfulRestart = createReviewWorkspaceService(source.path);
+    expect(await successfulRestart.cleanupRecovery(workspace.runId, vulnerabilityPrimary)).toMatchObject({ cleaned: true });
+    expect(await successfulRestart.findCleanupRecoveryRequired()).toBeUndefined();
+    expect(await successfulRestart.findCleanupRecoveryRequired(vulnerabilityPrimary)).toBeUndefined();
+    await expect(fs.access(metadataPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('records successful composite deregistration so cleanup can retry a later failed repository', async () => {
@@ -691,7 +1006,7 @@ describe('ReviewWorkspaceService', () => {
     const workspacePath = path.join(reviewRoot, 'review-missing-metadata');
     await fs.mkdir(workspacePath);
     const lockPath = await internal.getLockPath(reviewRoot, 'review-missing-metadata', true);
-    await fs.writeFile(lockPath, JSON.stringify({ ownerToken: 'dead-owner', ownerPid: 4242 }), 'utf8');
+    await writeRunLock(lockPath, { ownerToken: 'dead-owner', ownerPid: 4242 });
     const recoverable = await createWorkspace(service, {
       runId: 'review-independent-recovery',
       repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],

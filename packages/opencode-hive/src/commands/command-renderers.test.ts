@@ -726,6 +726,14 @@ describe('hive command renderers', () => {
       reason: 'candidate-mismatch' | 'create-denied' | 'source-drift' | 'scope-drift' | 'cleanup-uncertain' | 'create-needs-discussion' | 'packet-invalid';
       message: string;
       cleanup: { attempted: boolean; cleaned: boolean | null };
+    }
+  | {
+      schema: 'hive-vuln-review-stage1/v2';
+      state: 'STOP';
+      reason: 'cleanup-recovery-required';
+      message: string;
+      cleanup: { attempted: true; cleaned: false; runId: string; workspacePath: string; errors: string[] };
+      recovery: { state: 'required'; runId: string };
     };`,
     ];
 
@@ -743,6 +751,10 @@ describe('hive command renderers', () => {
     expect(output).toContain('emit the exact `scopeEcho` before materialize');
     expect(output).toContain('forward only `candidate.createInput` to `hive_review_workspace_create`');
     expect(output).toContain('Never call `hive_review_workspace_create` before accepting a schema-valid `BOUNDED` candidate');
+    expect(output).toContain("STOP(reason: 'cleanup-recovery-required')");
+    expect(output).toContain('call `hive_review_workspace_cleanup({ runId })` as the exact originating private primary without an ownership token');
+    expect(output).toContain('Do not claim, dispatch review lanes, or retry materialization until that exact cleanup returns `cleaned: true`');
+    expect(output).toContain('Cleanup-recovery metadata requires the updated binary; older binaries must fail closed and preserve the workspace');
     expect(output).not.toContain('## Explicit Vulnerability Review Arguments');
     expect(output).not.toContain('normalizedScopeInput');
     expect(output).not.toContain('hiveSelector');

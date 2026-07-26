@@ -34,6 +34,7 @@ export type {
 export {
   ReviewWorkspaceService,
   REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,
+  LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION,
   fingerprintReviewWorkspaceSourceScope,
   fingerprintReviewWorkspaceVulnerabilityScope,
 } from './reviewWorkspaceService.js';

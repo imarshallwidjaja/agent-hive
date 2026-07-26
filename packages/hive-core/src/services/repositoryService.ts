@@ -74,7 +74,16 @@ export class RepositoryService {
         throw new Error(`Repository path does not exist: ${resolvedPath}`);
       }
 
-      const gitRoot = this.readGitRoot(resolvedPath);
+      const repositoryStat = fs.lstatSync(resolvedPath);
+      if (repositoryStat.isSymbolicLink()) {
+        throw new Error(`Repository path must stay inside project root and must not be a symlink: ${repository.path}`);
+      }
+      const canonicalPath = fs.realpathSync(resolvedPath);
+      if (canonicalPath !== resolvedProjectRoot && !canonicalPath.startsWith(`${resolvedProjectRoot}${path.sep}`)) {
+        throw new Error(`Repository path must stay inside project root: ${repository.path}`);
+      }
+
+      const gitRoot = this.readGitRoot(canonicalPath);
       if (gitRoot === null) {
         throw new Error(`Repository path is not inside a git repository: ${resolvedPath}`);
       }
@@ -88,7 +97,7 @@ export class RepositoryService {
       }
       roots.add(canonicalGitRoot);
 
-      repositories.push({ id: repository.id, path: resolvedPath, root: canonicalGitRoot });
+      repositories.push({ id: repository.id, path: canonicalPath, root: canonicalGitRoot });
     }
 
     return repositories;

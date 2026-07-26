@@ -789,7 +789,7 @@ export function parseNameStatusPaths(content: Buffer): string[] {
 export type ReviewSourceScopeFingerprintInput = {
   manifestRepositoryIds: string[];
   selectedRepositoryIds: string[];
-  snapshots: Array<{ repositoryId: string; fingerprint: string }>;
+  snapshots: Array<{ repositoryId: string; sourceRoot: string; fingerprint: string }>;
 };
 
 export type ReviewMaterializationEntryDescriptor = {
@@ -803,12 +803,22 @@ export function serializeReviewSourceScopeFingerprint(input: ReviewSourceScopeFi
     selectedRepositoryIds: input.selectedRepositoryIds,
     snapshots: [...input.snapshots]
       .sort((left, right) => left.repositoryId.localeCompare(right.repositoryId))
-      .map(({ repositoryId, fingerprint }) => ({ repositoryId, fingerprint })),
+      .map(({ repositoryId, sourceRoot, fingerprint }) => ({ repositoryId, sourceRoot, fingerprint })),
   });
 }
 
 export function fingerprintReviewSourceScope(input: ReviewSourceScopeFingerprintInput): string {
   return createHash('sha256').update(serializeReviewSourceScopeFingerprint(input)).digest('hex');
+}
+
+export function fingerprintLegacyReviewSourceScope(input: ReviewSourceScopeFingerprintInput): string {
+  return createHash('sha256').update(JSON.stringify({
+    manifestRepositoryIds: input.manifestRepositoryIds,
+    selectedRepositoryIds: input.selectedRepositoryIds,
+    snapshots: [...input.snapshots]
+      .sort((left, right) => left.repositoryId.localeCompare(right.repositoryId))
+      .map(({ repositoryId, fingerprint }) => ({ repositoryId, fingerprint })),
+  })).digest('hex');
 }
 
 export function compactMaterializationDescriptors(

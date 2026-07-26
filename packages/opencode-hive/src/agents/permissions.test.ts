@@ -1,5 +1,6 @@
 import { describe, expect, it, spyOn, afterEach, mock } from 'bun:test';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { ConfigService, ReviewWorkspaceService } from 'hive-core';
@@ -301,7 +302,7 @@ async function grantCurrentChangeMaterialization(input: {
     : fingerprintReviewSourceScope({
         manifestRepositoryIds: [],
         selectedRepositoryIds: [],
-        snapshots: [{ repositoryId: 'root', fingerprint: preview.fingerprint }],
+        snapshots: [{ repositoryId: 'root', sourceRoot: preview.repository.root, fingerprint: preview.fingerprint }],
       });
   const candidate = {
     schema: 'hive-vuln-review-stage1/v2',
@@ -438,6 +439,29 @@ function writeCompositeWorkspaceManifest(workspace: string, repoIds: string[]): 
     baseCommits: Object.fromEntries(repoIds.map((id) => [id, '0123456789012345678901234567890123456789'])),
     createdAt: '2026-07-11T00:00:00.000Z',
   }));
+}
+
+function writeProjectRepositoryManifest(
+  projectRoot: string,
+  repositories: Array<{ id: string; path: string }>,
+): void {
+  mkdirSync(path.join(projectRoot, '.hive'), { recursive: true });
+  writeFileSync(path.join(projectRoot, '.hive', 'repositories.json'), JSON.stringify({
+    schemaVersion: 1,
+    repositories,
+  }));
+}
+
+function fingerprintLegacyReviewSourceScope(input: {
+  manifestRepositoryIds: string[];
+  selectedRepositoryIds: string[];
+  snapshots: Array<{ repositoryId: string; fingerprint: string }>;
+}): string {
+  return createHash('sha256').update(JSON.stringify({
+    manifestRepositoryIds: input.manifestRepositoryIds,
+    selectedRepositoryIds: input.selectedRepositoryIds,
+    snapshots: [...input.snapshots].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId)),
+  })).digest('hex');
 }
 
 describe('Agent permissions', () => {
@@ -859,7 +883,7 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('gives dash-reviewer generated review lanes with normal local tools and denied Hive lifecycle mutation', async () => {
+  it('gives dash-reviewer generated review lanes with normal local tools and bounded workspace lifecycle capability', async () => {
     const agents = await buildConfig('unified', {
       'scout-audit': {
         baseAgent: 'scout-researcher',
@@ -1117,12 +1141,20 @@ describe('Per-agent tool filtering', () => {
   });
 
   it('materializes a disposable review workspace for the scope lane and lets only the primary inspect or clean it', async () => {
-    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-tool-'));
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-tool-'));
+    const repository = path.join(projectRoot, '.tmp', 'hyperliquid', 'ramses-hl');
+    const otherRepository = path.join(projectRoot, 'services', 'worker');
+    createGitRepository(projectRoot);
     createGitRepository(repository);
+    createGitRepository(otherRepository);
+    writeProjectRepositoryManifest(projectRoot, [
+      { id: 'ramses-hl', path: './.tmp/hyperliquid/ramses-hl' },
+      { id: 'worker', path: './services/worker' },
+    ]);
     writeFileSync(path.join(repository, 'README.md'), 'dirty source\n');
     writeFileSync(path.join(repository, '.gitignore'), '*.ignored\n');
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
       const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string; template: string }> } = {};
       await hooks.config?.(config);
       const primary = config.command?.['dash-review']?.agent!;
@@ -1133,26 +1165,38 @@ describe('Per-agent tool filtering', () => {
       const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-inspect' };
 
       await expect(create({}, snapshotContext(primary))).rejects.toThrow('not authorized');
-      const created = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const reviewRepository = created.repositories['ramses-hl'].path;
       expect(created.state).toBe('READY');
-      expect(readFileSync(path.join(created.workspacePath, 'README.md'), 'utf8')).toBe('dirty source\n');
+      expect(Object.keys(created.repositories)).toEqual(['ramses-hl']);
+      expect(created.excludedRepositoryIds).toEqual(['worker']);
+      expect(readFileSync(path.join(reviewRepository, 'README.md'), 'utf8')).toBe('dirty source\n');
       expect(readFileSync(path.join(repository, 'README.md'), 'utf8')).toBe('dirty source\n');
       await hooks['chat.message']?.({ sessionID: 'dash-primary-inspect', agent: primary }, { message: {}, parts: [] } as any);
       await expect(inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext)).rejects.toThrow('inspection was denied');
       await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
       const initialInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
-      expect(initialInspection.source.stable).toBe(true);
-      writeFileSync(path.join(created.workspacePath, 'new-untracked.txt'), 'workspace delta\n');
+      const metadata = JSON.parse(readFileSync(path.join(
+        projectRoot,
+        '.hive',
+        '.worktrees',
+        'review',
+        '.runs',
+        `${created.runId}.json`,
+      ), 'utf8'));
+      expect(metadata.sourceFingerprintVersion).toBe(2);
+      expect(initialInspection.source).toMatchObject({ version: 2, status: 'stable', stable: true });
+      writeFileSync(path.join(reviewRepository, 'new-untracked.txt'), 'workspace delta\n');
       const untrackedInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
       expect(untrackedInspection.integrity).toMatchObject({ baselineClean: true, untrackedFiles: true });
       expect(untrackedInspection.reviewIntegrity).toBe(false);
-      rmSync(path.join(created.workspacePath, 'new-untracked.txt'));
-      writeFileSync(path.join(created.workspacePath, 'new.ignored'), 'ignored workspace delta\n');
+      rmSync(path.join(reviewRepository, 'new-untracked.txt'));
+      writeFileSync(path.join(reviewRepository, 'new.ignored'), 'ignored workspace delta\n');
       const ignoredInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
-      expect(ignoredInspection.repositories.root.ignoredChanges).toEqual(['new.ignored']);
+      expect(ignoredInspection.repositories['ramses-hl'].ignoredChanges).toEqual(['new.ignored']);
       expect(ignoredInspection.integrity).toMatchObject({ baselineClean: true, ignoredFiles: true });
       expect(ignoredInspection.reviewIntegrity).toBe(false);
-      rmSync(path.join(created.workspacePath, 'new.ignored'));
+      rmSync(path.join(reviewRepository, 'new.ignored'));
       writeFileSync(path.join(repository, 'README.md'), 'live source drift\n');
       const sourceDriftInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
       expect(sourceDriftInspection.integrity).toMatchObject({ baselineClean: true, untrackedFiles: false });
@@ -1160,12 +1204,283 @@ describe('Per-agent tool filtering', () => {
       expect(sourceDriftInspection.source.stable).toBe(false);
       expect(sourceDriftInspection.reviewIntegrity).toBe(false);
       writeFileSync(path.join(repository, 'README.md'), 'dirty source\n');
-      writeFileSync(path.join(created.workspacePath, 'README.md'), 'review workspace drift\n');
+      writeFileSync(path.join(reviewRepository, 'README.md'), 'review workspace drift\n');
       const workspaceDriftInspection = JSON.parse(await inspect({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext));
       expect(workspaceDriftInspection.source.stable).toBe(true);
       expect(workspaceDriftInspection.reviewIntegrity).toBe(false);
       expect(JSON.parse(await cleanup({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext).then((result) => result)).cleaned).toBe(true);
       expect(existsSync(created.workspacePath)).toBe(false);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('marks source identity unstable when a local manifest remaps an ID to an equal-content repository', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-remap-'));
+    const firstRepository = path.join(projectRoot, 'sources', 'first');
+    const secondRepository = path.join(projectRoot, 'sources', 'second');
+    createGitRepository(projectRoot);
+    createGitRepository(firstRepository);
+    execFileSync('git', ['clone', '--quiet', firstRepository, secondRepository], { shell: false });
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/first' }]);
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+      const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
+      const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
+      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-remap' };
+      await hooks['chat.message']?.({ sessionID: 'dash-primary-remap', agent: primary }, { message: {}, parts: [] } as any);
+      await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
+
+      writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/second' }]);
+      const inspection = JSON.parse(await inspect({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, primaryContext));
+
+      expect(inspection.source).toMatchObject({ version: 2, status: 'drifted', stable: false });
+      expect(inspection.reviewIntegrity).toBe(false);
+      expect(JSON.parse(await cleanup({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, primaryContext)).cleaned).toBe(true);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('validates an unchanged pre-version source fingerprint with the legacy algorithm', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-legacy-fingerprint-'));
+    const repository = path.join(projectRoot, 'sources', 'first');
+    createGitRepository(projectRoot);
+    createGitRepository(repository);
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/first' }]);
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+      const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
+      const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
+      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const metadataPath = path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${created.runId}.json`);
+      const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+      metadata.sourceFingerprint = fingerprintLegacyReviewSourceScope({
+        manifestRepositoryIds: ['ramses-hl'],
+        selectedRepositoryIds: ['ramses-hl'],
+        snapshots: created.snapshots.map((entry: { repositoryId: string; snapshot: { fingerprint: string } }) => ({
+          repositoryId: entry.repositoryId,
+          fingerprint: entry.snapshot.fingerprint,
+        })),
+      });
+      delete metadata.sourceFingerprintVersion;
+      writeFileSync(metadataPath, JSON.stringify(metadata));
+      const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-legacy-fingerprint' };
+      await hooks['chat.message']?.({ sessionID: 'dash-primary-legacy-fingerprint', agent: primary }, { message: {}, parts: [] } as any);
+      await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
+
+      const inspection = JSON.parse(await inspect({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, primaryContext));
+
+      expect(inspection.sourceFingerprint).toBe(metadata.sourceFingerprint);
+      expect(inspection.source).toMatchObject({ version: 1, status: 'stable', stable: true });
+      expect(inspection.reviewIntegrity).toBe(true);
+      expect(JSON.parse(await cleanup({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, primaryContext)).cleaned).toBe(true);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reports legacy source identity as incompatible when persisted roots no longer match', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-legacy-incompatible-'));
+    const firstRepository = path.join(projectRoot, 'sources', 'first');
+    const secondRepository = path.join(projectRoot, 'sources', 'second');
+    createGitRepository(projectRoot);
+    createGitRepository(firstRepository);
+    execFileSync('git', ['clone', '--quiet', firstRepository, secondRepository], { shell: false });
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/first' }]);
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+      const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
+      const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
+      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const metadataPath = path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${created.runId}.json`);
+      const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+      metadata.sourceFingerprint = fingerprintLegacyReviewSourceScope({
+        manifestRepositoryIds: ['ramses-hl'],
+        selectedRepositoryIds: ['ramses-hl'],
+        snapshots: created.snapshots.map((entry: { repositoryId: string; snapshot: { fingerprint: string } }) => ({
+          repositoryId: entry.repositoryId,
+          fingerprint: entry.snapshot.fingerprint,
+        })),
+      });
+      delete metadata.sourceFingerprintVersion;
+      writeFileSync(metadataPath, JSON.stringify(metadata));
+      writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/second' }]);
+      const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-legacy-incompatible' };
+      await hooks['chat.message']?.({ sessionID: 'dash-primary-legacy-incompatible', agent: primary }, { message: {}, parts: [] } as any);
+      await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
+
+      const inspection = JSON.parse(await inspect({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, primaryContext));
+
+      expect(inspection.source).toMatchObject({ version: 1, status: 'legacy-incompatible', stable: false });
+      expect(inspection.source.error).toContain('persisted source root');
+      expect(inspection.reviewIntegrity).toBe(false);
+      expect(JSON.parse(await cleanup({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, primaryContext)).cleaned).toBe(true);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('cannot return READY when a local manifest remaps an ID during each materialization attempt', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-materialization-remap-'));
+    const firstRepository = path.join(projectRoot, 'sources', 'first');
+    const secondRepository = path.join(projectRoot, 'sources', 'second');
+    createGitRepository(projectRoot);
+    createGitRepository(firstRepository);
+    execFileSync('git', ['clone', '--quiet', firstRepository, secondRepository], { shell: false });
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/first' }]);
+    const realSeal = ReviewWorkspaceService.prototype.seal;
+    const sealedRunIds: string[] = [];
+    let nextRepository = secondRepository;
+    spyOn(ReviewWorkspaceService.prototype, 'seal').mockImplementation(async function (
+      this: ReviewWorkspaceService,
+      runId: string,
+      ownershipToken: string,
+      caller: Parameters<ReviewWorkspaceService['seal']>[2],
+    ): Promise<void> {
+      await realSeal.call(this, runId, ownershipToken, caller);
+      sealedRunIds.push(runId);
+      writeProjectRepositoryManifest(projectRoot, [{
+        id: 'ramses-hl',
+        path: nextRepository === firstRepository ? './sources/first' : './sources/second',
+      }]);
+      nextRepository = nextRepository === firstRepository ? secondRepository : firstRepository;
+    });
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+
+      expect(created).toMatchObject({ state: 'NEEDS_DISCUSSION', stale: true });
+      expect(sealedRunIds).toHaveLength(2);
+      for (const runId of sealedRunIds) {
+        expect(existsSync(path.join(projectRoot, '.hive', '.worktrees', 'review', runId))).toBe(false);
+        expect(existsSync(path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${runId}.json`))).toBe(false);
+      }
+      expect(gitAt(firstRepository, ['worktree', 'list', '--porcelain'])).not.toContain(`${path.sep}.hive${path.sep}.worktrees${path.sep}review${path.sep}`);
+      expect(gitAt(secondRepository, ['worktree', 'list', '--porcelain'])).not.toContain(`${path.sep}.hive${path.sep}.worktrees${path.sep}review${path.sep}`);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('stops topology-drift retries and reports the orphaned run when cleanup fails', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-drift-cleanup-failure-'));
+    const firstRepository = path.join(projectRoot, 'sources', 'first');
+    const secondRepository = path.join(projectRoot, 'sources', 'second');
+    createGitRepository(projectRoot);
+    createGitRepository(firstRepository);
+    execFileSync('git', ['clone', '--quiet', firstRepository, secondRepository], { shell: false });
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/first' }]);
+    const realSeal = ReviewWorkspaceService.prototype.seal;
+    const sealedRunIds: string[] = [];
+    spyOn(ReviewWorkspaceService.prototype, 'seal').mockImplementation(async function (
+      this: ReviewWorkspaceService,
+      runId: string,
+      ownershipToken: string,
+      caller: Parameters<ReviewWorkspaceService['seal']>[2],
+    ): Promise<void> {
+      await realSeal.call(this, runId, ownershipToken, caller);
+      sealedRunIds.push(runId);
+      writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/second' }]);
+    });
+    const cleanup = spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockImplementation(async (runId) => ({
+      runId,
+      cleaned: false,
+      workspacePath: path.join(projectRoot, '.hive', '.worktrees', 'review', runId),
+      errors: ['injected cleanup failure'],
+    }));
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      const result = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+
+      expect(result).toMatchObject({
+        state: 'NEEDS_DISCUSSION',
+        reason: 'cleanup-failed',
+        stale: true,
+        cleanup: {
+          runId: sealedRunIds[0],
+          cleaned: false,
+          errors: ['injected cleanup failure'],
+        },
+      });
+      expect(result.recovery).toContain(sealedRunIds[0]);
+      expect(JSON.stringify(result)).not.toContain('ownershipToken');
+      expect(sealedRunIds).toHaveLength(1);
+      expect(cleanup).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the orphaned run when exception cleanup fails', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-review-workspace-exception-cleanup-failure-'));
+    createGitRepository(repository);
+    spyOn(ReviewWorkspaceService.prototype, 'seal').mockImplementation(async () => {
+      throw new Error('injected seal failure');
+    });
+    const cleanup = spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockImplementation(async (runId) => ({
+      runId,
+      cleaned: false,
+      workspacePath: path.join(repository, '.hive', '.worktrees', 'review', runId),
+      errors: ['injected cleanup failure'],
+    }));
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      const result = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+
+      expect(result).toMatchObject({
+        state: 'NEEDS_DISCUSSION',
+        reason: 'cleanup-failed',
+        stale: true,
+        failure: 'injected seal failure',
+        cleanup: {
+          cleaned: false,
+          errors: ['injected cleanup failure'],
+        },
+      });
+      expect(result.recovery).toContain(result.cleanup.runId);
+      expect(JSON.stringify(result)).not.toContain('ownershipToken');
+      expect(cleanup).toHaveBeenCalledTimes(1);
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -1242,6 +1557,421 @@ describe('Per-agent tool filtering', () => {
       expect(createWorkspace).not.toHaveBeenCalled();
     } finally {
       rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('delivers a cleanup-recovery STOP packet and grants only the exact primary tokenless recovery', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-cleanup-recovery-'));
+    const firstRepository = path.join(projectRoot, 'sources', 'first');
+    const secondRepository = path.join(projectRoot, 'sources', 'second');
+    createGitRepository(projectRoot);
+    createGitRepository(firstRepository);
+    execFileSync('git', ['clone', '--quiet', firstRepository, secondRepository], { shell: false });
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/first' }]);
+    const realSeal = ReviewWorkspaceService.prototype.seal;
+    spyOn(ReviewWorkspaceService.prototype, 'seal').mockImplementation(async function (
+      this: ReviewWorkspaceService,
+      runId: string,
+      ownershipToken: string,
+      caller: Parameters<ReviewWorkspaceService['seal']>[2],
+    ): Promise<void> {
+      await realSeal.call(this, runId, ownershipToken, caller);
+      writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/second' }]);
+    });
+    const realCleanup = ReviewWorkspaceService.prototype.cleanup;
+    const realCleanupRecovery = ReviewWorkspaceService.prototype.cleanupRecovery;
+    let recoveryPersistedBeforeCleanup = false;
+    const cleanupWorkspace = spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockImplementation(async (runId) => {
+      recoveryPersistedBeforeCleanup = await new ReviewWorkspaceService({ projectRoot })
+        .findCleanupRecoveryRequired() === runId;
+      throw new Error('injected interruption before cleanup completion');
+    });
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(projectRoot);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const grant = await grantCurrentChangeMaterialization({
+        hooks,
+        primary,
+        scope: vulnerabilityScopeAlias,
+        repositoryIds: ['ramses-hl'],
+      });
+
+      const created = JSON.parse(await create({
+        repositoryIds: ['ramses-hl'],
+        scopeMode: 'current-change',
+      }, grant.childContext));
+      const afterOutput = { title: 'task', output: JSON.stringify(created), metadata: {} };
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: 'vuln-primary',
+        callID: grant.materializeCallID,
+        args: {},
+      }, afterOutput);
+      const delivered = JSON.parse(afterOutput.output);
+
+      expect(delivered).toEqual(created);
+      expect(delivered).toMatchObject({
+        schema: 'hive-vuln-review-stage1/v2',
+        state: 'STOP',
+        reason: 'cleanup-recovery-required',
+        message: 'Source topology changed during review workspace materialization.',
+        cleanup: {
+          attempted: true,
+          cleaned: false,
+          workspacePath: created.cleanup.workspacePath,
+          errors: ['Review workspace cleanup threw: injected interruption before cleanup completion'],
+        },
+        recovery: {
+          state: 'required',
+          runId: created.cleanup.runId,
+        },
+      });
+      expect(JSON.stringify(delivered)).not.toContain('ownershipToken');
+      expect(recoveryPersistedBeforeCleanup).toBe(true);
+      const hiddenToken = cleanupWorkspace.mock.calls[0]![1] as string;
+      expect(typeof hiddenToken).toBe('string');
+      expect(JSON.stringify(delivered)).not.toContain(hiddenToken);
+
+      const startupSweep = spyOn(ReviewWorkspaceService.prototype, 'cleanupExpired')
+        .mockRejectedValueOnce(new Error('injected startup sweep failure'));
+      const restartedPlugin = await createSnapshotPlugin(projectRoot);
+      const restartedConfig: { command?: Record<string, { agent?: string }> } = {};
+      await restartedPlugin.hooks.config?.(restartedConfig);
+      expect(startupSweep).toHaveBeenCalled();
+      expect(restartedConfig.command?.['vuln-review']?.agent).toBe(primary);
+      const restartedCommand = restartedPlugin.hooks['command.execute.before']!;
+      const restartedCleanup = restartedPlugin.hooks.tool!.hive_review_workspace_cleanup.execute as (
+        input: unknown,
+        context: unknown,
+      ) => Promise<string>;
+      const primaryContext = { ...snapshotContext(primary), sessionID: 'vuln-primary' };
+      await expect(restartedCommand({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] }))
+        .rejects.toThrow(`cleanup ${created.cleanup.runId}`);
+      await expect(restartedCommand({ command: 'vuln-review', sessionID: 'unrelated-vuln-primary', arguments: '' }, { parts: [] }))
+        .rejects.toThrow(`cleanup ${created.cleanup.runId}`);
+      await expect(restartedCleanup({ runId: created.cleanup.runId }, {
+        ...snapshotContext(primary),
+        sessionID: 'unrelated-vuln-primary',
+      })).rejects.toThrow('cleanup was denied');
+      await expect(restartedCleanup({ runId: created.cleanup.runId }, grant.childContext)).rejects.toThrow('cleanup was denied');
+      await expect(restartedCleanup({ runId: created.cleanup.runId }, {
+        ...snapshotContext('__hive_dash_review_primary'),
+        sessionID: 'vuln-primary',
+      })).rejects.toThrow('cleanup was denied');
+      await expect(restartedCleanup({ runId: 'vulnerability-review-other-run' }, primaryContext)).rejects.toThrow('cleanup was denied');
+
+      const recoveryCleanup = spyOn(ReviewWorkspaceService.prototype, 'cleanupRecovery').mockImplementation(async (runId) => ({
+        runId,
+        cleaned: false,
+        workspacePath: created.cleanup.workspacePath,
+        errors: ['injected persistent cleanup failure'],
+      }));
+      const stillFailed = JSON.parse(await restartedCleanup({ runId: created.cleanup.runId }, primaryContext));
+      expect(stillFailed).toMatchObject({
+        runId: created.cleanup.runId,
+        cleaned: false,
+        errors: ['injected persistent cleanup failure'],
+      });
+      await expect(restartedCommand({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] }))
+        .rejects.toThrow(`cleanup ${created.cleanup.runId}`);
+
+      recoveryCleanup.mockImplementation(async function (
+        this: ReviewWorkspaceService,
+        runId: string,
+        caller: Parameters<ReviewWorkspaceService['cleanupRecovery']>[1],
+      ) {
+        return realCleanupRecovery.call(this, runId, caller);
+      });
+      cleanupWorkspace.mockImplementation(async function (
+        this: ReviewWorkspaceService,
+        runId: string,
+        ownershipToken: string,
+        caller: Parameters<ReviewWorkspaceService['cleanup']>[2],
+      ) {
+        return realCleanup.call(this, runId, ownershipToken, caller);
+      });
+      const recovered = JSON.parse(await restartedCleanup({ runId: created.cleanup.runId }, primaryContext));
+      expect(recovered).toMatchObject({ runId: created.cleanup.runId, cleaned: true });
+      expect(existsSync(created.cleanup.workspacePath)).toBe(false);
+      await expect(restartedCleanup({ runId: created.cleanup.runId }, primaryContext)).rejects.toThrow('cleanup was denied');
+      await expect(restartedCommand({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] }))
+        .resolves.toBeUndefined();
+      expect(JSON.stringify([created, delivered, stillFailed, recovered])).not.toContain('ownershipToken');
+      expect(JSON.stringify([created, delivered, stillFailed, recovered])).not.toContain(hiddenToken);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes pre-authorized vulnerability creates across durable cleanup recovery', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-concurrent-recovery-'));
+    const firstRepository = path.join(projectRoot, 'sources', 'first');
+    const secondRepository = path.join(projectRoot, 'sources', 'second');
+    createGitRepository(projectRoot);
+    createGitRepository(firstRepository);
+    execFileSync('git', ['clone', '--quiet', firstRepository, secondRepository], { shell: false });
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'root', path: './sources/first' }]);
+    try {
+      const firstPlugin = await createSnapshotPlugin(projectRoot);
+      const secondPlugin = await createSnapshotPlugin(projectRoot);
+      const firstConfig: { command?: Record<string, { agent?: string }> } = {};
+      const secondConfig: { command?: Record<string, { agent?: string }> } = {};
+      await firstPlugin.hooks.config?.(firstConfig);
+      await secondPlugin.hooks.config?.(secondConfig);
+      const firstPrimary = firstConfig.command?.['vuln-review']?.agent!;
+      const secondPrimary = secondConfig.command?.['vuln-review']?.agent!;
+      const firstGrant = await grantCurrentChangeMaterialization({
+        hooks: firstPlugin.hooks,
+        primary: firstPrimary,
+        scope: firstPlugin.vulnerabilityScopeAlias,
+      });
+      const secondGrant = await grantCurrentChangeMaterialization({
+        hooks: secondPlugin.hooks,
+        primary: secondPrimary,
+        scope: secondPlugin.vulnerabilityScopeAlias,
+      });
+      const firstCreate = firstPlugin.hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const secondCreate = secondPlugin.hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const recoveryCleanup = firstPlugin.hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
+      const realSeal = ReviewWorkspaceService.prototype.seal;
+      let releaseFirstSeal!: () => void;
+      const firstSealRelease = new Promise<void>((resolve) => {
+        releaseFirstSeal = resolve;
+      });
+      let firstSealReached!: () => void;
+      const firstSealArrival = new Promise<void>((resolve) => {
+        firstSealReached = resolve;
+      });
+      let sealCount = 0;
+      const realCleanup = ReviewWorkspaceService.prototype.cleanup;
+      spyOn(ReviewWorkspaceService.prototype, 'seal').mockImplementation(async function (
+        this: ReviewWorkspaceService,
+        runId: string,
+        ownershipToken: string,
+        caller: Parameters<ReviewWorkspaceService['seal']>[2],
+      ): Promise<void> {
+        await realSeal.call(this, runId, ownershipToken, caller);
+        sealCount += 1;
+        if (sealCount !== 1) return;
+        firstSealReached();
+        await firstSealRelease;
+        writeProjectRepositoryManifest(projectRoot, [{ id: 'root', path: './sources/second' }]);
+      });
+      spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockImplementation(async (runId) => ({
+        runId,
+        cleaned: false,
+        workspacePath: path.join(projectRoot, '.hive', '.worktrees', 'review', runId),
+        errors: ['injected cleanup failure'],
+      }));
+      const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
+
+      const firstAttempt = firstCreate({ repositoryIds: ['root'], scopeMode: 'current-change' }, firstGrant.childContext);
+      await firstSealArrival;
+      const secondAttempt = secondCreate({ repositoryIds: ['root'], scopeMode: 'current-change' }, secondGrant.childContext);
+      await Promise.resolve();
+      releaseFirstSeal();
+
+      const firstResult = JSON.parse(await firstAttempt);
+      expect(firstResult).toMatchObject({
+        state: 'STOP',
+        reason: 'cleanup-recovery-required',
+        cleanup: { cleaned: false },
+        recovery: { state: 'required', runId: firstResult.cleanup.runId },
+      });
+      await expect(secondAttempt).rejects.toThrow(`cleanup ${firstResult.cleanup.runId}`);
+      expect(createWorkspace).toHaveBeenCalledTimes(1);
+
+      const recovered = JSON.parse(await recoveryCleanup({ runId: firstResult.cleanup.runId }, {
+        ...snapshotContext(firstPrimary),
+        sessionID: 'vuln-primary',
+      }));
+      expect(recovered).toMatchObject({ runId: firstResult.cleanup.runId, cleaned: true });
+
+      const laterGrant = await grantCurrentChangeMaterialization({
+        hooks: secondPlugin.hooks,
+        primary: secondPrimary,
+        scope: secondPlugin.vulnerabilityScopeAlias,
+        idSuffix: 'after-recovery',
+      });
+      const later = JSON.parse(await secondCreate({ repositoryIds: ['root'], scopeMode: 'current-change' }, laterGrant.childContext));
+      expect(later.state).toBe('READY');
+      expect(createWorkspace).toHaveBeenCalledTimes(2);
+      const cleanupService = new ReviewWorkspaceService({ projectRoot });
+      await realCleanup.call(cleanupService, later.runId, later.ownershipToken, {
+        workflow: 'vulnerability-review',
+        role: 'creator',
+        agent: secondPlugin.vulnerabilityScopeAlias,
+        sessionId: 'materialize-child-after-recovery',
+        pid: process.pid,
+      });
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves recorded cleanup recovery before handling an undefined materialize callback', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-undefined-cleanup-recovery-'));
+    createGitRepository(repository);
+    spyOn(ReviewWorkspaceService.prototype, 'seal').mockImplementation(async () => {
+      throw new Error('injected materialization failure');
+    });
+    spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockImplementation(async (runId) => ({
+      runId,
+      cleaned: false,
+      workspacePath: path.join(repository, '.hive', '.worktrees', 'review', runId),
+      errors: ['injected cleanup failure'],
+    }));
+    const realFindCleanupRecovery = ReviewWorkspaceService.prototype.findCleanupRecoveryRequired;
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const command = hooks['command.execute.before']!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
+      const grant = await grantCurrentChangeMaterialization({
+        hooks,
+        primary,
+        scope: vulnerabilityScopeAlias,
+      });
+      const created = JSON.parse(await create({
+        repositoryIds: ['root'],
+        scopeMode: 'current-change',
+      }, grant.childContext));
+      expect(created).toMatchObject({
+        schema: 'hive-vuln-review-stage1/v2',
+        state: 'STOP',
+        reason: 'cleanup-recovery-required',
+        cleanup: { attempted: true, cleaned: false },
+        recovery: { state: 'required', runId: created.cleanup.runId },
+      });
+      const durableLookup = spyOn(ReviewWorkspaceService.prototype, 'findCleanupRecoveryRequired')
+        .mockImplementation(function (
+          this: ReviewWorkspaceService,
+          caller: Parameters<ReviewWorkspaceService['findCleanupRecoveryRequired']>[0],
+        ) {
+          return realFindCleanupRecovery.call(this, caller);
+        });
+
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: 'vuln-primary',
+        callID: grant.materializeCallID,
+        args: {},
+      }, undefined);
+
+      expect(durableLookup).toHaveBeenCalledWith({
+        workflow: 'vulnerability-review',
+        role: 'primary',
+        agent: primary,
+        sessionId: 'vuln-primary',
+        pid: process.pid,
+      });
+
+      await expect(command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] }))
+        .rejects.toThrow(`cleanup ${created.cleanup.runId}`);
+      expect(JSON.parse(await cleanup({ runId: created.cleanup.runId }, {
+        ...snapshotContext(primary),
+        sessionID: 'vuln-primary',
+      }))).toMatchObject({ cleaned: true });
+      await expect(command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] }))
+        .resolves.toBeUndefined();
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves verified cleanup-recovery STOP when materialize reservation is stale before defined callback', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-stale-cleanup-recovery-'));
+    const firstRepository = path.join(projectRoot, 'sources', 'first');
+    const secondRepository = path.join(projectRoot, 'sources', 'second');
+    createGitRepository(projectRoot);
+    createGitRepository(firstRepository);
+    execFileSync('git', ['clone', '--quiet', firstRepository, secondRepository], { shell: false });
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/first' }]);
+    const realSeal = ReviewWorkspaceService.prototype.seal;
+    spyOn(ReviewWorkspaceService.prototype, 'seal').mockImplementation(async function (
+      this: ReviewWorkspaceService,
+      runId: string,
+      ownershipToken: string,
+      caller: Parameters<ReviewWorkspaceService['seal']>[2],
+    ): Promise<void> {
+      await realSeal.call(this, runId, ownershipToken, caller);
+      writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/second' }]);
+    });
+    spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockImplementation(async (runId) => {
+      throw new Error('injected interruption before cleanup completion');
+    });
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(projectRoot);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const grant = await grantCurrentChangeMaterialization({
+        hooks,
+        primary,
+        scope: vulnerabilityScopeAlias,
+        repositoryIds: ['ramses-hl'],
+      });
+
+      const created = JSON.parse(await create({
+        repositoryIds: ['ramses-hl'],
+        scopeMode: 'current-change',
+      }, grant.childContext));
+      expect(created).toMatchObject({
+        schema: 'hive-vuln-review-stage1/v2',
+        state: 'STOP',
+        reason: 'cleanup-recovery-required',
+        cleanup: {
+          attempted: true,
+          cleaned: false,
+          runId: created.cleanup.runId,
+          workspacePath: created.cleanup.workspacePath,
+        },
+        recovery: {
+          state: 'required',
+          runId: created.cleanup.runId,
+        },
+      });
+      expect(JSON.stringify(created)).not.toContain('ownershipToken');
+
+      await hooks.event?.({ event: { type: 'session.error', properties: { sessionID: 'vuln-primary' } } } as any);
+
+      const afterOutput = { title: 'task', output: JSON.stringify(created), metadata: {} };
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: 'vuln-primary',
+        callID: grant.materializeCallID,
+        args: {},
+      }, afterOutput);
+      const delivered = JSON.parse(afterOutput.output);
+
+      expect(delivered).toEqual(created);
+      expect(delivered).toMatchObject({
+        schema: 'hive-vuln-review-stage1/v2',
+        state: 'STOP',
+        reason: 'cleanup-recovery-required',
+        cleanup: {
+          attempted: true,
+          cleaned: false,
+          runId: created.cleanup.runId,
+          workspacePath: created.cleanup.workspacePath,
+          errors: ['Review workspace cleanup threw: injected interruption before cleanup completion'],
+        },
+        recovery: {
+          state: 'required',
+          runId: created.cleanup.runId,
+        },
+      });
+      expect(JSON.stringify(delivered)).not.toContain('ownershipToken');
+      expect(delivered.reason).not.toBe('candidate-mismatch');
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 
@@ -1323,6 +2053,54 @@ describe('Per-agent tool filtering', () => {
       await expect(create({ repositoryIds: ['root'], scopeMode: 'current-change' }, grant.childContext)).rejects.toThrow('no exact materialize grant');
     } finally {
       rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a bounded candidate when a local manifest remaps an ID to an equal-content repository before create', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-remap-'));
+    const firstRepository = path.join(projectRoot, 'sources', 'first');
+    const secondRepository = path.join(projectRoot, 'sources', 'second');
+    createGitRepository(projectRoot);
+    createGitRepository(firstRepository);
+    execFileSync('git', ['clone', '--quiet', firstRepository, secondRepository], { shell: false });
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/first' }]);
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(projectRoot);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const grant = await grantCurrentChangeMaterialization({
+        hooks,
+        primary,
+        scope: vulnerabilityScopeAlias,
+        repositoryIds: ['ramses-hl'],
+      });
+
+      writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/second' }]);
+      const created = JSON.parse(await create({
+        repositoryIds: ['ramses-hl'],
+        scopeMode: 'current-change',
+      }, grant.childContext));
+      const afterOutput = {
+        title: 'task',
+        output: JSON.stringify(readyMaterializeResult(grant.candidate, created)),
+        metadata: {},
+      };
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: 'vuln-primary',
+        callID: grant.materializeCallID,
+        args: {},
+      }, afterOutput);
+
+      expect(JSON.parse(afterOutput.output)).toMatchObject({
+        state: 'STOP',
+        reason: 'candidate-mismatch',
+      });
+      expect(existsSync(created.workspacePath)).toBe(false);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 
@@ -1508,45 +2286,141 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('keeps malformed materialize output and cleanup uncertainty terminally stopped', async () => {
-    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-materialize-malformed-'));
-    createGitRepository(repository);
-    try {
-      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
-      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
-      await hooks.config?.(config);
-      const primary = config.command?.['vuln-review']?.agent!;
-      const baseline = findVulnerabilityReviewLanes(config.agent).find(([, lane]) => lane.prompt?.includes('mandatory cross-cutting baseline'))?.[0]!;
-      const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
-      const claim = hooks.tool!.hive_review_workspace_claim.execute as (value: unknown, context: unknown) => Promise<string>;
-      const grant = await grantCurrentChangeMaterialization({ hooks, primary, scope: vulnerabilityScopeAlias });
-      const created = JSON.parse(await create({ repositoryIds: ['root'], scopeMode: 'current-change' }, grant.childContext));
-      spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockRejectedValue(new Error('injected cleanup uncertainty'));
-      const afterOutput = { title: 'task', output: '{malformed', metadata: {} };
+  it.each(
+    (['malformed', 'mismatched', 'stale', 'undefined'] as const).flatMap((callbackKind) =>
+      (['throw', 'unconfirmed'] as const).map((cleanupFailure) => [callbackKind, cleanupFailure] as const)),
+  )(
+    'durably binds %s callback cleanup recovery when cleanup is %s',
+    async (callbackKind, cleanupFailure) => {
+      const repository = mkdtempSync(path.join(
+        os.tmpdir(),
+        `hive-vulnerability-materialize-${callbackKind}-${cleanupFailure}-`,
+      ));
+      createGitRepository(repository);
+      try {
+        const { hooks, primary, grant, created } = await createCurrentChangeMaterializedWorkspace(repository);
+        const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (
+          value: unknown,
+          context: unknown,
+        ) => Promise<string>;
+        const command = hooks['command.execute.before']!;
+        if (callbackKind === 'stale') {
+          await hooks.event?.({ event: { type: 'session.error', properties: { sessionID: 'vuln-primary' } } } as any);
+        }
+        const cleanupWorkspace = spyOn(ReviewWorkspaceService.prototype, 'cleanup');
+        const expectedErrors = cleanupFailure === 'throw'
+          ? ['Review workspace cleanup threw: injected callback cleanup exception']
+          : ['injected callback cleanup unconfirmed'];
+        if (cleanupFailure === 'throw') {
+          cleanupWorkspace.mockRejectedValueOnce(new Error('injected callback cleanup exception'));
+        } else {
+          cleanupWorkspace.mockResolvedValueOnce({
+            runId: created.runId,
+            cleaned: false,
+            workspacePath: created.workspacePath,
+            errors: expectedErrors,
+          });
+        }
+        const output = callbackKind === 'undefined'
+          ? undefined
+          : {
+              title: 'task',
+              output: callbackKind === 'malformed'
+                ? '{malformed'
+                : callbackKind === 'mismatched'
+                  ? JSON.stringify({
+                      ...readyMaterializeResult(grant.candidate, created),
+                      sourceFingerprint: 'f'.repeat(64),
+                    })
+                  : 'stale materialize output',
+              metadata: {},
+            };
 
-      await hooks['tool.execute.after']?.({
-        tool: 'task',
-        sessionID: 'vuln-primary',
-        callID: 'materialize-call',
-        args: {},
-      }, afterOutput);
+        await hooks['tool.execute.after']?.({
+          tool: 'task',
+          sessionID: 'vuln-primary',
+          callID: grant.materializeCallID,
+          args: {},
+        }, output as any);
 
-      expect(JSON.parse(afterOutput.output)).toMatchObject({
-        state: 'STOP',
-        cleanup: { attempted: true, cleaned: null },
-      });
-      const primaryContext = { ...snapshotContext(primary), sessionID: 'vuln-primary' };
-      await expect(claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext)).rejects.toThrow('READY');
-      await expect(hooks['tool.execute.before']?.({
-        tool: 'task',
-        sessionID: 'vuln-primary',
-        callID: 'deep-after-cleanup-uncertainty',
-      }, { args: { subagent_type: baseline } })).rejects.toThrow('READY');
-      expect(existsSync(created.workspacePath)).toBe(true);
-    } finally {
-      rmSync(repository, { recursive: true, force: true });
-    }
-  });
+        expect(cleanupWorkspace).toHaveBeenCalledWith(
+          created.runId,
+          created.ownershipToken,
+          expect.objectContaining({
+            workflow: 'vulnerability-review',
+            role: 'creator',
+            sessionId: 'materialize-child',
+          }),
+        );
+        if (output) {
+          const delivered = JSON.parse(output.output);
+          expect(delivered).toMatchObject({
+            schema: 'hive-vuln-review-stage1/v2',
+            state: 'STOP',
+            reason: 'cleanup-recovery-required',
+            cleanup: {
+              attempted: true,
+              cleaned: false,
+              runId: created.runId,
+              workspacePath: created.workspacePath,
+              errors: expectedErrors,
+            },
+            recovery: { state: 'required', runId: created.runId },
+          });
+          expect(JSON.stringify(delivered)).not.toContain(created.ownershipToken);
+        }
+        expect(existsSync(created.workspacePath)).toBe(true);
+
+        const recoveryService = new ReviewWorkspaceService({ projectRoot: repository });
+        const exactPrimary = {
+          workflow: 'vulnerability-review' as const,
+          role: 'primary' as const,
+          agent: primary,
+          sessionId: 'vuln-primary',
+          pid: process.pid,
+        };
+        expect(await recoveryService.findCleanupRecoveryRequired(exactPrimary)).toBe(created.runId);
+        expect(await recoveryService.findCleanupRecoveryRequired({
+          ...exactPrimary,
+          sessionId: 'unrelated-vuln-primary',
+        })).toBeUndefined();
+        await expect(command({
+          command: 'vuln-review',
+          sessionID: 'vuln-primary',
+          arguments: '',
+        }, { parts: [] })).rejects.toThrow(`cleanup ${created.runId}`);
+        await expect(command({
+          command: 'vuln-review',
+          sessionID: 'unrelated-vuln-primary',
+          arguments: '',
+        }, { parts: [] })).rejects.toThrow(`cleanup ${created.runId}`);
+        await expect(cleanup({ runId: created.runId }, {
+          ...snapshotContext(primary),
+          sessionID: 'unrelated-vuln-primary',
+        })).rejects.toThrow('cleanup was denied');
+
+        const recovered = JSON.parse(await cleanup({ runId: created.runId }, {
+          ...snapshotContext(primary),
+          sessionID: 'vuln-primary',
+        }));
+        expect(recovered).toMatchObject({
+          runId: created.runId,
+          cleaned: true,
+          workspacePath: created.workspacePath,
+          errors: [],
+        });
+        expect(existsSync(created.workspacePath)).toBe(false);
+        expect(await recoveryService.findCleanupRecoveryRequired()).toBeUndefined();
+        await expect(command({
+          command: 'vuln-review',
+          sessionID: 'vuln-primary',
+          arguments: '',
+        }, { parts: [] })).resolves.toBeUndefined();
+      } finally {
+        rmSync(repository, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('cleans the exact recorded workspace for undefined and stale materialize parent output', async () => {
     for (const parentOutput of ['undefined', 'stale'] as const) {
@@ -1576,57 +2450,6 @@ describe('Per-agent tool filtering', () => {
           });
         }
       } finally {
-        rmSync(repository, { recursive: true, force: true });
-      }
-    }
-  });
-
-  it('keeps undefined and stale materialize parent output terminal when exact cleanup is uncertain', async () => {
-    for (const parentOutput of ['undefined', 'stale'] as const) {
-      const repository = mkdtempSync(path.join(os.tmpdir(), `hive-vulnerability-materialize-${parentOutput}-uncertain-`));
-      createGitRepository(repository);
-      let cleanupWorkspace: ReturnType<typeof spyOn> | undefined;
-      try {
-        const { hooks, primary, created } = await createCurrentChangeMaterializedWorkspace(repository);
-        if (parentOutput === 'stale') {
-          await hooks.event?.({ event: { type: 'session.error', properties: { sessionID: 'vuln-primary' } } } as any);
-        }
-        cleanupWorkspace = spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockRejectedValueOnce(
-          new Error('injected exact cleanup uncertainty'),
-        );
-        const output = parentOutput === 'undefined'
-          ? undefined
-          : { title: 'task', output: 'stale parent output', metadata: {} };
-
-        await hooks['tool.execute.after']?.({
-          tool: 'task',
-          sessionID: 'vuln-primary',
-          callID: 'materialize-call',
-          args: {},
-        }, output as any);
-
-        expect(cleanupWorkspace).toHaveBeenCalledWith(
-          created.runId,
-          created.ownershipToken,
-          expect.objectContaining({
-            workflow: 'vulnerability-review',
-            role: 'creator',
-            sessionId: 'materialize-child',
-          }),
-        );
-        expect(existsSync(created.workspacePath)).toBe(true);
-        if (output) {
-          expect(JSON.parse(output.output)).toMatchObject({
-            state: 'STOP',
-            cleanup: { attempted: true, cleaned: null },
-          });
-        }
-        await expect(hooks.tool!.hive_review_workspace_claim.execute({
-          runId: created.runId,
-          ownershipToken: created.ownershipToken,
-        }, { ...snapshotContext(primary), sessionID: 'vuln-primary' })).rejects.toThrow('READY');
-      } finally {
-        cleanupWorkspace?.mockRestore();
         rmSync(repository, { recursive: true, force: true });
       }
     }
@@ -1965,7 +2788,7 @@ describe('Per-agent tool filtering', () => {
         const oldOutput = parentOutput === 'undefined'
           ? undefined
           : { title: 'task', output: 'stale materialize output', metadata: {} };
-        const cleanupUncertain = currentState === 'claimed';
+        const cleanupUncertain = currentState === 'claimed' && callbackOrder === 'after-current';
         if (cleanupUncertain) {
           cleanupWorkspace = spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockRejectedValueOnce(
             new Error('injected same-ID cleanup uncertainty'),
@@ -3819,12 +4642,16 @@ describe('Per-agent tool filtering', () => {
       for (const tool of ['hive_repositories_status', 'hive_plan_read', 'hive_status']) {
         await expect(invoke('dash-primary', tool)).resolves.toBeUndefined();
       }
-      await expect(invoke('dash-primary', 'task', { subagent_type: scopeAlias })).resolves.toBeUndefined();
-      for (const tool of ['hive_feature_create', 'hive_git_snapshot', 'hive_review_workspace_create']) {
-        await expect(invoke('dash-primary', tool, { command: 'touch should-not-run' })).rejects.toThrow('dash-review tool is not authorized');
-      }
-      for (const tool of ['hive_review_workspace_inspect', 'hive_review_workspace_cleanup']) {
+      for (const tool of ['hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']) {
         await expect(invoke('dash-primary', tool)).resolves.toBeUndefined();
+      }
+      await expect(invoke('dash-primary', 'task', { subagent_type: scopeAlias })).resolves.toBeUndefined();
+      for (const tool of [
+        'hive_feature_create',
+        'hive_git_snapshot',
+        'hive_review_workspace_create',
+      ]) {
+        await expect(invoke('dash-primary', tool, { command: 'touch should-not-run' })).rejects.toThrow('dash-review tool is not authorized');
       }
 
       await messageHook({ sessionID: 'dash-scope', agent: scopeAlias }, { message: {}, parts: [] } as any);
@@ -3832,7 +4659,7 @@ describe('Per-agent tool filtering', () => {
         await expect(invoke('dash-scope', tool)).resolves.toBeUndefined();
       }
       await expect(invoke('dash-scope', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review task target is not authorized');
-      for (const tool of ['hive_feature_create', 'hive_review_workspace_cleanup']) {
+      for (const tool of ['hive_feature_create', 'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']) {
         await expect(invoke('dash-scope', tool, { subagent_type: scopeAlias })).rejects.toThrow('dash-review tool is not authorized');
       }
 
@@ -3872,6 +4699,76 @@ describe('Per-agent tool filtering', () => {
       await expect(execute({ repositoryIds: ['missing'] }, snapshotContext(scopeAlias))).rejects.toThrow('Unknown repositoryId');
     } finally {
       rmSync(composite, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves selected repository IDs from a local manifest at an exact Git project root', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-local-manifest-'));
+    const repository = path.join(projectRoot, '.tmp', 'hyperliquid', 'ramses-hl');
+    const otherRepository = path.join(projectRoot, 'services', 'worker');
+    createGitRepository(projectRoot);
+    createGitRepository(repository);
+    createGitRepository(otherRepository);
+    writeProjectRepositoryManifest(projectRoot, [
+      { id: 'ramses-hl', path: './.tmp/hyperliquid/ramses-hl' },
+      { id: 'worker', path: './services/worker' },
+    ]);
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
+      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      const snapshot = JSON.parse(await execute(
+        { repositoryIds: ['ramses-hl'] },
+        snapshotContext(scopeAlias),
+      ));
+      expect(snapshot.manifestRepositoryIds).toEqual(['ramses-hl', 'worker']);
+      expect(snapshot.selectedRepositoryIds).toEqual(['ramses-hl']);
+      expect(snapshot.excludedRepositoryIds).toEqual(['worker']);
+      expect(snapshot.snapshots.map((entry: { repositoryId: string }) => entry.repositoryId)).toEqual(['ramses-hl']);
+      expect(snapshot.snapshots[0].snapshot.repository.root).toBe(repository);
+      const deduplicated = JSON.parse(await execute(
+        { repositoryIds: ['ramses-hl', 'ramses-hl'] },
+        snapshotContext(scopeAlias),
+      ));
+      expect(deduplicated.selectedRepositoryIds).toEqual(['ramses-hl']);
+      await expect(execute({ repositoryIds: [] }, snapshotContext(scopeAlias))).rejects.toThrow('must select at least one');
+      await expect(execute({
+        repositoryIds: Array.from({ length: 33 }, (_, index) => `repository-${index}`),
+      }, snapshotContext(scopeAlias))).rejects.toThrow('repository count exceeds 32');
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('snapshots an exact Git root without consulting malformed global Agent Hive config', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-malformed-global-config-'));
+    createGitRepository(repository);
+    const readStored = spyOn(ConfigService.prototype, 'readStored').mockImplementation(() => {
+      throw new Error('Invalid global Agent Hive config: injected malformed config');
+    });
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
+      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      expect(JSON.parse(await execute({}, snapshotContext(scopeAlias))).repository.root).toBe(repository);
+      expect(readStored).not.toHaveBeenCalled();
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('does not activate a project-local manifest away from an exact Git project root', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-non-root-local-manifest-'));
+    const repository = path.join(projectRoot, 'api');
+    createGitRepository(repository);
+    writeProjectRepositoryManifest(projectRoot, [{ id: 'api', path: './api' }]);
+    try {
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
+      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      await expect(execute({ repositoryIds: ['api'] }, snapshotContext(scopeAlias))).rejects.toThrow('Unknown repositoryIds: api');
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 
