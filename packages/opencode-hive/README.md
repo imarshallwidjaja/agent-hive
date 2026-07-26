@@ -57,7 +57,7 @@ Modern plans sync numbered tasks only from `## Tasks`. Keep pure release or suit
 | `/council-directive` | Turn rough input into a reusable directive for a council run. |
 | `/council` | Run a read-only council and synthesize a recommendation. |
 | `/dash-review [scope]` | Review one frozen disposable workspace without changing implementation source. |
-| `/vuln-review [flags]` | Run a findings-first static vulnerability review over one frozen disposable workspace. |
+| `/vuln-review [intent] [flags]` | Resolve a conversational scope, then run a findings-first static vulnerability review over one frozen disposable workspace. |
 | `/compact-summary` | Produce a compact recovery summary for the current session. |
 
 `/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by `hive_plan_write`, review, approval, task sync, execution, and merge.
@@ -108,9 +108,9 @@ Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAG
 
 #### Scope and examples
 
-The command accepts flags only. Current change is the default and includes captured in-progress state; whole-repository review is never inferred. Exact examples:
+The command accepts free text, recognized flags, a mixture of both, or no arguments. Text and relevant bounded conversation context supply inert intent for one coherent target; no-argument use infers from conversation and current Git/Hive metadata rather than silently selecting current change. Recognized flags are deterministic fixed overrides: inference can fill absent dimensions but cannot replace, widen, or reinterpret a fixed value. Whole-repository scope requires `--whole-repo` or explicit approval of that inferred expansion. Exact examples:
 
-- Current change: `/vuln-review`
+- No arguments (scope inferred): `/vuln-review`
 - Current change narrowed by repository and path: `/vuln-review --repo api --path src/auth`
 - Git range: `/vuln-review --range main...HEAD`
 - Git refs: `/vuln-review --base main --target HEAD`
@@ -118,21 +118,27 @@ The command accepts flags only. Current change is the default and includes captu
 - Hive feature: `/vuln-review --feature authentication`
 - Whole repository: `/vuln-review --whole-repo`
 - Current change compared with a prior report: `/vuln-review --compare approved/prior-review.md`
+- Free-text intent: `/vuln-review review the authentication boundary changed in this branch`
+- Free text with fixed boundaries: `/vuln-review review authentication --repo api --path src/auth`
 
 Legal combinations:
 
 | Mode | Required mode flag | Other allowed flags |
 |------|--------------------|---------------------|
-| Current change | None | Repeatable `--repo <id>`, repeatable `--path <relative-path>`, one `--compare <local-prior-report.md>` |
+| Current change | No dedicated mode flag; available only when inferred and accepted | Repeatable `--repo <id>`, repeatable `--path <relative-path>`, one `--compare <local-prior-report.md>` |
 | Git range | One `--range <base>...<target>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
 | Git refs | One `--base <ref>` | Optional `--target <ref>`, repeatable `--repo`, repeatable `--path`, one `--compare` |
 | Hive task | One `--task <task-folder>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
 | Hive feature | One `--feature <feature-name>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
 | Whole repository | `--whole-repo` | Repeatable `--repo`, one `--compare`; `--path` is not allowed |
 
-`--range` cannot be combined with `--base` or `--target`; `--target` requires `--base`. Git mode, task mode, feature mode, and whole-repository mode are mutually exclusive. Singleton flags cannot be repeated. PR numbers, PR URLs, `--pr`, and positional scope are unsupported. Fetch or check out the relevant refs locally, then use local `--base` and optional `--target` refs; the workflow does not call `gh` or another provider CLI.
+`--range` cannot be combined with `--base` or `--target`; `--target` requires `--base`. Git mode, task mode, feature mode, and whole-repository mode are mutually exclusive. Singleton flags cannot be repeated. Ordinary positional text, including PR numbers and PR URLs, remains inert intent rather than becoming a provider selector; `--pr` is unsupported. Fetch or check out relevant refs locally, then use local `--base` and optional `--target` refs; the workflow does not call `gh` or another provider CLI.
 
-If the scope is ambiguous, crosses an unexpected repository boundary, or needs more specialist coverage than the adaptive cap permits, the workflow asks one clarification question before deep review. Declining a required expansion produces `INCOMPLETE`.
+Current change is one possible canonical mode after inference and acceptance, not a parser default selected by omitting flags.
+
+Stage 1 resolve returns exactly `BOUNDED`, `NEEDS_CLARIFICATION`, or `STOP`. The workflow asks at most one clarification question. A second ambiguity, a changed question, a missing answer, a denied expansion, or an invalid packet resolves to `STOP` before workspace creation. `BOUNDED` stores one immutable `AcceptedCandidate`, and the primary emits its exact `scopeEcho`. Only a fresh materialize call that exact-matches that stored `AcceptedCandidate` may create the workspace; resolve itself cannot create one.
+
+`--compare` is a parser-normalized project-relative regular file bound to the current invocation. The private scope lane never receives its path as tool input: `hive_vulnerability_compare_report_read` accepts no arguments, path, or token. The runtime binds the scope-lane agent from child chat metadata, rechecks the same identity and child lineage at tool context, and permits one read. Replacement, any later task call, error, idle status, session deletion, read failure, or process restart revokes the ephemeral authority.
 
 #### Authorized-use and safety boundary
 
@@ -141,7 +147,7 @@ The workflow performs source review only: no active exploitation, no network sca
 The private roles use an exact allowlist:
 
 - The primary can call only `task`, `question`, `hive_review_workspace_claim`, `hive_review_workspace_inspect`, and `hive_review_workspace_cleanup`. Task targets are restricted to the generated private lanes.
-- The scope scout can call `read`, `glob`, `grep`, `hive_repositories_status`, `hive_status`, `hive_plan_read`, `hive_review_workspace_create`, and the approved MCP tools listed below. Its only permitted pre-freeze local file read is the optional prior report.
+- The scope scout can call `read`, `glob`, `grep`, `hive_repositories_status`, `hive_status`, `hive_plan_read`, `hive_git_snapshot`, `hive_vulnerability_compare_report_read`, `hive_review_workspace_create`, `hive_review_workspace_cleanup`, and the approved MCP tools listed below. Its only permitted pre-freeze product input is the invocation-bound optional prior report through the private reader.
 - Baseline, specialist, and falsifier lanes can call only `read`, `glob`, `grep`, and the approved MCP tools. Every local operation must use a supplied frozen absolute workspace path, never the live source or process cwd.
 - Approved MCP calls are `ast_grep_dump_syntax_tree`, `ast_grep_find_code`, `ast_grep_find_code_by_rule`, `ast_grep_test_match_code_rule`, `context7_resolve-library-id`, `context7_query-docs`, `grep_app_searchGitHub`, and `websearch_web_search_exa`.
 
@@ -153,12 +159,15 @@ Sensitive findings remain in OpenCode session history. No report file or SARIF i
 
 The stages run in this order:
 
-1. **Frame** resolves repository, path, ref, task, or feature scope; builds threat context; reads an optional prior report; chooses zero to two specialist lenses; and creates the frozen workspace.
-2. **Claim** binds that workspace to the private primary session before deep review starts.
-3. **Investigate** runs the mandatory cross-cutting baseline and zero to two selected specialists as fresh blocking lanes. Specialists supplement the baseline and are selected from the observed attack surface, not model prestige.
-4. **Challenge** gives every normalized candidate to the fixed falsifier. With no candidates, it tests the bounded hypothesis that no actionable vulnerability exists in the reviewed scope. A falsifier-originated suspicion remains unresolved and cannot become a confirmed finding in that run.
-5. **Inspect and cleanup** checks the materialized baseline, new-untracked state, and live-source stability, then attempts cleanup unconditionally. Drift, unavailable integrity evidence, policy violations, omitted scope, truncation, or cleanup uncertainty makes the run `INCOMPLETE` without discarding already confirmed evidence.
-6. **Synthesize and report** groups confirmed findings by root cause, orders them by severity, records coverage and integrity limits, and returns the report in the session only.
+1. **Resolve** combines intent, conversation, and Git/Hive metadata with fixed overrides. It reads an optional comparison report, previews the source, builds threat context, selects zero to two specialist lenses, and returns a bounded candidate, one clarification, or stop. Resolve cannot create a workspace.
+2. **Materialize** receives only the stored accepted candidate. It forwards that candidate's create input, then requires strict single-repository or composite descriptor and fingerprint equality across the preview, create result, and live lease before returning `READY`. A second ambiguity, malformed packet, `NEEDS_DISCUSSION`, drift, or cleanup uncertainty stops before claim. Materialize cannot reread the prior report.
+3. **Claim** binds the `READY` workspace to the private primary session before deep review starts.
+4. **Investigate** runs the mandatory cross-cutting baseline and zero to two selected specialists as fresh blocking lanes. Specialists supplement the baseline and are selected from the observed attack surface, not model prestige.
+5. **Challenge** gives every normalized candidate to the fixed falsifier. With no candidates, it tests the bounded hypothesis that no actionable vulnerability exists in the reviewed scope. A falsifier-originated suspicion remains unresolved and cannot become a confirmed finding in that run.
+6. **Inspect and cleanup** checks the materialized baseline, new-untracked state, and live-source stability, then attempts cleanup unconditionally. Drift, unavailable integrity evidence, policy violations, omitted scope, truncation, or cleanup uncertainty makes the run `INCOMPLETE` without discarding already confirmed evidence.
+7. **Synthesize and report** groups confirmed findings by root cause, orders them by severity, records coverage and integrity limits, and returns the report in the session only.
+
+The source preview applies vulnerability-only preview normalization so internal Hive review state does not alter the accepted fingerprint. This is not a public `excludePaths` option and does not change `/dash-review`. Materialize preserves the public create schema and requires exact descriptor, source fingerprint, and ordered per-repository fingerprint equality for both single and composite workspaces.
 
 A failed mandatory baseline or falsifier gets one fresh retry. A repeated mandatory failure, any selected specialist failure, declined required expansion, integrity failure, or cleanup uncertainty produces `INCOMPLETE`.
 

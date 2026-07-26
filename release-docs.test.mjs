@@ -41,7 +41,7 @@ describe('release 1.3.6 documentation contract', () => {
     assert.match(toolDocs, /dependsOn/i);
   });
 
-  it('documents the vulnerability-review command and its legal flag-only scopes', () => {
+  it('documents conversational vulnerability-review scope with deterministic flag overrides', () => {
     const rootReadme = readText('README.md');
     const pluginReadme = readText('packages/opencode-hive/README.md');
 
@@ -55,13 +55,15 @@ describe('release 1.3.6 documentation contract', () => {
       '/vuln-review --feature authentication',
       '/vuln-review --whole-repo',
       '/vuln-review --compare approved/prior-review.md',
+      '/vuln-review review the authentication boundary changed in this branch',
+      '/vuln-review review authentication --repo api --path src/auth',
     ]) {
       assert.ok(pluginReadme.includes(`\`${example}\``), `missing documented example: ${example}`);
     }
 
     assert.match(pluginReadme, /legal combinations/i);
     for (const row of [
-      '| Current change | None | Repeatable `--repo <id>`, repeatable `--path <relative-path>`, one `--compare <local-prior-report.md>` |',
+      '| Current change | No dedicated mode flag; available only when inferred and accepted | Repeatable `--repo <id>`, repeatable `--path <relative-path>`, one `--compare <local-prior-report.md>` |',
       '| Git range | One `--range <base>...<target>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |',
       '| Git refs | One `--base <ref>` | Optional `--target <ref>`, repeatable `--repo`, repeatable `--path`, one `--compare` |',
       '| Hive task | One `--task <task-folder>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |',
@@ -70,9 +72,44 @@ describe('release 1.3.6 documentation contract', () => {
     ]) {
       assert.ok(pluginReadme.includes(row), `missing legal-combination row: ${row}`);
     }
-    assert.match(pluginReadme, /flags only|flag-only/i);
-    assert.match(pluginReadme, /PR numbers.*URLs.*positional scope.*unsupported/is);
+    assert.match(pluginReadme, /free text/i);
+    assert.match(pluginReadme, /without arguments|no arguments/i);
+    assert.doesNotMatch(pluginReadme, /Current change:\s*`\/vuln-review`/i);
+    assert.match(pluginReadme, /current change.*inferred and accepted.*not a parser default/is);
+    assert.match(pluginReadme, /deterministic fixed overrides/i);
+    assert.match(pluginReadme, /exact `scopeEcho`|exact scope echo/i);
+    assert.match(pluginReadme, /at most one clarification question/i);
+    assert.match(pluginReadme, /BOUNDED.*NEEDS_CLARIFICATION.*STOP/is);
+    assert.match(pluginReadme, /stored.*AcceptedCandidate.*materialize/is);
+    assert.match(pluginReadme, /PR numbers.*URLs.*inert intent.*--pr.*unsupported/is);
     assert.match(pluginReadme, /local.*--base.*--target.*refs/is);
+  });
+
+  it('documents the pinned Stage 1 lifecycle and private comparison capability', () => {
+    const pluginReadme = readText('packages/opencode-hive/README.md');
+    const toolDocs = readText('packages/opencode-hive/docs/HIVE-TOOLS.md');
+
+    assert.match(pluginReadme, /--compare.*parser-normalized.*project-relative regular file.*current invocation/is);
+    assert.match(pluginReadme, /vulnerability-only preview normalization/i);
+    assert.match(pluginReadme, /strict.*descriptor.*fingerprint.*equal/is);
+    assert.match(pluginReadme, /not a public `excludePaths` option/i);
+    assert.doesNotMatch(pluginReadme, /`--exclude(?:-paths)?`/i);
+
+    assert.match(toolDocs, /hive_vulnerability_compare_report_read/);
+    assert.match(toolDocs, /accepts no path or token|accepts neither a path nor a token/i);
+    assert.match(toolDocs, /child chat metadata.*agent identity.*tool context/is);
+    assert.match(toolDocs, /one-use/i);
+    for (const revocation of ['replacement', 'later task', 'error', 'idle', 'deletion', 'read failure', 'restart']) {
+      assert.match(toolDocs, new RegExp(revocation, 'i'));
+    }
+
+    assert.match(toolDocs, /session\.get.*ID.*parent.*time.*no agent/is);
+    assert.match(toolDocs, /pre-execution agent lookup failure.*session\.error.*throws.*no after-hook/is);
+    assert.match(toolDocs, /caught executor failure.*tool\.execute\.after.*undefined.*task error state/is);
+    assert.match(toolDocs, /revokes the exact matching reservation without parsing output/i);
+    assert.match(toolDocs, /resolve cannot create/i);
+    assert.match(toolDocs, /fresh materialize call.*exact-match.*stored.*AcceptedCandidate.*consume.*create authority/is);
+    assert.match(toolDocs, /second ambiguity.*malformed packet.*drift.*cleanup uncertainty.*before claim/is);
   });
 
   it('documents vulnerability-review safety, retention, and report semantics', () => {

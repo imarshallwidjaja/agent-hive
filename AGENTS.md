@@ -251,7 +251,7 @@ This is a **bun workspaces** monorepo:
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Hive Plugin Tools (27 total)
+### Hive Plugin Tools (27 standard + 6 workflow-only)
 
 | Domain | Tools |
 |--------|-------|
@@ -265,11 +265,14 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 | Merge | hive_merge |
 | Context | hive_context_write |
 | Status | hive_status |
+| Workflow-only Review | hive_git_snapshot, hive_vulnerability_compare_report_read, hive_review_workspace_create, hive_review_workspace_claim, hive_review_workspace_inspect, hive_review_workspace_cleanup |
 
 Task-backed worktree tools create feature/task records and appear in `hive_status`. Modern `hive_tasks_sync` reads numbered tasks only from `## Tasks`; pure suite or release checks belong in `## Final Verification` unless they write tracked artifacts. Ad-hoc worktree tools are for isolated Hive Builder work and do not create feature/task records. `hive_adhoc_worktree_create` defaults to auto-spawning a worker; gate-closed sessions launch the returned blocking `taskToolCall`, and background-enabled sessions may launch `backgroundTaskCall` when independent foreground work can continue. Set `autoSpawnWorker: false` only for inspection, routing, or setup-only ad-hoc worktrees. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task({ background: true, ... })` completion notifications and do not roll back files, branches, worktrees, commits, or reports. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
 
-**Tool access is filtered per agent role:**
-- **Hive** — all 27 tools (hybrid agent)
+The six review tools are runtime-gated capabilities for generated private review agents, not additional powers for the standard roles. Vulnerability Stage 1 resolves a bounded candidate first; only a fresh materialize call that exactly matches the stored accepted candidate can consume workspace-create authority before claim.
+
+**Standard tool access is filtered per agent role:**
+- **Hive** — all 27 standard tools (hybrid agent)
 - **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_merge, hive_context_write, hive_status (20 tools — excludes hive_worktree_commit, hive_plan_write, hive_plan_patch, and ad-hoc worktree tools)
 - **Architect** — hive_feature_create, hive_plan_write, hive_plan_patch, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write, hive_status (13 tools)
 - **Hive Builder** — hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_plan_read, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_context_write, hive_status (14 tools — ad-hoc worktree + repo manifest + metadata inspection + background board + context; denied task-backed worktree, plan mutation, and feature tools)
