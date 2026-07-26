@@ -140,9 +140,10 @@ Require explicit dependency metadata for every generated subtask.
 4. **Good Enough Wins** - Ship working code, iterate later
 5. **Batched Parallelism** - Delegate independent tasks to workers
 6. **Tests Define Done** - Workers do best-effort checks; orchestrator runs full test suite after batch merge
-7. **Iron Laws + Hard Gates** - Non-negotiable constraints per agent
-8. **Cross-Model Prompts** — Agent prompts must work across all supported LLM providers. Use conditional triggers ("when X, do Y") instead of absolute mandates ("always do Y") or blanket defaults ("by default, do Y").
-9. **Deterministic Contracts Beat Soft Memory** — Prefer hard gates and deterministic tools over soft prompt-only memory when reliability matters.
+7. **Review Integrated Security Boundaries** - Before completing security-sensitive work that spans tasks or lifecycle phases, adversarially review the merged implementation as a whole; task-local reviews and passing tests do not establish composition safety.
+8. **Iron Laws + Hard Gates** - Non-negotiable constraints per agent
+9. **Cross-Model Prompts** — Agent prompts must work across all supported LLM providers. Use conditional triggers ("when X, do Y") instead of absolute mandates ("always do Y") or blanket defaults ("by default, do Y").
+10. **Deterministic Contracts Beat Soft Memory** — Prefer hard gates and deterministic tools over soft prompt-only memory when reliability matters.
 
 ### Agent Roles
 
