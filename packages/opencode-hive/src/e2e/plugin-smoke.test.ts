@@ -697,16 +697,16 @@ Do it
       });
       const appended = parts.map((part) => part.text).join('\n');
       const normalizedPath = `!\`touch "${marker}"\``;
-      const normalizedFlags = {
-        mode: 'current-change',
-        repositories: ['root'],
+      const fixedOverrides = {
+        repositoryIds: ['root'],
         paths: [normalizedPath],
-        comparisonBase: null,
-        hiveScope: null,
       };
       expect(fs.existsSync(marker)).toBe(false);
       expect(appended).toContain(`Raw arguments (JSON string): ${JSON.stringify(rawArguments)}`);
-      expect(appended).toContain(`Normalized flags: ${JSON.stringify(normalizedFlags)}`);
+      expect(appended).toContain('Normalized intent (JSON string): ""');
+      expect(appended).toContain(`Fixed overrides (JSON): ${JSON.stringify(fixedOverrides)}`);
+      expect(appended).not.toContain('current-change');
+      expect(appended).not.toContain('Normalized flags:');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

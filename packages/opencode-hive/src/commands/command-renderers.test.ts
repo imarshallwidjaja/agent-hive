@@ -4,7 +4,9 @@ import path from 'node:path';
 import { HIVE_COMMANDS, type HiveCommandKey } from './registry.js';
 import {
   hiveCommandRenderers,
+  normalizeVulnerabilityReviewPath,
   parseVulnerabilityReviewArgs,
+  renderVulnerabilityReviewArgumentBlock,
 } from './renderers.js';
 import { resolveCouncilMembers } from './council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './types.js';
@@ -112,24 +114,33 @@ function render(command: HiveCommandKey, args = '', context: HiveCommandContext 
 
 describe('hive command renderers', () => {
   it.each([
-    ['', { mode: 'current-change', comparisonBase: null, hiveScope: null }],
-    ['--repo web --path src/web.ts --repo api --path src/../src/api.ts --compare prior.md', { mode: 'current-change', repositories: ['api', 'web'], paths: ['src/api.ts', 'src/web.ts'], compare: 'prior.md' }],
-    ['--range main...HEAD --repo api --compare prior.md', { mode: 'git-comparison', comparisonBase: 'main', range: 'main...HEAD', compare: 'prior.md' }],
-    ['--base main --target release --path src --compare prior.md', { mode: 'git-comparison', comparisonBase: 'main', base: 'main', target: 'release', compare: 'prior.md' }],
-    ['--task 05-review --repo api --path src --compare prior.md', { mode: 'hive-task', hiveScope: 'task:05-review', task: '05-review', compare: 'prior.md' }],
-    ['--feature vulnerability-review --compare prior.md', { mode: 'hive-feature', hiveScope: 'feature:vulnerability-review', feature: 'vulnerability-review', compare: 'prior.md' }],
-    ['--whole-repo --repo api --repo web --compare prior.md', { mode: 'whole-repository', paths: [], compare: 'prior.md' }],
-  ])('parses legal vulnerability scope %s', (args, expected) => {
-    expect(parseVulnerabilityReviewArgs(args)).toMatchObject(expected);
-    expect(parseVulnerabilityReviewArgs(args).error).toBeUndefined();
+    ['', { intent: '', overrides: {} }],
+    ['review the authentication boundary', { intent: 'review the authentication boundary', overrides: {} }],
+    ['"review the authentication boundary" for confused deputy risks', { intent: 'review the authentication boundary for confused deputy risks', overrides: {} }],
+    ['review auth --repo web --path src/web.ts --repo api --path src/../src/api.ts --repo api --compare reports/../reports/prior.md carefully', {
+      intent: 'review auth carefully',
+      overrides: {
+        repositoryIds: ['api', 'web'],
+        paths: ['src/api.ts', 'src/web.ts'],
+        comparePath: 'reports/prior.md',
+      },
+    }],
+    ['review PR 123 at https://example.test/pull/123', { intent: 'review PR 123 at https://example.test/pull/123', overrides: {} }],
+    ['--range main...HEAD --repo api', { intent: '', overrides: { repositoryIds: ['api'], selector: { kind: 'range', range: 'main...HEAD' } } }],
+    ['--base main --target release --path src', { intent: '', overrides: { paths: ['src'], selector: { kind: 'base', baseRef: 'main', targetRef: 'release' } } }],
+    ['--task 05-review --repo api --path src', { intent: '', overrides: { repositoryIds: ['api'], paths: ['src'], selector: { kind: 'task', task: '05-review' } } }],
+    ['--feature vulnerability-review', { intent: '', overrides: { selector: { kind: 'feature', feature: 'vulnerability-review' } } }],
+    ['--whole-repo --repo api --repo web', { intent: '', overrides: { repositoryIds: ['api', 'web'], selector: { kind: 'whole-repository' } } }],
+  ])('parses conversational vulnerability scope %s', (args, expected) => {
+    expect(parseVulnerabilityReviewArgs(args)).toEqual(expected);
   });
 
   it.each([
-    ['123', 'Positional scope is unsupported'],
-    ['https://example.test/pull/1', 'Positional scope is unsupported'],
-    ['--pr 12', '--pr is unsupported'],
-    ['--unknown value', 'Unknown flag'],
+    ['--pr 12', 'Unknown option'],
+    ['--unknown value', 'Unknown option'],
+    ['-unknown value', 'Unknown option'],
     ['--repo', 'Missing value'],
+    ['--path', 'Missing value'],
     ['--range', 'Missing value'],
     ['--base', 'Missing value'],
     ['--target', 'Missing value'],
@@ -157,12 +168,27 @@ describe('hive command renderers', () => {
     ['--whole-repo --task task', '--whole-repo cannot be combined'],
     ['--whole-repo --feature feature', '--whole-repo cannot be combined'],
     ['--whole-repo --path src', '--whole-repo cannot be combined'],
-    ['--path ../secret', 'Path must be repository-relative'],
-    ['--path /etc/passwd', 'Path must be repository-relative'],
-    ['--path src\\secret', 'Path must be repository-relative'],
     ['--path --option', 'Missing value'],
+    ['--path ../secret', 'Path must be repository-relative'],
+    ['--compare ../prior.md', 'Path must be repository-relative'],
   ])('rejects illegal vulnerability scope %s', (args, error) => {
     expect(parseVulnerabilityReviewArgs(args).error).toContain(error);
+  });
+
+  it.each([
+    '',
+    '../secret',
+    '/etc/passwd',
+    'src\\secret',
+    'src\0secret',
+    '--option',
+    ':magic',
+  ])('rejects unsafe repository-relative path %s', (value) => {
+    expect(() => normalizeVulnerabilityReviewPath(value)).toThrow('Path must be repository-relative');
+  });
+
+  it('normalizes a safe repository-relative path', () => {
+    expect(normalizeVulnerabilityReviewPath('reports/../reports/prior.md')).toBe('reports/prior.md');
   });
 
   it('rejects non-canonical vulnerability review Hive identifiers', () => {
@@ -178,6 +204,17 @@ describe('hive command renderers', () => {
 
     expect(parseVulnerabilityReviewArgs('--task 01-review').error).toBeUndefined();
     expect(parseVulnerabilityReviewArgs('--feature vulnerability-review').error).toBeUndefined();
+  });
+
+  it('renders non-empty vulnerability arguments as inert JSON without synthesizing authority', () => {
+    const args = 'review auth --repo web --compare reports/../reports/prior.md';
+    const block = renderVulnerabilityReviewArgumentBlock(args);
+
+    expect(block).toContain(`Raw arguments (JSON string): ${JSON.stringify(args)}`);
+    expect(block).toContain('Normalized intent (JSON string): "review auth"');
+    expect(block).toContain('Fixed overrides (JSON): {"repositoryIds":["web"],"comparePath":"reports/prior.md"}');
+    expect(block).not.toContain('current-change');
+    expect(renderVulnerabilityReviewArgumentBlock('')).toBe('');
   });
 
   it('returns structured non-empty guidance for every command with empty and non-empty args', () => {
@@ -253,8 +290,8 @@ describe('hive command renderers', () => {
     for (const command of HIVE_COMMANDS) {
       const output = render(command.key, 'Route this', context);
 
-      expect(output).not.toContain('Mode:');
-      expect(output).not.toContain('Route:');
+      expect(output).not.toMatch(/^Mode:/m);
+      expect(output).not.toMatch(/^Route:/m);
       expect(output).not.toContain('Slash commands do not switch agents automatically');
       expect(output).not.toContain('delegate or reroute to the target agent and stop if that is not possible');
     }
@@ -508,7 +545,7 @@ describe('hive command renderers', () => {
   });
 
   it('renders the staged findings-first vulnerability review contract', () => {
-    const output = render('vuln-review', '--task 05-review', createContext({
+    const output = render('vuln-review', 'review authorization --task 05-review', createContext({
       vulnerabilityReviewLanes: [{
         taskTarget: '__hive_vulnerability_review_baseline',
         role: 'baseline',
@@ -537,6 +574,183 @@ describe('hive command renderers', () => {
     expect(output).toContain('provider/security-model');
     expect(output).toContain('xhigh');
     expect(output).toContain('Never claim multi-model execution unless the actual recorded model identities differ');
+  });
+
+  it('renders the exact conversational Stage 1 packet and acceptance contract', () => {
+    const output = render('vuln-review');
+    const stage1SchemaBlocks = [
+      `type ResolvePacket = {
+  schema: 'hive-vuln-review-stage1/v1';
+  stage: 'resolve';
+  attempt: 1 | 2;
+  intent: string;
+  conversationSummary: string;
+  fixedOverrides: {
+    repositoryIds?: string[];
+    paths?: string[];
+    selector?:
+      | { kind: 'range'; range: string }
+      | { kind: 'base'; baseRef: string; targetRef?: string }
+      | { kind: 'task'; task: string }
+      | { kind: 'feature'; feature: string }
+      | { kind: 'whole-repository' };
+    comparePath?: string;
+  };
+  clarification: null | { question: string; answer: string };
+};`,
+      `type ResolveResult =
+  | {
+      schema: 'hive-vuln-review-stage1/v1';
+      state: 'BOUNDED';
+      candidate: AcceptedCandidate;
+    }
+  | {
+      schema: 'hive-vuln-review-stage1/v1';
+      state: 'NEEDS_CLARIFICATION';
+      question: string;
+      reason: 'conflict' | 'ambiguous-target' | 'broad-expansion' | 'missing-boundary';
+      unresolvedDimensions: Array<'mode' | 'repositories' | 'paths' | 'git-selector' | 'hive-scope'>;
+    }
+  | {
+      schema: 'hive-vuln-review-stage1/v1';
+      state: 'STOP';
+      reason: 'invalid-fixed-override' | 'unresolvable-metadata' | 'denied-expansion' | 'second-ambiguity' | 'compare-unavailable' | 'snapshot-unavailable' | 'packet-invalid';
+      message: string;
+    };`,
+      `type AcceptedCandidate = {
+  schema: 'hive-vuln-review-stage1/v1';
+  normalizedIntent: string;
+  fixedOverrides: ResolvePacket['fixedOverrides'];
+  inferredScope: {
+    mode: VulnerabilityReviewScopeMode;
+    repositoryIds: string[];
+    paths: string[];
+    range?: string;
+    baseRef?: string;
+    targetRef?: string;
+    hiveScope: \`task:\${string}\` | \`feature:\${string}\` | null;
+    evidence: Array<{ source: 'command-text' | 'conversation' | 'git' | 'hive'; summary: string }>;
+  };
+  merge: {
+    provenance: {
+      mode: 'fixed' | 'inferred';
+      repositories: 'fixed' | 'inferred' | 'resolved';
+      paths: 'fixed' | 'inferred' | 'resolved';
+      gitSelector: 'fixed' | 'inferred' | 'none';
+      hiveScope: 'fixed' | 'inferred' | 'none';
+    };
+    conflicts: [];
+    approvedExpansions: Array<'whole-repository' | \`repository:\${string}\` | \`path:\${string}\`>;
+  };
+  clarification: null | { question: string; answer: string };
+  normalizedScope: {
+    mode: VulnerabilityReviewScopeMode;
+    repositoryIds: string[];
+    paths: string[];
+    comparisonBase: string | null;
+    hiveScope: \`task:\${string}\` | \`feature:\${string}\` | null;
+  };
+  expectedScopeDescriptor: {
+    schema: 'hive-vuln-review-scope/v1';
+    mode: VulnerabilityReviewScopeMode;
+    repositories: string[];
+    paths: string[];
+    comparisonBase: string | null;
+    hiveScope: \`task:\${string}\` | \`feature:\${string}\` | null;
+  };
+  createInput: {
+    repositoryIds?: string[];
+    range?: string;
+    baseRef?: string;
+    targetRef?: string;
+    paths?: string[];
+    scopeMode: VulnerabilityReviewScopeMode;
+    hiveScope?: \`task:\${string}\` | \`feature:\${string}\`;
+  };
+  preview: {
+    sourceFingerprint: string;
+    repositories: Array<{ repositoryId: string; snapshotFingerprint: string }>;
+  };
+  compare: {
+    requested: boolean;
+    normalizedPath?: string;
+    status: 'not-requested' | 'parsed' | 'skipped';
+    reason?: string;
+    reportSchema?: 'hive-vuln-review/v1';
+    priorRootCauseKeys: string[];
+  };
+  threatContext: {
+    assets: string[];
+    attackerCapabilities: string[];
+    entryPoints: string[];
+    trustBoundaries: string[];
+    existingControls: string[];
+    suspectedFailureModes: string[];
+  };
+  selectedLenses: Array<{ id: VulnerabilityReviewLensId; rationale: string }>;
+  scopeEcho: string;
+};`,
+      `type MaterializePacket = {
+  schema: 'hive-vuln-review-stage1/v1';
+  stage: 'materialize';
+  acceptedState: 'BOUNDED';
+  scopeEcho: string;
+  candidate: AcceptedCandidate;
+};`,
+      `type MaterializeResult =
+  | {
+      schema: 'hive-vuln-review-stage1/v1';
+      state: 'READY';
+      scopeEcho: string;
+      runId: string;
+      ownershipToken: string;
+      workspacePath: string;
+      repositories: Record<string, { path: string }>;
+      scopeDescriptor: AcceptedCandidate['expectedScopeDescriptor'];
+      scopeFingerprint: string;
+      sourceFingerprint: string;
+      materializedFingerprint: string;
+      repositoryFingerprints: Array<{ repositoryId: string; snapshotFingerprint: string }>;
+      excludedRepositoryIds: string[];
+      truncated: boolean;
+      threatContext: AcceptedCandidate['threatContext'];
+      selectedLenses: AcceptedCandidate['selectedLenses'];
+      compare: AcceptedCandidate['compare'];
+    }
+  | {
+      schema: 'hive-vuln-review-stage1/v1';
+      state: 'STOP';
+      reason: 'candidate-mismatch' | 'create-denied' | 'source-drift' | 'scope-drift' | 'cleanup-uncertain' | 'create-needs-discussion' | 'packet-invalid';
+      message: string;
+      cleanup: { attempted: boolean; cleaned: boolean | null };
+    };`,
+    ];
+
+    for (const block of stage1SchemaBlocks) {
+      expect(output).toContain(block);
+    }
+    expect(output).toContain('BOUNDED | NEEDS_CLARIFICATION | STOP');
+    expect(output).toContain('Every Stage 1 `task` prompt and result must be JSON only, with no surrounding prose.');
+    expect(output).toContain('ask exactly the returned `question` through the `question` tool once');
+    expect(output).toContain('attempt: 2');
+    expect(output).toContain("STOP(reason: 'second-ambiguity')");
+    expect(output).toContain('emit the exact `scopeEcho` before materialize');
+    expect(output).toContain('forward only `candidate.createInput` to `hive_review_workspace_create`');
+    expect(output).toContain('Never call `hive_review_workspace_create` before accepting a schema-valid `BOUNDED` candidate');
+    expect(output).not.toContain('## Explicit Vulnerability Review Arguments');
+    expect(output).not.toContain('normalizedScopeInput');
+    expect(output).not.toContain('hiveSelector');
+    expect(output).not.toContain("'unresolved-scope'");
+    for (const forbidden of ['$ARGUMENTS', 'generation', 'capabilityToken', 'reportPath']) {
+      expect(output).not.toContain(forbidden);
+    }
+  });
+
+  it('renders no vulnerability argument block or implicit selector for empty command input', () => {
+    const output = render('vuln-review');
+
+    expect(output).not.toContain('## Explicit Vulnerability Review Arguments');
+    expect(output).not.toContain('current-change');
   });
 
   it('defines exact report metadata, root-cause encoding, comparison outcomes, and terminal states', () => {
