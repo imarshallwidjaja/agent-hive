@@ -268,6 +268,9 @@ describe('Specialized reviewer prompts', () => {
     expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('private orchestrator');
     expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('do not review, falsify, or fix code');
     expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('mandatory baseline and fixed falsifier');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('two fresh blocking scope-scout tasks');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('exact `scopeEcho`');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('one clarification question');
     expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('report the run as INCOMPLETE');
     expect(VULNERABILITY_REVIEWER_PROMPT).toContain('attacker-controlled input or capabilities');
     expect(VULNERABILITY_REVIEWER_PROMPT).toContain('concrete impact');

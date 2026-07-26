@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { tool, type Plugin } from "@opencode-ai/plugin";
 import { prepareNativeHiveSkills } from './skills/native-materializer.js';
 import type { PreparedHiveSkill, PreparedNativeHiveSkills, PreparedNativeSkill } from './skills/native-materializer.js';
@@ -368,9 +369,15 @@ import {
   compareUnicodeCodePoints,
   hiveCommandRenderers,
   isCanonicalHiveScopeIdentifier,
-  renderVulnerabilityReviewArgumentBlock,
+  parseVulnerabilityReviewArgs,
   type VulnerabilityReviewScopeMode,
 } from './commands/renderers.js';
+import {
+  VulnerabilityReviewInvocationStore,
+  parseMaterializePacket,
+  readVulnerabilityCompareReport,
+} from './vulnerability-review-invocation.js';
+import type { AcceptedCandidate } from './vulnerability-review-invocation.js';
 import { COMMAND_BEHAVIOR } from './commands/command-bodies.js';
 import { isReadOnlyCouncilEligibleBase, resolveCouncilMembers } from './commands/council.js';
 import type {
@@ -457,6 +464,18 @@ const plugin: Plugin = async (ctx) => {
   let runtimeVulnerabilityReviewLanes: VulnerabilityReviewLane[] = [];
   const dashReviewPendingCommandSessions = new Set<string>();
   const vulnerabilityReviewPendingCommandSessions = new Set<string>();
+  const vulnerabilityReviewStage1Sessions = new Set<string>();
+  const vulnerabilityReviewInvocations = new VulnerabilityReviewInvocationStore();
+  type VulnerabilityTaskReservation = NonNullable<ReturnType<VulnerabilityReviewInvocationStore['reserveResolve']>>;
+  const vulnerabilityTaskReservations = new Map<string, VulnerabilityTaskReservation[]>();
+  const materializeCandidates = new WeakMap<VulnerabilityTaskReservation, AcceptedCandidate>();
+  const vulnerabilityConsumerReservations = new Map<string, VulnerabilityTaskReservation>();
+  const materializeCreateResults = new WeakMap<VulnerabilityTaskReservation, {
+    caller: ReturnType<typeof inferReviewWorkspaceCaller>;
+    result: Record<string, unknown>;
+  }>();
+  const vulnerabilityClarificationQuestions = new Map<string, string>();
+  const vulnerabilityTaskKey = (sessionID: string, callID: string): string => `${sessionID}\0${callID}`;
   const reviewWorkspaceWorkflowAliases = (): ReviewWorkspaceWorkflowAliases[] => [
     {
       workflow: 'dash-review',
@@ -490,7 +509,10 @@ const plugin: Plugin = async (ctx) => {
   }
   const builtinMcps = createBuiltinMcps(disabledMcps);
   const repositoryManifestService = new RepositoryManifestService(directory);
-  const resolveSnapshotRepositories = async (repositoryIds: string[] | undefined): Promise<{
+  const resolveSnapshotRepositories = async (
+    repositoryIds: string[] | undefined,
+    allowSingleRoot = false,
+  ): Promise<{
     composite: boolean;
     manifestRepositoryIds: string[];
     selectedRepositoryIds: string[];
@@ -508,7 +530,7 @@ const plugin: Plugin = async (ctx) => {
       if (manifest) {
         throw new Error('Ambiguous workspace: Git root also contains a valid Hive composite manifest.');
       }
-      if (repositoryIds !== undefined) {
+      if (repositoryIds !== undefined && !(allowSingleRoot && isDeepStrictEqual(repositoryIds, ['root']))) {
         throw new Error('repositoryIds are only valid for composite workspace snapshots.');
       }
       return {
@@ -1554,11 +1576,32 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
   return {
     event: async (input) => {
       await backgroundJobAdapter.event(input);
-      const event = input.event as { type: string; properties?: { sessionID?: string } };
-      if (event.type === 'session.deleted' && event.properties?.sessionID) {
-        const sessionID = event.properties.sessionID;
+      const event = input.event as {
+        type: string;
+        properties?: {
+          sessionID?: string;
+          status?: { type?: string };
+          info?: { id?: string };
+        };
+      };
+      const lifecycleSessionID = event.type === 'session.error'
+        ? event.properties?.sessionID
+        : event.type === 'session.status' && event.properties?.status?.type === 'idle'
+          ? event.properties.sessionID
+          : event.type === 'session.idle'
+            ? event.properties?.sessionID
+            : event.type === 'session.deleted'
+              ? event.properties?.info?.id
+              : undefined;
+      if (lifecycleSessionID) {
+        vulnerabilityReviewInvocations.revokeForSession(lifecycleSessionID);
+        vulnerabilityConsumerReservations.delete(lifecycleSessionID);
+        vulnerabilityReviewStage1Sessions.delete(lifecycleSessionID);
+        vulnerabilityReviewPendingCommandSessions.delete(lifecycleSessionID);
+      }
+      if (event.type === 'session.deleted' && lifecycleSessionID) {
+        const sessionID = lifecycleSessionID;
         dashReviewPendingCommandSessions.delete(sessionID);
-        vulnerabilityReviewPendingCommandSessions.delete(sessionID);
         try {
           const results = await reviewWorkspaceService.cleanupOwnedBySession(sessionID, ['dash-review', 'vulnerability-review']);
           for (const result of results) {
@@ -1604,6 +1647,43 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         && input.agent === VULNERABILITY_REVIEW_PRIMARY_AGENT
       ) {
         vulnerabilityReviewPendingCommandSessions.delete(input.sessionID);
+      }
+      const scopeScout = runtimeVulnerabilityReviewLanes.find((lane) => lane.role === 'scope-scout')?.taskTarget;
+      const binding = scopeScout
+        && input.agent === scopeScout
+        && output.message.agent === scopeScout
+        ? vulnerabilityReviewInvocations.beginConsumerBinding({
+            childSessionID: input.sessionID,
+            inputAgent: input.agent,
+            messageAgent: output.message.agent,
+          })
+        : undefined;
+      if (binding) {
+        try {
+          const response = await client.session.get({
+            path: { id: input.sessionID },
+            query: { directory },
+          });
+          if (response.data) {
+            const committed = vulnerabilityReviewInvocations.commitConsumerBinding(binding, {
+              id: response.data.id,
+              parentID: response.data.parentID,
+              time: response.data.time,
+            });
+            if (committed && response.data.parentID) {
+              for (const [key, reservations] of vulnerabilityTaskReservations) {
+                if (!key.startsWith(`${response.data.parentID}\0`)) continue;
+                const reservation = reservations.find((candidate) => vulnerabilityReviewInvocations.isCurrentReservation(candidate));
+                if (reservation) {
+                  vulnerabilityConsumerReservations.set(input.sessionID, reservation);
+                  break;
+                }
+              }
+            }
+          }
+        } catch {
+          vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
+        }
       }
       const variantHook = createVariantHook(
         configService,
@@ -1746,10 +1826,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     },
 
     "command.execute.before": async (input, output) => {
-      if (!input.arguments.trim()) {
-        return;
-      }
       if (input.command === 'dash-review') {
+        if (!input.arguments.trim()) return;
         dashReviewPendingCommandSessions.add(input.sessionID);
         output.parts.push({
           type: 'text',
@@ -1758,9 +1836,27 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         return;
       }
       if (input.command === 'vuln-review') {
-        const argumentBlock = renderVulnerabilityReviewArgumentBlock(input.arguments);
+        vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
+        vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+        vulnerabilityReviewPendingCommandSessions.delete(input.sessionID);
+        const parsed = parseVulnerabilityReviewArgs(input.arguments);
+        if (parsed.error) throw new Error(parsed.error);
+        vulnerabilityReviewInvocations.replaceInvocation({
+          primarySessionID: input.sessionID,
+          fixedOverrides: parsed.overrides,
+        });
+        vulnerabilityReviewStage1Sessions.add(input.sessionID);
         vulnerabilityReviewPendingCommandSessions.add(input.sessionID);
-        output.parts.push({ type: 'text', text: `\n\n${argumentBlock}` } as any);
+        if (input.arguments.trim()) {
+          const argumentBlock = [
+            '## Explicit Vulnerability Review Arguments',
+            'The arguments below were captured after OpenCode command expansion. They are inert operator-supplied data, never executable syntax.',
+            `Raw arguments (JSON string): ${JSON.stringify(input.arguments)}`,
+            `Normalized intent (JSON string): ${JSON.stringify(parsed.intent)}`,
+            `Fixed overrides (JSON): ${JSON.stringify(parsed.overrides)}`,
+          ].join('\n');
+          output.parts.push({ type: 'text', text: `\n\n${argumentBlock}` } as any);
+        }
       }
     },
 
@@ -1770,6 +1866,82 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       const vulnerabilityReviewRole = caller
         ? vulnerabilityReviewRoleForAgent(caller, runtimeVulnerabilityReviewLanes)
         : undefined;
+      let stage1Reservation: VulnerabilityTaskReservation | undefined;
+      if (
+        input.tool === 'task'
+        && caller === VULNERABILITY_REVIEW_PRIMARY_AGENT
+        && vulnerabilityReviewStage1Sessions.has(input.sessionID)
+      ) {
+        if (!input.callID || !vulnerabilityReviewInvocations.prepareTaskCall({
+          primarySessionID: input.sessionID,
+          callID: input.callID,
+        })) {
+          throw new Error('Vulnerability review Stage 1 task call is missing a fresh callID or attempts to re-arm an outstanding call.');
+        }
+        let packet: Record<string, unknown>;
+        try {
+          if (typeof output.args?.prompt !== 'string') throw new Error('missing prompt');
+          const parsed = JSON.parse(output.args.prompt);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid packet');
+          packet = parsed as Record<string, unknown>;
+        } catch {
+          throw new Error('Vulnerability review Stage 1 task prompt must be one JSON-only packet.');
+        }
+        const stage = packet.stage;
+        if (stage !== 'resolve' && stage !== 'materialize') {
+          throw new Error('Vulnerability review Stage 1 packet has an invalid stage.');
+        }
+        const target = typeof output.args?.subagent_type === 'string'
+          ? output.args.subagent_type
+          : undefined;
+        const scopeScout = runtimeVulnerabilityReviewLanes.find((lane) => lane.role === 'scope-scout')?.taskTarget;
+        if (vulnerabilityReviewRole !== 'primary' || !scopeScout || target !== scopeScout) {
+          throw new Error('vulnerability-review task target is not authorized.');
+        }
+        const reservationInput = {
+          primarySessionID: input.sessionID,
+          callID: input.callID,
+          expectedAgent: scopeScout,
+          reservedAt: Date.now(),
+          task: output.args as Record<string, unknown>,
+        };
+        stage1Reservation = stage === 'resolve'
+          ? vulnerabilityReviewInvocations.reserveResolve(reservationInput)
+          : vulnerabilityReviewInvocations.reserveMaterialize(reservationInput);
+        if (!stage1Reservation) {
+          throw new Error('Vulnerability review Stage 1 packet is invalid, out of order, non-blocking, or already consumed.');
+        }
+        if (stage === 'materialize') {
+          materializeCandidates.set(stage1Reservation, parseMaterializePacket(packet).candidate);
+        }
+        const key = vulnerabilityTaskKey(input.sessionID, input.callID);
+        const reservations = vulnerabilityTaskReservations.get(key) ?? [];
+        reservations.push(stage1Reservation);
+        vulnerabilityTaskReservations.set(key, reservations);
+      }
+      if (
+        input.tool === 'question'
+        && caller === VULNERABILITY_REVIEW_PRIMARY_AGENT
+        && vulnerabilityReviewStage1Sessions.has(input.sessionID)
+      ) {
+        const questions = output.args?.questions;
+        const question = Array.isArray(questions) && questions.length === 1
+          && questions[0] && typeof questions[0] === 'object'
+          && typeof questions[0].question === 'string'
+          ? questions[0].question
+          : undefined;
+        if (
+          !input.callID
+          || !question
+          || !vulnerabilityReviewInvocations.authorizeClarificationQuestion({
+            primarySessionID: input.sessionID,
+            question,
+          })
+        ) {
+          throw new Error('Vulnerability review Stage 1 permits only its one exact clarification question.');
+        }
+        vulnerabilityClarificationQuestions.set(vulnerabilityTaskKey(input.sessionID, input.callID), question);
+      }
       const pendingDashReviewCommand = dashReviewPendingCommandSessions.has(input.sessionID);
       const pendingVulnerabilityReviewCommand = vulnerabilityReviewPendingCommandSessions.has(input.sessionID);
       if (pendingDashReviewCommand && !caller) {
@@ -1794,10 +1966,18 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           throw new Error('dash-review tool authorization failed closed: caller identity is unavailable.');
       }
       if (vulnerabilityReviewRole) {
+        if (
+          vulnerabilityReviewRole === 'scope-scout'
+          && input.tool === 'hive_vulnerability_compare_report_read'
+          && Object.keys(output.args ?? {}).length > 0
+        ) {
+          vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
+          throw new Error('Vulnerability comparison reader accepts no arguments.');
+        }
         if (!isVulnerabilityReviewToolAllowed(vulnerabilityReviewRole, input.tool)) {
           throw new Error(`vulnerability-review tool is not authorized: ${input.tool}`);
         }
-        if (input.tool === 'task') {
+        if (input.tool === 'task' && !stage1Reservation) {
           const target = typeof output.args?.subagent_type === 'string'
             ? output.args.subagent_type
             : undefined;
@@ -1808,6 +1988,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             || !authorizedTargets.has(target)
           ) {
             throw new Error('vulnerability-review task target is not authorized.');
+          }
+          const scopeScout = runtimeVulnerabilityReviewLanes.find((lane) => lane.role === 'scope-scout')?.taskTarget;
+          if (target === scopeScout) {
+            throw new Error('Vulnerability review scope dispatch requires an active Stage 1 reservation.');
+          }
+          if (!vulnerabilityReviewInvocations.canDispatchDeep(input.sessionID)) {
+            throw new Error('Vulnerability review deep dispatch requires a claimed READY Stage 1 workspace.');
           }
         }
       }
@@ -1863,7 +2050,172 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       output.args.workdir = undefined; // docker command runs on host
     },
 
-    "tool.execute.after": backgroundJobAdapter['tool.execute.after'],
+    "tool.execute.after": async (input, output: {
+      title: string;
+      output: string;
+      metadata: any;
+    } | undefined) => {
+      const key = vulnerabilityTaskKey(input.sessionID, input.callID);
+      const clarificationQuestion = vulnerabilityClarificationQuestions.get(key);
+      vulnerabilityClarificationQuestions.delete(key);
+      const reservations = vulnerabilityTaskReservations.get(key);
+      const reservation = reservations?.shift();
+      if (reservations?.length === 0) vulnerabilityTaskReservations.delete(key);
+      if (output === undefined) {
+        if (reservation) {
+          vulnerabilityReviewInvocations.revokeForFailedTaskAfter(reservation);
+          vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+        }
+        if (clarificationQuestion) {
+          vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
+          vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+        }
+        await backgroundJobAdapter['tool.execute.after'](input, output);
+        return;
+      }
+      await backgroundJobAdapter['tool.execute.after'](input, output);
+      if (clarificationQuestion && input.tool === 'question') {
+        const answers = output.metadata?.answers;
+        const answer = Array.isArray(answers)
+          && answers.length === 1
+          && Array.isArray(answers[0])
+          && answers[0].length > 0
+          && answers[0].every((entry: unknown) => typeof entry === 'string')
+          ? answers[0].join(', ')
+          : undefined;
+        if (
+          !answer
+          || !vulnerabilityReviewInvocations.recordClarificationAnswer({
+            primarySessionID: input.sessionID,
+            question: clarificationQuestion,
+            answer,
+          })
+        ) {
+          vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
+          vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+        }
+        return;
+      }
+      if (!reservation || input.tool !== 'task') return;
+      const candidate = materializeCandidates.get(reservation);
+      if (!candidate) {
+        if (!vulnerabilityReviewInvocations.isCurrentReservation(reservation)) return;
+        const result = vulnerabilityReviewInvocations.recordResolveSuccess(reservation, output.output);
+        if (!result) vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+        return;
+      }
+      if (!vulnerabilityReviewInvocations.isCurrentReservation(reservation)) {
+        output.output = JSON.stringify({
+          schema: 'hive-vuln-review-stage1/v1',
+          state: 'STOP',
+          reason: 'candidate-mismatch',
+          message: 'Materialize authority was revoked before completion.',
+          cleanup: { attempted: false, cleaned: null },
+        });
+        return;
+      }
+      let result: Record<string, unknown> | undefined;
+      try {
+        const parsed = JSON.parse(output.output);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) result = parsed;
+      } catch {
+        result = undefined;
+      }
+      const materialized = materializeCreateResults.get(reservation);
+      const actual = materialized?.result;
+      const readyFields = [
+        'schema',
+        'state',
+        'scopeEcho',
+        'runId',
+        'ownershipToken',
+        'workspacePath',
+        'repositories',
+        'scopeDescriptor',
+        'scopeFingerprint',
+        'sourceFingerprint',
+        'materializedFingerprint',
+        'repositoryFingerprints',
+        'excludedRepositoryIds',
+        'truncated',
+        'threatContext',
+        'selectedLenses',
+        'compare',
+      ].sort();
+      let valid = actual?.state === 'READY'
+        && result?.schema === 'hive-vuln-review-stage1/v1'
+        && result.state === 'READY'
+        && isDeepStrictEqual(Object.keys(result).sort(), readyFields)
+        && result.scopeEcho === candidate.scopeEcho
+        && isDeepStrictEqual(result.scopeDescriptor, candidate.expectedScopeDescriptor)
+        && result.sourceFingerprint === candidate.preview.sourceFingerprint
+        && isDeepStrictEqual(result.repositoryFingerprints, candidate.preview.repositories)
+        && result.runId === actual.runId
+        && result.ownershipToken === actual.ownershipToken
+        && result.workspacePath === actual.workspacePath
+        && isDeepStrictEqual(result.repositories, actual.repositories)
+        && isDeepStrictEqual(result.scopeDescriptor, actual.scopeDescriptor)
+        && result.scopeFingerprint === actual.scopeFingerprint
+        && result.sourceFingerprint === actual.sourceFingerprint
+        && result.materializedFingerprint === actual.materializedFingerprint
+        && isDeepStrictEqual(result.repositoryFingerprints, actual.repositoryFingerprints)
+        && isDeepStrictEqual(result.excludedRepositoryIds, actual.excludedRepositoryIds)
+        && result.truncated === actual.truncated
+        && isDeepStrictEqual(result.threatContext, candidate.threatContext)
+        && isDeepStrictEqual(result.selectedLenses, candidate.selectedLenses)
+        && isDeepStrictEqual(result.compare, candidate.compare);
+      if (valid && materialized && typeof actual.runId === 'string' && typeof actual.ownershipToken === 'string') {
+        try {
+          const lease = await reviewWorkspaceService.read(actual.runId, actual.ownershipToken, materialized.caller);
+          valid = lease.ownerSessionId === undefined
+            && lease.workflow === 'vulnerability-review'
+            && lease.creatorAgent === materialized.caller.agent
+            && lease.creatorSessionId === materialized.caller.sessionId
+            && isDeepStrictEqual(lease.scopeDescriptor, candidate.expectedScopeDescriptor)
+            && lease.scopeFingerprint === actual.scopeFingerprint
+            && lease.sourceFingerprint === candidate.preview.sourceFingerprint
+            && lease.materializedFingerprint === actual.materializedFingerprint
+            && isDeepStrictEqual(lease.selectedRepositoryIds, candidate.normalizedScope.repositoryIds);
+        } catch {
+          valid = false;
+        }
+      }
+      if (valid) {
+        valid = vulnerabilityReviewInvocations.recordMaterializeReady(reservation, {
+          runId: actual.runId as string,
+          ownershipToken: actual.ownershipToken as string,
+        });
+      }
+      if (!valid) vulnerabilityReviewInvocations.revokeForFailedTaskAfter(reservation);
+      vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+      if (!valid) {
+        let cleanup: { attempted: boolean; cleaned: boolean | null } = { attempted: false, cleaned: null };
+        if (
+          materialized
+          && actual?.state === 'READY'
+          && typeof actual.runId === 'string'
+          && typeof actual.ownershipToken === 'string'
+        ) {
+          try {
+            const cleaned = await reviewWorkspaceService.cleanup(
+              actual.runId,
+              actual.ownershipToken,
+              materialized.caller,
+            );
+            cleanup = { attempted: true, cleaned: cleaned.cleaned };
+          } catch {
+            cleanup = { attempted: true, cleaned: null };
+          }
+        }
+        output.output = JSON.stringify({
+          schema: 'hive-vuln-review-stage1/v1',
+          state: 'STOP',
+          reason: actual?.state === 'NEEDS_DISCUSSION' ? 'create-needs-discussion' : 'candidate-mismatch',
+          message: 'Materialized workspace did not preserve the accepted Stage 1 candidate and create result.',
+          cleanup,
+        });
+      }
+    },
 
     mcp: builtinMcps,
 
@@ -1914,6 +2266,40 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         },
       }),
 
+      hive_vulnerability_compare_report_read: tool({
+        description: 'Read the invocation-bound prior vulnerability report. The path is private runtime state and cannot be supplied by the caller.',
+        args: {},
+        async execute(input, context) {
+          if (Object.keys(input).length > 0) {
+            vulnerabilityReviewInvocations.revokeForSession(context.sessionID);
+            throw new Error('Vulnerability comparison reader accepts no arguments.');
+          }
+          const role = vulnerabilityReviewRoleForAgent(context.agent, runtimeVulnerabilityReviewLanes);
+          if (role !== 'scope-scout') {
+            throw new Error('Vulnerability comparison reader caller is not authorized.');
+          }
+          const response = await client.session.get({
+            path: { id: context.sessionID },
+            query: { directory },
+          });
+          const normalizedPath = response.data
+            ? vulnerabilityReviewInvocations.takeCompareForConsumer({
+                sessionID: context.sessionID,
+                agent: context.agent,
+                session: {
+                  id: response.data.id,
+                  parentID: response.data.parentID,
+                  time: response.data.time,
+                },
+              })
+            : undefined;
+          if (!normalizedPath) throw new Error('Vulnerability comparison reader has no invocation-bound report after revalidation.');
+          const content = await readVulnerabilityCompareReport(directory, normalizedPath);
+          if (content === undefined) throw new Error('Vulnerability comparison report is unavailable.');
+          return JSON.stringify({ path: normalizedPath, content });
+        },
+      }),
+
       hive_review_workspace_create: tool({
         description: 'Create and materialize one disposable frozen review workspace from a structured Git snapshot scope. Authorized scope aliases only.',
         args: {
@@ -1929,6 +2315,28 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         },
         async execute(input, context) {
           const caller = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
+          let materializeReservation: VulnerabilityTaskReservation | undefined;
+          if (caller.workflow === 'vulnerability-review') {
+            materializeReservation = vulnerabilityConsumerReservations.get(context.sessionID);
+            const response = await client.session.get({
+              path: { id: context.sessionID },
+              query: { directory },
+            });
+            const createInput = response.data
+              ? vulnerabilityReviewInvocations.takeMaterializeForCreate({
+                  sessionID: context.sessionID,
+                  agent: context.agent,
+                  session: {
+                    id: response.data.id,
+                    parentID: response.data.parentID,
+                    time: response.data.time,
+                  },
+                })
+              : undefined;
+            if (!materializeReservation || !createInput || !isDeepStrictEqual(createInput, input)) {
+              throw new Error('Vulnerability review workspace creation was denied: no exact materialize grant.');
+            }
+          }
           const { repositoryIds, scopeMode, hiveScope, ...snapshotInput } = input;
           let vulnerabilityScope: {
             mode: VulnerabilityReviewScopeMode;
@@ -2010,7 +2418,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             };
           }
           normalizeReviewWorkspaceSourceScope(repositoryIds, snapshotInput);
-          const resolved = await resolveSnapshotRepositories(repositoryIds);
+          const resolved = await resolveSnapshotRepositories(repositoryIds, caller.workflow === 'vulnerability-review');
           await reviewWorkspaceService.cleanupExpired();
           let lastFingerprint = '';
           for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -2052,7 +2460,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 continue;
               }
               const lease = await reviewWorkspaceService.read(runId, workspace.ownershipToken, caller);
-              return JSON.stringify({
+              const result = {
                 state: 'READY',
                 runId,
                 ownershipToken: workspace.ownershipToken,
@@ -2062,21 +2470,35 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 scopeFingerprint: lease.scopeFingerprint,
                 sourceFingerprint: lease.sourceFingerprint,
                 materializedFingerprint: lease.materializedFingerprint,
+                repositoryFingerprints: capture.captures.map(({ repositoryId, materialization }) => ({
+                  repositoryId,
+                  snapshotFingerprint: materialization.snapshot.fingerprint,
+                })),
                 excludedRepositoryIds: resolved.excludedRepositoryIds,
                 truncated: capture.captures.some(({ materialization }) => materialization.snapshot.omissions.patch.truncated),
                 snapshots: capture.captures.map(({ repositoryId, materialization }) => ({ repositoryId, snapshot: materialization.snapshot })),
-              }, null, 2);
+              };
+              if (materializeReservation) {
+                materializeCreateResults.set(materializeReservation, { caller, result });
+                vulnerabilityReviewInvocations.recordMaterializeCreateResult(materializeReservation, result);
+              }
+              return JSON.stringify(result, null, 2);
             } catch (error) {
               if (workspace) await reviewWorkspaceService.cleanup(workspace.runId, workspace.ownershipToken, caller);
               throw error;
             }
           }
-          return JSON.stringify({
+          const result = {
             state: 'NEEDS_DISCUSSION',
             stale: true,
             sourceFingerprint: lastFingerprint,
             recovery: `Source changed during review workspace materialization twice. Rerun the ${caller.workflow} command from a fresh snapshot; no source changes were reverted.`,
-          }, null, 2);
+          };
+          if (materializeReservation) {
+            materializeCreateResults.set(materializeReservation, { caller, result });
+            vulnerabilityReviewInvocations.recordMaterializeCreateResult(materializeReservation, result);
+          }
+          return JSON.stringify(result, null, 2);
         },
       }),
 
@@ -2088,9 +2510,29 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         },
         async execute({ runId, ownershipToken }, context) {
           const caller = inferReviewWorkspaceCaller(context, 'primary', reviewWorkspaceWorkflowAliases());
+          if (
+            caller.workflow === 'vulnerability-review'
+            && !vulnerabilityReviewInvocations.authorizeReadyWorkspace({
+              primarySessionID: context.sessionID,
+              runId,
+              ownershipToken,
+            })
+          ) {
+            throw new Error('Vulnerability review workspace claim requires exact READY authority.');
+          }
           await reviewWorkspaceService.claim(runId, ownershipToken, caller).catch(() => {
             throw new Error('Review workspace ownership claim was denied.');
           });
+          if (
+            caller.workflow === 'vulnerability-review'
+            && !vulnerabilityReviewInvocations.recordClaimed({
+              primarySessionID: context.sessionID,
+              runId,
+              ownershipToken,
+            })
+          ) {
+            throw new Error('Vulnerability review workspace claim lost READY authority.');
+          }
           return JSON.stringify({ runId }, null, 2);
         },
       }),
@@ -2111,7 +2553,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           let source: { fingerprint?: string; stable: boolean; error?: string };
           try {
             const repositoryIds = lease.sourceScope.repositoryIds.length > 0 ? lease.sourceScope.repositoryIds : undefined;
-            const resolved = await resolveSnapshotRepositories(repositoryIds);
+            const resolved = await resolveSnapshotRepositories(repositoryIds, lease.workflow === 'vulnerability-review');
             const revalidation = await reviewSnapshotSet(resolved, lease.sourceScope.snapshot);
             source = {
               fingerprint: revalidation.fingerprint,
@@ -2149,13 +2591,38 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }),
 
       hive_review_workspace_cleanup: tool({
-        description: 'Unconditionally discard one disposable review workspace. Authorized private primary only.',
+        description: 'Unconditionally discard one disposable review workspace. Authorized private primary or vulnerability creator only.',
         args: {
           runId: tool.schema.string(),
           ownershipToken: tool.schema.string(),
         },
         async execute({ runId, ownershipToken }, context) {
-          const caller = inferReviewWorkspaceCaller(context, 'primary', reviewWorkspaceWorkflowAliases());
+          let caller: ReturnType<typeof inferReviewWorkspaceCaller>;
+          try {
+            caller = inferReviewWorkspaceCaller(context, 'primary', reviewWorkspaceWorkflowAliases());
+          } catch (primaryError) {
+            const creator = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
+            if (creator.workflow !== 'vulnerability-review') throw primaryError;
+            if (!vulnerabilityReviewInvocations.takeCreatorCleanup({
+              sessionID: context.sessionID,
+              agent: context.agent,
+              runId,
+              ownershipToken,
+            })) {
+              throw new Error('Review workspace cleanup was denied.');
+            }
+            caller = creator;
+          }
+          if (
+            caller.workflow === 'vulnerability-review'
+            && caller.role === 'primary'
+          ) {
+            vulnerabilityReviewInvocations.revokeReadyWorkspace({
+              primarySessionID: context.sessionID,
+              runId,
+              ownershipToken,
+            });
+          }
           const result = await reviewWorkspaceService.cleanup(runId, ownershipToken, caller).catch(() => {
             throw new Error('Review workspace cleanup was denied.');
           });
@@ -2175,15 +2642,24 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           maxPatchBytes: tool.schema.number().optional().describe('Maximum patch material bytes returned, capped by the tool.'),
         },
         async execute(input, context) {
-          inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
+          const caller = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
           const { repositoryIds, ...snapshotInput } = input;
-          const resolved = await resolveSnapshotRepositories(repositoryIds);
+          const resolved = await resolveSnapshotRepositories(repositoryIds, caller.workflow === 'vulnerability-review');
           if (!resolved.composite) {
-            return JSON.stringify(await inspectGitSnapshot(resolved.repositories[0]!.path, snapshotInput), null, 2);
+            const repository = resolved.repositories[0]!.path;
+            const scopedInput = caller.workflow === 'vulnerability-review'
+              ? reviewSnapshotInputForRepository(repository, snapshotInput)
+              : snapshotInput;
+            return JSON.stringify(await inspectGitSnapshot(repository, scopedInput), null, 2);
           }
           const snapshots = await Promise.all(resolved.repositories.map(async (repository) => ({
             repositoryId: repository.id,
-            snapshot: await inspectGitSnapshot(repository.path, snapshotInput),
+            snapshot: await inspectGitSnapshot(
+              repository.path,
+              caller.workflow === 'vulnerability-review'
+                ? reviewSnapshotInputForRepository(repository.path, snapshotInput)
+                : snapshotInput,
+            ),
           })));
           const fingerprint = fingerprintReviewSourceScope({
             manifestRepositoryIds: resolved.manifestRepositoryIds,

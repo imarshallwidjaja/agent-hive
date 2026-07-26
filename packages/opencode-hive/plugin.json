@@ -74,6 +74,7 @@
     "hive_context_write",
     "hive_status",
     "hive_git_snapshot",
+    "hive_vulnerability_compare_report_read",
     "hive_review_workspace_create",
     "hive_review_workspace_claim",
     "hive_review_workspace_inspect",
