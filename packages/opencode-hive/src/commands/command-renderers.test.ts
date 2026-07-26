@@ -580,7 +580,7 @@ describe('hive command renderers', () => {
     const output = render('vuln-review');
     const stage1SchemaBlocks = [
       `type ResolvePacket = {
-  schema: 'hive-vuln-review-stage1/v1';
+  schema: 'hive-vuln-review-stage1/v2';
   stage: 'resolve';
   attempt: 1 | 2;
   intent: string;
@@ -600,25 +600,28 @@ describe('hive command renderers', () => {
 };`,
       `type ResolveResult =
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'BOUNDED';
       candidate: AcceptedCandidate;
     }
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'NEEDS_CLARIFICATION';
       question: string;
       reason: 'conflict' | 'ambiguous-target' | 'broad-expansion' | 'missing-boundary';
       unresolvedDimensions: Array<'mode' | 'repositories' | 'paths' | 'git-selector' | 'hive-scope'>;
+      proposal: Omit<AcceptedCandidate, 'clarification' | 'merge'> & {
+        merge: Omit<AcceptedCandidate['merge'], 'approvedExpansions'>;
+      };
     }
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'STOP';
       reason: 'invalid-fixed-override' | 'unresolvable-metadata' | 'denied-expansion' | 'second-ambiguity' | 'compare-unavailable' | 'snapshot-unavailable' | 'packet-invalid';
       message: string;
     };`,
       `type AcceptedCandidate = {
-  schema: 'hive-vuln-review-stage1/v1';
+  schema: 'hive-vuln-review-stage1/v2';
   normalizedIntent: string;
   fixedOverrides: ResolvePacket['fixedOverrides'];
   inferredScope: {
@@ -691,7 +694,7 @@ describe('hive command renderers', () => {
   scopeEcho: string;
 };`,
       `type MaterializePacket = {
-  schema: 'hive-vuln-review-stage1/v1';
+  schema: 'hive-vuln-review-stage1/v2';
   stage: 'materialize';
   acceptedState: 'BOUNDED';
   scopeEcho: string;
@@ -699,7 +702,7 @@ describe('hive command renderers', () => {
 };`,
       `type MaterializeResult =
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'READY';
       scopeEcho: string;
       runId: string;
@@ -718,7 +721,7 @@ describe('hive command renderers', () => {
       compare: AcceptedCandidate['compare'];
     }
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'STOP';
       reason: 'candidate-mismatch' | 'create-denied' | 'source-drift' | 'scope-drift' | 'cleanup-uncertain' | 'create-needs-discussion' | 'packet-invalid';
       message: string;
@@ -732,6 +735,9 @@ describe('hive command renderers', () => {
     expect(output).toContain('BOUNDED | NEEDS_CLARIFICATION | STOP');
     expect(output).toContain('Every Stage 1 `task` prompt and result must be JSON only, with no surrounding prose.');
     expect(output).toContain('ask exactly the returned `question` through the `question` tool once');
+    expect(output).toContain('Only the exact case-sensitive answer `Yes` advances.');
+    expect(output).toContain('complete normalized non-ephemeral `proposal`');
+    expect(output).toContain('any resolve input, target, threat context, lens, intent, evidence, provenance, comparison, preview, descriptor, create-input, or scope-echo drift terminates');
     expect(output).toContain('attempt: 2');
     expect(output).toContain("STOP(reason: 'second-ambiguity')");
     expect(output).toContain('emit the exact `scopeEcho` before materialize');

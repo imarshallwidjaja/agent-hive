@@ -375,6 +375,7 @@ import {
 import {
   VulnerabilityReviewInvocationStore,
   parseMaterializePacket,
+  parseStage1Json,
   readVulnerabilityCompareReport,
 } from './vulnerability-review-invocation.js';
 import type { AcceptedCandidate } from './vulnerability-review-invocation.js';
@@ -467,15 +468,27 @@ const plugin: Plugin = async (ctx) => {
   const vulnerabilityReviewStage1Sessions = new Set<string>();
   const vulnerabilityReviewInvocations = new VulnerabilityReviewInvocationStore();
   type VulnerabilityTaskReservation = NonNullable<ReturnType<VulnerabilityReviewInvocationStore['reserveResolve']>>;
-  const vulnerabilityTaskReservations = new Map<string, VulnerabilityTaskReservation[]>();
+  const vulnerabilityTaskReservations = new Map<string, Map<string, VulnerabilityTaskReservation>>();
   const materializeCandidates = new WeakMap<VulnerabilityTaskReservation, AcceptedCandidate>();
   const vulnerabilityConsumerReservations = new Map<string, VulnerabilityTaskReservation>();
   const materializeCreateResults = new WeakMap<VulnerabilityTaskReservation, {
     caller: ReturnType<typeof inferReviewWorkspaceCaller>;
     result: Record<string, unknown>;
   }>();
-  const vulnerabilityClarificationQuestions = new Map<string, string>();
-  const vulnerabilityTaskKey = (sessionID: string, callID: string): string => `${sessionID}\0${callID}`;
+  type VulnerabilityClarificationHandle = NonNullable<ReturnType<VulnerabilityReviewInvocationStore['authorizeClarificationQuestion']>>;
+  const vulnerabilityClarificationHandles = new Map<string, Map<string, VulnerabilityClarificationHandle>>();
+  const vulnerabilityStage1CallIDs = new Map<string, Map<string, Set<string>>>();
+  const reserveVulnerabilityToolCallID = (sessionID: string, toolName: string, callID: string): boolean => {
+    const sessionCallIDs = vulnerabilityStage1CallIDs.get(sessionID) ?? new Map<string, Set<string>>();
+    const toolCallIDs = sessionCallIDs.get(toolName) ?? new Set<string>();
+    if (toolCallIDs.has(callID)) return false;
+    toolCallIDs.add(callID);
+    sessionCallIDs.set(toolName, toolCallIDs);
+    vulnerabilityStage1CallIDs.set(sessionID, sessionCallIDs);
+    return true;
+  };
+  const isReusedVulnerabilityToolCallID = (sessionID: string, toolName: string, callID: string): boolean =>
+    vulnerabilityStage1CallIDs.get(sessionID)?.get(toolName)?.has(callID) === true;
   const reviewWorkspaceWorkflowAliases = (): ReviewWorkspaceWorkflowAliases[] => [
     {
       workflow: 'dash-review',
@@ -1671,18 +1684,19 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
               time: response.data.time,
             });
             if (committed && response.data.parentID) {
-              for (const [key, reservations] of vulnerabilityTaskReservations) {
-                if (!key.startsWith(`${response.data.parentID}\0`)) continue;
-                const reservation = reservations.find((candidate) => vulnerabilityReviewInvocations.isCurrentReservation(candidate));
-                if (reservation) {
+              const reservations = vulnerabilityTaskReservations.get(response.data.parentID);
+              for (const reservation of reservations?.values() ?? []) {
+                if (vulnerabilityReviewInvocations.isCurrentReservation(reservation)) {
                   vulnerabilityConsumerReservations.set(input.sessionID, reservation);
                   break;
                 }
               }
             }
+          } else {
+            vulnerabilityReviewInvocations.revokeConsumerBinding(binding);
           }
         } catch {
-          vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
+          vulnerabilityReviewInvocations.revokeConsumerBinding(binding);
         }
       }
       const variantHook = createVariantHook(
@@ -1866,37 +1880,54 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       const vulnerabilityReviewRole = caller
         ? vulnerabilityReviewRoleForAgent(caller, runtimeVulnerabilityReviewLanes)
         : undefined;
+      if (
+        input.callID
+        && isReusedVulnerabilityToolCallID(input.sessionID, input.tool, input.callID)
+      ) {
+        throw new Error('Vulnerability review Stage 1 rejected a reused session/tool callID because exact callback identity is unavailable.');
+      }
       let stage1Reservation: VulnerabilityTaskReservation | undefined;
       if (
         input.tool === 'task'
         && caller === VULNERABILITY_REVIEW_PRIMARY_AGENT
         && vulnerabilityReviewStage1Sessions.has(input.sessionID)
       ) {
-        if (!input.callID || !vulnerabilityReviewInvocations.prepareTaskCall({
+        const rejectStage1Task = (message: string): never => {
+          if (vulnerabilityReviewInvocations.stopForInvalidTaskInput(input.sessionID)) {
+            vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+          }
+          throw new Error(message);
+        };
+        if (!input.callID) {
+          rejectStage1Task('Vulnerability review Stage 1 task call is missing a fresh callID or attempts to re-arm an outstanding call.');
+        }
+        if (!reserveVulnerabilityToolCallID(input.sessionID, input.tool, input.callID)) {
+          throw new Error('Vulnerability review Stage 1 rejected a reused session/tool callID because exact callback identity is unavailable.');
+        }
+        if (!vulnerabilityReviewInvocations.prepareTaskCall({
           primarySessionID: input.sessionID,
           callID: input.callID,
         })) {
-          throw new Error('Vulnerability review Stage 1 task call is missing a fresh callID or attempts to re-arm an outstanding call.');
+          rejectStage1Task('Vulnerability review Stage 1 task call is missing a fresh callID or attempts to re-arm an outstanding call.');
         }
         let packet: Record<string, unknown>;
         try {
-          if (typeof output.args?.prompt !== 'string') throw new Error('missing prompt');
-          const parsed = JSON.parse(output.args.prompt);
+          const parsed = parseStage1Json(output.args?.prompt, 'Vulnerability review Stage 1 task prompt');
           if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid packet');
           packet = parsed as Record<string, unknown>;
         } catch {
-          throw new Error('Vulnerability review Stage 1 task prompt must be one JSON-only packet.');
+          rejectStage1Task('Vulnerability review Stage 1 task prompt must be one JSON-only packet.');
         }
         const stage = packet.stage;
         if (stage !== 'resolve' && stage !== 'materialize') {
-          throw new Error('Vulnerability review Stage 1 packet has an invalid stage.');
+          rejectStage1Task('Vulnerability review Stage 1 packet has an invalid stage.');
         }
         const target = typeof output.args?.subagent_type === 'string'
           ? output.args.subagent_type
           : undefined;
         const scopeScout = runtimeVulnerabilityReviewLanes.find((lane) => lane.role === 'scope-scout')?.taskTarget;
         if (vulnerabilityReviewRole !== 'primary' || !scopeScout || target !== scopeScout) {
-          throw new Error('vulnerability-review task target is not authorized.');
+          rejectStage1Task('vulnerability-review task target is not authorized.');
         }
         const reservationInput = {
           primarySessionID: input.sessionID,
@@ -1909,15 +1940,14 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           ? vulnerabilityReviewInvocations.reserveResolve(reservationInput)
           : vulnerabilityReviewInvocations.reserveMaterialize(reservationInput);
         if (!stage1Reservation) {
-          throw new Error('Vulnerability review Stage 1 packet is invalid, out of order, non-blocking, or already consumed.');
+          rejectStage1Task('Vulnerability review Stage 1 packet is invalid, out of order, non-blocking, or already consumed.');
         }
         if (stage === 'materialize') {
           materializeCandidates.set(stage1Reservation, parseMaterializePacket(packet).candidate);
         }
-        const key = vulnerabilityTaskKey(input.sessionID, input.callID);
-        const reservations = vulnerabilityTaskReservations.get(key) ?? [];
-        reservations.push(stage1Reservation);
-        vulnerabilityTaskReservations.set(key, reservations);
+        const taskReservations = vulnerabilityTaskReservations.get(input.sessionID) ?? new Map<string, VulnerabilityTaskReservation>();
+        taskReservations.set(input.callID, stage1Reservation);
+        vulnerabilityTaskReservations.set(input.sessionID, taskReservations);
       }
       if (
         input.tool === 'question'
@@ -1925,22 +1955,40 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         && vulnerabilityReviewStage1Sessions.has(input.sessionID)
       ) {
         const questions = output.args?.questions;
-        const question = Array.isArray(questions) && questions.length === 1
+        const clarification = Array.isArray(questions) && questions.length === 1
           && questions[0] && typeof questions[0] === 'object'
-          && typeof questions[0].question === 'string'
-          ? questions[0].question
+          ? questions[0] as Record<string, unknown>
           : undefined;
-        if (
-          !input.callID
-          || !question
-          || !vulnerabilityReviewInvocations.authorizeClarificationQuestion({
-            primarySessionID: input.sessionID,
-            question,
-          })
-        ) {
+        const options = clarification?.options;
+        const question = clarification
+          && typeof clarification.question === 'string'
+          && clarification.multiple !== true
+          && Array.isArray(options)
+          && options.length === 2
+          && options[0] && typeof options[0] === 'object'
+          && options[1] && typeof options[1] === 'object'
+          && (options[0] as Record<string, unknown>).label === 'Yes'
+          && (options[1] as Record<string, unknown>).label === 'No'
+          ? clarification.question
+          : undefined;
+        if (!input.callID) {
           throw new Error('Vulnerability review Stage 1 permits only its one exact clarification question.');
         }
-        vulnerabilityClarificationQuestions.set(vulnerabilityTaskKey(input.sessionID, input.callID), question);
+        if (!reserveVulnerabilityToolCallID(input.sessionID, input.tool, input.callID)) {
+          throw new Error('Vulnerability review Stage 1 rejected a reused session/tool callID because exact callback identity is unavailable.');
+        }
+        const clarificationHandle = question
+          ? vulnerabilityReviewInvocations.authorizeClarificationQuestion({
+              primarySessionID: input.sessionID,
+              question,
+            })
+          : undefined;
+        if (!question || !clarificationHandle) {
+          throw new Error('Vulnerability review Stage 1 permits only its one exact clarification question.');
+        }
+        const clarificationHandles = vulnerabilityClarificationHandles.get(input.sessionID) ?? new Map<string, VulnerabilityClarificationHandle>();
+        clarificationHandles.set(input.callID, clarificationHandle);
+        vulnerabilityClarificationHandles.set(input.sessionID, clarificationHandles);
       }
       const pendingDashReviewCommand = dashReviewPendingCommandSessions.has(input.sessionID);
       const pendingVulnerabilityReviewCommand = vulnerabilityReviewPendingCommandSessions.has(input.sessionID);
@@ -2055,26 +2103,65 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       output: string;
       metadata: any;
     } | undefined) => {
-      const key = vulnerabilityTaskKey(input.sessionID, input.callID);
-      const clarificationQuestion = vulnerabilityClarificationQuestions.get(key);
-      vulnerabilityClarificationQuestions.delete(key);
-      const reservations = vulnerabilityTaskReservations.get(key);
-      const reservation = reservations?.shift();
-      if (reservations?.length === 0) vulnerabilityTaskReservations.delete(key);
+      const clarificationHandles = vulnerabilityClarificationHandles.get(input.sessionID);
+      const clarificationHandle = input.tool === 'question'
+        ? clarificationHandles?.get(input.callID)
+        : undefined;
+      if (clarificationHandle) {
+        clarificationHandles!.delete(input.callID);
+        if (clarificationHandles!.size === 0) vulnerabilityClarificationHandles.delete(input.sessionID);
+      }
+      const taskReservations = vulnerabilityTaskReservations.get(input.sessionID);
+      const reservation = input.tool === 'task'
+        ? taskReservations?.get(input.callID)
+        : undefined;
+      if (reservation) {
+        taskReservations!.delete(input.callID);
+        if (taskReservations!.size === 0) vulnerabilityTaskReservations.delete(input.sessionID);
+      }
+      const materialized = reservation ? materializeCreateResults.get(reservation) : undefined;
+      const actual = materialized?.result;
+      const cleanupMaterializedWorkspace = async (): Promise<{ attempted: boolean; cleaned: boolean | null }> => {
+        if (
+          !materialized
+          || actual?.state !== 'READY'
+          || typeof actual.runId !== 'string'
+          || typeof actual.ownershipToken !== 'string'
+        ) {
+          return { attempted: false, cleaned: null };
+        }
+        try {
+          const cleaned = await reviewWorkspaceService.cleanup(
+            actual.runId,
+            actual.ownershipToken,
+            materialized.caller,
+          );
+          return { attempted: true, cleaned: cleaned.cleaned };
+        } catch {
+          return { attempted: true, cleaned: null };
+        }
+      };
       if (output === undefined) {
         if (reservation) {
-          vulnerabilityReviewInvocations.revokeForFailedTaskAfter(reservation);
-          vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+          if (vulnerabilityReviewInvocations.revokeForFailedTaskAfter(reservation)) {
+            vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+          }
+          const cleanup = await cleanupMaterializedWorkspace();
+          if (cleanup.attempted && cleanup.cleaned !== true) {
+            console.warn(`[hive:vulnerability-review] materialized workspace cleanup was not confirmed for undefined task output: ${String(actual?.runId)}`);
+          }
         }
-        if (clarificationQuestion) {
-          vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
+        if (
+          clarificationHandle
+          && vulnerabilityReviewInvocations.revokeForFailedClarification(clarificationHandle)
+        ) {
           vulnerabilityReviewStage1Sessions.delete(input.sessionID);
         }
         await backgroundJobAdapter['tool.execute.after'](input, output);
         return;
       }
       await backgroundJobAdapter['tool.execute.after'](input, output);
-      if (clarificationQuestion && input.tool === 'question') {
+      if (clarificationHandle && input.tool === 'question') {
         const answers = output.metadata?.answers;
         const answer = Array.isArray(answers)
           && answers.length === 1
@@ -2083,15 +2170,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           && answers[0].every((entry: unknown) => typeof entry === 'string')
           ? answers[0].join(', ')
           : undefined;
-        if (
-          !answer
-          || !vulnerabilityReviewInvocations.recordClarificationAnswer({
-            primarySessionID: input.sessionID,
-            question: clarificationQuestion,
-            answer,
-          })
-        ) {
-          vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
+        const outcome = answer === undefined
+          ? vulnerabilityReviewInvocations.revokeForFailedClarification(clarificationHandle)
+            ? 'stopped'
+            : undefined
+          : vulnerabilityReviewInvocations.recordClarificationAnswer(clarificationHandle, answer);
+        if (outcome === 'stopped') {
           vulnerabilityReviewStage1Sessions.delete(input.sessionID);
         }
         return;
@@ -2105,24 +2189,25 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         return;
       }
       if (!vulnerabilityReviewInvocations.isCurrentReservation(reservation)) {
+        const cleanup = await cleanupMaterializedWorkspace();
         output.output = JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v1',
+          schema: 'hive-vuln-review-stage1/v2',
           state: 'STOP',
           reason: 'candidate-mismatch',
           message: 'Materialize authority was revoked before completion.',
-          cleanup: { attempted: false, cleaned: null },
+          cleanup,
         });
         return;
       }
       let result: Record<string, unknown> | undefined;
       try {
-        const parsed = JSON.parse(output.output);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) result = parsed;
+        const parsed = parseStage1Json(output.output, 'Vulnerability review Stage 1 materialize result');
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          result = parsed as Record<string, unknown>;
+        }
       } catch {
         result = undefined;
       }
-      const materialized = materializeCreateResults.get(reservation);
-      const actual = materialized?.result;
       const readyFields = [
         'schema',
         'state',
@@ -2143,7 +2228,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         'compare',
       ].sort();
       let valid = actual?.state === 'READY'
-        && result?.schema === 'hive-vuln-review-stage1/v1'
+        && result?.schema === 'hive-vuln-review-stage1/v2'
         && result.state === 'READY'
         && isDeepStrictEqual(Object.keys(result).sort(), readyFields)
         && result.scopeEcho === candidate.scopeEcho
@@ -2180,35 +2265,18 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           valid = false;
         }
       }
-      if (valid) {
-        valid = vulnerabilityReviewInvocations.recordMaterializeReady(reservation, {
+      const mutatedCurrentGeneration = valid
+        ? vulnerabilityReviewInvocations.recordMaterializeReady(reservation, {
           runId: actual.runId as string,
           ownershipToken: actual.ownershipToken as string,
-        });
-      }
-      if (!valid) vulnerabilityReviewInvocations.revokeForFailedTaskAfter(reservation);
-      vulnerabilityReviewStage1Sessions.delete(input.sessionID);
+        })
+        : vulnerabilityReviewInvocations.revokeForFailedTaskAfter(reservation);
+      if (valid && !mutatedCurrentGeneration) valid = false;
+      if (mutatedCurrentGeneration) vulnerabilityReviewStage1Sessions.delete(input.sessionID);
       if (!valid) {
-        let cleanup: { attempted: boolean; cleaned: boolean | null } = { attempted: false, cleaned: null };
-        if (
-          materialized
-          && actual?.state === 'READY'
-          && typeof actual.runId === 'string'
-          && typeof actual.ownershipToken === 'string'
-        ) {
-          try {
-            const cleaned = await reviewWorkspaceService.cleanup(
-              actual.runId,
-              actual.ownershipToken,
-              materialized.caller,
-            );
-            cleanup = { attempted: true, cleaned: cleaned.cleaned };
-          } catch {
-            cleanup = { attempted: true, cleaned: null };
-          }
-        }
+        const cleanup = await cleanupMaterializedWorkspace();
         output.output = JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v1',
+          schema: 'hive-vuln-review-stage1/v2',
           state: 'STOP',
           reason: actual?.state === 'NEEDS_DISCUSSION' ? 'create-needs-discussion' : 'candidate-mismatch',
           message: 'Materialized workspace did not preserve the accepted Stage 1 candidate and create result.',
@@ -2278,23 +2346,39 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           if (role !== 'scope-scout') {
             throw new Error('Vulnerability comparison reader caller is not authorized.');
           }
-          const response = await client.session.get({
-            path: { id: context.sessionID },
-            query: { directory },
+          const compareCapability = vulnerabilityReviewInvocations.takeCompareForConsumer({
+            sessionID: context.sessionID,
+            agent: context.agent,
           });
+          if (!compareCapability) throw new Error('Vulnerability comparison reader has no invocation-bound report after revalidation.');
+          let response: Awaited<ReturnType<typeof client.session.get>>;
+          try {
+            response = await client.session.get({
+              path: { id: context.sessionID },
+              query: { directory },
+            });
+          } catch (error) {
+            vulnerabilityReviewInvocations.revokeConsumerGrant(compareCapability);
+            throw error;
+          }
           const normalizedPath = response.data
-            ? vulnerabilityReviewInvocations.takeCompareForConsumer({
-                sessionID: context.sessionID,
-                agent: context.agent,
-                session: {
-                  id: response.data.id,
-                  parentID: response.data.parentID,
-                  time: response.data.time,
-                },
+            ? vulnerabilityReviewInvocations.validateCompareForConsumer(compareCapability, {
+                id: response.data.id,
+                parentID: response.data.parentID,
+                time: response.data.time,
               })
             : undefined;
+          if (!response.data) vulnerabilityReviewInvocations.revokeConsumerGrant(compareCapability);
           if (!normalizedPath) throw new Error('Vulnerability comparison reader has no invocation-bound report after revalidation.');
-          const content = await readVulnerabilityCompareReport(directory, normalizedPath);
+          let content: string | undefined;
+          try {
+            content = await readVulnerabilityCompareReport(directory, normalizedPath);
+          } catch (error) {
+            vulnerabilityReviewInvocations.recordCompareRead(compareCapability, false);
+            throw error;
+          }
+          const compareRecorded = vulnerabilityReviewInvocations.recordCompareRead(compareCapability, content !== undefined);
+          if (!compareRecorded) throw new Error('Vulnerability comparison reader has no invocation-bound report after revalidation.');
           if (content === undefined) throw new Error('Vulnerability comparison report is unavailable.');
           return JSON.stringify({ path: normalizedPath, content });
         },
@@ -2318,22 +2402,40 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           let materializeReservation: VulnerabilityTaskReservation | undefined;
           if (caller.workflow === 'vulnerability-review') {
             materializeReservation = vulnerabilityConsumerReservations.get(context.sessionID);
-            const response = await client.session.get({
-              path: { id: context.sessionID },
-              query: { directory },
-            });
-            const createInput = response.data
+            const createCapability = materializeReservation
               ? vulnerabilityReviewInvocations.takeMaterializeForCreate({
                   sessionID: context.sessionID,
                   agent: context.agent,
-                  session: {
-                    id: response.data.id,
-                    parentID: response.data.parentID,
-                    time: response.data.time,
-                  },
                 })
               : undefined;
-            if (!materializeReservation || !createInput || !isDeepStrictEqual(createInput, input)) {
+            if (!materializeReservation || !createCapability) {
+              throw new Error('Vulnerability review workspace creation was denied: no exact materialize grant.');
+            }
+            let response: Awaited<ReturnType<typeof client.session.get>>;
+            try {
+              response = await client.session.get({
+                path: { id: context.sessionID },
+                query: { directory },
+              });
+            } catch (error) {
+              if (vulnerabilityConsumerReservations.get(context.sessionID) === materializeReservation) {
+                vulnerabilityConsumerReservations.delete(context.sessionID);
+              }
+              vulnerabilityReviewInvocations.revokeConsumerGrant(createCapability);
+              throw error;
+            }
+            const createInput = response.data
+              ? vulnerabilityReviewInvocations.validateMaterializeForCreate(createCapability, {
+                  id: response.data.id,
+                  parentID: response.data.parentID,
+                  time: response.data.time,
+                })
+              : undefined;
+            if (!response.data || !createInput || !isDeepStrictEqual(createInput, input)) {
+              if (vulnerabilityConsumerReservations.get(context.sessionID) === materializeReservation) {
+                vulnerabilityConsumerReservations.delete(context.sessionID);
+              }
+              vulnerabilityReviewInvocations.revokeConsumerGrant(createCapability);
               throw new Error('Vulnerability review workspace creation was denied: no exact materialize grant.');
             }
           }

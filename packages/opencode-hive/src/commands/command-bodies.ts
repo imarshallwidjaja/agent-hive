@@ -475,12 +475,12 @@ Private lane routing:
 
 Stage 1 - Frame:
 
-- Every Stage 1 \`task\` prompt and result must be JSON only, with no surrounding prose. Use exact schema \`hive-vuln-review-stage1/v1\` and exact resolve states BOUNDED | NEEDS_CLARIFICATION | STOP.
+- Every Stage 1 \`task\` prompt and result must be JSON only, with no surrounding prose. Use exact schema \`hive-vuln-review-stage1/v2\` and exact resolve states BOUNDED | NEEDS_CLARIFICATION | STOP.
 - Resolve receives exactly:
 
 \`\`\`ts
 type ResolvePacket = {
-  schema: 'hive-vuln-review-stage1/v1';
+  schema: 'hive-vuln-review-stage1/v2';
   stage: 'resolve';
   attempt: 1 | 2;
   intent: string;
@@ -501,32 +501,35 @@ type ResolvePacket = {
 
 type ResolveResult =
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'BOUNDED';
       candidate: AcceptedCandidate;
     }
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'NEEDS_CLARIFICATION';
       question: string;
       reason: 'conflict' | 'ambiguous-target' | 'broad-expansion' | 'missing-boundary';
       unresolvedDimensions: Array<'mode' | 'repositories' | 'paths' | 'git-selector' | 'hive-scope'>;
+      proposal: Omit<AcceptedCandidate, 'clarification' | 'merge'> & {
+        merge: Omit<AcceptedCandidate['merge'], 'approvedExpansions'>;
+      };
     }
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'STOP';
       reason: 'invalid-fixed-override' | 'unresolvable-metadata' | 'denied-expansion' | 'second-ambiguity' | 'compare-unavailable' | 'snapshot-unavailable' | 'packet-invalid';
       message: string;
     };
 \`\`\`
 
-- Attempt 1 may return all three resolve states. On NEEDS_CLARIFICATION, ask exactly the returned \`question\` through the \`question\` tool once, then launch one fresh resolve task with \`attempt: 2\` and the exact question and answer in \`clarification\`. Attempt 2 may return only BOUNDED or STOP. Normalize a second clarification, changed question, missing answer, or additional expansion to STOP(reason: 'second-ambiguity'). STOP ends before create.
-- A fixed selector fixes mode and selector fields. Fixed repositories and paths are exact boundaries, and \`comparePath\` is orthogonal and never inferred. Contradictory prose yields attempt-1 NEEDS_CLARIFICATION with \`reason: 'conflict'\`. Ambiguous targets use \`reason: 'ambiguous-target'\`. Missing boundaries use \`reason: 'missing-boundary'\`. Inferred whole-repository scope, an extra repository, or a path outside the coherent inferred boundary yields \`reason: 'broad-expansion'\` unless that exact expansion was fixed. An accepted expansion is recorded exactly in \`approvedExpansions\`; denial yields STOP(reason: 'denied-expansion').
+- Attempt 1 may return all three resolve states. On NEEDS_CLARIFICATION, ask exactly the returned \`question\` through the \`question\` tool once with exact option labels \`Yes\` and \`No\`. Only the exact case-sensitive answer \`Yes\` advances. Exact \`No\`, missing, custom, differently cased, punctuated, whitespace-padded, or multiple answers terminate before another resolve. Then launch one fresh resolve task with \`attempt: 2\` and the exact question and answer in \`clarification\`. Attempt 2 may return only BOUNDED or STOP. Normalize a second clarification, changed question, missing answer, or additional expansion to STOP(reason: 'second-ambiguity'). STOP ends before create.
+- A fixed selector fixes mode and selector fields. Fixed repositories and paths are exact boundaries, and \`comparePath\` is orthogonal and never inferred. Contradictory prose yields attempt-1 NEEDS_CLARIFICATION with \`reason: 'conflict'\`. Ambiguous targets use \`reason: 'ambiguous-target'\`. Missing boundaries use \`reason: 'missing-boundary'\`. Inferred whole-repository scope, an extra repository, or a path outside the coherent inferred boundary yields \`reason: 'broad-expansion'\` unless that exact expansion was fixed. Every clarification returns the complete normalized non-ephemeral \`proposal\`; it omits only \`clarification\` and \`merge.approvedExpansions\`. The store derives required expansions, stores the full proposal, and constructs the only acceptable attempt-2 candidate by adding the exact clarification and derived approvals. Attempt 2 may change only attempt metadata and those store-owned fields: any resolve input, target, threat context, lens, intent, evidence, provenance, comparison, preview, descriptor, create-input, or scope-echo drift terminates and revokes authority.
 - BOUNDED requires an immutable fully materialized candidate with empty \`conflicts\`, every dimension resolved, exact preview/create inputs, and every expansion approved:
 
 \`\`\`ts
 type AcceptedCandidate = {
-  schema: 'hive-vuln-review-stage1/v1';
+  schema: 'hive-vuln-review-stage1/v2';
   normalizedIntent: string;
   fixedOverrides: ResolvePacket['fixedOverrides'];
   inferredScope: {
@@ -605,7 +608,7 @@ type AcceptedCandidate = {
 
 \`\`\`ts
 type MaterializePacket = {
-  schema: 'hive-vuln-review-stage1/v1';
+  schema: 'hive-vuln-review-stage1/v2';
   stage: 'materialize';
   acceptedState: 'BOUNDED';
   scopeEcho: string;
@@ -614,7 +617,7 @@ type MaterializePacket = {
 
 type MaterializeResult =
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'READY';
       scopeEcho: string;
       runId: string;
@@ -633,7 +636,7 @@ type MaterializeResult =
       compare: AcceptedCandidate['compare'];
     }
   | {
-      schema: 'hive-vuln-review-stage1/v1';
+      schema: 'hive-vuln-review-stage1/v2';
       state: 'STOP';
       reason: 'candidate-mismatch' | 'create-denied' | 'source-drift' | 'scope-drift' | 'cleanup-uncertain' | 'create-needs-discussion' | 'packet-invalid';
       message: string;
