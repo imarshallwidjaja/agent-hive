@@ -477,18 +477,16 @@ const plugin: Plugin = async (ctx) => {
   }>();
   type VulnerabilityClarificationHandle = NonNullable<ReturnType<VulnerabilityReviewInvocationStore['authorizeClarificationQuestion']>>;
   const vulnerabilityClarificationHandles = new Map<string, Map<string, VulnerabilityClarificationHandle>>();
-  const vulnerabilityStage1CallIDs = new Map<string, Map<string, Set<string>>>();
+  const vulnerabilityToolCallIDs = new Map<string, Map<string, Set<string>>>();
   const reserveVulnerabilityToolCallID = (sessionID: string, toolName: string, callID: string): boolean => {
-    const sessionCallIDs = vulnerabilityStage1CallIDs.get(sessionID) ?? new Map<string, Set<string>>();
+    const sessionCallIDs = vulnerabilityToolCallIDs.get(sessionID) ?? new Map<string, Set<string>>();
     const toolCallIDs = sessionCallIDs.get(toolName) ?? new Set<string>();
     if (toolCallIDs.has(callID)) return false;
     toolCallIDs.add(callID);
     sessionCallIDs.set(toolName, toolCallIDs);
-    vulnerabilityStage1CallIDs.set(sessionID, sessionCallIDs);
+    vulnerabilityToolCallIDs.set(sessionID, sessionCallIDs);
     return true;
   };
-  const isReusedVulnerabilityToolCallID = (sessionID: string, toolName: string, callID: string): boolean =>
-    vulnerabilityStage1CallIDs.get(sessionID)?.get(toolName)?.has(callID) === true;
   const reviewWorkspaceWorkflowAliases = (): ReviewWorkspaceWorkflowAliases[] => [
     {
       workflow: 'dash-review',
@@ -1881,8 +1879,9 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         ? vulnerabilityReviewRoleForAgent(caller, runtimeVulnerabilityReviewLanes)
         : undefined;
       if (
-        input.callID
-        && isReusedVulnerabilityToolCallID(input.sessionID, input.tool, input.callID)
+        (input.tool === 'task' || input.tool === 'question')
+        && input.callID
+        && !reserveVulnerabilityToolCallID(input.sessionID, input.tool, input.callID)
       ) {
         throw new Error('Vulnerability review Stage 1 rejected a reused session/tool callID because exact callback identity is unavailable.');
       }
@@ -1900,9 +1899,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         };
         if (!input.callID) {
           rejectStage1Task('Vulnerability review Stage 1 task call is missing a fresh callID or attempts to re-arm an outstanding call.');
-        }
-        if (!reserveVulnerabilityToolCallID(input.sessionID, input.tool, input.callID)) {
-          throw new Error('Vulnerability review Stage 1 rejected a reused session/tool callID because exact callback identity is unavailable.');
         }
         if (!vulnerabilityReviewInvocations.prepareTaskCall({
           primarySessionID: input.sessionID,
@@ -1973,9 +1969,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           : undefined;
         if (!input.callID) {
           throw new Error('Vulnerability review Stage 1 permits only its one exact clarification question.');
-        }
-        if (!reserveVulnerabilityToolCallID(input.sessionID, input.tool, input.callID)) {
-          throw new Error('Vulnerability review Stage 1 rejected a reused session/tool callID because exact callback identity is unavailable.');
         }
         const clarificationHandle = question
           ? vulnerabilityReviewInvocations.authorizeClarificationQuestion({

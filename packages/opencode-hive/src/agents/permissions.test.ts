@@ -3062,6 +3062,252 @@ describe('Per-agent tool filtering', () => {
     },
   );
 
+  it.each(
+    (['pre-stage-1', 'deep'] as const).flatMap((oldPhase) =>
+      (['before-current', 'after-current'] as const).flatMap((callbackOrder) =>
+        (['undefined', 'stale'] as const).flatMap((parentOutput) =>
+          (['resolve', 'materialize'] as const).flatMap((replacementStage) =>
+            (['fresh', 'READY', 'claimed'] as const).map((currentState) =>
+              [oldPhase, callbackOrder, parentOutput, replacementStage, currentState] as const))))),
+  )(
+    'tombstones a %s task identity with a %s %s callback before a %s %s Stage 1 replacement',
+    async (oldPhase, callbackOrder, parentOutput, replacementStage, currentState) => {
+      const suffix = `${oldPhase}-${callbackOrder}-${parentOutput}-${replacementStage}-${currentState}`;
+      const repository = mkdtempSync(path.join(os.tmpdir(), `hive-vulnerability-mixed-task-${suffix}-`));
+      createGitRepository(repository);
+      let cleanupWorkspace: ReturnType<typeof spyOn> | undefined;
+      try {
+        const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+        const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+        await hooks.config?.(config);
+        const primary = config.command?.['vuln-review']?.agent!;
+        const baseline = findVulnerabilityReviewLanes(config.agent)
+          .find(([, lane]) => lane.prompt?.includes('mandatory cross-cutting baseline'))?.[0]!;
+        const command = hooks['command.execute.before']!;
+        const message = hooks['chat.message']!;
+        const before = hooks['tool.execute.before']!;
+        const after = hooks['tool.execute.after']!;
+        const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
+        const claim = hooks.tool!.hive_review_workspace_claim.execute as (value: unknown, context: unknown) => Promise<string>;
+        const sharedCallID = `mixed-task-shared-${suffix}`;
+        const oldCallback = {
+          tool: 'task',
+          sessionID: 'vuln-primary',
+          callID: sharedCallID,
+          args: {},
+        };
+        const oldOutput = parentOutput === 'undefined'
+          ? undefined
+          : {
+              title: 'task',
+              output: JSON.stringify({
+                schema: 'hive-vuln-review-stage1/v2',
+                state: 'BOUNDED',
+                candidate: currentChangeProposal(),
+              }),
+              metadata: {},
+            };
+
+        if (oldPhase === 'deep') {
+          const oldGrant = await grantCurrentChangeMaterialization({
+            hooks,
+            primary,
+            scope: vulnerabilityScopeAlias,
+            idSuffix: `mixed-task-old-${suffix}`,
+          });
+          const oldWorkspace = JSON.parse(await create(
+            { repositoryIds: ['root'], scopeMode: 'current-change' },
+            oldGrant.childContext,
+          ));
+          await after({
+            tool: 'task',
+            sessionID: 'vuln-primary',
+            callID: oldGrant.materializeCallID,
+            args: {},
+          }, {
+            title: 'task',
+            output: JSON.stringify(readyMaterializeResult(oldGrant.candidate, oldWorkspace)),
+            metadata: {},
+          });
+          await claim({
+            runId: oldWorkspace.runId,
+            ownershipToken: oldWorkspace.ownershipToken,
+          }, { ...snapshotContext(primary), sessionID: 'vuln-primary' });
+        }
+        await before({ tool: 'task', sessionID: 'vuln-primary', callID: sharedCallID }, {
+          args: { subagent_type: baseline },
+        });
+        cleanupWorkspace = spyOn(ReviewWorkspaceService.prototype, 'cleanup').mockRejectedValue(
+          new Error('injected mixed-phase cleanup uncertainty'),
+        );
+
+        if (callbackOrder === 'before-current') {
+          await after(oldCallback, oldOutput as any);
+        }
+
+        const resolvePacket = {
+          schema: 'hive-vuln-review-stage1/v2',
+          stage: 'resolve',
+          attempt: 1,
+          intent: '',
+          conversationSummary: 'Review the replacement generation.',
+          fixedOverrides: {},
+          clarification: null,
+        };
+        let currentResolveCallID: string | undefined;
+        let currentGrant: Awaited<ReturnType<typeof grantCurrentChangeMaterialization>> | undefined;
+        let currentWorkspace: Record<string, any> | undefined;
+        if (replacementStage === 'resolve') {
+          await command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] });
+          await message({ sessionID: 'vuln-primary', agent: primary }, {
+            message: { agent: primary },
+            parts: [],
+          } as any);
+          await expect(before({ tool: 'task', sessionID: 'vuln-primary', callID: sharedCallID }, {
+            args: { prompt: JSON.stringify(resolvePacket), subagent_type: vulnerabilityScopeAlias, background: false },
+          })).rejects.toThrow('reused session/tool callID');
+          if (currentState === 'fresh') {
+            currentResolveCallID = `mixed-task-current-resolve-${suffix}`;
+            await before({ tool: 'task', sessionID: 'vuln-primary', callID: currentResolveCallID }, {
+              args: { prompt: JSON.stringify(resolvePacket), subagent_type: vulnerabilityScopeAlias, background: false },
+            });
+          } else {
+            currentGrant = await grantCurrentChangeMaterialization({
+              hooks,
+              primary,
+              scope: vulnerabilityScopeAlias,
+              idSuffix: `mixed-task-current-${suffix}`,
+            });
+          }
+        } else {
+          currentGrant = await grantCurrentChangeMaterialization({
+            hooks,
+            primary,
+            scope: vulnerabilityScopeAlias,
+            idSuffix: `mixed-task-current-${suffix}`,
+          });
+          await expect(before({ tool: 'task', sessionID: 'vuln-primary', callID: sharedCallID }, {
+            args: {
+              prompt: JSON.stringify({
+                schema: 'hive-vuln-review-stage1/v2',
+                stage: 'materialize',
+                acceptedState: 'BOUNDED',
+                scopeEcho: currentGrant.candidate.scopeEcho,
+                candidate: currentGrant.candidate,
+              }),
+              subagent_type: vulnerabilityScopeAlias,
+              background: false,
+            },
+          })).rejects.toThrow('reused session/tool callID');
+        }
+        if (currentGrant && currentState !== 'fresh') {
+          currentWorkspace = JSON.parse(await create(
+            { repositoryIds: ['root'], scopeMode: 'current-change' },
+            currentGrant.childContext,
+          ));
+          await after({
+            tool: 'task',
+            sessionID: 'vuln-primary',
+            callID: currentGrant.materializeCallID,
+            args: {},
+          }, {
+            title: 'task',
+            output: JSON.stringify(readyMaterializeResult(currentGrant.candidate, currentWorkspace)),
+            metadata: {},
+          });
+          if (currentState === 'claimed') {
+            await claim({
+              runId: currentWorkspace.runId,
+              ownershipToken: currentWorkspace.ownershipToken,
+            }, { ...snapshotContext(primary), sessionID: 'vuln-primary' });
+          }
+        }
+
+        if (callbackOrder === 'after-current') {
+          await after(oldCallback, oldOutput as any);
+        }
+        await after(oldCallback, oldOutput as any);
+
+        expect(cleanupWorkspace).not.toHaveBeenCalled();
+        await expect(create(
+          { repositoryIds: ['root'], scopeMode: 'current-change' },
+          { ...snapshotContext(vulnerabilityScopeAlias), sessionID: `mixed-task-stale-child-${suffix}` },
+        )).rejects.toThrow('no exact materialize grant');
+        if (currentState === 'fresh' && replacementStage === 'resolve') {
+          const proposal = currentChangeProposal();
+          const candidate = {
+            ...proposal,
+            merge: {
+              ...(proposal.merge as Record<string, unknown>),
+              approvedExpansions: [],
+            },
+            clarification: null,
+          };
+          await after({
+            tool: 'task',
+            sessionID: 'vuln-primary',
+            callID: currentResolveCallID!,
+            args: {},
+          }, {
+            title: 'task',
+            output: JSON.stringify({ schema: 'hive-vuln-review-stage1/v2', state: 'BOUNDED', candidate }),
+            metadata: {},
+          });
+          await expect(before({
+            tool: 'task',
+            sessionID: 'vuln-primary',
+            callID: `mixed-task-current-materialize-${suffix}`,
+          }, {
+            args: {
+              prompt: JSON.stringify({
+                schema: 'hive-vuln-review-stage1/v2',
+                stage: 'materialize',
+                acceptedState: 'BOUNDED',
+                scopeEcho: candidate.scopeEcho,
+                candidate,
+              }),
+              subagent_type: vulnerabilityScopeAlias,
+              background: false,
+            },
+          })).resolves.toBeUndefined();
+        } else if (currentState === 'fresh') {
+          currentWorkspace = JSON.parse(await create(
+            { repositoryIds: ['root'], scopeMode: 'current-change' },
+            currentGrant!.childContext,
+          ));
+          await after({
+            tool: 'task',
+            sessionID: 'vuln-primary',
+            callID: currentGrant!.materializeCallID,
+            args: {},
+          }, {
+            title: 'task',
+            output: JSON.stringify(readyMaterializeResult(currentGrant!.candidate, currentWorkspace)),
+            metadata: {},
+          });
+          expect(existsSync(currentWorkspace.workspacePath)).toBe(true);
+        } else {
+          expect(existsSync(currentWorkspace!.workspacePath)).toBe(true);
+          if (currentState === 'READY') {
+            await expect(claim({
+              runId: currentWorkspace!.runId,
+              ownershipToken: currentWorkspace!.ownershipToken,
+            }, { ...snapshotContext(primary), sessionID: 'vuln-primary' })).resolves.toBeDefined();
+          } else {
+            await expect(before({
+              tool: 'task',
+              sessionID: 'vuln-primary',
+              callID: `mixed-task-deep-after-stale-${suffix}`,
+            }, { args: { subagent_type: baseline } })).resolves.toBeUndefined();
+          }
+        }
+      } finally {
+        cleanupWorkspace?.mockRestore();
+        rmSync(repository, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('permits one exact question answer transition when distinct tools share a callID', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-clarification-'));
     createGitRepository(repository);
@@ -3269,6 +3515,127 @@ describe('Per-agent tool filtering', () => {
           args: {
             prompt: JSON.stringify({
               ...packet,
+              attempt: 2,
+              clarification: { question, answer: 'Yes' },
+            }),
+            subagent_type: vulnerabilityScopeAlias,
+            background: false,
+          },
+        })).resolves.toBeUndefined();
+      } finally {
+        rmSync(repository, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(
+    (['before-current', 'after-current'] as const).flatMap((callbackOrder) =>
+      (['undefined', 'No', 'invalid', 'Yes'] as const).map((oldAnswer) =>
+        [callbackOrder, oldAnswer] as const)),
+  )(
+    'tombstones a pre-Stage-1 clarification identity with a %s callback answered %s',
+    async (callbackOrder, oldAnswer) => {
+      const suffix = `${callbackOrder}-${oldAnswer}`;
+      const repository = mkdtempSync(path.join(os.tmpdir(), `hive-vulnerability-mixed-question-${suffix}-`));
+      createGitRepository(repository);
+      try {
+        const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+        const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+        await hooks.config?.(config);
+        const primary = config.command?.['vuln-review']?.agent!;
+        const command = hooks['command.execute.before']!;
+        const message = hooks['chat.message']!;
+        const before = hooks['tool.execute.before']!;
+        const after = hooks['tool.execute.after']!;
+        const question = 'Use the exact proposed repository boundary?';
+        const questionArgs = {
+          questions: [{
+            header: 'Scope',
+            question,
+            options: [
+              { label: 'Yes', description: 'Accept the proposal' },
+              { label: 'No', description: 'Deny the proposal' },
+            ],
+          }],
+        };
+        const resolvePacket = {
+          schema: 'hive-vuln-review-stage1/v2',
+          stage: 'resolve',
+          attempt: 1,
+          intent: '',
+          conversationSummary: 'The repository boundary is ambiguous.',
+          fixedOverrides: {},
+          clarification: null,
+        };
+        const sharedCallID = `mixed-question-shared-${suffix}`;
+        const oldCallback = {
+          tool: 'question',
+          sessionID: 'vuln-primary',
+          callID: sharedCallID,
+          args: questionArgs,
+        };
+        const oldOutput = oldAnswer === 'undefined'
+          ? undefined
+          : {
+              title: 'Questions answered',
+              output: oldAnswer,
+              metadata: { answers: [[oldAnswer === 'invalid' ? 'yes' : oldAnswer]] },
+            };
+
+        await before({ tool: 'question', sessionID: 'vuln-primary', callID: sharedCallID }, { args: questionArgs });
+        if (callbackOrder === 'before-current') {
+          await after(oldCallback, oldOutput as any);
+        }
+
+        await command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] });
+        await message({ sessionID: 'vuln-primary', agent: primary }, {
+          message: { agent: primary },
+          parts: [],
+        } as any);
+        const resolveCallID = `mixed-question-resolve-${suffix}`;
+        await before({ tool: 'task', sessionID: 'vuln-primary', callID: resolveCallID }, {
+          args: { prompt: JSON.stringify(resolvePacket), subagent_type: vulnerabilityScopeAlias, background: false },
+        });
+        await after({ tool: 'task', sessionID: 'vuln-primary', callID: resolveCallID, args: {} }, {
+          title: 'task',
+          output: JSON.stringify({
+            schema: 'hive-vuln-review-stage1/v2',
+            state: 'NEEDS_CLARIFICATION',
+            question,
+            reason: 'ambiguous-target',
+            unresolvedDimensions: ['repositories'],
+            proposal: currentChangeProposal(),
+          }),
+          metadata: {},
+        });
+        await expect(before({ tool: 'question', sessionID: 'vuln-primary', callID: sharedCallID }, {
+          args: questionArgs,
+        })).rejects.toThrow('reused session/tool callID');
+
+        const currentCallID = `mixed-question-current-${suffix}`;
+        await before({ tool: 'question', sessionID: 'vuln-primary', callID: currentCallID }, { args: questionArgs });
+        if (callbackOrder === 'after-current') {
+          await after(oldCallback, oldOutput as any);
+        }
+        await after(oldCallback, oldOutput as any);
+        await after({
+          tool: 'question',
+          sessionID: 'vuln-primary',
+          callID: currentCallID,
+          args: questionArgs,
+        }, {
+          title: 'Questions answered',
+          output: 'Yes',
+          metadata: { answers: [['Yes']] },
+        });
+        await expect(before({
+          tool: 'task',
+          sessionID: 'vuln-primary',
+          callID: `mixed-question-attempt-two-${suffix}`,
+        }, {
+          args: {
+            prompt: JSON.stringify({
+              ...resolvePacket,
               attempt: 2,
               clarification: { question, answer: 'Yes' },
             }),
