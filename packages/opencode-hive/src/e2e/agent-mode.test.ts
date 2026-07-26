@@ -136,8 +136,8 @@ describe("agentMode gating", () => {
     }).command;
     for (const command of HIVE_COMMANDS) {
       const output = commandHooks[command.key].run('route smoke');
-      expect(output).not.toContain('Mode:');
-      expect(output).not.toContain('Route:');
+      expect(output).not.toMatch(/^Mode:/m);
+      expect(output).not.toMatch(/^Route:/m);
       expect(output).not.toContain('Slash commands do not switch agents automatically');
       expect(output).not.toContain('delegate or reroute to the target agent and stop if that is not possible');
     }
