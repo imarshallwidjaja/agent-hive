@@ -34,3 +34,9 @@ export const HIVE_SYSTEM_PROMPT = `
 **Important:** hive_worktree_commit commits to the task branch but does NOT merge.
 Task branches are integrated by the responsible orchestrator/helper flow. Swarm normally delegates merge batches to \`hive-helper\`; direct \`hive_merge\` is a recovery escape when the active role allows it.
 `;
+
+export const SUBAGENT_CLARIFICATION_PROMPT = `
+## Clarification Handoff
+
+The \`question\` tool is unavailable in subagent sessions. If clarification is required, stop and return the exact clarification question in your terminal response so the parent orchestrator can ask the operator.
+`;

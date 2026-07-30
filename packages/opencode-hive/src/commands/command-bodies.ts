@@ -206,7 +206,7 @@ Stop to clarify or ask questions only when a real decision or blocker requires i
 
 Preserve execution flow: \`hive_worktree_start\` → worker execution → worker \`hive_worktree_commit\` → orchestrator \`hive_merge\`. The orchestrator must not call \`hive_worktree_commit\` for workers.
 
-Each native \`task()\` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. Never pass \`task_id\` to \`task()\`; returned task IDs are observe-only board handles. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse.
+Each native \`task()\` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. Never pass \`task_id\` to \`task()\`; returned task IDs are observe-only board handles. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated \`architect-planner\` may launch one level of read-only planning helpers; those children cannot delegate.
 
 Tidy up commits and worktrees after each task or batch when appropriate. Preserve one root commit per completed task. Default to \`strategy: "squash"\` and fold provisional implementation, review and fix iterations into that squash commit. Every created commit message must have a non-empty one-line subject, a blank line, and a descriptive body. Use rebase or normal merge only when every preserved commit is independently valuable; normal merge also requires a valid aggregate message. Commits should use the correct topical prefix for the work in that commit, not a generic "hive" prefix. Do not use \`hive\`, task numbers, task folder names, run IDs, or "merge task" prose in project history.
 

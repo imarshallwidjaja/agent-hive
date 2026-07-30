@@ -313,7 +313,7 @@ If a completed task branch has no net tracked changes, `hive_merge` returns `suc
 3. Worker executes -> calls `hive_worktree_commit(status: "completed")`
 4. Worker blocked -> calls `hive_worktree_commit(status: "blocked", blocker: {...})`
 
-One native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches. Never pass `task_id` to `task()`: returned task IDs are observe-only board handles for status, reconcile, and cancel. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse.
+One native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches. Never pass `task_id` to `task()`: returned task IDs are observe-only board handles for status, reconcile, and cancel. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate. Subagents cannot use `question`; they return required operator clarification to their parent in the terminal handoff.
 
 Feature task granularity remains separate: one implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
@@ -333,7 +333,7 @@ Failed or retry work starts a new worker with a concise self-contained handoff. 
 - Call `hive_status()` immediately to check the new task state and find next runnable tasks
 - Prefer structured worker-result envelopes over free-form completion interpretation when extending worker/orchestrator flows
 - When opencode is launched with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents may load and use the bundled `background-delegation` skill and call `task({ background: true, ... })` only for independent work where useful foreground work can continue. Use blocking task/worktree calls when the next meaningful step depends on the worker. Gate-open `hive_worktree_start` may return `backgroundTaskCall`, but pending background board state is not created until the parent actually launches the native background task. Wait for the native completion notification and refresh `hive_background_status` before dependent decisions. If status returns wait-only scheduler guidance, do not refresh repeatedly until the native notification arrives or the lane becomes stale, wrong, or no longer needed. Treat `recommendedNextAction` and `requiresHiveStatusRefresh` as board-local scheduler hints, not merge readiness.
-- Subagents are terminal and cannot recurse; including custom derived subagents, they must not call `task()` recursively
+- The subagent depth and clarification contract above also applies to custom derived subagents.
 
 ### Sandbox Configuration
 

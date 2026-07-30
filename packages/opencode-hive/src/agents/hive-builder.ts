@@ -52,7 +52,7 @@ A non-feature delegation unit is one independently answerable question or one pr
 
 Each native \`task()\` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal. Split independently verifiable outcomes into fresh launches. Never pass \`task_id\` to \`task()\`. Returned task IDs are observe-only board handles for status, reconcile, and cancel; they are not session-continuation inputs. Do not send a follow-up prompt to a completed, failed, or blocked session.
 
-For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse; they must not call \`task()\` recursively.
+For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse, except a delegated \`architect-planner\` may launch one level of read-only planning helpers; those children cannot delegate.
 
 ### Subagent Concurrency
 

@@ -363,7 +363,7 @@ import { applyTaskBudget, applyContextBudget, DEFAULT_BUDGET, type TruncationEve
 import { writeWorkerPromptFile } from "./utils/prompt-file";
 import { formatRelativeTime } from "./utils/format";
 import { createVariantHook } from "./hooks/variant-hook.js";
-import { HIVE_SYSTEM_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
+import { HIVE_SYSTEM_PROMPT, SUBAGENT_CLARIFICATION_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
 import { HIVE_COMMANDS, type HiveCommandKey } from './commands/registry.js';
@@ -465,6 +465,8 @@ const plugin: Plugin = async (ctx) => {
   let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
   let runtimeDashReviewLanes: HiveCommandDashReviewLane[] = [];
   let runtimeVulnerabilityReviewLanes: VulnerabilityReviewLane[] = [];
+  let runtimeArchitectTaskTargets = new Set<string>();
+  const runtimeTaskChildSessions = new Set<string>();
   const dashReviewPendingCommandSessions = new Set<string>();
   const vulnerabilityReviewPendingCommandSessions = new Set<string>();
   const vulnerabilityReviewStage1Sessions = new Set<string>();
@@ -488,6 +490,16 @@ const plugin: Plugin = async (ctx) => {
     sessionCallIDs.set(toolName, toolCallIDs);
     vulnerabilityToolCallIDs.set(sessionID, sessionCallIDs);
     return true;
+  };
+  const getSessionParentID = async (sessionID: string): Promise<string | undefined> => {
+    const response = await client.session.get({
+      path: { id: sessionID },
+      query: { directory },
+    });
+    if (!response.data) {
+      throw new Error(`Session not found: ${sessionID}`);
+    }
+    return response.data.parentID;
   };
   const reviewWorkspaceWorkflowAliases = (): ReviewWorkspaceWorkflowAliases[] => [
     {
@@ -1689,9 +1701,19 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         properties?: {
           sessionID?: string;
           status?: { type?: string };
-          info?: { id?: string };
+          info?: { id?: string; parentID?: string };
         };
       };
+      if (
+        (event.type === 'session.created' || event.type === 'session.updated')
+        && event.properties?.info?.id
+      ) {
+        if (event.properties.info.parentID) {
+          runtimeTaskChildSessions.add(event.properties.info.id);
+        } else {
+          runtimeTaskChildSessions.delete(event.properties.info.id);
+        }
+      }
       const lifecycleSessionID = event.type === 'session.error'
         ? event.properties?.sessionID
         : event.type === 'session.status' && event.properties?.status?.type === 'idle'
@@ -1709,6 +1731,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
       if (event.type === 'session.deleted' && lifecycleSessionID) {
         const sessionID = lifecycleSessionID;
+        runtimeTaskChildSessions.delete(sessionID);
         dashReviewPendingCommandSessions.delete(sessionID);
         try {
           const results = await reviewWorkspaceService.cleanupOwnedBySession(sessionID, ['dash-review', 'vulnerability-review']);
@@ -1811,19 +1834,21 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         return;
       }
 
+      const isTaskChild = input.sessionID ? runtimeTaskChildSessions.has(input.sessionID) : false;
       const trackedAgent = input.sessionID ? sessionService.getGlobal(input.sessionID)?.agent : undefined;
       const agentName = input.agent ?? trackedAgent;
       const agentPrompt = agentName ? runtimeAgentPrompts.get(agentName) : undefined;
-      if (!agentPrompt) {
+      const prompt = `${agentPrompt ?? ''}${isTaskChild ? SUBAGENT_CLARIFICATION_PROMPT : ''}`;
+      if (!prompt) {
         return;
       }
 
       if (output.system.length === 0) {
-        output.system.push(agentPrompt);
+        output.system.push(prompt);
         return;
       }
 
-      output.system[0] = `${output.system[0]}\n\n${agentPrompt}`;
+      output.system[0] = `${output.system[0]}\n\n${prompt}`;
     }) satisfies SystemTransformHook,
 
     "experimental.chat.messages.transform": async (
@@ -1979,6 +2004,31 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       const vulnerabilityReviewRole = caller
         ? vulnerabilityReviewRoleForAgent(caller, runtimeVulnerabilityReviewLanes)
         : undefined;
+      if ((input.tool === 'task' || input.tool === 'question') && input.sessionID) {
+        let parentID: string | undefined;
+        try {
+          parentID = await getSessionParentID(input.sessionID);
+        } catch {
+          throw new Error(`${input.tool} authorization failed because session lineage is unavailable.`);
+        }
+        if (parentID) {
+          if (input.tool === 'question') {
+            throw new Error('question is unavailable in task-created child sessions; return the exact clarification question to the parent.');
+          }
+          let parentParentID: string | undefined;
+          try {
+            parentParentID = await getSessionParentID(parentID);
+          } catch {
+            throw new Error('task authorization failed because session lineage is unavailable.');
+          }
+          const target = typeof output.args?.subagent_type === 'string'
+            ? output.args.subagent_type
+            : undefined;
+          if (parentParentID || caller !== 'architect-planner' || !target || !runtimeArchitectTaskTargets.has(target)) {
+            throw new Error('task target is not authorized from this task-created child session.');
+          }
+        }
+      }
       if (
         (input.tool === 'task' || input.tool === 'question')
         && input.callID
@@ -2158,6 +2208,9 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       await backgroundJobAdapter['tool.execute.before'](input, output);
+      if (input.tool === 'task' && typeof output.args?.task_id === 'string' && output.args.task_id.trim()) {
+        runtimeTaskChildSessions.add(output.args.task_id.trim());
+      }
 
       // Cadence gate: check if this hook should execute this turn
       // SAFETY-CRITICAL: This hook wraps commands for Docker sandbox isolation.
@@ -4138,6 +4191,7 @@ NEXT: Ask your first clarifying question about this feature.`;
     // Config hook - merge agents into opencodeConfig.agent
     config: async (opencodeConfig: Record<string, unknown>) => {
       runtimeAgentPrompts.clear();
+      opencodeConfig.subagent_depth = 2;
 
       function agentTools(allowed: string[]): Record<string, boolean> {
         const result: Record<string, boolean> = {};
@@ -4181,7 +4235,34 @@ NEXT: Ask your first clarifying question about this feature.`;
       const hiveConfigData = configService.get();
       const agentMode = hiveConfigData.agentMode ?? 'unified';
 
+      const existingExperimental = opencodeConfig.experimental && typeof opencodeConfig.experimental === 'object'
+        ? opencodeConfig.experimental as Record<string, unknown>
+        : {};
+      const existingPrimaryTools = Array.isArray(existingExperimental.primary_tools)
+        ? existingExperimental.primary_tools.filter((tool): tool is string => typeof tool === 'string')
+        : [];
+      opencodeConfig.experimental = {
+        ...existingExperimental,
+        primary_tools: [...existingPrimaryTools.filter((tool) => tool !== 'question' && tool !== 'task'), 'question'],
+      };
+
       const customAgentConfigs = getCustomAgentConfigsCompat(configService);
+      const architectTaskPermission: Record<string, 'allow' | 'deny'> = {
+        '*': 'deny',
+        'scout-researcher': 'allow',
+        'plan-reviewer': 'allow',
+        'approach-advisor': 'allow',
+      };
+      for (const [agentName, config] of Object.entries(customAgentConfigs)) {
+        if (['scout-researcher', 'plan-reviewer', 'approach-advisor'].includes(config.baseAgent)) {
+          architectTaskPermission[agentName] = 'allow';
+        }
+      }
+      runtimeArchitectTaskTargets = new Set(
+        Object.entries(architectTaskPermission)
+          .filter(([, action]) => action === 'allow')
+          .map(([target]) => target),
+      );
       const dashReviewTaskPermission: Record<string, 'allow' | 'deny'> = {
         '*': 'deny',
       };

@@ -68,7 +68,7 @@ function createStubClient(): unknown {
           id: inputPath.id,
           projectID: 'snapshot',
           directory: '/test',
-          parentID: 'vuln-primary',
+          parentID: inputPath.id.includes('child') ? 'vuln-primary' : undefined,
           title: 'Test session',
           version: '1',
           time: {
@@ -102,6 +102,31 @@ type AgentConfig = {
   variant?: string;
   description?: string;
 };
+
+function createLineageClient(parentBySession: Record<string, string | undefined>): unknown {
+  const client = createStubClient() as {
+    session: {
+      get: (input: { path: { id: string } }) => Promise<{ data: Record<string, unknown> | undefined }>;
+    };
+  };
+  client.session.get = async ({ path: inputPath }) => {
+    if (!Object.hasOwn(parentBySession, inputPath.id)) {
+      return { data: undefined };
+    }
+    return {
+      data: {
+        id: inputPath.id,
+        projectID: 'test',
+        directory: '/test',
+        parentID: parentBySession[inputPath.id],
+        title: 'Test session',
+        version: '1',
+        time: { created: 1, updated: 1 },
+      },
+    };
+  };
+  return client;
+}
 
 function resolveTaskPermission(rules: Record<string, string>, target: string): string | undefined {
   let result: string | undefined;
@@ -493,7 +518,8 @@ describe('Agent permissions', () => {
     
     const opencodeConfig: { 
       agent?: Record<string, AgentConfig>,
-      default_agent?: string 
+      default_agent?: string,
+      subagent_depth?: number,
     } = {};
     await hooks.config?.(opencodeConfig);
 
@@ -512,6 +538,7 @@ describe('Agent permissions', () => {
 
     const hivePerm = opencodeConfig.agent?.['hive-master']?.permission;
     expect(hivePerm).toBeTruthy();
+    expect(hivePerm?.question).toBe('allow');
   });
 
   it('registers dedicated agents in dedicated mode', async () => {
@@ -555,6 +582,7 @@ describe('Agent permissions', () => {
     expect(opencodeConfig.agent?.['hive-builder']).toBeTruthy();
     expect(opencodeConfig.agent?.['__hive_dash_review_primary']).toBeTruthy();
     expect(opencodeConfig.default_agent).toBe('architect-planner');
+    expect(opencodeConfig.subagent_depth).toBe(2);
 
     const swarmPerm = opencodeConfig.agent?.['swarm-orchestrator']?.permission;
     const architectPerm = opencodeConfig.agent?.['architect-planner']?.permission;
@@ -565,6 +593,36 @@ describe('Agent permissions', () => {
 
     expect(architectPerm!.edit).toBe('deny');
     expect(architectPerm!.task).toBe('allow');
+  });
+
+  it('normalizes experimental.primary_tools by removing task, keeping question once, and preserving unrelated entries', async () => {
+    spyOn(ConfigService.prototype, 'get').mockReturnValue({
+      agentMode: 'unified',
+      agents: {
+        'hive-master': {},
+      },
+    } as any);
+
+    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const hooks = await plugin({
+      directory: repoRoot,
+      worktree: repoRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: { id: 'test', worktree: repoRoot, time: { created: Date.now() } },
+      client: createStubClient(),
+      $: createStubShell(),
+    } as any);
+
+    const opencodeConfig: {
+      experimental?: { primary_tools?: string[] };
+    } = {
+      experimental: {
+        primary_tools: ['task', 'question', 'unrelated-tool'],
+      },
+    };
+    await hooks.config?.(opencodeConfig);
+
+    expect(opencodeConfig.experimental?.primary_tools).toEqual(['unrelated-tool', 'question']);
   });
 
   it('explicitly denies delegation tools for subagents', async () => {
@@ -600,6 +658,302 @@ describe('Agent permissions', () => {
       expect(perm!.task).toBe('deny');
       expect(perm!.delegate).toBe('deny');
     }
+  });
+
+  it('enforces task depth and target permissions from runtime session lineage', async () => {
+    spyOn(ConfigService.prototype, 'get').mockReturnValue({
+      agentMode: 'dedicated',
+      agents: {},
+      customAgents: {
+        'scout-domain': {
+          baseAgent: 'scout-researcher',
+          description: 'Domain research',
+        },
+        'reviewer-domain-plan': {
+          baseAgent: 'plan-reviewer',
+          description: 'Domain plan review',
+        },
+        'advisor-domain': {
+          baseAgent: 'approach-advisor',
+          description: 'Domain approach advice',
+        },
+        'forager-domain': {
+          baseAgent: 'forager-worker',
+          description: 'Domain implementation',
+        },
+      },
+    } as any);
+
+    const sessions: Record<string, string | undefined> = {
+      root: undefined,
+      'root-hive': undefined,
+      'root-swarm': undefined,
+      'root-builder': undefined,
+      'root-architect': undefined,
+      'architect-child': 'root',
+      'hive-child': 'root',
+      'swarm-child': 'root',
+      'builder-child': 'root',
+      'forager-child': 'root',
+      'scout-grandchild': 'architect-child',
+    };
+    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const hooks = await plugin({
+      directory: repoRoot,
+      worktree: repoRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: { id: 'test', worktree: repoRoot, time: { created: Date.now() } },
+      client: createLineageClient(sessions),
+      $: createStubShell(),
+    } as any);
+    await hooks.config?.({});
+
+    const trackAgent = async (sessionID: string, agent: string) => {
+      await hooks['chat.message']?.(
+        { sessionID, agent },
+        { message: { agent }, parts: [] } as any,
+      );
+    };
+    const callTask = (sessionID: string, target: string, taskID?: string) => hooks['tool.execute.before']?.(
+      { tool: 'task', sessionID, callID: `${sessionID}-${target}${taskID ? '-resume' : ''}` },
+      {
+        args: {
+          description: 'Permission contract',
+          prompt: 'Check task permission',
+          subagent_type: target,
+          ...(taskID ? { task_id: taskID } : {}),
+        },
+      } as any,
+    );
+
+    for (const [sessionID, agent] of [
+      ['root-hive', 'hive-master'],
+      ['root-swarm', 'swarm-orchestrator'],
+      ['root-builder', 'hive-builder'],
+    ] as const) {
+      await trackAgent(sessionID, agent);
+      await callTask(sessionID, 'forager-worker');
+    }
+    await trackAgent('root-architect', 'architect-planner');
+    await callTask('root-architect', 'scout-researcher');
+
+    await trackAgent('architect-child', 'architect-planner');
+    for (const target of [
+      'scout-researcher',
+      'plan-reviewer',
+      'approach-advisor',
+      'scout-domain',
+      'reviewer-domain-plan',
+      'advisor-domain',
+    ]) {
+      await callTask('architect-child', target);
+    }
+    await expect(callTask(
+      'architect-child',
+      'approach-advisor',
+      'existing-advisor-session',
+    )).rejects.toThrow('fresh-session policy forbids task({ task_id })');
+    for (const target of ['forager-worker', 'forager-domain', 'code-reviewer', 'hive-builder']) {
+      await expect(callTask('architect-child', target), target).rejects.toThrow('not authorized');
+    }
+
+    for (const [sessionID, agent] of [
+      ['hive-child', 'hive-master'],
+      ['swarm-child', 'swarm-orchestrator'],
+      ['builder-child', 'hive-builder'],
+      ['forager-child', 'forager-worker'],
+    ] as const) {
+      await trackAgent(sessionID, agent);
+      await expect(callTask(sessionID, 'scout-researcher'), agent).rejects.toThrow('not authorized');
+    }
+
+    await trackAgent('scout-grandchild', 'scout-researcher');
+    await expect(callTask('scout-grandchild', 'plan-reviewer')).rejects.toThrow('not authorized');
+  });
+
+  it('fails closed when session lineage is missing or the session API fails', async () => {
+    spyOn(ConfigService.prototype, 'get').mockReturnValue({
+      agentMode: 'dedicated',
+      agents: {},
+    } as any);
+
+    const apiErrorClient = createLineageClient({}) as {
+      session: {
+        get: () => Promise<never>;
+      };
+    };
+    apiErrorClient.session.get = async () => {
+      throw new Error('session API unavailable');
+    };
+
+    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    for (const [caseName, client] of [
+      ['missing session record', createLineageClient({})],
+      ['session API error', apiErrorClient],
+    ] as const) {
+      const hooks = await plugin({
+        directory: repoRoot,
+        worktree: repoRoot,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repoRoot, time: { created: Date.now() } },
+        client,
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+
+      await expect(hooks['tool.execute.before']?.(
+        { tool: 'task', sessionID: 'unknown-child', callID: `${caseName}-task` },
+        { args: { subagent_type: 'scout-researcher' } } as any,
+      ), caseName).rejects.toThrow('task authorization failed because session lineage is unavailable');
+      await expect(hooks['tool.execute.before']?.(
+        { tool: 'question', sessionID: 'unknown-child', callID: `${caseName}-question` },
+        { args: { questions: [] } } as any,
+      ), caseName).rejects.toThrow('question authorization failed because session lineage is unavailable');
+    }
+  });
+
+  it('fails closed without hanging on cyclic session parent links', async () => {
+    spyOn(ConfigService.prototype, 'get').mockReturnValue({
+      agentMode: 'dedicated',
+      agents: {},
+    } as any);
+
+    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const hooks = await plugin({
+      directory: repoRoot,
+      worktree: repoRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: { id: 'test', worktree: repoRoot, time: { created: Date.now() } },
+      client: createLineageClient({
+        'cycle-child': 'cycle-parent',
+        'cycle-parent': 'cycle-child',
+      }),
+      $: createStubShell(),
+    } as any);
+    await hooks.config?.({});
+    await hooks['chat.message']?.(
+      { sessionID: 'cycle-child', agent: 'architect-planner' },
+      { message: { agent: 'architect-planner' }, parts: [] } as any,
+    );
+
+    const taskCall = hooks['tool.execute.before']?.(
+      { tool: 'task', sessionID: 'cycle-child', callID: 'cycle-task' },
+      { args: { subagent_type: 'scout-researcher' } } as any,
+    );
+    const boundedTaskCall = Promise.race([
+      taskCall,
+      Bun.sleep(100).then(() => {
+        throw new Error('cyclic lineage authorization timed out');
+      }),
+    ]);
+    await expect(boundedTaskCall).rejects.toThrow('not authorized');
+    await expect(hooks['tool.execute.before']?.(
+      { tool: 'question', sessionID: 'cycle-child', callID: 'cycle-question' },
+      { args: { questions: [] } } as any,
+    )).rejects.toThrow('unavailable in task-created child sessions');
+  });
+
+  it('denies question in fresh or resumed task children and injects clarification handoff guidance', async () => {
+    spyOn(ConfigService.prototype, 'get').mockReturnValue({
+      agentMode: 'dedicated',
+      agents: {},
+    } as any);
+
+    const sessions: Record<string, string | undefined> = {
+      root: undefined,
+      'untracked-resume-root': undefined,
+      'root-architect': undefined,
+      'root-hive': undefined,
+      'root-swarm': undefined,
+      'root-builder': undefined,
+      'architect-child': 'root',
+      'hive-child': 'root',
+      'swarm-child': 'root',
+      'builder-child': 'root',
+      'forager-child': 'root',
+    };
+    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const hooks = await plugin({
+      directory: repoRoot,
+      worktree: repoRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: { id: 'test', worktree: repoRoot, time: { created: Date.now() } },
+      client: createLineageClient(sessions),
+      $: createStubShell(),
+    } as any);
+    await hooks.config?.({});
+
+    await hooks.event?.({
+      event: {
+        type: 'session.updated',
+        properties: { info: { id: 'builder-child', parentID: 'root' } },
+      },
+    } as any);
+
+    for (const [sessionID, agent] of [
+      ['architect-child', 'architect-planner'],
+      ['hive-child', 'hive-master'],
+      ['swarm-child', 'swarm-orchestrator'],
+      ['builder-child', 'hive-builder'],
+      ['forager-child', 'forager-worker'],
+    ] as const) {
+      await hooks['chat.message']?.(
+        { sessionID, agent },
+        { message: { agent }, parts: [] } as any,
+      );
+      await expect(hooks['tool.execute.before']?.(
+        { tool: 'question', sessionID, callID: `${sessionID}-question` },
+        { args: { questions: [] } } as any,
+      ), agent).rejects.toThrow('unavailable in task-created child sessions');
+    }
+
+    for (const [sessionID, agent] of [
+      ['root-architect', 'architect-planner'],
+      ['root-hive', 'hive-master'],
+      ['root-swarm', 'swarm-orchestrator'],
+      ['root-builder', 'hive-builder'],
+    ] as const) {
+      await hooks['chat.message']?.(
+        { sessionID, agent },
+        { message: { agent }, parts: [] } as any,
+      );
+      await expect(hooks['tool.execute.before']?.(
+        { tool: 'question', sessionID, callID: `${sessionID}-question` },
+        { args: { questions: [] } } as any,
+      ), agent).resolves.toBeUndefined();
+    }
+
+    const childSystem = { system: ['base'] };
+    await (hooks['experimental.chat.system.transform'] as any)?.(
+      { sessionID: 'builder-child', agent: 'hive-builder' },
+      childSystem,
+    );
+    expect(childSystem.system.join('\n')).toContain('return the exact clarification question in your terminal response');
+
+    await hooks['tool.execute.before']?.(
+      { tool: 'task', sessionID: 'untracked-resume-root', callID: 'resume-forager-child' },
+      {
+        args: {
+          description: 'Resume child',
+          prompt: 'Continue the existing child',
+          subagent_type: 'forager-worker',
+          task_id: 'forager-child',
+        },
+      } as any,
+    );
+    const resumedChildSystem = { system: ['base'] };
+    await (hooks['experimental.chat.system.transform'] as any)?.(
+      { sessionID: 'forager-child', agent: 'forager-worker' },
+      resumedChildSystem,
+    );
+    expect(resumedChildSystem.system.join('\n')).toContain('return the exact clarification question in your terminal response');
+
+    const primarySystem = { system: ['base'] };
+    await (hooks['experimental.chat.system.transform'] as any)?.(
+      { sessionID: 'root', agent: 'hive-builder' },
+      primarySystem,
+    );
+    expect(primarySystem.system.join('\n')).not.toContain('## Clarification Handoff');
   });
 
   it('gives hive-helper the bounded hard-task tool set and no auto-loaded skills appendix', async () => {
@@ -3736,8 +4090,10 @@ describe('Per-agent tool filtering', () => {
     const sessionCreatedAt = new Map<string, number>();
     const client = createStubClient() as any;
     client.session.get = async ({ path: inputPath }: { path: { id: string } }) => {
-      getCount += 1;
-      if (getCount === 1) await firstGet;
+      if (inputPath.id.includes('child')) {
+        getCount += 1;
+        if (getCount === 1) await firstGet;
+      }
       const created = sessionCreatedAt.get(inputPath.id) ?? Date.now() + 1_000;
       sessionCreatedAt.set(inputPath.id, created);
       return {
@@ -3745,7 +4101,7 @@ describe('Per-agent tool filtering', () => {
           id: inputPath.id,
           projectID: 'snapshot',
           directory: repository,
-          parentID: 'vuln-primary',
+          parentID: inputPath.id.includes('child') ? 'vuln-primary' : undefined,
           title: 'Scope child',
           version: '1',
           time: { created, updated: Date.now() + 1_000 },

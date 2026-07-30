@@ -46,7 +46,7 @@ Each native `task()` launch has one primary goal, starts one fresh subagent sess
 
 Never pass `task_id` to `task()`. Returned task IDs are observe-only board handles for `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`; they are not session-resume inputs. Do not send a follow-up prompt to a completed, failed, or blocked session.
 
-For a blocked feature task, `hive_worktree_create({ task, continueFrom: "blocked", decision })` launches a new worker session in the same worktree after the operator provides the decision. For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
+For a blocked feature task, `hive_worktree_create({ task, continueFrom: "blocked", decision })` launches a new worker session in the same worktree after the operator provides the decision. For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
 
 For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
@@ -144,7 +144,7 @@ Result: wait for final native task evidence, then refresh `hive_background_statu
 
 - Using background when the next step depends on the result.
 - Launching speculative work without a clear decision point.
-- Nested delegation. Do not call `task()` from subagents.
+- Nested delegation outside the bounded planning exception. Only a delegated `architect-planner` may call `task()` from a subagent session, and only for one level of approved read-only planning helpers.
 - Forgotten terminal jobs: treating a prompt-acknowledged terminal result as reconciled, or forgetting to wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
 - Empty-board false negatives: treating `jobs: []` as final when `pendingLaunches` or `nextActions` are present.
 - Wait-only polling: repeatedly calling `hive_background_status` while `schedulerGuidance.reason` is `wait_for_native_completion_notification`.

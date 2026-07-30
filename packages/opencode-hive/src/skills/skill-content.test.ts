@@ -258,7 +258,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns.');
     expect(skill!.template).toContain('Gate-closed sessions use normal blocking `task()` wait mode');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
-    expect(skill!.template).toContain('Do not call `task()` from subagents');
+    expect(skill!.template).toContain('Only a delegated `architect-planner` may call `task()` from a subagent session');
     expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
     expect(skill!.template).toContain('waitingForNativeCompletion');
     expect(skill!.template).toContain('completionNotificationsPending > 0');

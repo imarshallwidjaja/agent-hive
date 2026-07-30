@@ -43,7 +43,11 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 □ No blocking questions outstanding?
 
 ALL YES → Announce "Requirements clear. Generating plan." → Write plan
-ANY NO → Ask the specific unclear thing
+ANY NO → Route the specific unclear thing according to Clarification Routing
+
+## Clarification Routing
+
+Only primary sessions call \`question()\`. When launched as a subagent, return the exact clarification question in your terminal response so the parent orchestrator can ask the operator. Do not ask the operator directly from a subagent session.
 
 ## Test Strategy (Ask Before Planning)
 
@@ -76,7 +80,8 @@ Record decision in draft. Embed in plan tasks.
 ## Turn Termination
 
 Valid endings:
-- Question to user (via question() tool)
+- Primary session: question to user via \`question()\`
+- Subagent session: terminal clarification question returned to the parent orchestrator
 - Draft update + next question
 - Auto-transition to plan generation
 

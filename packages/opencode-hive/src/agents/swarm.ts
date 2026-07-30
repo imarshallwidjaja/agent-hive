@@ -78,7 +78,7 @@ Each native \`task()\` launch has one primary goal, starts one fresh subagent se
 
 Never pass \`task_id\` to \`task()\`. Returned task IDs are observe-only board handles for \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\`; they are not session-resume inputs. Do not send a follow-up prompt to a completed, failed, or blocked session.
 
-For a blocked feature task, collect the operator decision, then use \`hive_worktree_create({ task, continueFrom: "blocked", decision })\` to launch a new worker session in the same worktree. For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
+For a blocked feature task, collect the operator decision, then use \`hive_worktree_create({ task, continueFrom: "blocked", decision })\` to launch a new worker session in the same worktree. For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse, except a delegated \`architect-planner\` may launch one level of read-only planning helpers; those children cannot delegate.
 
 ## Delegation Prompt Structure (All 6 Sections)
 

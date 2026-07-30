@@ -7,6 +7,16 @@ import plugin from '../index.js';
 import type { BackgroundJobsJson } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
+(OPENCODE_CLIENT.session as unknown as { get: (input: { path: { id: string } }) => Promise<unknown> }).get = async (input) => ({
+  data: {
+    id: input.path.id,
+    projectID: 'test',
+    directory: '/tmp',
+    title: 'Primary test session',
+    version: '1',
+    time: { created: 1, updated: 1 },
+  },
+});
 
 function createStubShell(): PluginInput['$'] {
   let shell: PluginInput['$'];

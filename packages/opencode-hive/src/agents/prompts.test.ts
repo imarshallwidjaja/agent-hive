@@ -142,7 +142,8 @@ describe('Fresh-session delegation contract', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).toContain('concise self-contained handoff');
       expect(prompt, name).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
-      expect(prompt, name).toContain('Subagents are terminal and cannot recurse');
+      expect(prompt, name).toContain('Subagents are terminal and cannot recurse, except a delegated `architect-planner`');
+      expect(prompt, name).toContain('those children cannot delegate');
     }
 
     for (const [name, prompt] of [
@@ -778,6 +779,13 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
   });
 
+  it('routes architect subagent clarification to the parent without question()', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain(
+      'When launched as a subagent, return the exact clarification question in your terminal response',
+    );
+    expect(ARCHITECT_BEE_PROMPT).toContain('Only primary sessions call `question()`');
+  });
+
   it('does NOT contain oracle reference', () => {
     expect(SWARM_BEE_PROMPT).not.toContain('oracle');
   });
@@ -1382,11 +1390,10 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     );
   });
 
-  it('says subagents must not call task() recursively', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('subagents');
-    expect(HIVE_BUILDER_PROMPT).toContain('not call');
-    expect(HIVE_BUILDER_PROMPT).toContain('task()');
-    expect(HIVE_BUILDER_PROMPT).toContain('recursively');
+  it('limits recursive task use to one architect planning-helper level', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('except a delegated `architect-planner`');
+    expect(HIVE_BUILDER_PROMPT).toContain('one level of read-only planning helpers');
+    expect(HIVE_BUILDER_PROMPT).toContain('those children cannot delegate');
   });
 
   it('does NOT contain task-DAG defaults', () => {
