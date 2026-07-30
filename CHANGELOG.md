@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-30
+
+### Added
+
+- `/vuln-review` resolves free-text intent plus optional fixed scope flags, asks at most one clarification question, then materializes a frozen disposable workspace only after the bounded scope is accepted.
+- Vulnerability Stage 1 is gated by resolve/materialize capabilities, pinned lifecycle events, exact-match materialization, and one-use private comparison authority via `hive_vulnerability_compare_report_read`.
+- Configurable `vulnerability-reviewer` sources feed hidden private review lanes with fail-closed role-specific tool authorization while preserving fixed baseline and falsifier identities.
+- Built-in security lenses cover trust-and-identity, untrusted-data, secrets-and-platform, and stateful-abuse. Optional research MCPs remain coverage gaps when unavailable rather than new scanner dependencies.
+- `/dash-review` and `/vuln-review` authorize from workflow-neutral persisted frozen review leases with restart recovery, trusted cleanup identity, and source/workspace drift rejection.
+- Architecture guidance now requires an integrated adversarial security review before completing security-sensitive work that spans tasks or lifecycle phases.
+
+### Changed
+
+- Hive commit and merge operations require a non-empty one-line subject, a blank line, and a non-empty descriptive body. Feature and ad-hoc integration default to squash with an explicit polished aggregate message.
+- Rebase and normal merge remain available only when every preserved source commit is independently valuable and satisfies the same message contract.
+- Version-bearing package, lockfile, plugin manifest, changelog, and release-note surfaces are refreshed to `2.2.0`.
+
+### Fixed
+
+- Persisted review scope identity stays canonical across restart, tamper, ignored-file drift, and noncanonical Hive scope aliases.
+- Stage 1 proposal approval binds the full normalized packet, isolates callback identities across review phases, and keeps callback cleanup generation-safe under retries and reused call IDs.
+- Review materialization honors project-local repository manifests, hardens frozen workspace identity and cleanup recovery, and uses cross-process materialization locking.
+- Failed integration rolls back safely when commit-message validation rejects preserved history.
+
 ## [2.1.0] - 2026-07-25
 
 ### Added
