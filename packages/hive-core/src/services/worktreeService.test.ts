@@ -43,8 +43,10 @@ async function createTempRepo(): Promise<{ repoPath: string; repoGit: SimpleGit 
   await repoGit.raw(["config", "user.email", "test@example.com"]);
   await repoGit.raw(["config", "user.name", "Test User"]);
 
+  // Nested worktrees under .hive/ appear as untracked without this ignore.
+  await fs.writeFile(path.join(repoPath, ".gitignore"), ".hive/\n", "utf-8");
   await fs.writeFile(path.join(repoPath, "tracked.txt"), "base\n", "utf-8");
-  await repoGit.add("tracked.txt");
+  await repoGit.add([".gitignore", "tracked.txt"]);
   await repoGit.commit("chore: base commit");
 
   return { repoPath, repoGit };
