@@ -1227,6 +1227,19 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
+  it('task trace tools are available only to primary orchestration agents', async () => {
+    const agents = await buildConfig('dedicated');
+    for (const toolName of ['hive_task_trace', 'hive_task_trace_content']) {
+      expect(agents['architect-planner']!.tools![toolName]).toBeUndefined();
+      expect(agents['swarm-orchestrator']!.tools![toolName]).toBeUndefined();
+      expect(agents['hive-builder']!.tools![toolName]).toBeUndefined();
+      expect(agents['scout-researcher']!.tools![toolName]).toBe(false);
+      expect(agents['forager-worker']!.tools![toolName]).toBe(false);
+      expect(agents['hive-helper']!.tools![toolName]).toBe(false);
+      expect(agents['code-reviewer']!.tools![toolName]).toBe(false);
+    }
+  });
+
   it('reviewer agents have same tool set as scout', async () => {
     const agents = await buildConfig('unified');
     const scoutTools = agents['scout-researcher']?.tools;

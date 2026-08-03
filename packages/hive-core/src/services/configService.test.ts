@@ -81,6 +81,59 @@ describe("ConfigService defaults", () => {
     });
   });
 
+  it('defaults task trace summarization to the OpenCode model with deterministic temperature', () => {
+    expect(new ConfigService().get().taskTraceSummarizer).toEqual({ temperature: 0 });
+  });
+
+  it('loads a strict task trace summarizer override', () => {
+    const service = new ConfigService();
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    fs.writeFileSync(service.getPath(), JSON.stringify({
+      taskTraceSummarizer: {
+        model: 'provider/model',
+        variant: 'high',
+        temperature: 0.25,
+      },
+    }));
+
+    expect(service.get().taskTraceSummarizer).toEqual({
+      model: 'provider/model',
+      variant: 'high',
+      temperature: 0.25,
+    });
+  });
+
+  it('trims task trace summarizer model and variant strings', () => {
+    const service = new ConfigService();
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    fs.writeFileSync(service.getPath(), JSON.stringify({
+      taskTraceSummarizer: { model: ' provider/model ', variant: ' high ' },
+    }));
+
+    expect(service.get().taskTraceSummarizer).toEqual({
+      model: 'provider/model',
+      variant: 'high',
+      temperature: 0,
+    });
+  });
+
+  it('falls back to defaults for invalid task trace summarizer declarations', () => {
+    for (const taskTraceSummarizer of [
+      { model: '' },
+      { variant: '   ' },
+      { temperature: -0.1 },
+      { temperature: 2.1 },
+      { temperature: Number.NaN },
+      { unknown: true },
+    ]) {
+      const service = new ConfigService();
+      fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+      fs.writeFileSync(service.getPath(), JSON.stringify({ taskTraceSummarizer }));
+      expect(service.get()).toEqual(DEFAULT_HIVE_CONFIG);
+      expect(service.getLastFallbackWarning()?.reason).toBe('validation_error');
+    }
+  });
+
   it('includes default council groups with stock read-only members only', () => {
     const config = new ConfigService().get();
 

@@ -370,6 +370,7 @@ export const CUSTOM_AGENT_RESERVED_NAMES = [
   ...BUILT_IN_AGENT_NAMES,
   '__hive_dash_review_primary',
   '__hive_vulnerability_review_primary',
+  '__hive_task_trace_summarizer',
   'hive',
   'architect',
   'swarm',
@@ -421,6 +422,12 @@ export interface CouncilConfig {
   groups?: Record<string, CouncilGroupConfig>;
 }
 
+export interface TaskTraceSummarizerConfig {
+  model?: string;
+  variant?: string;
+  temperature?: number;
+}
+
 export interface ResolvedRepository {
   id: string;
   path: string;
@@ -470,6 +477,8 @@ export interface HiveConfig {
   customAgents?: Record<string, CustomAgentConfig>;
   /** Global council command group configuration. */
   council?: CouncilConfig;
+  /** Optional model settings for delegated-task recovery interpretation. */
+  taskTraceSummarizer?: TaskTraceSummarizerConfig;
   /** Sandbox mode for worker isolation */
   sandbox?: 'none' | 'docker';
   /** Docker image to use when sandbox is 'docker' (optional explicit override) */
@@ -532,6 +541,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   agentMode: 'unified',
   sandbox: 'none',
   council: DEFAULT_COUNCIL_CONFIG,
+  taskTraceSummarizer: { temperature: 0 },
   customAgents: {
     'scout-example-template': {
       baseAgent: 'scout-researcher',

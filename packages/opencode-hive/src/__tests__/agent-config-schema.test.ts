@@ -64,6 +64,7 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('vulnerability-reviewer');
     expectReservedNameToFail('__hive_dash_review_primary');
     expectReservedNameToFail('__hive_vulnerability_review_primary');
+    expectReservedNameToFail('__hive_task_trace_summarizer');
     expectReservedNameToFail('hive');
     expectReservedNameToFail('architect');
     expectReservedNameToFail('swarm');
@@ -104,6 +105,25 @@ describe('agent_hive schema customAgents contract', () => {
 });
 
 describe('agent_hive schema council contract', () => {
+  it('defines the strict task trace summarizer configuration', () => {
+    expect(schema.properties.taskTraceSummarizer).toEqual({
+      $ref: '#/$defs/taskTraceSummarizerConfig',
+      description: 'Optional model settings for recovery trace interpretation.',
+    });
+    expect(validateConfigShape({
+      taskTraceSummarizer: { model: 'provider/model', variant: 'high', temperature: 0 },
+    })).toBe(true);
+    for (const invalid of [
+      { taskTraceSummarizer: { model: '' } },
+      { taskTraceSummarizer: { variant: ' ' } },
+      { taskTraceSummarizer: { temperature: -1 } },
+      { taskTraceSummarizer: { temperature: 3 } },
+      { taskTraceSummarizer: { extra: true } },
+    ]) {
+      expect(validateConfigShape(invalid)).toBe(false);
+    }
+  });
+
   it('defines council as a documented global-only config section', () => {
     expect(schema.properties.council).toEqual({
       $ref: '#/$defs/councilConfig',

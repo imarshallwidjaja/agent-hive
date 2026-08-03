@@ -230,6 +230,35 @@ describe('BackgroundJobService', () => {
     expect(lateStatus.archivedAt).toBe(reconciled.archivedAt);
   });
 
+  it('keeps the first terminal runtime state and completion time when late updates conflict', () => {
+    registerJob(service);
+
+    const terminal = service.markTerminal('task-1', 'completed', { resultSummary: 'done' });
+    const lateActive = service.updateRuntimeState('task-1', 'running', { statusUncertain: true });
+    const conflictingTerminal = service.markTerminal('task-1', 'error', { lastStatusError: 'late error' });
+
+    expect(lateActive.runtimeState).toBe('completed');
+    expect(conflictingTerminal.runtimeState).toBe('completed');
+    expect(conflictingTerminal.runtimeCompletedAt).toBe(terminal.runtimeCompletedAt);
+    expect(conflictingTerminal.resultSummary).toBe('done');
+    expect(conflictingTerminal.lastStatusError).toBeUndefined();
+  });
+
+  it('allows identical terminal updates to fill missing diagnostics without changing completion time', () => {
+    registerJob(service);
+
+    const terminal = service.markTerminal('task-1', 'error');
+    const enriched = service.markTerminal('task-1', 'error', {
+      resultSummary: 'worker failed',
+      lastStatusError: 'provider disconnected',
+    });
+
+    expect(enriched.runtimeState).toBe('error');
+    expect(enriched.runtimeCompletedAt).toBe(terminal.runtimeCompletedAt);
+    expect(enriched.resultSummary).toBe('worker failed');
+    expect(enriched.lastStatusError).toBe('provider disconnected');
+  });
+
   it('hides archived reconciled jobs from active scoped lists while preserving history', () => {
     registerJob(service, 'terminal-task', 'terminal-session');
     service.markTerminal('terminal-task', 'completed', { resultSummary: 'done' });

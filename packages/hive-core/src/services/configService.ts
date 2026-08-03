@@ -32,6 +32,7 @@ const STORED_CONFIG_KEYS = new Set([
   'agentMode',
   'hook_cadence',
   'council',
+  'taskTraceSummarizer',
   'agents',
   'customAgents',
 ]);
@@ -491,6 +492,12 @@ export class ConfigService {
         ...storedCustomAgents,
       },
       council: this.mergeCouncilConfig(DEFAULT_HIVE_CONFIG.council, stored.council),
+      taskTraceSummarizer: {
+        ...DEFAULT_HIVE_CONFIG.taskTraceSummarizer,
+        ...stored.taskTraceSummarizer,
+        ...(stored.taskTraceSummarizer?.model !== undefined ? { model: stored.taskTraceSummarizer.model.trim() } : {}),
+        ...(stored.taskTraceSummarizer?.variant !== undefined ? { variant: stored.taskTraceSummarizer.variant.trim() } : {}),
+      },
     };
   }
 
@@ -566,6 +573,10 @@ export class ConfigService {
       return false;
     }
 
+    if (config.taskTraceSummarizer !== undefined && !this.isValidTaskTraceSummarizerConfig(config.taskTraceSummarizer)) {
+      return false;
+    }
+
     if (config.sandbox !== undefined && config.sandbox !== 'none' && config.sandbox !== 'docker') {
       return false;
     }
@@ -603,6 +614,19 @@ export class ConfigService {
 
   private isStringArray(value: unknown): value is string[] {
     return Array.isArray(value) && value.every((item) => typeof item === 'string');
+  }
+
+  private isValidTaskTraceSummarizerConfig(value: unknown): boolean {
+    if (!this.isObjectRecord(value)) return false;
+    const keys = Object.keys(value);
+    if (keys.some((key) => !['model', 'variant', 'temperature'].includes(key))) return false;
+    for (const key of ['model', 'variant'] as const) {
+      const entry = value[key];
+      if (entry !== undefined && (typeof entry !== 'string' || entry.trim().length === 0)) return false;
+    }
+    const temperature = value.temperature;
+    return temperature === undefined
+      || (typeof temperature === 'number' && Number.isFinite(temperature) && temperature >= 0 && temperature <= 2);
   }
 
   private isPositiveInteger(value: unknown): value is number {

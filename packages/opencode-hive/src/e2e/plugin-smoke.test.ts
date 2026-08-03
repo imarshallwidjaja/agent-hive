@@ -14,6 +14,7 @@ import { HIVE_SYSTEM_PROMPT } from "../hooks/system-hook";
 import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
+import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 type PluginHooks = Awaited<ReturnType<typeof plugin>>;
@@ -549,6 +550,66 @@ Do it
     expect(continuationDescription).toContain('Returns fresh-worker launch guidance');
     expect(startDescription).not.toMatch(/spawn.*automatically/i);
     expect(continuationDescription).not.toMatch(/spawn.*automatically|resume.*session/i);
+  });
+
+  it('registers task trace tools and a hidden tool-less recovery summarizer', async () => {
+    const configDir = path.join(testRoot, '.config', 'opencode');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'agent_hive.json'), JSON.stringify({
+      taskTraceSummarizer: { model: 'provider/model', variant: 'high', temperature: 0.2 },
+    }));
+    const { hooks } = await createHooksForTest(testRoot, 'sess_trace_config');
+    const opencodeConfig: Record<string, any> = {};
+
+    await hooks.config!(opencodeConfig);
+
+    expect(hooks.tool).toHaveProperty('hive_task_trace');
+    expect(hooks.tool).toHaveProperty('hive_task_trace_content');
+    expect(opencodeConfig.agent[TASK_TRACE_SUMMARIZER_AGENT]).toMatchObject({
+      mode: 'primary',
+      hidden: true,
+      model: 'provider/model',
+      variant: 'high',
+      temperature: 0.2,
+      permission: { '*': 'deny', task: 'deny' },
+    });
+    const prompt = opencodeConfig.agent[TASK_TRACE_SUMMARIZER_AGENT].prompt;
+    expect(prompt).toContain('plaintext reasoning');
+    expect(prompt).toContain('may restate or quote it');
+    expect(prompt).toContain('untrusted reasoning-derived');
+    expect(prompt).toContain("agent's assistant response");
+    expect(Object.values(opencodeConfig.agent[TASK_TRACE_SUMMARIZER_AGENT].tools)).not.toContain(true);
+  });
+
+  it('explicitly rejects native task dispatch to the hidden trace summarizer', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_trace_dispatch');
+    await expect(hooks['tool.execute.before']?.(
+      { tool: 'task', sessionID: 'sess_trace_dispatch', callID: 'trace-dispatch' },
+      { args: { subagent_type: TASK_TRACE_SUMMARIZER_AGENT, prompt: 'bypass' } } as any,
+    )).rejects.toThrow('task trace summarizer cannot be dispatched');
+  });
+
+  it('adds a parent-visible trace hint only from native task session metadata', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_trace_hint');
+    const output = { title: 'task', output: '', metadata: { sessionId: 'child-session' } };
+
+    await hooks['tool.execute.after']?.({
+      tool: 'task',
+      sessionID: 'sess_trace_hint',
+      callID: 'trace-hint',
+      args: { subagent_type: 'scout-researcher' },
+    }, output);
+
+    expect(output.output).toContain('hive_task_trace({ task_id: "child-session" })');
+
+    const noMetadata = { title: 'task', output: 'child-session', metadata: {} };
+    await hooks['tool.execute.after']?.({
+      tool: 'task',
+      sessionID: 'sess_trace_hint',
+      callID: 'trace-no-hint',
+      args: { subagent_type: 'scout-researcher' },
+    }, noMetadata);
+    expect(noMetadata.output).toBe('child-session');
   });
 
   it('registers every registry command on hooks.command and returns string guidance', async () => {

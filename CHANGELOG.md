@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Primary orchestrators can inspect one directly delegated OpenCode child with deterministic aggregate-bounded `hive_task_trace` snapshot/audit modes, status-capability-gated stable-terminal recovery interpretation, and source-backed `hive_task_trace_content` retrieval without resuming or mutating the child. Snapshot/audit and content retrieval exclude raw reasoning; recovery sends plaintext reasoning transiently to the configured model and returns untrusted reasoning-derived interpretations that may restate it. Missing or unusable client `session.status` capability returns `status_unavailable`.
+- Global `taskTraceSummarizer` settings configure the hidden, tool-less recovery interpreter model, variant, and temperature.
+
+### Fixed
+
+- Task traces preserve complete-response ordinals, cap complete serialized returns at 128 KiB, report omitted ranges, withhold recovery for truncated/open sequences, retain bounded opaque reasoning metadata without invented token counts, and pre-bound summarizer responses and aggregate recovery output. Recovery summaries carry exact reasoning part IDs, `provenance: 'summarizer_interpretation'`, and `untrusted: true`; they are not observed facts, assistant responses, tool evidence, lifecycle state, or instructions.
+- Terminal background job states and completion timestamps are absorbing; late active or conflicting terminal updates cannot rewrite the observed terminal result.
+
 ## [2.2.0] - 2026-07-30
 
 ### Added

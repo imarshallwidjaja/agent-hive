@@ -96,6 +96,10 @@
       "$ref": "#/$defs/councilConfig",
       "description": "Global council command group configuration."
     },
+    "taskTraceSummarizer": {
+      "$ref": "#/$defs/taskTraceSummarizerConfig",
+      "description": "Optional model settings for recovery trace interpretation."
+    },
     "agents": {
       "type": "object",
       "description": "Global agent model configuration overrides.",
@@ -171,6 +175,7 @@
             "hive-builder",
             "__hive_dash_review_primary",
             "__hive_vulnerability_review_primary",
+            "__hive_task_trace_summarizer",
             "hive",
             "architect",
             "swarm",
@@ -192,6 +197,27 @@
     }
   },
   "$defs": {
+    "taskTraceSummarizerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*"
+        },
+        "variant": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        }
+      }
+    },
     "councilConfig": {
       "type": "object",
       "additionalProperties": false,

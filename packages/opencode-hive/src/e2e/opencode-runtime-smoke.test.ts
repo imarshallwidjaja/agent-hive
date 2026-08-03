@@ -398,6 +398,34 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
       expect(sessionID).not.toBeNull();
       if (!sessionID) return;
 
+      const runtimeSession = client.session as unknown as {
+        create(input: unknown): Promise<unknown>;
+        get(input: unknown): Promise<unknown>;
+        messages(input: unknown): Promise<unknown>;
+        status?: (input: unknown) => Promise<unknown>;
+        delete(input: unknown): Promise<unknown>;
+      };
+      const probe = await runtimeSession.create({
+        body: { title: 'hive task trace runtime probe', parentID: sessionID },
+        query: { directory: projectDir },
+      });
+      const probeID = isRecord(probe) && typeof probe.id === 'string' ? probe.id : null;
+      expect(probeID).not.toBeNull();
+      if (!probeID) return;
+      const probeGet = await runtimeSession.get({ path: { id: probeID }, query: { directory: projectDir } });
+      expect(probeGet).toMatchObject({ id: probeID, parentID: sessionID });
+      const probeMessages = await runtimeSession.messages({ path: { id: probeID }, query: { directory: projectDir } });
+      expect(probeMessages).toEqual([]);
+      if (typeof runtimeSession.status === 'function') {
+        const probeStatuses = await runtimeSession.status({ query: { directory: projectDir } });
+        expect(isRecord(probeStatuses) ? probeStatuses : {}).not.toHaveProperty(probeID);
+      } else {
+        expect(runtimeSession.status).toBeUndefined();
+      }
+      expect(await runtimeSession.delete({ path: { id: probeID }, query: { directory: projectDir } })).toBe(true);
+      await expect(runtimeSession.get({ path: { id: probeID }, query: { directory: projectDir } })).rejects.toThrow();
+      await expect(runtimeSession.messages({ path: { id: probeID }, query: { directory: projectDir } })).rejects.toThrow();
+
       const permissionTask = approvePermissions(sessionID);
 
       // Prevent CI hangs: bound the prompt request time.
@@ -474,6 +502,15 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
           expect.objectContaining({ type: 'step-finish' }),
         ]),
       );
+      const stepStartIndex = promptParts.findIndex((part) => part.type === 'step-start');
+      const stepFinishIndex = promptParts.findIndex((part) => part.type === 'step-finish');
+      expect(stepStartIndex).toBeGreaterThanOrEqual(0);
+      expect(stepFinishIndex).toBeGreaterThan(stepStartIndex);
+      for (const part of promptParts) {
+        expect(typeof part.id).toBe('string');
+        expect(typeof part.messageID).toBe('string');
+        expect(typeof part.sessionID).toBe('string');
+      }
 
       abortController.abort();
       await permissionTask.catch(() => undefined);

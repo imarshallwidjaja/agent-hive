@@ -156,7 +156,7 @@ describe('background task lifecycle hook support', () => {
       const cancelResult = JSON.parse(cancelRaw as string) as { success: boolean; runtimeCancelled: boolean; job: { runtime: { state: string } } };
       expect(cancelResult.success).toBe(true);
       expect(cancelResult.runtimeCancelled).toBe(true);
-      expect(cancelResult.job.runtime.state).toBe('cancelled');
+      expect(cancelResult.job.runtime.state).toBe('completed');
       expect(abortCalls).toEqual([{ path: { id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' }, query: { directory: testRoot } }]);
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });

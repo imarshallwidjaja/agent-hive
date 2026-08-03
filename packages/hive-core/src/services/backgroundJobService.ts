@@ -201,6 +201,7 @@ export class BackgroundJobService {
   updateRuntimeState(identifier: string, runtimeState: BackgroundJobRuntimeState, patch: RuntimeStatePatch = {}): BackgroundJobRecord {
     return this.updateBoard((board) => {
       const record = this.findRecord(board, identifier);
+      if (isTerminalRuntimeState(record.runtimeState)) return record;
       let changed = false;
 
       changed = this.applyIfChanged(record, 'runtimeState', runtimeState) || changed;
@@ -222,6 +223,7 @@ export class BackgroundJobService {
   markTerminal(identifier: string, runtimeState: 'completed' | 'error' | 'cancelled', patch: RuntimeStatePatch = {}): BackgroundJobRecord {
     return this.updateBoard((board) => {
       const record = this.findRecord(board, identifier);
+      if (isTerminalRuntimeState(record.runtimeState) && record.runtimeState !== runtimeState) return record;
       let changed = false;
 
       changed = this.applyIfChanged(record, 'runtimeState', runtimeState) || changed;
@@ -232,13 +234,13 @@ export class BackgroundJobService {
         record.runtimeCompletedAt = new Date().toISOString();
         changed = true;
       }
-      if (patch.statusUncertain !== undefined) {
+      if (patch.statusUncertain !== undefined && record.statusUncertain === undefined) {
         changed = this.applyIfChanged(record, 'statusUncertain', patch.statusUncertain) || changed;
       }
-      if (patch.resultSummary !== undefined) {
+      if (patch.resultSummary !== undefined && record.resultSummary === undefined) {
         changed = this.applyIfChanged(record, 'resultSummary', patch.resultSummary) || changed;
       }
-      if (patch.lastStatusError !== undefined) {
+      if (patch.lastStatusError !== undefined && record.lastStatusError === undefined) {
         changed = this.applyIfChanged(record, 'lastStatusError', patch.lastStatusError) || changed;
       }
 
