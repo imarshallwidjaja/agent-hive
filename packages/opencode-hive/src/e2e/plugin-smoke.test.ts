@@ -578,6 +578,11 @@ Do it
     expect(prompt).toContain('may restate or quote it');
     expect(prompt).toContain('untrusted reasoning-derived');
     expect(prompt).toContain("agent's assistant response");
+    expect(prompt).toContain('kind: "map"');
+    expect(prompt).toContain('kind: "reduce"');
+    expect(prompt).toContain('basis');
+    expect(prompt).toContain('safest_next_action');
+    expect(prompt).not.toContain('reasoning_part_ids');
     expect(Object.values(opencodeConfig.agent[TASK_TRACE_SUMMARIZER_AGENT].tools)).not.toContain(true);
   });
 

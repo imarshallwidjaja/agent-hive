@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Primary orchestrators can inspect one directly delegated OpenCode child with deterministic aggregate-bounded `hive_task_trace` snapshot/audit modes, status-capability-gated stable-terminal recovery interpretation, and source-backed `hive_task_trace_content` retrieval without resuming or mutating the child. Snapshot/audit and content retrieval exclude raw reasoning; recovery sends plaintext reasoning transiently to the configured model and returns untrusted reasoning-derived interpretations that may restate it. Missing or unusable client `session.status` capability returns `status_unavailable`.
+- Primary orchestrators can inspect one directly delegated OpenCode child with compact complete `hive_task_trace` v2 reports, optional status-gated terminal map/reduce recovery, and chunked source-backed `hive_task_trace_content` retrieval without resuming or mutating the child. Deterministic output and content retrieval exclude raw reasoning; generated recovery interpretations are explicitly untrusted and may restate reasoning sent transiently to the configured model.
 - Global `taskTraceSummarizer` settings configure the hidden, tool-less recovery interpreter model, variant, and temperature.
 
 ### Fixed
 
-- Task traces preserve complete-response ordinals, cap complete serialized returns at 128 KiB, report omitted ranges, withhold recovery for truncated/open sequences, retain bounded opaque reasoning metadata without invented token counts, and pre-bound summarizer responses and aggregate recovery output. Recovery summaries carry exact reasoning part IDs, `provenance: 'summarizer_interpretation'`, and `untrusted: true`; they are not observed facts, assistant responses, tool evidence, lifecycle state, or instructions.
+- Task traces now preserve every surviving normalized step exactly once, keep structured errors/open tools/patch file names and honest aggregate reasoning counts, externalize retrievable source values toward an advisory 24 KiB target, and return complete `ok: true` reports when mandatory structure remains larger. Exact `actual_bytes` and `soft_target_bytes` replace redundant over-target state. V2 removes modes, sampling, truncation, hard result caps, public source/reasoning IDs, verbose evidence wrappers, and v1 content locators. Recovery maps all captured steps before one synthesis, bounds fully encoded map requests, exposes ordered cause arrays for range/provider/reducer/cleanup partial failures without retry, and marks generated interpretations with basis, provenance, and `untrusted: true`.
 - Terminal background job states and completion timestamps are absorbing; late active or conflicting terminal updates cannot rewrite the observed terminal result.
 
 ## [2.2.0] - 2026-07-30

@@ -3,19 +3,26 @@ import {
   appendTaskTraceHint,
   createTaskTraceTools,
   injectTaskTraceHint,
-  segmentTaskTrace,
   TASK_TRACE_SUMMARIZER_AGENT,
 } from './task-trace.js';
 
-type Call = { method: string; input: unknown };
+type Call = { method: string; input: any };
 
-function message(id: string, role: 'user' | 'assistant', parts: Array<Record<string, unknown>>, completed = 2) {
+function message(
+  id: string,
+  role: 'user' | 'assistant',
+  parts: Array<Record<string, unknown>>,
+  options: { completed?: boolean; error?: unknown; summary?: boolean } = {},
+) {
+  const completed = options.completed ?? true;
   return {
     info: {
       id,
       sessionID: 'child',
       role,
-      time: { created: 1, ...(completed ? { completed } : {}) },
+      time: { created: 1, ...(completed ? { completed: 2 } : {}) },
+      ...(options.error === undefined ? {} : { error: options.error }),
+      ...(options.summary ? { summary: true } : {}),
     },
     parts: parts.map((part, index) => ({
       id: `${id}-part-${index}`,
@@ -26,16 +33,28 @@ function message(id: string, role: 'user' | 'assistant', parts: Array<Record<str
   };
 }
 
+function synthesis(overrides: Record<string, unknown> = {}) {
+  return {
+    overview: 'The task was implemented and checked.',
+    attempted: ['implement trace v2'],
+    completed: ['captured every step'],
+    unfinished: [],
+    risks: [],
+    safest_next_action: 'Review the result.',
+    ...overrides,
+  };
+}
+
 function clientFor(messages: unknown[], options: {
   parentID?: string;
   childID?: string;
   status?: Record<string, unknown>;
   statusResponse?: { data?: unknown; error?: unknown };
   statusError?: unknown;
-  promptText?: string | ((index: number, input: unknown) => string);
-  promptParts?: Array<Record<string, unknown>>;
-  mutateMessages?: (calls: number) => unknown[];
-  deleteError?: unknown | ((index: number, input: unknown) => unknown | undefined);
+  mutateMessages?: (reads: number) => unknown[];
+  prompt?: (request: any, call: number) => unknown | Promise<unknown>;
+  promptError?: (request: any, call: number) => unknown;
+  deleteError?: (call: number) => unknown;
 } = {}) {
   const calls: Call[] = [];
   let messageReads = 0;
@@ -60,28 +79,70 @@ function clientFor(messages: unknown[], options: {
       calls.push({ method: 'create', input });
       return { data: { id: `summary-${calls.filter((call) => call.method === 'create').length}` } };
     },
-    prompt: async (input: unknown) => {
+    prompt: async (input: any) => {
       calls.push({ method: 'prompt', input });
       promptCalls += 1;
-      if (options.promptParts) return { data: { parts: options.promptParts } };
-      const text = typeof options.promptText === 'function'
-        ? options.promptText(promptCalls, input)
-        : options.promptText ?? '{"batch_id":"batch-1","steps":[]}';
-      return { data: { parts: [{ type: 'text', text }] } };
+      const request = JSON.parse(input.body.parts[0].text);
+      const error = options.promptError?.(request, promptCalls);
+      if (error) return { error };
+      const supplied = await options.prompt?.(request, promptCalls);
+      if (
+        supplied
+        && typeof supplied === 'object'
+        && Array.isArray((supplied as { parts?: unknown }).parts)
+        && !('kind' in (supplied as object))
+      ) {
+        return {
+          data: {
+            model: { providerID: 'observed-provider', modelID: 'observed-model' },
+            variant: 'observed-variant',
+            ...(supplied as Record<string, unknown>),
+          },
+        };
+      }
+      const response = supplied ?? (request.kind === 'map'
+        ? {
+            kind: 'map',
+            range: request.range,
+            interpretations: [...new Set(request.fragments.map((fragment: any) => fragment.step))].map((step) => ({
+              step,
+              summary: `Interpretation for step ${step}`,
+              basis: request.fragments.find((fragment: any) => fragment.step === step).source.basis,
+            })),
+          }
+        : { kind: 'reduce', synthesis: synthesis() });
+      return {
+        data: {
+          model: { providerID: 'observed-provider', modelID: 'observed-model' },
+          variant: 'observed-variant',
+          parts: [{ type: 'text', text: JSON.stringify(response) }],
+        },
+      };
     },
     delete: async (input: unknown) => {
       calls.push({ method: 'delete', input });
       deleteCalls += 1;
-      const error = typeof options.deleteError === 'function'
-        ? options.deleteError(deleteCalls, input)
-        : options.deleteError;
+      const error = options.deleteError?.(deleteCalls);
       return error ? { error } : { data: true };
     },
   };
   return { client: { session }, calls };
 }
 
-function executeRaw(tools: ReturnType<typeof createTaskTraceTools>, name: 'hive_task_trace' | 'hive_task_trace_content', args: Record<string, unknown>) {
+function toolsFor(setup: ReturnType<typeof clientFor>, ephemeralSessionIDs = new Set<string>()) {
+  return createTaskTraceTools({
+    client: setup.client,
+    directory: '/repo',
+    summarizer: { model: 'requested/model', variant: 'high', temperature: 0 },
+    ephemeralSessionIDs,
+  });
+}
+
+function executeRaw(
+  tools: ReturnType<typeof createTaskTraceTools>,
+  name: 'hive_task_trace' | 'hive_task_trace_content',
+  args: Record<string, unknown>,
+) {
   return tools[name].execute(args as never, {
     sessionID: 'parent',
     messageID: 'parent-message',
@@ -90,692 +151,585 @@ function executeRaw(tools: ReturnType<typeof createTaskTraceTools>, name: 'hive_
   } as never);
 }
 
-function execute(tools: ReturnType<typeof createTaskTraceTools>, name: 'hive_task_trace' | 'hive_task_trace_content', args: Record<string, unknown>) {
-  return executeRaw(tools, name, args).then((value) => JSON.parse(value));
+async function execute(
+  tools: ReturnType<typeof createTaskTraceTools>,
+  name: 'hive_task_trace' | 'hive_task_trace_content',
+  args: Record<string, unknown>,
+) {
+  return JSON.parse(await executeRaw(tools, name, args));
 }
 
-describe('task trace segmentation', () => {
-  it('preserves API order and closes malformed nested, orphan, implicit, and open steps deterministically', () => {
-    const trace = segmentTaskTrace([
-      message('m1', 'assistant', [
-        { type: 'text', text: 'before' },
-        { type: 'step-start' },
-        { type: 'text', text: 'progress' },
-        { type: 'step-start' },
-        { type: 'step-finish' },
-        { type: 'step-finish' },
-        { type: 'step-start' },
-      ]),
-    ]);
+function allKeys(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(allKeys);
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value).flatMap(([key, child]) => [key, ...allKeys(child)]);
+}
 
-    expect(trace.steps.map((step) => ({ id: step.step_id, close: step.close_reason }))).toEqual([
-      { id: 'm1:step:1', close: 'implicit-boundary' },
-      { id: 'm1:step:2', close: 'malformed:nested-start' },
-      { id: 'm1:step:3', close: 'step-finish' },
-      { id: 'm1:step:4', close: 'malformed:orphan-finish' },
-      { id: 'm1:step:5', close: 'open' },
-    ]);
-    expect(trace.steps.flatMap((step) => step.evidence.map((item) => item.part_ordinal))).toEqual([1, 2, 3, 4, 5, 6, 7]);
-  });
-
-  it('keeps reasoning out of evidence while reporting bounded opaque metadata and unknown mixed token totals', () => {
-    const trace = segmentTaskTrace([
-      message('m1', 'assistant', [
-        { type: 'step-start' },
-        { type: 'reasoning', text: 'private chain', tokens: 8 },
-        {
-          type: 'reasoning',
-          metadata: { providerItemId: 'opaque-1', format: 'opaque', encrypted: 'secret', payload: 'ciphertext' },
-          time: { start: 10, end: 11, payload: 'hidden timestamp payload' },
-        },
-        { type: 'text', text: 'answer', time: { end: 12 } },
-        { type: 'step-finish' },
-      ]),
-    ]);
-
-    expect(trace.reasoning).toMatchObject({
-      availability: 'mixed',
-      part_count: 2,
-      plaintext_bytes: 13,
-      token_count: null,
-      known_token_count: 8,
-      unknown_token_part_count: 1,
-    });
-    expect(trace.reasoning.opaque_parts[0]).toMatchObject({
-      part_id: 'm1-part-2',
-      metadata_keys: ['encrypted', 'format', 'providerItemId'],
-      metadata: { format: 'opaque', providerItemId: 'opaque-1' },
-      time: { start: 10, end: 11 },
-    });
-    expect(JSON.stringify(trace.steps)).not.toContain('private chain');
-    expect(JSON.stringify(trace)).not.toContain('secret');
-    expect(JSON.stringify(trace)).not.toContain('ciphertext');
-    expect(JSON.stringify(trace)).not.toContain('hidden timestamp payload');
-  });
-
-  it('reports missing plaintext, opaque, and mixed reasoning token counts as unknown rather than zero', () => {
-    for (const setup of [
-      { parts: [{ type: 'reasoning', text: 'plaintext' }], availability: 'plaintext', known: 0 },
-      { parts: [{ type: 'reasoning', metadata: { providerItemId: 'opaque-1' } }], availability: 'opaque', known: 0 },
-      {
-        parts: [{ type: 'reasoning', text: 'known', tokens: 3 }, { type: 'reasoning', metadata: { providerItemId: 'opaque-2' } }],
-        availability: 'mixed',
-        known: 3,
-      },
-    ]) {
-      const trace = segmentTaskTrace([message('m1', 'assistant', setup.parts)]);
-      const unknownEvidence = trace.steps[0].evidence.find((item) => item.representation === (setup.availability === 'plaintext' ? 'plaintext' : 'opaque') && item.tokens === undefined);
-
-      expect(trace.reasoning).toMatchObject({
-        availability: setup.availability,
-        token_count: null,
-        known_token_count: setup.known,
-        unknown_token_part_count: 1,
-      });
-      expect(trace.messages[0].reasoning_token_count).toBeNull();
-      expect(trace.steps[0].reasoning_token_count).toBeNull();
-      expect(unknownEvidence).toBeDefined();
-      expect(unknownEvidence).not.toHaveProperty('tokens');
-    }
-  });
-
-  it('emits a remaining implicit step as open', () => {
-    const trace = segmentTaskTrace([message('m1', 'assistant', [{ type: 'text', text: 'still working' }], 0)]);
-    expect(trace.steps).toHaveLength(1);
-    expect(trace.steps[0].close_reason).toBe('open');
-  });
-
-  it('marks compaction loss and distinguishes tool lifecycle, input, output, and patch provenance', () => {
-    const compacted = message('m1', 'assistant', [
+function realisticTrace() {
+  const messages: unknown[] = [];
+  messages.push(message('instruction', 'user', [{ type: 'text', text: 'Implement every requested invariant.' }]));
+  for (let index = 1; index <= 57; index += 1) {
+    const parts: Array<Record<string, unknown>> = [
       { type: 'step-start' },
-      { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'pwd' }, output: '/repo' } },
-      { type: 'patch', patch: 'diff --git a/a b/a' },
-      { type: 'compaction' },
+      { type: 'reasoning', text: `private reasoning ${index}`, tokens: index },
+      { type: 'text', text: `progress ${index}` },
+      { type: 'tool', tool: index % 2 ? 'bash' : 'read', state: { status: 'completed', input: { index }, output: `output ${index}` } },
+      ...(index === 29 ? [{ type: 'retry', error: { name: 'ProviderError', message: 'middle retry' } }] : []),
       { type: 'step-finish' },
-    ]);
-    compacted.info.summary = true;
-
-    const trace = segmentTaskTrace([compacted]);
-
-    expect(trace.loss_markers).toHaveLength(2);
-    expect(trace.loss_markers.every((marker) => marker.raw_fidelity === false)).toBe(true);
-    expect(trace.steps[0].evidence.map((item) => item.provenance)).toEqual([
-      'lifecycle_event',
-      'lifecycle_event',
-      'tool_input',
-      'tool_output',
-      'patch',
-      'lifecycle_event',
-      'lifecycle_event',
-    ]);
-  });
-
-  it('associates reasoning and final text with the exact source step', () => {
-    const trace = segmentTaskTrace([message('m1', 'assistant', [
-      { type: 'step-start' },
-      { type: 'reasoning', text: 'first reason' },
-      { type: 'text', text: 'progress' },
-      { type: 'step-finish' },
-      { type: 'step-start' },
-      { type: 'reasoning', text: 'second reason' },
-      { type: 'text', text: 'final' },
-      { type: 'step-finish' },
-    ])]);
-
-    expect(trace.steps.map((step) => step.reasoning_part_ids)).toEqual([['m1-part-1'], ['m1-part-5']]);
-    expect(trace.steps[0].evidence.find((item) => item.type === 'text')?.provenance).toBe('assistant_progress_text');
-    expect(trace.steps[1].evidence.find((item) => item.type === 'text')?.provenance).toBe('assistant_final_response');
-  });
-});
-
-describe('task trace tools', () => {
-  it('authorizes only a direct child and performs one get/messages/status read without polling', async () => {
-    const { client, calls } = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'done' }])]);
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'audit' });
-
-    expect(result.ok).toBe(true);
-    expect(calls.map((call) => call.method)).toEqual(['get', 'messages', 'status']);
-  });
-
-  it('returns one generic response for missing, sibling, and grandchild sessions', async () => {
-    const { client, calls } = clientFor([], { parentID: 'other' });
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child' });
-
-    expect(result).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
-    expect(calls.map((call) => call.method)).toEqual(['get']);
-  });
-
-  it('withholds recovery when status is active or the latest assistant/tool is open', async () => {
-    const openMessages = [message('m1', 'assistant', [
-      { type: 'tool', tool: 'bash', state: { status: 'running', input: { command: 'sleep 1' } } },
-    ], 0)];
-    for (const setup of [
-      clientFor([message('m1', 'assistant', [{ type: 'text', text: 'done' }])], { status: { child: { type: 'busy' } } }),
-      clientFor(openMessages),
-    ]) {
-      const tools = createTaskTraceTools({ client: setup.client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-      const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-      expect(result.recovery).toEqual({ available: false, reason: expect.any(String) });
-      expect(setup.calls.some((call) => call.method === 'create')).toBe(false);
-    }
-  });
-
-  it('returns exact status_unavailable lifecycle and recovery results for every unusable status capability', async () => {
-    const source = [message('m1', 'assistant', [{ type: 'text', text: 'done' }])];
-    const missing = clientFor(source);
-    delete (missing.client.session as { status?: unknown }).status;
-    const setups = [
-      missing,
-      clientFor(source, { statusError: new Error('status failed') }),
-      clientFor(source, { statusResponse: { error: 'status failed' } }),
-      clientFor(source, { statusResponse: { data: [] } }),
-      clientFor(source, { status: { bogus: 'not-a-status' } }),
-      clientFor(source, { status: { other: null } }),
-      clientFor(source, { status: { child: 'busy' } }),
-      clientFor(source, { status: { child: { type: 'retry', attempt: 1, message: 'wait' } } }),
-      clientFor(source, { status: { child: { type: 'retry', attempt: '1', message: 'wait', next: 2 } } }),
-      clientFor(source, { status: { ok: { type: 'idle' }, bad: { type: 'busy', extra: true } } }),
     ];
+    messages.push(message(`assistant-${index}`, 'assistant', parts));
+  }
+  messages.push(message('tail', 'assistant', [
+    { type: 'step-start' },
+    { type: 'text', text: 'final tail response' },
+    { type: 'patch', files: ['src/final.ts', 'src/shared.ts'], hash: 'not-public' },
+    { type: 'step-finish' },
+  ]));
+  return messages;
+}
 
-    for (const setup of setups) {
-      const tools = createTaskTraceTools({ client: setup.client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-      const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-      expect(result.lifecycle).toEqual({
-        state: 'uncertain',
-        stable_terminal: false,
-        incomplete: true,
-        reason: 'status_unavailable',
-      });
-      expect(result.recovery).toEqual({ available: false, reason: 'status_unavailable' });
-      expect(setup.calls.some((call) => call.method === 'create')).toBe(false);
-    }
-  });
-
-  it('accepts complete valid session status maps and classifies busy or retry as active', async () => {
-    const source = [message('m1', 'assistant', [{ type: 'text', text: 'done' }])];
-    const validMaps = [
-      {},
-      { other: { type: 'idle' } },
-      {
-        other: {
-          type: 'retry',
-          attempt: 2,
-          message: 'provider backoff',
-          next: 1_700_000_000_000,
-          action: {
-            reason: 'rate_limit',
-            provider: 'openai',
-            title: 'Retry',
-            message: 'Wait and retry',
-            label: 'retry',
-            link: 'https://example.test/retry',
-          },
-        },
-      },
-    ];
-
-    for (const status of validMaps) {
-      const { client, calls } = clientFor(source, { status });
-      const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-      const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-      expect(result.lifecycle.reason).not.toBe('status_unavailable');
-      expect(result.lifecycle.state).toBe('terminal');
-      expect(calls.some((call) => call.method === 'create')).toBe(true);
-    }
-
-    for (const status of [
-      { child: { type: 'busy' } },
-      { child: { type: 'retry', attempt: 1, message: 'retrying', next: 99 } },
-    ]) {
-      const { client, calls } = clientFor(source, { status });
-      const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-      const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-      expect(result.lifecycle).toEqual({
-        state: 'active',
-        stable_terminal: false,
-        incomplete: true,
-        reason: 'runtime_active',
-      });
-      expect(result.recovery).toEqual({ available: false, reason: 'runtime_active' });
-      expect(calls.some((call) => call.method === 'create')).toBe(false);
-    }
-
-    const idleChild = clientFor(source, { status: { child: { type: 'idle' } } });
-    const idleTools = createTaskTraceTools({
-      client: idleChild.client,
-      directory: '/repo',
-      summarizer: { temperature: 0 },
-      ephemeralSessionIDs: new Set(),
-    });
-    const idleResult = await execute(idleTools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-    expect(idleResult.lifecycle.state).toBe('terminal');
-    expect(idleResult.lifecycle.reason).toBe('idle_and_closed');
-    expect(idleChild.calls.some((call) => call.method === 'create')).toBe(true);
-  });
-
-  it('withholds recovery when any source message still has a pending tool part', async () => {
-    const source = [
-      message('m1', 'assistant', [{ type: 'tool', tool: 'bash', state: { status: 'pending' } }]),
-      message('m2', 'assistant', [{ type: 'reasoning', text: 'later reason' }, { type: 'text', text: 'later response' }]),
-    ];
-    const { client, calls } = clientFor(source);
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-    expect(result.lifecycle.reason).toBe('tool_pending_or_running');
-    expect(result.recovery).toEqual({ available: false, reason: 'tool_pending_or_running' });
-    expect(calls.some((call) => call.method === 'create')).toBe(false);
-  });
-
-  it('withholds recovery when the latest source turn is a user message or compaction-only assistant record', async () => {
-    const summary = message('m2', 'assistant', [{ type: 'summary' }]);
-    summary.info.summary = true;
-    for (const setup of [
-      {
-        source: [
-          message('m1', 'assistant', [{ type: 'text', text: 'done' }]),
-          message('m2', 'user', [{ type: 'text', text: 'one more request' }]),
-        ],
-        reason: 'latest_message_not_assistant',
-      },
-      {
-        source: [message('m1', 'assistant', [{ type: 'text', text: 'done' }]), summary],
-        reason: 'latest_message_summary_or_compaction',
-      },
-      {
-        source: [
-          message('m1', 'assistant', [{ type: 'text', text: 'done' }]),
-          message('m2', 'assistant', [{ type: 'compaction' }]),
-        ],
-        reason: 'latest_message_summary_or_compaction',
-      },
-    ]) {
-      const { client, calls } = clientFor(setup.source);
-      const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-
-      const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-      expect(result.lifecycle.reason).toBe(setup.reason);
-      expect(result.recovery).toEqual({ available: false, reason: setup.reason });
-      expect(calls.some((call) => call.method === 'create')).toBe(false);
-    }
-  });
-
-  it('preserves complete-response ordinals and reports messages omitted from snapshots', async () => {
-    const source = Array.from({ length: 25 }, (_, index) => message(`m${index + 1}`, 'assistant', [{ type: 'text', text: `answer-${index + 1}` }]));
-    const { client, calls } = clientFor(source);
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'snapshot' });
-
-    expect(result.messages.map((entry: any) => entry.message_ordinal)).toEqual(Array.from({ length: 20 }, (_, index) => index + 6));
-    expect(result.steps.flatMap((step: any) => step.evidence).map((entry: any) => entry.message_ordinal)).toEqual(Array.from({ length: 20 }, (_, index) => index + 6));
-    expect(result.truncation).toMatchObject({
-      truncated: true,
-      omitted_message_count: 5,
-      omitted_part_count: 5,
-      represented_range: {
-        first_message_ordinal: 6,
-        last_message_ordinal: 25,
-        first_part: { message_ordinal: 6, part_ordinal: 1 },
-        last_part: { message_ordinal: 25, part_ordinal: 1 },
-      },
-    });
-    expect(calls.filter((call) => call.method === 'messages')).toHaveLength(1);
-  });
-
-  it('aggregate-bounds parts and bytes in every mode and never recovers a truncated trace', async () => {
-    const source = [message('m1', 'assistant', Array.from({ length: 400 }, (_, index) => ({
-      type: 'text',
-      text: `part-${index + 1}:${'x'.repeat(6000)}`,
-    })))];
-
-    for (const mode of ['snapshot', 'audit', 'recovery'] as const) {
-      const { client, calls } = clientFor(source);
-      const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-
-      const serialized = await executeRaw(tools, 'hive_task_trace', { task_id: 'child', mode });
-      const result = JSON.parse(serialized);
-      const evidence = result.steps.flatMap((step: any) => step.evidence);
-
-      expect(result.bounded).toBe(true);
-      expect(result.incomplete).toBe(true);
-      expect(result.truncation.truncated).toBe(true);
-      expect(result.truncation.omitted_message_count).toBe(0);
-      expect(result.truncation.omitted_part_count).toBeGreaterThan(0);
-      expect(evidence.length).toBeLessThanOrEqual(result.truncation.limits.max_parts);
-      expect(result.truncation.represented_bytes).toBeLessThanOrEqual(result.truncation.limits.max_bytes);
-      expect(result.truncation.limits.max_bytes).toBe(128 * 1024);
-      expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(result.truncation.limits.max_bytes);
-      expect(result.truncation.represented_range.first_message_ordinal).toBe(1);
-      expect(result.truncation.represented_range.last_message_ordinal).toBe(1);
-      expect(result.truncation.represented_range.first_part.message_ordinal).toBe(1);
-      expect(result.truncation.represented_range.last_part.message_ordinal).toBe(1);
-      if (mode === 'snapshot') {
-        expect(result.truncation.represented_range.first_part.part_ordinal).toBeGreaterThan(1);
-        expect(result.truncation.represented_range.last_part.part_ordinal).toBe(400);
-      } else {
-        expect(result.truncation.represented_range.first_part.part_ordinal).toBe(1);
-        expect(result.truncation.represented_range.last_part.part_ordinal).toBeLessThan(400);
-      }
-      expect(calls.filter((call) => call.method === 'messages')).toHaveLength(1);
-      if (mode === 'recovery') {
-        expect(result.recovery).toEqual({ available: false, reason: 'trace_truncated' });
-        expect(calls.some((call) => call.method === 'create')).toBe(false);
-      }
-    }
-  });
-
-  it('caps aggregate recovery summaries while retaining a bounded deterministic trace', async () => {
-    const source = Array.from({ length: 64 }, (_, index) => message(`m${index + 1}`, 'assistant', [
-      { type: 'text', text: `completed-${index + 1}` },
-    ]));
-    const { client } = clientFor(source, {
-      promptText: (index, input) => {
-        const request = JSON.parse((input as any).body.parts[0].text);
-        return JSON.stringify({
-          batch_id: `batch-${index}`,
-          steps: request.steps.map((step: any) => ({
-            step_id: step.step_id,
-            summary: `Outcome for ${step.step_id}: ${'x'.repeat(1900)}`,
-            reasoning_part_ids: step.reasoning_part_ids,
-          })),
-        });
-      },
-    });
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-
-    const serialized = await executeRaw(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
+describe('compact task trace v2', () => {
+  it('returns every realistic source step once with compact indexes and no v1 fields', async () => {
+    const source = realisticTrace();
+    const setup = clientFor(source);
+    const serialized = await executeRaw(toolsFor(setup), 'hive_task_trace', { task_id: 'child' });
     const result = JSON.parse(serialized);
-    const representedStepIDs = new Set(result.steps.map((step: any) => step.step_id));
+
+    expect(result).toMatchObject({ ok: true, version: 2, task_id: 'child' });
+    expect(result.source).toMatchObject({ messages: 59, parts: 291, steps: 59, fidelity: 'surviving_source' });
+    expect(result.timeline.map((step: any) => step.step)).toEqual(Array.from({ length: 59 }, (_, index) => index + 1));
+    expect(result.timeline.filter((step: any) => step.actor === 'user')).toHaveLength(1);
+    expect(result.instruction).toEqual({ step: 1, text: 1 });
+    expect(result.latest.final).toEqual({ step: 59, text: 1 });
+    expect(result.changed_files).toEqual({ files: ['src/final.ts', 'src/shared.ts'], exhaustive: false });
+    expect(result.errors.some((entry: any) => JSON.stringify(entry).includes('middle retry'))).toBe(true);
+    expect(result.tool_dictionary).toEqual(['bash', 'read']);
+    expect(result.tool_rollup).toEqual([
+      { tool: 1, statuses: { completed: 29 } },
+      { tool: 2, statuses: { completed: 28 } },
+    ]);
+    expect(setup.calls.map((call) => call.method)).toEqual(['get', 'messages', 'status']);
+    expect(Buffer.byteLength(serialized)).toBe(result.render.actual_bytes);
+    expect(result.render).toMatchObject({ soft_target_bytes: 24_576, externalized_count: expect.any(Number) });
+
+    const forbidden = new Set([
+      'mode', 'evidence', 'message_id', 'part_id', 'message_ordinal', 'part_ordinal', 'step_id',
+      'reasoning_part_ids', 'provenance', 'truncation', 'bounded', 'incomplete', 'trace_truncated', 'result_size_limit',
+      'soft_target', 'over_soft_target',
+    ]);
+    expect(allKeys(result).filter((key) => forbidden.has(key))).toEqual([]);
+    expect(result).not.toHaveProperty('messages');
+    expect(serialized).not.toContain('private reasoning');
+    expect(serialized).not.toContain('assistant-57-part');
+  });
+
+  it('preserves robust malformed/open boundaries and closes implicit steps with their message', async () => {
+    const source = [message('m1', 'assistant', [
+      { type: 'text', text: 'before' },
+      { type: 'step-start' },
+      { type: 'text', text: 'nested' },
+      { type: 'step-start' },
+      { type: 'step-finish' },
+      { type: 'step-finish' },
+      { type: 'step-start' },
+    ], { completed: false })];
+    const result = await execute(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+
+    expect(result.timeline.map((step: any) => step.state)).toEqual(['closed', 'malformed', 'closed', 'malformed', 'open']);
+    expect(result.timeline.map((step: any) => step.text?.length ?? 0)).toEqual([1, 1, 0, 0, 0]);
+  });
+
+  it('derives only structured errors, patch files, tool status, open tools, and honest reasoning totals', async () => {
+    const source = [
+      message('user', 'user', [{ type: 'text', text: 'Run it.' }]),
+      message('m1', 'assistant', [
+        { type: 'reasoning', text: 'secret', tokens: 4 },
+        { type: 'reasoning', metadata: { providerItemId: 'opaque', encrypted: 'ciphertext' } },
+        { type: 'tool', tool: 'bash', state: { status: 'running', input: { command: 'sleep' }, output: 'incidental error text' } },
+        { type: 'tool', tool: 'read', state: { status: 'error', error: { message: 'tool failed' } } },
+        { type: 'retry', error: 'retry failed' },
+        { type: 'patch', files: ['a.ts'], patch: 'not a source of files b.ts' },
+        { type: 'unknown', error: 'not structured' },
+      ], { completed: false, error: { message: 'assistant failed' } }),
+    ];
+    const setup = clientFor(source, { status: { child: { type: 'busy' } } });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const serialized = JSON.stringify(result);
+
+    expect(result.reasoning).toEqual({
+      availability: 'mixed', parts: 2, plaintext_parts: 1, plaintext_bytes: 6, opaque_parts: 1,
+      tokens: null, known_tokens: 4, unknown_token_parts: 1,
+    });
+    expect(result.timeline[1].reasoning).toEqual({ presence: 'mixed', parts: 2, tokens: null });
+    expect(result.timeline[1].unknown_parts).toBe(1);
+    expect(result.changed_files).toEqual({ files: ['a.ts'], exhaustive: false });
+    expect(result.errors.map((entry: any) => entry.kind)).toEqual(['assistant', 'tool', 'retry']);
+    expect(result.open_tools).toEqual([{ step: 2, call: 1, tool: 1, status: 'running' }]);
+    expect(result.lifecycle.state).toBe('active');
+    expect(result.recovery).toEqual({ available: false, reasons: ['runtime_active'] });
+    expect(serialized).not.toContain('secret');
+    expect(serialized).not.toContain('ciphertext');
+    expect(serialized).not.toContain('not structured');
+    expect(serialized).not.toContain('b.ts');
+    expect(setup.calls.filter((call) => call.method === 'create')).toHaveLength(0);
+  });
+
+  it('reports complete active and uncertain traces without model calls', async () => {
+    const source = realisticTrace();
+    const active = clientFor(source, { status: { child: { type: 'busy' } } });
+    const uncertain = clientFor(source, { statusError: new Error('unavailable') });
+
+    for (const [setup, reason] of [[active, 'runtime_active'], [uncertain, 'status_unavailable']] as const) {
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      expect(result.timeline).toHaveLength(59);
+      expect(result.recovery).toEqual({ available: false, reasons: [reason] });
+      expect(setup.calls.filter((call) => call.method === 'create')).toHaveLength(0);
+      expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(1);
+      expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(1);
+    }
+  });
+
+  it('externalizes realistic large values toward the soft target without losing steps', async () => {
+    const source = Array.from({ length: 59 }, (_, index) => message(`m${index}`, index === 0 ? 'user' : 'assistant', [
+      { type: 'step-start' },
+      { type: 'text', text: `${index}:${'x'.repeat(700)}` },
+      { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'x'.repeat(500) }, output: 'y'.repeat(500) } },
+      { type: 'step-finish' },
+    ]));
+    const serialized = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+    const result = JSON.parse(serialized);
+
+    expect(result.timeline).toHaveLength(59);
+    expect(Buffer.byteLength(JSON.stringify(source))).toBeGreaterThan(90 * 1024);
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(24_576);
+    expect(result.render.actual_bytes).toBeLessThanOrEqual(result.render.soft_target_bytes);
+    expect(result.render.externalized_count).toBeGreaterThan(100);
+  });
+
+  it('externalizes instruction and latest text only at their timeline positions', async () => {
+    const source = [
+      message('instruction', 'user', [{ type: 'text', text: `instruction:${'i'.repeat(600)}` }]),
+      message('final', 'assistant', [{ type: 'text', text: `final:${'f'.repeat(600)}` }]),
+    ];
+    const result = await execute(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+
+    expect(result.instruction).toEqual({ step: 1, text: 1 });
+    expect(result.latest.final).toEqual({ step: 2, text: 1 });
+    expect(result.timeline.map((step: any) => step.text)).toEqual([[{ r: 1 }], [{ r: 2 }]]);
+    expect(result.content_dictionary).toHaveLength(2);
+    expect(result.render.externalized_count).toBe(2);
+  });
+
+  it('keeps render bytes exact at the soft target and actual-byte digit transitions', async () => {
+    const renderNear = async (target: number) => {
+      const probeID = 'x';
+      const probe = await executeRaw(
+        toolsFor(clientFor([], { childID: probeID })),
+        'hive_task_trace',
+        { task_id: probeID },
+      );
+      const estimatedLength = Math.max(1, target - Buffer.byteLength(probe) + probeID.length);
+      const samples: Array<{ bytes: number; result: any }> = [];
+      for (let length = Math.max(1, estimatedLength - 24); length <= estimatedLength + 24; length += 1) {
+        const taskID = 'x'.repeat(length);
+        const serialized = await executeRaw(
+          toolsFor(clientFor([], { childID: taskID })),
+          'hive_task_trace',
+          { task_id: taskID },
+        );
+        samples.push({ bytes: Buffer.byteLength(serialized), result: JSON.parse(serialized) });
+      }
+      return samples;
+    };
+
+    const softTargetSamples = await renderNear(24_576);
+    const exactSoftTarget = softTargetSamples.find(({ bytes }) => bytes === 24_576);
+    expect(exactSoftTarget).toBeDefined();
+    for (const { bytes, result } of softTargetSamples) {
+      expect(result.render).toEqual({
+        actual_bytes: bytes,
+        soft_target_bytes: 24_576,
+        externalized_count: 0,
+      });
+    }
+
+    const digitTransitionSamples = await renderNear(10_000);
+    expect(digitTransitionSamples.some(({ bytes }) => bytes < 10_000)).toBe(true);
+    expect(digitTransitionSamples.some(({ bytes }) => bytes >= 10_000)).toBe(true);
+    for (const { bytes, result } of digitTransitionSamples) {
+      expect(result.render.actual_bytes).toBe(bytes);
+    }
+  });
+
+  it('returns pathological reports complete and ok when mandatory structure exceeds the target', async () => {
+    const source = Array.from({ length: 900 }, (_, index) => message(`m${index}`, 'assistant', [
+      { type: 'step-start' }, { type: `unknown-${index}` }, { type: 'step-finish' },
+    ]));
+    const serialized = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+    const result = JSON.parse(serialized);
 
     expect(result.ok).toBe(true);
-    expect(result.steps.length).toBeGreaterThan(0);
-    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(128 * 1024);
-    expect(result.recovery).toMatchObject({ available: false, reason: 'summary_output_too_large' });
-    expect(result.recovery.summaries.every((summary: any) => representedStepIDs.has(summary.step_id))).toBe(true);
-    expect(Buffer.byteLength(JSON.stringify(result.recovery.summaries), 'utf8')).toBeLessThanOrEqual(
-      result.truncation.limits.max_recovery_summary_bytes,
-    );
-    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(result.truncation.limits.max_bytes);
+    expect(result.timeline).toHaveLength(900);
+    expect(result.render.actual_bytes).toBeGreaterThan(result.render.soft_target_bytes);
+    expect(result.render.actual_bytes).toBe(Buffer.byteLength(serialized));
   });
 
-  it('returns a compact explicit limit result when envelope data exceeds the reserved budget', async () => {
-    const taskID = `child-${'x'.repeat(140 * 1024)}`;
-    const { client } = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'done' }])], { childID: taskID });
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
+  it('does not externalize short values when their locator dictionary makes the report larger', async () => {
+    const source = Array.from({ length: 900 }, (_, index) => message(`m${index}`, 'assistant', [
+      { type: 'text', text: `${index}:${'x'.repeat(80)}` },
+    ]));
+    const serialized = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+    const result = JSON.parse(serialized);
 
-    const serialized = await executeRaw(tools, 'hive_task_trace', { task_id: taskID, mode: 'audit' });
-
-    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(128 * 1024);
-    expect(JSON.parse(serialized)).toEqual({
-      ok: false,
-      reason: 'result_size_limit',
-      mode: 'audit',
-      bounded: true,
-      incomplete: true,
-      limits: { max_bytes: 128 * 1024 },
-    });
-    expect(serialized).not.toContain(taskID);
+    expect(result.render.actual_bytes).toBeGreaterThan(result.render.soft_target_bytes);
+    expect(result.render.externalized_count).toBe(0);
+    expect(result.content_dictionary).toEqual([]);
+    expect(result.timeline).toHaveLength(900);
   });
 
-  it('keeps raw reasoning out of snapshot, audit, and content retrieval', async () => {
-    const large = 'x'.repeat(5000);
-    const reasoning = 'never retrievable as deterministic trace content';
-    const source = [message('m1', 'assistant', [
-      { type: 'text', text: large },
-      { type: 'reasoning', text: reasoning },
-    ])];
-
-    for (const mode of ['snapshot', 'audit'] as const) {
-      const { client } = clientFor(source, {
-        mutateMessages: (count) => count < 3 ? source : [message('m1', 'assistant', [{ type: 'text', text: `${large}changed` }])],
-      });
-      const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-      const trace = await execute(tools, 'hive_task_trace', { task_id: 'child', mode });
-      const evidence = trace.steps.flatMap((step: any) => step.evidence).find((item: any) => item.provenance === 'assistant_final_response');
-
-      expect(JSON.stringify(trace)).not.toContain(reasoning);
-      expect(trace.reasoning).toMatchObject({ availability: 'plaintext', plaintext_part_count: 1 });
-      expect(evidence.text.preview).toHaveLength(512);
-      expect(evidence.text.content_id).toBeString();
-      expect(await execute(tools, 'hive_task_trace_content', { content_id: evidence.text.content_id })).toEqual({
-        ok: true,
-        content: large,
-        bytes: 5000,
-        sha256: expect.any(String),
-      });
-      expect(await execute(tools, 'hive_task_trace_content', { content_id: evidence.text.content_id })).toEqual({
-        ok: false,
-        reason: 'stale_or_not_found',
-      });
-      const forbidden = Buffer.from(JSON.stringify({ v: 1, sessionID: 'child', messageID: 'm1', partID: 'm1-part-1', field: 'reasoning.text', bytes: 5000, sha256: 'a'.repeat(64) })).toString('base64url');
-      expect(await execute(tools, 'hive_task_trace_content', { content_id: forbidden })).toEqual({ ok: false, reason: 'invalid_content_id' });
+  it('externalizes remaining candidates when final render metadata alone exceeds the soft target', async () => {
+    const candidate = 'c'.repeat(487);
+    const source = [message('u', 'user', [{ type: 'text', text: 'go' }]), message('a0', 'assistant', [{ type: 'text', text: candidate }])];
+    for (let index = 0; index < 344; index += 1) {
+      source.push(message(`p${index}`, 'assistant', [
+        { type: 'step-start' },
+        { type: `unk${index}` },
+        { type: 'step-finish' },
+      ]));
     }
+    const serialized = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+    const result = JSON.parse(serialized);
+
+    expect(serialized.includes(candidate)).toBe(false);
+    expect(result.render.externalized_count).toBeGreaterThanOrEqual(1);
+    expect(result.content_dictionary).toHaveLength(result.render.externalized_count);
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(24_576);
+    expect(result.render.actual_bytes).toBeLessThanOrEqual(result.render.soft_target_bytes);
+    expect(result.render.actual_bytes).toBe(Buffer.byteLength(serialized));
+    expect(result.timeline).toHaveLength(346);
   });
 
-  it('returns a restated reasoning summary only as an untrusted reasoning-derived interpretation', async () => {
-    const reasoning = 'Considered the failure, checked tool evidence, and chose the smallest fix.';
+  it('maps every terminal step including the middle, then performs one synthesis', async () => {
+    const source = realisticTrace();
+    const setup = clientFor(source);
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const mapRequests = setup.calls.filter((call) => call.method === 'prompt')
+      .map((call) => JSON.parse(call.input.body.parts[0].text))
+      .filter((request) => request.kind === 'map');
+    const reduceRequests = setup.calls.filter((call) => call.method === 'prompt')
+      .map((call) => JSON.parse(call.input.body.parts[0].text))
+      .filter((request) => request.kind === 'reduce');
+    const mapped = new Set(mapRequests.flatMap((request) => request.fragments.map((fragment: any) => fragment.step)));
+
+    expect(mapped).toEqual(new Set(Array.from({ length: 59 }, (_, index) => index + 1)));
+    expect(mapped.has(30)).toBe(true);
+    expect(reduceRequests).toHaveLength(1);
+    expect(reduceRequests[0].interpretations).toHaveLength(59);
+    expect(result.timeline.every((step: any) => step.interpretation?.untrusted === true)).toBe(true);
+    expect(result.timeline.every((step: any) => step.interpretation?.provenance === 'summarizer_interpretation')).toBe(true);
+    expect(result.recovery).toMatchObject({
+      available: true,
+      failed_ranges: [],
+      synthesis: synthesis(),
+      model: {
+        requested: { model: 'requested/model', variant: 'high' },
+        observed: { model: 'observed-provider/observed-model', variant: 'observed-variant' },
+      },
+    });
+  });
+
+  it('uses adaptive target as guidance and accepts valid longer summaries', async () => {
+    const source = Array.from({ length: 100 }, (_, index) => message(`m${index}`, 'assistant', [{ type: 'text', text: `step ${index}` }]));
+    const setup = clientFor(source, {
+      prompt: (request) => request.kind === 'map'
+        ? {
+            kind: 'map', range: request.range,
+            interpretations: [...new Set(request.fragments.map((fragment: any) => fragment.step))].map((step) => ({
+              step, summary: 's'.repeat(400), basis: 'observed',
+            })),
+          }
+        : { kind: 'reduce', synthesis: synthesis() },
+    });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const map = setup.calls.find((call) => call.method === 'prompt')!;
+    const request = JSON.parse(map.input.body.parts[0].text);
+
+    expect(request.target_chars).toBe(140);
+    expect(result.timeline.every((step: any) => step.interpretation)).toBe(true);
+    expect(result.timeline[50].interpretation.summary).toHaveLength(400);
+    expect(result.ok).toBe(true);
+    expect(result.render.actual_bytes).toBeGreaterThan(result.render.soft_target_bytes);
+  });
+
+  it('bounds encoded map prompts while reconstructing escape-heavy observed and reasoning atoms', async () => {
+    const observed = `${'\\"\n'.repeat(12_000)}🙂observed-tail`;
+    const reasoning = `${'"\n\\'.repeat(12_000)}🙂reasoning-tail`;
     const source = [message('m1', 'assistant', [
       { type: 'step-start' },
       { type: 'reasoning', text: reasoning },
-      { type: 'text', text: 'Checking the failing path.' },
-      { type: 'tool', tool: 'test', state: { status: 'completed', input: { file: 'task-trace.test.ts' }, output: '1 failed' } },
-      { type: 'text', text: 'Fixed the reasoning summary contract.' },
+      { type: 'text', text: observed },
       { type: 'step-finish' },
     ])];
-    const promptText = JSON.stringify({
-      batch_id: 'batch-1',
-      steps: [{ step_id: 'm1:step:1', summary: reasoning, reasoning_part_ids: ['m1-part-1'] }],
-    });
-    const { client, calls } = clientFor(source, { promptText });
-    const ephemeralSessionIDs = new Set<string>();
-    const tools = createTaskTraceTools({
-      client,
-      directory: '/repo',
-      summarizer: { model: 'provider/model', variant: 'high', temperature: 0.2 },
-      ephemeralSessionIDs,
-    });
+    const setup = clientFor(source);
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const promptCalls = setup.calls.filter((call) => call.method === 'prompt' && JSON.parse(call.input.body.parts[0].text).kind === 'map');
+    const fragments = promptCalls.flatMap((call) => JSON.parse(call.input.body.parts[0].text).fragments);
 
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-    expect(result.recovery.available).toBe(true);
-    expect(result.recovery.summaries[0]).toEqual({
-      step_id: 'm1:step:1',
-      summary: reasoning,
-      provenance: 'summarizer_interpretation',
-      reasoning_part_ids: ['m1-part-1'],
-      untrusted: true,
-    });
-    const evidence = result.steps[0].evidence;
-    expect(evidence.find((item: any) => item.provenance === 'assistant_progress_text')?.text).toBe('Checking the failing path.');
-    expect(evidence.find((item: any) => item.provenance === 'assistant_final_response')?.text).toBe('Fixed the reasoning summary contract.');
-    expect(evidence.find((item: any) => item.provenance === 'tool_output')?.output).toBe('1 failed');
-    expect(JSON.stringify(evidence)).not.toContain(reasoning);
-    expect(result.reasoning).toMatchObject({ availability: 'plaintext', plaintext_part_count: 1 });
-    expect(calls.map((call) => call.method)).toEqual(['get', 'messages', 'status', 'create', 'prompt', 'delete']);
-    expect((calls.find((call) => call.method === 'create')!.input as any).body.parentID).toBeUndefined();
-    expect((calls.find((call) => call.method === 'prompt')!.input as any).body).toMatchObject({
-      agent: TASK_TRACE_SUMMARIZER_AGENT,
-      model: { providerID: 'provider', modelID: 'model' },
-    });
-    expect((calls.find((call) => call.method === 'prompt')!.input as any).body).not.toHaveProperty('variant');
-    const request = JSON.parse((calls.find((call) => call.method === 'prompt')!.input as any).body.parts[0].text);
-    expect(request.steps[0].source.reasoning).toEqual([{ part_id: 'm1-part-1', text: reasoning }]);
-    expect(ephemeralSessionIDs.size).toBe(0);
+    expect(promptCalls.every((call) => Buffer.byteLength(call.input.body.parts[0].text, 'utf8') <= 20_480)).toBe(true);
+    expect(fragments.map((fragment: any) => fragment.fragment)).toEqual(Array.from({ length: fragments.length }, (_, index) => index + 1));
+    expect(fragments.every((fragment: any) => fragment.fragments === fragments.length)).toBe(true);
+    expect(JSON.parse(fragments.map((fragment: any) => fragment.source.observed ?? '').join('')).text).toEqual([observed]);
+    expect(fragments.map((fragment: any) => fragment.source.reasoning ?? '').join('')).toBe(reasoning);
+    expect(result.timeline[0].interpretation).toBeDefined();
   });
 
-  it('rejects malformed JSON, IDs, order, extra fields, and per-summary bounds without retry', async () => {
-    const source = [
-      message('m1', 'assistant', [{ type: 'reasoning', text: 'first basis' }]),
-      message('m2', 'assistant', [{ type: 'reasoning', text: 'second basis' }]),
-    ];
-    const validSteps = [
-      { step_id: 'm1:step:1', summary: 'First interpretation.', reasoning_part_ids: ['m1-part-0'] },
-      { step_id: 'm2:step:1', summary: 'Second interpretation.', reasoning_part_ids: ['m2-part-0'] },
-    ];
-    const invalidOutputs = [
-      'not json',
-      JSON.stringify({ batch_id: 'wrong', steps: validSteps }),
-      JSON.stringify({ batch_id: 'batch-1', steps: validSteps, extra: true }),
-      JSON.stringify({ batch_id: 'batch-1', steps: [...validSteps].reverse() }),
-      JSON.stringify({ batch_id: 'batch-1', steps: [{ ...validSteps[0], step_id: 'wrong' }, validSteps[1]] }),
-      JSON.stringify({ batch_id: 'batch-1', steps: [{ ...validSteps[0], reasoning_part_ids: ['wrong'] }, validSteps[1]] }),
-      JSON.stringify({ batch_id: 'batch-1', steps: [{ ...validSteps[0], provenance: 'assistant_final_response', untrusted: false }, validSteps[1]] }),
-      JSON.stringify({ batch_id: 'batch-1', steps: [{ ...validSteps[0], summary: 'x'.repeat(2049) }, validSteps[1]] }),
-    ];
+  it('splits oversized singleton observed and reasoning atoms on UTF-8 boundaries without gaps', async () => {
+    for (const channel of ['observed', 'reasoning'] as const) {
+      const value = `start-${'🙂'.repeat(20_000)}-${channel}-end`;
+      const parts = channel === 'observed'
+        ? [{ type: 'text', text: value }]
+        : [{ type: 'reasoning', text: value }];
+      const setup = clientFor([message('m1', 'assistant', parts)]);
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      const promptCalls = setup.calls.filter((call) => call.method === 'prompt' && JSON.parse(call.input.body.parts[0].text).kind === 'map');
+      const fragments = promptCalls.flatMap((call) => JSON.parse(call.input.body.parts[0].text).fragments);
+      const reconstructed = fragments.map((fragment: any) => fragment.source[channel] ?? '').join('');
 
-    for (const promptText of invalidOutputs) {
-      const { client, calls } = clientFor(source, { promptText });
-      const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
-
-      const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-      expect(result.recovery).toEqual({ available: false, reason: 'invalid_summary_output', summaries: [] });
-      expect(calls.filter((call) => call.method === 'prompt')).toHaveLength(1);
-      expect(calls.filter((call) => call.method === 'delete')).toHaveLength(1);
+      expect(promptCalls.every((call) => Buffer.byteLength(call.input.body.parts[0].text, 'utf8') <= 20_480)).toBe(true);
+      expect(fragments.length).toBeGreaterThan(1);
+      expect(fragments.map((fragment: any) => fragment.fragment)).toEqual(Array.from({ length: fragments.length }, (_, index) => index + 1));
+      expect(reconstructed).not.toContain('�');
+      if (channel === 'observed') expect(JSON.parse(reconstructed).text).toEqual([value]);
+      else expect(reconstructed).toBe(value);
+      expect(result.timeline[0].interpretation).toBeDefined();
     }
   });
 
-  it('rejects an oversized single summarizer text part before parsing without retry', async () => {
-    const source = [message('m1', 'assistant', [{ type: 'reasoning', text: 'private basis' }])];
-    const valid = JSON.stringify({
-      batch_id: 'batch-1',
-      steps: [{ step_id: 'm1:step:1', summary: 'The assistant evaluated the evidence.', reasoning_part_ids: ['m1-part-0'] }],
-    });
-    const { client, calls } = clientFor(source, {
-      promptParts: [{ type: 'text', text: `${' '.repeat(40 * 1024)}${valid}` }],
-    });
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
+  it('reports map/provider/cleanup failures as explicit partial ranges without retry', async () => {
+    for (const failure of ['schema', 'provider', 'cleanup'] as const) {
+      const source = Array.from({ length: 20 }, (_, index) => message(`m${index}`, 'assistant', [
+        { type: 'text', text: `${index}:${'x'.repeat(2500)}` },
+      ]));
+      const setup = clientFor(source, {
+        prompt: (request, call) => failure === 'schema' && request.kind === 'map' && call === 2
+          ? { kind: 'map', range: request.range, interpretations: [] }
+          : undefined,
+        promptError: (request, call) => failure === 'provider' && request.kind === 'map' && call === 2 ? 'provider failed' : undefined,
+        deleteError: (call) => failure === 'cleanup' && call === 2 ? 'delete failed' : undefined,
+      });
+      const ephemeral = new Set<string>();
+      const result = await execute(toolsFor(setup, ephemeral), 'hive_task_trace', { task_id: 'child', recovery: true });
 
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-    expect(result.recovery).toEqual({ available: false, reason: 'summarizer_response_limit_exceeded', summaries: [] });
-    expect(calls.filter((call) => call.method === 'prompt')).toHaveLength(1);
-    expect(calls.filter((call) => call.method === 'delete')).toHaveLength(1);
+      expect(result.ok).toBe(true);
+      expect(result.recovery.available).toBe(false);
+      expect(result.recovery.failed_ranges).toHaveLength(1);
+      expect(result.recovery.failed_ranges[0].reasons).toEqual([{ schema: 'invalid_map_output', provider: 'summarizer_unavailable', cleanup: 'ephemeral_cleanup_failed' }[failure]]);
+      expect(result.recovery.failed_ranges[0]).not.toHaveProperty('reason');
+      expect(result.timeline.some((step: any) => step.interpretation)).toBe(true);
+      expect(result.timeline.some((step: any) => !step.interpretation)).toBe(true);
+      expect(setup.calls.filter((call) => call.method === 'prompt').length).toBeLessThanOrEqual(
+        setup.calls.filter((call) => call.method === 'create').length,
+      );
+      if (failure === 'cleanup') expect(ephemeral.size).toBe(1);
+    }
   });
 
-  it('rejects too many summarizer text parts before concatenation without retry', async () => {
-    const source = [message('m1', 'assistant', [{ type: 'reasoning', text: 'private basis' }])];
-    const valid = JSON.stringify({
-      batch_id: 'batch-1',
-      steps: [{ step_id: 'm1:step:1', summary: 'The assistant evaluated the evidence.', reasoning_part_ids: ['m1-part-0'] }],
-    });
-    const { client, calls } = clientFor(source, {
-      promptParts: [
-        ...Array.from({ length: 32 }, () => ({ type: 'text', text: ' ' })),
-        { type: 'text', text: valid },
-      ],
-    });
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
+  it('preserves concurrent map provider or schema and cleanup causes with successful-range interpretations', async () => {
+    for (const failure of ['schema', 'provider'] as const) {
+      const source = Array.from({ length: 20 }, (_, index) => message(`m${index}`, 'assistant', [
+        { type: 'text', text: `${index}:${'x'.repeat(2500)}` },
+      ]));
+      const setup = clientFor(source, {
+        prompt: (request, call) => failure === 'schema' && request.kind === 'map' && call === 2
+          ? { kind: 'map', range: request.range, interpretations: [] }
+          : undefined,
+        promptError: (request, call) => failure === 'provider' && request.kind === 'map' && call === 2 ? 'provider failed' : undefined,
+        deleteError: (call) => call === 2 ? 'delete failed' : undefined,
+      });
+      const ephemeral = new Set<string>();
+      const result = await execute(toolsFor(setup, ephemeral), 'hive_task_trace', { task_id: 'child', recovery: true });
+      const failed = result.recovery.failed_ranges[0];
+      const expectedPrimary = failure === 'schema' ? 'invalid_map_output' : 'summarizer_unavailable';
 
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-    expect(result.recovery).toEqual({ available: false, reason: 'summarizer_response_limit_exceeded', summaries: [] });
-    expect(calls.filter((call) => call.method === 'prompt')).toHaveLength(1);
-    expect(calls.filter((call) => call.method === 'delete')).toHaveLength(1);
+      expect(result.timeline.map((step: any) => step.step)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+      expect(failed.reasons).toEqual([expectedPrimary, 'ephemeral_cleanup_failed']);
+      expect(failed).not.toHaveProperty('reason');
+      expect(result.timeline.some((step: any) => step.interpretation)).toBe(true);
+      expect(result.timeline.filter((step: any) => step.step >= failed.range[0] && step.step <= failed.range[1]).every((step: any) => !step.interpretation)).toBe(true);
+      expect(ephemeral).toEqual(new Set(['summary-2']));
+    }
   });
 
-  it('summarizes stable contiguous steps even when a step has no plaintext reasoning', async () => {
-    const source = [message('m1', 'assistant', [{ type: 'text', text: 'observed final response' }])];
-    const { client } = clientFor(source, {
-      promptText: JSON.stringify({
-        batch_id: 'batch-1',
-        steps: [{ step_id: 'm1:step:1', summary: 'The assistant produced a final response.', reasoning_part_ids: [] }],
-      }),
-    });
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
+  it('keeps map interpretations but marks synthesis unavailable on reducer schema, provider, or cleanup failure', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])];
+    for (const failure of ['schema', 'provider', 'cleanup'] as const) {
+      const setup = clientFor(source, {
+        prompt: (request) => failure === 'schema' && request.kind === 'reduce'
+          ? { kind: 'reduce', synthesis: { overview: 'missing fields' } }
+          : undefined,
+        promptError: (request) => failure === 'provider' && request.kind === 'reduce' ? 'provider failed' : undefined,
+        deleteError: (call) => failure === 'cleanup' && call === 2 ? 'delete failed' : undefined,
+      });
+      const ephemeral = new Set<string>();
+      const result = await execute(toolsFor(setup, ephemeral), 'hive_task_trace', { task_id: 'child', recovery: true });
 
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
+      expect(result.timeline.every((step: any) => step.interpretation)).toBe(true);
+      expect(result.recovery.available).toBe(false);
+      expect(result.recovery.synthesis).toEqual({
+        available: false,
+        reasons: [{ schema: 'invalid_reducer_output', provider: 'summarizer_unavailable', cleanup: 'ephemeral_cleanup_failed' }[failure]],
+      });
+      expect(setup.calls.filter((call) => call.method === 'prompt' && JSON.parse(call.input.body.parts[0].text).kind === 'reduce')).toHaveLength(1);
+      if (failure === 'cleanup') expect(ephemeral).toEqual(new Set(['summary-2']));
+    }
+  });
+
+  it('preserves concurrent reducer provider or schema and cleanup causes without dropping map interpretations', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])];
+    for (const failure of ['schema', 'provider'] as const) {
+      const setup = clientFor(source, {
+        prompt: (request) => failure === 'schema' && request.kind === 'reduce'
+          ? { kind: 'reduce', synthesis: { overview: 'missing fields' } }
+          : undefined,
+        promptError: (request) => failure === 'provider' && request.kind === 'reduce' ? 'provider failed' : undefined,
+        deleteError: (call) => call === 2 ? 'delete failed' : undefined,
+      });
+      const ephemeral = new Set<string>();
+      const result = await execute(toolsFor(setup, ephemeral), 'hive_task_trace', { task_id: 'child', recovery: true });
+      const expectedPrimary = failure === 'schema' ? 'invalid_reducer_output' : 'summarizer_unavailable';
+
+      expect(result.timeline.map((step: any) => step.step)).toEqual([1]);
+      expect(result.timeline[0].interpretation).toMatchObject({
+        provenance: 'summarizer_interpretation',
+        untrusted: true,
+      });
+      expect(result.recovery.synthesis).toEqual({
+        available: false,
+        reasons: [expectedPrimary, 'ephemeral_cleanup_failed'],
+      });
+      expect(result.recovery.synthesis).not.toHaveProperty('reason');
+      expect(ephemeral).toEqual(new Set(['summary-2']));
+    }
+  });
+
+  it('accepts realistic multi-part map and reducer responses including split JSON text parts', async () => {
+    const source = [message('m1', 'assistant', [
+      { type: 'step-start' },
+      { type: 'reasoning', text: 'private chain-of-thought that must not be parsed' },
+      { type: 'text', text: 'completed work' },
+      { type: 'step-finish' },
+    ])];
+    const reduceBody = JSON.stringify({ kind: 'reduce', synthesis: synthesis() });
+    const setup = clientFor(source, {
+      prompt: (request) => {
+        if (request.kind === 'map') {
+          const mapBody = JSON.stringify({
+            kind: 'map',
+            range: request.range,
+            interpretations: [...new Set(request.fragments.map((fragment: any) => fragment.step))].map((step) => ({
+              step,
+              summary: 'Mapped from split parts',
+              basis: request.fragments.some((fragment: any) => fragment.step === step && fragment.source.reasoning)
+                ? request.fragments.some((fragment: any) => fragment.step === step && fragment.source.observed) ? 'mixed' : 'reasoning'
+                : 'observed',
+            })),
+          });
+          const mid = Math.floor(mapBody.length / 2);
+          return {
+            parts: [
+              { type: 'step-start' },
+              { type: 'reasoning', text: 'do not concatenate this into JSON' },
+              { type: 'text', text: mapBody.slice(0, mid) },
+              { type: 'text', text: mapBody.slice(mid) },
+              { type: 'step-finish' },
+            ],
+          };
+        }
+        const mid = Math.floor(reduceBody.length / 2);
+        return {
+          parts: [
+            { type: 'step-start' },
+            { type: 'reasoning', text: 'reducer private reasoning' },
+            { type: 'text', text: reduceBody.slice(0, mid) },
+            { type: 'text', text: reduceBody.slice(mid) },
+            { type: 'step-finish' },
+          ],
+        };
+      },
+    });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
     expect(result.recovery.available).toBe(true);
-    expect(result.recovery.summaries[0]).toMatchObject({
+    expect(result.timeline[0].interpretation).toMatchObject({
+      summary: 'Mapped from split parts',
+      basis: 'mixed',
       provenance: 'summarizer_interpretation',
-      reasoning_part_ids: [],
       untrusted: true,
     });
+    expect(result.recovery.synthesis).toEqual(synthesis());
+    expect(JSON.stringify(result)).not.toContain('do not concatenate this into JSON');
+    expect(JSON.stringify(result)).not.toContain('reducer private reasoning');
+    expect(JSON.stringify(result)).not.toContain('private chain-of-thought');
   });
 
-  it('keeps an undeleted summarizer session isolated after cleanup failure', async () => {
-    const source = [message('m1', 'assistant', [{ type: 'reasoning', text: 'reason' }])];
-    const { client } = clientFor(source, {
-      promptText: JSON.stringify({
-        batch_id: 'batch-1',
-        steps: [{ step_id: 'm1:step:1', summary: 'Interpretation.', reasoning_part_ids: ['m1-part-0'] }],
+  it('rejects multi-part summarizer output with no text parts as invalid map/reducer output', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])];
+    const setup = clientFor(source, {
+      prompt: () => ({
+        parts: [
+          { type: 'step-start' },
+          { type: 'reasoning', text: '{"kind":"map"}' },
+          { type: 'step-finish' },
+        ],
       }),
-      deleteError: 'failed',
     });
-    const ephemeralSessionIDs = new Set<string>();
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-    expect(result.recovery).toMatchObject({ available: false, reason: 'ephemeral_cleanup_failed' });
-    expect(ephemeralSessionIDs).toEqual(new Set(['summary-1']));
+    expect(result.ok).toBe(true);
+    expect(result.recovery.available).toBe(false);
+    expect(result.recovery.failed_ranges).toEqual([{ range: [1, 1], reasons: ['invalid_map_output'] }]);
+    expect(result.recovery.synthesis).toEqual({ available: false, reasons: ['no_successful_map_ranges'] });
+    expect(result.timeline[0].interpretation).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('{"kind":"map"}');
   });
 
-  it('batches at most eight ordered steps per ephemeral session', async () => {
-    const source = Array.from({ length: 9 }, (_, index) => message(`m${index + 1}`, 'assistant', [
-      { type: 'step-start' },
-      { type: 'reasoning', text: `private-basis-qwzxvut-${index + 1}-xykjmnp` },
-      { type: 'step-finish' },
-    ]));
-    const { client, calls } = clientFor(source, {
-      promptText: (index, input) => {
-        const body = (input as any).body;
-        const request = JSON.parse(body.parts[0].text);
-        return JSON.stringify({
-          batch_id: `batch-${index}`,
-          steps: request.steps.map((step: any) => ({
-            step_id: step.step_id,
-            summary: `Interpretation for ${step.step_id}`,
-            reasoning_part_ids: step.reasoning_part_ids,
-          })),
-        });
-      },
+  it('reauthorizes v2 content, detects staleness, and returns UTF-8-safe 8 KiB chunks', async () => {
+    const large = `start-${'🙂'.repeat(5000)}-end`;
+    const source = [message('m1', 'assistant', [{ type: 'text', text: large }, { type: 'reasoning', text: 'private' }])];
+    const setup = clientFor(source, {
+      mutateMessages: (reads) => reads <= 3 ? source : [message('m1', 'assistant', [{ type: 'text', text: `${large}changed` }])],
     });
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
+    const tools = toolsFor(setup);
+    const trace = await execute(tools, 'hive_task_trace', { task_id: 'child' });
+    const contentID = trace.content_dictionary[trace.timeline[0].text[0].r - 1];
+    const first = await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: contentID });
+    const second = await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: contentID, offset: first.next_offset });
+    const stale = await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: contentID });
 
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
+    expect(first).toMatchObject({ ok: true, version: 2, task_id: 'child', offset: 0, bytes: Buffer.byteLength(large), sha256: expect.any(String) });
+    expect(Buffer.byteLength(first.content)).toBeLessThanOrEqual(8192);
+    expect(first.content).not.toContain('�');
+    expect(second.offset).toBe(first.next_offset);
+    expect(second.content).not.toContain('�');
+    expect(stale).toEqual({ ok: false, reason: 'stale_or_not_found' });
+    expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(4);
+    expect(setup.calls.filter((call) => call.method === 'get')).toHaveLength(4);
 
-    expect(result.recovery.available).toBe(true);
-    expect(result.recovery.summaries.map((summary: any) => summary.step_id)).toEqual(source.map((_, index) => `m${index + 1}:step:1`));
-    expect(calls.filter((call) => call.method === 'create')).toHaveLength(2);
-    expect(calls.filter((call) => call.method === 'prompt')).toHaveLength(2);
-    expect(calls.filter((call) => call.method === 'delete')).toHaveLength(2);
+    const decoded = JSON.parse(Buffer.from(contentID, 'base64url').toString('utf8'));
+    expect(decoded).toEqual([2, 0, 0, 1, Buffer.byteLength(large), expect.any(String)]);
+    const reasoningLocator = Buffer.from(JSON.stringify([2, 0, 1, 7, 7, 'a'.repeat(43)])).toString('base64url');
+    expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: reasoningLocator })).toEqual({ ok: false, reason: 'invalid_content_id' });
   });
 
-  it('validates a near-limit recovery batch within a bounded test timeout', async () => {
-    const source = Array.from({ length: 8 }, (_, index) => message(`m${index + 1}`, 'assistant', [
-      { type: 'reasoning', text: 'q'.repeat(3500) },
-    ]));
-    const { client, calls } = clientFor(source, {
-      promptText: (_index, input) => {
-        const request = JSON.parse((input as any).body.parts[0].text);
-        return JSON.stringify({
-          batch_id: 'batch-1',
-          steps: request.steps.map((step: any) => ({
-            step_id: step.step_id,
-            summary: 'z'.repeat(1800),
-            reasoning_part_ids: step.reasoning_part_ids,
-          })),
-        });
-      },
-    });
-    const tools = createTaskTraceTools({ client, directory: '/repo', summarizer: { temperature: 0 }, ephemeralSessionIDs: new Set() });
+  it('authorizes only direct children and performs no mutation, polling, retry, or resume', async () => {
+    const denied = clientFor([], { parentID: 'other' });
+    expect(await execute(toolsFor(denied), 'hive_task_trace', { task_id: 'child' })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
+    expect(denied.calls.map((call) => call.method)).toEqual(['get']);
 
-    const result = await execute(tools, 'hive_task_trace', { task_id: 'child', mode: 'recovery' });
-
-    expect(result.recovery.available).toBe(true);
-    expect(result.recovery.summaries).toHaveLength(8);
-    expect(calls.filter((call) => call.method === 'prompt')).toHaveLength(1);
-  }, 5000);
+    const allowed = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'done' }])]);
+    await execute(toolsFor(allowed), 'hive_task_trace', { task_id: 'child' });
+    expect(allowed.calls.map((call) => call.method)).toEqual(['get', 'messages', 'status']);
+  });
 });
 
 describe('task trace lifecycle hints', () => {
@@ -802,28 +756,9 @@ describe('task trace lifecycle hints', () => {
     await injectTaskTraceHint(messages, authorize, seen);
     await injectTaskTraceHint(messages, authorize, seen);
     expect(messages[0].parts.filter((part: any) => part.type === 'text' && part.synthetic)).toHaveLength(1);
-
-    const replayed = [{ info: messages[0].info, parts: [messages[0].parts[0]] }] as any[];
-    await injectTaskTraceHint(replayed, authorize, seen);
-    expect(replayed[0].parts).toHaveLength(1);
   });
 
-  it('attempts lifecycle-hint authorization once per candidate even when authorization fails', async () => {
-    const messages: any[] = [{
-      info: { id: 'parent-tool', sessionID: 'parent', role: 'assistant' },
-      parts: [{ id: 'task-part', type: 'tool', tool: 'task', state: { status: 'error' }, metadata: { sessionId: 'child' } }],
-    }];
-    const seen = new Set<string>();
-    let authorizationCalls = 0;
-    const authorize = async () => {
-      authorizationCalls += 1;
-      return false;
-    };
-
-    await injectTaskTraceHint(messages, authorize, seen);
-    await injectTaskTraceHint(messages, authorize, seen);
-
-    expect(authorizationCalls).toBe(1);
-    expect(messages[0].parts).toHaveLength(1);
+  it('keeps the recovery agent name reserved for hidden internal use', () => {
+    expect(TASK_TRACE_SUMMARIZER_AGENT).toBe('__hive_task_trace_summarizer');
   });
 });

@@ -20,6 +20,8 @@ const EXPECTED_TOOLS = [
   "hive_tasks_sync",
   "hive_worktree_start",
   "hive_worktree_create",
+  "hive_task_trace",
+  "hive_task_trace_content",
 ] as const;
 
 const RUNTIME_PROVIDER_ID = 'runtime-stub';
