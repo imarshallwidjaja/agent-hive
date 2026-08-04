@@ -12,6 +12,15 @@ const INITIAL_ERROR_INLINE_BYTES = 256;
 const MAP_BATCH_BYTES = 20 * 1024;
 const MAX_SUMMARIZER_RESPONSE_PARTS = 8;
 const MAX_SUMMARIZER_RESPONSE_BYTES = 128 * 1024;
+const RECOVERY_PREVIEW_BYTES = 256;
+const RECOVERY_CARD_ACTION_BYTES = 384;
+const RECOVERY_CARD_FINDING_BYTES = 768;
+const RECOVERY_CARD_UNRESOLVED_BYTES = 384;
+const RECOVERY_PHASE_SUMMARY_BYTES = 384;
+const RECOVERY_PHASE_ACTION_BYTES = 512;
+const RECOVERY_PHASE_FINDING_BYTES = 768;
+const RECOVERY_PHASE_UNRESOLVED_BYTES = 512;
+const RECOVERY_ANCHOR_BYTES = 2 * 1024;
 const CONTENT_FIELDS = ['text', 'tool.input', 'tool.output', 'tool.error', 'assistant.error', 'retry.error'] as const;
 
 type RecordValue = Record<string, unknown>;
@@ -19,10 +28,12 @@ type Actor = 'user' | 'assistant';
 type StepState = 'closed' | 'open' | 'malformed';
 type ContentField = typeof CONTENT_FIELDS[number];
 type ContentLocator = [2, number, number, number, number, string];
+type RecoveryBasis = 'observed' | 'reasoning' | 'mixed';
 type RecoveryFailureReason =
   | 'empty_trace'
   | 'ephemeral_cleanup_failed'
   | 'invalid_map_output'
+  | 'invalid_phase_coverage'
   | 'invalid_reducer_output'
   | 'latest_assistant_open'
   | 'latest_message_not_assistant'
@@ -32,6 +43,32 @@ type RecoveryFailureReason =
   | 'status_unavailable'
   | 'summarizer_unavailable'
   | 'tool_pending_or_running';
+
+interface RecoveryCard {
+  step: number;
+  intent: string | null;
+  actions: string[];
+  findings: string[];
+  outcome: string | null;
+  unresolved: string[];
+  basis: RecoveryBasis;
+}
+
+interface RuntimeRecoveryCard extends RecoveryCard {
+  provenance: 'summarizer_interpretation' | 'deterministic_extractive_fallback';
+  untrusted: true;
+  source: 'generated' | 'fallback';
+}
+
+interface RecoveryCapabilities {
+  hasVisibleObservedEvidence: boolean;
+  hasPlaintextReasoning: boolean;
+}
+
+interface MapValidation {
+  cards: RecoveryCard[];
+  invalidSteps: number[];
+}
 
 interface TaskTraceClient {
   session: {
@@ -86,6 +123,7 @@ interface IRReasoning {
 
 interface IRStep {
   number: number;
+  message: number;
   actor: Actor;
   state: StepState;
   explicit: boolean;
@@ -95,6 +133,8 @@ interface IRStep {
   errors: IRError[];
   files: string[];
   reasoning: IRReasoning[];
+  retries: number;
+  patches: number;
   unknownParts: number;
 }
 
@@ -104,7 +144,7 @@ interface TraceIR {
   partCount: number;
   compactionCount: number;
   digest: string;
-  latestMessage: { role?: string; closed: boolean; summary: boolean } | undefined;
+  latestMessage: { index: number; role?: string; closed: boolean; summary: boolean } | undefined;
 }
 
 interface ExternalizationCandidate {
@@ -153,9 +193,10 @@ function normalizeTrace(messages: unknown[]): TraceIR {
   let compactionCount = 0;
   let latestMessage: TraceIR['latestMessage'];
 
-  const openStep = (actor: Actor, explicit: boolean): IRStep => {
+  const openStep = (actor: Actor, explicit: boolean, message: number): IRStep => {
     const step: IRStep = {
       number: steps.length + 1,
+      message,
       actor,
       state: 'open',
       explicit,
@@ -165,6 +206,8 @@ function normalizeTrace(messages: unknown[]): TraceIR {
       errors: [],
       files: [],
       reasoning: [],
+      retries: 0,
+      patches: 0,
       unknownParts: 0,
     };
     steps.push(step);
@@ -178,13 +221,13 @@ function normalizeTrace(messages: unknown[]): TraceIR {
     const actor: Actor = info.role === 'user' ? 'user' : 'assistant';
     const closed = record(info.time)?.completed !== undefined || info.error !== undefined;
     const summary = info.summary === true || parts.some((part) => part.type === 'summary' || part.type === 'compaction');
-    latestMessage = { role: typeof info.role === 'string' ? info.role : undefined, closed, summary };
+    latestMessage = { index: messageIndex, role: typeof info.role === 'string' ? info.role : undefined, closed, summary };
     partCount += parts.length;
     if (info.summary === true) compactionCount += 1;
     let current: IRStep | undefined;
 
     if (info.error !== undefined && actor === 'assistant') {
-      current = openStep(actor, false);
+      current = openStep(actor, false, messageIndex);
       current.meaningful += 1;
       current.errors.push({ kind: 'assistant', source: sourceValue(messageIndex, -1, 'assistant.error', info.error) });
     }
@@ -193,10 +236,10 @@ function normalizeTrace(messages: unknown[]): TraceIR {
       const type = typeof part.type === 'string' ? part.type : 'unknown';
       if (type === 'step-start') {
         if (current) current.state = current.explicit ? 'malformed' : 'closed';
-        current = openStep(actor, true);
+        current = openStep(actor, true, messageIndex);
         return;
       }
-      if (!current) current = openStep(actor, false);
+      if (!current) current = openStep(actor, false, messageIndex);
 
       if (type === 'step-finish') {
         current.state = !current.explicit && current.meaningful === 0 ? 'malformed' : 'closed';
@@ -234,11 +277,13 @@ function normalizeTrace(messages: unknown[]): TraceIR {
       }
       if (type === 'retry') {
         current.meaningful += 1;
+        current.retries += 1;
         if (part.error !== undefined) current.errors.push({ kind: 'retry', source: sourceValue(messageIndex, partIndex, 'retry.error', part.error) });
         return;
       }
       if (type === 'patch') {
         current.meaningful += 1;
+        current.patches += 1;
         if (Array.isArray(part.files)) {
           current.files.push(...part.files.filter((file): file is string => typeof file === 'string'));
         }
@@ -386,6 +431,24 @@ function stepReasoningReport(step: IRStep): RecordValue | undefined {
   };
 }
 
+function traceTextSelections(ir: TraceIR) {
+  const all = ir.steps.flatMap((step) => step.texts.map((text, index) => ({ step, text, index: index + 1 })));
+  const instructions = all.filter((entry) => entry.step.actor === 'user');
+  const assistant = all.filter((entry) => entry.step.actor === 'assistant');
+  const final = [...assistant].reverse().find((entry) => entry.text.messageClosed);
+  const progress = [...assistant].reverse().find((entry) => entry !== final);
+  return { instruction: instructions.at(-1), final, progress };
+}
+
+function recoveryTerminalText(ir: TraceIR, lifecycle: RecordValue) {
+  if (lifecycle.terminal !== true || !ir.latestMessage) return undefined;
+  const terminalStep = [...ir.steps].reverse().find((step) => (
+    step.message === ir.latestMessage!.index && step.actor === 'assistant'
+  ));
+  const text = terminalStep?.texts.at(-1);
+  return terminalStep && text?.messageClosed ? { step: terminalStep, text } : undefined;
+}
+
 function projectReport(taskID: string, ir: TraceIR, lifecycle: RecordValue): {
   report: RecordValue;
   candidates: ExternalizationCandidate[];
@@ -465,14 +528,10 @@ function projectReport(taskID: string, ir: TraceIR, lifecycle: RecordValue): {
     timeline.push(projected);
   }
 
-  const allTexts = ir.steps.flatMap((step) => step.texts.map((text, index) => ({ step, text, index: index + 1 })));
-  const instructions = allTexts.filter((entry) => entry.step.actor === 'user');
-  const assistantTexts = allTexts.filter((entry) => entry.step.actor === 'assistant');
-  const final = [...assistantTexts].reverse().find((entry) => entry.text.messageClosed);
-  const progress = [...assistantTexts].reverse().find((entry) => entry !== final);
+  const selections = traceTextSelections(ir);
   const latest: RecordValue = {};
-  if (final) latest.final = { step: final.step.number, text: final.index };
-  if (progress) latest.progress = { step: progress.step.number, text: progress.index };
+  if (selections.final) latest.final = { step: selections.final.step.number, text: selections.final.index };
+  if (selections.progress) latest.progress = { step: selections.progress.step.number, text: selections.progress.index };
   if (latestTool) latest.tool = latestTool;
   if (latestError) latest.error = latestError;
 
@@ -489,7 +548,7 @@ function projectReport(taskID: string, ir: TraceIR, lifecycle: RecordValue): {
       compactions: ir.compactionCount,
       as_of: ir.digest,
     },
-    ...(instructions.length > 0 ? { instruction: { step: instructions[instructions.length - 1].step.number, text: instructions[instructions.length - 1].index } } : {}),
+    ...(selections.instruction ? { instruction: { step: selections.instruction.step.number, text: selections.instruction.index } } : {}),
     latest,
     reasoning: reasoningReport(ir.steps),
     content_dictionary: contentDictionary,
@@ -522,15 +581,62 @@ function splitUtf8(value: string, maxBytes: number): string[] {
   return chunks;
 }
 
-function recoveryBasis(step: IRStep): 'observed' | 'reasoning' | 'mixed' {
-  const hasReasoning = step.reasoning.length > 0;
-  const hasObserved = step.texts.length > 0 || step.tools.length > 0 || step.errors.length > 0 || step.files.length > 0 || step.unknownParts > 0;
-  return hasReasoning && hasObserved ? 'mixed' : hasReasoning ? 'reasoning' : 'observed';
+function compactRecoveryText(value: string): string {
+  if (Buffer.byteLength(value) <= RECOVERY_PREVIEW_BYTES) return value;
+  const marker = '... [truncated; inspect recovery:false for source detail]';
+  const available = RECOVERY_PREVIEW_BYTES - Buffer.byteLength(marker);
+  return `${splitUtf8(value, available)[0]}${marker}`;
 }
 
-function recoveryFragments(steps: IRStep[]): RecordValue[] {
+function boundedRecoveryStrings(values: string[], maxBytes: number, maxItems = 8): string[] {
+  const candidates = uniqueStrings(values.map(compactRecoveryText));
+  const output: string[] = [];
+  let bytes = 0;
+  for (const value of candidates) {
+    const valueBytes = Buffer.byteLength(value);
+    if (output.length >= maxItems || bytes + valueBytes > maxBytes) {
+      const marker = 'additional source items omitted; inspect recovery:false for source detail';
+      const markerBytes = Buffer.byteLength(marker);
+      while (output.length > 0 && bytes + markerBytes > maxBytes) {
+        bytes -= Buffer.byteLength(output.pop()!);
+      }
+      if (markerBytes <= maxBytes) output.push(marker);
+      break;
+    }
+    output.push(value);
+    bytes += valueBytes;
+  }
+  return output;
+}
+
+function boundedRecoverySummary(values: string[], maxBytes: number): string | null {
+  const bounded = boundedRecoveryStrings(values, maxBytes);
+  return bounded.length > 0 ? bounded.join(' ') : null;
+}
+
+function recoveryCapabilities(step: IRStep): RecoveryCapabilities {
+  const hasVisibleObservedEvidence = step.texts.some((entry) => fieldText(entry.source.value).trim().length > 0)
+    || step.tools.length > 0
+    || step.errors.length > 0
+    || step.retries > 0
+    || step.patches > 0
+    || step.files.some((file) => file.trim().length > 0);
+  const hasPlaintextReasoning = step.reasoning.some((entry) => entry.plaintext?.trim().length);
+  return {
+    hasVisibleObservedEvidence,
+    hasPlaintextReasoning,
+  };
+}
+
+function recoveryBasis(step: IRStep, capabilities = recoveryCapabilities(step)): RecoveryBasis {
+  if (capabilities.hasVisibleObservedEvidence && capabilities.hasPlaintextReasoning) return 'mixed';
+  return capabilities.hasPlaintextReasoning ? 'reasoning' : 'observed';
+}
+
+function recoveryFragments(steps: IRStep[], capabilities: Map<number, RecoveryCapabilities>): RecordValue[] {
   const fragments: RecordValue[] = [];
   for (const step of steps) {
+    const stepCapabilities = capabilities.get(step.number)!;
     const observed = stableJson({
       actor: step.actor,
       state: step.state,
@@ -544,15 +650,19 @@ function recoveryFragments(steps: IRStep[]): RecordValue[] {
       })),
       errors: step.errors.map((entry) => ({ kind: entry.kind, error: entry.source.value })),
       files: step.files,
+      retries: step.retries,
+      patches: step.patches,
       unknown_parts: step.unknownParts,
     });
-    const reasoning = step.reasoning.map((entry) => entry.plaintext ?? '[opaque reasoning part]').join('\n');
+    const reasoning = step.reasoning.flatMap((entry) => entry.plaintext?.trim().length ? [entry.plaintext] : []).join('\n');
+    const opaqueReasoningParts = step.reasoning.filter((entry) => entry.opaque).length;
     fragments.push({
       step: step.number,
       source: {
-        observed,
-        ...(reasoning ? { reasoning } : {}),
-        basis: recoveryBasis(step),
+        ...(stepCapabilities.hasVisibleObservedEvidence ? { observed } : {}),
+        ...(stepCapabilities.hasPlaintextReasoning ? { reasoning } : {}),
+        ...(opaqueReasoningParts > 0 ? { opaque_reasoning_parts: opaqueReasoningParts } : {}),
+        basis: recoveryBasis(step, stepCapabilities),
       },
     });
   }
@@ -589,6 +699,9 @@ function splitRecoveryFragment(fragment: RecordValue): RecordValue[] {
   if (!source) throw new Error('invalid recovery fragment');
   const left: RecordValue = { basis: source.basis };
   const right: RecordValue = { basis: source.basis };
+  for (const [key, value] of Object.entries(source)) {
+    if (key !== 'basis' && key !== 'observed' && key !== 'reasoning') left[key] = value;
+  }
   let split = false;
   for (const channel of ['observed', 'reasoning'] as const) {
     const value = source[channel];
@@ -712,28 +825,192 @@ function parseJsonRecord(text: string | undefined): RecordValue | undefined {
   }
 }
 
-function validateMapOutput(value: RecordValue | undefined, range: number[], steps: number[], basis: Map<number, string>): RecordValue[] | undefined {
-  if (!value || Object.keys(value).sort().join(',') !== 'interpretations,kind,range') return undefined;
-  if (value.kind !== 'map' || stableJson(value.range) !== stableJson(range) || !Array.isArray(value.interpretations)) return undefined;
-  if (value.interpretations.length !== steps.length) return undefined;
-  const output: RecordValue[] = [];
-  for (const [index, raw] of value.interpretations.entries()) {
-    const entry = record(raw);
-    const step = steps[index];
-    if (!entry || Object.keys(entry).sort().join(',') !== 'basis,step,summary') return undefined;
-    if (entry.step !== step || entry.basis !== basis.get(step) || typeof entry.summary !== 'string' || entry.summary.trim().length === 0) return undefined;
-    output.push({ step, summary: entry.summary, basis: entry.basis });
-  }
-  return output;
+function hasExactKeys(value: RecordValue, keys: string[]): boolean {
+  return Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 }
 
-function validateSynthesis(value: RecordValue | undefined): RecordValue | undefined {
-  if (!value || Object.keys(value).sort().join(',') !== 'attempted,completed,overview,risks,safest_next_action,unfinished') return undefined;
-  if (typeof value.overview !== 'string' || typeof value.safest_next_action !== 'string') return undefined;
-  for (const key of ['attempted', 'completed', 'unfinished', 'risks']) {
-    if (!Array.isArray(value[key]) || !(value[key] as unknown[]).every((entry) => typeof entry === 'string')) return undefined;
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  if (!value.every((entry) => typeof entry === 'string' && entry.trim().length > 0)) return undefined;
+  return value as string[];
+}
+
+function semanticText(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && value.trim().length > 0);
+}
+
+function validateMapOutput(
+  value: RecordValue | undefined,
+  range: number[],
+  steps: number[],
+  capabilities: Map<number, RecoveryCapabilities>,
+): MapValidation | undefined {
+  if (!value || !hasExactKeys(value, ['kind', 'range', 'cards'])) return undefined;
+  if (value.kind !== 'map' || stableJson(value.range) !== stableJson(range) || !Array.isArray(value.cards)) return undefined;
+  if (value.cards.length !== steps.length) return undefined;
+  const cards: RecoveryCard[] = [];
+  const invalidSteps: number[] = [];
+  for (const [index, raw] of value.cards.entries()) {
+    const card = record(raw);
+    const step = steps[index];
+    if (!card || !hasExactKeys(card, ['step', 'intent', 'actions', 'findings', 'outcome', 'unresolved', 'basis']) || card.step !== step) {
+      invalidSteps.push(step);
+      continue;
+    }
+    const actions = stringList(card.actions);
+    const findings = stringList(card.findings);
+    const unresolved = stringList(card.unresolved);
+    if (
+      !semanticText(card.intent)
+      || !semanticText(card.outcome)
+      || actions === undefined
+      || findings === undefined
+      || unresolved === undefined
+      || !['observed', 'reasoning', 'mixed'].includes(String(card.basis))
+    ) {
+      invalidSteps.push(step);
+      continue;
+    }
+    const stepCapabilities = capabilities.get(step)!;
+    const basisSupported = card.basis === 'observed'
+      ? stepCapabilities.hasVisibleObservedEvidence
+      : card.basis === 'reasoning'
+        ? stepCapabilities.hasPlaintextReasoning
+        : stepCapabilities.hasVisibleObservedEvidence && stepCapabilities.hasPlaintextReasoning;
+    const hasSemanticContent = card.intent !== null
+      || actions.length > 0
+      || findings.length > 0
+      || card.outcome !== null
+      || unresolved.length > 0;
+    if (!basisSupported || !hasSemanticContent) {
+      invalidSteps.push(step);
+      continue;
+    }
+    cards.push({
+      step,
+      intent: card.intent,
+      actions,
+      findings,
+      outcome: card.outcome,
+      unresolved,
+      basis: card.basis as RecoveryBasis,
+    });
   }
-  return value;
+  return { cards, invalidSteps };
+}
+
+function validateSourceSteps(value: unknown, minimum: number, maximum: number): number[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  let previous = minimum - 1;
+  const steps: number[] = [];
+  for (const entry of value) {
+    if (!Number.isSafeInteger(entry) || entry < minimum || entry > maximum || entry <= previous) return undefined;
+    previous = entry;
+    steps.push(entry);
+  }
+  return steps;
+}
+
+function validateClaims(value: unknown, stepCount: number): RecordValue[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const claims: RecordValue[] = [];
+  for (const raw of value) {
+    const claim = record(raw);
+    if (!claim || !hasExactKeys(claim, ['claim', 'source_steps'])) return undefined;
+    const sourceSteps = validateSourceSteps(claim.source_steps, 1, stepCount);
+    if (typeof claim.claim !== 'string' || claim.claim.trim().length === 0 || sourceSteps === undefined) return undefined;
+    claims.push({ claim: claim.claim, source_steps: sourceSteps });
+  }
+  return claims;
+}
+
+function validateReduction(value: RecordValue | undefined, stepCount: number): {
+  semantic?: RecordValue;
+  reason?: 'invalid_reducer_output' | 'invalid_phase_coverage';
+} {
+  if (!value || !hasExactKeys(value, ['kind', 'semantic']) || value.kind !== 'reduce') {
+    return { reason: 'invalid_reducer_output' };
+  }
+  const semantic = record(value.semantic);
+  if (!semantic || !hasExactKeys(semantic, ['overview', 'phases', 'completed', 'unfinished', 'safest_next_action'])) {
+    return { reason: 'invalid_reducer_output' };
+  }
+  if (typeof semantic.overview !== 'string' || semantic.overview.trim().length === 0 || !Array.isArray(semantic.phases)) {
+    return { reason: 'invalid_reducer_output' };
+  }
+  const minimumPhases = stepCount > 12 ? 6 : 1;
+  if (semantic.phases.length < minimumPhases || semantic.phases.length > 12) return { reason: 'invalid_phase_coverage' };
+
+  const phases: RecordValue[] = [];
+  let expectedStart = 1;
+  for (const raw of semantic.phases) {
+    const phase = record(raw);
+    if (!phase || !hasExactKeys(phase, ['range', 'title', 'intent', 'actions', 'findings', 'outcome', 'unresolved', 'source_steps'])) {
+      return { reason: 'invalid_reducer_output' };
+    }
+    const actions = stringList(phase.actions);
+    const findings = stringList(phase.findings);
+    const unresolved = stringList(phase.unresolved);
+    if (
+      typeof phase.title !== 'string'
+      || phase.title.trim().length === 0
+      || !semanticText(phase.intent)
+      || !semanticText(phase.outcome)
+      || actions === undefined
+      || findings === undefined
+      || unresolved === undefined
+    ) return { reason: 'invalid_reducer_output' };
+    if (!Array.isArray(phase.range) || phase.range.length !== 2) return { reason: 'invalid_phase_coverage' };
+    const [start, end] = phase.range;
+    if (
+      !Number.isSafeInteger(start)
+      || !Number.isSafeInteger(end)
+      || start !== expectedStart
+      || end < start
+      || end > stepCount
+    ) return { reason: 'invalid_phase_coverage' };
+    const sourceSteps = validateSourceSteps(phase.source_steps, start, end);
+    if (sourceSteps === undefined) return { reason: 'invalid_phase_coverage' };
+    phases.push({
+      range: [start, end],
+      title: phase.title,
+      intent: phase.intent,
+      actions,
+      findings,
+      outcome: phase.outcome,
+      unresolved,
+      source_steps: sourceSteps,
+    });
+    expectedStart = end + 1;
+  }
+  if (expectedStart !== stepCount + 1) return { reason: 'invalid_phase_coverage' };
+
+  const completed = validateClaims(semantic.completed, stepCount);
+  const unfinished = validateClaims(semantic.unfinished, stepCount);
+  const action = record(semantic.safest_next_action);
+  if (completed === undefined || unfinished === undefined || !action || !hasExactKeys(action, ['action', 'context', 'source_steps'])) {
+    return { reason: 'invalid_reducer_output' };
+  }
+  if (action.context !== null && (typeof action.context !== 'string' || action.context.trim().length === 0)) {
+    return { reason: 'invalid_reducer_output' };
+  }
+  const actionSteps = validateSourceSteps(action.source_steps, 1, stepCount);
+  if (actionSteps === undefined) return { reason: 'invalid_reducer_output' };
+  if (unfinished.length > 0 && (action.action !== 'launch_fresh_task' || typeof action.context !== 'string')) {
+    return { reason: 'invalid_reducer_output' };
+  }
+  if (unfinished.length === 0 && (action.action !== 'review_completed_work' || action.context !== null)) {
+    return { reason: 'invalid_reducer_output' };
+  }
+  return {
+    semantic: {
+      overview: semantic.overview,
+      phases,
+      completed,
+      unfinished,
+      safest_next_action: { action: action.action, context: action.context, source_steps: actionSteps },
+    },
+  };
 }
 
 function observedModel(response: { data?: unknown } | undefined): RecordValue | undefined {
@@ -749,14 +1026,234 @@ function observedModel(response: { data?: unknown } | undefined): RecordValue | 
   };
 }
 
-async function recover(options: TaskTraceOptions, ir: TraceIR, timeline: RecordValue[]): Promise<RecordValue> {
-  if (ir.steps.length === 0) return { available: false, reasons: ['empty_trace'] };
+function fallbackCard(step: IRStep): RecoveryCard {
+  const toolCounts = new Map<string, { name: string; status: string; count: number }>();
+  for (const tool of step.tools) {
+    const key = stableJson([tool.name, tool.status]);
+    const known = toolCounts.get(key);
+    if (known) known.count += 1;
+    else toolCounts.set(key, { name: tool.name, status: tool.status, count: 1 });
+  }
+  const plaintextReasoning = step.reasoning.filter((entry) => entry.plaintext?.trim().length).length;
+  const toolSourceFields = step.tools.reduce((counts, tool) => ({
+    input: counts.input + Number(tool.input !== undefined),
+    output: counts.output + Number(tool.output !== undefined),
+    error: counts.error + Number(tool.error !== undefined),
+  }), { input: 0, output: 0, error: 0 });
+  const findings = [
+    ...(plaintextReasoning > 0
+      ? [`plaintext reasoning present (${plaintextReasoning} ${plaintextReasoning === 1 ? 'part' : 'parts'}; source text not published)`]
+      : []),
+    ...(toolSourceFields.input + toolSourceFields.output + toolSourceFields.error > 0
+      ? [`tool source fields present (input=${toolSourceFields.input}, output=${toolSourceFields.output}, error=${toolSourceFields.error}); inspect recovery:false for source detail`]
+      : []),
+    ...(step.actor === 'assistant' ? step.texts.map((entry) => fieldText(entry.source.value)) : []),
+  ];
+  return {
+    step: step.number,
+    intent: null,
+    actions: boundedRecoveryStrings(
+      [...toolCounts.values()].map((entry) => `${entry.name} [${entry.status}] x${entry.count}`),
+      RECOVERY_CARD_ACTION_BYTES,
+    ),
+    findings: boundedRecoveryStrings(findings, RECOVERY_CARD_FINDING_BYTES),
+    outcome: null,
+    unresolved: boundedRecoveryStrings(
+      step.errors.map((entry) => `${entry.kind} error present: ${fieldText(entry.source.value)}`),
+      RECOVERY_CARD_UNRESOLVED_BYTES,
+    ),
+    basis: recoveryBasis(step),
+  };
+}
+
+function mergeCards(step: IRStep, cards: Array<{ order: number; card: RecoveryCard }>): RecoveryCard {
+  const ordered = [...cards].sort((left, right) => left.order - right.order).map((entry) => entry.card);
+  const mergeNullable = (values: Array<string | null>): string | null => {
+    const present = values.filter((value): value is string => value !== null);
+    return present.length > 0 ? present.join(' ') : null;
+  };
+  return {
+    step: step.number,
+    intent: mergeNullable(ordered.map((card) => card.intent)),
+    actions: ordered.flatMap((card) => card.actions),
+    findings: ordered.flatMap((card) => card.findings),
+    outcome: mergeNullable(ordered.map((card) => card.outcome)),
+    unresolved: ordered.flatMap((card) => card.unresolved),
+    basis: new Set(ordered.map((card) => card.basis)).size === 1 ? ordered[0].basis : 'mixed',
+  };
+}
+
+function runtimeCard(card: RecoveryCard, source: 'generated' | 'fallback'): RuntimeRecoveryCard {
+  return {
+    ...card,
+    provenance: source === 'generated' ? 'summarizer_interpretation' : 'deterministic_extractive_fallback',
+    untrusted: true,
+    source,
+  };
+}
+
+function balancedPhaseRanges(stepCount: number): Array<[number, number]> {
+  const phaseCount = stepCount <= 12
+    ? stepCount
+    : Math.min(12, Math.max(6, Math.ceil(stepCount / 8)));
+  const ranges: Array<[number, number]> = [];
+  let start = 1;
+  for (let index = 0; index < phaseCount; index += 1) {
+    const size = Math.ceil((stepCount - start + 1) / (phaseCount - index));
+    const end = start + size - 1;
+    ranges.push([start, end]);
+    start = end + 1;
+  }
+  return ranges;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function combinedBasis(cards: RuntimeRecoveryCard[]): RecoveryBasis {
+  const bases = new Set(cards.map((card) => card.basis));
+  return bases.size === 1 ? cards[0].basis : 'mixed';
+}
+
+function fallbackReduction(cards: RuntimeRecoveryCard[]): RecordValue {
+  const phases = balancedPhaseRanges(cards.length).map(([start, end], index) => {
+    const covered = cards.slice(start - 1, end);
+    const intents = uniqueStrings(covered.flatMap((card) => card.intent === null ? [] : [card.intent]));
+    const outcomes = uniqueStrings(covered.flatMap((card) => card.outcome === null ? [] : [card.outcome]));
+    return {
+      range: [start, end],
+      title: `Source steps ${start}-${end}`,
+      intent: boundedRecoverySummary(intents, RECOVERY_PHASE_SUMMARY_BYTES),
+      actions: boundedRecoveryStrings(covered.flatMap((card) => card.actions), RECOVERY_PHASE_ACTION_BYTES, 12),
+      findings: boundedRecoveryStrings(covered.flatMap((card) => card.findings), RECOVERY_PHASE_FINDING_BYTES, 12),
+      outcome: boundedRecoverySummary(outcomes, RECOVERY_PHASE_SUMMARY_BYTES),
+      unresolved: boundedRecoveryStrings(covered.flatMap((card) => card.unresolved), RECOVERY_PHASE_UNRESOLVED_BYTES, 12),
+      source_steps: Array.from({ length: end - start + 1 }, (_, offset) => start + offset),
+    };
+  });
+  return {
+    overview: `Recovered ${cards.length} source steps with deterministic balanced fallback phases. Inspect the source before acting.`,
+    phases,
+    completed: cards.flatMap((card) => card.outcome === null ? [] : [{ claim: card.outcome, source_steps: [card.step] }]),
+    unfinished: cards.flatMap((card) => card.unresolved.map((claim) => ({ claim, source_steps: [card.step] }))),
+    safest_next_action: {
+      action: 'inspect',
+      context: null,
+      source_steps: cards.map((card) => card.step),
+    },
+  };
+}
+
+function sourceStepUnion(claims: unknown, fallback: number[]): number[] {
+  if (!Array.isArray(claims)) return fallback;
+  const steps = claims.flatMap((raw) => {
+    const claim = record(raw);
+    return Array.isArray(claim?.source_steps) ? claim.source_steps.filter((step): step is number => typeof step === 'number') : [];
+  });
+  const unique = [...new Set(steps)].sort((left, right) => left - right);
+  return unique.length > 0 ? unique : fallback;
+}
+
+function finalizeSemantic(
+  semantic: RecordValue,
+  cards: RuntimeRecoveryCard[],
+  ir: TraceIR,
+  provenance: 'summarizer_interpretation' | 'deterministic_recovery_fallback',
+  forceInspect: boolean,
+): RecordValue {
+  const phases = (semantic.phases as RecordValue[]).map((phase) => {
+    const [start, end] = phase.range as [number, number];
+    const covered = cards.slice(start - 1, end);
+    const errorSteps = ir.steps
+      .slice(start - 1, end)
+      .filter((step) => step.errors.length > 0)
+      .map((step) => step.number);
+    return { ...phase, basis: combinedBasis(covered), error_steps: errorSteps };
+  });
+  const allSteps = cards.map((card) => card.step);
+  const unfinished = semantic.unfinished as RecordValue[];
+  const generatedAction = record(semantic.safest_next_action)!;
+  let safestNextAction: RecordValue;
+  if (forceInspect) {
+    safestNextAction = { action: 'inspect', context: null, source_steps: allSteps };
+  } else if (unfinished.length > 0) {
+    safestNextAction = {
+      action: 'launch_fresh_task',
+      context: generatedAction.context,
+      source_steps: sourceStepUnion(unfinished, allSteps),
+    };
+  } else {
+    safestNextAction = {
+      action: 'review_completed_work',
+      context: null,
+      source_steps: sourceStepUnion(semantic.completed, allSteps),
+    };
+  }
+  return {
+    provenance,
+    untrusted: true,
+    overview: semantic.overview,
+    phases,
+    completed: semantic.completed,
+    unfinished,
+    safest_next_action: safestNextAction,
+  };
+}
+
+function boundedRecoveryRecords(values: RecordValue[], label: string): RecordValue[] {
+  const output: RecordValue[] = [];
+  let bytes = 0;
+  for (const [index, value] of values.entries()) {
+    const valueBytes = Buffer.byteLength(stableJson(value));
+    if (output.length >= 12 || bytes + valueBytes > RECOVERY_ANCHOR_BYTES) {
+      const marker = {
+        omitted: values.length - index,
+        detail: `additional ${label} omitted; inspect recovery:false for source detail`,
+      };
+      const markerBytes = Buffer.byteLength(stableJson(marker));
+      while (output.length > 0 && bytes + markerBytes > RECOVERY_ANCHOR_BYTES) {
+        bytes -= Buffer.byteLength(stableJson(output.pop()!));
+      }
+      output.push(marker);
+      break;
+    }
+    output.push(value);
+    bytes += valueBytes;
+  }
+  return output;
+}
+
+function recoveryAnchors(ir: TraceIR): RecordValue {
+  const errors = ir.steps.flatMap((step) => step.errors.map((entry) => ({
+    step: step.number,
+    kind: entry.kind,
+    error: compactRecoveryText(fieldText(entry.source.value)),
+  })));
+  const changedFiles = ir.steps.flatMap((step) => step.files.length > 0 ? [{
+    step: step.number,
+    files: boundedRecoveryStrings(step.files, RECOVERY_CARD_FINDING_BYTES),
+  }] : []);
+  return {
+    errors: boundedRecoveryRecords(errors, 'errors'),
+    changed_files: boundedRecoveryRecords(changedFiles, 'changed-file anchors'),
+  };
+}
+
+function requestedRecoveryModel(options: TaskTraceOptions): RecordValue {
+  return {
+    ...(options.summarizer.model ? { model: options.summarizer.model } : {}),
+    ...(options.summarizer.variant ? { variant: options.summarizer.variant } : {}),
+  };
+}
+
+async function recover(options: TaskTraceOptions, ir: TraceIR): Promise<{ recovery: RecordValue; semantic: RecordValue }> {
   const targetChars = Math.max(80, Math.min(280, Math.round(14_000 / ir.steps.length)));
-  const basis = new Map(ir.steps.map((step) => [step.number, recoveryBasis(step)]));
-  const batches = batchFragments(recoveryFragments(ir.steps), targetChars);
-  const summaries = new Map<number, string[]>();
+  const capabilities = new Map(ir.steps.map((step) => [step.number, recoveryCapabilities(step)]));
+  const batches = batchFragments(recoveryFragments(ir.steps, capabilities), targetChars);
+  const generatedCards = new Map<number, Array<{ order: number; card: RecoveryCard }>>();
   const failedSteps = new Set<number>();
-  const failedRanges: RecordValue[] = [];
+  const failures: RecordValue[] = [];
   let observed: RecordValue | undefined;
 
   for (const [index, fragments] of batches.entries()) {
@@ -765,74 +1262,163 @@ async function recover(options: TaskTraceOptions, ir: TraceIR, timeline: RecordV
     observed = observedModel(prompted.response) ?? observed;
     const providerFailed = prompted.reasons.includes('summarizer_unavailable');
     const cleanupFailed = prompted.reasons.includes('ephemeral_cleanup_failed');
-    const generated = providerFailed
+    const validation = providerFailed
       ? undefined
-      : validateMapOutput(parseJsonRecord(responseText(prompted.response)), range, steps, basis);
+      : validateMapOutput(parseJsonRecord(responseText(prompted.response)), range, steps, capabilities);
+    const invalidMap = !providerFailed && (!validation || validation.invalidSteps.length > 0);
     const reasons: RecoveryFailureReason[] = [
-      ...(providerFailed ? ['summarizer_unavailable' as const] : generated ? [] : ['invalid_map_output' as const]),
+      ...(providerFailed ? ['summarizer_unavailable' as const] : invalidMap ? ['invalid_map_output' as const] : []),
       ...(cleanupFailed ? ['ephemeral_cleanup_failed' as const] : []),
     ];
-    if (reasons.length > 0) {
-      failedRanges.push({ range, reasons });
+    if (reasons.length > 0) failures.push({ stage: 'map', range, reasons });
+    if (providerFailed || cleanupFailed || !validation) {
       steps.forEach((step) => failedSteps.add(step));
       continue;
     }
-    for (const entry of generated ?? []) {
-      const step = Number(entry.step);
-      const values = summaries.get(step) ?? [];
-      values.push(String(entry.summary));
-      summaries.set(step, values);
+    validation.invalidSteps.forEach((step) => failedSteps.add(step));
+    for (const card of validation.cards) {
+      const cardFragments = fragments.filter((fragment) => Number(fragment.step) === card.step);
+      const order = Math.min(...cardFragments.map((fragment) => Number(fragment.fragment)));
+      const values = generatedCards.get(card.step) ?? [];
+      values.push({ order, card });
+      generatedCards.set(card.step, values);
     }
   }
 
-  const interpretations = ir.steps.flatMap((step) => {
-    const values = summaries.get(step.number);
-    if (!values || failedSteps.has(step.number)) return [];
-    const interpretation = {
-      summary: values.join(' '),
-      basis: basis.get(step.number),
-      provenance: 'summarizer_interpretation',
-      untrusted: true,
-    };
-    timeline[step.number - 1].interpretation = interpretation;
-    return [{ step: step.number, ...interpretation }];
+  let generatedCount = 0;
+  const cards = ir.steps.map((step) => {
+    const generated = generatedCards.get(step.number);
+    if (!failedSteps.has(step.number) && generated && generated.length > 0) {
+      generatedCount += 1;
+      return runtimeCard(mergeCards(step, generated), 'generated');
+    }
+    return runtimeCard(fallbackCard(step), 'fallback');
   });
+  const cardsSource = generatedCount === cards.length ? 'generated' : generatedCount === 0 ? 'fallback' : 'mixed';
+  let phasesSource: 'generated' | 'fallback' = 'fallback';
+  let semantic: RecordValue | undefined;
 
-  let synthesis: RecordValue = { available: false, reasons: ['no_successful_map_ranges'] };
-  if (interpretations.length > 0) {
-    const prompted = await promptEphemeral(options, 'Hive task trace synthesis', { kind: 'reduce', interpretations });
+  if (generatedCount === 0) {
+    failures.push({ stage: 'reduce', reasons: ['no_successful_map_ranges'] });
+  } else {
+    const request = { kind: 'reduce', step_count: ir.steps.length, cards, anchors: recoveryAnchors(ir) };
+    const prompted = await promptEphemeral(options, 'Hive task trace semantic reduction', request);
     observed = observedModel(prompted.response) ?? observed;
     const providerFailed = prompted.reasons.includes('summarizer_unavailable');
     const cleanupFailed = prompted.reasons.includes('ephemeral_cleanup_failed');
-    let generated: RecordValue | undefined;
-    if (!providerFailed) {
-      const parsed = parseJsonRecord(responseText(prompted.response));
-      generated = parsed
-        && Object.keys(parsed).sort().join(',') === 'kind,synthesis'
-        && parsed.kind === 'reduce'
-        ? validateSynthesis(record(parsed.synthesis))
-        : undefined;
-    }
+    const validated = providerFailed
+      ? { reason: undefined }
+      : validateReduction(parseJsonRecord(responseText(prompted.response)), ir.steps.length);
     const reasons: RecoveryFailureReason[] = [
-      ...(providerFailed ? ['summarizer_unavailable' as const] : generated ? [] : ['invalid_reducer_output' as const]),
+      ...(providerFailed ? ['summarizer_unavailable' as const] : validated.semantic ? [] : [validated.reason ?? 'invalid_reducer_output']),
       ...(cleanupFailed ? ['ephemeral_cleanup_failed' as const] : []),
     ];
-    synthesis = reasons.length > 0 ? { available: false, reasons } : generated!;
+    if (reasons.length > 0) {
+      failures.push({ stage: 'reduce', reasons });
+    } else {
+      semantic = validated.semantic!;
+      phasesSource = 'generated';
+    }
   }
+  semantic ??= fallbackReduction(cards);
 
-  const synthesisAvailable = synthesis.available !== false;
+  const status = failures.length === 0 ? 'complete' : 'partial';
+  const forceInspect = status === 'partial'
+    || cardsSource !== 'generated'
+    || phasesSource !== 'generated'
+    || ir.compactionCount > 0
+    || ir.steps.some((step) => step.errors.length > 0);
   return {
-    available: failedRanges.length === 0 && synthesisAvailable,
-    failed_ranges: failedRanges,
-    synthesis,
-    model: {
-      requested: {
-        ...(options.summarizer.model ? { model: options.summarizer.model } : {}),
-        ...(options.summarizer.variant ? { variant: options.summarizer.variant } : {}),
+    recovery: {
+      status,
+      failures,
+      model: {
+        requested: requestedRecoveryModel(options),
+        ...(observed ? { observed } : {}),
       },
-      ...(observed ? { observed } : {}),
+      cards_source: cardsSource,
+      phases_source: phasesSource,
     },
+    semantic: finalizeSemantic(
+      semantic,
+      cards,
+      ir,
+      phasesSource === 'generated' ? 'summarizer_interpretation' : 'deterministic_recovery_fallback',
+      forceInspect,
+    ),
   };
+}
+
+function recoverySourceValue(source: SourceValue, inlineBytes: number): unknown {
+  if (source.bytes <= inlineBytes) return source.value;
+  return { content_id: encodeLocator(source), bytes: source.bytes, sha256: source.digest };
+}
+
+function recoveryProjection(
+  taskID: string,
+  ir: TraceIR,
+  lifecycle: RecordValue,
+  recovery: RecordValue,
+  semantic: RecordValue | null,
+): RecordValue {
+  const selections = traceTextSelections(ir);
+  const final = recoveryTerminalText(ir, lifecycle);
+  const files: string[] = [];
+  const seenFiles = new Set<string>();
+  for (const step of ir.steps) {
+    for (const file of step.files) {
+      if (seenFiles.has(file)) continue;
+      seenFiles.add(file);
+      files.push(file);
+    }
+  }
+  return {
+    ok: true,
+    version: 2,
+    task_id: taskID,
+    lifecycle,
+    source: {
+      steps: ir.steps.length,
+      fidelity: ir.compactionCount > 0 ? 'compacted_surviving_source' : 'surviving_source',
+      compactions: ir.compactionCount,
+      as_of: ir.digest,
+    },
+    ...(selections.instruction ? {
+      task_instruction: {
+        step: selections.instruction.step.number,
+        text: recoverySourceValue(selections.instruction.text.source, INITIAL_TEXT_INLINE_BYTES),
+      },
+    } : {}),
+    final_response: final
+      ? {
+        step: final.step.number,
+        text: recoverySourceValue(final.text.source, INITIAL_TEXT_INLINE_BYTES),
+        provenance: 'child_self_report',
+        untrusted: true,
+      }
+      : null,
+    recovery,
+    semantic,
+    errors: ir.steps.flatMap((step) => step.errors.map((entry) => ({
+      kind: entry.kind,
+      step: step.number,
+      error: recoverySourceValue(entry.source, INITIAL_ERROR_INLINE_BYTES),
+    }))),
+    changed_files: { files, exhaustive: false },
+    render: { actual_bytes: 0, soft_target_bytes: SOFT_TARGET_BYTES },
+  };
+}
+
+function finalizeRecoveryProjection(report: RecordValue): string {
+  const render = record(report.render)!;
+  let serialized = JSON.stringify(report);
+  let bytes = Buffer.byteLength(serialized);
+  while (render.actual_bytes !== bytes) {
+    render.actual_bytes = bytes;
+    serialized = JSON.stringify(report);
+    bytes = Buffer.byteLength(serialized);
+  }
+  return serialized;
 }
 
 function finalizeReport(report: RecordValue, candidates: ExternalizationCandidate[]): string {
@@ -891,10 +1477,10 @@ function readLocatedValue(messages: unknown[], locator: ContentLocator): unknown
 export function createTaskTraceTools(options: TaskTraceOptions) {
   return {
     hive_task_trace: tool({
-      description: 'Return a compact complete situation report for one directly delegated child. Compare exact render bytes with the soft target; recovery failures use ordered cause arrays. Optional terminal recovery adds untrusted generated interpretations without exposing raw reasoning.',
+      description: 'Return a compact complete situation report for one directly delegated child. Deterministic mode preserves the forensic v2 report; terminal recovery returns only an untrusted semantic projection with coverage-gated phases and runtime-safe next actions.',
       args: {
         task_id: tool.schema.string().describe('Direct child OpenCode session ID returned by native task metadata.'),
-        recovery: tool.schema.boolean().optional().describe('Request terminal-only internal map/reduce recovery. Defaults to false.'),
+        recovery: tool.schema.boolean().optional().describe('Request the terminal-only semantic map/reduce projection. Defaults to false forensic output.'),
       },
       async execute({ task_id, recovery = false }, context) {
         const unavailable = JSON.stringify({ ok: false, reason: 'unavailable_or_unauthorized' });
@@ -918,12 +1504,22 @@ export function createTaskTraceTools(options: TaskTraceOptions) {
         }
         const ir = normalizeTrace(messages);
         const lifecycle = deriveLifecycle(ir, status, task_id);
-        const projected = projectReport(task_id, ir, lifecycle);
         if (recovery) {
-          projected.report.recovery = lifecycle.terminal === true
-            ? await recover(options, ir, projected.report.timeline as RecordValue[])
-            : { available: false, reasons: [lifecycle.reason] };
+          if (ir.steps.length === 0 || lifecycle.terminal !== true) {
+            const reason = ir.steps.length === 0 ? 'empty_trace' : String(lifecycle.reason);
+            const unavailableRecovery = {
+              status: 'unavailable',
+              failures: [{ stage: 'eligibility', reasons: [reason] }],
+              model: { requested: requestedRecoveryModel(options) },
+              cards_source: null,
+              phases_source: null,
+            };
+            return finalizeRecoveryProjection(recoveryProjection(task_id, ir, lifecycle, unavailableRecovery, null));
+          }
+          const recovered = await recover(options, ir);
+          return finalizeRecoveryProjection(recoveryProjection(task_id, ir, lifecycle, recovered.recovery, recovered.semantic));
         }
+        const projected = projectReport(task_id, ir, lifecycle);
         return finalizeReport(projected.report, projected.candidates);
       },
     }),

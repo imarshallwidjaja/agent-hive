@@ -165,6 +165,22 @@ describe('Fresh-session delegation contract', () => {
 
     expect(HIVE_BUILDER_PROMPT).toContain('disjoint path ownership or sequence overlapping writers');
   });
+
+  it('requests semantic recovery handoffs and treats every generated claim as untrusted context coverage', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Architect', ARCHITECT_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('hive_task_trace({ task_id, recovery: true })');
+      expect(prompt, name).toContain('semantic handoff');
+      expect(prompt, name).toContain('untrusted');
+      expect(prompt, name).toContain('source coverage');
+      expect(prompt, name).toContain('not evidence or proof');
+      expect(prompt, name).toContain('Never accept, merge, retry, resume, or auto-run');
+    }
+  });
 });
 
 describe('Direct Work Boundary prompt hygiene', () => {

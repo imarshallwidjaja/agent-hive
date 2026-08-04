@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Primary orchestrators can inspect one directly delegated OpenCode child with compact complete `hive_task_trace` v2 reports, optional status-gated terminal map/reduce recovery, and chunked source-backed `hive_task_trace_content` retrieval without resuming or mutating the child. Deterministic output and content retrieval exclude raw reasoning; generated recovery interpretations are explicitly untrusted and may restate reasoning sent transiently to the configured model.
+- Primary orchestrators can inspect one directly delegated OpenCode child with stable compact forensic `hive_task_trace` v2 reports or request a terminal semantic handoff with one card per source step, coverage-gated phases, deterministic fallback, labelled child self-report, and runtime-safe next actions. Generated semantics are explicitly untrusted and may restate reasoning sent transiently to the configured model; source steps identify context coverage, not evidence.
 - Global `taskTraceSummarizer` settings configure the hidden, tool-less recovery interpreter model, variant, and temperature.
 
 ### Fixed
 
-- Task traces now preserve every surviving normalized step exactly once, keep structured errors/open tools/patch file names and honest aggregate reasoning counts, externalize retrievable source values toward an advisory 24 KiB target, and return complete `ok: true` reports when mandatory structure remains larger. Exact `actual_bytes` and `soft_target_bytes` replace redundant over-target state. V2 removes modes, sampling, truncation, hard result caps, public source/reasoning IDs, verbose evidence wrappers, and v1 content locators. Recovery maps all captured steps before one synthesis, bounds fully encoded map requests, exposes ordered cause arrays for range/provider/reducer/cleanup partial failures without retry, and marks generated interpretations with basis, provenance, and `untrusted: true`.
+- Task traces preserve every surviving normalized step exactly once in forensic mode while terminal semantic recovery omits forensic dictionaries, raw payloads, and timelines. UTF-8-bounded mapping covers every step; failed fragments fall back the whole step, reduction enforces 1-12 contiguous phases, and invalid or unavailable reduction uses balanced fallback. Ordered failures retain concurrent provider/schema/coverage and cleanup causes without retry. Deterministic errors and PatchPart files cannot be overridden by generated success claims, and any partial/fallback/error/compacted source forces inspection. Exact `actual_bytes` and advisory `soft_target_bytes` remain uncapped.
 - Terminal background job states and completion timestamps are absorbing; late active or conflicting terminal updates cannot rewrite the observed terminal result.
 
 ## [2.2.0] - 2026-07-30
