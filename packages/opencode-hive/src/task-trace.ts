@@ -9,8 +9,10 @@ const CONTENT_CHUNK_BYTES = 8 * 1024;
 const INITIAL_TEXT_INLINE_BYTES = 512;
 const INITIAL_TOOL_INLINE_BYTES = 160;
 const INITIAL_ERROR_INLINE_BYTES = 256;
-const MAP_BATCH_BYTES = 20 * 1024;
-const MAP_CONCURRENCY = 3;
+const MIN_MAP_BATCH_BYTES = 20 * 1024;
+const FALLBACK_MAP_BATCH_BYTES = 256 * 1024;
+const MAP_INPUT_CONTEXT_RATIO = 0.7;
+const ESTIMATED_UTF8_BYTES_PER_TOKEN = 2;
 const SUMMARIZER_ATTEMPT_MS = 120_000;
 const SEMANTIC_RECOVERY_MS = 300_000;
 const REDUCTION_RESERVE_MS = 120_000;
@@ -78,6 +80,9 @@ interface MapValidation {
 }
 
 interface TaskTraceClient {
+  config: {
+    providers(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
+  };
   session: {
     get(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
     messages(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
@@ -737,12 +742,12 @@ function splitRecoveryFragment(fragment: RecordValue): RecordValue[] {
   ];
 }
 
-function batchFragments(input: RecordValue[], targetChars: number): RecordValue[][] {
+function batchFragments(input: RecordValue[], targetChars: number, mapBatchBytes: number): RecordValue[][] {
   const splitFragments = [...input];
   while (true) {
     const numbered = numberRecoveryFragments(splitFragments);
     const oversized = numbered.findIndex((fragment) => (
-      Buffer.byteLength(stableJson(buildMapRequest([fragment], targetChars).request), 'utf8') > MAP_BATCH_BYTES
+      Buffer.byteLength(stableJson(buildMapRequest([fragment], targetChars).request), 'utf8') > mapBatchBytes
     ));
     if (oversized < 0) break;
     splitFragments.splice(oversized, 1, ...splitRecoveryFragment(splitFragments[oversized]));
@@ -755,7 +760,7 @@ function batchFragments(input: RecordValue[], targetChars: number): RecordValue[
     const candidate = [...batch, fragment];
     if (
       batch.length > 0
-      && Buffer.byteLength(stableJson(buildMapRequest(candidate, targetChars).request), 'utf8') > MAP_BATCH_BYTES
+      && Buffer.byteLength(stableJson(buildMapRequest(candidate, targetChars).request), 'utf8') > mapBatchBytes
     ) {
       batches.push(batch);
       batch = [fragment];
@@ -790,6 +795,29 @@ function modelRef(model: string | undefined): { providerID: string; modelID: str
   return separator > 0 && separator < model.length - 1
     ? { providerID: model.slice(0, separator), modelID: model.slice(separator + 1) }
     : undefined;
+}
+
+function mapBatchBytesFromProviders(response: { data?: unknown; error?: unknown }, model: string | undefined): number {
+  const ref = modelRef(model);
+  const data = record(response.data);
+  if (response.error !== undefined || !ref || !data || !Array.isArray(data.providers)) return FALLBACK_MAP_BATCH_BYTES;
+  const provider = data.providers.map(record).find((entry) => entry?.id === ref.providerID);
+  const models = record(provider?.models);
+  const selected = record(models?.[ref.modelID]);
+  const limit = record(selected?.limit);
+  const context = limit?.context;
+  const input = limit?.input;
+  if (
+    typeof context !== 'number'
+    || !Number.isFinite(context)
+    || context <= 0
+    || (input !== undefined && (typeof input !== 'number' || !Number.isFinite(input) || input <= 0))
+  ) return FALLBACK_MAP_BATCH_BYTES;
+  const usableTokens = Math.min(typeof input === 'number' ? input : context, context);
+  return Math.max(
+    MIN_MAP_BATCH_BYTES,
+    Math.floor(usableTokens * MAP_INPUT_CONTEXT_RATIO * ESTIMATED_UTF8_BYTES_PER_TOKEN),
+  );
 }
 
 class RecoveryTimeoutError extends Error {
@@ -842,6 +870,26 @@ async function boundedRequest<T>(
   } finally {
     clearTimeout(timer);
     callerSignal.removeEventListener('abort', onAbort);
+  }
+}
+
+async function resolveMapBatchBytes(
+  options: TaskTraceOptions,
+  callerSignal: AbortSignal,
+  deadline: number,
+): Promise<number> {
+  if (!modelRef(options.summarizer.model)) return FALLBACK_MAP_BATCH_BYTES;
+  try {
+    const response = await boundedRequest(
+      (signal) => options.client.config.providers({ query: { directory: options.directory }, signal }),
+      callerSignal,
+      deadline,
+      'recovery_deadline_exceeded',
+    );
+    return mapBatchBytesFromProviders(response, options.summarizer.model);
+  } catch {
+    if (callerSignal.aborted) throw cancellationReason(callerSignal);
+    return FALLBACK_MAP_BATCH_BYTES;
   }
 }
 
@@ -1408,7 +1456,8 @@ async function recover(
   const mapDeadline = recoveryDeadline - REDUCTION_RESERVE_MS;
   const targetChars = Math.max(80, Math.min(280, Math.round(14_000 / ir.steps.length)));
   const capabilities = new Map(ir.steps.map((step) => [step.number, recoveryCapabilities(step)]));
-  const batches = batchFragments(recoveryFragments(ir.steps, capabilities), targetChars);
+  const mapBatchBytes = await resolveMapBatchBytes(options, callerSignal, mapDeadline);
+  const batches = batchFragments(recoveryFragments(ir.steps, capabilities), targetChars, mapBatchBytes);
   const generatedCards = new Map<number, Array<{ order: number; card: RecoveryCard }>>();
   const failedSteps = new Set<number>();
   const failures: RecordValue[] = [];
@@ -1418,19 +1467,13 @@ async function recover(
     steps: number[];
     prompted: Awaited<ReturnType<typeof promptEphemeral>>;
   } | undefined> = new Array(batches.length);
-  let nextBatch = 0;
-  const mapWorker = async () => {
-    while (true) {
-      if (callerSignal.aborted) throw cancellationReason(callerSignal);
-      if (Date.now() >= mapDeadline || nextBatch >= batches.length) return;
-      const index = nextBatch;
-      nextBatch += 1;
-      const { request, range, steps } = buildMapRequest(batches[index], targetChars);
-      const prompted = await promptEphemeral(options, `Hive task trace map ${index + 1}`, request, callerSignal, mapDeadline);
-      outcomes[index] = { range, steps, prompted };
-    }
-  };
-  await Promise.allSettled(Array.from({ length: Math.min(MAP_CONCURRENCY, batches.length) }, () => mapWorker()));
+  await Promise.allSettled(batches.map(async (fragments, index) => {
+    if (callerSignal.aborted) throw cancellationReason(callerSignal);
+    if (Date.now() >= mapDeadline) return;
+    const { request, range, steps } = buildMapRequest(fragments, targetChars);
+    const prompted = await promptEphemeral(options, `Hive task trace map ${index + 1}`, request, callerSignal, mapDeadline);
+    outcomes[index] = { range, steps, prompted };
+  }));
   if (callerSignal.aborted) throw cancellationReason(callerSignal);
 
   for (const [index, fragments] of batches.entries()) {

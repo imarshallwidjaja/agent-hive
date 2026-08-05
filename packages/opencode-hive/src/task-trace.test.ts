@@ -104,6 +104,7 @@ function clientFor(messages: unknown[], options: {
   mutateMessages?: (reads: number) => unknown[];
   prompt?: (request: any, call: number) => unknown | Promise<unknown>;
   promptError?: (request: any, call: number) => unknown;
+  providers?: (input: any) => unknown | Promise<unknown>;
   abort?: (call: number, input: any) => unknown | Promise<unknown>;
   delete?: (call: number, input: any) => unknown | Promise<unknown>;
 } = {}) {
@@ -174,7 +175,17 @@ function clientFor(messages: unknown[], options: {
       return await options.delete?.(deleteCalls, input) ?? { data: true };
     },
   };
-  return { client: { session }, calls };
+  const config = {
+    providers: async (input: any) => {
+      calls.push({ method: 'providers', input });
+      return await options.providers?.(input) ?? {
+        data: {
+          providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 } } } }],
+        },
+      };
+    },
+  };
+  return { client: { session, config }, calls };
 }
 
 function toolsFor(setup: ReturnType<typeof clientFor>, ephemeralSessionIDs = new Set<string>()) {
@@ -646,7 +657,7 @@ describe('compact task trace v2', () => {
     expect(result.changed_files).toEqual({ files: ['src/a.ts'], exhaustive: false });
   });
 
-  it('bounds UTF-8 map requests and merges split-step semantic fragments in fragment order', async () => {
+  it('uses the configured model context to collapse formerly fragmented map input', async () => {
     const observed = `${'\\"\n'.repeat(12_000)}🙂observed-tail`;
     const reasoning = `${'"\n\\'.repeat(12_000)}🙂reasoning-tail`;
     const source = [message('m1', 'assistant', [
@@ -656,6 +667,36 @@ describe('compact task trace v2', () => {
       { type: 'step-finish' },
     ])];
     const setup = clientFor(source, {
+      providers: () => ({
+        data: {
+          providers: [{ id: 'requested', models: { model: { limit: { context: 500_000, output: 16_000 } } } }],
+        },
+      }),
+    });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const requests = setup.calls.filter((call) => call.method === 'prompt').map((call) => JSON.parse(call.input.body.parts[0].text));
+    const maps = requests.filter((request) => request.kind === 'map');
+
+    expect(maps).toHaveLength(1);
+    expect(maps.every((request) => Buffer.byteLength(JSON.stringify(request), 'utf8') <= 700_000)).toBe(true);
+    expect(result.recovery.status).toBe('complete');
+  });
+
+  it('uses the smaller model input limit and merges split-step fragments in order', async () => {
+    const observed = `${'\\"\n'.repeat(12_000)}🙂observed-tail`;
+    const reasoning = `${'"\n\\'.repeat(12_000)}🙂reasoning-tail`;
+    const source = [message('m1', 'assistant', [
+      { type: 'step-start' },
+      { type: 'reasoning', text: reasoning },
+      { type: 'text', text: observed },
+      { type: 'step-finish' },
+    ])];
+    const setup = clientFor(source, {
+      providers: () => ({
+        data: {
+          providers: [{ id: 'requested', models: { model: { limit: { context: 500_000, input: 20_000, output: 16_000 } } } }],
+        },
+      }),
       prompt: (request) => request.kind === 'map'
         ? semanticMap(request, {
             1: {
@@ -673,7 +714,8 @@ describe('compact task trace v2', () => {
     const fragments = maps.flatMap((request) => request.fragments);
     const reducer = requests.find((request) => request.kind === 'reduce');
 
-    expect(maps.every((request) => Buffer.byteLength(JSON.stringify(request), 'utf8') <= 20_480)).toBe(true);
+    expect(maps.length).toBeGreaterThan(1);
+    expect(maps.every((request) => Buffer.byteLength(JSON.stringify(request), 'utf8') <= 28_000)).toBe(true);
     expect(fragments.map((fragment: any) => fragment.fragment)).toEqual(sourceSteps(1, fragments.length));
     expect(fragments.every((fragment: any) => fragment.fragments === fragments.length)).toBe(true);
     expect(JSON.parse(fragments.map((fragment: any) => fragment.source.observed ?? '').join('')).text).toEqual([observed]);
@@ -681,6 +723,22 @@ describe('compact task trace v2', () => {
     expect(reducer.cards).toHaveLength(1);
     expect(reducer.cards[0].actions).toEqual(fragments.map((fragment: any) => `fragment ${fragment.fragment}`));
     expect(result.recovery.status).toBe('complete');
+  });
+
+  it('uses the fallback map envelope when provider metadata lookup fails', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'x'.repeat(300_000) }])];
+    const setup = clientFor(source, {
+      providers: () => { throw new Error('metadata unavailable'); },
+    });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const maps = setup.calls.filter((call) => call.method === 'prompt')
+      .map((call) => JSON.parse(call.input.body.parts[0].text))
+      .filter((request) => request.kind === 'map');
+
+    expect(maps.length).toBeGreaterThan(1);
+    expect(maps.every((request) => Buffer.byteLength(JSON.stringify(request), 'utf8') <= 256 * 1024)).toBe(true);
+    expect(result.recovery.status).toBe('complete');
+    expect(result.recovery.failures).toEqual([]);
   });
 
   it('falls back the whole split step after one fragment failure and skips the reducer when no generated card survives', async () => {
@@ -909,82 +967,45 @@ describe('compact task trace v2', () => {
     expect(result).not.toHaveProperty('content_dictionary');
   });
 
-  it('runs map batches with continuous fixed concurrency of three', async () => {
+  it('starts every map batch concurrently and folds reverse completion by batch index', async () => {
     const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
       { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
     ]));
-    const gates: Array<ReturnType<typeof deferred<unknown>> & { settled?: boolean }> = [];
+    const gates: Array<ReturnType<typeof deferred<unknown>>> = [];
+    const requests: any[] = [];
     let active = 0;
     let peak = 0;
     const setup = clientFor(source, {
       prompt: async (request) => {
         if (request.kind === 'reduce') return undefined;
+        requests.push(request);
         const gate = deferred<unknown>();
         gates.push(gate);
         active += 1;
         peak = Math.max(peak, active);
         const result = await gate.promise;
-        gate.settled = true;
         active -= 1;
         return result;
       },
     });
     const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
-    await settleUntil(() => gates.length === 3);
-    expect(active).toBe(3);
-    gates[0].resolve(semanticMap(JSON.parse(setup.calls.filter((call) => call.method === 'prompt')[0].input.body.parts[0].text)));
-    await settleUntil(() => gates.length === 4);
-    expect(active).toBe(3);
-
-    for (let iteration = 0; iteration < 100; iteration += 1) {
-      const promptCalls = setup.calls.filter((call) => call.method === 'prompt');
-      for (const [index, gate] of gates.entries()) {
-        if (gate.settled) continue;
-        const request = JSON.parse(promptCalls[index].input.body.parts[0].text);
-        gate.resolve(semanticMap(request));
-      }
-      await Promise.resolve();
-      await Promise.resolve();
-      if (setup.calls.some((call) => call.method === 'prompt' && JSON.parse(call.input.body.parts[0].text).kind === 'reduce')) break;
-    }
-    const result = await execution;
-
-    expect(peak).toBe(3);
-    expect(result.recovery.cards_source).toBe('generated');
-  });
-
-  it('folds reverse map completion into deterministic batch-index failure order', async () => {
-    const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
-      { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
-    ]));
-    const gates: Array<ReturnType<typeof deferred<unknown>>> = [];
-    const requests: any[] = [];
-    const setup = clientFor(source, {
-      prompt: (request, call) => {
-        if (request.kind === 'reduce' || call > 3) return request.kind === 'map' ? semanticMap(request) : undefined;
-        requests.push(request);
-        const gate = deferred<unknown>();
-        gates.push(gate);
-        return gate.promise;
-      },
-    });
-    const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
-
-    await settleUntil(() => gates.length === 3);
-    for (const index of [2, 1, 0]) {
+    await settleUntil(() => gates.length === 12);
+    expect(active).toBe(12);
+    for (const index of sourceSteps(0, gates.length - 1).reverse()) {
       gates[index].resolve({ kind: 'map', range: requests[index].range, cards: [] });
       await Promise.resolve();
     }
     const result = await execution;
 
-    expect(result.recovery.failures.filter((entry: any) => entry.stage === 'map').slice(0, 3)).toEqual(
+    expect(peak).toBe(12);
+    expect(result.recovery.failures.filter((entry: any) => entry.stage === 'map')).toEqual(
       requests.map((request) => ({ stage: 'map', range: request.range, reasons: ['invalid_map_output'] })),
     );
-    expect(result.recovery.cards_source).toBe('mixed');
+    expect(result.recovery.cards_source).toBe('fallback');
   });
 
-  it('propagates caller abort before recovery work and during three active prompts', async () => {
+  it('propagates caller abort before recovery work, during metadata lookup, and during all active prompts', async () => {
     const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
       { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
     ]));
@@ -993,6 +1014,21 @@ describe('compact task trace v2', () => {
     beforeAbort.abort(new Error('cancel before recovery'));
     await expect(executeRaw(toolsFor(before), 'hive_task_trace', { task_id: 'child', recovery: true }, beforeAbort.signal)).rejects.toThrow('cancel before recovery');
     expect(before.calls).toHaveLength(0);
+
+    let metadataSignal: AbortSignal | undefined;
+    const metadata = clientFor(source, {
+      providers: (input) => new Promise((_resolve, reject) => {
+        metadataSignal = input.signal;
+        input.signal.addEventListener('abort', () => reject(input.signal.reason), { once: true });
+      }),
+    });
+    const metadataController = new AbortController();
+    const metadataExecution = executeRaw(toolsFor(metadata), 'hive_task_trace', { task_id: 'child', recovery: true }, metadataController.signal);
+    await settleUntil(() => metadataSignal !== undefined);
+    metadataController.abort(new Error('cancel metadata lookup'));
+    await expect(metadataExecution).rejects.toThrow('cancel metadata lookup');
+    expect(metadataSignal?.aborted).toBe(true);
+    expect(metadata.calls.filter((call) => call.method === 'create')).toHaveLength(0);
 
     const activeSignals: AbortSignal[] = [];
     const during = clientFor(source, {
@@ -1005,14 +1041,14 @@ describe('compact task trace v2', () => {
     });
     const controller = new AbortController();
     const execution = executeRaw(toolsFor(during), 'hive_task_trace', { task_id: 'child', recovery: true }, controller.signal);
-    await settleUntil(() => activeSignals.length === 3);
+    await settleUntil(() => activeSignals.length === 12);
     controller.abort(new Error('cancel active recovery'));
 
     await expect(execution).rejects.toThrow('cancel active recovery');
     expect(activeSignals.every((signal) => signal.aborted)).toBe(true);
-    expect(during.calls.filter((call) => call.method === 'create')).toHaveLength(3);
-    expect(during.calls.filter((call) => call.method === 'abort')).toHaveLength(3);
-    expect(during.calls.filter((call) => call.method === 'delete')).toHaveLength(3);
+    expect(during.calls.filter((call) => call.method === 'create')).toHaveLength(12);
+    expect(during.calls.filter((call) => call.method === 'abort')).toHaveLength(12);
+    expect(during.calls.filter((call) => call.method === 'delete')).toHaveLength(12);
     for (const call of during.calls.filter((entry) => entry.method === 'abort' || entry.method === 'delete')) {
       expect(call.input.signal).not.toBe(controller.signal);
     }
@@ -1132,34 +1168,23 @@ describe('compact task trace v2', () => {
     Date.now = () => now;
     try {
       const cleanupOrder: string[] = [];
-      const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
-        { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
-      ]));
-      const firstWaveDeletes = deferred<void>();
-      let lateMapPrompts = 0;
-      let hungSession: string | undefined;
+      const source = [message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])];
       const setup = clientFor(source, {
+        providers: () => {
+          now = 100_000;
+          return {
+            data: {
+              providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 } } } }],
+            },
+          };
+        },
         prompt: (request) => {
-          if (request.kind !== 'map' || now < 100_000) return undefined;
-          lateMapPrompts += 1;
-          if (lateMapPrompts !== 1) return undefined;
-          hungSession = setup.calls.filter((entry) => entry.method === 'prompt').at(-1)?.input?.path?.id;
+          if (request.kind !== 'map') return undefined;
           return new Promise(() => {});
         },
-        delete: async (call, input) => {
-          if (call <= 3) {
-            if (call === 3) {
-              firstWaveDeletes.resolve();
-              now = 100_000;
-            }
-            await firstWaveDeletes.promise;
-            return { data: true };
-          }
-          if (hungSession && input?.path?.id === hungSession) {
-            cleanupOrder.push('delete');
-            return new Promise(() => {});
-          }
-          return { data: true };
+        delete: async () => {
+          cleanupOrder.push('delete');
+          return new Promise(() => {});
         },
         abort: async () => {
           cleanupOrder.push('abort');
@@ -1167,7 +1192,7 @@ describe('compact task trace v2', () => {
         },
       });
       const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
-      await settleUntil(() => lateMapPrompts >= 1 && timers.active(60_000).length >= 1);
+      await settleUntil(() => timers.active(60_000).length >= 1);
       const promptTimer = timers.active(60_000)[0];
       now += promptTimer.delay;
       expect(now).toBe(160_000);
@@ -1205,14 +1230,14 @@ describe('compact task trace v2', () => {
       const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
         { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
       ]));
-      const firstWaveDeletes = deferred<void>();
       const setup = clientFor(source, {
-        prompt: () => undefined,
-        delete: async (call) => {
-          if (call === 3) firstWaveDeletes.resolve();
-          if (call <= 3) await firstWaveDeletes.promise;
-          if (call === 3) now = 179_001;
-          return { data: true };
+        providers: () => {
+          now = 179_001;
+          return {
+            data: {
+              providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 } } } }],
+            },
+          };
         },
       });
       const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
@@ -1220,9 +1245,9 @@ describe('compact task trace v2', () => {
       const cutoffFailures = result.recovery.failures.filter((entry: any) => (
         entry.stage === 'map' && entry.reasons.includes('recovery_deadline_exceeded')
       ));
-      expect(mapCreates).toHaveLength(3);
-      expect(cutoffFailures.length).toBeGreaterThan(0);
-      expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'mixed', phases_source: 'generated' });
+      expect(mapCreates).toHaveLength(0);
+      expect(cutoffFailures).toHaveLength(12);
+      expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'fallback', phases_source: 'fallback' });
     } finally {
       Date.now = originalNow;
     }
@@ -1315,7 +1340,7 @@ describe('compact task trace v2', () => {
     }
   });
 
-  it('stops launching maps at the global map cutoff and reserves reduction time', async () => {
+  it('starts all maps before the global cutoff and reserves reduction time', async () => {
     const originalNow = Date.now;
     let now = 0;
     Date.now = () => now;
@@ -1323,13 +1348,10 @@ describe('compact task trace v2', () => {
       const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
         { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
       ]));
-      const firstWaveDeletes = deferred<void>();
       const setup = clientFor(source, {
         prompt: () => undefined,
         delete: async (call) => {
-          if (call === 3) firstWaveDeletes.resolve();
-          if (call <= 3) await firstWaveDeletes.promise;
-          if (call === 3) now = 180_001;
+          if (call === 12) now = 180_001;
           return { data: true };
         },
       });
@@ -1341,12 +1363,11 @@ describe('compact task trace v2', () => {
         entry.stage === 'map' && entry.reasons.includes('recovery_deadline_exceeded')
       ));
 
-      expect(setup.calls.filter((call) => call.method === 'create' && call.input.body.title.includes(' map '))).toHaveLength(3);
-      expect(mapRequests.length).toBeGreaterThan(0);
-      expect(mapRequests.length).toBeLessThanOrEqual(3);
+      expect(setup.calls.filter((call) => call.method === 'create' && call.input.body.title.includes(' map '))).toHaveLength(12);
+      expect(mapRequests).toHaveLength(12);
       expect(requests.some((request) => request.kind === 'reduce')).toBe(true);
-      expect(cutoffFailures.length).toBeGreaterThan(0);
-      expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'mixed', phases_source: 'generated' });
+      expect(cutoffFailures).toHaveLength(0);
+      expect(result.recovery).toMatchObject({ status: 'complete', cards_source: 'generated', phases_source: 'generated' });
     } finally {
       Date.now = originalNow;
     }
