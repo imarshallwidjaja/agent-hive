@@ -104,11 +104,13 @@ function clientFor(messages: unknown[], options: {
   mutateMessages?: (reads: number) => unknown[];
   prompt?: (request: any, call: number) => unknown | Promise<unknown>;
   promptError?: (request: any, call: number) => unknown;
-  deleteError?: (call: number) => unknown;
+  abort?: (call: number, input: any) => unknown | Promise<unknown>;
+  delete?: (call: number, input: any) => unknown | Promise<unknown>;
 } = {}) {
   const calls: Call[] = [];
   let messageReads = 0;
   let promptCalls = 0;
+  let abortCalls = 0;
   let deleteCalls = 0;
   const session = {
     get: async (input: unknown) => {
@@ -161,11 +163,15 @@ function clientFor(messages: unknown[], options: {
         },
       };
     },
-    delete: async (input: unknown) => {
+    abort: async (input: any) => {
+      calls.push({ method: 'abort', input });
+      abortCalls += 1;
+      return await options.abort?.(abortCalls, input) ?? { data: true };
+    },
+    delete: async (input: any) => {
       calls.push({ method: 'delete', input });
       deleteCalls += 1;
-      const error = options.deleteError?.(deleteCalls);
-      return error ? { error } : { data: true };
+      return await options.delete?.(deleteCalls, input) ?? { data: true };
     },
   };
   return { client: { session }, calls };
@@ -184,13 +190,56 @@ function executeRaw(
   tools: ReturnType<typeof createTaskTraceTools>,
   name: 'hive_task_trace' | 'hive_task_trace_content',
   args: Record<string, unknown>,
+  abort = new AbortController().signal,
 ) {
   return tools[name].execute(args as never, {
     sessionID: 'parent',
     messageID: 'parent-message',
     agent: 'hive-master',
-    abort: new AbortController().signal,
+    abort,
   } as never);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function settleUntil(predicate: () => boolean): Promise<void> {
+  for (let index = 0; index < 100 && !predicate(); index += 1) await Promise.resolve();
+  expect(predicate()).toBe(true);
+}
+
+function interceptTimers() {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const timers: Array<{ callback: () => void; delay: number; active: boolean }> = [];
+  globalThis.setTimeout = ((callback: () => void, delay = 0) => {
+    const timer = { callback, delay, active: true };
+    timers.push(timer);
+    return timer as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
+    const captured = timer as unknown as { active?: boolean };
+    if (captured) captured.active = false;
+  }) as typeof clearTimeout;
+  return {
+    timers,
+    active(delay?: number) {
+      return timers.filter((timer) => timer.active && (delay === undefined || timer.delay === delay));
+    },
+    fire(timer: { callback: () => void; active: boolean; delay?: number }) {
+      timer.active = false;
+      timer.callback();
+    },
+    restore() {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    },
+  };
 }
 
 async function execute(
@@ -860,6 +909,521 @@ describe('compact task trace v2', () => {
     expect(result).not.toHaveProperty('content_dictionary');
   });
 
+  it('runs map batches with continuous fixed concurrency of three', async () => {
+    const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
+      { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
+    ]));
+    const gates: Array<ReturnType<typeof deferred<unknown>> & { settled?: boolean }> = [];
+    let active = 0;
+    let peak = 0;
+    const setup = clientFor(source, {
+      prompt: async (request) => {
+        if (request.kind === 'reduce') return undefined;
+        const gate = deferred<unknown>();
+        gates.push(gate);
+        active += 1;
+        peak = Math.max(peak, active);
+        const result = await gate.promise;
+        gate.settled = true;
+        active -= 1;
+        return result;
+      },
+    });
+    const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    await settleUntil(() => gates.length === 3);
+    expect(active).toBe(3);
+    gates[0].resolve(semanticMap(JSON.parse(setup.calls.filter((call) => call.method === 'prompt')[0].input.body.parts[0].text)));
+    await settleUntil(() => gates.length === 4);
+    expect(active).toBe(3);
+
+    for (let iteration = 0; iteration < 100; iteration += 1) {
+      const promptCalls = setup.calls.filter((call) => call.method === 'prompt');
+      for (const [index, gate] of gates.entries()) {
+        if (gate.settled) continue;
+        const request = JSON.parse(promptCalls[index].input.body.parts[0].text);
+        gate.resolve(semanticMap(request));
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+      if (setup.calls.some((call) => call.method === 'prompt' && JSON.parse(call.input.body.parts[0].text).kind === 'reduce')) break;
+    }
+    const result = await execution;
+
+    expect(peak).toBe(3);
+    expect(result.recovery.cards_source).toBe('generated');
+  });
+
+  it('folds reverse map completion into deterministic batch-index failure order', async () => {
+    const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
+      { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
+    ]));
+    const gates: Array<ReturnType<typeof deferred<unknown>>> = [];
+    const requests: any[] = [];
+    const setup = clientFor(source, {
+      prompt: (request, call) => {
+        if (request.kind === 'reduce' || call > 3) return request.kind === 'map' ? semanticMap(request) : undefined;
+        requests.push(request);
+        const gate = deferred<unknown>();
+        gates.push(gate);
+        return gate.promise;
+      },
+    });
+    const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    await settleUntil(() => gates.length === 3);
+    for (const index of [2, 1, 0]) {
+      gates[index].resolve({ kind: 'map', range: requests[index].range, cards: [] });
+      await Promise.resolve();
+    }
+    const result = await execution;
+
+    expect(result.recovery.failures.filter((entry: any) => entry.stage === 'map').slice(0, 3)).toEqual(
+      requests.map((request) => ({ stage: 'map', range: request.range, reasons: ['invalid_map_output'] })),
+    );
+    expect(result.recovery.cards_source).toBe('mixed');
+  });
+
+  it('propagates caller abort before recovery work and during three active prompts', async () => {
+    const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
+      { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
+    ]));
+    const before = clientFor(source);
+    const beforeAbort = new AbortController();
+    beforeAbort.abort(new Error('cancel before recovery'));
+    await expect(executeRaw(toolsFor(before), 'hive_task_trace', { task_id: 'child', recovery: true }, beforeAbort.signal)).rejects.toThrow('cancel before recovery');
+    expect(before.calls).toHaveLength(0);
+
+    const activeSignals: AbortSignal[] = [];
+    const during = clientFor(source, {
+      prompt: (_request, call) => new Promise((_resolve, reject) => {
+        const promptCall = during.calls.filter((entry) => entry.method === 'prompt')[call - 1];
+        const signal = promptCall.input.signal as AbortSignal;
+        activeSignals.push(signal);
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }),
+    });
+    const controller = new AbortController();
+    const execution = executeRaw(toolsFor(during), 'hive_task_trace', { task_id: 'child', recovery: true }, controller.signal);
+    await settleUntil(() => activeSignals.length === 3);
+    controller.abort(new Error('cancel active recovery'));
+
+    await expect(execution).rejects.toThrow('cancel active recovery');
+    expect(activeSignals.every((signal) => signal.aborted)).toBe(true);
+    expect(during.calls.filter((call) => call.method === 'create')).toHaveLength(3);
+    expect(during.calls.filter((call) => call.method === 'abort')).toHaveLength(3);
+    expect(during.calls.filter((call) => call.method === 'delete')).toHaveLength(3);
+    for (const call of during.calls.filter((entry) => entry.method === 'abort' || entry.method === 'delete')) {
+      expect(call.input.signal).not.toBe(controller.signal);
+    }
+  });
+
+  it('shares one 120-second create-plus-prompt attempt budget so slow create cannot approach 240 seconds', async () => {
+    const timers = interceptTimers();
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const setup = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])], {
+        prompt: (request) => request.kind === 'reduce' ? new Promise(() => {}) : undefined,
+      });
+      let creates = 0;
+      const originalCreate = setup.client.session.create.bind(setup.client.session);
+      setup.client.session.create = async (input: unknown) => {
+        creates += 1;
+        const created = await originalCreate(input);
+        if (creates === 2) now += 100_000;
+        return created;
+      };
+      const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      await settleUntil(() => (
+        setup.calls.some((call) => call.method === 'prompt' && JSON.parse(call.input.body.parts[0].text).kind === 'reduce')
+        && (timers.active(20_000).length === 1 || timers.active(120_000).length === 1)
+      ));
+      expect(timers.active(20_000)).toHaveLength(1);
+      expect(timers.active(120_000)).toHaveLength(0);
+      timers.fire(timers.active(20_000)[0]);
+      await settleUntil(() => setup.calls.some((call) => call.method === 'abort') || setup.calls.filter((call) => call.method === 'delete').length > 1);
+      for (let index = 0; index < 4; index += 1) {
+        const cleanup = timers.active(10_000)[0];
+        if (!cleanup) break;
+        timers.fire(cleanup);
+        await Promise.resolve();
+      }
+      const result = await execution;
+      expect(result.recovery.failures).toContainEqual({ stage: 'reduce', reasons: ['summarizer_timeout'] });
+      expect(now + 20_000).toBeLessThan(240_000);
+    } finally {
+      Date.now = originalNow;
+      timers.restore();
+    }
+  });
+
+  it('reserves abort and delete windows so generation timeout still runs both cleanups in order', async () => {
+    const timers = interceptTimers();
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const order: string[] = [];
+      const setup = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])], {
+        prompt: (request) => {
+          if (request.kind === 'map') return undefined;
+          return new Promise(() => {});
+        },
+        abort: () => {
+          order.push('abort');
+          return new Promise(() => {});
+        },
+        delete: (call) => {
+          order.push(`delete-${call}`);
+          if (call === 1) {
+            now = 200_000;
+            return { data: true };
+          }
+          return new Promise(() => {});
+        },
+      });
+      const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      await settleUntil(() => {
+        const reducePrompt = setup.calls.find((call) => (
+          call.method === 'prompt' && JSON.parse(call.input.body.parts[0].text).kind === 'reduce'
+        ));
+        return Boolean(reducePrompt) && timers.active().some((timer) => timer.delay > 0 && timer.delay <= 100_000);
+      });
+      const promptTimer = timers.active().find((timer) => timer.delay > 0 && timer.delay <= 100_000)!;
+      expect(promptTimer.delay).toBe(80_000);
+      now += promptTimer.delay;
+      expect(now).toBe(280_000);
+      timers.fire(promptTimer);
+      await settleUntil(() => setup.calls.some((call) => call.method === 'abort'));
+      expect(timers.active(10_000)).toHaveLength(1);
+      const abortTimer = timers.active(10_000)[0];
+      now += abortTimer.delay;
+      expect(now).toBe(290_000);
+      timers.fire(abortTimer);
+      await settleUntil(() => setup.calls.filter((call) => call.method === 'delete').length >= 2);
+      expect(timers.active(10_000)).toHaveLength(1);
+      const deleteTimer = timers.active(10_000)[0];
+      now += deleteTimer.delay;
+      expect(now).toBe(300_000);
+      timers.fire(deleteTimer);
+      const result = await execution;
+      expect(order.filter((entry) => entry === 'abort' || entry.startsWith('delete-'))).toEqual([
+        'delete-1',
+        'abort',
+        'delete-2',
+      ]);
+      expect(result.recovery.failures).toContainEqual({
+        stage: 'reduce',
+        reasons: ['recovery_deadline_exceeded', 'ephemeral_cleanup_failed'],
+      });
+      expect(now).toBeLessThanOrEqual(300_000);
+    } finally {
+      Date.now = originalNow;
+      timers.restore();
+    }
+  });
+
+  it('keeps a reserved delete window when abort consumes its full cleanup budget', async () => {
+    const timers = interceptTimers();
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const cleanupOrder: string[] = [];
+      const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
+        { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
+      ]));
+      const firstWaveDeletes = deferred<void>();
+      let lateMapPrompts = 0;
+      let hungSession: string | undefined;
+      const setup = clientFor(source, {
+        prompt: (request) => {
+          if (request.kind !== 'map' || now < 100_000) return undefined;
+          lateMapPrompts += 1;
+          if (lateMapPrompts !== 1) return undefined;
+          hungSession = setup.calls.filter((entry) => entry.method === 'prompt').at(-1)?.input?.path?.id;
+          return new Promise(() => {});
+        },
+        delete: async (call, input) => {
+          if (call <= 3) {
+            if (call === 3) {
+              firstWaveDeletes.resolve();
+              now = 100_000;
+            }
+            await firstWaveDeletes.promise;
+            return { data: true };
+          }
+          if (hungSession && input?.path?.id === hungSession) {
+            cleanupOrder.push('delete');
+            return new Promise(() => {});
+          }
+          return { data: true };
+        },
+        abort: async () => {
+          cleanupOrder.push('abort');
+          return new Promise(() => {});
+        },
+      });
+      const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      await settleUntil(() => lateMapPrompts >= 1 && timers.active(60_000).length >= 1);
+      const promptTimer = timers.active(60_000)[0];
+      now += promptTimer.delay;
+      expect(now).toBe(160_000);
+      timers.fire(promptTimer);
+      await settleUntil(() => cleanupOrder.includes('abort') && timers.active(10_000).length === 1);
+      const abortTimer = timers.active(10_000)[0];
+      expect(abortTimer.delay).toBe(10_000);
+      now += abortTimer.delay;
+      expect(now).toBe(170_000);
+      timers.fire(abortTimer);
+      await settleUntil(() => cleanupOrder.includes('delete') && timers.active(10_000).length === 1);
+      const deleteTimer = timers.active(10_000)[0];
+      expect(deleteTimer.delay).toBe(10_000);
+      now += deleteTimer.delay;
+      expect(now).toBe(180_000);
+      timers.fire(deleteTimer);
+      const result = await execution;
+      expect(cleanupOrder.filter((entry) => entry === 'abort' || entry === 'delete')).toEqual(['abort', 'delete']);
+      expect(result.recovery.failures.some((entry: any) => (
+        entry.stage === 'map'
+        && entry.reasons.includes('recovery_deadline_exceeded')
+        && entry.reasons.includes('ephemeral_cleanup_failed')
+      ))).toBe(true);
+    } finally {
+      Date.now = originalNow;
+      timers.restore();
+    }
+  });
+
+  it('skips session create when stage time cannot reserve abort and delete cleanup', async () => {
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
+        { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
+      ]));
+      const firstWaveDeletes = deferred<void>();
+      const setup = clientFor(source, {
+        prompt: () => undefined,
+        delete: async (call) => {
+          if (call === 3) firstWaveDeletes.resolve();
+          if (call <= 3) await firstWaveDeletes.promise;
+          if (call === 3) now = 179_001;
+          return { data: true };
+        },
+      });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      const mapCreates = setup.calls.filter((call) => call.method === 'create' && call.input.body.title.includes(' map '));
+      const cutoffFailures = result.recovery.failures.filter((entry: any) => (
+        entry.stage === 'map' && entry.reasons.includes('recovery_deadline_exceeded')
+      ));
+      expect(mapCreates).toHaveLength(3);
+      expect(cutoffFailures.length).toBeGreaterThan(0);
+      expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'mixed', phases_source: 'generated' });
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it('propagates caller abort after bounded reducer and map cleanup instead of returning fallback', async () => {
+    for (const stage of ['reduce', 'map'] as const) {
+      const timers = interceptTimers();
+      const originalNow = Date.now;
+      let now = 0;
+      Date.now = () => now;
+      try {
+        const cleanupStarted = deferred<void>();
+        const setup = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])], {
+          prompt: (request) => (
+            request.kind === stage ? new Promise(() => {}) : undefined
+          ),
+          abort: async () => {
+            cleanupStarted.resolve();
+            return new Promise(() => {});
+          },
+          delete: (call) => {
+            if (stage === 'reduce' && call === 1) return { data: true };
+            return new Promise(() => {});
+          },
+        });
+        const controller = new AbortController();
+        const execution = executeRaw(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true }, controller.signal);
+        await settleUntil(() => (
+          setup.calls.some((call) => call.method === 'prompt' && JSON.parse(call.input.body.parts[0].text).kind === stage)
+          && timers.active(120_000).length >= 1
+        ));
+        const promptTimer = timers.active(120_000)[0];
+        now += promptTimer.delay;
+        timers.fire(promptTimer);
+        await cleanupStarted.promise;
+        controller.abort(new Error(`cancel during ${stage} cleanup`));
+        await settleUntil(() => timers.active(10_000).length >= 1);
+        const abortTimer = timers.active(10_000)[0];
+        now += abortTimer.delay;
+        timers.fire(abortTimer);
+        await settleUntil(() => {
+          const deletes = setup.calls.filter((call) => call.method === 'delete');
+          return (stage === 'map' ? deletes.length >= 1 : deletes.length >= 2) && timers.active(10_000).length >= 1;
+        });
+        const deleteTimer = timers.active(10_000)[0];
+        now += deleteTimer.delay;
+        timers.fire(deleteTimer);
+        await expect(execution).rejects.toThrow(`cancel during ${stage} cleanup`);
+        const methods = setup.calls.map((call) => call.method);
+        const abortAt = methods.indexOf('abort');
+        const deleteAt = methods.lastIndexOf('delete');
+        expect(abortAt).toBeGreaterThan(-1);
+        expect(deleteAt).toBeGreaterThan(abortAt);
+      } finally {
+        Date.now = originalNow;
+        timers.restore();
+      }
+    }
+  });
+
+  it('falls back only a timed-out map range while successful maps still reduce', async () => {
+    const timers = interceptTimers();
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const source = Array.from({ length: 8 }, (_, index) => message(`m${index}`, 'assistant', [
+        { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
+      ]));
+      const setup = clientFor(source, {
+        prompt: (request, call) => request.kind === 'map' && call === 1 ? new Promise(() => {}) : undefined,
+      });
+      const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      await settleUntil(() => setup.calls.some((call) => call.method === 'prompt') && timers.active(120_000).length === 1);
+      const promptTimer = timers.active(120_000)[0];
+      now += promptTimer.delay;
+      timers.fire(promptTimer);
+      const result = await execution;
+      const mapFailures = result.recovery.failures.filter((entry: any) => entry.stage === 'map');
+
+      expect(mapFailures).toHaveLength(1);
+      expect(mapFailures[0].reasons).toEqual(['summarizer_timeout']);
+      expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'mixed', phases_source: 'generated' });
+      expect(setup.calls.filter((call) => call.method === 'abort')).toHaveLength(1);
+      expect(setup.calls.filter((call) => call.method === 'delete').length).toBeGreaterThanOrEqual(1);
+    } finally {
+      Date.now = originalNow;
+      timers.restore();
+    }
+  });
+
+  it('stops launching maps at the global map cutoff and reserves reduction time', async () => {
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
+        { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
+      ]));
+      const firstWaveDeletes = deferred<void>();
+      const setup = clientFor(source, {
+        prompt: () => undefined,
+        delete: async (call) => {
+          if (call === 3) firstWaveDeletes.resolve();
+          if (call <= 3) await firstWaveDeletes.promise;
+          if (call === 3) now = 180_001;
+          return { data: true };
+        },
+      });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      const requests = setup.calls.filter((call) => call.method === 'prompt')
+        .map((call) => JSON.parse(call.input.body.parts[0].text));
+      const mapRequests = requests.filter((request) => request.kind === 'map');
+      const cutoffFailures = result.recovery.failures.filter((entry: any) => (
+        entry.stage === 'map' && entry.reasons.includes('recovery_deadline_exceeded')
+      ));
+
+      expect(setup.calls.filter((call) => call.method === 'create' && call.input.body.title.includes(' map '))).toHaveLength(3);
+      expect(mapRequests.length).toBeGreaterThan(0);
+      expect(mapRequests.length).toBeLessThanOrEqual(3);
+      expect(requests.some((request) => request.kind === 'reduce')).toBe(true);
+      expect(cutoffFailures.length).toBeGreaterThan(0);
+      expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'mixed', phases_source: 'generated' });
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it('keeps generated cards and uses deterministic phases when reduction times out', async () => {
+    const timers = interceptTimers();
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const setup = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])], {
+        prompt: (request) => request.kind === 'reduce' ? new Promise(() => {}) : undefined,
+      });
+      const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      await settleUntil(() => (
+        setup.calls.filter((call) => call.method === 'prompt').length === 2
+        && timers.active(120_000).length === 1
+      ));
+      const promptTimer = timers.active(120_000)[0];
+      now += promptTimer.delay;
+      timers.fire(promptTimer);
+      const result = await execution;
+
+      expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'generated', phases_source: 'fallback' });
+      expect(result.recovery.failures).toContainEqual({ stage: 'reduce', reasons: ['summarizer_timeout'] });
+      expect(result.semantic.phases).toEqual(expect.arrayContaining([expect.objectContaining({ source_steps: [1] })]));
+    } finally {
+      Date.now = originalNow;
+      timers.restore();
+    }
+  });
+
+  it('bounds hanging abort and delete cleanup and retains an unconfirmed hidden session id', async () => {
+    const timers = interceptTimers();
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const cleanupSignals: AbortSignal[] = [];
+      const setup = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'completed work' }])], {
+        prompt: (request) => request.kind === 'map' ? new Promise(() => {}) : undefined,
+        abort: () => new Promise(() => {}),
+        delete: () => new Promise(() => {}),
+      });
+      const ephemeral = new Set<string>();
+      const execution = execute(toolsFor(setup, ephemeral), 'hive_task_trace', { task_id: 'child', recovery: true });
+      await settleUntil(() => setup.calls.some((call) => call.method === 'prompt') && timers.active(120_000).length === 1);
+      const promptTimer = timers.active(120_000)[0];
+      now += promptTimer.delay;
+      timers.fire(promptTimer);
+      await settleUntil(() => setup.calls.some((call) => call.method === 'abort') && timers.active(10_000).length === 1);
+      cleanupSignals.push(setup.calls.find((call) => call.method === 'abort')!.input.signal);
+      const abortTimer = timers.active(10_000)[0];
+      now += abortTimer.delay;
+      timers.fire(abortTimer);
+      await settleUntil(() => setup.calls.some((call) => call.method === 'delete') && timers.active(10_000).length === 1);
+      cleanupSignals.push(setup.calls.find((call) => call.method === 'delete')!.input.signal);
+      const deleteTimer = timers.active(10_000)[0];
+      now += deleteTimer.delay;
+      timers.fire(deleteTimer);
+      const result = await execution;
+
+      expect(result.recovery.failures).toContainEqual({
+        stage: 'map',
+        range: [1, 1],
+        reasons: ['summarizer_timeout', 'ephemeral_cleanup_failed'],
+      });
+      expect(ephemeral).toEqual(new Set(['summary-1']));
+      expect(cleanupSignals[0]).not.toBe(cleanupSignals[1]);
+      expect(cleanupSignals.every((signal) => signal.aborted)).toBe(true);
+    } finally {
+      Date.now = originalNow;
+      timers.restore();
+    }
+  });
+
   it('falls back affected map steps while retaining ordered provider/schema and cleanup causes', async () => {
     const source = Array.from({ length: 20 }, (_, index) => message(`m${index}`, 'assistant', [
       { type: 'text', text: `${index}:${'x'.repeat(2500)}` },
@@ -870,7 +1434,9 @@ describe('compact task trace v2', () => {
           ? { kind: 'map', range: request.range, cards: [] }
           : undefined,
         promptError: (request, call) => failure.startsWith('provider') && request.kind === 'map' && call === 2 ? 'provider failed' : undefined,
-        deleteError: (call) => failure.includes('cleanup') && call === 2 ? 'delete failed' : undefined,
+        delete: (_call, input) => failure.includes('cleanup') && input.path.id === 'summary-2'
+          ? { error: 'delete failed' }
+          : { data: true },
       });
       const ephemeral = new Set<string>();
       const result = await execute(toolsFor(setup, ephemeral), 'hive_task_trace', { task_id: 'child', recovery: true });
@@ -901,7 +1467,9 @@ describe('compact task trace v2', () => {
           ? { kind: 'reduce', semantic: { overview: 'missing fields' } }
           : undefined,
         promptError: (request) => failure.startsWith('provider') && request.kind === 'reduce' ? 'provider failed' : undefined,
-        deleteError: (call) => failure.includes('cleanup') && call === 2 ? 'delete failed' : undefined,
+        delete: (_call, input) => failure.includes('cleanup') && input.path.id === 'summary-2'
+          ? { error: 'delete failed' }
+          : { data: true },
       });
       const ephemeral = new Set<string>();
       const result = await execute(toolsFor(setup, ephemeral), 'hive_task_trace', { task_id: 'child', recovery: true });

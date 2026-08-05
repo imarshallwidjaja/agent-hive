@@ -10,6 +10,11 @@ const INITIAL_TEXT_INLINE_BYTES = 512;
 const INITIAL_TOOL_INLINE_BYTES = 160;
 const INITIAL_ERROR_INLINE_BYTES = 256;
 const MAP_BATCH_BYTES = 20 * 1024;
+const MAP_CONCURRENCY = 3;
+const SUMMARIZER_ATTEMPT_MS = 120_000;
+const SEMANTIC_RECOVERY_MS = 300_000;
+const REDUCTION_RESERVE_MS = 120_000;
+const CLEANUP_ATTEMPT_MS = 10_000;
 const MAX_SUMMARIZER_RESPONSE_PARTS = 8;
 const MAX_SUMMARIZER_RESPONSE_BYTES = 128 * 1024;
 const RECOVERY_PREVIEW_BYTES = 256;
@@ -39,9 +44,11 @@ type RecoveryFailureReason =
   | 'latest_message_not_assistant'
   | 'latest_message_summary_or_compaction'
   | 'no_successful_map_ranges'
+  | 'recovery_deadline_exceeded'
   | 'runtime_active'
   | 'status_unavailable'
   | 'summarizer_unavailable'
+  | 'summarizer_timeout'
   | 'tool_pending_or_running';
 
 interface RecoveryCard {
@@ -77,6 +84,7 @@ interface TaskTraceClient {
     status?: (input: unknown) => Promise<{ data?: unknown; error?: unknown }>;
     create(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
     prompt(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
+    abort(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
     delete(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
   };
 }
@@ -311,12 +319,19 @@ function normalizeTrace(messages: unknown[]): TraceIR {
   };
 }
 
-async function authorizeDirectChild(client: TaskTraceClient, directory: string, taskID: string, parentID: string): Promise<boolean> {
+async function authorizeDirectChild(
+  client: TaskTraceClient,
+  directory: string,
+  taskID: string,
+  parentID: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   try {
-    const response = await client.session.get({ path: { id: taskID }, query: { directory } });
+    const response = await client.session.get({ path: { id: taskID }, query: { directory }, ...(signal ? { signal } : {}) });
     const child = record(response.data);
     return child?.id === taskID && child.parentID === parentID;
   } catch {
+    if (signal?.aborted) throw cancellationReason(signal);
     return false;
   }
 }
@@ -777,7 +792,90 @@ function modelRef(model: string | undefined): { providerID: string; modelID: str
     : undefined;
 }
 
-async function promptEphemeral(options: TaskTraceOptions, title: string, request: RecordValue): Promise<{
+class RecoveryTimeoutError extends Error {
+  constructor(readonly reason: 'summarizer_timeout' | 'recovery_deadline_exceeded') {
+    super(reason);
+  }
+}
+
+function cancellationReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
+}
+
+async function boundedRequest<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  callerSignal: AbortSignal,
+  deadline: number,
+  timeoutReason: 'summarizer_timeout' | 'recovery_deadline_exceeded',
+): Promise<T> {
+  if (callerSignal.aborted) throw cancellationReason(callerSignal);
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new RecoveryTimeoutError('recovery_deadline_exceeded');
+  const controller = new AbortController();
+  let timedOut = false;
+  let rejectCancellation!: (reason: unknown) => void;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
+  });
+  const onAbort = () => {
+    const reason = cancellationReason(callerSignal);
+    controller.abort(reason);
+    rejectCancellation(reason);
+  };
+  callerSignal.addEventListener('abort', onAbort, { once: true });
+  let rejectTimeout!: (reason: unknown) => void;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    rejectTimeout = reject;
+  });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    const error = new RecoveryTimeoutError(timeoutReason);
+    controller.abort(error);
+    rejectTimeout(error);
+  }, remaining);
+  try {
+    return await Promise.race([run(controller.signal), cancellation, timeout]);
+  } catch (error) {
+    if (callerSignal.aborted) throw cancellationReason(callerSignal);
+    if (timedOut) throw new RecoveryTimeoutError(timeoutReason);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    callerSignal.removeEventListener('abort', onAbort);
+  }
+}
+
+async function boundedCleanup<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  deadline: number,
+): Promise<T> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new RecoveryTimeoutError('recovery_deadline_exceeded');
+  const timeoutMs = Math.min(CLEANUP_ATTEMPT_MS, remaining);
+  const controller = new AbortController();
+  let rejectTimeout!: (reason: unknown) => void;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    rejectTimeout = reject;
+  });
+  const timer = setTimeout(() => {
+    const error = new RecoveryTimeoutError('recovery_deadline_exceeded');
+    controller.abort(error);
+    rejectTimeout(error);
+  }, timeoutMs);
+  try {
+    return await Promise.race([run(controller.signal), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function promptEphemeral(
+  options: TaskTraceOptions,
+  title: string,
+  request: RecordValue,
+  callerSignal: AbortSignal,
+  deadline: number,
+): Promise<{
   response?: { data?: unknown; error?: unknown };
   reasons: RecoveryFailureReason[];
 }> {
@@ -785,8 +883,26 @@ async function promptEphemeral(options: TaskTraceOptions, title: string, request
   let response: { data?: unknown; error?: unknown } | undefined;
   const reasons: RecoveryFailureReason[] = [];
   let cleanupFailed = false;
+  let generationInterrupted = false;
+  const attemptStarted = Date.now();
+  const cleanupReserveMs = 2 * CLEANUP_ATTEMPT_MS;
+  if (attemptStarted + cleanupReserveMs >= deadline) {
+    if (callerSignal.aborted) throw cancellationReason(callerSignal);
+    return { reasons: ['recovery_deadline_exceeded'] };
+  }
+  const generationCap = attemptStarted + SUMMARIZER_ATTEMPT_MS;
+  const generationDeadline = Math.min(deadline - cleanupReserveMs, generationCap);
+  const abortDeadline = deadline - CLEANUP_ATTEMPT_MS;
+  const attemptTimeoutReason = deadline - cleanupReserveMs <= generationCap
+    ? 'recovery_deadline_exceeded' as const
+    : 'summarizer_timeout' as const;
   try {
-    const created = await options.client.session.create({ body: { title }, query: { directory: options.directory } });
+    const created = await boundedRequest(
+      (signal) => options.client.session.create({ body: { title }, query: { directory: options.directory }, signal }),
+      callerSignal,
+      generationDeadline,
+      attemptTimeoutReason,
+    );
     const session = record(created.data);
     if (!session || typeof session.id !== 'string') throw new Error('create failed');
     sessionID = session.id;
@@ -797,21 +913,56 @@ async function promptEphemeral(options: TaskTraceOptions, title: string, request
     };
     const model = modelRef(options.summarizer.model);
     if (model) body.model = model;
-    response = await options.client.session.prompt({ path: { id: sessionID }, query: { directory: options.directory }, body });
+    try {
+      response = await boundedRequest(
+        (signal) => options.client.session.prompt({ path: { id: sessionID }, query: { directory: options.directory }, body, signal }),
+        callerSignal,
+        generationDeadline,
+        attemptTimeoutReason,
+      );
+    } catch (error) {
+      generationInterrupted = error instanceof RecoveryTimeoutError || callerSignal.aborted;
+      throw error;
+    }
     if (response.error !== undefined) reasons.push('summarizer_unavailable');
-  } catch {
-    reasons.push('summarizer_unavailable');
+  } catch (error) {
+    if (!callerSignal.aborted) {
+      if (error instanceof RecoveryTimeoutError) reasons.push(error.reason);
+      else reasons.push('summarizer_unavailable');
+    }
   } finally {
     if (sessionID) {
+      if (generationInterrupted) {
+        try {
+          const aborted = await boundedCleanup(
+            (signal) => options.client.session.abort({
+              path: { id: sessionID }, query: { directory: options.directory }, signal,
+            }),
+            abortDeadline,
+          );
+          if (aborted.error !== undefined) cleanupFailed = true;
+        } catch {
+          cleanupFailed = true;
+        }
+      }
       try {
-        const deleted = await options.client.session.delete({ path: { id: sessionID }, query: { directory: options.directory } });
-        cleanupFailed = deleted.error !== undefined || deleted.data !== true;
+        const deleted = await boundedCleanup(
+          (signal) => options.client.session.delete({
+            path: { id: sessionID }, query: { directory: options.directory }, signal,
+          }),
+          deadline,
+        );
+        if (deleted.error === undefined && deleted.data === true) {
+          options.ephemeralSessionIDs.delete(sessionID);
+        } else {
+          cleanupFailed = true;
+        }
       } catch {
         cleanupFailed = true;
       }
-      if (!cleanupFailed) options.ephemeralSessionIDs.delete(sessionID);
     }
   }
+  if (callerSignal.aborted) throw cancellationReason(callerSignal);
   if (cleanupFailed) reasons.push('ephemeral_cleanup_failed');
   return { response, reasons };
 }
@@ -1247,7 +1398,14 @@ function requestedRecoveryModel(options: TaskTraceOptions): RecordValue {
   };
 }
 
-async function recover(options: TaskTraceOptions, ir: TraceIR): Promise<{ recovery: RecordValue; semantic: RecordValue }> {
+async function recover(
+  options: TaskTraceOptions,
+  ir: TraceIR,
+  callerSignal: AbortSignal,
+): Promise<{ recovery: RecordValue; semantic: RecordValue }> {
+  if (callerSignal.aborted) throw cancellationReason(callerSignal);
+  const recoveryDeadline = Date.now() + SEMANTIC_RECOVERY_MS;
+  const mapDeadline = recoveryDeadline - REDUCTION_RESERVE_MS;
   const targetChars = Math.max(80, Math.min(280, Math.round(14_000 / ir.steps.length)));
   const capabilities = new Map(ir.steps.map((step) => [step.number, recoveryCapabilities(step)]));
   const batches = batchFragments(recoveryFragments(ir.steps, capabilities), targetChars);
@@ -1255,19 +1413,48 @@ async function recover(options: TaskTraceOptions, ir: TraceIR): Promise<{ recove
   const failedSteps = new Set<number>();
   const failures: RecordValue[] = [];
   let observed: RecordValue | undefined;
+  const outcomes: Array<{
+    range: number[];
+    steps: number[];
+    prompted: Awaited<ReturnType<typeof promptEphemeral>>;
+  } | undefined> = new Array(batches.length);
+  let nextBatch = 0;
+  const mapWorker = async () => {
+    while (true) {
+      if (callerSignal.aborted) throw cancellationReason(callerSignal);
+      if (Date.now() >= mapDeadline || nextBatch >= batches.length) return;
+      const index = nextBatch;
+      nextBatch += 1;
+      const { request, range, steps } = buildMapRequest(batches[index], targetChars);
+      const prompted = await promptEphemeral(options, `Hive task trace map ${index + 1}`, request, callerSignal, mapDeadline);
+      outcomes[index] = { range, steps, prompted };
+    }
+  };
+  await Promise.allSettled(Array.from({ length: Math.min(MAP_CONCURRENCY, batches.length) }, () => mapWorker()));
+  if (callerSignal.aborted) throw cancellationReason(callerSignal);
 
   for (const [index, fragments] of batches.entries()) {
-    const { request, range, steps } = buildMapRequest(fragments, targetChars);
-    const prompted = await promptEphemeral(options, `Hive task trace map ${index + 1}`, request);
+    const outcome = outcomes[index];
+    const { range, steps } = outcome ?? buildMapRequest(fragments, targetChars);
+    if (!outcome) {
+      failures.push({ stage: 'map', range, reasons: ['recovery_deadline_exceeded'] });
+      steps.forEach((step) => failedSteps.add(step));
+      continue;
+    }
+    const { prompted } = outcome;
     observed = observedModel(prompted.response) ?? observed;
-    const providerFailed = prompted.reasons.includes('summarizer_unavailable');
+    const providerFailed = prompted.reasons.some((reason) => (
+      reason === 'summarizer_unavailable'
+      || reason === 'summarizer_timeout'
+      || reason === 'recovery_deadline_exceeded'
+    ));
     const cleanupFailed = prompted.reasons.includes('ephemeral_cleanup_failed');
     const validation = providerFailed
       ? undefined
       : validateMapOutput(parseJsonRecord(responseText(prompted.response)), range, steps, capabilities);
     const invalidMap = !providerFailed && (!validation || validation.invalidSteps.length > 0);
     const reasons: RecoveryFailureReason[] = [
-      ...(providerFailed ? ['summarizer_unavailable' as const] : invalidMap ? ['invalid_map_output' as const] : []),
+      ...(providerFailed ? prompted.reasons.filter((reason) => reason !== 'ephemeral_cleanup_failed') : invalidMap ? ['invalid_map_output' as const] : []),
       ...(cleanupFailed ? ['ephemeral_cleanup_failed' as const] : []),
     ];
     if (reasons.length > 0) failures.push({ stage: 'map', range, reasons });
@@ -1302,15 +1489,19 @@ async function recover(options: TaskTraceOptions, ir: TraceIR): Promise<{ recove
     failures.push({ stage: 'reduce', reasons: ['no_successful_map_ranges'] });
   } else {
     const request = { kind: 'reduce', step_count: ir.steps.length, cards, anchors: recoveryAnchors(ir) };
-    const prompted = await promptEphemeral(options, 'Hive task trace semantic reduction', request);
+    const prompted = await promptEphemeral(options, 'Hive task trace semantic reduction', request, callerSignal, recoveryDeadline);
     observed = observedModel(prompted.response) ?? observed;
-    const providerFailed = prompted.reasons.includes('summarizer_unavailable');
+    const providerFailed = prompted.reasons.some((reason) => (
+      reason === 'summarizer_unavailable'
+      || reason === 'summarizer_timeout'
+      || reason === 'recovery_deadline_exceeded'
+    ));
     const cleanupFailed = prompted.reasons.includes('ephemeral_cleanup_failed');
     const validated = providerFailed
       ? { reason: undefined }
       : validateReduction(parseJsonRecord(responseText(prompted.response)), ir.steps.length);
     const reasons: RecoveryFailureReason[] = [
-      ...(providerFailed ? ['summarizer_unavailable' as const] : validated.semantic ? [] : [validated.reason ?? 'invalid_reducer_output']),
+      ...(providerFailed ? prompted.reasons.filter((reason) => reason !== 'ephemeral_cleanup_failed') : validated.semantic ? [] : [validated.reason ?? 'invalid_reducer_output']),
       ...(cleanupFailed ? ['ephemeral_cleanup_failed' as const] : []),
     ];
     if (reasons.length > 0) {
@@ -1483,22 +1674,38 @@ export function createTaskTraceTools(options: TaskTraceOptions) {
         recovery: tool.schema.boolean().optional().describe('Request the terminal-only semantic map/reduce projection. Defaults to false forensic output.'),
       },
       async execute({ task_id, recovery = false }, context) {
+        if (recovery && context.abort.aborted) throw cancellationReason(context.abort);
         const unavailable = JSON.stringify({ ok: false, reason: 'unavailable_or_unauthorized' });
-        if (!(await authorizeDirectChild(options.client, options.directory, task_id, context.sessionID))) return unavailable;
+        if (!(await authorizeDirectChild(
+          options.client,
+          options.directory,
+          task_id,
+          context.sessionID,
+          recovery ? context.abort : undefined,
+        ))) return unavailable;
         let messages: unknown[];
         try {
-          const response = await options.client.session.messages({ path: { id: task_id }, query: { directory: options.directory } });
+          const response = await options.client.session.messages({
+            path: { id: task_id },
+            query: { directory: options.directory },
+            ...(recovery ? { signal: context.abort } : {}),
+          });
           if (response.error !== undefined || !Array.isArray(response.data)) return unavailable;
           messages = response.data;
         } catch {
+          if (recovery && context.abort.aborted) throw cancellationReason(context.abort);
           return unavailable;
         }
         let status: RecordValue | undefined;
         if (typeof options.client.session.status === 'function') {
           try {
-            const response = await options.client.session.status({ query: { directory: options.directory } });
+            const response = await options.client.session.status({
+              query: { directory: options.directory },
+              ...(recovery ? { signal: context.abort } : {}),
+            });
             status = response.error === undefined ? parseSessionStatusMap(response.data) : undefined;
           } catch {
+            if (recovery && context.abort.aborted) throw cancellationReason(context.abort);
             status = undefined;
           }
         }
@@ -1516,7 +1723,7 @@ export function createTaskTraceTools(options: TaskTraceOptions) {
             };
             return finalizeRecoveryProjection(recoveryProjection(task_id, ir, lifecycle, unavailableRecovery, null));
           }
-          const recovered = await recover(options, ir);
+          const recovered = await recover(options, ir, context.abort);
           return finalizeRecoveryProjection(recoveryProjection(task_id, ir, lifecycle, recovered.recovery, recovered.semantic));
         }
         const projected = projectReport(task_id, ir, lifecycle);
