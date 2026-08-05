@@ -40,7 +40,7 @@
 ## Reserved Overview Convention
 
 - `context/overview.md` is the primary human-facing summary and review surface.
-- Update it with the existing context tool: `hive_context_write({ name: "overview", content })`.
+- Update it with the existing context tool: `hive_context_write({ feature: "feature-name", name: "overview", content })` from a repository-root session until that session is bound.
 - `plan.md` remains the graph source of truth for plan-backed task generation, dependency parsing, and execution, and may still include a readable design summary before `## Tasks`.
 - `context/overview.md` is intentionally excluded from worker execution context so the narrative summary does not blur implementation truth.
 - Other context filenames remain durable free-form notes by default; files like `decisions.md`, `architecture.md`, and `constraints.md` are examples, not required schema.

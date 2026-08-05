@@ -63,6 +63,8 @@ import {
 } from './utils/adhoc-launch-payload.js';
 import { HIVE_SESSION_POLICY, shouldRejectTaskIdReuse } from './utils/session-policy.js';
 
+const NON_FEATURE_WORKTREE_NAMESPACES = new Set(['adhoc', 'review']);
+
 function blankToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -3144,7 +3146,7 @@ Before writing a plan, you MUST:
 1. Ask clarifying questions about the feature
 2. Document Q&A in plan.md with a \`## Discovery\` section
 3. Research the codebase (grep, read existing code)
-4. Save findings with hive_context_write
+4. Save findings with hive_context_write({ feature: "${feature.name}", ... })
 
 Example discovery section:
 \`\`\`markdown
@@ -3199,7 +3201,7 @@ NEXT: Ask your first clarifying question about this feature.`;
 
           captureSession(feature, toolContext);
           const planPath = planService.write(feature, content);
-          return `Plan written to ${planPath}. Comments cleared for fresh review. Refresh the primary human-facing overview with hive_context_write({ name: "overview", content }) using ## At a Glance, ## Workstreams, and ## Revision History. Review context/overview.md first; plan.md remains execution truth.`;
+          return `Plan written to ${planPath}. Comments cleared for fresh review. Refresh the primary human-facing overview with hive_context_write({ feature: "${feature}", name: "overview", content }) using ## At a Glance, ## Workstreams, and ## Revision History. Review context/overview.md first; plan.md remains execution truth.`;
         },
       }),
 
@@ -3962,15 +3964,28 @@ NEXT: Ask your first clarifying question about this feature.`;
         args: {
           name: tool.schema.string().describe('Context file name (e.g., "overview", "draft", "execution-decisions", "learnings"). overview is the human-facing summary/history file, draft is planner scratchpad, execution-decisions is the orchestration log; other names remain durable free-form context.'),
           content: tool.schema.string().describe('Markdown content to write'),
-          feature: tool.schema.string().optional().describe('Feature name (defaults to active)'),
+          feature: tool.schema.string().optional().describe('Feature name. Required unless the current path detects a feature or this session is already bound to one.'),
         },
         async execute({ name, content, feature: explicitFeature }, toolContext) {
-          const feature = resolveFeature(explicitFeature);
+          const detected = runtimeContext;
+          const detectedFeature = detected.isWorktree
+            && detected.feature
+            && NON_FEATURE_WORKTREE_NAMESPACES.has(detected.feature)
+            ? undefined
+            : detected.feature ?? undefined;
+          const targetFeatureService = new FeatureService(detected.projectRoot);
+          const targetContextService = new ContextService(detected.projectRoot);
+          const targetSessionService = new SessionService(detected.projectRoot);
+          const sessionID = (toolContext as ToolContext)?.sessionID;
+          let feature = explicitFeature ?? detectedFeature;
+          if (!feature && sessionID) {
+            feature = targetSessionService.findFeatureBySession(sessionID) ?? undefined;
+          }
           if (!feature) return "Error: No feature specified. Create a feature or provide feature param.";
-          if (!featureService.get(feature)) return `Error: Feature '${feature}' not found. Create it first with hive_feature_create.`;
+          if (!targetFeatureService.get(feature)) return `Error: Feature '${feature}' not found. Create it first with hive_feature_create.`;
 
-          bindFeatureSession(feature, toolContext);
-          const filePath = contextService.write(feature, name, content);
+          const filePath = targetContextService.write(feature, name, content);
+          if (sessionID) targetSessionService.bindFeature(sessionID, feature);
           return `Context file written: ${filePath}. Known names: overview = human-facing summary/history, draft = planner scratchpad, execution-decisions = orchestration log; all other context names remain durable free-form notes.`;
         },
       }),

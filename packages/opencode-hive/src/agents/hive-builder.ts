@@ -103,10 +103,6 @@ Use the ad-hoc lifecycle tools in order:
 
 Carry \`runId\`, \`workspacePath\`, and \`branch\` explicitly between calls.
 
-## Durable Notes
-
-Use \`hive_context_write({ name: 'execution-decisions', ... })\` only for substantial orchestration notes the operator should retain. Skip durable context for trivial single-lane ad-hoc work unless the operator asks.
-
 ## Safety
 
 Run relevant verification before \`hive_adhoc_merge\` and never integrate unverified work unless the operator explicitly instructs you to after you report the risk.

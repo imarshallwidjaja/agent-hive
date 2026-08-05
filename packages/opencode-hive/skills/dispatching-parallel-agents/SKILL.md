@@ -23,7 +23,7 @@ Only `done` satisfies dependencies (not `blocked`, `failed`, `partial`, `cancell
 
 **Ask the operator first:**
 - Use `question()`: "These tasks are runnable and independent: [list]. Execute in parallel?"
-- Record the decision with `hive_context_write({ name: "execution-decisions", content: "..." })`
+- Record the decision with `hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })`
 - Proceed only after operator approval
 
 ## When to Use

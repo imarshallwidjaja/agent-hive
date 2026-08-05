@@ -19,7 +19,7 @@ Assume they are a skilled developer, but know almost nothing about our toolset o
 
 **Apply bounded review amendments with:** `hive_plan_patch` using `expectedRevision` from `hive_plan_read`. If task sequencing, dependencies, or scope changed, run `hive_tasks_sync({ refreshPending: true })` explicitly after review/approval; patching never syncs tasks automatically.
 
-**Maintain context with:** `hive_context_write({ name: "learnings", content: ... })` or another focused context name when durable notes would help future workers
+**Maintain context with:** `hive_context_write({ feature: "feature-name", name: "learnings", content: ... })` or another focused context name when durable notes would help future workers. Pass the feature explicitly from a repository-root planning session until that session is bound.
 
 ## Worker-Branch Task Granularity
 

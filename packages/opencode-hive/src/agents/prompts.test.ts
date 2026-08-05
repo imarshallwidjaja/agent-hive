@@ -602,6 +602,19 @@ describe('Architect (Planner) prompt', () => {
     expect(contextIndex).toBeGreaterThan(-1);
     expect(createIndex).toBeLessThan(contextIndex);
     expect(ARCHITECT_BEE_PROMPT).toContain('Create the feature before writing feature context');
+    expect(ARCHITECT_BEE_PROMPT).toContain('hive_context_write({ feature: "feature-name"');
+  });
+
+  it('uses explicit feature targeting for root-oriented context guidance', () => {
+    expect(QUEEN_BEE_PROMPT).toContain(
+      'hive_context_write({ feature: "feature-name", name: "execution-decisions"',
+    );
+    expect(SWARM_BEE_PROMPT).toContain(
+      'hive_context_write({ feature: "feature-name", name: "execution-decisions"',
+    );
+    expect(SCOUT_BEE_PROMPT).toContain('feature: "{feature-name}"');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('## Durable Notes');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('execution-decisions');
   });
 
   it('requires a human-facing summary in plan.md before tasks', () => {
@@ -817,7 +830,9 @@ describe('Swarm (Orchestrator) prompt', () => {
   });
 
   it('teaches orchestrators to maintain overview at execution milestones', () => {
-    expect(SWARM_BEE_PROMPT).toContain('hive_context_write({ name: "overview", content: ... })');
+    expect(SWARM_BEE_PROMPT).toContain(
+      'hive_context_write({ feature: "feature-name", name: "overview", content: ... })',
+    );
     expect(SWARM_BEE_PROMPT).toContain('execution start');
     expect(SWARM_BEE_PROMPT).toContain('scope shift');
     expect(SWARM_BEE_PROMPT).toContain('completion');
@@ -859,6 +874,17 @@ describe('Swarm (Orchestrator) prompt', () => {
 });
 
 describe('Forager (Worker/Coder) prompt', () => {
+  it('targets feature learnings explicitly without implying ad-hoc context persistence', () => {
+    expect(FORAGER_BEE_PROMPT).toContain(
+      'hive_context_write({ feature: "<feature-name>", name: "learnings", content: "..." })',
+    );
+    expect(FORAGER_BEE_PROMPT).not.toContain(
+      'hive_context_write({ name: "learnings", content: "..." })',
+    );
+    expect(FORAGER_BEE_PROMPT).toContain('For ad-hoc runs, do not call `hive_context_write` unless');
+    expect(FORAGER_BEE_PROMPT).toContain('ad-hoc runs have no separate context persistence');
+  });
+
   it('requires one meaningful task commit with a subject and body', () => {
     expect(FORAGER_BEE_PROMPT).toContain('one meaningful commit per feature task');
     expect(FORAGER_BEE_PROMPT).toContain('subject, a blank line, and a descriptive body');

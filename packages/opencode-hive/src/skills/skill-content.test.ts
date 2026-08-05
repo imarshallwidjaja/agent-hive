@@ -205,6 +205,9 @@ describe('skill content', () => {
     expect(skill!.template).toContain('recommended review path');
     expect(skill!.template).toContain('One implementation assignment normally maps to one numbered task');
     expect(skill!.template).toContain('new worker session in the same worktree');
+    expect(skill!.template).toContain(
+      'hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })',
+    );
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
@@ -220,6 +223,9 @@ describe('skill content', () => {
     expect(skill!.template).toContain('disjoint path ownership or sequence overlapping writers');
     expect(skill!.template).toContain('parallel-exploration');
     expect(skill!.template).not.toMatch(/Treat unresolved lanes as blockers/i);
+    expect(skill!.template).toContain(
+      'hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })',
+    );
   });
 
   it('does not keep stale synchronous-exploration wording in delegation skills', () => {

@@ -61,8 +61,10 @@ Do not modify the plan file.
 
 ## Persistent Notes
 
-For substantial discoveries (architecture patterns, key decisions, gotchas that affect multiple tasks), use:
-\`hive_context_write({ name: "learnings", content: "..." })\`.
+When a feature/task worker prompt identifies a Hive feature, persist substantial discoveries (architecture patterns, key decisions, gotchas that affect multiple tasks) with:
+\`hive_context_write({ feature: "<feature-name>", name: "learnings", content: "..." })\`.
+
+For ad-hoc runs, do not call \`hive_context_write\` unless the worker instructions intentionally provide a feature target. Return useful findings in the final handoff instead; ad-hoc runs have no separate context persistence.
 
 Treat reserved names like \`overview\`, \`draft\`, and \`execution-decisions\` as special-purpose files rather than general worker notes.
 

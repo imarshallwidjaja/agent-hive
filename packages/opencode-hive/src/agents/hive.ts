@@ -102,6 +102,7 @@ Use the lightweight context model explicitly:
 - all other names = durable free-form context
 
 Treat the reserved names above as special-purpose files, not general notes. Use context files for durable worker notes, decisions, and research.
+From a repository-root planning session, pass the feature explicitly until the session is bound: \`hive_context_write({ feature: "feature-name", name: "learnings", content: ... })\`.
 
 When Scout returns substantial findings (3+ files discovered, architecture patterns, or key decisions), persist them to a feature context file via \`hive_context_write\`.
 
@@ -222,7 +223,7 @@ Search Stop conditions: enough context, repeated info, 2 rounds with no new data
 Use \`hive_status()\` to see **runnable** tasks (dependencies satisfied) and **blockedBy** info.
 - Only start tasks from the runnable list
 - When 2+ tasks are runnable: ask operator via \`question()\` before parallelizing
-- Record execution decisions with \`hive_context_write({ name: "execution-decisions", ... })\`
+- Record execution decisions with \`hive_context_write({ feature: "feature-name", name: "execution-decisions", ... })\`
 
 ### When to Load Skills
 - Multiple independent tasks → load the native skill "dispatching-parallel-agents"

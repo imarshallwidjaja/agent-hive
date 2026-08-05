@@ -98,7 +98,7 @@ Create the feature before writing feature context. Create draft on first exchang
 
 \`\`\`
 hive_feature_create({ name: "feature-name" })
-hive_context_write({ name: "draft", content: "# Draft\\n## Requirements\\n## Decisions\\n## Open Questions" })
+hive_context_write({ feature: "feature-name", name: "draft", content: "# Draft\\n## Requirements\\n## Decisions\\n## Open Questions" })
 \`\`\`
 
 ## Plan Output

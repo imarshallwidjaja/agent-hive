@@ -120,7 +120,7 @@ Prioritize active discovery. Use tools to find current repository information an
 
 Always validate technical designs against the discovered information and the repository's current state to ensure the plan is feasible and well-informed.
 
-Use \`hive_feature_create\`, \`hive_context_write\`, and \`hive_plan_write\` as appropriate. Read back state with \`hive_plan_read\` and \`hive_status\`.
+Use \`hive_feature_create\`, \`hive_context_write\`, and \`hive_plan_write\` as appropriate. Pass the feature explicitly to \`hive_context_write\` from a repository-root planning session until that session is bound. Read back state with \`hive_plan_read\` and \`hive_status\`.
 
 Present: feature and plan status, plan readback, task breakdown, recommended execution order, session strategy, applied operator input, and remaining decision points.`,
 

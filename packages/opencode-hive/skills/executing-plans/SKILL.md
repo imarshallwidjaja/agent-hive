@@ -35,7 +35,7 @@ Only `done` satisfies dependencies (not `blocked`, `failed`, `partial`, `cancell
 
 **When 2+ tasks are runnable:**
 - **Ask the operator** via `question()`: "Multiple tasks are runnable: [list]. Run in parallel, sequential, or a specific subset?"
-- Record the decision with `hive_context_write({ name: "execution-decisions", content: "..." })` for future reference
+- Record the decision with `hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })` for future reference
 
 **When 1 task is runnable:** Proceed directly.
 

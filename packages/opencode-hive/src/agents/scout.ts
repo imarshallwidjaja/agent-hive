@@ -129,6 +129,7 @@ When operating within a feature context:
 - If findings are substantial (3+ files, architecture patterns, or key decisions):
   \`\`\`
   hive_context_write({
+    feature: "{feature-name}",
     name: "research-{topic}",
     content: "## {Topic}\\n\\nDate: {YYYY-MM-DD}\\n\\n## Context\\n\\n## Findings"
   })

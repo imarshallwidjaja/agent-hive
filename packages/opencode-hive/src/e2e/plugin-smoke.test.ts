@@ -92,6 +92,16 @@ function createProject(worktree: string): PluginInput["project"] {
   };
 }
 
+function readGlobalSessionFeatureName(projectRoot: string, sessionID: string): string | undefined {
+  const sessionsPath = path.join(projectRoot, '.hive', 'sessions.json');
+  if (!fs.existsSync(sessionsPath)) return undefined;
+
+  const sessions = JSON.parse(fs.readFileSync(sessionsPath, 'utf-8')) as {
+    sessions: Array<{ sessionId: string; featureName?: string }>;
+  };
+  return sessions.sessions.find((session) => session.sessionId === sessionID)?.featureName;
+}
+
 function readHeadBody(targetPath: string): string {
   return execSync("git log -1 --format=%B", {
     cwd: targetPath,
@@ -114,15 +124,19 @@ Do it
 `;
 }
 
-async function createHooksForTest(testRoot: string, sessionID: string): Promise<{
+async function createHooksForTest(
+  testRoot: string,
+  sessionID: string,
+  worktree = testRoot,
+): Promise<{
   hooks: PluginHooks;
   toolContext: ToolContext;
 }> {
   const ctx: PluginInput = {
     directory: testRoot,
-    worktree: testRoot,
+    worktree,
     serverUrl: new URL("http://localhost:1"),
-    project: createProject(testRoot),
+    project: createProject(worktree),
     client: OPENCODE_CLIENT,
     $: createStubShell(),
   };
@@ -510,6 +524,39 @@ Do it
 
     expect(output).toContain("Error: Feature 'future-feature' not found");
     expect(fs.existsSync(path.join(testRoot, '.hive', 'features', 'future-feature'))).toBe(false);
+  });
+
+  it('rejects unbound root context writes instead of using the repository-active feature', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_active_feature_owner');
+    await hooks.tool!.hive_feature_create.execute({ name: 'unrelated-active-feature' }, toolContext);
+
+    const unboundSessionID = 'sess_unbound_context_write';
+    const output = await hooks.tool!.hive_context_write.execute(
+      { name: 'unsafe-notes', content: '# Must not be written' },
+      createToolContext(unboundSessionID),
+    );
+
+    expect(output).toContain('Error: No feature specified');
+    expect(output).toContain('provide feature param');
+    expect(fs.existsSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_unrelated-active-feature',
+      'context',
+      'unsafe-notes.md',
+    ))).toBe(false);
+
+    expect(readGlobalSessionFeatureName(testRoot, unboundSessionID)).toBeUndefined();
+
+    const featureJson = JSON.parse(fs.readFileSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_unrelated-active-feature',
+      'feature.json',
+    ), 'utf-8')) as { sessionId?: string };
+    expect(featureJson.sessionId).toBeUndefined();
   });
 
   it("keeps checked-in plugin.json aligned with the runtime contract", async () => {
@@ -3470,10 +3517,20 @@ Do it
     );
 
     const workerContext = createToolContext("sess_worker_ctx_bind");
-    await hooks.tool!.hive_context_write.execute(
+    const output = await hooks.tool!.hive_context_write.execute(
       { name: "notes", content: "test notes", feature: "ctx-bind-feature" },
       workerContext
     );
+
+    expect(output).toContain('Context file written');
+    expect(fs.readFileSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_ctx-bind-feature',
+      'context',
+      'notes.md',
+    ), 'utf-8')).toBe('test notes');
 
     const sessionsPath = path.join(testRoot, ".hive", "sessions.json");
     expect(fs.existsSync(sessionsPath)).toBe(true);
@@ -3483,6 +3540,282 @@ Do it
     );
     expect(workerSession).toBeDefined();
     expect(workerSession.featureName).toBe("ctx-bind-feature");
+  });
+
+  it('uses a root session binding before an unrelated repository-active feature', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_context_binding_setup');
+    const boundContext = createToolContext('sess_bound_context_write');
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: 'bound-context-feature' },
+      createToolContext('sess_bound_feature_owner'),
+    );
+    await hooks.tool!.hive_context_write.execute(
+      { feature: 'bound-context-feature', name: 'initial-notes', content: 'initial' },
+      boundContext,
+    );
+    await hooks.tool!.hive_feature_create.execute(
+      { name: 'other-active-feature' },
+      createToolContext('sess_other_feature_owner'),
+    );
+
+    const output = await hooks.tool!.hive_context_write.execute(
+      { name: 'bound-notes', content: 'bound content' },
+      boundContext,
+    );
+
+    expect(output).toContain(path.join('01_bound-context-feature', 'context', 'bound-notes.md'));
+    expect(fs.readFileSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_bound-context-feature',
+      'context',
+      'bound-notes.md',
+    ), 'utf-8')).toBe('bound content');
+    expect(fs.existsSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '02_other-active-feature',
+      'context',
+      'bound-notes.md',
+    ))).toBe(false);
+  });
+
+  it('treats an ad-hoc worktree namespace as unscoped for context writes', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_adhoc_context_setup');
+    await hooks.tool!.hive_feature_create.execute(
+      { name: 'adhoc-bound-feature' },
+      createToolContext('sess_adhoc_bound_owner'),
+    );
+    await hooks.tool!.hive_feature_create.execute(
+      { name: 'unrelated-active-feature' },
+      createToolContext('sess_adhoc_active_owner'),
+    );
+
+    const adhocWorktreePath = path.join(
+      testRoot,
+      '.hive',
+      '.worktrees',
+      'adhoc',
+      'context-target-run',
+    );
+    fs.mkdirSync(adhocWorktreePath, { recursive: true });
+    const { hooks: adhocHooks } = await createHooksForTest(
+      testRoot,
+      'sess_adhoc_bound_write',
+      adhocWorktreePath,
+    );
+    const boundContext = createToolContext('sess_adhoc_bound_write');
+
+    const explicitOutput = await adhocHooks.tool!.hive_context_write.execute(
+      { feature: 'adhoc-bound-feature', name: 'initial-notes', content: 'initial' },
+      boundContext,
+    );
+    const omittedOutput = await adhocHooks.tool!.hive_context_write.execute(
+      { name: 'follow-up-notes', content: 'follow-up' },
+      boundContext,
+    );
+    const unboundOutput = await adhocHooks.tool!.hive_context_write.execute(
+      { name: 'unsafe-notes', content: 'must not write' },
+      createToolContext('sess_adhoc_unbound_write'),
+    );
+
+    expect(explicitOutput).toContain(path.join('01_adhoc-bound-feature', 'context', 'initial-notes.md'));
+    expect(omittedOutput).toContain(path.join('01_adhoc-bound-feature', 'context', 'follow-up-notes.md'));
+    expect(omittedOutput).not.toContain("Feature 'adhoc'");
+    expect(fs.readFileSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_adhoc-bound-feature',
+      'context',
+      'follow-up-notes.md',
+    ), 'utf-8')).toBe('follow-up');
+
+    expect(unboundOutput).toContain('Error: No feature specified');
+    expect(unboundOutput).not.toContain("Feature 'adhoc'");
+    expect(fs.existsSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '02_unrelated-active-feature',
+      'context',
+      'unsafe-notes.md',
+    ))).toBe(false);
+  });
+
+  it('uses a detected feature worktree and binds the writing session', async () => {
+    const { worktreePath } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_detected_worktree_setup',
+      'detected-context-feature',
+      'Detected Context Feature',
+      'Yes, this creates a feature worktree so context targeting can be verified from its detected path.',
+    );
+    const sessionID = 'sess_detected_context_write';
+    const { hooks: worktreeHooks, toolContext: detectedContext } = await createHooksForTest(
+      testRoot,
+      sessionID,
+      worktreePath,
+    );
+
+    const output = await worktreeHooks.tool!.hive_context_write.execute(
+      { name: 'worktree-notes', content: 'detected content' },
+      detectedContext,
+    );
+
+    expect(output).toContain(path.join('01_detected-context-feature', 'context', 'worktree-notes.md'));
+    expect(fs.readFileSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_detected-context-feature',
+      'context',
+      'worktree-notes.md',
+    ), 'utf-8')).toBe('detected content');
+    expect(readGlobalSessionFeatureName(testRoot, sessionID)).toBe('detected-context-feature');
+  });
+
+  it('explicit feature overrides a different detected worktree feature', async () => {
+    const { worktreePath } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_explicit_override_setup',
+      'detected-override-feature',
+      'Detected Override Feature',
+      'Yes, this creates a detected worktree feature so an explicit feature param can override it.',
+    );
+    const { hooks } = await createHooksForTest(testRoot, 'sess_explicit_target_owner');
+    await hooks.tool!.hive_feature_create.execute(
+      { name: 'explicit-target-feature' },
+      createToolContext('sess_explicit_target_owner'),
+    );
+
+    const sessionID = 'sess_explicit_override_write';
+    const { hooks: worktreeHooks, toolContext: overrideContext } = await createHooksForTest(
+      testRoot,
+      sessionID,
+      worktreePath,
+    );
+
+    const output = await worktreeHooks.tool!.hive_context_write.execute(
+      {
+        feature: 'explicit-target-feature',
+        name: 'override-notes',
+        content: 'explicit wins',
+      },
+      overrideContext,
+    );
+
+    expect(output).toContain(path.join('02_explicit-target-feature', 'context', 'override-notes.md'));
+    expect(fs.readFileSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '02_explicit-target-feature',
+      'context',
+      'override-notes.md',
+    ), 'utf-8')).toBe('explicit wins');
+    expect(fs.existsSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_detected-override-feature',
+      'context',
+      'override-notes.md',
+    ))).toBe(false);
+
+    expect(readGlobalSessionFeatureName(testRoot, sessionID)).toBe('explicit-target-feature');
+  });
+
+  it('fails a missing detected feature without falling back to a valid session-bound feature', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_missing_detected_setup');
+    const boundContext = createToolContext('sess_missing_detected_write');
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: 'session-bound-feature' },
+      createToolContext('sess_session_bound_owner'),
+    );
+    await hooks.tool!.hive_context_write.execute(
+      { feature: 'session-bound-feature', name: 'bound-seed', content: 'seed' },
+      boundContext,
+    );
+
+    const staleWorktreePath = path.join(
+      testRoot,
+      '.hive',
+      '.worktrees',
+      'missing-detected-feature',
+      FIRST_TASK,
+    );
+    fs.mkdirSync(staleWorktreePath, { recursive: true });
+
+    const { hooks: worktreeHooks } = await createHooksForTest(
+      testRoot,
+      boundContext.sessionID,
+      staleWorktreePath,
+    );
+
+    const output = await worktreeHooks.tool!.hive_context_write.execute(
+      { name: 'should-not-fallback', content: 'must not write' },
+      boundContext,
+    );
+
+    expect(output).toContain("Error: Feature 'missing-detected-feature' not found");
+    expect(fs.existsSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_session-bound-feature',
+      'context',
+      'should-not-fallback.md',
+    ))).toBe(false);
+    expect(fs.existsSync(path.join(
+      testRoot,
+      '.hive',
+      'features',
+      'missing-detected-feature',
+    ))).toBe(false);
+
+    expect(readGlobalSessionFeatureName(testRoot, boundContext.sessionID)).toBe('session-bound-feature');
+  });
+
+  it('does not bind the session when context write fails', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_write_fail_owner');
+    await hooks.tool!.hive_feature_create.execute(
+      { name: 'write-fail-feature' },
+      createToolContext('sess_write_fail_owner'),
+    );
+
+    const featureDir = path.join(testRoot, '.hive', 'features', '01_write-fail-feature');
+    const contextPath = path.join(featureDir, 'context');
+    fs.writeFileSync(contextPath, 'not-a-directory');
+
+    const sessionID = 'sess_write_fail_unbound';
+    await expect(
+      hooks.tool!.hive_context_write.execute(
+        { feature: 'write-fail-feature', name: 'failed-notes', content: 'should not persist' },
+        createToolContext(sessionID),
+      ),
+    ).rejects.toThrow();
+
+    expect(fs.existsSync(path.join(featureDir, 'context', 'failed-notes.md'))).toBe(false);
+
+    expect(readGlobalSessionFeatureName(testRoot, sessionID)).toBeUndefined();
+
+    const featureSessionsPath = path.join(featureDir, 'sessions.json');
+    if (fs.existsSync(featureSessionsPath)) {
+      const featureSessions = JSON.parse(fs.readFileSync(featureSessionsPath, 'utf-8')) as {
+        sessions: Array<{ sessionId: string; featureName?: string }>;
+      };
+      expect(featureSessions.sessions.some((session) => session.sessionId === sessionID)).toBe(false);
+    }
+
+    const featureJson = JSON.parse(fs.readFileSync(path.join(featureDir, 'feature.json'), 'utf-8')) as {
+      sessionId?: string;
+    };
+    expect(featureJson.sessionId).not.toBe(sessionID);
   });
 
   it("hive_worktree_commit binds featureName, taskFolder, and workerPromptPath to global session", async () => {
