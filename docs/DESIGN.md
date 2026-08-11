@@ -191,7 +191,7 @@ Agents edit only the task workspace. `hive_worktree_commit` collects the task di
 
 When `.hive/repositories.json` defines project repositories, tasks with a `Repos:` annotation use composite workspaces. Each declared repo gets its own git worktree under the composite root.
 
-**Project-local manifest example:**
+**Project-local manifest shape:**
 
 ```json
 {

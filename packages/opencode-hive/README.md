@@ -5,9 +5,9 @@
 
 OpenCode workflow plugin for plan-first development: feature plans, approval gates, isolated git worktrees, durable `.hive/` state, and optional review commands.
 
-Requires **OpenCode >= 1.14.48** and a project with either a git repository root or a valid `<project>/.hive/repositories.json` manifest whose entries point to git repositories for worktree-based execution.
+Requires **OpenCode >= 1.14.48**. Open your project and ask Hive to work.
 
-Team onboarding: [Getting Started](../../docs/GETTING-STARTED.md) · day-to-day ops: [Operator Guide](../../docs/OPERATOR-GUIDE.md) · monorepo overview: [root README](../../README.md).
+Human onboarding starts in the [root README](../../README.md). This README is the detailed npm and operator reference.
 
 ## Install
 
@@ -24,7 +24,7 @@ Restart OpenCode after changing plugins.
 
 ### Existing OpenCode configurations
 
-If you already have an OpenCode config, append `oc-arkive@latest` to its existing `plugin` array. Keep your surrounding settings and existing plugin entries, and preserve unrelated settings in the source file. The plugin still intentionally mutates the OpenCode fields listed below. This section is the package README's full compatibility reference; the root README and Getting Started link here instead of repeating these mutations.
+If you already have an OpenCode config, append `oc-arkive@latest` to its existing `plugin` array. Keep your surrounding settings and existing plugin entries, and preserve unrelated settings in the source file. The plugin still intentionally mutates the OpenCode fields listed below. This section is the full compatibility reference; the root README points here instead of repeating these mutations.
 
 The config hook intentionally mutates these OpenCode fields:
 
@@ -53,7 +53,7 @@ Default mode is unified (`hive-master`). Set `"agentMode": "dedicated"` for sepa
 7. **Merge** - `hive_merge` integrates completed task branches
 8. **Complete feature** - `hive_feature_complete` when done
 
-Ad-hoc non-feature work uses the ad-hoc orchestration tools (`hive_adhoc_*`) instead of the feature DAG.
+Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Ad-hoc work uses `hive_adhoc_*`; `hive-master` can coordinate it in unified mode, while dedicated mode uses `hive-builder`. `architect-planner` is planning-only and does not route ad-hoc work.
 
 ### Operator Commands
 
@@ -92,7 +92,7 @@ Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do n
 
 The inert transport requires `@opencode-ai/plugin >=1.14.48`, which exposes OpenCode's `command.execute.before` hook. Earlier runtimes are not supported because they expand command templates before any safe plugin interception point.
 
-A scope/lead researcher constructs the frozen manifest, causal scope, and content-sensitive fingerprint before deep review. Scope contract overrides inherited guidance: all lanes may call universal metadata tools `hive_repositories_status`, `hive_plan_read`, and `hive_status`; the scope lane additionally retains `hive_git_snapshot` and `hive_review_workspace_create`; for legacy single-root omit `repositoryIds` entirely from snapshot/create; for composite use manifest IDs consistently. The scope lane returns `runId`/token without claim/inspect/cleanup. It uses `hive_repositories_status`, the active composite `workspace.json`, `hive_git_snapshot`, and `hive_review_workspace_create` with the same structured scope. After Stage A returns `runId` and `ownershipToken`, the private primary calls `hive_review_workspace_claim` for its session before dispatching deep review lanes. This claim owns inspection, cleanup, and session-deletion cleanup. In a composite workspace, omitted repository IDs select every manifest repository; an explicit selection reports exclusions. A Git root with an unrelated or invalid workspace.json remains single-root; a Git root with a valid Hive composite manifest is rejected as ambiguous.
+A scope/lead researcher constructs the frozen manifest, causal scope, and content-sensitive fingerprint before deep review. Scope contract overrides inherited guidance: all lanes may call universal metadata tools `hive_repositories_status`, `hive_plan_read`, and `hive_status`; the scope lane also retains `hive_git_snapshot` and `hive_review_workspace_create`; for legacy single-root omit `repositoryIds` entirely from snapshot/create; for composite use manifest IDs consistently. The scope lane returns `runId`/token without claim/inspect/cleanup. It uses `hive_repositories_status`, the active composite `workspace.json`, `hive_git_snapshot`, and `hive_review_workspace_create` with the same structured scope. After Stage A returns `runId` and `ownershipToken`, the private primary calls `hive_review_workspace_claim` for its session before dispatching deep review lanes. This claim owns inspection, cleanup, and session-deletion cleanup. In a composite workspace, omitted repository IDs select every manifest repository; an explicit selection reports exclusions. A Git root with an unrelated or invalid workspace.json remains single-root; a Git root with a valid Hive composite manifest is rejected as ambiguous.
 
 Each command run creates one shared disposable workspace at `.hive/.worktrees/review/<runId>`. Single repositories use a detached Git worktree. Composite review uses `repos/<repoId>` plus a review-mode workspace.json. Dirty review captures final file bytes, modes, symlinks, additions, deletions, and renames into the detached workspace; it does not replay staged and unstaged patches. Committed refs/ranges materialize the resolved target without overlaying a different live HEAD. The source fingerprint is checked before and after materialization. One retry is allowed; a second mismatch is stale and returns NEEDS_DISCUSSION. Workspace operations use exclusive token-and-PID locks: live locks are never stolen, and a later process can recover only a dead holder. A sealed claimed run is retained while its owner PID is alive; a dead owner is swept. An unclaimed sealed run is retained for its creator PID during a bounded handoff window, then swept when the creator dies or the window expires. Recovery validates the recorded source Git root/common directory before removing a registered worktree. Metadata-less state is preserved and reported. Live drift is non-attributable and generic rollback is not used.
 
@@ -236,7 +236,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 ### Local skill and model use cases
 
 - **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then load it with OpenCode's native `skill` tool, reference it in agent instructions, or list its frontmatter `name` in `autoLoadSkills`. User file skills are discovered through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, and `skills.urls` mechanisms.
-- **Runtime configuration:** set global agent models, variants, sandbox policy, custom agents, task-trace summarizer settings, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. `taskTraceSummarizer` accepts optional nonempty `model`/`variant` strings and `temperature` from 0 through 2; omitted model/variant use OpenCode defaults and temperature defaults to 0. Repository topology lives in `<project>/.hive/repositories.json`; legacy global topology fields are migration-only.
+- **Runtime configuration:** set global agent models, variants, sandbox policy, custom agents, task-trace summarizer settings, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. `taskTraceSummarizer` accepts optional nonempty `model`/`variant` strings and `temperature` from 0 through 2; omitted model/variant use OpenCode defaults and temperature defaults to 0.
 
 #### Canonical Delegation Threshold
 
@@ -406,7 +406,9 @@ Description.
 
 Hive reads runtime configuration only from `~/.config/opencode/agent_hive.json`. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files are ignored, including malformed files. Global config failures still produce a runtime warning and fall back to defaults.
 
-All runtime policy, agent definitions, and auto-load skill settings use the global file. Repository topology is project-local in `<project>/.hive/repositories.json`; entry paths are relative to the canonical project root and cannot escape it. Legacy global `repositoryRoot` and `repositories` fields remain accepted only as migration input for `hive_repositories_update`.
+All runtime policy, agent definitions, and auto-load skill settings use the global file.
+
+`hook_cadence` currently has no useful tuning surface: production gates only the safety-critical `tool.execute.before` hook, which is forced to cadence `1`. The schema remains the machine-readable reference for this field.
 
 ### Council config
 
@@ -449,9 +451,11 @@ Partial global overrides merge with the built-in defaults. Declaring a group rep
 
 Council resolution preserves configured order, deduplicates by first occurrence, filters unusable seats before applying the cap, and uses `group.maxMembers ?? council.maxMembers ?? 4`. It skips unavailable agents, explicitly excluded agents, starter template custom agents, mutable-base agents, and duplicates with warnings. If a requested group has no usable seats, `/council` falls back to `council.defaultGroup`; if the fallback also has no usable seats, the command stops with an error instead of running an unsafe council.
 
-### Project-local repository manifest example
+### Project-local repository manifest
 
-Add the manifest to `<project>/.hive/repositories.json`:
+Optional Hive-managed project state for multi-repo topology. Single-repository projects need no manifest. Do not hand-author this file for normal onboarding; ask Hive to inspect, discover, and update topology with `hive_repositories_status`, `hive_repositories_discover`, and `hive_repositories_update`.
+
+Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 
 ```json
 {
@@ -693,6 +697,13 @@ Override models for specific agents:
   }
 }
 ```
+
+## Focused references
+
+- [Hive Tools](docs/HIVE-TOOLS.md) for tool inventory and contracts
+- [Data Model](docs/DATA-MODEL.md) for `.hive/` state and task records
+- [Operator Guide](../../docs/OPERATOR-GUIDE.md) for the human workflow and review choices
+- [Design](../../docs/DESIGN.md) for architecture and source-of-truth rules
 
 ## Pair with VS Code
 

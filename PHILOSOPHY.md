@@ -34,14 +34,8 @@ Aligned with the project agent guidelines:
 | Researchers and reviewers | Read-only or bounded review seats; they do not own the feature lifecycle |
 | `.hive/` | Shared durable state: plans, tasks, reports, session recovery metadata |
 
-Restrained analogy: a hive works when roles are clear, cells are isolated, and the record of work outlives any single worker. That is the useful part. Extended animal-role branding is not part of the product vocabulary.
+The name describes coordination. It does not define agent roles.
 
-## What stays out of philosophy
+## References
 
-Tool catalogs, command matrices, and config field lists change with releases. Use:
-
-- [Operator Guide](docs/OPERATOR-GUIDE.md) for workflows
-- [Design](docs/DESIGN.md) for architecture and ownership rules
-- [Hive Tools](packages/opencode-hive/docs/HIVE-TOOLS.md) for tool contracts
-- [Data Model](packages/opencode-hive/docs/DATA-MODEL.md) for on-disk layout
-- [Plugin README](packages/opencode-hive/README.md) for install and reference
+Use the [root README documentation section](README.md#documentation) for current documentation ownership.

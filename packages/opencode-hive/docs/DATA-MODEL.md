@@ -4,7 +4,7 @@
 
 ```
 .hive/
-├── repositories.json          # Optional project-local multi-repo manifest
+├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
 ├── sessions.json              # Optional top-level session index (when used)
 ├── background-jobs.json       # Background board state (tool-owned, env-gated)
 └── features/
@@ -36,6 +36,8 @@
 ```
 
 Runtime Agent Hive configuration is **not** stored under `.hive/`. It lives only at `~/.config/opencode/agent_hive.json`. Project-local `agent_hive.json` / `agent-hive.json` files are ignored.
+
+Single-repo projects use the git root directly; multi-repo topology, when needed, is stored in this manifest.
 
 ## Prompt Files
 

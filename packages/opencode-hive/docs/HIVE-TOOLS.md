@@ -17,6 +17,7 @@
 
 #### Repository manifest notes
 
+- Single-repo projects use the normal git-root path; these tools manage explicit multi-repo topology when needed.
 - Agents should add only repositories they have decided to work in; discovery is not bulk registration.
 - Discovery is bounded to the project root, depth 4, and 50 candidates, and skips `.git`, `.hive`, `.opencode`, `node_modules`, build outputs, coverage, and temp folders.
 - Updates are add-only and accept project-relative paths only. If any requested repo is invalid, the manifest is not written.
