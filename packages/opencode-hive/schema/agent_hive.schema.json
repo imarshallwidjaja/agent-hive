@@ -78,16 +78,14 @@
     },
     "hook_cadence": {
       "type": "object",
-      "description": "Global hook execution cadence configuration. Key = hook name, Value = number of turns between invocations (1 = every turn, 3 = every 3rd turn). All hooks default to 1.",
+      "description": "Global hook cadence configuration. Production currently gates only tool.execute.before, which is safety-critical and forced to cadence 1. Other hook keys have no runtime effect.",
       "additionalProperties": {
         "type": "integer",
         "minimum": 1,
-        "description": "Number of turns between hook invocations"
+        "description": "Number of invocations between gated hook executions; ignored for hooks that do not invoke the production cadence gate"
       },
       "examples": [
         {
-          "experimental.chat.system.transform": 3,
-          "chat.message": 1,
           "tool.execute.before": 1
         }
       ]

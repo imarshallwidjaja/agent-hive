@@ -1,274 +1,98 @@
-# Agent Hive
+# Agent Hive (`oc-arkive`)
 
-A plan-first development workflow for OpenCode. Features, tasks, and review gates live in `.hive/` alongside your code.
+OpenCode workflow plugin for plan-first development with isolated workers, durable `.hive/` state, and explicit human approval gates.
 
-Agent Hive is a workflow layer that sits on top of your AI coding tool. It imposes just enough structure to make multi-agent, multi-step work traceable and recoverable — without taking ownership of your editor, your model, or your coding style.
+If you already run OpenCode, install the plugin, restart, and ask for a feature. The shortest path is below. Deeper operator detail lives in the docs linked at the end.
 
-This fork publishes the OpenCode runtime as `oc-arkive` and ships the VS Code review companion as a release VSIX named `vscode-arkive`.
+## Requirements
 
-[![npm](https://img.shields.io/npm/v/oc-arkive.svg?label=oc-arkive)](https://www.npmjs.com/package/oc-arkive)
-[![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](LICENSE)
+- [OpenCode](https://opencode.ai) `>= 1.14.48` (peer dependency of `oc-arkive`)
+- A git repository root, or a valid `<project>/.hive/repositories.json` manifest whose entries point to git repositories (task and ad-hoc worktrees need one of these)
+- Optional: [VS Code](https://code.visualstudio.com/) for sidebar plan review via `vscode-arkive`
 
----
+## Quick start
 
-## Demo
-
-https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
-
----
-
-## Why Hive
-
-Raw agentic coding has a consistent failure mode: agents spray changes across a codebase, sessions lose context, parallel workers collide, and nobody can reconstruct what happened. Hive fixes this with a small, strict loop:
-
-```
-You describe the work
-    ↓
-Hive discovers, asks, builds plan.md
-    ↓
-You review and approve   ← human gate
-    ↓
-Workers execute tasks in isolated git worktrees (batched parallel)
-    ↓
-Results merge. plan/spec/report live in .hive/ forever.
-```
-
-| Without Hive | With Hive |
-|---|---|
-| Agent touches 40 files, half break | Tasks run in isolated worktrees — discard any worker |
-| New session starts from zero | Feature state persists in `.hive/features/<name>/` |
-| Parallel agents collide, duplicate | Explicit batches with dependency ordering |
-| "What happened here?" | plan.md, spec.md, report.md per task |
-| Scope creep mid-execution | Human approval gate before any code change |
-
----
-
-## OpenCode
-
-OpenCode is Hive's supported runtime. It integrates with OpenCode's session, plugin, and compaction systems natively.
-
-### Install
-
-Add the plugin to `opencode.json` — OpenCode handles npm resolution automatically; you do not need to `npm install` yourself.
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["oc-arkive@latest"]
-}
-```
-
-### Optional config - `~/.config/opencode/agent_hive.json`
-
-Agent Hive reads runtime configuration only from this global file. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files are ignored.
-
-```json
-{
-  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
-  "agentMode": "unified",
-  "agents": {
-    "hive-master":    { "model": "anthropic/claude-sonnet-4-20250514", "temperature": 0.5 },
-    "forager-worker": { "model": "anthropic/claude-sonnet-4-20250514", "temperature": 0.3 }
-  }
-}
-```
-
-### Start
-
-Chat with OpenCode. Ask it to "create a feature for user authentication" and Hive activates automatically.
-
-### What you get
-
-- **Runtime agents** - Unified mode: `hive-master` handles planning + orchestration. Dedicated mode uses `architect-planner` + `swarm-orchestrator`; specialist agents handle research, implementation, review, approach advice, helper recovery, ad-hoc execution, and simplicity review. Background-first orchestration adds no new agents; custom derived agents keep their configured base-agent inheritance.
-- **Hive tools** - Full lifecycle: feature, plan, tasks, worktrees, ad-hoc worktrees, background status/reconcile/cancel, context, merge, and status, plus runtime-gated private review tools.
-- **Read-only vulnerability review** - `/vuln-review` resolves free text and optional fixed scope flags, asks at most one clarification question, then materializes a frozen disposable workspace only after the bounded scope is accepted. It leaves remediation to a separately authorized workflow.
-- **15 skills** — Loaded via OpenCode's native `skill` tool.
-- **Compaction recovery** — OpenCode sessions compact on long runs; Hive stores durable session metadata in `.hive/sessions.json` so agents re-anchor with the correct role after compaction.
-- **Optional research MCPs** — Exa web search, Context7 docs, grep.app, ast-grep. Disable individually via `disableMcps`; `/vuln-review` reports an unavailable approved MCP as a coverage gap rather than adding a scanner dependency.
-
-See [`packages/opencode-hive/README.md`](packages/opencode-hive/README.md) for per-agent model routing, derived subagents, and DCP safety.
-
----
-
-## VS Code
-
-The VS Code extension is a **companion**, not a runtime. It shows you the state of `.hive/` that the OpenCode CLI runtime is writing, and lets you review plans and add inline comments without leaving the editor.
-
-### Install
-
-```bash
-code --install-extension ./vscode-arkive.vsix
-```
-
-Download `vscode-arkive.vsix` from the GitHub Release first.
-
-### What you get
-
-- **Hive sidebar** (activity-bar view) — features tree, per-task status, inline comments on `plan.md` and `overview.md`.
-- **Background Jobs and Tracked Repositories views** - viewer-only state for `.hive/background-jobs.json` and `.hive/repositories.json`.
-- **Plan and overview review** — opens docs from the sidebar, lets you add/resolve inline comments, Done Review button marks the review as complete.
-- **Task detail** — open `spec.md` (what the worker was told) and `report.md` (what it did).
-- **File watching** — tracks changes to `.hive/` and refreshes the sidebar in real time.
-
-### Typical setup
-
-Run OpenCode in a terminal pane; keep VS Code open for the Hive sidebar. Plan review happens in VS Code; approval and execution happen in the OpenCode CLI. The extension watches `.hive/` and reflects changes in real time.
-
----
-
-## The Workflow
-
-Every feature runs through the same four phases.
-
-### 1. Discovery + Plan
-
-Hive asks questions, reads the codebase, checks existing patterns, then writes `.hive/features/<name>/plan.md`:
-
-```markdown
-# User Authentication
-
-## Overview
-Add JWT-based auth with login, signup, protected routes.
-
-## Tasks
-
-### 1. Extract auth logic to service
-Move scattered auth code to AuthService.
-
-### 2. Add token refresh mechanism
-Implement refresh token rotation.
-
-### 3. Update API routes
-Convert all routes to use AuthService.
-
-## Final Verification
-
-- Run the full suite after the task branches are merged.
-```
-
-Modern plans sync numbered tasks only from `## Tasks`. Put pure final verification in `## Final Verification` so it stays outside the task graph unless it needs a worker to write tracked artifacts.
-
-### 2. Human Approval
-
-Nothing executes until you approve in the chat or by calling `hive_plan_approve`. VS Code is for review comments, not approval or execution. The human owns the *what*. The agent owns the *how*.
-
-### 3. Batched Parallel Execution
-
-```
-Orchestrator
-├── Batch 1 (parallel):
-│   ├── Forager A → worktree-a → commit
-│   ├── Forager B → worktree-b → commit
-│   └── Forager C → worktree-c → commit
-│       ↓ merge + full test suite
-└── Batch 2 (parallel):
-    ├── Forager D (uses A+B+C results)
-    └── Forager E
-        ↓ merge + full test suite
-```
-
-Independent tasks run concurrently. Dependent tasks wait. Each worker runs in its own worktree, verifies its own work, and commits. The orchestrator uses `hive_status` to inspect task/worktree-aware merge eligibility, merges batch-by-batch, and runs the full suite after each merge.
-
-Each native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal can include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. Returned task IDs are observe-only handles for status, reconciliation, cancellation, and direct-child trace inspection, never inputs to `task()`. Request `hive_task_trace({ task_id, recovery: true })` for a terminal semantic handoff; active or uncertain children return recovery unavailable without model calls. Recovery context belongs in a NEW task without `task_id`. A blocked feature continuation starts a new worker session in the same worktree; failed or retry work uses a fresh worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
-
-Deterministic `hive_task_trace` v2 output remains the compact complete forensic report over surviving source. Terminal `recovery: true` instead returns a materially smaller semantic projection with coverage-gated phases, deterministic errors/files, a labelled untrusted child self-report, and a runtime-safe next action. Generated semantics may restate transient plaintext reasoning and are always untrusted; `source_steps` describe context coverage, not evidence or proof. Partial, fallback, errored, or compacted recovery forces inspection and never accepts, merges, retries, resumes, or auto-runs work. Both modes report exact bytes against an advisory soft target without truncation.
-
-When OpenCode's background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents use background-first scheduler mode for independent work that can run while useful foreground work continues. Dependent work stays on the blocking path. Background board state is managed through `hive_background_status`, reconcile, and cancel tools; merge readiness still comes from `hive_status`. See `packages/opencode-hive/README.md` and `packages/opencode-hive/docs/HIVE-TOOLS.md` for the full protocol.
-
-### 4. Audit Trail
-
-```
-.hive/features/01_user-auth/
-├── plan.md              # the approved contract
-├── tasks.json           # task state
-├── context/
-│   └── overview.md      # human-facing branch summary
-└── tasks/
-    ├── 01-extract-auth-logic/
-    │   ├── spec.md      # what the worker was told
-    │   └── report.md    # what it did
-    └── 02-add-token-refresh/
-        ├── spec.md
-        └── report.md
-```
-
----
-
-## Philosophy
-
-Hive is built on nine principles. They explain why the workflow is shaped the way it is.
-
-**P1 — Context Persists.** `.hive/features/` is durable memory. Plan, tasks, context, reports survive session end, compaction, and restarts.
-
-**P2 — Plan → Approve → Execute.** No code changes before a human approves the plan. Trust is established, not assumed.
-
-**P3 — Human Shapes, Agent Builds.** The human owns *what* and *why*. The agent owns *how*. Scope is fixed at approval.
-
-**P4 — Good Enough Wins.** Workers do best-effort verification at task level; the full suite runs at batch level. No perfectionism spirals.
-
-**P5 — Batched Parallelism.** Independent tasks run in parallel inside a batch. Batches run sequentially so context flows forward.
-
-**P6 — Tests Define Done.** A batch is done when the suite passes, not when a worker says so.
-
-**P7 — Iron Laws + Hard Gates.** Constraints are enforced by tools, not by prompts. Modern plans parse task work from `## Tasks`; final verification stays separate unless it needs tracked artifacts. A worker that commits incomplete work gets rejected.
-
-**P8 — Cross-Model Prompts.** Agent instructions work across model families. The workflow design does not depend on any one model's quirks.
-
-**P9 — Deterministic Contracts Beat Soft Memory.** What a version ships is defined by the checked-in artifacts all agreeing on a version. What a feature did is defined by `plan.md`, `spec.md`, `report.md` — not by what anyone remembers.
-
-See [PHILOSOPHY.md](PHILOSOPHY.md) for the full evolution log.
-
----
-
-## Skills
-
-| Skill | When the orchestrator loads it |
-|---|---|
-| `writing-plans` | Creating or revising a feature plan |
-| `executing-plans` | Running a batch execution pass |
-| `dispatching-parallel-agents` | Spawning multiple concurrent workers |
-| `parallel-exploration` | Multi-domain research |
-| `systematic-debugging` | Diagnosing a failing test or regression |
-| `test-driven-development` | Implementing new behaviour with tests |
-| `verification` | Checking work before declaring done |
-| `code-reviewer` | Deprecated compatibility wrapper; use the `code-reviewer` subagent for implementation review |
-| `brainstorming` | Exploring options before committing |
-| `docker-mastery` | Docker / docker-compose / container debugging |
-| `agents-md-mastery` | Reviewing agent instruction files |
-
----
-
-## Troubleshooting
-
-**Worker appears stuck.** Call `hive_status({ feature })` first. Use `continueFrom: 'blocked'` only when status confirms `blocked` — not `pending` or `in_progress`.
-
-**Session resumed without context.** Compaction recovery should re-inject. If not, call `hive_status` explicitly.
-
-**OpenCode with DCP.** Protect Hive tools from pruning:
+1. Append `oc-arkive@latest` to the existing `plugin` array in your OpenCode config (`opencode.json` or `opencode.jsonc`). Keep your existing plugin entries, preserve unrelated settings, and retain the surrounding config. This JSONC fragment uses placeholders:
 
 ```jsonc
 {
-  "tools": {
-    "settings": {
-      "protectedTools": ["hive_status", "hive_worktree_start", "hive_worktree_create", "hive_worktree_commit", "hive_worktree_discard", "question"]
-    }
-  }
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "existing-plugin@version", // placeholder: retain your current plugin entry
+    "oc-arkive@latest"
+  ],
+  "model": "provider/model" // placeholder: retain your existing setting
 }
 ```
 
----
+For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is sufficient.
+
+2. Restart OpenCode so it loads the plugin.
+3. Open a project with a git repository root or valid repository manifest and ask for a feature in plain language, or use `/hive-plan`.
+4. Review the plan (editor comments or chat). Approve when ready (`/approve-sync-plan` or ask the agent to approve and sync).
+5. Start execution (`/start-execution` or ask the agent to run the approved plan). Workers implement in isolated git worktrees.
+6. Verify results, then let the orchestrator merge completed task branches.
+
+Built-in research MCPs (web search, Context7, grep.app, ast-grep) load with the plugin. Disable any of them with `disableMcps` in `~/.config/opencode/agent_hive.json`. Set `EXA_API_KEY` if you want Exa web search.
+For existing-config compatibility details, see the [plugin compatibility note](packages/opencode-hive/README.md#existing-opencode-configurations).
+
+Runtime config is global only: `~/.config/opencode/agent_hive.json`. Project-local `agent_hive.json` / `agent-hive.json` files are ignored. Repository topology for multi-repo projects lives in `<project>/.hive/repositories.json`.
+
+Default agent mode is **unified** (`hive-master` plans and orchestrates). Set `"agentMode": "dedicated"` for separate planner (`architect-planner`) and orchestrator (`swarm-orchestrator`) seats.
+
+## Capability map
+
+Happy path first. Everything below the line is optional or advanced.
+
+**Core**
+
+- Feature plan, approval, task sync, isolated task worktrees, merge, status
+- Durable feature state under `.hive/features/<name>/`
+- Unified or dedicated agent modes
+- 29 standard Hive tools plus 6 runtime-gated private review tools
+- 16 bundled skills loaded through OpenCode's native `skill` tool
+- Research, worker, reviewer, helper recovery, ad-hoc orchestration, and simplicity review
+- Built-in research MCPs; per-MCP disable via `disableMcps`
+
+**Common next steps**
+
+- Ad-hoc orchestration outside a feature (`hive_adhoc_*`)
+- Optional VS Code companion for sidebar status and plan/overview comments
+- Council commands (`/council-directive`, `/council`) for read-only multi-seat advice
+- `/dash-review` for frozen disposable implementation review
+- `/vuln-review` for authorized, read-only static vulnerability review of a frozen scope
+
+**Advanced / optional**
+
+- Background job board (`hive_background_status` / reconcile / cancel) when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set
+- Repository manifests and composite multi-repo workspaces
+- Task trace and terminal recovery inspection (`hive_task_trace`, `hive_task_trace_content`)
+- Docker sandbox for worker shell commands
+- Custom derived subagents, per-agent models, council group overrides
+- Compaction recovery via durable `.hive/sessions.json` metadata
 
 ## Packages
 
-| Package | Registry | Description |
-|---|---|---|
-| [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin — full Hive runtime, tools, agents, skills, and background board support |
-| `vscode-arkive` | GitHub Release VSIX | Sidebar, plan review, file watcher |
+| Package | Distribution | Role |
+|---------|--------------|------|
+| [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin: agents, tools, skills, MCPs, commands |
+| `vscode-arkive` | GitHub Release VSIX | Sidebar, plan/overview review, background job viewer |
 
----
+## Documentation
+
+| Doc | Audience |
+|-----|----------|
+| [Getting Started](docs/GETTING-STARTED.md) | Teammates with OpenCode already configured |
+| [Operator Guide](docs/OPERATOR-GUIDE.md) | Day-to-day feature, ad-hoc, review, and config operations |
+| [Philosophy](PHILOSOPHY.md) | Why the workflow is shaped this way |
+| [Design](docs/DESIGN.md) | Internal architecture and source-of-truth rules |
+| [Plugin README](packages/opencode-hive/README.md) | npm install, commands, tools, config reference |
+| [Hive Tools](packages/opencode-hive/docs/HIVE-TOOLS.md) | Full tool inventory and contracts |
+| [Data Model](packages/opencode-hive/docs/DATA-MODEL.md) | `.hive/` layout and task status fields |
+| [Hook Cadence](packages/opencode-hive/docs/HOOK_CADENCE.md) | Optional hook turn gating |
+| [VS Code extension](packages/vscode-hive/README.md) | Companion install and scope |
+| [Releasing](docs/RELEASING.md) | Maintainers: publish and recovery |
 
 ## License
 
-MIT with Commons Clause — free for personal and non-commercial use. See [LICENSE](LICENSE).
-
----
+MIT with Commons Clause. See [LICENSE](LICENSE).

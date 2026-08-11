@@ -113,9 +113,9 @@ This metadata is the recovery surface Hive can rely on inside OpenCode today. It
 
 Hive distinguishes `primary`, `subagent`, `task-worker`, and `unknown` sessions.
 
-- `primary`: top-level Hive / Architect / Swarm conversations
-- `subagent`: delegated Scout or Hygienic sessions
-- `task-worker`: Forager workers and forager-derived custom agents executing a task
+- `primary`: top-level planner, orchestrator, or hybrid conversations
+- `subagent`: delegated research or review sessions
+- `task-worker`: workers and worker-derived custom agents executing a task
 - `unknown`: safe fallback when Hive cannot classify the session confidently
 
 ### Recovery behavior after compaction
@@ -272,14 +272,14 @@ Hive uses file-based state with clear ownership boundaries:
 
 | File | Owner | Other Access |
 |------|-------|--------------| 
-| `feature.json` | Hive Master | VS Code (read-only) |
-| `tasks.json` | Hive Master | VS Code (read-only) |
-| `status.json` (task) | Worker | Hive Master (read), Poller (read-only) |
-| `plan.md` | Hive Master | VS Code (read + comment, execution source of truth) |
-| `comments/plan.json` | VS Code | Hive Master (read-only) |
+| `feature.json` | Primary agent | VS Code (read-only) |
+| `tasks.json` | Primary agent | VS Code (read-only) |
+| `status.json` (task) | Worker | Primary agent (read), Poller (read-only) |
+| `plan.md` | Primary agent | VS Code (read + comment, execution source of truth) |
+| `comments/plan.json` | VS Code | Primary agent (read-only) |
 | `spec.md` | `hive_worktree_start` / `hive_worktree_create` | Worker (read-only) |
 | `report.md` | Worker | All (read-only) |
-| `BLOCKED` | Beekeeper | All (read-only, blocks operations) |
+| `BLOCKED` | Operator | All (read-only, blocks operations) |
 
 ### Poller Constraints
 

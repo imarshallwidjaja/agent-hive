@@ -1087,7 +1087,7 @@ describe('README.md documentation', () => {
     });
 
     it('explains task() delegation model', () => {
-      expect(readmeContent).toContain('Delegate to Scout');
+      expect(readmeContent).toContain('Delegate to a researcher');
       expect(readmeContent).toContain('Read-only exploration');
     });
 

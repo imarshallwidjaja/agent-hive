@@ -12,7 +12,7 @@ OpenCode runs the work. This extension keeps the plan, comments, overviews, and 
 
 ### From VSIX
 
-Download from [Releases](https://github.com/tctinh/agent-hive/releases) and install manually.
+Download `vscode-arkive.vsix` from [GitHub Releases](https://github.com/imarshallwidjaja/agent-hive/releases) and install manually.
 
 ## Features
 

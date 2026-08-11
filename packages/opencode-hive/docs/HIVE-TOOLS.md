@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Standard Hive Tools (27 total)
+## Standard Hive Tools (29 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -93,7 +93,7 @@
 
 ### Ad-hoc Worktree (4 tools)
 
-These tools are for isolated ad-hoc orchestration work (Hive Builder). They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`.
+These tools are for isolated ad-hoc orchestration work. They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`.
 
 | Tool | Purpose |
 |------|---------|
@@ -130,9 +130,9 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 - With the env gate unset, the background management tools return `background_tools_disabled`. Primary agents keep normal blocking `task()` wait mode, and no background appendix is injected.
 - With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active. This is experimental-gate behavior, not the default contract.
 - Gate-open delegation uses lane kind to choose how much management is required. Exploratory/read-only and review lanes are lightweight background candidates. Writing/change and execution lanes require path ownership, explicit state tracking, verification routing, unresolved-lane checks before dependent decisions, and integration control.
-- Every delegated lane needs a context packet: objective, known facts, relevant paths or references, constraints, prior failures, expected output, and where to find missing context. This matters most for non-feature and ad-hoc Hive Builder work because those workers may not have a plan or task context file.
+- Every delegated lane needs a context packet: objective, known facts, relevant paths or references, constraints, prior failures, expected output, and where to find missing context. This matters most for non-feature and ad-hoc work because those workers may not have a plan or task context file.
 - Primary orchestrators choose specialists from built-in and custom agent descriptors. Do not add fixed routing tables; use the descriptor that best matches the lane.
-- Hive Builder is an ad-hoc orchestrator in both gate-closed and gate-open sessions. Non-trivial non-feature work should be decomposed, routed, tracked, verified, and integrated like orchestration, using ad-hoc worktrees for implementation branches when needed.
+- Ad-hoc orchestration works in both gate-closed and gate-open sessions. Non-trivial non-feature work should be decomposed, routed, tracked, verified, and integrated like orchestration, using ad-hoc worktrees for implementation branches when needed.
 - In gate-open sessions, launch native background tasks, inspect the scoped board with `hive_background_status`, wait for native completion notifications before dependent decisions, refresh `hive_background_status`, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
 - `hive_background_status` and reconcile responses include `recommendedNextAction` guidance and may set `requiresHiveStatusRefresh` after reconciliation. Treat these as board-local scheduler hints. They do not predict task merge readiness; use `hive_status` for task/worktree-aware state before merge decisions.
 - A `backgroundTaskCall` returned from `hive_worktree_start` is launch guidance, not board state. Until the parent actually launches the native background task, no pending background board entry exists.

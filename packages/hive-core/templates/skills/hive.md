@@ -5,15 +5,15 @@ description: Plan-first AI development with isolated git worktrees and human rev
 
 # Hive Workflow
 
-Plan-first development with bee roles.
+Plan-first development with role-separated agents.
 
 ## Architecture
 
 ```
-Architect (Planner) -> Swarm (Orchestrator)
-                           \-> Scout (Explorer/Researcher/Retrieval)
-Swarm -> Forager (Worker/Coder)
-Review -> Plan Reviewer / Code Reviewer / Approach Advisor
+Unified primary (`hive-master`) plans and orchestrates
+Dedicated planner (`architect-planner`) -> orchestrator (`swarm-orchestrator`)
+Both modes -> researcher (`scout-researcher`) -> worker (`forager-worker`)
+Review -> `plan-reviewer` / `code-reviewer` / `approach-advisor`
 ```
 
 ---
@@ -22,19 +22,24 @@ Review -> Plan Reviewer / Code Reviewer / Approach Advisor
 
 | Agent | Mode | Use |
 |-------|------|-----|
-| `@architect` | Primary | Discovery + planning |
-| `@swarm` | Primary | Orchestration |
-| `@scout` | Subagent | Exploration/research/retrieval |
-| `@forager` | Subagent | Executes tasks in worktrees |
-| `@plan-reviewer` | Subagent | Plan readiness review |
-| `@code-reviewer` | Subagent | Implementation review against plan |
-| `@approach-advisor` | Subagent | Read-only strategic approach advice |
+| `hive-master` | Unified primary | Planning and orchestration |
+| `architect-planner` | Dedicated primary | Discovery and planning |
+| `swarm-orchestrator` | Dedicated primary | Orchestration |
+| `hive-builder` | Primary in both modes | Ad-hoc orchestration |
+| `scout-researcher` | Subagent in both modes | Exploration, research, and retrieval |
+| `forager-worker` | Subagent in both modes | Executes tasks in worktrees |
+| `hive-helper` | Subagent in both modes | Bounded merge recovery, state clarification, and safe manual follow-up |
+| `plan-reviewer` | Subagent in both modes | Plan readiness review |
+| `code-reviewer` | Subagent in both modes | Implementation review against plan |
+| `simplicity-reviewer` | Subagent in both modes | Final post-implementation simplicity review |
+| `approach-advisor` | Subagent in both modes | Read-only strategic approach advice |
+| `vulnerability-reviewer` | Subagent in both modes | Read-only application-security review |
 
 ---
 
 ## Research Delegation (MCP Tools + Parallel Exploration)
 
-Use MCP tools for focused research; for multi-domain exploration, use parallel Scout fan-out.
+Use MCP tools for focused research; for multi-domain exploration, use parallel researcher fan-out.
 
 | Tool | Use For |
 |------|---------|
@@ -42,7 +47,7 @@ Use MCP tools for focused research; for multi-domain exploration, use parallel S
 | `context7_query-docs` | Library documentation |
 | `websearch_web_search_exa` | Web search and scraping |
 | `ast_grep_find_code` / `ast_grep_find_code_by_rule` | AST-aware code search |
-| `task()` | Parallel exploration via Scout fan-out | 
+| `task()` | Parallel exploration via researcher fan-out |
 
 For exploratory fan-out, load the `parallel-exploration` skill for the full playbook.
 
@@ -72,7 +77,7 @@ Classify Intent → Discovery → Plan → Review → Execute → Merge
 
 ---
 
-## Phase 1: Discovery (Architect)
+## Phase 1: Discovery and Planning
 
 ### Research First (Greenfield/Complex)
 
@@ -116,7 +121,7 @@ ANY NO → Ask the unclear thing
 hive_feature_create({ name: "feature-name" })
 ```
 
-### Save Context (Royal Jelly)
+### Save Context
 
 ```
 hive_context_write({
@@ -239,7 +244,7 @@ In this example, tasks 2 and 3 can run in parallel (both only depend on 1), whil
 
 ---
 
-## Phase 4: Execute (Swarm Bee)
+## Phase 4: Execute (Orchestrator)
 
 ### Sync Tasks
 
@@ -253,14 +258,14 @@ hive_tasks_sync()
 hive_worktree_start({ task: "01-task-name" })  // Creates worktree; returns delegation instructions
 task({ ...taskCall })  // Only when delegationRequired is true
   ↓
-[Forager Bee implements in worktree]
+[Worker implements in worktree]
   ↓
 hive_worktree_commit({ task, summary, status: "completed" })
   ↓
 hive_merge({ task: "01-task-name", strategy: "squash" })
 ```
 
-### Parallel Execution (Swarming)
+### Parallel Execution
 
 When multiple tasks have their dependencies satisfied (runnable), the orchestrator should ask the operator how to proceed:
 
@@ -296,7 +301,7 @@ When worker returns `status: 'blocked'`:
 
 1. `hive_status()` - get details
 2. Ask user via question tool
-3. Resume: `hive_worktree_create({ task, continueFrom: "blocked", decision: "..." })`
+3. Continue the blocked task in its existing worktree with a fresh worker session: `hive_worktree_create({ task, continueFrom: "blocked", decision: "..." })`
 
 ### Plan Gap Detected
 
@@ -335,8 +340,8 @@ If "Revise Plan":
 | Plan | `hive_plan_read` | Check comments |
 | Plan | `hive_plan_approve` | Approve plan |
 | Execute | `hive_tasks_sync` | Generate tasks |
-| Execute | `hive_worktree_start` | Spawn Forager Bee worker for normal starts |
-| Execute | `hive_worktree_create` | Resume blocked Forager Bee worker |
+| Execute | `hive_worktree_start` | Spawn worker for normal starts |
+| Execute | `hive_worktree_create` | Launch a fresh worker for a blocked task in its existing worktree |
 | Execute | `hive_worktree_commit` | Finish task |
 | Execute | `hive_worktree_discard` | Discard task |
 | Execute | `hive_merge` | Integrate task |
@@ -374,8 +379,8 @@ hive_worktree_start({ task })  # Fresh start
 
 ### After 3 Failures
 1. Stop all workers
-2. Consult oracle: `task({ subagent_type: "oracle", prompt: "Analyze failure..." })`
-3. Ask user how to proceed
+2. Ask the registered `approach-advisor` for read-only failure analysis: `task({ subagent_type: "approach-advisor", prompt: "Analyze failure..." })`
+3. If the advisor is unavailable or the failure remains unresolved, ask the user how to proceed
 
 ### Merge Conflicts
 1. Resolve in worktree

@@ -9,13 +9,94 @@ function readText(relativePath) {
   return fs.readFileSync(path.join(workspaceRoot, relativePath), 'utf8');
 }
 
-describe('release 1.3.6 documentation contract', () => {
-  it('records a v1.3.6 philosophy note for worker replay and DAG-aware manual tasks', () => {
+function normalizeWhitespace(value) {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+describe('current documentation contract', () => {
+  it('keeps philosophy focused on current references', () => {
     const philosophy = readText('PHILOSOPHY.md');
 
-    assert.match(philosophy, /### v1\.3\.6/i);
-    assert.match(philosophy, /worker replay|worker-specific synthetic replay|bounded worker replay/i);
-    assert.match(philosophy, /manual task|dependsOn|refreshPending/i);
+    assert.doesNotMatch(philosophy, /### v1\.3\.6/i);
+    assert.match(philosophy, /\[Operator Guide\]/i);
+    assert.match(philosophy, /\[Plugin README\]/i);
+  });
+
+  it('documents safe installation into an existing OpenCode config', () => {
+    const rootReadme = readText('README.md');
+    const gettingStarted = readText('docs/GETTING-STARTED.md');
+    const pluginReadme = readText('packages/opencode-hive/README.md');
+    const hiveSkill = readText('packages/hive-core/templates/skills/hive.md');
+
+    for (const doc of [rootReadme, gettingStarted, pluginReadme]) {
+      assert.match(doc, /append.*oc-arkive@latest/is);
+      assert.match(doc, /plugin`?\s+array/i);
+      assert.match(doc, /preserve.*unrelated settings/i);
+    }
+
+    assert.match(pluginReadme, /reserved.*legacy.*current.*agent.*command/is);
+    assert.match(pluginReadme, /disableMcps.*same-name MCP/i);
+    assert.match(pluginReadme, /subagent_depth/i);
+    assert.match(pluginReadme, /skills\.paths/i);
+    assert.match(pluginReadme, /experimental\.primary_tools/i);
+    assert.match(pluginReadme, /`simplicity-reviewer`[^.\n]*supported `customAgents` base/i);
+    assert.doesNotMatch(pluginReadme, /`simplicity-reviewer`[^.\n]*not a custom-agent base/i);
+    assert.match(pluginReadme, /\| `ast_grep` \| Structural search and AST inspection/i);
+    assert.doesNotMatch(pluginReadme, /\| `ast_grep` \| .*search and replace/i);
+    for (const doc of [rootReadme, gettingStarted]) {
+      assert.match(doc, /existing-plugin@version[\s\S]*oc-arkive@latest/i);
+      assert.match(doc, /placeholder/i);
+    }
+    for (const agent of [
+      'hive-master',
+      'architect-planner',
+      'swarm-orchestrator',
+      'scout-researcher',
+      'forager-worker',
+      'hive-builder',
+      'hive-helper',
+      'plan-reviewer',
+      'code-reviewer',
+      'simplicity-reviewer',
+      'approach-advisor',
+      'vulnerability-reviewer',
+    ]) {
+      assert.match(hiveSkill, new RegExp('`' + agent + '`'));
+    }
+    assert.doesNotMatch(hiveSkill, /@(?:architect|swarm|scout|forager)\b/);
+    assert.match(gettingStarted, /dedicated mode.*hive-builder/is);
+    assert.match(gettingStarted, /architect-planner.*(?:does not|not).*ad-?hoc/is);
+  });
+
+  it('keeps cadence, compatibility, and blocked-worker recovery docs aligned with runtime contracts', () => {
+    const cadence = readText('packages/opencode-hive/docs/HOOK_CADENCE.md');
+    const pluginReadme = readText('packages/opencode-hive/README.md');
+    const hiveSkill = readText('packages/hive-core/templates/skills/hive.md');
+    const schema = JSON.parse(readText('packages/opencode-hive/schema/agent_hive.schema.json'));
+    const hookCadenceSchema = schema.properties.hook_cadence;
+    const hookCadenceDescription = normalizeWhitespace(hookCadenceSchema.description);
+    const hookValueDescription = normalizeWhitespace(hookCadenceSchema.additionalProperties.description);
+
+    assert.match(cadence, /production.*cadence.*`tool\.execute\.before`/is);
+    for (const unsupportedHook of [
+      'chat.message',
+      'experimental.chat.system.transform',
+      'experimental.chat.messages.transform',
+    ]) {
+      assert.doesNotMatch(cadence, new RegExp(`\\b${unsupportedHook.replaceAll('.', '\\.?')}\\b`));
+    }
+    assert.match(hookCadenceDescription, /production.*gates only `?tool\.execute\.before`?/i);
+    assert.match(hookCadenceDescription, /forced to cadence 1/i);
+    assert.match(hookCadenceDescription, /other hook keys have no runtime effect/i);
+    assert.match(hookValueDescription, /ignored for hooks that do not invoke the production cadence gate/i);
+    assert.deepEqual(hookCadenceSchema.examples, [{ 'tool.execute.before': 1 }]);
+
+    assert.match(pluginReadme, /- `command`:[\s\S]*same-key.*user command definitions.*unrelated command keys remain/i);
+    assert.match(pluginReadme, /- `agent`:[\s\S]*reserved legacy\/current agent IDs.*unrelated agent IDs remain/i);
+    assert.match(pluginReadme, /- `mcp`:[\s\S]*enabled built-in MCP IDs.*same-ID definitions.*unrelated IDs remain.*disableMcps.*prevents.*registered/i);
+
+    assert.doesNotMatch(hiveSkill, /\boracle\b/i);
+    assert.match(hiveSkill, /blocked task.*existing worktree.*fresh worker session/is);
   });
 
   it('updates design docs for the shipped #67 and #69 behavior', () => {
