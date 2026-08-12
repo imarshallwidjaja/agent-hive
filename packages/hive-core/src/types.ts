@@ -41,7 +41,7 @@ export interface SubtaskStatus {
 
 /** Worker session information for background task execution */
 export interface WorkerSession {
-  /** Background task ID from OMO-Slim */
+  /** Background task ID when the worker runs as a background subagent */
   taskId?: string;
   /** Unique session identifier */
   sessionId: string;
@@ -443,8 +443,6 @@ export interface HiveConfig {
   disableSkills?: string[];
   /** Globally disable specific MCP servers. Available: websearch, context7, grep_app, ast_grep */
   disableMcps?: string[];
-  /** Enable OMO-Slim delegation (optional integration) */
-  omoSlimEnabled?: boolean;
   /** Choose between unified or dedicated agent modes */
   agentMode?: 'unified' | 'dedicated';
   /** Agent configuration */

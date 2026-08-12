@@ -40,7 +40,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 The plugin supplies built-in research MCP definitions at startup. You do **not** need to copy `.opencode/mcp-servers.json`; see [Available MCPs](#available-mcps) for the inventory and disable controls.
 
-Default mode is unified (`hive-master`). Set `"agentMode": "dedicated"` for separate planner and orchestrator seats. Runtime config is **global only**: `~/.config/opencode/agent_hive.json`.
+Default mode is unified (`hive-master`). Set `"agentMode": "dedicated"` for separate planner and orchestrator seats; see [Agent mode](#agent-mode). Runtime config is **global only**: `~/.config/opencode/agent_hive.json`.
 
 ## The Workflow
 
@@ -236,7 +236,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 ### Local skill and model use cases
 
 - **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then load it with OpenCode's native `skill` tool, reference it in agent instructions, or list its frontmatter `name` in `autoLoadSkills`. User file skills are discovered through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, and `skills.urls` mechanisms.
-- **Runtime configuration:** set global agent models, variants, sandbox policy, custom agents, task-trace summarizer settings, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. `taskTraceSummarizer` accepts optional nonempty `model`/`variant` strings and `temperature` from 0 through 2; omitted model/variant use OpenCode defaults and temperature defaults to 0.
+- **Runtime configuration:** set global agent models, variants, sandbox policy, custom agents, `taskTraceSummarizer`, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. See [Agent mode](#agent-mode) and [Task trace summarizer](#task-trace-summarizer).
 
 #### Canonical Delegation Threshold
 
@@ -409,6 +409,58 @@ Hive reads runtime configuration only from `~/.config/opencode/agent_hive.json`.
 All runtime policy, agent definitions, and auto-load skill settings use the global file.
 
 `hook_cadence` currently has no useful tuning surface: production gates only the safety-critical `tool.execute.before` hook, which is forced to cadence `1`. The schema remains the machine-readable reference for this field.
+
+### Agent mode
+
+`agentMode` selects how planning and orchestration seats are registered. Default is `"unified"`.
+
+| Value | Default agent | Primary seats | When to use |
+|-------|---------------|---------------|-------------|
+| `unified` | `hive-master` | One hybrid planner+orchestrator | Most installs; one primary agent owns the feature loop |
+| `dedicated` | `architect-planner` | Separate `architect-planner` and `swarm-orchestrator` | Split planning and execution across two primary seats |
+
+In both modes:
+
+- Researchers, workers, reviewers, `hive-helper`, and `hive-builder` remain available.
+- Slash-command routing follows the [Operator Commands](#operator-commands) table.
+- Custom derived subagents attach to the active planner/orchestrator prompts for that mode.
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "agentMode": "dedicated"
+}
+```
+
+Dedicated mode does not auto-switch the live chat agent when you run a slash command. If the active agent is not the route target, delegate or reroute to that target and stop if that is not possible. `/dash-review` and `/vuln-review` always bind to private review primaries regardless of mode.
+
+### Task trace summarizer
+
+`taskTraceSummarizer` configures the **hidden, parentless, tool-less** model used only when a primary agent calls `hive_task_trace({ task_id, recovery: true })`. It does **not** change forensic (non-recovery) traces, which stay deterministic and model-free.
+
+| Field | Required | Default | Notes |
+|-------|----------|---------|-------|
+| `model` | no | OpenCode default model | Nonempty `provider/model-id` string |
+| `variant` | no | OpenCode default / none | Must match a key under `opencode.json` `provider.<provider>.models.<model>.variants` |
+| `temperature` | no | `0` | Number from `0` through `2` |
+
+Behavior:
+
+- Recovery interpretation is always marked untrusted (`provenance: 'summarizer_interpretation'`).
+- An unavailable configured model or variant produces deterministic partial fallback without provider retry.
+- Recovery never authorizes accept, merge, retry, resume, or auto-run. Use recovery context only as input for a **new** task without `task_id`.
+- See [Delegated Task Inspection](docs/HIVE-TOOLS.md#delegated-task-inspection-2-tools) for the full trace/recovery contract.
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "taskTraceSummarizer": {
+    "model": "anthropic/claude-sonnet-4-20250514",
+    "variant": "high",
+    "temperature": 0
+  }
+}
+```
 
 ### Council config
 

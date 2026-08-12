@@ -939,14 +939,6 @@ const plugin: Plugin = async (ctx) => {
     isPrimaryAgent: (_agentName, session) => session?.sessionKind === 'primary',
   });
 
-  /**
-   * Check if OMO-Slim delegation is enabled via user config.
-   * Configuration is read from ~/.config/opencode/agent_hive.json.
-   */
-  const isOmoSlimEnabled = (): boolean => {
-    return configService.isOmoSlimEnabled();
-  };
-
   const resolveFeature = (explicit?: string): string | null => {
     if (explicit) return explicit;
 

@@ -54,8 +54,10 @@ feature work and `hive-builder` handles ad-hoc work.
 
 Runtime configuration is global only: `~/.config/opencode/agent_hive.json`.
 Project-local `agent_hive.json` and `agent-hive.json` files are ignored. Set
-`"agentMode": "dedicated"` for separate planner and orchestrator seats. For
-existing-config compatibility, see the [plugin README](packages/opencode-hive/README.md#existing-opencode-configurations).
+`"agentMode": "dedicated"` for separate planner and orchestrator seats (see the
+[plugin README agent mode section](packages/opencode-hive/README.md#agent-mode)).
+For existing-config compatibility, see the
+[plugin README](packages/opencode-hive/README.md#existing-opencode-configurations).
 
 ## Packages
 

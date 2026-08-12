@@ -169,7 +169,20 @@ describe('current documentation contract', () => {
     }
     assert.match(pluginReadme, /## Tools/);
     assert.match(pluginReadme, /## Configuration/);
+    assert.match(pluginReadme, /### Agent mode/);
+    assert.match(pluginReadme, /### Task trace summarizer/);
     assert.match(pluginReadme, /### Project-local repository manifest/);
+    const agentMode = sectionText(pluginReadme, 'Agent mode');
+    assert.match(agentMode, /`unified`/);
+    assert.match(agentMode, /`dedicated`/);
+    assert.match(agentMode, /hive-master/);
+    assert.match(agentMode, /architect-planner/);
+    assert.match(agentMode, /swarm-orchestrator/);
+    const taskTrace = sectionText(pluginReadme, 'Task trace summarizer');
+    assert.match(taskTrace, /recovery:\s*true/);
+    assert.match(taskTrace, /temperature/);
+    assert.match(taskTrace, /forensic/);
+    assert.doesNotMatch(pluginReadme, /omoSlimEnabled/);
     const manifest = sectionText(pluginReadme, 'Project-local repository manifest');
     assert.match(manifest, /optional[\s\S]{0,120}Hive-managed[\s\S]{0,120}multi-repo topology/i);
     for (const command of ['hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update']) {

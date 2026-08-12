@@ -28,7 +28,6 @@ const STORED_CONFIG_KEYS = new Set([
   'enableToolsFor',
   'disableSkills',
   'disableMcps',
-  'omoSlimEnabled',
   'agentMode',
   'hook_cadence',
   'council',
@@ -370,14 +369,6 @@ export class ConfigService {
   }
 
   /**
-   * Check if OMO-Slim delegation is enabled via user config.
-   */
-  isOmoSlimEnabled(): boolean {
-    const config = this.get();
-    return config.omoSlimEnabled === true;
-  }
-
-  /**
    * Get list of globally disabled skills.
    */
   getDisabledSkills(): string[] {
@@ -451,10 +442,16 @@ export class ConfigService {
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return { ok: false, reason: 'validation_error' };
       }
-      if (!this.isValidStoredConfig(parsed)) {
+      const record = { ...(parsed as Record<string, unknown>) };
+      // Removed setting: keep existing files readable while ignoring the dead key.
+      if ('omoSlimEnabled' in record) {
+        delete record.omoSlimEnabled;
+        console.warn('[hive:config] Ignoring removed setting omoSlimEnabled');
+      }
+      if (!this.isValidStoredConfig(record)) {
         return { ok: false, reason: 'validation_error' };
       }
-      return { ok: true, value: parsed as Partial<HiveConfig> };
+      return { ok: true, value: record as Partial<HiveConfig> };
     } catch (error) {
       if (error instanceof SyntaxError) {
         return { ok: false, reason: 'parse_error' };
@@ -542,10 +539,6 @@ export class ConfigService {
     }
 
     if (config.disableMcps !== undefined && !this.isStringArray(config.disableMcps)) {
-      return false;
-    }
-
-    if (config.omoSlimEnabled !== undefined && typeof config.omoSlimEnabled !== 'boolean') {
       return false;
     }
 

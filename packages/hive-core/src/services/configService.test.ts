@@ -85,6 +85,21 @@ describe("ConfigService defaults", () => {
     expect(new ConfigService().get().taskTraceSummarizer).toEqual({ temperature: 0 });
   });
 
+  it('ignores removed omoSlimEnabled without invalidating the rest of the config', () => {
+    const service = new ConfigService();
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    fs.writeFileSync(service.getPath(), JSON.stringify({
+      agentMode: 'dedicated',
+      omoSlimEnabled: true,
+    }));
+
+    expect(service.get().agentMode).toBe('dedicated');
+    expect(service.get()).not.toHaveProperty('omoSlimEnabled');
+    expect(warn.mock.calls.map((call) => call.join(' ')).some((line) => line.includes('omoSlimEnabled'))).toBe(true);
+    warn.mockRestore();
+  });
+
   it('loads a strict task trace summarizer override', () => {
     const service = new ConfigService();
     fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });

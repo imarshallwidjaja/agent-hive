@@ -29,10 +29,6 @@
       "default": true,
       "description": "Reuse Docker containers per worktree (docker exec) instead of creating new ones per command (docker run --rm). Default: true when sandbox is 'docker'."
     },
-    "omoSlimEnabled": {
-      "type": "boolean",
-      "description": "Enable compatibility with the oh-my-opencode slim agent profile."
-    },
     "repositoryRoot": {
       "type": "string",
       "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)",
@@ -74,7 +70,7 @@
         "dedicated"
       ],
       "default": "unified",
-      "description": "Agent specialization mode. 'unified' (default) uses a single hybrid agent for all roles; 'dedicated' uses specialized agents for each role."
+      "description": "Agent specialization mode. 'unified' (default) uses hive-master as the hybrid planner+orchestrator default agent; 'dedicated' registers separate architect-planner and swarm-orchestrator seats and sets default_agent to architect-planner. hive-builder remains available in both modes."
     },
     "hook_cadence": {
       "type": "object",
@@ -96,7 +92,7 @@
     },
     "taskTraceSummarizer": {
       "$ref": "#/$defs/taskTraceSummarizerConfig",
-      "description": "Optional model settings for recovery trace interpretation."
+      "description": "Optional model settings for the hidden, tool-less recovery interpreter used by hive_task_trace({ recovery: true }). Does not affect forensic (non-recovery) traces."
     },
     "agents": {
       "type": "object",
@@ -198,21 +194,25 @@
     "taskTraceSummarizerConfig": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Model settings for hive_task_trace recovery interpretation. Omitted model/variant use OpenCode defaults; temperature defaults to 0. An unavailable configured model/variant yields deterministic partial fallback without provider retry.",
       "properties": {
         "model": {
           "type": "string",
           "minLength": 1,
-          "pattern": ".*\\S.*"
+          "pattern": ".*\\S.*",
+          "description": "Provider/model-id for the hidden recovery interpreter (for example, anthropic/claude-sonnet-4-20250514)."
         },
         "variant": {
           "type": "string",
           "minLength": 1,
-          "pattern": ".*\\S.*"
+          "pattern": ".*\\S.*",
+          "description": "Optional variant key for the configured model (must exist under opencode.json provider.<provider>.models.<model>.variants)."
         },
         "temperature": {
           "type": "number",
           "minimum": 0,
-          "maximum": 2
+          "maximum": 2,
+          "description": "Sampling temperature for recovery interpretation. Default: 0."
         }
       }
     },

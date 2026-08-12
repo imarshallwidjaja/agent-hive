@@ -108,8 +108,12 @@ describe('agent_hive schema council contract', () => {
   it('defines the strict task trace summarizer configuration', () => {
     expect(schema.properties.taskTraceSummarizer).toEqual({
       $ref: '#/$defs/taskTraceSummarizerConfig',
-      description: 'Optional model settings for recovery trace interpretation.',
+      description: 'Optional model settings for the hidden, tool-less recovery interpreter used by hive_task_trace({ recovery: true }). Does not affect forensic (non-recovery) traces.',
     });
+    expect(schema.$defs.taskTraceSummarizerConfig.description).toContain('temperature defaults to 0');
+    expect(schema.properties.omoSlimEnabled).toBeUndefined();
+    expect(schema.properties.agentMode.description).toContain('hive-master');
+    expect(schema.properties.agentMode.description).toContain('architect-planner');
     expect(validateConfigShape({
       taskTraceSummarizer: { model: 'provider/model', variant: 'high', temperature: 0 },
     })).toBe(true);
@@ -144,11 +148,14 @@ describe('agent_hive schema council contract', () => {
 
   it('validates the relevant global config contract through the published schema', () => {
     expect(validateConfigShape({
-      omoSlimEnabled: true,
+      agentMode: 'dedicated',
       hook_cadence: { 'chat.message': 1 },
       repositoryRoot: '/tmp/project',
       repositories: [{ id: 'api', path: './api' }],
     })).toBe(true);
+    expect(validateConfigShape({
+      omoSlimEnabled: true,
+    })).toBe(false);
 
     for (const invalid of [
       { unknown: true },
