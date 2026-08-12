@@ -40,7 +40,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 The plugin supplies built-in research MCP definitions at startup. You do **not** need to copy `.opencode/mcp-servers.json`; see [Available MCPs](#available-mcps) for the inventory and disable controls.
 
-Default mode is unified (`hive-master`). Set `"agentMode": "dedicated"` for separate planner and orchestrator seats; see [Agent mode](#agent-mode). Runtime config is **global only**: `~/.config/opencode/agent_hive.json`.
+Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"agentMode": "unified"` for a single hybrid `hive-master` seat; see [Agent mode](#agent-mode). Runtime config is **global only**: `~/.config/opencode/agent_hive.json`.
 
 ## The Workflow
 
@@ -412,12 +412,12 @@ All runtime policy, agent definitions, and auto-load skill settings use the glob
 
 ### Agent mode
 
-`agentMode` selects how planning and orchestration seats are registered. Default is `"unified"`.
+`agentMode` selects how planning and orchestration seats are registered. Default is `"dedicated"`.
 
 | Value | Default agent | Primary seats | When to use |
 |-------|---------------|---------------|-------------|
-| `unified` | `hive-master` | One hybrid planner+orchestrator | Most installs; one primary agent owns the feature loop |
-| `dedicated` | `architect-planner` | Separate `architect-planner` and `swarm-orchestrator` | Split planning and execution across two primary seats |
+| `dedicated` | `architect-planner` | Separate `architect-planner` and `swarm-orchestrator` | Default; split planning and execution across two primary seats |
+| `unified` | `hive-master` | One hybrid planner+orchestrator | One primary agent owns the full feature loop |
 
 In both modes:
 
@@ -428,7 +428,7 @@ In both modes:
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
-  "agentMode": "dedicated"
+  "agentMode": "unified"
 }
 ```
 

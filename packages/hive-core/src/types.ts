@@ -536,7 +536,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   enableToolsFor: [],
   disableSkills: [],
   disableMcps: [],
-  agentMode: 'unified',
+  agentMode: 'dedicated',
   sandbox: 'none',
   council: DEFAULT_COUNCIL_CONFIG,
   taskTraceSummarizer: { temperature: 0 },

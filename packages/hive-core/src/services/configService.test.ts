@@ -322,9 +322,9 @@ describe("ConfigService defaults", () => {
     expect(config.agents?.["forager-worker"]?.variant).toBe("high");
   });
 
-  it("returns 'unified' as default agentMode", () => {
+  it("returns 'dedicated' as default agentMode", () => {
     const service = new ConfigService();
-    expect(service.get().agentMode).toBe('unified');
+    expect(service.get().agentMode).toBe('dedicated');
   });
 
   it("ignores both project config filenames", () => {

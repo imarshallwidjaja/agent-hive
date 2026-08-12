@@ -173,6 +173,7 @@ describe('current documentation contract', () => {
     assert.match(pluginReadme, /### Task trace summarizer/);
     assert.match(pluginReadme, /### Project-local repository manifest/);
     const agentMode = sectionText(pluginReadme, 'Agent mode');
+    assert.match(agentMode, /Default is `"dedicated"`/);
     assert.match(agentMode, /`unified`/);
     assert.match(agentMode, /`dedicated`/);
     assert.match(agentMode, /hive-master/);

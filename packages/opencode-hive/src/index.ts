@@ -799,7 +799,7 @@ const plugin: Plugin = async (ctx) => {
   const createHiveCommandContext = () => {
     const currentConfig = configService.get();
     return {
-      agentMode: currentConfig.agentMode ?? 'unified',
+      agentMode: currentConfig.agentMode ?? 'dedicated',
       backgroundGuidance: runtimeBackgroundGuidance,
       council: currentConfig.council ?? DEFAULT_COUNCIL_CONFIG,
       agents: runtimeCommandAgents,
@@ -4288,7 +4288,7 @@ NEXT: Ask your first clarifying question about this feature.`;
         paths: preparedNativeHiveSkills.skillPaths,
       };
       const hiveConfigData = configService.get();
-      const agentMode = hiveConfigData.agentMode ?? 'unified';
+      const agentMode = hiveConfigData.agentMode ?? 'dedicated';
 
       const existingExperimental = opencodeConfig.experimental && typeof opencodeConfig.experimental === 'object'
         ? opencodeConfig.experimental as Record<string, unknown>

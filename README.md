@@ -48,14 +48,14 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
 
 Use a feature when the work needs plan review, task dependencies, isolated task
 worktrees, or a durable audit trail. Use an ad-hoc run for bounded non-feature
-work that should not create feature or task records. In unified mode the primary
-agent coordinates both; in dedicated mode, the planner and orchestrator handle
-feature work and `hive-builder` handles ad-hoc work.
+work that should not create feature or task records. By default (dedicated mode),
+the planner and orchestrator handle feature work and `hive-builder` handles
+ad-hoc work. Set `"agentMode": "unified"` for one hybrid primary that coordinates both.
 
 Runtime configuration is global only: `~/.config/opencode/agent_hive.json`.
-Project-local `agent_hive.json` and `agent-hive.json` files are ignored. Set
-`"agentMode": "dedicated"` for separate planner and orchestrator seats (see the
-[plugin README agent mode section](packages/opencode-hive/README.md#agent-mode)).
+Project-local `agent_hive.json` and `agent-hive.json` files are ignored. Dedicated
+mode is the default; set `"agentMode": "unified"` for a single `hive-master` seat
+(see the [plugin README agent mode section](packages/opencode-hive/README.md#agent-mode)).
 For existing-config compatibility, see the
 [plugin README](packages/opencode-hive/README.md#existing-opencode-configurations).
 

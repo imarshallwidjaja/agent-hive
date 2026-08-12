@@ -69,8 +69,8 @@
         "unified",
         "dedicated"
       ],
-      "default": "unified",
-      "description": "Agent specialization mode. 'unified' (default) uses hive-master as the hybrid planner+orchestrator default agent; 'dedicated' registers separate architect-planner and swarm-orchestrator seats and sets default_agent to architect-planner. hive-builder remains available in both modes."
+      "default": "dedicated",
+      "description": "Agent specialization mode. 'dedicated' (default) registers separate architect-planner and swarm-orchestrator seats and sets default_agent to architect-planner; 'unified' uses hive-master as the hybrid planner+orchestrator default agent. hive-builder remains available in both modes."
     },
     "hook_cadence": {
       "type": "object",

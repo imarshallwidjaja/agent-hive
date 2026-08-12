@@ -3341,7 +3341,7 @@ Do it
   });
 
   it("auto-loads parallel exploration for planner agents by default", async () => {
-    // Test unified mode agents
+    // Test dedicated-mode (default) planner agents
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -3360,26 +3360,27 @@ Do it
     );
     expect(parallelExplorationSkill).toBeDefined();
 
-    // Default mode is 'unified' which includes hive-master, scout, forager, hygienic
+    // Default mode is 'dedicated' which includes architect-planner, swarm-orchestrator, scout, forager, reviewers
     const opencodeConfig: Record<string, unknown> = { agent: {} };
     await hooks.config!(opencodeConfig);
     const agents = opencodeConfig.agent as Record<string, { prompt?: string }>;
+    expect(opencodeConfig.default_agent).toBe('architect-planner');
+    expect(agents['architect-planner']).toBeDefined();
+    expect(agents['swarm-orchestrator']).toBeDefined();
+    expect(agents['hive-master']).toBeUndefined();
     const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
       | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
       | undefined;
 
-    const hiveOutput = { system: ["OpenCode provider base prompt"] };
-    await systemTransform?.({ sessionID: 'sess_hive_autoload', agent: 'hive-master' }, hiveOutput);
     const foragerOutput = { system: ["OpenCode provider base prompt"] };
     await systemTransform?.({ sessionID: 'sess_forager_autoload', agent: 'forager-worker' }, foragerOutput);
 
-    // hive-master should have parallel-exploration load guidance in prompt (unified mode)
-    expect(agents["hive-master"]?.prompt).toBeUndefined();
-    expect(hiveOutput.system[0]).toContain(parallelExplorationToolCall);
-    expect(hiveOutput.system[0]).not.toContain(parallelExplorationSkill!.template);
-    expect(hiveOutput.system[0]).not.toContain(onboardingSnippet);
+    // architect-planner embeds parallel-exploration load guidance in its registered prompt (dedicated mode)
+    expect(agents["architect-planner"]?.prompt).toContain(parallelExplorationToolCall);
+    expect(agents["architect-planner"]?.prompt).not.toContain(parallelExplorationSkill!.template);
+    expect(agents["architect-planner"]?.prompt).not.toContain(onboardingSnippet);
 
-    // scout-researcher should NOT have parallel-exploration guidance in prompt (unified mode)
+    // scout-researcher should NOT have parallel-exploration guidance in prompt
     // (removed to prevent recursive delegation - scout cannot spawn scouts)
     expect(agents["scout-researcher"]?.prompt).toBeDefined();
     expect(agents["scout-researcher"]?.prompt).not.toContain(parallelExplorationToolCall);
