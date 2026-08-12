@@ -1,5 +1,7 @@
 # Agent Hive (`oc-arkive`)
 
+[![npm version](https://img.shields.io/npm/v/oc-arkive?logo=npm&logoColor=white)](https://www.npmjs.com/package/oc-arkive)
+
 OpenCode workflow plugin for plan-first development with isolated workers, durable `.hive/` state, and explicit human approval gates.
 
 After installation, ask Hive for a feature in plain language. The first feature loop is below; the [Operator Guide](docs/OPERATOR-GUIDE.md) covers day-to-day operation.
