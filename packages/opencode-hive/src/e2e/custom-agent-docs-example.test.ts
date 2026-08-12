@@ -105,26 +105,32 @@ describe('e2e: published custom-agent docs example', () => {
     expect(reviewerSecurity.variant).toBeUndefined();
     expect(reviewerSecurity.description).toBe('Use for review passes focused on auth, permissions, secret handling, injection risk, or other security-sensitive changes.');
 
-    expect(opencodeConfig.agent['hive-master']?.prompt).toBeUndefined();
+    expect(opencodeConfig.agent['hive-master']).toBeUndefined();
     expect(foragerUi.prompt).toBeUndefined();
+    const architectPrompt = opencodeConfig.agent['architect-planner']?.prompt as string;
+    expect(architectPrompt).toContain('## Configured Custom Subagents');
+    expect(architectPrompt).toContain('Custom subagents are scoped specialists, not automatic model upgrades.');
+    expect(architectPrompt).toContain(
+      'For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.'
+    );
+    expect(architectPrompt).toContain("Choose a custom subagent when its description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names it.");
+    expect(architectPrompt).toContain('Use the built-in base agent when no configured custom description is a closer task fit.');
+    expect(architectPrompt).toContain('Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.');
+    expect(architectPrompt).not.toContain('exception routes, not capability upgrades');
+    expect(architectPrompt).toContain('`scout-docs`');
+    expect(architectPrompt).toContain('`forager-ui`');
+    expect(architectPrompt).toContain('`reviewer-security`');
+
     const systemTransform = hooks['experimental.chat.system.transform' as keyof typeof hooks] as
       | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
       | undefined;
-    const hiveOutput = { system: ['OpenCode provider base prompt'] };
-    await systemTransform?.({ sessionID: 'sess_docs_hive', agent: 'hive-master' }, hiveOutput);
-    const hivePrompt = hiveOutput.system[0];
-    expect(hivePrompt).toContain('## Configured Custom Subagents');
-    expect(hivePrompt).toContain('Custom subagents are scoped specialists, not automatic model upgrades.');
-    expect(hivePrompt).toContain(
-      'For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.'
-    );
-    expect(hivePrompt).toContain("Choose a custom subagent when its description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names it.");
-    expect(hivePrompt).toContain('Use the built-in base agent when no configured custom description is a closer task fit.');
-    expect(hivePrompt).toContain('Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.');
-    expect(hivePrompt).not.toContain('exception routes, not capability upgrades');
-    expect(hivePrompt).toContain('`scout-docs`');
-    expect(hivePrompt).toContain('`forager-ui`');
-    expect(hivePrompt).toContain('`reviewer-security`');
+    const swarmOutput = { system: ['OpenCode provider base prompt'] };
+    await systemTransform?.({ sessionID: 'sess_docs_swarm', agent: 'swarm-orchestrator' }, swarmOutput);
+    const swarmPrompt = swarmOutput.system[0];
+    expect(swarmPrompt).toContain('## Configured Custom Subagents');
+    expect(swarmPrompt).toContain('`scout-docs`');
+    expect(swarmPrompt).toContain('`forager-ui`');
+    expect(swarmPrompt).toContain('`reviewer-security`');
 
     const readmeContent = fs.readFileSync(README_PATH, 'utf-8');
     const sectionMatch = readmeContent.match(/### Custom Derived Subagents[\s\S]*?```json\n([\s\S]*?)\n```/);

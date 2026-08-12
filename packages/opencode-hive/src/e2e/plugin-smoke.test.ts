@@ -7,6 +7,7 @@ import type { PluginInput } from "@opencode-ai/plugin";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import plugin from "../index";
 import { QUEEN_BEE_PROMPT } from "../agents/hive";
+import { ARCHITECT_BEE_PROMPT } from "../agents/architect";
 import { SWARM_BEE_PROMPT } from "../agents/swarm";
 import { FORAGER_BEE_PROMPT } from "../agents/forager";
 import { HIVE_BUILDER_PROMPT } from "../agents/hive-builder";
@@ -712,7 +713,8 @@ Do it
     for (const command of HIVE_COMMANDS) {
       const configCommand = configCommands[command.key];
       expect(configCommand.description).toBe(command.description);
-      expect(configCommand.template).toContain('Mode:');
+      expect(configCommand.template).not.toMatch(/^Mode:/m);
+      expect(configCommand.template).not.toMatch(/^Route:/m);
     }
 
     expect(configCommands.interview.template).toContain('$ARGUMENTS');
@@ -2242,7 +2244,7 @@ Do it
       configPath,
       JSON.stringify({
         agents: {
-          "hive-master": {
+          "architect-planner": {
             autoLoadSkills: ["brainstorming"],
           },
         },
@@ -2281,34 +2283,38 @@ Do it
     const opencodeConfig: Record<string, unknown> = { agent: {} };
     await hooks.config!(opencodeConfig);
     
+    const agents = opencodeConfig.agent as Record<string, { prompt?: string }>;
+    const architectPrompt = agents["architect-planner"]?.prompt ?? "";
+    expect(agents["hive-master"]).toBeUndefined();
+    expect(architectPrompt).toContain("## Hive — Active Session");
+    expect(architectPrompt).not.toContain("Use hive_status to check feature state before starting work");
+    expect(architectPrompt).not.toContain("Use hive_plan_read to see plan comments");
+
+    const brainstormingSkill = BUILTIN_SKILLS.find((skill) => skill.name === "brainstorming");
+    expect(brainstormingSkill).toBeDefined();
+    expect(architectPrompt).toContain("## Configured Auto-Load Skills");
+    expect(architectPrompt).toContain('skill({ name: "brainstorming" })');
+    expect(architectPrompt).not.toContain(brainstormingSkill!.template);
+    expect(architectPrompt).toContain("Configured Custom Subagents");
+    expect(architectPrompt).toContain("`scout-docs`");
+    expect(architectPrompt).toContain("`reviewer-security`");
+    expect(architectPrompt).toContain("the scout researcher whose description best fits the research slice");
+    expect(architectPrompt).toContain("Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match");
+    expect(architectPrompt).toContain("task({ subagent_type: \"<chosen-researcher>\"");
+
     const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
       | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
       | undefined;
-    const output = { system: ["OpenCode provider base prompt"] };
-    await systemTransform?.({ sessionID: "sess", agent: "hive-master" }, output);
-    const agentConfig = { prompt: output.system[0] };
-    expect(agentConfig).toBeDefined();
-    expect(agentConfig.prompt).toBeDefined();
-    expect(agentConfig.prompt).toContain("## Hive — Active Session");
-    expect(agentConfig.prompt).not.toContain("Use hive_status to check feature state before starting work");
-    expect(agentConfig.prompt).not.toContain("Use hive_plan_read to see plan comments");
-    
-    const brainstormingSkill = BUILTIN_SKILLS.find((skill) => skill.name === "brainstorming");
-    expect(brainstormingSkill).toBeDefined();
-    expect(agentConfig.prompt).toContain("## Configured Auto-Load Skills");
-    expect(agentConfig.prompt).toContain('skill({ name: "brainstorming" })');
-    expect(agentConfig.prompt).not.toContain(brainstormingSkill!.template);
-    expect(agentConfig.prompt).toContain("Configured Custom Subagents");
-    expect(agentConfig.prompt).toContain("`scout-docs`");
-    expect(agentConfig.prompt).toContain("`reviewer-security`");
-    expect(agentConfig.prompt).toContain("the scout researcher whose description best fits the research slice");
-    expect(agentConfig.prompt).toContain("Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match");
-    expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-researcher>\"");
-    expect(agentConfig.prompt).toContain("the code reviewer whose description best fits the review lens");
-    expect(agentConfig.prompt).toContain("Use built-in `code-reviewer` when no configured code-reviewer-derived custom description is a closer match");
-    expect(agentConfig.prompt).toContain("task({ subagent_type: \"<chosen-reviewer>\"");
+    const swarmOutput = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: "sess", agent: "swarm-orchestrator" }, swarmOutput);
+    const swarmPrompt = swarmOutput.system[0];
+    expect(swarmPrompt).toContain("Configured Custom Subagents");
+    expect(swarmPrompt).toContain("`scout-docs`");
+    expect(swarmPrompt).toContain("`reviewer-security`");
+    expect(swarmPrompt).toContain("the code reviewer whose description best fits the review lens");
+    expect(swarmPrompt).toContain("Use built-in `code-reviewer` when no configured code-reviewer-derived custom description is a closer match");
+    expect(swarmPrompt).toContain("task({ subagent_type: \"<chosen-reviewer>\"");
 
-    const agents = opencodeConfig.agent as Record<string, unknown>;
     expect(agents["forager-worker"]).toBeDefined();
     expect(agents["scout-docs"]).toBeDefined();
     expect(agents["code-reviewer"]).toBeDefined();
@@ -2335,9 +2341,9 @@ Do it
     const builderConfig = agents["hive-builder"];
     expect(builderConfig).toBeDefined();
     expect(builderConfig.prompt).toBeUndefined();
-    expect(agents["hive-master"]?.prompt).toBeUndefined();
+    expect(agents["hive-master"]).toBeUndefined();
     expect(agents["forager-worker"]?.prompt).toBeUndefined();
-    expect(agents["architect-planner"]).toBeUndefined();
+    expect(agents["architect-planner"]?.prompt).toContain(ARCHITECT_BEE_PROMPT);
     expect(agents["scout-researcher"]?.prompt).toBeDefined();
     expect(agents["hive-helper"]?.prompt).toBeDefined();
     expect(agents["code-reviewer"]?.prompt).toBeDefined();
@@ -2347,7 +2353,6 @@ Do it
       | undefined;
 
     const cases = [
-      ['hive-master', QUEEN_BEE_PROMPT],
       ['forager-worker', FORAGER_BEE_PROMPT],
       ['hive-builder', HIVE_BUILDER_PROMPT],
     ] as const;
