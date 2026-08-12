@@ -345,7 +345,7 @@ After session compaction, task workers re-read `worker-prompt.md` and continue f
 
 Manual tasks created with `hive_task_create()` follow the same DAG model as plan-backed tasks. The `goal`, `description`, `acceptanceCriteria`, `files`, and `references` fields are turned into `spec.md` content visible to the worker. To change downstream sequencing or scope after review feedback, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })`.
 
-`hive-helper` is a runtime-only bounded assistant for merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance. It stays within the current approved DAG boundary and does not appear in `.github/agents/`.
+`hive-helper` is a runtime-only bounded assistant for merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance. It stays within the current approved DAG boundary and is not a selectable custom base agent.
 
 `simplicity-reviewer` is a built-in read-only reviewer for final post-implementation cleanup and a supported `customAgents` base for specialized cleanup passes. It reviews completed diffs for YAGNI, dead code, duplication, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification.
 
@@ -617,7 +617,7 @@ Define plugin-only custom subagents with `customAgents`. Freshly initialized `ag
 
 Custom subagents are scoped routing specialists, not model-upgrade switches. Primary agents choose them when their description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names them. They keep the built-in base agent when no configured description is a closer fit. A stronger model alone is not a routing reason.
 
-`hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery and does not appear in `.github/agents/`.
+`hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery.
 
 `simplicity-reviewer` is a custom base agent for specialized cleanup passes. Primary agents still use the built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match.
 

@@ -36,7 +36,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 packages/
 ├── hive-core/            <- Shared logic (services, types, utils)
 ├── opencode-hive/        <- OpenCode plugin (planning, execution, tracking)
-└── vscode-hive/          <- VS Code extension (plan-only review, status, reduced Copilot-facing tool surface)
+└── vscode-hive/          <- VS Code extension (viewer-first plan/overview review, status, limited archive)
 ```
 
 ## Data Flow

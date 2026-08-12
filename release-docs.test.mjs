@@ -63,11 +63,19 @@ describe('current documentation contract', () => {
 
     assert.equal(fs.existsSync(path.join(workspaceRoot, 'docs/GETTING-STARTED.md')), false);
     assert.equal(fs.existsSync(path.join(workspaceRoot, 'packages/opencode-hive/docs/HOOK_CADENCE.md')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, 'plugin.json')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, '.github/agents')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, '.github/skills')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, '.github/hooks')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, '.github/instructions')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, '.github/prompts')), false);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, '.github/copilot-instructions.md')), false);
   });
 
   it('rejects deleted-doc references in current tracked Markdown', () => {
     for (const relativePath of currentTrackedMarkdownPaths()) {
       assert.doesNotMatch(readText(relativePath), /GETTING-STARTED\.md|HOOK_CADENCE\.md/, relativePath);
+      assert.doesNotMatch(readText(relativePath), /\.github\/agents\/|\.github\/skills\/|copilot-instructions\.md/, relativePath);
     }
   });
 

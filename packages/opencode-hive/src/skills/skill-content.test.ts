@@ -1,14 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { BUILTIN_SKILLS } from './registry.generated.js';
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-const copilotBrainstormingSkillPath = path.join(
-  repoRoot,
-  '.github/skills/brainstorming/SKILL.md'
-);
 
 function expectInSessionDesignDocumentationPolicy(content: string) {
   expect(content).not.toContain('docs/plans/YYYY-MM-DD-<topic>-design.md');
@@ -74,12 +65,6 @@ describe('skill content', () => {
 
     expect(skill).toBeDefined();
     expectInSessionDesignDocumentationPolicy(skill!.template);
-  });
-
-  it('aligns Copilot brainstorming documentation policy with the canonical skill', () => {
-    const copilotSkill = fs.readFileSync(copilotBrainstormingSkillPath, 'utf-8');
-
-    expectInSessionDesignDocumentationPolicy(copilotSkill);
   });
 
   it('documents overview-first execution truth in writing-plans', () => {

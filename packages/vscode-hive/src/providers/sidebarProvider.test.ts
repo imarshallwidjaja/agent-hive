@@ -217,18 +217,10 @@ describe('HiveSidebarProvider', () => {
   });
 
   it('ignores non-.hive workspace artifacts', async () => {
-    fs.mkdirSync(path.join(testRoot, '.github', 'agents'), { recursive: true });
-    fs.mkdirSync(path.join(testRoot, '.github', 'skills', 'executing-plans'), { recursive: true });
-    fs.mkdirSync(path.join(testRoot, '.github', 'hooks'), { recursive: true });
-    fs.mkdirSync(path.join(testRoot, '.github', 'instructions'), { recursive: true });
-    fs.mkdirSync(path.join(testRoot, '.github', 'prompts'), { recursive: true });
-    fs.writeFileSync(path.join(testRoot, '.github', 'agents', 'hive.agent.md'), '# agent');
-    fs.writeFileSync(path.join(testRoot, '.github', 'skills', 'executing-plans', 'SKILL.md'), '# skill');
-    fs.writeFileSync(path.join(testRoot, '.github', 'hooks', 'hive-plan-enforcement.json'), '{}');
-    fs.writeFileSync(path.join(testRoot, '.github', 'instructions', 'hive.instructions.md'), '# instruction');
-    fs.writeFileSync(path.join(testRoot, '.github', 'prompts', 'plan-feature.prompt.md'), '# prompt');
-    fs.writeFileSync(path.join(testRoot, '.github', 'copilot-instructions.md'), '# steering');
-    fs.writeFileSync(path.join(testRoot, 'plugin.json'), '{"name":"hive"}');
+    fs.mkdirSync(path.join(testRoot, '.github', 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, '.github', 'workflows', 'ci.yml'), 'name: ci\n');
+    fs.writeFileSync(path.join(testRoot, 'README.md'), '# noise\n');
+    fs.writeFileSync(path.join(testRoot, 'package.json'), '{"name":"noise"}');
 
     const provider = new HiveSidebarProvider(testRoot);
     const rootItems = await provider.getChildren();

@@ -1074,12 +1074,6 @@ describe('README.md documentation', () => {
   const vscodeReadmeContent = readFileSync(VSCODE_README_PATH, 'utf-8');
   const PHILOSOPHY_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'PHILOSOPHY.md');
   const philosophyContent = readFileSync(PHILOSOPHY_PATH, 'utf-8');
-  const GITHUB_HIVE_AGENT_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', '.github', 'agents', 'hive.agent.md');
-  const githubHiveAgentContent = readFileSync(GITHUB_HIVE_AGENT_PATH, 'utf-8');
-  const GITHUB_EXECUTING_PLANS_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', '.github', 'skills', 'executing-plans', 'SKILL.md');
-  const githubExecutingPlansContent = readFileSync(GITHUB_EXECUTING_PLANS_PATH, 'utf-8');
-  const GITHUB_VERIFY_COMPLETION_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', '.github', 'prompts', 'verify-completion.prompt.md');
-  const githubVerifyCompletionContent = readFileSync(GITHUB_VERIFY_COMPLETION_PATH, 'utf-8');
 
   describe('delegation planning alignment', () => {
     it('contains the heading "### Planning-mode delegation"', () => {
@@ -1161,7 +1155,7 @@ describe('README.md documentation', () => {
     });
 
     it('keeps hive-helper out of custom derived subagent docs while documenting simplicity-reviewer as a custom base', () => {
-      expect(readmeContent).toContain('does not appear in `.github/agents/`');
+      expect(readmeContent).toContain('is not a custom base agent');
       expect(readmeContent).toContain('### Custom Derived Subagents');
       expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, or `vulnerability-reviewer`');
       expect(readmeContent).not.toContain('`simplicity-reviewer` is also not a custom base agent');
@@ -1195,22 +1189,6 @@ describe('README.md documentation', () => {
       for (const doc of docs) {
         expect(doc).not.toContain(removedNetworkTool);
         expect(doc).not.toContain(removedNetworkName);
-      }
-    });
-  });
-
-  describe('github workflow reviewer guidance', () => {
-    it('does not route current GitHub guidance to retired hygienic or verification-before-completion flows', () => {
-      const currentGuidance = [
-        githubHiveAgentContent,
-        githubExecutingPlansContent,
-        githubVerifyCompletionContent,
-      ];
-
-      for (const doc of currentGuidance) {
-        expect(doc).not.toContain('@hygienic');
-        expect(doc).not.toContain('Hygienic');
-        expect(doc).not.toContain('verification-before-completion');
       }
     });
   });
