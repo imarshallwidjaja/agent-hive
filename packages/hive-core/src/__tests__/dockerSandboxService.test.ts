@@ -84,9 +84,22 @@ describe('DockerSandboxService', () => {
   });
 
   describe('isDockerAvailable', () => {
-    test('returns boolean based on docker availability', () => {
-      const result = DockerSandboxService.isDockerAvailable();
-      expect(typeof result).toBe('boolean');
+    test('returns true when docker info succeeds within the timeout', () => {
+      const execSyncSpy = spyOn(child_process, 'execSync').mockImplementation(() => '' as any);
+      expect(DockerSandboxService.isDockerAvailable()).toBe(true);
+      expect(execSyncSpy).toHaveBeenCalledWith(
+        'docker info',
+        expect.objectContaining({ stdio: 'ignore', timeout: 2000 })
+      );
+      execSyncSpy.mockRestore();
+    });
+
+    test('returns false when docker info fails or times out', () => {
+      const execSyncSpy = spyOn(child_process, 'execSync').mockImplementation(() => {
+        throw new Error('docker info timed out');
+      });
+      expect(DockerSandboxService.isDockerAvailable()).toBe(false);
+      execSyncSpy.mockRestore();
     });
   });
 

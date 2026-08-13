@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Semantic map requests size to selected-model context metadata and launch indexed batches concurrently.
 - Unbound sessions and ad-hoc worktrees cannot mutate a repository-active feature through context writes.
 - Terminal background job states and completion timestamps are absorbing; late active or conflicting terminal updates cannot rewrite the observed terminal result.
+- Docker availability checks time out after 2 seconds instead of hanging when the daemon is unresponsive.
 
 ## [2.2.0] - 2026-07-30
 

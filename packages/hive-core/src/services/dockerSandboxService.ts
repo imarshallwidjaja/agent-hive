@@ -152,7 +152,7 @@ export class DockerSandboxService {
    */
   static isDockerAvailable(): boolean {
     try {
-      execSync('docker info', { stdio: 'ignore' });
+      execSync('docker info', { stdio: 'ignore', timeout: 2000 });
       return true;
     } catch {
       return false;
