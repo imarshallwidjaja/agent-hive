@@ -1,6 +1,6 @@
 # Operator Guide
 
-This guide covers day-to-day work after installation. Use the [root README](../README.md) for first setup.
+This guide covers day-to-day work after installation. Use the [root README](../README.md) for first setup. Exact slash-command flags, tool contracts, and report schemas live in the [plugin README](../packages/opencode-hive/README.md).
 
 ## Mental model
 
@@ -12,13 +12,62 @@ Agent Hive separates decisions from execution:
 - **Workers** implement approved tasks in isolated git worktrees.
 - **`.hive/`** stores durable plans, task state, reports, comments, and recovery metadata.
 
-A plan does not authorize implementation until you approve it.
+A plan does not authorize implementation until you approve it. `/dash-review` and `/vuln-review` bind to separate review primaries so the agent that wrote the change is not the one judging it.
+
+## Agents
+
+OpenCode shows these public seats. Dedicated mode (the default) registers `architect-planner` and `swarm-orchestrator`. Unified mode (`"agentMode": "unified"`) registers `hive-master` instead. `hive-builder` and the subagents below stay available in both modes.
+
+Hidden runtime seats used by `/dash-review`, `/vuln-review`, and task-trace recovery are not listed here. You invoke those products with the slash commands, not by picking the private agent.
+
+### Primary seats
+
+**`architect-planner`** exists so feature work can be scoped before anyone writes code. Default seat in dedicated mode. It interviews, researches through scouts, and writes `plan.md`. "Do X" means "plan X". It does not implement, start worktrees, or merge.
+
+MO: classify the request, clear requirements one gap at a time, then write a worker-executable plan. It stops at an approved plan. Switch to `swarm-orchestrator` (or keep talking to `hive-master` in unified mode) for execution.
+
+**`swarm-orchestrator`** exists so approved feature work can run without rewriting the plan. Dedicated-mode execution seat. It syncs tasks, starts workers, inspects handoffs, merges, and tracks `.hive/` status.
+
+MO: delegate by default. Direct work is only coordination, one bounded read, one bounded write, or one cheap final check. One numbered task is one implementation assignment. Worker output is evidence to inspect, not proof that the batch is done.
+
+**`hive-master`** exists for operators who want one feature seat across planning and execution. Unified-mode default. It is phase-aware: no feature or unapproved plan means planning; approved tasks mean orchestration.
+
+MO: same direct-work boundary as the split seats. It still waits for your approval before implementation. It can also coordinate ad-hoc work in unified mode; dedicated mode leaves that to `hive-builder`.
+
+**`hive-builder`** exists for bounded work that should not become a feature, plan, or task DAG. It is the dedicated-mode ad-hoc orchestrator and remains available in unified mode.
+
+MO: inspect, classify direct vs delegated work, isolate in an ad-hoc worktree, delegate non-trivial work, verify, inspect status/diff, commit, merge, cleanup. It does not create feature or task records. If a durable plan, task dependencies, or an audit trail would actually help, it asks before escalating; if you say no, it stays ad-hoc.
+
+### Subagents you will see
+
+Primaries launch these. Ask the primary for a named seat when you want that lens. Custom agents in `~/.config/opencode/agent_hive.json` derive from these bases; they are routing specialists, not a reason to pick a stronger model.
+
+**`scout-researcher`** exists so primaries do not wander the tree themselves. Read-only research: local code, docs, and external lookup. It answers one assigned question, parallelizes independent evidence, and returns partial findings plus next-slice recommendations when the question will not fit one context window. It does not edit, implement, or launch other agents.
+
+**`forager-worker`** exists so implementation happens in isolation, against a written assignment, without the worker inventing extra scope. It codes in a task or ad-hoc worktree, runs best-effort checks, and commits through the Hive worktree tools. It never delegates. If three approaches fail, it stops and reports blocked instead of improvising a fourth.
+
+**`plan-reviewer`** exists to catch plans that a worker cannot execute. Core question: can a capable worker run this without getting stuck? It checks work content, references, scope, dependencies, executable verification, and written assumptions. Verdict is OKAY or REJECT. It does not judge whether the architecture is optimal.
+
+**`code-reviewer`** exists to check an implementation against the task or plan that authorized it. Core question: is this sound for the stated assignment? It maps changed files to requirements, then correctness, tests, risk, and YAGNI. Verdict is APPROVE, REQUEST_CHANGES, or NEEDS_DISCUSSION. It does not review plan readiness or relitigate architecture unless the diff exposes a concrete defect.
+
+**`simplicity-reviewer`** exists as a final deletion-biased pass after the behavior is already in place. Core question: is the completed change as simple as it can safely be? It looks for YAGNI, dead code, duplication, and extra abstractions. It does not redesign the approach or claim tests passed without evidence.
+
+**`approach-advisor`** exists for "should we do it this way?" questions. Read-only advice on architecture, tradeoffs, stalled debugging direction, and route choice. It recommends one path. It does not implement, approve, reject, patch, or verify.
+
+**`vulnerability-reviewer`** exists to trace attacker-controlled input or capability to concrete impact with local evidence. `/vuln-review` uses it as the specialist base; primaries can also send a scoped security question to the stock seat. It does not exploit systems, edit source, run scanners or shell, or emit a patch.
+
+`hive-helper` is a runtime-only recovery assistant for merge recovery, state clarification, and safe append-only follow-up inside an approved feature DAG. It is not a seat you start from.
 
 ## Choose a workflow
 
-Use a **feature** when the work needs a reviewed plan, multiple tasks, dependencies, isolated task worktrees, or a durable execution record.
+| Workflow | Use it when | Start |
+|----------|-------------|-------|
+| Feature | You need a reviewed plan, task dependencies, isolated task worktrees, or a durable execution record | Ask in plain language, or `/hive-plan` |
+| Ad-hoc (`hive-builder`) | The work is bounded, is not a feature, and should not create feature or task records | Talk to `hive-builder` (dedicated) or `hive-master` (unified) |
+| `/dash-review` | You want an independent implementation review of one frozen snapshot, with no source edits | `/dash-review [scope]` |
+| `/vuln-review` | You are authorized to assess the source and want a bounded static security review | `/vuln-review [intent] [flags]` |
 
-Use an **ad-hoc run** for bounded work that is not a feature and should not create feature or task records. It still uses isolation and orchestration, but does not need the feature planning lifecycle.
+`/council` is a lighter read-only advice run. It does not replace dash-review or vuln-review.
 
 ## Feature lifecycle
 
@@ -48,24 +97,58 @@ The operator/orchestrator inspects completed worker output. Worker claims and ta
 
 Merge completed task branches after inspecting their output. Then run fresh build/test verification against the merged result. Mark the feature complete only after that merged-result verification passes.
 
+## Ad-hoc lifecycle (`hive-builder`)
+
+Use this when the change is real work (isolation, delegation, verification, merge) but does not deserve a feature record.
+
+1. **Inspect and classify.** `hive-builder` gathers enough context to decide direct work vs a delegated lane. Direct work stays tiny: setup, one bounded read, one bounded write, or one cheap check.
+2. **Isolate.** Non-trivial writes go into an ad-hoc worktree under `.hive/.worktrees/adhoc/<runId>`. These runs do not appear in `hive_status` and do not create `plan.md` or tasks.
+3. **Delegate.** Scouts research. Foragers implement. Reviewers check the result. Each native `task()` launch is one primary goal and one terminal handoff.
+4. **Verify.** Relevant checks run before merge. Unverified integration needs an explicit operator instruction after the risk is reported.
+5. **Inspect, merge, cleanup.** Default integration is squash with a polished message. Cleanup removes the ad-hoc worktree and branch.
+
+After a `/dash-review` or `/vuln-review` on ad-hoc work, give any fix instruction to `hive-builder`. Findings are review context, not auto-created tasks.
+
+If the request grows task dependencies, a reviewed plan, or a durable audit trail, `hive-builder` should ask before opening a feature. Tool contracts: [Ad-hoc Worktree](../packages/opencode-hive/README.md#ad-hoc-worktree).
+
+## `/dash-review`
+
+Use this when you want a second look at an implementation without the reviewer changing source or starting a fix.
+
+1. Run `/dash-review` with a branch, ref, range, path, task, feature, or other coherent target. Arguments win. With no argument, it infers only when the conversation and Git/Hive context already name one surface; otherwise it asks one question and stops.
+2. A scope researcher freezes a disposable workspace at `.hive/.worktrees/review/<runId>`. Reviewers work in that copy. Live source is not the review tree.
+3. Parallel review lanes read the frozen snapshot and return findings. The first response is review-only: scope, coverage gaps, verdicts, execution integrity, and APPROVE, REQUEST_CHANGES, or NEEDS_DISCUSSION.
+4. Hive inspects the workspace against the frozen baseline, then cleans it up. Nothing from the review tree is copied back to source.
+5. If you want a fix, say so later to the feature orchestrator or to `hive-builder`. Dash-review does not create Hive state, tasks, commits, or patches.
+
+This is an independent implementation review, not a security assessment and not proof that tests passed on your machine. Flags, workspace locking, and lane contracts: [Operator Commands](../packages/opencode-hive/README.md#operator-commands).
+
+## `/vuln-review`
+
+Use this for authorized static review of source you are allowed to assess. It is a findings-first pass over one frozen snapshot, not a pentest and not a substitute for SAST, DAST, or an audit.
+
+1. Run `/vuln-review` with free text, flags, both, or nothing. Flags are fixed overrides. Whole-repository scope needs `--whole-repo` or an explicit yes to that inferred expansion.
+2. Resolve returns `BOUNDED`, `NEEDS_CLARIFICATION`, or `STOP`. Clarification asks one Yes/No question. Only the stored accepted candidate can be materialized.
+3. Investigate runs a mandatory baseline plus at most two specialist lenses chosen from the observed attack surface. A falsifier then challenges every candidate, including the hypothesis that nothing actionable exists in scope.
+4. The report stays in the OpenCode session. No report file, SARIF, patch, or Hive task is written. Confirmed findings include evidence, attacker-to-impact path, and fix direction without a patch.
+5. Remediation is a separate operator instruction to the feature or ad-hoc orchestrator after you accept the risk and the scope.
+
+The workflow does not exploit systems, scan networks, use credentials, install packages, run scanners, edit source, or mutate remote state. A clean scoped result is not a repository-security claim. Intent flags, specialist lenses, and the report schema: [Vulnerability Review](../packages/opencode-hive/README.md#vulnerability-review).
+
 ## When work blocks or fails
 
 After a worker fails or reports partial progress, start again through the normal task-start path, [`hive_worktree_start`](../packages/opencode-hive/docs/HIVE-TOOLS.md#worktree-4-tools). This normal path covers retries; it is not restricted to pending or in-progress tasks.
 
 When a worker is blocked, inspect the blocker and make the operator decision. The blocked path, [`hive_worktree_create`](../packages/opencode-hive/docs/HIVE-TOOLS.md#worktree-4-tools), launches a fresh worker in the existing worktree.
 
-## Review options
+## Other review options
 
-- **Plan comments**: review requirements, dependencies, and scope in the plan document or chat.
-- **`/dash-review`**: review one frozen disposable implementation workspace without changing source.
-- **`/vuln-review`**: run an authorized bounded static review. It does not exploit systems, edit source, or create automatic fixes, and it does not prove exhaustive security coverage.
-- **`/council`**: request read-only advice about a design or tradeoff. It does not approve, execute, or merge work.
-
-Use the [package README](../packages/opencode-hive/README.md) for exact APIs and contracts.
+- **Plan comments**: review requirements, dependencies, and scope in the plan document or chat before approval.
+- **`/council`**: read-only advice about a design or tradeoff. It synthesizes member notes. It does not approve, execute, merge, or freeze a review workspace.
 
 ## Background and trace notes
 
-Background execution is optional and experimental. When enabled, wait for the native completion notification, then inspect and reconcile terminal jobs. Background controls do not roll back files, branches, worktrees, commits, or reports.
+Background execution is optional and experimental. When enabled, wait for the native completion notification, then inspect and reconcile terminal jobs. Background controls do not roll back files, branches, worktrees, commits, or reports. `/dash-review` and `/vuln-review` stay blocking.
 
 Trace output helps inspect delegated work. It is untrusted and does not authorize acceptance, merge, retry, or resume.
 

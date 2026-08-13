@@ -4,7 +4,7 @@
 
 OpenCode workflow plugin for plan-first development with isolated workers, durable `.hive/` state, and explicit human approval gates.
 
-After installation, ask Hive for a feature in plain language. The first feature loop is below; the [Operator Guide](docs/OPERATOR-GUIDE.md) covers day-to-day operation.
+After installation, ask Hive for a feature in plain language. The first feature loop is below. Ad-hoc work, independent review commands, and the public agent seats are in the [Operator Guide](docs/OPERATOR-GUIDE.md).
 
 ## Demo
 
@@ -52,11 +52,42 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
 7. Run fresh build/test verification against the merged result.
 8. Mark the feature complete only after that merged-result verification passes.
 
-Use a feature when the work needs plan review, task dependencies, isolated task
-worktrees, or a durable audit trail. Use an ad-hoc run for bounded non-feature
-work that should not create feature or task records. By default (dedicated mode),
-the planner and orchestrator handle feature work and `hive-builder` handles
-ad-hoc work. Set `"agentMode": "unified"` for one hybrid primary that coordinates both.
+## What you can run
+
+| Workflow | When | How you start |
+|----------|------|----------------|
+| Feature | Plan review, task dependencies, isolated task worktrees, or a durable audit trail | Ask in plain language, or `/hive-plan` |
+| Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
+| `/dash-review` | Independent implementation review of one frozen snapshot, no source edits | `/dash-review [scope]` |
+| `/vuln-review` | Authorized bounded static security review of one frozen snapshot | `/vuln-review [intent] [flags]` |
+
+By default (dedicated mode), `architect-planner` and `swarm-orchestrator` handle
+feature work and `hive-builder` handles ad-hoc work. Set `"agentMode": "unified"`
+for one hybrid `hive-master` that can coordinate both. `/dash-review` and
+`/vuln-review` always bind to separate review primaries.
+
+## Agents at a glance
+
+Dedicated mode registers `architect-planner` and `swarm-orchestrator`. Unified
+mode registers `hive-master` instead. `hive-builder` and the subagents below
+are in both modes.
+
+| Seat | Role |
+|------|------|
+| `architect-planner` | Writes feature plans. Does not implement. Default in dedicated mode. |
+| `swarm-orchestrator` | Executes approved feature work. Dedicated-mode execution seat. |
+| `hive-master` | Hybrid planner and orchestrator. Unified-mode default. |
+| `hive-builder` | Ad-hoc orchestrator. No feature or task DAG. |
+| `scout-researcher` | Read-only research. |
+| `forager-worker` | Implements in isolated worktrees. Never delegates. |
+| `plan-reviewer` | Checks whether a plan is worker-executable. |
+| `code-reviewer` | Checks an implementation against the task or plan. |
+| `simplicity-reviewer` | Deletion-biased cleanup of a completed diff. |
+| `approach-advisor` | Read-only architecture and tradeoff advice. |
+| `vulnerability-reviewer` | Read-only attacker-to-impact review. |
+
+Why each seat exists, how it behaves, and the full ad-hoc / dash-review /
+vuln-review loops are in the [Operator Guide](docs/OPERATOR-GUIDE.md).
 
 Runtime configuration is global only: `~/.config/opencode/agent_hive.json`.
 Project-local `agent_hive.json` and `agent-hive.json` files are ignored. Dedicated
@@ -76,8 +107,8 @@ For existing-config compatibility, see the
 
 | Doc | Audience |
 |-----|----------|
-| [Operator Guide](docs/OPERATOR-GUIDE.md) | Day-to-day workflow and review choices |
-| [Plugin README](packages/opencode-hive/README.md) | Detailed npm, operator, helper recovery, and simplicity review reference |
+| [Operator Guide](docs/OPERATOR-GUIDE.md) | Agents, feature / ad-hoc / dash-review / vuln-review workflows |
+| [Plugin README](packages/opencode-hive/README.md) | Slash-command flags, tool contracts, helper recovery, and config |
 | [Philosophy](PHILOSOPHY.md) | Why the workflow is shaped this way |
 | [Design](docs/DESIGN.md) | Internal architecture and source-of-truth rules |
 | [Hive Tools](packages/opencode-hive/docs/HIVE-TOOLS.md) | Full tool inventory and contracts |

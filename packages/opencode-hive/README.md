@@ -53,7 +53,7 @@ Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"ag
 7. **Merge** - `hive_merge` integrates completed task branches
 8. **Complete feature** - `hive_feature_complete` when done
 
-Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Ad-hoc work uses `hive_adhoc_*`; `hive-master` can coordinate it in unified mode, while dedicated mode uses `hive-builder`. `architect-planner` is planning-only and does not route ad-hoc work.
+Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Ad-hoc work uses `hive_adhoc_*`; `hive-master` can coordinate it in unified mode, while dedicated mode uses `hive-builder`. `architect-planner` is planning-only and does not route ad-hoc work. Operator-facing seats, when to pick each workflow, and the human loops are in the [Operator Guide](../../docs/OPERATOR-GUIDE.md).
 
 ### Operator Commands
 
@@ -88,6 +88,8 @@ Routing depends on `agentMode`:
 
 Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
 
+Use `/dash-review` when you want an independent implementation review of one frozen snapshot. It does not edit source, create Hive tasks, or start a fix; give any later fix instruction to the feature orchestrator or `hive-builder`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#dash-review). The rest of this section is the command contract.
+
 `/dash-review` accepts a branch/ref/range/path/task/feature/description or another coherent implementation target. Arguments win. Without one, it infers the current implementation only when the conversation and Git/Hive context identify a coherent surface; otherwise it asks one clarification question and stops. OpenCode substitutes command templates and expands `!\`...\`` before plugin command hooks run. `/dash-review` therefore never interpolates raw arguments into its template. Its command hook appends the original argument string after expansion as inert review scope data. Shell-style argument fragments are not evaluated.
 
 The inert transport requires `@opencode-ai/plugin >=1.14.48`, which exposes OpenCode's `command.execute.before` hook. Earlier runtimes are not supported because they expand command templates before any safe plugin interception point.
@@ -115,6 +117,8 @@ For an ad-hoc run, review the existing run or branch, then give a later fix inst
 Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set and the bundled background protocol is available. Use the existing Background Orchestration section and the `background-delegation` skill for the scheduler protocol; command text only points at it when the gate is open. `/dash-review` is a deliberate exception and remains blocking-only.
 
 ### Vulnerability Review
+
+Use `/vuln-review` when you are authorized to assess the source and want a findings-first static review of one frozen snapshot. It does not exploit systems, edit source, or create automatic fixes. A scoped clean result is not a repository-security claim. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#vuln-review). The rest of this section is the command contract.
 
 `/vuln-review` is for authorized use against source the operator is permitted to assess. It performs a bounded static/local review and does not establish compliance, replace SAST or DAST, prove exhaustive coverage, or establish repository security.
 
@@ -286,6 +290,8 @@ In gate-open sessions, `hive_worktree_start` may return a `backgroundTaskCall` f
 When a task branch has no net tracked changes to integrate, `hive_merge` reports a successful no-op: `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, and no empty `sha`. Requested cleanup can still run when safe. Use `hive_status`, not the background board, to decide whether a task has completed work and a live worktree eligible for merge or cleanup.
 
 ### Ad-hoc Worktree
+
+Use ad-hoc orchestration when you need isolation, delegation, verification, and merge without a feature, plan, or task record. Dedicated mode uses `hive-builder`; unified mode can use `hive-master`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#ad-hoc-lifecycle-hive-builder).
 
 The ad-hoc orchestrator uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. This orchestrator works in both gate-closed and gate-open sessions; gate-closed sessions return blocking `taskToolCall` payloads, while gate-open sessions return both `taskToolCall` and `backgroundTaskCall` (identical except `background: true`) so blocking remains available when the next step depends on the worker. `hive_adhoc_worktree_create` accepts `autoSpawnWorker`, default `true`; set it to `false` only for inspection, routing, or setup-only worktrees where no worker should auto-launch. See `docs/HIVE-TOOLS.md` for the full tool contracts.
 
@@ -754,7 +760,7 @@ Override models for specific agents:
 
 - [Hive Tools](docs/HIVE-TOOLS.md) for tool inventory and contracts
 - [Data Model](docs/DATA-MODEL.md) for `.hive/` state and task records
-- [Operator Guide](../../docs/OPERATOR-GUIDE.md) for the human workflow and review choices
+- [Operator Guide](../../docs/OPERATOR-GUIDE.md) for public agents and the feature / ad-hoc / dash-review / vuln-review loops
 - [Design](../../docs/DESIGN.md) for architecture and source-of-truth rules
 
 ## Pair with VS Code
