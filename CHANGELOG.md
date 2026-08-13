@@ -7,14 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-13
+
 ### Added
 
 - Primary orchestrators can inspect one directly delegated OpenCode child with stable compact forensic `hive_task_trace` v2 reports or request a terminal semantic handoff with one card per source step, coverage-gated phases, deterministic fallback, labelled child self-report, and runtime-safe next actions. Generated semantics are explicitly untrusted and may restate reasoning sent transiently to the configured model; source steps identify context coverage, not evidence.
 - Global `taskTraceSummarizer` settings configure the hidden, tool-less recovery interpreter model, variant, and temperature.
+- Delegated `architect-planner` sessions may launch one level of read-only planning helpers. Those children cannot delegate, and `question` stays reserved for primary sessions.
+
+### Changed
+
+- Default `agentMode` is now `dedicated` (`architect-planner` plus `swarm-orchestrator`). Set `"agentMode": "unified"` to keep a single hybrid `hive-master` seat.
+- Unused `omoSlimEnabled` is ignored in existing global configs and is no longer a documented setting.
+- Dead Copilot and marketplace surfaces are removed. The repo ships `oc-arkive` and the `vscode-arkive` VSIX companion path.
+- Operator docs describe the public agent seats, dedicated vs unified routing, and the ad-hoc / dash-review / vuln-review loops.
+- Version-bearing package, lockfile, plugin manifest, changelog, and release-note surfaces are refreshed to `2.3.0`.
 
 ### Fixed
 
 - Task traces preserve every surviving normalized step exactly once in forensic mode while terminal semantic recovery omits forensic dictionaries, raw payloads, and timelines. UTF-8-bounded mapping covers every step; failed fragments fall back the whole step, reduction enforces 1-12 contiguous phases, and invalid or unavailable reduction uses balanced fallback. Ordered failures retain concurrent provider/schema/coverage and cleanup causes without retry. Deterministic errors and PatchPart files cannot be overridden by generated success claims, and any partial/fallback/error/compacted source forces inspection. Exact `actual_bytes` and advisory `soft_target_bytes` remain uncapped.
+- Semantic map requests size to selected-model context metadata and launch indexed batches concurrently.
+- Unbound sessions and ad-hoc worktrees cannot mutate a repository-active feature through context writes.
 - Terminal background job states and completion timestamps are absorbing; late active or conflicting terminal updates cannot rewrite the observed terminal result.
 
 ## [2.2.0] - 2026-07-30
