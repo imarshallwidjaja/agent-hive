@@ -6,6 +6,12 @@ OpenCode workflow plugin for plan-first development with isolated workers, durab
 
 After installation, ask Hive for a feature in plain language. The first feature loop is below; the [Operator Guide](docs/OPERATOR-GUIDE.md) covers day-to-day operation.
 
+## Demo
+
+Older walkthrough of the plan-first loop. Package names and UI have changed since this was recorded.
+
+https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
+
 ## Requirements
 
 - [OpenCode](https://opencode.ai) `>= 1.14.48` (peer dependency of `oc-arkive`)
