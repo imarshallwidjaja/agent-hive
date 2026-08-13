@@ -1164,7 +1164,7 @@ describe('README.md documentation', () => {
 
     it('mentions hive-helper and simplicity-reviewer in the top-level README so users know the agents exist', () => {
       expect(rootReadmeContent).toContain('helper recovery');
-      expect(rootReadmeContent).toContain('simplicity review');
+      expect(rootReadmeContent).toContain('simplicity-reviewer');
       expect(readmeContent).toContain('simplicity-reviewer');
     });
 
