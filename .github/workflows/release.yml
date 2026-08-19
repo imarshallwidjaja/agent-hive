@@ -185,13 +185,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: '24'
 
-      - name: Verify npm publish credentials
-        run: node .github/scripts/verify-npm-publish-access.mjs opencode-hive
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
+      - name: Install npm 11.5+
+        run: npm install -g npm@^11.5.1
 
       - name: Check if already published on npm
         id: npm_check
@@ -205,15 +202,11 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
 
       - name: Publish to npm
         if: steps.npm_check.outputs.skip != 'true'
         working-directory: packages/opencode-hive
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
+        run: npm publish --access public
 
   release:
     needs: [prepare, build, publish-oc-arkive]

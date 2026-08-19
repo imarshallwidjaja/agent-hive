@@ -14,6 +14,13 @@ function readJson(relativePath) {
   return JSON.parse(readText(relativePath));
 }
 
+function readPublishOcArkiveJob() {
+  const workflow = readText('.github/workflows/release.yml');
+  const match = workflow.match(/^ {2}publish-oc-arkive:[\s\S]*?(?=^ {2}\w[\w-]*:)/m);
+  assert.ok(match, 'expected a publish-oc-arkive job block in .github/workflows/release.yml');
+  return match[0];
+}
+
 async function loadNpmPublishAccessHelper() {
   const helperPath = path.join(workspaceRoot, '.github', 'scripts', 'verify-npm-publish-access.mjs');
 
@@ -173,10 +180,24 @@ describe('npm publish access helper', () => {
     );
   });
 
-  it('uses the checked-in helper script from the npm publish job instead of inline node-e JavaScript', () => {
+  it('publishes oc-arkive to npm through GitHub OIDC trusted publishing without static tokens', () => {
     const workflow = readText('.github/workflows/release.yml');
+    const job = readPublishOcArkiveJob();
 
-    assert.match(workflow, /node \.github\/scripts\/verify-npm-publish-access\.mjs opencode-hive/);
+    assert.match(job, /id-token:\s*write/);
+    assert.match(job, /contents:\s*read/);
+    assert.match(job, /runs-on:\s*ubuntu-latest/);
+    assert.match(job, /actions\/setup-node@v\d+/);
+    assert.match(job, /node-version:\s*'24'/);
+    assert.match(job, /npm install -g npm@\^11\.5\.1/);
+    assert.match(job, /npm view/);
+    assert.match(job, /skip=true/);
+    assert.match(job, /run: npm publish --access public[ \t]*$/m);
+    assert.doesNotMatch(job, /--provenance/);
+
+    assert.doesNotMatch(workflow, /NPM_KEY/);
+    assert.doesNotMatch(workflow, /NODE_AUTH_TOKEN/);
+    assert.doesNotMatch(workflow, /node \.github\/scripts\/verify-npm-publish-access\.mjs opencode-hive/);
     assert.doesNotMatch(workflow, /node -e/);
   });
 });
@@ -188,8 +209,10 @@ describe('release recovery docs contract', () => {
 
     assert.match(releasing, /workflow_dispatch/);
     assert.match(releasing, /Manual `workflow_dispatch` runs default to `rehearse`/i);
-    assert.match(releasing, /first publish/i);
-    assert.match(releasing, /package does not exist yet|package is currently absent/i);
+    assert.match(releasing, /requested version/i);
+    assert.match(releasing, /absent requested version is publish-ready/i);
+    assert.match(releasing, /already-published requested version skips publishing/i);
+    assert.match(releasing, /provenance/i);
     assert.match(releasing, /Recovery mode is only for existing .*vX\.Y\.Z.* tags/i);
     assert.match(releasing, /publishes `oc-arkive` to npm/i);
     assert.doesNotMatch(releasing, /VS Code Marketplace/i);

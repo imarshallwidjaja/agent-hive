@@ -6,9 +6,13 @@ The `Release` workflow publishes only on tags matching `v*`. Manual `workflow_di
 
 ## 1. One-time release setup
 
-Create an npm automation token for the account that will own `oc-arkive`, then add it to the fork as a repository secret named `NPM_KEY`.
+Publishing to npm uses [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) through GitHub Actions OIDC, so no npm token or repository secret is required. On npmjs.com, create a trusted publisher for the account that owns `oc-arkive` with the GitHub repository `imarshallwidjaja/agent-hive`, workflow filename `release.yml`, and permission `npm publish`.
 
-For the first publish, the package does not exist yet. The release helper treats that as first-publish-ready as long as `npm whoami` succeeds with the configured token. After the package exists, the same helper verifies that the publishing account has read-write collaborator access.
+After the first OIDC publish succeeds, remove the `NPM_KEY` repository secret on GitHub and revoke the old npm automation token. These are manual account steps; the workflow change does not remove the secret or revoke the token.
+
+The workflow authenticates through the GitHub OIDC token: the publish job declares `permissions: contents: read` and `id-token: write` and publishes with Node 24 and npm CLI 11.5+ (`npm install -g npm@^11.5.1`) on a GitHub-hosted runner, which meets the npm Trusted Publishing requirements.
+
+Trusted Publishing is configured on the existing `oc-arkive` package. The CI skip check runs `npm view oc-arkive@<requested version>` anonymously: an absent requested version is publish-ready and an already-published requested version skips publishing. The workflow keeps public access explicit with `npm publish --access public`. Publishes through Trusted Publishing from GitHub Actions automatically generate npm provenance attestations, so the workflow does not pass `--provenance` explicitly.
 
 ## 2. Prep the release locally
 
@@ -28,21 +32,28 @@ The pushed tag must also match the root package version. A `v1.2.3` tag on a com
 
 ## 3. Run local release preflight
 
-Before tagging, confirm local package state and npm access:
+Before tagging, run the canonical release check:
+
+```bash
+bun run release:check
+```
+
+You can also verify your local npm login and package access, but CI does not require either check:
 
 ```bash
 npm whoami
 node .github/scripts/verify-npm-publish-access.mjs opencode-hive
-bun run release:check
 ```
 
-These are preflight checks, not preparation shortcuts:
+These checks are not preparation shortcuts:
 
 - `npm whoami` confirms your local npm login works.
-- `node .github/scripts/verify-npm-publish-access.mjs opencode-hive` reads `packages/opencode-hive/package.json`, so it checks `oc-arkive` even though the package directory is still named `opencode-hive`.
+- `node .github/scripts/verify-npm-publish-access.mjs opencode-hive` (optional, local-only) reads `packages/opencode-hive/package.json`, so it checks `oc-arkive` even though the package directory is still named `opencode-hive`. It validates your local npm login (or read-write collaborator access once the package exists).
 - `bun run release:check` installs dependencies, verifies the release artifacts and workflow contract, builds `hive-core`, `oc-arkive`, and `vscode-arkive`, and runs their test suites.
 
-If any preflight fails, fix credentials, access, or branch content before creating a tag.
+The npm checks are optional local validation only and are not CI gates: CI authenticates with the GitHub OIDC token exchanged by npm Trusted Publishing and never uses a static npm token.
+
+Fix any `bun run release:check` failure before creating a tag. A failed optional npm check only affects local npm operations; CI publishing authenticates independently through OIDC.
 
 ## 4. Rehearse the GitHub workflow
 
@@ -102,7 +113,7 @@ When a tag already exists but one or more release targets failed, recover by man
 ### Operator flow for a partially published version
 
 1. Check whether `oc-arkive@X.Y.Z` exists on npm and whether the GitHub Release exists for `vX.Y.Z` with the `vscode-arkive.vsix` asset attached.
-2. Repair the credential or access issue that caused the partial failure.
+2. Check the trusted publisher configuration (GitHub repository, workflow filename `release.yml`, allowed action, and environment if configured), the publish job `permissions` (`contents: read` and `id-token: write`), the GitHub-hosted `ubuntu-latest` runner, and supported Node 24 / npm 11.5+ versions.
 3. Open the `Release` workflow with `workflow_dispatch`.
 4. Set `release_mode` to `recover`.
 5. Set `recovery_tag` to the existing release tag.
