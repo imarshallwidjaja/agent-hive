@@ -302,13 +302,36 @@ describe('Specialized reviewer prompts', () => {
     expect(DASH_REVIEWER_PROMPT).toContain('Do not edit files');
     expect(DASH_REVIEWER_PROMPT).toContain('normal local CLI and retrieval tools');
     expect(DASH_REVIEWER_PROMPT).toContain('review workspace');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not create or mutate Hive state');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not perform any other Hive or source mutation');
     expect(DASH_REVIEWER_PROMPT).toContain('native `task()`');
     expect(DASH_REVIEWER_PROMPT).toContain('generated review-lane task targets');
     expect(DASH_REVIEWER_PROMPT).toContain('hive_review_workspace_claim');
     expect(DASH_REVIEWER_PROMPT).toContain('before deep review lanes');
+    expect(DASH_REVIEWER_PROMPT).toContain('The exact allowed review-workspace lifecycle is: delegated Stage A `hive_review_workspace_create`, primary `hive_review_workspace_claim`, primary post-review `hive_review_workspace_inspect`, and exactly one primary `hive_review_workspace_cleanup`.');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not perform any other Hive or source mutation');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not clean or reset source');
+    expect(DASH_REVIEWER_PROMPT).not.toContain('sole lifecycle exception');
+    expect(DASH_REVIEWER_PROMPT).not.toContain('commit, merge, clean up');
     expect(DASH_REVIEWER_PROMPT).not.toContain('scope/lead scout');
     expect(DASH_REVIEWER_PROMPT).not.toContain('Do not run Git');
+  });
+
+  it('leaves provider and scope workflow details to the active dash-review command contract', () => {
+    expect(DASH_REVIEWER_PROMPT).toContain('Follow the active `/dash-review` command contract');
+    for (const commandContractDetail of [
+      'GitHub',
+      'githubPullRequest',
+      'gh api',
+      'baseSha',
+      'headSha',
+      'verified PR commits',
+      'explicit local scope',
+      'unverified local checkout',
+      'targetRef',
+      'provider refs',
+    ]) {
+      expect(DASH_REVIEWER_PROMPT).not.toContain(commandContractDetail);
+    }
   });
 
   it('keeps plan-reviewer focused on executable plans, not approach review', () => {

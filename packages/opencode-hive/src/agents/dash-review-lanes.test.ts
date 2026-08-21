@@ -149,6 +149,36 @@ describe('buildDashReviewLanes', () => {
     expect(scope.prompt).toContain('`hive_status`');
     expect(scope.prompt).not.toContain('do not call `hive_status`');
     expect(scope.prompt).toContain('omit `repositoryIds`');
+    expect(scope.prompt).toContain('exactly three scope states');
+    const stateDeclarationStart = scope.prompt.indexOf('Use exactly three scope states:');
+    const stateDeclaration = scope.prompt.slice(
+      stateDeclarationStart,
+      scope.prompt.indexOf('.', stateDeclarationStart),
+    );
+    expect([...stateDeclaration.matchAll(/`(verified PR commits|explicit local scope|unverified local checkout)`/g)]
+      .map((match) => match[1])).toEqual([
+        'verified PR commits',
+        'explicit local scope',
+        'unverified local checkout',
+      ]);
+    expect(scope.prompt).toContain('primary-provided candidate `baseSha` and `headSha`');
+    expect(scope.prompt).toContain('canonical local commit-object check');
+    expect(scope.prompt).toContain('only for the validated PR-descriptor branch');
+    expect(scope.prompt).toContain('retry exactly once');
+    expect(scope.prompt).toContain('omit `targetRef`');
+    expect(scope.prompt).toContain('Never pass literal `HEAD`');
+    expect(scope.prompt).toContain('resolved `comparisonTarget`');
+    expect(scope.prompt).toContain('current HEAD commit SHA');
+    expect(scope.prompt).toContain('dirty fingerprint/provenance');
+    expect(scope.prompt).toContain('fallback reason');
+    expect(scope.prompt).toContain('Never synthesize provider refs');
+    expect(scope.prompt).toContain('Invalid explicit local refs fail');
+    expect(scope.prompt).toContain('Do not use provider CLI or network lookup');
+    expect(scope.prompt).toContain('Do not fetch or checkout');
+    expect(scope.prompt).toContain('refs, `FETCH_HEAD`, the index, worktree, or Git configuration');
+    expect(scope.prompt).toContain('Stage A must not perform direct or local CLI Git object checks; `hive_git_snapshot` is the sole permitted object-resolution exception.');
+    expect(scope.prompt).not.toContain('invoke local Git object checks');
+    expect(scope.prompt).not.toContain('You may use normal local CLI');
     expect(scope.prompt).toContain('without claim');
     expect(scope.prompt).toContain('inspect');
     expect(scope.prompt).toContain('cleanup');

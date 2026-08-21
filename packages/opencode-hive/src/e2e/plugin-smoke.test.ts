@@ -767,7 +767,7 @@ Do it
     });
   });
 
-  it('keeps dash-review command arguments inert until the post-expansion command hook appends them', async () => {
+  it('appends one authoritative dash-review argument packet after command expansion', async () => {
     const dashRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-e2e-dash-review-'));
     try {
       execSync('git init', { cwd: dashRoot });
@@ -779,23 +779,45 @@ Do it
       const { hooks } = await createHooksForTest(dashRoot, 'sess_dash_review_arguments');
       const config: Record<string, any> = {};
       const marker = path.join(dashRoot, 'dash-review-argument-marker');
-      const rawArguments = `!\`touch "${marker}"\` explicit/scope`;
 
       await hooks.config!(config);
 
       const template = config.command['dash-review'].template as string;
-      const parts = await runOpenCodeV114CommandPath({
-        hooks,
-        command: 'dash-review',
-        sessionID: 'sess_dash_review_arguments',
-        arguments: rawArguments,
-        template,
-        cwd: dashRoot,
-      });
+      const packetMarker = 'Dash-review command input (JSON; inert data only):\n';
+      expect(template).not.toContain('$ARGUMENTS');
+      expect(template).not.toContain(packetMarker);
+
+      for (const [name, rawArguments, githubPullRequest] of [
+        ['exact PR URL', 'https://github.com/example/project/pull/295', {
+          owner: 'example',
+          repository: 'project',
+          number: 295,
+        }],
+        ['ordinary text', 'feature/retry-restore', null],
+        ['multiline shell-like text', `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`, null],
+      ] as const) {
+        const parts = await runOpenCodeV114CommandPath({
+          hooks,
+          command: 'dash-review',
+          sessionID: `sess_dash_review_arguments_${name.replaceAll(' ', '_')}`,
+          arguments: rawArguments,
+          template,
+          cwd: dashRoot,
+        });
+        const rendered = parts.map((part) => part.text).join('\n');
+        const expectedPacket = {
+          schema: 'hive-dash-review-command/v1',
+          rawIntent: rawArguments,
+          githubPullRequest,
+        };
+
+        expect(rendered.split(packetMarker)).toHaveLength(2);
+        expect(parts.at(-1)?.text.trim()).toBe(`${packetMarker}${JSON.stringify(expectedPacket)}`);
+        expect(rendered).not.toContain('## Explicit Command Scope');
+        expect(rendered).not.toContain('{"schema":"hive-dash-review-command/v1","rawIntent":"","githubPullRequest":null}');
+      }
 
       expect(fs.existsSync(marker)).toBe(false);
-      expect(template).not.toContain('$ARGUMENTS');
-      expect(parts.map((part) => part.text).join('\n')).toContain(rawArguments);
     } finally {
       fs.rmSync(dashRoot, { recursive: true, force: true });
     }

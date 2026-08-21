@@ -1254,7 +1254,7 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('gives dash-reviewer generated review lanes with normal local tools and bounded workspace lifecycle capability', async () => {
+  it('gives dash-reviewer generated review lanes with role-specific local tools and bounded workspace lifecycle capability', async () => {
     const agents = await buildConfig('unified', {
       'scout-audit': {
         baseAgent: 'scout-researcher',
@@ -1390,10 +1390,22 @@ describe('Per-agent tool filtering', () => {
     expect(scopeLane?.prompt).toContain('first tool call must be `hive_repositories_status`');
     expect(scopeLane?.prompt).toContain('`hive_status`');
     expect(scopeLane?.prompt).not.toContain('do not call `hive_status`');
+    expect(Object.entries(scopeLane?.tools ?? {})
+      .filter(([, enabled]) => enabled)
+      .map(([tool]) => tool)
+      .sort()).toEqual([
+        'hive_git_snapshot',
+        'hive_plan_read',
+        'hive_repositories_status',
+        'hive_review_workspace_create',
+        'hive_status',
+      ]);
+    expect(scopeLane?.permission?.skill).toBe('deny');
     expect(securityLane?.variant).toBe('xhigh');
     expect(securityLane?.description).toContain('Security implementation reviewer');
     expect(securityLane?.prompt).toContain('Security implementation reviewer');
     expect(securityLane?.permission?.bash).toBeUndefined();
+    expect(securityLane?.permission?.skill).toBe('allow');
     expect(securityLane?.tools?.['hive_git_snapshot']).toBe(false);
     expect(securityLane?.prompt).toContain('process cwd is live source');
     for (const sourceName of ['reviewer-*', 'reviewer/security', 'reviewer\\security', '42']) {
@@ -4992,7 +5004,7 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('keeps dash task targets and Hive lifecycle tools bounded without blocking local CLI or retrieval tools', async () => {
+  it('enforces the Stage A scope tool allowlist before execution without narrowing primary or deep review lanes', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-tool-auth-'));
     createGitRepository(repository);
     try {
@@ -5028,12 +5040,31 @@ describe('Per-agent tool filtering', () => {
       }
 
       await messageHook({ sessionID: 'dash-scope', agent: scopeAlias }, { message: {}, parts: [] } as any);
-      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool', 'hive_repositories_status', 'hive_plan_read', 'hive_status', 'hive_git_snapshot', 'hive_review_workspace_create']) {
+      const scopeAllowedTools = [
+        'hive_repositories_status',
+        'hive_plan_read',
+        'hive_status',
+        'hive_git_snapshot',
+        'hive_review_workspace_create',
+      ];
+      for (const tool of scopeAllowedTools) {
         await expect(invoke('dash-scope', tool)).resolves.toBeUndefined();
       }
-      await expect(invoke('dash-scope', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review task target is not authorized');
-      for (const tool of ['hive_feature_create', 'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']) {
-        await expect(invoke('dash-scope', tool, { subagent_type: scopeAlias })).rejects.toThrow('dash-review tool is not authorized');
+      for (const tool of [
+        'bash',
+        'read',
+        'glob',
+        'grep',
+        'websearch_web_search_exa',
+        'context7_query-docs',
+        'unknown_mcp_tool',
+        'mutating_mcp_tool',
+      ]) {
+        await expect(invoke('dash-scope', tool, { command: 'touch should-not-run' })).rejects.toThrow('dash-review tool is not authorized');
+      }
+      await expect(invoke('dash-scope', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review tool is not authorized');
+      for (const tool of HIVE_TOOL_NAMES.filter((tool) => !scopeAllowedTools.includes(tool))) {
+        await expect(invoke('dash-scope', tool)).rejects.toThrow('dash-review tool is not authorized');
       }
 
       await messageHook({ sessionID: 'dash-code', agent: codeAlias }, { message: {}, parts: [] } as any);

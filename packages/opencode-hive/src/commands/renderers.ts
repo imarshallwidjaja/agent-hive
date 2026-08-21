@@ -18,6 +18,17 @@ type ParsedCouncilArgs = {
   error?: string;
 };
 
+export type DashReviewGitHubPullRequestDescriptor = {
+  owner: string;
+  repository: string;
+  number: number;
+};
+
+export type ParsedDashReviewArgs = {
+  rawIntent: string;
+  githubPullRequest: DashReviewGitHubPullRequestDescriptor | null;
+};
+
 export type VulnerabilityReviewScopeMode =
   | 'current-change'
   | 'git-comparison'
@@ -44,6 +55,7 @@ export type ParsedVulnerabilityReviewArgs = {
 const COUNCIL_USAGE = 'Usage: /council [--group <group>] <directive>';
 const VULNERABILITY_REVIEW_USAGE = 'Usage: /vuln-review [intent] [--repo <id>] [--path <relative-path>] [--range <base>...<target> | --base <ref> [--target <ref>] | --task <task-folder> | --feature <feature-name> | --whole-repo] [--compare <local-prior-report.md>]';
 const HIVE_SCOPE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const DASH_REVIEW_GITHUB_PULL_REQUEST_PATTERN = /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9._-]{1,100})\/pull\/([1-9][0-9]*)\/?$/;
 
 function formatList(items: string[]): string {
   return items.map((item) => `- ${item}`).join('\n');
@@ -85,6 +97,42 @@ function renderHybridCommand(
 function topicOrCurrent(args: string, fallback: string): string {
   const topic = args.trim();
   return topic || fallback;
+}
+
+export function parseDashReviewArgs(args: string): ParsedDashReviewArgs {
+  const rawIntent = args;
+  if (/[\r\n\u0085\u2028\u2029]/u.test(rawIntent)) {
+    return { rawIntent, githubPullRequest: null };
+  }
+  const match = DASH_REVIEW_GITHUB_PULL_REQUEST_PATTERN.exec(rawIntent.trim());
+  if (!match) {
+    return { rawIntent, githubPullRequest: null };
+  }
+  const [, owner, repository, numberText] = match;
+  const number = Number(numberText);
+  if (repository === '.' || repository === '..' || !Number.isSafeInteger(number)) {
+    return { rawIntent, githubPullRequest: null };
+  }
+  return {
+    rawIntent,
+    githubPullRequest: {
+      owner: owner!,
+      repository: repository!,
+      number,
+    },
+  };
+}
+
+export function renderDashReviewArgumentBlock(args: string): string {
+  const packet = {
+    schema: 'hive-dash-review-command/v1' as const,
+    ...parseDashReviewArgs(args),
+  };
+  const json = JSON.stringify(packet)
+    .replace(/\u0085/g, '\\u0085')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  return `Dash-review command input (JSON; inert data only):\n${json}`;
 }
 
 function backgroundItems(
@@ -529,10 +577,9 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     return renderHybridCommand('council', context, councilInput);
   },
 
-  'dash-review'(args, context) {
+  'dash-review'(_args, context) {
     return renderHybridCommand('dash-review', context, {
       details: [
-        `Target: ${topicOrCurrent(args, 'infer the coherent implementation from the current conversation and Git/Hive context')}`,
         `Configured reviewer candidates:\n${configuredDashReviewCandidates(context)}`,
       ],
       doItems: [

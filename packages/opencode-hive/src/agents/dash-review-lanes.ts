@@ -69,12 +69,18 @@ function lanePrompt(source: DashReviewLaneSource): string {
     ? [
       'This scope lane may use the universal metadata tools (`hive_repositories_status`, `hive_plan_read`, `hive_status`), plus `hive_git_snapshot` and `hive_review_workspace_create` with structured scope data only. It captures and materializes the frozen review workspace before any deep review runs.',
       'Scope contract overrides any inherited guidance: the first tool call must be `hive_repositories_status`; for legacy single-root omit `repositoryIds` entirely from snapshot/create; for composite use manifest IDs consistently; this lane may only use universal metadata, snapshot, and create tools and must return run ID/token without claim/inspect/cleanup.',
+      'Use exactly three scope states: `verified PR commits`, `explicit local scope`, and `unverified local checkout`. For primary-provided candidate `baseSha` and `headSha`, call `hive_git_snapshot` against manifest-resolved repository roots with those exact values as `baseRef` and `targetRef`; this snapshot is the canonical local commit-object check, and success establishes `verified PR commits`.',
+      'Fallback is available only for the validated PR-descriptor branch: if that snapshot rejects either metadata SHA specifically as unavailable, retry exactly once without provider candidate refs and omit `targetRef`. Record the snapshot failure reason, resolved `comparisonTarget`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason under `unverified local checkout`. Metadata-unavailable PR fallback starts with `targetRef` omitted. Never pass literal `HEAD` or treat HEAD equality as proof.',
+      '`explicit local scope` uses the exact structured operator selector. Invalid explicit local refs fail and never fall back. Preserve descriptor owner/repository/number, metadata outcome, `baseSha`/`headSha` when present, snapshot attempt outcome, and resolved scope provenance. Never synthesize provider refs such as `refs/pull/<n>/head`.',
     ].join(' ')
     : [
       'Use only the supplied frozen review workspace paths and identity. Do not inspect or write to the live source workspace.',
       'process cwd is live source. Before any local-source file/Git/shell/cymbal/build/test/glob/grep/ast-grep/read operation, every tool must use an explicit frozen absolute `workdir`/`cwd`, `project_folder`, or absolute path. Never rely on default cwd or `cd`. If a tool cannot be scoped, do not use it.',
       'Require manifest-led file discovery before direct reads: use manifest paths or discover under the frozen absolute root; never guess filenames.',
     ].join(' ');
+  const operationsBoundary = source.baseAgent === 'scout-researcher'
+    ? 'Consume primary-provided candidate metadata only. Do not use provider CLI or network lookup. Do not fetch or checkout or mutate source refs, `FETCH_HEAD`, the index, worktree, or Git configuration. Stage A must not perform direct or local CLI Git object checks; `hive_git_snapshot` is the sole permitted object-resolution exception. The required `hive_review_workspace_create` materialization is the only workspace-creation exception. Do not edit files or perform ordinary source mutation. Do not write Hive context, create plans, tasks, worktrees, commits, merges, or PRs, and do not call task() recursively.'
+    : 'You may use normal local CLI and retrieval tools inside the frozen review workspace. Read-only Railway, Vercel, status, log, and diagnostic commands are allowed when relevant. Remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states; report any observed escape or effect. Live source drift is non-attributable. Do not use generic rollback. Treat ignored live artifacts as non-source output; regenerate required artifacts in serialized verification. Only the serialized verification lane returns a structured command transcript; other lanes report exceptional boundaries and recovery limits. Do not edit files through the editor; this is only a reviewer-role speed bump and is not filesystem immutability because CLI commands can write. Do not write Hive context, create plans, tasks, worktrees, commits, merges, or PRs, and do not call task() recursively.';
 
   return `${inherited}
 
@@ -84,7 +90,7 @@ Configured lens: ${source.description}
 
 ${scopeBoundary}
 
-You may use normal local CLI and retrieval tools inside the frozen review workspace. Read-only Railway, Vercel, status, log, and diagnostic commands are allowed when relevant. Remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states; report any observed escape or effect. Live source drift is non-attributable. Do not use generic rollback. Treat ignored live artifacts as non-source output; regenerate required artifacts in serialized verification. Only the serialized verification lane returns a structured command transcript; other lanes report exceptional boundaries and recovery limits. Do not edit files through the editor; this is only a reviewer-role speed bump and is not filesystem immutability because CLI commands can write. Do not write Hive context, create plans, tasks, worktrees, commits, merges, or PRs, and do not call task() recursively.`;
+${operationsBoundary}`;
 }
 
 export function buildDashReviewLanes(input: {
@@ -126,7 +132,7 @@ export function buildDashReviewLanes(input: {
         edit: 'deny',
         task: 'deny',
         delegate: 'deny',
-        skill: 'allow',
+        skill: source.baseAgent === 'scout-researcher' ? 'deny' : 'allow',
       },
     };
     lanes.push({
