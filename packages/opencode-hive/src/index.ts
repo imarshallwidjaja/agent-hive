@@ -632,7 +632,7 @@ const plugin: Plugin = async (ctx) => {
     excludedRepositoryIds: string[];
     repositories: Array<{ id: string; path: string }>;
   }> => {
-    const workspaceRoot = await fs.promises.realpath(worktree || directory);
+    const workspaceRoot = await fs.promises.realpath(directory);
     // Deterministic manifest containment assumes no concurrent path mutation by a process with project write access.
     let manifestRepositoryIds: string[];
     let resolveSelectedRepositories: (selectedRepositoryIds: string[]) => Promise<Array<{ id: string; path: string }>>;

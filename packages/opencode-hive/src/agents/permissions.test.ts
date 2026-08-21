@@ -159,7 +159,11 @@ function gitAt(repository: string, args: string[]): string {
   }).trim();
 }
 
-async function createSnapshotPlugin(directory: string, client: unknown = createStubClient()): Promise<{
+async function createSnapshotPlugin(
+  directory: string,
+  client: unknown = createStubClient(),
+  worktree: string = directory,
+): Promise<{
   hooks: Awaited<ReturnType<typeof plugin>>;
   scopeAlias: string;
   vulnerabilityScopeAlias: string;
@@ -167,9 +171,9 @@ async function createSnapshotPlugin(directory: string, client: unknown = createS
   spyOn(ConfigService.prototype, 'get').mockReturnValue({ agentMode: 'unified', agents: {} } as any);
   const hooks = await plugin({
     directory,
-    worktree: directory,
+    worktree,
     serverUrl: new URL('http://localhost:1'),
-    project: { id: 'snapshot', worktree: directory, time: { created: Date.now() } },
+    project: { id: 'snapshot', worktree, time: { created: Date.now() } },
     client,
     $: createStubShell(),
   } as any);
@@ -5132,11 +5136,17 @@ describe('Per-agent tool filtering', () => {
     const repository = path.join(projectRoot, 'nested repositories', 'api service');
     createGitRepository(repository);
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
+      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot, createStubClient(), path.parse(projectRoot).root);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
       const update = hooks.tool!.hive_repositories_update.execute as (input: unknown, context: unknown) => Promise<string>;
       const status = hooks.tool!.hive_repositories_status.execute as (input: unknown, context: unknown) => Promise<string>;
       const snapshot = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
       const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
+      const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
+      const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
 
       expect(JSON.parse(await update(
         { repositories: [{ id: 'api', path: repositoryPath }] },
@@ -5167,6 +5177,21 @@ describe('Per-agent tool filtering', () => {
       expect(created.state).toBe('READY');
       expect(Object.keys(created.repositories)).toEqual(['api']);
       expect(readFileSync(path.join(created.repositories.api.path, 'README.md'), 'utf8')).toBe('snapshot fixture\n');
+      const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-divergent-worktree' };
+      await hooks['chat.message']?.({
+        sessionID: 'dash-primary-divergent-worktree',
+        agent: primary,
+      }, { message: {}, parts: [] } as any);
+      await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
+      expect(JSON.parse(await inspect({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, primaryContext)).source).toMatchObject({ status: 'stable', stable: true });
+      expect(JSON.parse(await cleanup({
+        runId: created.runId,
+        ownershipToken: created.ownershipToken,
+      }, primaryContext)).cleaned).toBe(true);
+      expect(existsSync(created.workspacePath)).toBe(false);
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
