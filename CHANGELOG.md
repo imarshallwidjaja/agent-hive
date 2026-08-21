@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-08-21
+
+### Changed
+
+- The release workflow publishes `oc-arkive` through npm Trusted Publishing with GitHub Actions OIDC, Node 24, and npm 11.5+ instead of a static `NPM_KEY` token. Anonymous version checks still skip versions that are already published, and Trusted Publishing supplies provenance.
+
+### Fixed
+
+- Repository registrations added at non-Git project roots are immediately available to authorized frozen-review snapshots and workspaces in the same session, including repositories under nested paths containing spaces. Existing review authorization and project-manifest path, containment, canonicalization, and symlink validation remain enforced.
+
 ## [2.3.0] - 2026-08-13
 
 ### Added
