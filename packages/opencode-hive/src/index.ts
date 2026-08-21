@@ -669,41 +669,52 @@ const plugin: Plugin = async (ctx) => {
     } else {
       const manifest = await readCompositeWorkspaceManifest(workspaceRoot);
       if (!manifest) {
-        if (repositoryIds !== undefined) {
-          throw new Error(`Unknown repositoryIds: ${repositoryIds.join(', ')}`);
+        const status = new RepositoryManifestService(workspaceRoot).getLocalManifestStatus();
+        if (!status) {
+          if (repositoryIds !== undefined) {
+            throw new Error(`Unknown repositoryIds: ${repositoryIds.join(', ')}`);
+          }
+          return {
+            composite: false,
+            manifestRepositoryIds: [],
+            selectedRepositoryIds: [],
+            excludedRepositoryIds: [],
+            repositories: [{ id: 'root', path: workspaceRoot }],
+          };
         }
-        return {
-          composite: false,
-          manifestRepositoryIds: [],
-          selectedRepositoryIds: [],
-          excludedRepositoryIds: [],
-          repositories: [{ id: 'root', path: workspaceRoot }],
+        if (status.error) throw new Error(status.error);
+        manifestRepositoryIds = status.repositories.map((repository) => repository.id).sort(compareUnicodeCodePoints);
+        const repositoriesById = new Map(status.repositories.map((repository) => [repository.id, repository]));
+        resolveSelectedRepositories = async (selectedRepositoryIds) => selectedRepositoryIds.map((repositoryId) => ({
+          id: repositoryId,
+          path: repositoriesById.get(repositoryId)!.root!,
+        }));
+      } else {
+        manifestRepositoryIds = Object.keys(manifest.repos).sort(compareUnicodeCodePoints);
+        resolveSelectedRepositories = async (selectedRepositoryIds) => {
+          const canonicalReposRoot = await fs.promises.realpath(path.join(workspaceRoot, 'repos'));
+          if (canonicalReposRoot === workspaceRoot || !canonicalReposRoot.startsWith(`${workspaceRoot}${path.sep}`)) {
+            throw new Error('Composite repos directory escapes the workspace root.');
+          }
+          return Promise.all(selectedRepositoryIds.map(async (repositoryId) => {
+            const entry = manifest.repos[repositoryId]!;
+            const expectedPath = path.join(workspaceRoot, 'repos', repositoryId);
+            if (entry.path !== path.posix.join('repos', repositoryId)) {
+              throw new Error(`Repository ${repositoryId} does not use the authorized repos/<id> workspace path.`);
+            }
+            const stat = await fs.promises.lstat(expectedPath);
+            if (stat.isSymbolicLink()) {
+              throw new Error(`Repository ${repositoryId} must not be a symlink.`);
+            }
+            const repository = await fs.promises.realpath(expectedPath);
+            const canonicalExpectedPath = path.join(canonicalReposRoot, repositoryId);
+            if (repository !== canonicalExpectedPath || !repository.startsWith(`${canonicalReposRoot}${path.sep}`)) {
+              throw new Error(`Repository ${repositoryId} escapes the authorized composite repos directory.`);
+            }
+            return { id: repositoryId, path: repository };
+          }));
         };
       }
-      manifestRepositoryIds = Object.keys(manifest.repos).sort(compareUnicodeCodePoints);
-      resolveSelectedRepositories = async (selectedRepositoryIds) => {
-        const canonicalReposRoot = await fs.promises.realpath(path.join(workspaceRoot, 'repos'));
-        if (canonicalReposRoot === workspaceRoot || !canonicalReposRoot.startsWith(`${workspaceRoot}${path.sep}`)) {
-          throw new Error('Composite repos directory escapes the workspace root.');
-        }
-        return Promise.all(selectedRepositoryIds.map(async (repositoryId) => {
-          const entry = manifest.repos[repositoryId]!;
-          const expectedPath = path.join(workspaceRoot, 'repos', repositoryId);
-          if (entry.path !== path.posix.join('repos', repositoryId)) {
-            throw new Error(`Repository ${repositoryId} does not use the authorized repos/<id> workspace path.`);
-          }
-          const stat = await fs.promises.lstat(expectedPath);
-          if (stat.isSymbolicLink()) {
-            throw new Error(`Repository ${repositoryId} must not be a symlink.`);
-          }
-          const repository = await fs.promises.realpath(expectedPath);
-          const canonicalExpectedPath = path.join(canonicalReposRoot, repositoryId);
-          if (repository !== canonicalExpectedPath || !repository.startsWith(`${canonicalReposRoot}${path.sep}`)) {
-            throw new Error(`Repository ${repositoryId} escapes the authorized composite repos directory.`);
-          }
-          return { id: repositoryId, path: repository };
-        }));
-      };
     }
     const selectedRepositoryIds = repositoryIds === undefined
       ? manifestRepositoryIds

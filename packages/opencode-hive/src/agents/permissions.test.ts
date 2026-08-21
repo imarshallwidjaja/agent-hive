@@ -5126,16 +5126,47 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('does not activate a project-local manifest away from an exact Git project root', async () => {
-    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-non-root-local-manifest-'));
-    const repository = path.join(projectRoot, 'api');
+  it('uses same-session project-local registrations for review snapshots and workspaces away from a Git project root', async () => {
+    const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'hive snapshot non-root local manifest '));
+    const repositoryPath = './nested repositories/api service';
+    const repository = path.join(projectRoot, 'nested repositories', 'api service');
     createGitRepository(repository);
-    writeProjectRepositoryManifest(projectRoot, [{ id: 'api', path: './api' }]);
     try {
       const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+      const update = hooks.tool!.hive_repositories_update.execute as (input: unknown, context: unknown) => Promise<string>;
+      const status = hooks.tool!.hive_repositories_status.execute as (input: unknown, context: unknown) => Promise<string>;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
 
-      await expect(execute({ repositoryIds: ['api'] }, snapshotContext(scopeAlias))).rejects.toThrow('Unknown repositoryIds: api');
+      expect(JSON.parse(await update(
+        { repositories: [{ id: 'api', path: repositoryPath }] },
+        snapshotContext('hive-master'),
+      )).added).toEqual(['api']);
+      expect(JSON.parse(await status({}, snapshotContext('hive-master')))).toMatchObject({
+        mode: 'manifest',
+        source: 'local',
+        repositories: [{ id: 'api', path: repositoryPath, root: repository }],
+      });
+
+      const captured = JSON.parse(await snapshot(
+        { repositoryIds: ['api'] },
+        snapshotContext(scopeAlias),
+      ));
+      expect(captured.manifestRepositoryIds).toEqual(['api']);
+      expect(captured.selectedRepositoryIds).toEqual(['api']);
+      expect(captured.snapshots[0].snapshot.repository.root).toBe(repository);
+      await expect(snapshot(
+        { repositoryIds: ['missing'] },
+        snapshotContext(scopeAlias),
+      )).rejects.toThrow('Unknown repositoryId: missing');
+
+      const created = JSON.parse(await create(
+        { repositoryIds: ['api'] },
+        snapshotContext(scopeAlias),
+      ));
+      expect(created.state).toBe('READY');
+      expect(Object.keys(created.repositories)).toEqual(['api']);
+      expect(readFileSync(path.join(created.repositories.api.path, 'README.md'), 'utf8')).toBe('snapshot fixture\n');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
