@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-08-21
+
+### Fixed
+
+- Frozen review repository topology consistently resolves from the session/project `directory`, so unrelated OpenCode global `worktree=/` metadata cannot hide a valid project-local repository manifest. Same-session status, snapshot, workspace creation, claim, inspection, revalidation, and cleanup use the same topology while preserving authorization and path, containment, canonicalization, and symlink checks.
+- `/dash-review` preserves provider-agnostic scope for descriptions, paths, tasks, features, local refs, ranges, SHAs, non-GitHub URLs, and local-checkout intent. Command scope is deterministically JSON-framed, and Stage A has a runtime tool allowlist. An exact GitHub pull-request URL may add bounded metadata; provider, credential, or network failure continues against the local checkout with explicit `unverified local checkout` provenance. The command does not fetch, check out, or mutate refs automatically.
+
 ## [2.3.1] - 2026-08-21
 
 ### Changed

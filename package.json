@@ -1,6 +1,6 @@
 {
   "name": "agent-hive",
-  "version": "2.3.1",
+  "version": "2.3.2",
   "private": true,
   "description": "Context-Driven Development for AI coding assistants",
   "workspaces": [
