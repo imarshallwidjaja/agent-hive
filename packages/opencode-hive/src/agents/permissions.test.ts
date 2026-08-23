@@ -1,13 +1,14 @@
 import { describe, expect, it, spyOn, afterEach, mock } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { ConfigService, ReviewWorkspaceService } from 'hive-core';
 import * as path from 'path';
 import plugin from '../index';
-import { fingerprintReviewSourceScope } from '../utils/git-snapshot.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
+import { compareUnicodeCodePoints } from '../review-runtime-kernel.js';
+import { fingerprintReviewSourceResolutionAuthority } from '../review-source-resolution.js';
 
 const removedHiveSkillTool = ['hive', 'skill'].join('_');
 const expectedVulnerabilityReviewMcpTools = [
@@ -68,7 +69,11 @@ function createStubClient(): unknown {
           id: inputPath.id,
           projectID: 'snapshot',
           directory: '/test',
-          parentID: inputPath.id.includes('child') ? 'vuln-primary' : undefined,
+          parentID: inputPath.id.startsWith('dash-child')
+            ? 'dash-primary'
+            : inputPath.id.includes('child')
+              ? 'vuln-primary'
+              : undefined,
           title: 'Test session',
           version: '1',
           time: {
@@ -103,7 +108,10 @@ type AgentConfig = {
   description?: string;
 };
 
-function createLineageClient(parentBySession: Record<string, string | undefined>): unknown {
+function createLineageClient(
+  parentBySession: Record<string, string | undefined>,
+  created = 1,
+): unknown {
   const client = createStubClient() as {
     session: {
       get: (input: { path: { id: string } }) => Promise<{ data: Record<string, unknown> | undefined }>;
@@ -121,7 +129,7 @@ function createLineageClient(parentBySession: Record<string, string | undefined>
         parentID: parentBySession[inputPath.id],
         title: 'Test session',
         version: '1',
-        time: { created: 1, updated: 1 },
+        time: { created, updated: created },
       },
     };
   };
@@ -159,6 +167,42 @@ function gitAt(repository: string, args: string[]): string {
   }).trim();
 }
 
+function installProviderFixture(repository: string): { bin: string; countFile: string } {
+  const baseSha = gitAt(repository, ['rev-parse', 'HEAD']);
+  writeFileSync(path.join(repository, 'README.md'), 'provider head fixture\n');
+  execFileSync('git', ['-C', repository, 'add', 'README.md'], { shell: false });
+  execFileSync('git', ['-C', repository, 'commit', '-m', 'provider head'], { shell: false });
+  const headSha = gitAt(repository, ['rev-parse', 'HEAD']);
+  const bin = path.join(repository, '.hive', 'provider-bin');
+  const countFile = path.join(repository, '.hive', 'provider-count');
+  mkdirSync(bin, { recursive: true });
+  const executable = path.join(bin, 'gh');
+  writeFileSync(executable, [
+    '#!/bin/sh',
+    `printf x >> '${countFile}'`,
+    `printf '%s\\n' '{"baseSha":"${baseSha}","headSha":"${headSha}"}'`,
+  ].join('\n'));
+  chmodSync(executable, 0o755);
+  return { bin, countFile };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function installGitExecutorCounter(bin: string): string {
+  const countFile = path.join(path.dirname(bin), 'git-executor-count');
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8', shell: false }).trim();
+  const executable = path.join(bin, 'git');
+  writeFileSync(executable, [
+    '#!/bin/sh',
+    `printf x >> ${shellQuote(countFile)}`,
+    `exec ${shellQuote(realGit)} "$@"`,
+  ].join('\n'));
+  chmodSync(executable, 0o755);
+  return countFile;
+}
+
 async function createSnapshotPlugin(
   directory: string,
   client: unknown = createStubClient(),
@@ -167,6 +211,7 @@ async function createSnapshotPlugin(
   hooks: Awaited<ReturnType<typeof plugin>>;
   scopeAlias: string;
   vulnerabilityScopeAlias: string;
+  dashPrimary: string;
 }> {
   spyOn(ConfigService.prototype, 'get').mockReturnValue({ agentMode: 'unified', agents: {} } as any);
   const hooks = await plugin({
@@ -177,7 +222,10 @@ async function createSnapshotPlugin(
     client,
     $: createStubShell(),
   } as any);
-  const config: { agent?: Record<string, AgentConfig> } = {};
+  const config: {
+    agent?: Record<string, AgentConfig>;
+    command?: Record<string, { agent?: string }>;
+  } = {};
   await hooks.config?.(config);
   const scopeAlias = findDashScopeAlias(config.agent);
   if (!scopeAlias) throw new Error('Expected a generated dash scope alias');
@@ -187,7 +235,9 @@ async function createSnapshotPlugin(
       && agent?.tools?.hive_review_workspace_create === true;
   });
   if (!vulnerabilityScopeAlias) throw new Error('Expected a generated vulnerability-review scope alias');
-  return { hooks, scopeAlias, vulnerabilityScopeAlias };
+  const dashPrimary = config.command?.['dash-review']?.agent;
+  if (!dashPrimary) throw new Error('Expected a private dash-review primary');
+  return { hooks, scopeAlias, vulnerabilityScopeAlias, dashPrimary };
 }
 
 function findDashReviewLanes(agents: Record<string, AgentConfig> | undefined): Array<[string, AgentConfig]> {
@@ -221,9 +271,120 @@ function snapshotContext(agent: string): Record<string, unknown> {
   };
 }
 
-function currentChangeProposal(): Record<string, unknown> {
+async function bindDashScope(input: {
+  hooks: Awaited<ReturnType<typeof plugin>>;
+  primary: string;
+  scope: string;
+  primarySessionID?: string;
+  childSessionID?: string;
+  commandArguments?: string;
+  callID?: string;
+}): Promise<Record<string, unknown>> {
+  const primarySessionID = input.primarySessionID ?? 'dash-primary';
+  const childSessionID = input.childSessionID ?? 'dash-child';
+  await input.hooks['command.execute.before']?.({
+    command: 'dash-review',
+    sessionID: primarySessionID,
+    arguments: input.commandArguments ?? '',
+  }, { parts: [] });
+  await input.hooks['chat.message']?.({ sessionID: primarySessionID, agent: input.primary }, {
+    message: { agent: input.primary },
+    parts: [],
+  } as any);
+  await input.hooks['tool.execute.before']?.({
+    tool: 'task',
+    sessionID: primarySessionID,
+    callID: input.callID ?? 'dash-scope-call',
+  }, {
+    args: {
+      description: 'Resolve dash review source',
+      prompt: 'Resolve and materialize the exact command-bound source.',
+      subagent_type: input.scope,
+      background: false,
+    },
+  });
+  await input.hooks['chat.message']?.({ sessionID: childSessionID, agent: input.scope }, {
+    message: { agent: input.scope },
+    parts: [],
+  } as any);
   return {
-    schema: 'hive-vuln-review-stage1/v2',
+    ...snapshotContext(input.scope),
+    sessionID: childSessionID,
+  };
+}
+
+let dashFlowOrdinal = 0;
+
+async function captureDashSource(input: {
+  hooks: Awaited<ReturnType<typeof plugin>>;
+  primary: string;
+  scope: string;
+  snapshotInput?: Record<string, unknown>;
+}): Promise<{
+  context: Record<string, unknown>;
+  preview: Record<string, any>;
+  createInput: Record<string, unknown>;
+}> {
+  dashFlowOrdinal += 1;
+  const context = await bindDashScope({
+    hooks: input.hooks,
+    primary: input.primary,
+    scope: input.scope,
+    childSessionID: `dash-child-${dashFlowOrdinal}`,
+    callID: `dash-scope-call-${dashFlowOrdinal}`,
+  });
+  const snapshot = input.hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+  const preview = JSON.parse(await snapshot(input.snapshotInput ?? {}, context));
+  const sourceResolution = preview.sourceResolution;
+  return {
+    context,
+    preview,
+    createInput: {
+      ...(sourceResolution.provenance.manifestRepositoryIds.length > 0
+        ? { repositoryIds: sourceResolution.provenance.selectedRepositoryIds }
+        : {}),
+      ...sourceResolution.snapshotInput,
+    },
+  };
+}
+
+async function createDashWorkspace(input: {
+  hooks: Awaited<ReturnType<typeof plugin>>;
+  primary: string;
+  scope: string;
+  snapshotInput?: Record<string, unknown>;
+}): Promise<Record<string, any>> {
+  const grant = await captureDashSource(input);
+  const create = input.hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
+  return JSON.parse(await create(grant.createInput, grant.context));
+}
+
+function currentChangeProposal(runtimeSourceResolution?: Record<string, any>): Record<string, unknown> {
+  const sourceResolution = runtimeSourceResolution ?? {
+    schema: 'hive-review-source-resolution/v1',
+    kind: 'explicit-local',
+    descriptor: null,
+    provider: { kind: 'not-requested' },
+    candidateShas: null,
+    snapshotInput: {},
+    provenance: {
+      snapshot: { outcome: 'resolved' },
+      manifestRepositoryIds: [],
+      selectedRepositoryIds: ['root'],
+      selectedPaths: [],
+      repositories: [{
+        repositoryId: 'root', sourceRoot: '/repo/root', currentHead: 'c'.repeat(40),
+        comparisonBase: 'd'.repeat(40), comparisonTarget: 'c'.repeat(40),
+        snapshotFingerprint: 'b'.repeat(64),
+        changedPaths: { comparison: [], staged: [], unstaged: [], untracked: [] },
+      }],
+      sourceFingerprint: 'a'.repeat(64),
+      fingerprint: 'e'.repeat(64),
+    },
+  };
+  return {
+    schema: 'hive-vuln-review-stage1/v3',
+    sourceResolution,
     normalizedIntent: 'review the current change',
     fixedOverrides: {},
     inferredScope: {
@@ -258,10 +419,17 @@ function currentChangeProposal(): Record<string, unknown> {
       comparisonBase: null,
       hiveScope: null,
     },
-    createInput: { repositoryIds: ['root'], scopeMode: 'current-change' },
+    createInput: {
+      repositoryIds: sourceResolution.provenance.selectedRepositoryIds,
+      scopeMode: 'current-change',
+      sourceResolutionFingerprint: sourceResolution.provenance.fingerprint,
+    },
     preview: {
-      sourceFingerprint: 'a'.repeat(64),
-      repositories: [{ repositoryId: 'root', snapshotFingerprint: 'b'.repeat(64) }],
+      sourceFingerprint: sourceResolution.provenance.sourceFingerprint,
+      repositories: sourceResolution.provenance.repositories.map((repository: Record<string, string>) => ({
+        repositoryId: repository.repositoryId,
+        snapshotFingerprint: repository.snapshotFingerprint,
+      })),
     },
     compare: { requested: false, status: 'not-requested', priorRootCauseKeys: [] },
     threatContext: {
@@ -275,6 +443,31 @@ function currentChangeProposal(): Record<string, unknown> {
     selectedLenses: [],
     scopeEcho: 'Review current-change in root under all paths without prior comparison.',
   };
+}
+
+function refreshRuntimeSourceResolutionFingerprint(sourceResolution: Record<string, any>): void {
+  const { fingerprint: _fingerprint, ...provenance } = sourceResolution.provenance;
+  sourceResolution.provenance.fingerprint = fingerprintReviewSourceResolutionAuthority({
+    ...sourceResolution,
+    provenance,
+  });
+}
+
+async function captureVulnerabilitySource(
+  hooks: Awaited<ReturnType<typeof plugin>>,
+  scope: string,
+  childSessionID: string,
+): Promise<Record<string, any>> {
+  await hooks['chat.message']?.({ sessionID: childSessionID, agent: scope }, {
+    message: { agent: scope },
+    parts: [],
+  } as any);
+  const snapshot = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+  const preview = JSON.parse(await snapshot({}, {
+    ...snapshotContext(scope),
+    sessionID: childSessionID,
+  }));
+  return preview.sourceResolution;
 }
 
 async function grantCurrentChangeMaterialization(input: {
@@ -304,7 +497,7 @@ async function grantCurrentChangeMaterialization(input: {
   await command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: commandArguments }, { parts: [] });
   await message({ sessionID: 'vuln-primary', agent: input.primary }, { message: { agent: input.primary }, parts: [] } as any);
   const resolvePacket = {
-    schema: 'hive-vuln-review-stage1/v2',
+    schema: 'hive-vuln-review-stage1/v3',
     stage: 'resolve',
     attempt: 1,
     intent: '',
@@ -320,21 +513,17 @@ async function grantCurrentChangeMaterialization(input: {
     ...snapshotContext(input.scope),
     sessionID: id('resolve-child'),
   }));
+  const sourceResolution = preview.sourceResolution;
   const repositoryFingerprints = preview.composite
     ? preview.snapshots.map((entry: { repositoryId: string; snapshot: { fingerprint: string } }) => ({
         repositoryId: entry.repositoryId,
         snapshotFingerprint: entry.snapshot.fingerprint,
       }))
     : [{ repositoryId: 'root', snapshotFingerprint: preview.fingerprint }];
-  const sourceFingerprint = preview.composite
-    ? preview.fingerprint
-    : fingerprintReviewSourceScope({
-        manifestRepositoryIds: [],
-        selectedRepositoryIds: [],
-        snapshots: [{ repositoryId: 'root', sourceRoot: preview.repository.root, fingerprint: preview.fingerprint }],
-      });
+  const sourceFingerprint = sourceResolution.provenance.sourceFingerprint;
   const candidate = {
-    schema: 'hive-vuln-review-stage1/v2',
+    schema: 'hive-vuln-review-stage1/v3',
+    sourceResolution,
     normalizedIntent: 'review the current change',
     fixedOverrides,
     inferredScope: {
@@ -371,7 +560,11 @@ async function grantCurrentChangeMaterialization(input: {
       comparisonBase: null,
       hiveScope: null,
     },
-    createInput: { repositoryIds, scopeMode: 'current-change' },
+    createInput: {
+      repositoryIds,
+      scopeMode: 'current-change',
+      sourceResolutionFingerprint: sourceResolution.provenance.fingerprint,
+    },
     preview: {
       sourceFingerprint,
       repositories: repositoryFingerprints,
@@ -390,11 +583,11 @@ async function grantCurrentChangeMaterialization(input: {
   };
   await after({ tool: 'task', sessionID: 'vuln-primary', callID: id('resolve-call'), args: {} }, {
     title: 'task',
-    output: JSON.stringify({ schema: 'hive-vuln-review-stage1/v2', state: 'BOUNDED', candidate }),
+    output: JSON.stringify({ schema: 'hive-vuln-review-stage1/v3', state: 'BOUNDED', candidate }),
     metadata: {},
   });
   const materializePacket = {
-    schema: 'hive-vuln-review-stage1/v2',
+    schema: 'hive-vuln-review-stage1/v3',
     stage: 'materialize',
     acceptedState: 'BOUNDED',
     scopeEcho: candidate.scopeEcho,
@@ -425,7 +618,7 @@ async function createCurrentChangeMaterializedWorkspace(repository: string): Pro
   const grant = await grantCurrentChangeMaterialization({ hooks, primary, scope: vulnerabilityScopeAlias });
   const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
   const created = JSON.parse(await create(
-    { repositoryIds: ['root'], scopeMode: 'current-change' },
+    grant.candidate.createInput,
     grant.childContext,
   ));
   return { hooks, primary, grant, created };
@@ -433,7 +626,7 @@ async function createCurrentChangeMaterializedWorkspace(repository: string): Pro
 
 function readyMaterializeResult(candidate: Record<string, any>, created: Record<string, any>): Record<string, unknown> {
   return {
-    schema: 'hive-vuln-review-stage1/v2',
+    schema: 'hive-vuln-review-stage1/v3',
     state: 'READY',
     scopeEcho: candidate.scopeEcho,
     runId: created.runId,
@@ -445,6 +638,7 @@ function readyMaterializeResult(candidate: Record<string, any>, created: Record<
     sourceFingerprint: created.sourceFingerprint,
     materializedFingerprint: created.materializedFingerprint,
     repositoryFingerprints: created.repositoryFingerprints,
+    sourceResolutionFingerprint: created.sourceResolutionFingerprint,
     excludedRepositoryIds: created.excludedRepositoryIds,
     truncated: created.truncated,
     threatContext: candidate.threatContext,
@@ -489,7 +683,7 @@ function fingerprintLegacyReviewSourceScope(input: {
   return createHash('sha256').update(JSON.stringify({
     manifestRepositoryIds: input.manifestRepositoryIds,
     selectedRepositoryIds: input.selectedRepositoryIds,
-    snapshots: [...input.snapshots].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId)),
+    snapshots: [...input.snapshots].sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId)),
   })).digest('hex');
 }
 
@@ -1315,7 +1509,7 @@ describe('Per-agent tool filtering', () => {
     expect(resolveToolPermission(tools!, 'bash')).toBeUndefined();
     for (const toolName of HIVE_TOOL_NAMES) {
       if (['hive_repositories_status', 'hive_plan_read', 'hive_status'].includes(toolName)) {
-        expect(tools![toolName]).toBeUndefined();
+        expect(tools![toolName]).toBe(true);
       } else {
         expect(tools![toolName]).toBe([
           'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup',
@@ -1323,7 +1517,7 @@ describe('Per-agent tool filtering', () => {
       }
     }
     expect(reviewer?.permission?.edit).toBe('deny');
-    expect(reviewer?.permission?.bash).toBeUndefined();
+    expect(reviewer?.permission?.bash).toBe('allow');
     expect(taskPermissions['*']).toBe('deny');
     expect(Object.keys(taskPermissions)[0]).toBe('*');
     expect(reviewLanes).toHaveLength(10);
@@ -1366,7 +1560,7 @@ describe('Per-agent tool filtering', () => {
       expect(lane.permission?.edit).toBe('deny');
       expect(lane.permission?.task).toBe('deny');
       expect(lane.permission?.delegate).toBe('deny');
-      expect(lane.permission?.bash).toBeUndefined();
+      expect(lane.permission?.bash).toBe(isScopeLane ? undefined : 'allow');
       if (isScopeLane) {
         expect(lane.tools?.['hive_git_snapshot']).toBe(true);
         expect(lane.tools?.['hive_repositories_status']).toBe(true);
@@ -1404,7 +1598,7 @@ describe('Per-agent tool filtering', () => {
     expect(securityLane?.variant).toBe('xhigh');
     expect(securityLane?.description).toContain('Security implementation reviewer');
     expect(securityLane?.prompt).toContain('Security implementation reviewer');
-    expect(securityLane?.permission?.bash).toBeUndefined();
+    expect(securityLane?.permission?.bash).toBe('allow');
     expect(securityLane?.permission?.skill).toBe('allow');
     expect(securityLane?.tools?.['hive_git_snapshot']).toBe(false);
     expect(securityLane?.prompt).toContain('process cwd is live source');
@@ -1437,7 +1631,10 @@ describe('Per-agent tool filtering', () => {
         $: createStubShell(),
       } as any);
 
-      const opencodeConfig: { agent?: Record<string, AgentConfig> } = {};
+      const opencodeConfig: {
+        agent?: Record<string, AgentConfig>;
+        command?: Record<string, { agent?: string }>;
+      } = {};
       await hooks.config?.(opencodeConfig);
       const firstLanes = findDashReviewLanes(opencodeConfig.agent);
       const firstTargets = firstLanes.map(([name]) => name).sort();
@@ -1483,7 +1680,12 @@ describe('Per-agent tool filtering', () => {
       expect(secondCode).toBe(firstCode);
 
       const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-      expect(JSON.parse(await execute({}, snapshotContext(secondScope))).repository.root).toBe(repository);
+      const grant = await captureDashSource({
+        hooks,
+        primary: opencodeConfig.command?.['dash-review']?.agent!,
+        scope: secondScope,
+      });
+      expect(grant.preview.repository.root).toBe(repository);
       await expect(execute({}, snapshotContext(secondCode))).rejects.toThrow('not authorized');
       await expect(execute({}, snapshotContext(`${secondScope}-2`))).rejects.toThrow(/not (registered|authorized)/);
     } finally {
@@ -1508,7 +1710,10 @@ describe('Per-agent tool filtering', () => {
 
       await expect(execute({}, snapshotContext('review-scout-researcher-unregistered'))).rejects.toThrow('not authorized');
 
-      const config: { agent?: Record<string, AgentConfig> } = {};
+      const config: {
+        agent?: Record<string, AgentConfig>;
+        command?: Record<string, { agent?: string }>;
+      } = {};
       await hooks.config?.(config);
       const scopeAlias = findDashScopeAlias(config.agent)!;
       const codeAlias = findDashCodeAlias(config.agent)!;
@@ -1517,7 +1722,424 @@ describe('Per-agent tool filtering', () => {
       await expect(execute({}, snapshotContext('__hive_dash_review_primary'))).rejects.toThrow('not authorized');
       await expect(execute({}, snapshotContext('external-agent'))).rejects.toThrow('not authorized');
       await expect(execute({}, snapshotContext(codeAlias))).rejects.toThrow('not authorized');
-      expect(JSON.parse(await execute({}, snapshotContext(scopeAlias))).repository.root).toBe(repository);
+      await expect(execute({}, snapshotContext(scopeAlias))).rejects.toThrow('exact dash-review source authority');
+      const grant = await captureDashSource({
+        hooks,
+        primary: config.command?.['dash-review']?.agent!,
+        scope: scopeAlias,
+      });
+      expect(grant.preview.repository.root).toBe(repository);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('fails dash snapshot and create closed without exact command lineage', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-source-lineage-'));
+    createGitRepository(repository);
+    try {
+      const client = createLineageClient({
+        'dash-primary': undefined,
+      }, Date.now() + 10_000);
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository, client);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
+      const context = await bindDashScope({ hooks, primary, scope: scopeAlias });
+
+      await expect(snapshot({}, context)).rejects.toThrow('exact dash-review source authority');
+      await expect(create({}, context)).rejects.toThrow('exact dash-review create authority');
+      await expect(snapshot({}, snapshotContext(scopeAlias))).rejects.toThrow('exact dash-review source authority');
+      await expect(create({}, snapshotContext(scopeAlias))).rejects.toThrow('exact dash-review create authority');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('replays one identical dash snapshot without recapture and stops on a different second scope', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-source-once-'));
+    createGitRepository(repository);
+    try {
+      const client = createLineageClient({
+        'dash-primary': undefined,
+        'dash-child': 'dash-primary',
+      }, Date.now() + 10_000);
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository, client);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
+      const context = await bindDashScope({ hooks, primary, scope: scopeAlias });
+      const first = await snapshot({}, context);
+      writeFileSync(path.join(repository, 'README.md'), 'dirty after source resolution\n');
+
+      expect(await snapshot({}, context)).toBe(first);
+      await expect(snapshot({ paths: ['README.md'] }, context)).rejects.toThrow('already resolved with different input');
+      await expect(create({}, context)).rejects.toThrow('exact dash-review create authority');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects vulnerability-only create arguments from dash scope callers', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-create-vulnerability-args-'));
+    createGitRepository(repository);
+    try {
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(repository);
+      const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
+      const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
+      for (const vulnerabilityArgument of [
+        { scopeMode: 'current-change' },
+        { hiveScope: 'task:review' },
+        { sourceResolutionFingerprint: 'f'.repeat(64) },
+      ]) {
+        const grant = await captureDashSource({ hooks, primary: dashPrimary, scope: scopeAlias });
+        await expect(create({
+          ...grant.createInput,
+          ...vulnerabilityArgument,
+        }, grant.context)).rejects.toThrow('exact dash-review create authority');
+      }
+      expect(createWorkspace).not.toHaveBeenCalled();
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects supplemental vulnerability selectors and widened fixed boundaries before provider or Git execution', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-fixed-source-authority-'));
+    createGitRepository(repository);
+    const provider = installProviderFixture(repository);
+    const gitCountFile = installGitExecutorCounter(provider.bin);
+    const previousPath = process.env.PATH;
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const command = hooks['command.execute.before']!;
+      const message = hooks['chat.message']!;
+      const before = hooks['tool.execute.before']!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+      const pullRequest = 'https://github.com/Example/project/pull/295';
+      let ordinal = 0;
+      const arm = async (
+        commandArguments: string,
+        fixedOverrides: Record<string, unknown>,
+      ): Promise<Record<string, unknown>> => {
+        ordinal += 1;
+        await command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: commandArguments }, { parts: [] });
+        await message({ sessionID: 'vuln-primary', agent: primary }, {
+          message: { agent: primary },
+          parts: [],
+        } as any);
+        await before({ tool: 'task', sessionID: 'vuln-primary', callID: `fixed-source-${ordinal}` }, {
+          args: {
+            prompt: JSON.stringify({
+              schema: 'hive-vuln-review-stage1/v3',
+              stage: 'resolve',
+              attempt: 1,
+              intent: commandArguments,
+              conversationSummary: 'Review only the operator-fixed source boundary.',
+              fixedOverrides,
+              clarification: null,
+            }),
+            subagent_type: vulnerabilityScopeAlias,
+            background: false,
+          },
+        });
+        const childSessionID = `fixed-source-child-${ordinal}`;
+        await message({ sessionID: childSessionID, agent: vulnerabilityScopeAlias }, {
+          message: { agent: vulnerabilityScopeAlias },
+          parts: [],
+        } as any);
+        return { ...snapshotContext(vulnerabilityScopeAlias), sessionID: childSessionID };
+      };
+      const executionCount = (file: string): number => existsSync(file) ? readFileSync(file, 'utf8').length : 0;
+      process.env.PATH = `${provider.bin}${path.delimiter}${previousPath ?? ''}`;
+
+      const rejected = [
+        {
+          commandArguments: '--base main',
+          fixedOverrides: { selector: { kind: 'base', baseRef: 'main' } },
+          input: { targetRef: 'other' },
+        },
+        {
+          commandArguments: '--task review',
+          fixedOverrides: { selector: { kind: 'task', task: 'review' } },
+          input: { baseRef: 'main' },
+        },
+        {
+          commandArguments: '--feature review',
+          fixedOverrides: { selector: { kind: 'feature', feature: 'review' } },
+          input: { range: 'main...HEAD' },
+        },
+        {
+          commandArguments: '--whole-repo',
+          fixedOverrides: { selector: { kind: 'whole-repository' } },
+          input: { baseRef: 'main', targetRef: 'HEAD' },
+        },
+        {
+          commandArguments: pullRequest,
+          fixedOverrides: {},
+          input: { baseRef: 'main' },
+        },
+        {
+          commandArguments: `${pullRequest} --repo root`,
+          fixedOverrides: { repositoryIds: ['root'] },
+          input: { repositoryIds: ['other', 'root'] },
+        },
+        {
+          commandArguments: `${pullRequest} --path README.md`,
+          fixedOverrides: { paths: ['README.md'] },
+          input: { paths: ['README.md', 'src'] },
+        },
+      ];
+      for (const testCase of rejected) {
+        const providerCalls = executionCount(provider.countFile);
+        const gitCalls = executionCount(gitCountFile);
+        const context = await arm(testCase.commandArguments, testCase.fixedOverrides);
+        await expect(snapshot(testCase.input, context)).rejects.toThrow('fixed vulnerability review source authority');
+        expect(executionCount(provider.countFile), testCase.commandArguments).toBe(providerCalls);
+        expect(executionCount(gitCountFile), testCase.commandArguments).toBe(gitCalls);
+      }
+
+      const matchingContext = await arm(
+        '--repo root --repo root --path docs/../README.md --base main --target HEAD',
+        {
+          repositoryIds: ['root'],
+          paths: ['README.md'],
+          selector: { kind: 'base', baseRef: 'main', targetRef: 'HEAD' },
+        },
+      );
+      const matching = JSON.parse(await snapshot({
+        repositoryIds: ['root', 'root'],
+        paths: ['docs/../README.md'],
+        baseRef: 'main',
+        targetRef: 'HEAD',
+      }, matchingContext));
+      expect(matching.sourceResolution.snapshotInput).toEqual({
+        baseRef: 'main',
+        targetRef: 'HEAD',
+        paths: ['README.md'],
+      });
+      expect(executionCount(provider.countFile)).toBe(0);
+      expect(executionCount(gitCountFile)).toBeGreaterThan(0);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('executes a vulnerability provider snapshot once, replays identical output, and stops input drift', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-source-once-'));
+    createGitRepository(repository);
+    const provider = installProviderFixture(repository);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${provider.bin}${path.delimiter}${previousPath ?? ''}`;
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const command = hooks['command.execute.before']!;
+      const message = hooks['chat.message']!;
+      const before = hooks['tool.execute.before']!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+      const pullRequest = 'https://github.com/Example/project/pull/295';
+      await command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: pullRequest }, { parts: [] });
+      await message({ sessionID: 'vuln-primary', agent: primary }, { message: { agent: primary }, parts: [] } as any);
+      await before({ tool: 'task', sessionID: 'vuln-primary', callID: 'provider-source-call' }, {
+        args: {
+          prompt: JSON.stringify({
+            schema: 'hive-vuln-review-stage1/v3',
+            stage: 'resolve',
+            attempt: 1,
+            intent: pullRequest,
+            conversationSummary: 'Review the exact pull request.',
+            fixedOverrides: {},
+            clarification: null,
+          }),
+          subagent_type: vulnerabilityScopeAlias,
+          background: false,
+        },
+      });
+      await message({ sessionID: 'provider-source-child', agent: vulnerabilityScopeAlias }, {
+        message: { agent: vulnerabilityScopeAlias },
+        parts: [],
+      } as any);
+      const context = { ...snapshotContext(vulnerabilityScopeAlias), sessionID: 'provider-source-child' };
+      const first = await snapshot({}, context);
+      writeFileSync(path.join(repository, 'README.md'), 'dirty after provider source resolution\n');
+
+      expect(await snapshot({}, context)).toBe(first);
+      expect(readFileSync(provider.countFile, 'utf8')).toBe('x');
+      await expect(snapshot({ paths: ['README.md'] }, context)).rejects.toThrow('source authority was consumed');
+      expect(readFileSync(provider.countFile, 'utf8')).toBe('x');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('denies concurrent vulnerability snapshots after starting exactly one provider execution', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-source-concurrent-'));
+    createGitRepository(repository);
+    const provider = installProviderFixture(repository);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${provider.bin}${path.delimiter}${previousPath ?? ''}`;
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const pullRequest = 'https://github.com/Example/project/pull/295';
+      await hooks['command.execute.before']?.({
+        command: 'vuln-review', sessionID: 'vuln-primary', arguments: pullRequest,
+      }, { parts: [] });
+      await hooks['chat.message']?.({ sessionID: 'vuln-primary', agent: primary }, {
+        message: { agent: primary }, parts: [],
+      } as any);
+      await hooks['tool.execute.before']?.({
+        tool: 'task', sessionID: 'vuln-primary', callID: 'concurrent-provider-call',
+      }, {
+        args: {
+          prompt: JSON.stringify({
+            schema: 'hive-vuln-review-stage1/v3',
+            stage: 'resolve',
+            attempt: 1,
+            intent: pullRequest,
+            conversationSummary: 'Review the exact pull request concurrently.',
+            fixedOverrides: {},
+            clarification: null,
+          }),
+          subagent_type: vulnerabilityScopeAlias,
+          background: false,
+        },
+      });
+      await hooks['chat.message']?.({ sessionID: 'concurrent-provider-child', agent: vulnerabilityScopeAlias }, {
+        message: { agent: vulnerabilityScopeAlias }, parts: [],
+      } as any);
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+      const context = { ...snapshotContext(vulnerabilityScopeAlias), sessionID: 'concurrent-provider-child' };
+
+      const outcomes = await Promise.allSettled([snapshot({}, context), snapshot({}, context)]);
+      expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(0);
+      expect(outcomes.filter(({ status }) => status === 'rejected')).toHaveLength(2);
+      expect(readFileSync(provider.countFile, 'utf8')).toBe('x');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['dirty edit', async (repository: string) => {
+      writeFileSync(path.join(repository, 'README.md'), 'dirty after snapshot\n');
+    }],
+    ['ref move', async (repository: string) => {
+      execFileSync('git', ['-C', repository, 'commit', '--allow-empty', '-m', 'move target'], { shell: false });
+    }],
+  ] as const)('consumes dash create once and never returns READY after %s', async (_case, mutate) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-create-drift-'));
+    createGitRepository(repository);
+    execFileSync('git', ['-C', repository, 'checkout', '-b', 'moving'], { shell: false });
+    try {
+      const client = createLineageClient({
+        'dash-primary': undefined,
+        'dash-child': 'dash-primary',
+      }, Date.now() + 10_000);
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository, client);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
+      const context = await bindDashScope({ hooks, primary, scope: scopeAlias });
+      const scopeInput = _case === 'ref move'
+        ? { baseRef: 'main', targetRef: 'moving' }
+        : {};
+      await snapshot(scopeInput, context);
+      await mutate(repository);
+
+      expect(JSON.parse(await create(scopeInput, context))).toMatchObject({ state: 'NEEDS_DISCUSSION', stale: true });
+      await expect(create(scopeInput, context)).rejects.toThrow('exact dash-review create authority');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('atomically consumes one dash create under concurrent calls', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-create-concurrent-'));
+    createGitRepository(repository);
+    try {
+      const client = createLineageClient({
+        'dash-primary': undefined,
+        'dash-child': 'dash-primary',
+      }, Date.now() + 10_000);
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository, client);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
+      const claim = hooks.tool!.hive_review_workspace_claim.execute as (value: unknown, context: unknown) => Promise<string>;
+      const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (value: unknown, context: unknown) => Promise<string>;
+      const context = await bindDashScope({ hooks, primary, scope: scopeAlias });
+      await snapshot({}, context);
+
+      const results = await Promise.allSettled([create({}, context), create({}, context)]);
+      const fulfilled = results.filter((result): result is PromiseFulfilledResult<string> => result.status === 'fulfilled');
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(String(rejected[0]!.reason)).toContain('exact dash-review create authority');
+      const created = JSON.parse(fulfilled[0]!.value);
+      expect(created.state).toBe('READY');
+      const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary' };
+      await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
+      expect(JSON.parse(await cleanup({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext)).cleaned).toBe(true);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('revokes an unbound dash scope child when the parent command generation is replaced', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-command-replacement-'));
+    createGitRepository(repository);
+    try {
+      const client = createLineageClient({
+        'dash-primary': undefined,
+        'dash-old-child': 'dash-primary',
+      }, Date.now() + 10_000);
+      const { hooks, scopeAlias } = await createSnapshotPlugin(repository, client);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['dash-review']?.agent!;
+      const command = hooks['command.execute.before']!;
+      const message = hooks['chat.message']!;
+      const before = hooks['tool.execute.before']!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (value: unknown, context: unknown) => Promise<string>;
+      await command({ command: 'dash-review', sessionID: 'dash-primary', arguments: 'first' }, { parts: [] });
+      await message({ sessionID: 'dash-primary', agent: primary }, { message: { agent: primary }, parts: [] } as any);
+      await before({ tool: 'task', sessionID: 'dash-primary', callID: 'old-call' }, {
+        args: { prompt: 'old scope', subagent_type: scopeAlias, background: false },
+      });
+      await command({ command: 'dash-review', sessionID: 'dash-primary', arguments: 'replacement' }, { parts: [] });
+      await message({ sessionID: 'dash-old-child', agent: scopeAlias }, {
+        message: { agent: scopeAlias },
+        parts: [],
+      } as any);
+
+      await expect(snapshot({}, {
+        ...snapshotContext(scopeAlias),
+        sessionID: 'dash-old-child',
+      })).rejects.toThrow('exact dash-review source authority');
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -1548,7 +2170,12 @@ describe('Per-agent tool filtering', () => {
       const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-inspect' };
 
       await expect(create({}, snapshotContext(primary))).rejects.toThrow('not authorized');
-      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const created = await createDashWorkspace({
+        hooks,
+        primary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['ramses-hl'] },
+      });
       const reviewRepository = created.repositories['ramses-hl'].path;
       expect(created.state).toBe('READY');
       expect(Object.keys(created.repositories)).toEqual(['ramses-hl']);
@@ -1615,7 +2242,12 @@ describe('Per-agent tool filtering', () => {
       const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
       const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
       const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
-      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const created = await createDashWorkspace({
+        hooks,
+        primary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['ramses-hl'] },
+      });
       const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-remap' };
       await hooks['chat.message']?.({ sessionID: 'dash-primary-remap', agent: primary }, { message: {}, parts: [] } as any);
       await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
@@ -1652,7 +2284,12 @@ describe('Per-agent tool filtering', () => {
       const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
       const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
       const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
-      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const created = await createDashWorkspace({
+        hooks,
+        primary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['ramses-hl'] },
+      });
       const metadataPath = path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${created.runId}.json`);
       const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
       metadata.sourceFingerprint = fingerprintLegacyReviewSourceScope({
@@ -1703,7 +2340,12 @@ describe('Per-agent tool filtering', () => {
       const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
       const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
       const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
-      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const created = await createDashWorkspace({
+        hooks,
+        primary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['ramses-hl'] },
+      });
       const metadataPath = path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${created.runId}.json`);
       const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
       metadata.sourceFingerprint = fingerprintLegacyReviewSourceScope({
@@ -1764,13 +2406,16 @@ describe('Per-agent tool filtering', () => {
       nextRepository = nextRepository === firstRepository ? secondRepository : firstRepository;
     });
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
-      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      const created = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(projectRoot);
+      const created = await createDashWorkspace({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['ramses-hl'] },
+      });
 
       expect(created).toMatchObject({ state: 'NEEDS_DISCUSSION', stale: true });
-      expect(sealedRunIds).toHaveLength(2);
+      expect(sealedRunIds).toHaveLength(1);
       for (const runId of sealedRunIds) {
         expect(existsSync(path.join(projectRoot, '.hive', '.worktrees', 'review', runId))).toBe(false);
         expect(existsSync(path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${runId}.json`))).toBe(false);
@@ -1809,10 +2454,13 @@ describe('Per-agent tool filtering', () => {
       errors: ['injected cleanup failure'],
     }));
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
-      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      const result = JSON.parse(await create({ repositoryIds: ['ramses-hl'] }, snapshotContext(scopeAlias)));
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(projectRoot);
+      const result = await createDashWorkspace({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['ramses-hl'] },
+      });
 
       expect(result).toMatchObject({
         state: 'NEEDS_DISCUSSION',
@@ -1846,10 +2494,8 @@ describe('Per-agent tool filtering', () => {
       errors: ['injected cleanup failure'],
     }));
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
-      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      const result = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(repository);
+      const result = await createDashWorkspace({ hooks, primary: dashPrimary, scope: scopeAlias });
 
       expect(result).toMatchObject({
         state: 'NEEDS_DISCUSSION',
@@ -1982,10 +2628,7 @@ describe('Per-agent tool filtering', () => {
         repositoryIds: ['ramses-hl'],
       });
 
-      const created = JSON.parse(await create({
-        repositoryIds: ['ramses-hl'],
-        scopeMode: 'current-change',
-      }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       const afterOutput = { title: 'task', output: JSON.stringify(created), metadata: {} };
       await hooks['tool.execute.after']?.({
         tool: 'task',
@@ -1997,7 +2640,7 @@ describe('Per-agent tool filtering', () => {
 
       expect(delivered).toEqual(created);
       expect(delivered).toMatchObject({
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         state: 'STOP',
         reason: 'cleanup-recovery-required',
         message: 'Source topology changed during review workspace materialization.',
@@ -2151,9 +2794,9 @@ describe('Per-agent tool filtering', () => {
       }));
       const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
 
-      const firstAttempt = firstCreate({ repositoryIds: ['root'], scopeMode: 'current-change' }, firstGrant.childContext);
+      const firstAttempt = firstCreate(firstGrant.candidate.createInput, firstGrant.childContext);
       await firstSealArrival;
-      const secondAttempt = secondCreate({ repositoryIds: ['root'], scopeMode: 'current-change' }, secondGrant.childContext);
+      const secondAttempt = secondCreate(secondGrant.candidate.createInput, secondGrant.childContext);
       await Promise.resolve();
       releaseFirstSeal();
 
@@ -2179,7 +2822,7 @@ describe('Per-agent tool filtering', () => {
         scope: secondPlugin.vulnerabilityScopeAlias,
         idSuffix: 'after-recovery',
       });
-      const later = JSON.parse(await secondCreate({ repositoryIds: ['root'], scopeMode: 'current-change' }, laterGrant.childContext));
+      const later = JSON.parse(await secondCreate(laterGrant.candidate.createInput, laterGrant.childContext));
       expect(later.state).toBe('READY');
       expect(createWorkspace).toHaveBeenCalledTimes(2);
       const cleanupService = new ReviewWorkspaceService({ projectRoot });
@@ -2221,12 +2864,9 @@ describe('Per-agent tool filtering', () => {
         primary,
         scope: vulnerabilityScopeAlias,
       });
-      const created = JSON.parse(await create({
-        repositoryIds: ['root'],
-        scopeMode: 'current-change',
-      }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       expect(created).toMatchObject({
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         state: 'STOP',
         reason: 'cleanup-recovery-required',
         cleanup: { attempted: true, cleaned: false },
@@ -2302,12 +2942,9 @@ describe('Per-agent tool filtering', () => {
         repositoryIds: ['ramses-hl'],
       });
 
-      const created = JSON.parse(await create({
-        repositoryIds: ['ramses-hl'],
-        scopeMode: 'current-change',
-      }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       expect(created).toMatchObject({
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         state: 'STOP',
         reason: 'cleanup-recovery-required',
         cleanup: {
@@ -2336,7 +2973,7 @@ describe('Per-agent tool filtering', () => {
 
       expect(delivered).toEqual(created);
       expect(delivered).toMatchObject({
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         state: 'STOP',
         reason: 'cleanup-recovery-required',
         cleanup: {
@@ -2358,6 +2995,123 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
+  it('grants no create authority after initial BOUNDED candidate/source tampering', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-initial-candidate-binding-'));
+    createGitRepository(repository);
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const command = hooks['command.execute.before']!;
+      const message = hooks['chat.message']!;
+      const before = hooks['tool.execute.before']!;
+      const after = hooks['tool.execute.after']!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
+      const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
+      const tampering = [
+        ['preview fingerprint', (candidate: Record<string, any>) => {
+          candidate.preview.sourceFingerprint = 'f'.repeat(64);
+        }],
+        ['candidate selector and mode', (candidate: Record<string, any>) => {
+          candidate.inferredScope.mode = 'git-comparison';
+          candidate.inferredScope.baseRef = 'main';
+          candidate.merge.provenance.gitSelector = 'inferred';
+          candidate.normalizedScope.mode = 'git-comparison';
+          candidate.normalizedScope.comparisonBase = 'main';
+          candidate.expectedScopeDescriptor.mode = 'git-comparison';
+          candidate.expectedScopeDescriptor.comparisonBase = 'main';
+          candidate.createInput.scopeMode = 'git-comparison';
+          candidate.createInput.baseRef = 'main';
+          candidate.scopeEcho = 'Review git-comparison in root under all paths using base main without prior comparison.';
+        }],
+        ['source selector', (candidate: Record<string, any>) => {
+          candidate.sourceResolution.snapshotInput = { baseRef: 'main' };
+          refreshRuntimeSourceResolutionFingerprint(candidate.sourceResolution);
+          candidate.createInput.sourceResolutionFingerprint = candidate.sourceResolution.provenance.fingerprint;
+        }],
+        ['create selector', (candidate: Record<string, any>) => {
+          candidate.createInput.baseRef = 'main';
+          candidate.createInput.scopeMode = 'git-comparison';
+        }],
+        ['normalized repository', (candidate: Record<string, any>) => {
+          candidate.normalizedScope.repositoryIds = ['other'];
+        }],
+        ['normalized path', (candidate: Record<string, any>) => {
+          candidate.normalizedScope.paths = ['other'];
+        }],
+      ] as const;
+
+      for (const [caseName, tamper] of tampering) {
+        const suffix = caseName.replaceAll(' ', '-');
+        const resolveCallID = `initial-binding-resolve-${suffix}`;
+        await command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] });
+        await message({ sessionID: 'vuln-primary', agent: primary }, {
+          message: { agent: primary },
+          parts: [],
+        } as any);
+        await before({ tool: 'task', sessionID: 'vuln-primary', callID: resolveCallID }, {
+          args: {
+            prompt: JSON.stringify({
+              schema: 'hive-vuln-review-stage1/v3',
+              stage: 'resolve',
+              attempt: 1,
+              intent: '',
+              conversationSummary: 'Review the current change.',
+              fixedOverrides: {},
+              clarification: null,
+            }),
+            subagent_type: vulnerabilityScopeAlias,
+            background: false,
+          },
+        });
+        const resolveChildID = `initial-binding-child-${suffix}`;
+        await message({ sessionID: resolveChildID, agent: vulnerabilityScopeAlias }, {
+          message: { agent: vulnerabilityScopeAlias },
+          parts: [],
+        } as any);
+        const sourceResolution = JSON.parse(await snapshot({}, {
+          ...snapshotContext(vulnerabilityScopeAlias),
+          sessionID: resolveChildID,
+        })).sourceResolution;
+        const proposal = currentChangeProposal(sourceResolution) as Record<string, any>;
+        const candidate = {
+          ...proposal,
+          merge: { ...proposal.merge, approvedExpansions: [] },
+          clarification: null,
+        };
+        tamper(candidate);
+        await after({ tool: 'task', sessionID: 'vuln-primary', callID: resolveCallID, args: {} }, {
+          title: 'task',
+          output: JSON.stringify({ schema: 'hive-vuln-review-stage1/v3', state: 'BOUNDED', candidate }),
+          metadata: {},
+        });
+        const materializeCallID = `initial-binding-materialize-${suffix}`;
+        await expect(before({ tool: 'task', sessionID: 'vuln-primary', callID: materializeCallID }, {
+          args: {
+            prompt: JSON.stringify({
+              schema: 'hive-vuln-review-stage1/v3',
+              stage: 'materialize',
+              acceptedState: 'BOUNDED',
+              scopeEcho: candidate.scopeEcho,
+              candidate,
+            }),
+            subagent_type: vulnerabilityScopeAlias,
+            background: false,
+          },
+        }), caseName).rejects.toThrow();
+        await expect(create(candidate.createInput, {
+          ...snapshotContext(vulnerabilityScopeAlias),
+          sessionID: `initial-binding-create-child-${suffix}`,
+        }), caseName).rejects.toThrow('no exact materialize grant');
+      }
+      expect(createWorkspace).not.toHaveBeenCalled();
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
   it('creates only after an exact BOUNDED candidate is transferred to a fresh materialize child', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-valid-scopes-'));
     createGitRepository(repository);
@@ -2375,7 +3129,7 @@ describe('Per-agent tool filtering', () => {
       const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
       await expect(create({ repositoryIds: ['root'], scopeMode: 'current-change' }, snapshotContext(vulnerabilityScopeAlias))).rejects.toThrow('no exact materialize grant');
       const grant = await grantCurrentChangeMaterialization({ hooks, primary, scope: vulnerabilityScopeAlias });
-      const created = JSON.parse(await create({ repositoryIds: ['root'], scopeMode: 'current-change' }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       expect(created.state).toBe('READY');
       expect(created.scopeDescriptor).toEqual(grant.candidate.expectedScopeDescriptor);
       expect(created.sourceFingerprint).toBe((grant.candidate.preview as { sourceFingerprint: string }).sourceFingerprint);
@@ -2393,7 +3147,7 @@ describe('Per-agent tool filtering', () => {
         ownershipToken: created.ownershipToken,
       }, { ...snapshotContext(primary), sessionID: 'vuln-primary' })).rejects.toThrow('READY');
       const materializeResult = {
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         state: 'READY',
         scopeEcho: grant.candidate.scopeEcho,
         runId: created.runId,
@@ -2405,6 +3159,7 @@ describe('Per-agent tool filtering', () => {
         sourceFingerprint: created.sourceFingerprint,
         materializedFingerprint: created.materializedFingerprint,
         repositoryFingerprints: created.repositoryFingerprints,
+      sourceResolutionFingerprint: created.sourceResolutionFingerprint,
         excludedRepositoryIds: created.excludedRepositoryIds,
         truncated: created.truncated,
         threatContext: grant.candidate.threatContext,
@@ -2461,10 +3216,7 @@ describe('Per-agent tool filtering', () => {
       });
 
       writeProjectRepositoryManifest(projectRoot, [{ id: 'ramses-hl', path: './sources/second' }]);
-      const created = JSON.parse(await create({
-        repositoryIds: ['ramses-hl'],
-        scopeMode: 'current-change',
-      }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       const afterOutput = {
         title: 'task',
         output: JSON.stringify(readyMaterializeResult(grant.candidate, created)),
@@ -2501,9 +3253,9 @@ describe('Per-agent tool filtering', () => {
       const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (value: unknown, context: unknown) => Promise<string>;
       const before = hooks['tool.execute.before']!;
       const grant = await grantCurrentChangeMaterialization({ hooks, primary, scope: vulnerabilityScopeAlias });
-      const created = JSON.parse(await create({ repositoryIds: ['root'], scopeMode: 'current-change' }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       const materializeResult = {
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         state: 'READY',
         scopeEcho: grant.candidate.scopeEcho,
         runId: created.runId,
@@ -2515,6 +3267,7 @@ describe('Per-agent tool filtering', () => {
         sourceFingerprint: created.sourceFingerprint,
         materializedFingerprint: created.materializedFingerprint,
         repositoryFingerprints: created.repositoryFingerprints,
+      sourceResolutionFingerprint: created.sourceResolutionFingerprint,
         excludedRepositoryIds: created.excludedRepositoryIds,
         truncated: created.truncated,
         threatContext: grant.candidate.threatContext,
@@ -2561,11 +3314,11 @@ describe('Per-agent tool filtering', () => {
       const primary = config.command?.['vuln-review']?.agent!;
       const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
       const grant = await grantCurrentChangeMaterialization({ hooks, primary, scope: vulnerabilityScopeAlias });
-      const created = JSON.parse(await create({ repositoryIds: ['root'], scopeMode: 'current-change' }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       const afterOutput = {
         title: 'task',
         output: JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           state: 'READY',
           scopeEcho: grant.candidate.scopeEcho,
           runId: created.runId,
@@ -2577,6 +3330,7 @@ describe('Per-agent tool filtering', () => {
           sourceFingerprint: 'f'.repeat(64),
           materializedFingerprint: created.materializedFingerprint,
           repositoryFingerprints: created.repositoryFingerprints,
+      sourceResolutionFingerprint: created.sourceResolutionFingerprint,
           excludedRepositoryIds: created.excludedRepositoryIds,
           truncated: created.truncated,
           threatContext: grant.candidate.threatContext,
@@ -2622,11 +3376,11 @@ describe('Per-agent tool filtering', () => {
       const primary = config.command?.['vuln-review']?.agent!;
       const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
       const grant = await grantCurrentChangeMaterialization({ hooks, primary, scope: vulnerabilityScopeAlias });
-      const created = JSON.parse(await create({ repositoryIds: ['root'], scopeMode: 'current-change' }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       const output = {
         title: 'task',
         output: `${JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           state: 'READY',
           scopeEcho: grant.candidate.scopeEcho,
           runId: created.runId,
@@ -2638,6 +3392,7 @@ describe('Per-agent tool filtering', () => {
           sourceFingerprint: created.sourceFingerprint,
           materializedFingerprint: created.materializedFingerprint,
           repositoryFingerprints: created.repositoryFingerprints,
+      sourceResolutionFingerprint: created.sourceResolutionFingerprint,
           excludedRepositoryIds: created.excludedRepositoryIds,
           truncated: created.truncated,
           threatContext: grant.candidate.threatContext,
@@ -2738,7 +3493,7 @@ describe('Per-agent tool filtering', () => {
         if (output) {
           const delivered = JSON.parse(output.output);
           expect(delivered).toMatchObject({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             state: 'STOP',
             reason: 'cleanup-recovery-required',
             cleanup: {
@@ -2855,10 +3610,7 @@ describe('Per-agent tool filtering', () => {
           idSuffix: 'old',
         });
         const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
-        const oldWorkspace = JSON.parse(await create(
-          { repositoryIds: ['root'], scopeMode: 'current-change' },
-          oldGrant.childContext,
-        ));
+        const oldWorkspace = JSON.parse(await create(oldGrant.candidate.createInput, oldGrant.childContext));
 
         await hooks['command.execute.before']?.({
           command: 'vuln-review',
@@ -2893,7 +3645,7 @@ describe('Per-agent tool filtering', () => {
         }, {
           args: {
             prompt: JSON.stringify({
-              schema: 'hive-vuln-review-stage1/v2',
+              schema: 'hive-vuln-review-stage1/v3',
               stage: 'resolve',
               attempt: 1,
               intent: '',
@@ -2930,20 +3682,14 @@ describe('Per-agent tool filtering', () => {
           scope: vulnerabilityScopeAlias,
           idSuffix: 'old-claimed',
         });
-        const oldWorkspace = JSON.parse(await create(
-          { repositoryIds: ['root'], scopeMode: 'current-change' },
-          oldGrant.childContext,
-        ));
+        const oldWorkspace = JSON.parse(await create(oldGrant.candidate.createInput, oldGrant.childContext));
         const currentGrant = await grantCurrentChangeMaterialization({
           hooks,
           primary,
           scope: vulnerabilityScopeAlias,
           idSuffix: 'current-claimed',
         });
-        const currentWorkspace = JSON.parse(await create(
-          { repositoryIds: ['root'], scopeMode: 'current-change' },
-          currentGrant.childContext,
-        ));
+        const currentWorkspace = JSON.parse(await create(currentGrant.candidate.createInput, currentGrant.childContext));
         await hooks['tool.execute.after']?.({
           tool: 'task',
           sessionID: 'vuln-primary',
@@ -3018,10 +3764,7 @@ describe('Per-agent tool filtering', () => {
         scope: vulnerabilityScopeAlias,
         idSuffix: 'lineage-old',
       });
-      const workspace = JSON.parse(await create(
-        { repositoryIds: ['root'], scopeMode: 'current-change' },
-        grant.childContext,
-      ));
+      const workspace = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       const originalRead = ReviewWorkspaceService.prototype.read;
       readWorkspace = spyOn(ReviewWorkspaceService.prototype, 'read').mockImplementation(async function (...args) {
         readStarted();
@@ -3064,7 +3807,7 @@ describe('Per-agent tool filtering', () => {
       }, {
         args: {
           prompt: JSON.stringify({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             stage: 'resolve',
             attempt: 1,
             intent: '',
@@ -3098,7 +3841,7 @@ describe('Per-agent tool filtering', () => {
         idSuffix: 'first',
       });
       const packet = {
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         stage: 'materialize',
         acceptedState: 'BOUNDED',
         scopeEcho: grant.candidate.scopeEcho,
@@ -3122,6 +3865,61 @@ describe('Per-agent tool filtering', () => {
         sessionID: 'vuln-primary',
         callID: 'materialize-current',
       }, { args: { prompt: JSON.stringify(packet), subagent_type: vulnerabilityScopeAlias, background: false } })).resolves.toBeUndefined();
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('does not rearm workspace creation with a fresh call after create authority is consumed', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-create-consumed-call-'));
+    createGitRepository(repository);
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const config: { agent?: Record<string, AgentConfig>; command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const before = hooks['tool.execute.before']!;
+      const after = hooks['tool.execute.after']!;
+      const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
+      const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
+      const grant = await grantCurrentChangeMaterialization({
+        hooks,
+        primary,
+        scope: vulnerabilityScopeAlias,
+        idSuffix: 'consumed-call',
+      });
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
+      const packet = {
+        schema: 'hive-vuln-review-stage1/v3',
+        stage: 'materialize',
+        acceptedState: 'BOUNDED',
+        scopeEcho: grant.candidate.scopeEcho,
+        candidate: grant.candidate,
+      };
+
+      await expect(before({
+        tool: 'task',
+        sessionID: 'vuln-primary',
+        callID: 'fresh-after-create-consumed',
+      }, {
+        args: { prompt: JSON.stringify(packet), subagent_type: vulnerabilityScopeAlias, background: false },
+      })).rejects.toThrow('fresh callID');
+      await expect(create(grant.candidate.createInput, grant.childContext)).rejects.toThrow('no exact materialize grant');
+      expect(createWorkspace).toHaveBeenCalledTimes(1);
+
+      const output = {
+        title: 'task',
+        output: JSON.stringify(readyMaterializeResult(grant.candidate, created)),
+        metadata: {},
+      };
+      await after({
+        tool: 'task',
+        sessionID: 'vuln-primary',
+        callID: grant.materializeCallID,
+        args: {},
+      }, output);
+      expect(JSON.parse(output.output)).toMatchObject({ state: 'STOP', reason: 'candidate-mismatch' });
+      expect(existsSync(created.workspacePath)).toBe(false);
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -3158,10 +3956,7 @@ describe('Per-agent tool filtering', () => {
           scope: vulnerabilityScopeAlias,
           idSuffix: `collision-old-${suffix}`,
         });
-        const oldWorkspace = JSON.parse(await create(
-          { repositoryIds: ['root'], scopeMode: 'current-change' },
-          oldGrant.childContext,
-        ));
+        const oldWorkspace = JSON.parse(await create(oldGrant.candidate.createInput, oldGrant.childContext));
         const oldCallback = {
           tool: 'task',
           sessionID: 'vuln-primary',
@@ -3194,7 +3989,7 @@ describe('Per-agent tool filtering', () => {
           }, {
             args: {
               prompt: JSON.stringify({
-                schema: 'hive-vuln-review-stage1/v2',
+                schema: 'hive-vuln-review-stage1/v3',
                 stage: 'materialize',
                 acceptedState: 'BOUNDED',
                 scopeEcho: oldGrant.candidate.scopeEcho,
@@ -3209,7 +4004,7 @@ describe('Per-agent tool filtering', () => {
           await before({ tool: 'task', sessionID: 'vuln-primary', callID: resolveCallID }, {
             args: {
               prompt: JSON.stringify({
-                schema: 'hive-vuln-review-stage1/v2',
+                schema: 'hive-vuln-review-stage1/v3',
                 stage: 'resolve',
                 attempt: 1,
                 intent: '',
@@ -3221,11 +4016,16 @@ describe('Per-agent tool filtering', () => {
               background: false,
             },
           });
+          const currentSourceResolution = await captureVulnerabilitySource(
+            hooks,
+            vulnerabilityScopeAlias,
+            `collision-current-child-${suffix}`,
+          );
           if (callbackOrder === 'after-current') {
             await after(oldCallback, oldOutput as any);
           }
           await after(oldCallback, oldOutput as any);
-          const currentProposal = currentChangeProposal();
+          const currentProposal = currentChangeProposal(currentSourceResolution);
           const currentCandidate = {
             ...currentProposal,
             merge: {
@@ -3237,7 +4037,7 @@ describe('Per-agent tool filtering', () => {
           await after({ tool: 'task', sessionID: 'vuln-primary', callID: resolveCallID, args: {} }, {
             title: 'task',
             output: JSON.stringify({
-              schema: 'hive-vuln-review-stage1/v2',
+              schema: 'hive-vuln-review-stage1/v3',
               state: 'BOUNDED',
               candidate: currentCandidate,
             }),
@@ -3250,7 +4050,7 @@ describe('Per-agent tool filtering', () => {
           }, {
             args: {
               prompt: JSON.stringify({
-                schema: 'hive-vuln-review-stage1/v2',
+                schema: 'hive-vuln-review-stage1/v3',
                 stage: 'materialize',
                 acceptedState: 'BOUNDED',
                 scopeEcho: currentCandidate.scopeEcho,
@@ -3267,10 +4067,7 @@ describe('Per-agent tool filtering', () => {
             scope: vulnerabilityScopeAlias,
             idSuffix: `collision-current-${suffix}`,
           });
-          const currentWorkspace = JSON.parse(await create(
-            { repositoryIds: ['root'], scopeMode: 'current-change' },
-            currentGrant.childContext,
-          ));
+          const currentWorkspace = JSON.parse(await create(currentGrant.candidate.createInput, currentGrant.childContext));
           await after({
             tool: 'task',
             sessionID: 'vuln-primary',
@@ -3341,7 +4138,7 @@ describe('Per-agent tool filtering', () => {
       const create = hooks.tool!.hive_review_workspace_create.execute as (value: unknown, context: unknown) => Promise<string>;
       const claim = hooks.tool!.hive_review_workspace_claim.execute as (value: unknown, context: unknown) => Promise<string>;
       const grant = await grantCurrentChangeMaterialization({ hooks, primary, scope: vulnerabilityScopeAlias });
-      const created = JSON.parse(await create({ repositoryIds: ['root'], scopeMode: 'current-change' }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       const cleanupService = new ReviewWorkspaceService({ projectRoot: repository });
       await cleanupService.cleanup(created.runId, created.ownershipToken, {
         workflow: 'vulnerability-review',
@@ -3354,7 +4151,7 @@ describe('Per-agent tool filtering', () => {
       const afterOutput = {
         title: 'task',
         output: JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           state: 'READY',
           scopeEcho: grant.candidate.scopeEcho,
           runId: created.runId,
@@ -3366,6 +4163,7 @@ describe('Per-agent tool filtering', () => {
           sourceFingerprint: created.sourceFingerprint,
           materializedFingerprint: created.materializedFingerprint,
           repositoryFingerprints: created.repositoryFingerprints,
+      sourceResolutionFingerprint: created.sourceResolutionFingerprint,
           excludedRepositoryIds: created.excludedRepositoryIds,
           truncated: created.truncated,
           threatContext: grant.candidate.threatContext,
@@ -3413,10 +4211,7 @@ describe('Per-agent tool filtering', () => {
         scope: vulnerabilityScopeAlias,
         repositoryIds: ['api', 'web'],
       });
-      const created = JSON.parse(await create({
-        repositoryIds: ['api', 'web'],
-        scopeMode: 'current-change',
-      }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
 
       expect(created.sourceFingerprint).toBe((grant.candidate.preview as { sourceFingerprint: string }).sourceFingerprint);
       expect(created.snapshots.map((entry: { repositoryId: string; snapshot: { fingerprint: string } }) => ({
@@ -3459,7 +4254,7 @@ describe('Per-agent tool filtering', () => {
       const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
       const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
 
-      const created = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const created = await createDashWorkspace({ hooks, primary, scope: scopeAlias });
       await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, {
         ...snapshotContext(primary),
         sessionID: 'dash-primary-cleanup',
@@ -3485,9 +4280,9 @@ describe('Per-agent tool filtering', () => {
       const create = hooks.tool!.hive_review_workspace_create.execute as (input: unknown, context: unknown) => Promise<string>;
       const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
       const primaryContext = { ...snapshotContext(primary), sessionID: 'dash-primary-errors' };
-      const first = JSON.parse(await create({}, snapshotContext(scopeAlias)));
-      const second = JSON.parse(await create({}, snapshotContext(scopeAlias)));
-      const third = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const first = await createDashWorkspace({ hooks, primary, scope: scopeAlias });
+      const second = await createDashWorkspace({ hooks, primary, scope: scopeAlias });
+      const third = await createDashWorkspace({ hooks, primary, scope: scopeAlias });
       await claim({ runId: first.runId, ownershipToken: first.ownershipToken }, primaryContext);
       await claim({ runId: second.runId, ownershipToken: second.ownershipToken }, primaryContext);
       await claim({ runId: third.runId, ownershipToken: third.ownershipToken }, primaryContext);
@@ -3523,8 +4318,8 @@ describe('Per-agent tool filtering', () => {
       const claim = hooks.tool!.hive_review_workspace_claim.execute as (input: unknown, context: unknown) => Promise<string>;
       const inspect = hooks.tool!.hive_review_workspace_inspect.execute as (input: unknown, context: unknown) => Promise<string>;
       const cleanup = hooks.tool!.hive_review_workspace_cleanup.execute as (input: unknown, context: unknown) => Promise<string>;
-      const first = JSON.parse(await create({}, snapshotContext(scopeAlias)));
-      const second = JSON.parse(await create({}, snapshotContext(scopeAlias)));
+      const first = await createDashWorkspace({ hooks, primary, scope: scopeAlias });
+      const second = await createDashWorkspace({ hooks, primary, scope: scopeAlias });
       const firstContext = { ...snapshotContext(primary), sessionID: 'dash-primary-first' };
       const secondContext = { ...snapshotContext(primary), sessionID: 'dash-primary-second' };
       await hooks['chat.message']?.({ sessionID: 'dash-primary-first', agent: primary }, { message: {}, parts: [] } as any);
@@ -3561,7 +4356,7 @@ describe('Per-agent tool filtering', () => {
         primary: vulnerabilityPrimary,
         scope: firstPlugin.vulnerabilityScopeAlias,
       });
-      const created = JSON.parse(await create({ repositoryIds: ['root'], scopeMode: 'current-change' }, grant.childContext));
+      const created = JSON.parse(await create(grant.candidate.createInput, grant.childContext));
       expect(created.scopeDescriptor).toEqual({
         schema: 'hive-vuln-review-scope/v1',
         mode: 'current-change',
@@ -3585,7 +4380,7 @@ describe('Per-agent tool filtering', () => {
       }, {
         title: 'task',
         output: JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           state: 'READY',
           scopeEcho: grant.candidate.scopeEcho,
           runId: created.runId,
@@ -3597,6 +4392,7 @@ describe('Per-agent tool filtering', () => {
           sourceFingerprint: created.sourceFingerprint,
           materializedFingerprint: created.materializedFingerprint,
           repositoryFingerprints: created.repositoryFingerprints,
+      sourceResolutionFingerprint: created.sourceResolutionFingerprint,
           excludedRepositoryIds: created.excludedRepositoryIds,
           truncated: created.truncated,
           threatContext: grant.candidate.threatContext,
@@ -3647,8 +4443,10 @@ describe('Per-agent tool filtering', () => {
       await hooks.config?.(config);
       const dashPrimary = config.command?.['dash-review']?.agent!;
       const safeAlias = findDashScopeAlias(config.agent)!;
+      const commandHook = hooks['command.execute.before']!;
       const messageHook = hooks['chat.message']!;
       const taskHook = hooks['tool.execute.before']!;
+      await commandHook({ command: 'dash-review', sessionID: 'dash-session', arguments: '' }, { parts: [] });
       await messageHook({ sessionID: 'dash-session', agent: dashPrimary }, {
         message: {},
         parts: [],
@@ -3677,7 +4475,7 @@ describe('Per-agent tool filtering', () => {
       } as any);
       await expect(taskHook({ tool: 'bash', sessionID: 'untracked-dash-session', callID: 'unexpected-primary' }, {
         args: { command: 'touch should-not-run' },
-      })).resolves.toBeUndefined();
+      })).rejects.toThrow('exact primary caller identity');
       await messageHook({ sessionID: 'untracked-dash-session', agent: dashPrimary }, {
         message: {},
         parts: [],
@@ -3691,13 +4489,13 @@ describe('Per-agent tool filtering', () => {
       } as any);
       await expect(taskHook({ tool: 'bash', sessionID: 'untracked-dash-session', callID: 'handoff' }, {
         args: { command: 'echo ok' },
-      })).resolves.toBeUndefined();
+      })).rejects.toThrow('exact primary caller identity');
       await hooks.event?.({
         event: { type: 'session.deleted', properties: { info: { id: 'untracked-dash-session' } } },
       } as any);
       await expect(taskHook({ tool: 'task', sessionID: 'untracked-dash-session', callID: 'after-delete' }, {
         args: { subagent_type: safeAlias },
-      })).resolves.toBeUndefined();
+      })).rejects.toThrow('exact primary caller identity');
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -3777,7 +4575,7 @@ describe('Per-agent tool filtering', () => {
       await before({ tool: 'task', sessionID: 'vuln-primary', callID: 'compare-resolve' }, {
         args: {
           prompt: JSON.stringify({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             stage: 'resolve',
             attempt: 1,
             intent: '',
@@ -3836,7 +4634,7 @@ describe('Per-agent tool filtering', () => {
       await hooks['tool.execute.before']?.({ tool: 'task', sessionID: 'vuln-primary', callID: 'compare-lineage' }, {
         args: {
           prompt: JSON.stringify({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             stage: 'resolve',
             attempt: 1,
             intent: '',
@@ -3890,7 +4688,7 @@ describe('Per-agent tool filtering', () => {
       await hooks['tool.execute.before']?.({ tool: 'task', sessionID: 'vuln-primary', callID: 'compare-lineage-failure' }, {
         args: {
           prompt: JSON.stringify({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             stage: 'resolve',
             attempt: 1,
             intent: '',
@@ -3954,7 +4752,7 @@ describe('Per-agent tool filtering', () => {
         await before({ tool: 'task', sessionID: 'vuln-primary', callID: `${failure}-binding` }, {
           args: {
             prompt: JSON.stringify({
-              schema: 'hive-vuln-review-stage1/v2',
+              schema: 'hive-vuln-review-stage1/v3',
               stage: 'resolve',
               attempt: 1,
               intent: '',
@@ -4005,7 +4803,7 @@ describe('Per-agent tool filtering', () => {
       const createWorkspace = spyOn(ReviewWorkspaceService.prototype, 'create');
       const resolveArgs = {
         prompt: JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           stage: 'resolve',
           attempt: 1,
           intent: '',
@@ -4060,7 +4858,7 @@ describe('Per-agent tool filtering', () => {
       }, {
         args: {
           prompt: JSON.stringify({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             stage: 'resolve',
             attempt: 1,
             intent: '',
@@ -4148,7 +4946,7 @@ describe('Per-agent tool filtering', () => {
       const reader = hooks.tool!.hive_vulnerability_compare_report_read.execute as (value: unknown, context: unknown) => Promise<string>;
       const args = {
         prompt: JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           stage: 'resolve',
           attempt: 1,
           intent: '',
@@ -4213,7 +5011,7 @@ describe('Per-agent tool filtering', () => {
         const after = hooks['tool.execute.after']!;
         const sharedCallID = `resolve-shared-${callbackOrder}`;
         const packet = {
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           stage: 'resolve',
           attempt: 1,
           intent: '',
@@ -4230,7 +5028,7 @@ describe('Per-agent tool filtering', () => {
         const oldOutput = {
           title: 'task',
           output: JSON.stringify({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             state: 'BOUNDED',
             candidate: currentChangeProposal(),
           }),
@@ -4309,7 +5107,7 @@ describe('Per-agent tool filtering', () => {
           : {
               title: 'task',
               output: JSON.stringify({
-                schema: 'hive-vuln-review-stage1/v2',
+                schema: 'hive-vuln-review-stage1/v3',
                 state: 'BOUNDED',
                 candidate: currentChangeProposal(),
               }),
@@ -4323,10 +5121,7 @@ describe('Per-agent tool filtering', () => {
             scope: vulnerabilityScopeAlias,
             idSuffix: `mixed-task-old-${suffix}`,
           });
-          const oldWorkspace = JSON.parse(await create(
-            { repositoryIds: ['root'], scopeMode: 'current-change' },
-            oldGrant.childContext,
-          ));
+          const oldWorkspace = JSON.parse(await create(oldGrant.candidate.createInput, oldGrant.childContext));
           await after({
             tool: 'task',
             sessionID: 'vuln-primary',
@@ -4354,7 +5149,7 @@ describe('Per-agent tool filtering', () => {
         }
 
         const resolvePacket = {
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           stage: 'resolve',
           attempt: 1,
           intent: '',
@@ -4363,6 +5158,7 @@ describe('Per-agent tool filtering', () => {
           clarification: null,
         };
         let currentResolveCallID: string | undefined;
+        let currentSourceResolution: Record<string, any> | undefined;
         let currentGrant: Awaited<ReturnType<typeof grantCurrentChangeMaterialization>> | undefined;
         let currentWorkspace: Record<string, any> | undefined;
         if (replacementStage === 'resolve') {
@@ -4379,6 +5175,11 @@ describe('Per-agent tool filtering', () => {
             await before({ tool: 'task', sessionID: 'vuln-primary', callID: currentResolveCallID }, {
               args: { prompt: JSON.stringify(resolvePacket), subagent_type: vulnerabilityScopeAlias, background: false },
             });
+            currentSourceResolution = await captureVulnerabilitySource(
+              hooks,
+              vulnerabilityScopeAlias,
+              `mixed-task-current-child-${suffix}`,
+            );
           } else {
             currentGrant = await grantCurrentChangeMaterialization({
               hooks,
@@ -4397,7 +5198,7 @@ describe('Per-agent tool filtering', () => {
           await expect(before({ tool: 'task', sessionID: 'vuln-primary', callID: sharedCallID }, {
             args: {
               prompt: JSON.stringify({
-                schema: 'hive-vuln-review-stage1/v2',
+                schema: 'hive-vuln-review-stage1/v3',
                 stage: 'materialize',
                 acceptedState: 'BOUNDED',
                 scopeEcho: currentGrant.candidate.scopeEcho,
@@ -4409,10 +5210,7 @@ describe('Per-agent tool filtering', () => {
           })).rejects.toThrow('reused session/tool callID');
         }
         if (currentGrant && currentState !== 'fresh') {
-          currentWorkspace = JSON.parse(await create(
-            { repositoryIds: ['root'], scopeMode: 'current-change' },
-            currentGrant.childContext,
-          ));
+          currentWorkspace = JSON.parse(await create(currentGrant.candidate.createInput, currentGrant.childContext));
           await after({
             tool: 'task',
             sessionID: 'vuln-primary',
@@ -4442,7 +5240,7 @@ describe('Per-agent tool filtering', () => {
           { ...snapshotContext(vulnerabilityScopeAlias), sessionID: `mixed-task-stale-child-${suffix}` },
         )).rejects.toThrow('no exact materialize grant');
         if (currentState === 'fresh' && replacementStage === 'resolve') {
-          const proposal = currentChangeProposal();
+          const proposal = currentChangeProposal(currentSourceResolution);
           const candidate = {
             ...proposal,
             merge: {
@@ -4458,7 +5256,7 @@ describe('Per-agent tool filtering', () => {
             args: {},
           }, {
             title: 'task',
-            output: JSON.stringify({ schema: 'hive-vuln-review-stage1/v2', state: 'BOUNDED', candidate }),
+            output: JSON.stringify({ schema: 'hive-vuln-review-stage1/v3', state: 'BOUNDED', candidate }),
             metadata: {},
           });
           await expect(before({
@@ -4468,7 +5266,7 @@ describe('Per-agent tool filtering', () => {
           }, {
             args: {
               prompt: JSON.stringify({
-                schema: 'hive-vuln-review-stage1/v2',
+                schema: 'hive-vuln-review-stage1/v3',
                 stage: 'materialize',
                 acceptedState: 'BOUNDED',
                 scopeEcho: candidate.scopeEcho,
@@ -4479,10 +5277,7 @@ describe('Per-agent tool filtering', () => {
             },
           })).resolves.toBeUndefined();
         } else if (currentState === 'fresh') {
-          currentWorkspace = JSON.parse(await create(
-            { repositoryIds: ['root'], scopeMode: 'current-change' },
-            currentGrant!.childContext,
-          ));
+          currentWorkspace = JSON.parse(await create(currentGrant!.candidate.createInput, currentGrant!.childContext));
           await after({
             tool: 'task',
             sessionID: 'vuln-primary',
@@ -4528,11 +5323,12 @@ describe('Per-agent tool filtering', () => {
       const message = hooks['chat.message']!;
       const before = hooks['tool.execute.before']!;
       const after = hooks['tool.execute.after']!;
+      const snapshot = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
       const question = 'Which repository boundary should be reviewed?';
       await command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] });
       await message({ sessionID: 'vuln-primary', agent: primary }, { message: { agent: primary }, parts: [] } as any);
       const firstPacket = {
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         stage: 'resolve',
         attempt: 1,
         intent: '',
@@ -4543,15 +5339,23 @@ describe('Per-agent tool filtering', () => {
       await before({ tool: 'task', sessionID: 'vuln-primary', callID: 'resolve-one' }, {
         args: { prompt: JSON.stringify(firstPacket), subagent_type: vulnerabilityScopeAlias, background: false },
       });
+      await message({ sessionID: 'clarification-child', agent: vulnerabilityScopeAlias }, {
+        message: { agent: vulnerabilityScopeAlias }, parts: [],
+      } as any);
+      const firstSourceOutput = await snapshot({}, {
+        ...snapshotContext(vulnerabilityScopeAlias),
+        sessionID: 'clarification-child',
+      });
+      const sourceResolution = JSON.parse(firstSourceOutput).sourceResolution;
       await after({ tool: 'task', sessionID: 'vuln-primary', callID: 'resolve-one', args: {} }, {
         title: 'task',
         output: JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           state: 'NEEDS_CLARIFICATION',
           question,
           reason: 'ambiguous-target',
           unresolvedDimensions: ['repositories'],
-          proposal: currentChangeProposal(),
+          proposal: currentChangeProposal(sourceResolution),
         }),
         metadata: {},
       });
@@ -4586,6 +5390,14 @@ describe('Per-agent tool filtering', () => {
           background: false,
         },
       })).resolves.toBeUndefined();
+      writeFileSync(path.join(repository, 'README.md'), 'dirty before clarification replay\n');
+      await message({ sessionID: 'clarification-second-child', agent: vulnerabilityScopeAlias }, {
+        message: { agent: vulnerabilityScopeAlias }, parts: [],
+      } as any);
+      expect(await snapshot({}, {
+        ...snapshotContext(vulnerabilityScopeAlias),
+        sessionID: 'clarification-second-child',
+      })).toBe(firstSourceOutput);
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -4620,7 +5432,7 @@ describe('Per-agent tool filtering', () => {
           }],
         };
         const packet = {
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           stage: 'resolve',
           attempt: 1,
           intent: '',
@@ -4637,15 +5449,20 @@ describe('Per-agent tool filtering', () => {
           await before({ tool: 'task', sessionID: 'vuln-primary', callID: `resolve-${suffix}` }, {
             args: { prompt: JSON.stringify(packet), subagent_type: vulnerabilityScopeAlias, background: false },
           });
+          const sourceResolution = await captureVulnerabilitySource(
+            hooks,
+            vulnerabilityScopeAlias,
+            `clarification-${suffix}-child`,
+          );
           await after({ tool: 'task', sessionID: 'vuln-primary', callID: `resolve-${suffix}`, args: {} }, {
             title: 'task',
             output: JSON.stringify({
-              schema: 'hive-vuln-review-stage1/v2',
+              schema: 'hive-vuln-review-stage1/v3',
               state: 'NEEDS_CLARIFICATION',
               question,
               reason: 'ambiguous-target',
               unresolvedDimensions: ['repositories'],
-              proposal: currentChangeProposal(),
+              proposal: currentChangeProposal(sourceResolution),
             }),
             metadata: {},
           });
@@ -4679,6 +5496,11 @@ describe('Per-agent tool filtering', () => {
         await before({ tool: 'task', sessionID: 'vuln-primary', callID: `resolve-current-${callbackOrder}-${oldAnswer}` }, {
           args: { prompt: JSON.stringify(packet), subagent_type: vulnerabilityScopeAlias, background: false },
         });
+        const currentSourceResolution = await captureVulnerabilitySource(
+          hooks,
+          vulnerabilityScopeAlias,
+          `clarification-current-${callbackOrder}-${oldAnswer}-child`,
+        );
         await after({
           tool: 'task',
           sessionID: 'vuln-primary',
@@ -4687,12 +5509,12 @@ describe('Per-agent tool filtering', () => {
         }, {
           title: 'task',
           output: JSON.stringify({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             state: 'NEEDS_CLARIFICATION',
             question,
             reason: 'ambiguous-target',
             unresolvedDimensions: ['repositories'],
-            proposal: currentChangeProposal(),
+            proposal: currentChangeProposal(currentSourceResolution),
           }),
           metadata: {},
         });
@@ -4767,7 +5589,7 @@ describe('Per-agent tool filtering', () => {
           }],
         };
         const resolvePacket = {
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           stage: 'resolve',
           attempt: 1,
           intent: '',
@@ -4804,15 +5626,20 @@ describe('Per-agent tool filtering', () => {
         await before({ tool: 'task', sessionID: 'vuln-primary', callID: resolveCallID }, {
           args: { prompt: JSON.stringify(resolvePacket), subagent_type: vulnerabilityScopeAlias, background: false },
         });
+        const sourceResolution = await captureVulnerabilitySource(
+          hooks,
+          vulnerabilityScopeAlias,
+          `mixed-question-child-${suffix}`,
+        );
         await after({ tool: 'task', sessionID: 'vuln-primary', callID: resolveCallID, args: {} }, {
           title: 'task',
           output: JSON.stringify({
-            schema: 'hive-vuln-review-stage1/v2',
+            schema: 'hive-vuln-review-stage1/v3',
             state: 'NEEDS_CLARIFICATION',
             question,
             reason: 'ambiguous-target',
             unresolvedDimensions: ['repositories'],
-            proposal: currentChangeProposal(),
+            proposal: currentChangeProposal(sourceResolution),
           }),
           metadata: {},
         });
@@ -4871,7 +5698,7 @@ describe('Per-agent tool filtering', () => {
       const after = hooks['tool.execute.after']!;
       const question = 'Use the proposed repository boundary?';
       const firstPacket = {
-        schema: 'hive-vuln-review-stage1/v2',
+        schema: 'hive-vuln-review-stage1/v3',
         stage: 'resolve',
         attempt: 1,
         intent: '',
@@ -4884,15 +5711,16 @@ describe('Per-agent tool filtering', () => {
       await before({ tool: 'task', sessionID: 'vuln-primary', callID: 'terminal-first' }, {
         args: { prompt: JSON.stringify(firstPacket), subagent_type: vulnerabilityScopeAlias, background: false },
       });
+      const sourceResolution = await captureVulnerabilitySource(hooks, vulnerabilityScopeAlias, 'terminal-first-child');
       await after({ tool: 'task', sessionID: 'vuln-primary', callID: 'terminal-first', args: {} }, {
         title: 'task',
         output: JSON.stringify({
-          schema: 'hive-vuln-review-stage1/v2',
+          schema: 'hive-vuln-review-stage1/v3',
           state: 'NEEDS_CLARIFICATION',
           question,
           reason: 'ambiguous-target',
           unresolvedDimensions: ['repositories'],
-          proposal: currentChangeProposal(),
+          proposal: currentChangeProposal(sourceResolution),
         }),
         metadata: {},
       });
@@ -4930,7 +5758,7 @@ describe('Per-agent tool filtering', () => {
       })).rejects.toThrow('active Stage 1 reservation');
       await expect(before({ tool: 'task', sessionID: 'vuln-primary', callID: 'terminal-materialize' }, {
         args: {
-          prompt: JSON.stringify({ schema: 'hive-vuln-review-stage1/v2', stage: 'materialize' }),
+          prompt: JSON.stringify({ schema: 'hive-vuln-review-stage1/v3', stage: 'materialize' }),
           subagent_type: vulnerabilityScopeAlias,
           background: false,
         },
@@ -4968,7 +5796,7 @@ describe('Per-agent tool filtering', () => {
         await before({ tool: 'task', sessionID: 'vuln-primary', callID }, {
           args: {
             prompt: JSON.stringify({
-              schema: 'hive-vuln-review-stage1/v2',
+              schema: 'hive-vuln-review-stage1/v3',
               stage: 'resolve',
               attempt: 1,
               intent: '',
@@ -5020,10 +5848,16 @@ describe('Per-agent tool filtering', () => {
         return toolHook({ tool, sessionID, callID: `${sessionID}-${tool}` }, { args });
       };
 
+      await hooks['command.execute.before']?.({
+        command: 'dash-review',
+        sessionID: 'dash-primary',
+        arguments: '',
+      }, { parts: [] });
       await messageHook({ sessionID: 'dash-primary', agent: dashPrimary }, { message: {}, parts: [] } as any);
-      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool']) {
+      for (const tool of ['read', 'glob', 'grep', 'bash']) {
         await expect(invoke('dash-primary', tool)).resolves.toBeUndefined();
       }
+      await expect(invoke('dash-primary', 'mutating_mcp_tool')).rejects.toThrow('not authorized');
       for (const tool of ['hive_repositories_status', 'hive_plan_read', 'hive_status']) {
         await expect(invoke('dash-primary', tool)).resolves.toBeUndefined();
       }
@@ -5068,10 +5902,11 @@ describe('Per-agent tool filtering', () => {
       }
 
       await messageHook({ sessionID: 'dash-code', agent: codeAlias }, { message: {}, parts: [] } as any);
-      for (const tool of ['read', 'glob', 'grep', 'bash', 'mutating_mcp_tool', 'hive_repositories_status', 'hive_plan_read', 'hive_status']) {
+      for (const tool of ['read', 'glob', 'grep', 'bash', 'hive_repositories_status', 'hive_plan_read', 'hive_status']) {
         await expect(invoke('dash-code', tool)).resolves.toBeUndefined();
       }
-      await expect(invoke('dash-code', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review task target is not authorized');
+      await expect(invoke('dash-code', 'mutating_mcp_tool')).rejects.toThrow('not authorized');
+      await expect(invoke('dash-code', 'task', { subagent_type: scopeAlias })).rejects.toThrow('dash-review tool is not authorized');
       for (const tool of ['hive_git_snapshot', 'hive_feature_create', 'hive_review_workspace_create']) {
         await expect(invoke('dash-code', tool, { subagent_type: scopeAlias })).rejects.toThrow('dash-review tool is not authorized');
       }
@@ -5088,19 +5923,27 @@ describe('Per-agent tool filtering', () => {
     createGitRepository(web);
     writeCompositeWorkspaceManifest(composite, ['api', 'web']);
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(composite);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      const all = JSON.parse(await execute({}, snapshotContext(scopeAlias)));
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(composite);
+      const all = (await captureDashSource({ hooks, primary: dashPrimary, scope: scopeAlias })).preview;
       expect(all.manifestRepositoryIds).toEqual(['api', 'web']);
       expect(all.selectedRepositoryIds).toEqual(['api', 'web']);
       expect(all.excludedRepositoryIds).toEqual([]);
       expect(all.snapshots.map((entry: { repositoryId: string; snapshot: { repository: { root: string } } }) => entry.repositoryId)).toEqual(['api', 'web']);
       expect(all.snapshots.map((entry: { repositoryId: string; snapshot: { repository: { root: string } } }) => entry.snapshot.repository.root)).toEqual([api, web]);
-      const narrowed = JSON.parse(await execute({ repositoryIds: ['api'] }, snapshotContext(scopeAlias)));
+      const narrowed = (await captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['api'] },
+      })).preview;
       expect(narrowed.selectedRepositoryIds).toEqual(['api']);
       expect(narrowed.excludedRepositoryIds).toEqual(['web']);
-      await expect(execute({ repositoryIds: ['missing'] }, snapshotContext(scopeAlias))).rejects.toThrow('Unknown repositoryId');
+      await expect(captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['missing'] },
+      })).rejects.toThrow('Unknown repositoryId');
     } finally {
       rmSync(composite, { recursive: true, force: true });
     }
@@ -5118,27 +5961,37 @@ describe('Per-agent tool filtering', () => {
       { id: 'worker', path: './services/worker' },
     ]);
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(projectRoot);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      const snapshot = JSON.parse(await execute(
-        { repositoryIds: ['ramses-hl'] },
-        snapshotContext(scopeAlias),
-      ));
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(projectRoot);
+      const snapshot = (await captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['ramses-hl'] },
+      })).preview;
       expect(snapshot.manifestRepositoryIds).toEqual(['ramses-hl', 'worker']);
       expect(snapshot.selectedRepositoryIds).toEqual(['ramses-hl']);
       expect(snapshot.excludedRepositoryIds).toEqual(['worker']);
       expect(snapshot.snapshots.map((entry: { repositoryId: string }) => entry.repositoryId)).toEqual(['ramses-hl']);
       expect(snapshot.snapshots[0].snapshot.repository.root).toBe(repository);
-      const deduplicated = JSON.parse(await execute(
-        { repositoryIds: ['ramses-hl', 'ramses-hl'] },
-        snapshotContext(scopeAlias),
-      ));
+      const deduplicated = (await captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['ramses-hl', 'ramses-hl'] },
+      })).preview;
       expect(deduplicated.selectedRepositoryIds).toEqual(['ramses-hl']);
-      await expect(execute({ repositoryIds: [] }, snapshotContext(scopeAlias))).rejects.toThrow('must select at least one');
-      await expect(execute({
-        repositoryIds: Array.from({ length: 33 }, (_, index) => `repository-${index}`),
-      }, snapshotContext(scopeAlias))).rejects.toThrow('repository count exceeds 32');
+      await expect(captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: [] },
+      })).rejects.toThrow('must select at least one');
+      await expect(captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: Array.from({ length: 33 }, (_, index) => `repository-${index}`) },
+      })).rejects.toThrow('repository count exceeds 32');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -5151,10 +6004,8 @@ describe('Per-agent tool filtering', () => {
       throw new Error('Invalid global Agent Hive config: injected malformed config');
     });
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      expect(JSON.parse(await execute({}, snapshotContext(scopeAlias))).repository.root).toBe(repository);
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(repository);
+      expect((await captureDashSource({ hooks, primary: dashPrimary, scope: scopeAlias })).preview.repository.root).toBe(repository);
       expect(readStored).not.toHaveBeenCalled();
     } finally {
       rmSync(repository, { recursive: true, force: true });
@@ -5189,22 +6040,28 @@ describe('Per-agent tool filtering', () => {
         repositories: [{ id: 'api', path: repositoryPath, root: repository }],
       });
 
-      const captured = JSON.parse(await snapshot(
-        { repositoryIds: ['api'] },
-        snapshotContext(scopeAlias),
-      ));
+      const captured = (await captureDashSource({
+        hooks,
+        primary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['api'] },
+      })).preview;
       expect(captured.manifestRepositoryIds).toEqual(['api']);
       expect(captured.selectedRepositoryIds).toEqual(['api']);
       expect(captured.snapshots[0].snapshot.repository.root).toBe(repository);
-      await expect(snapshot(
-        { repositoryIds: ['missing'] },
-        snapshotContext(scopeAlias),
-      )).rejects.toThrow('Unknown repositoryId: missing');
+      await expect(captureDashSource({
+        hooks,
+        primary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['missing'] },
+      })).rejects.toThrow('Unknown repositoryId: missing');
 
-      const created = JSON.parse(await create(
-        { repositoryIds: ['api'] },
-        snapshotContext(scopeAlias),
-      ));
+      const created = await createDashWorkspace({
+        hooks,
+        primary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['api'] },
+      });
       expect(created.state).toBe('READY');
       expect(Object.keys(created.repositories)).toEqual(['api']);
       expect(readFileSync(path.join(created.repositories.api.path, 'README.md'), 'utf8')).toBe('snapshot fixture\n');
@@ -5233,10 +6090,8 @@ describe('Per-agent tool filtering', () => {
     createGitRepository(repository);
     writeFileSync(path.join(repository, 'workspace.json'), JSON.stringify({ name: 'unrelated monorepo metadata' }));
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      expect(JSON.parse(await execute({}, snapshotContext(scopeAlias))).repository.root).toBe(repository);
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(repository);
+      expect((await captureDashSource({ hooks, primary: dashPrimary, scope: scopeAlias })).preview.repository.root).toBe(repository);
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -5249,10 +6104,8 @@ describe('Per-agent tool filtering', () => {
     createGitRepository(childRepository);
     writeCompositeWorkspaceManifest(repository, ['api']);
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      await expect(execute({}, snapshotContext(scopeAlias))).rejects.toThrow(/ambiguous/i);
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(repository);
+      await expect(captureDashSource({ hooks, primary: dashPrimary, scope: scopeAlias })).rejects.toThrow(/ambiguous/i);
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -5278,10 +6131,13 @@ describe('Per-agent tool filtering', () => {
       createdAt: '2026-07-11T00:00:00.000Z',
     }));
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(composite);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      await expect(execute({ repositoryIds: ['../evil'] }, snapshotContext(scopeAlias))).rejects.toThrow('Invalid composite workspace manifest');
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(composite);
+      await expect(captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['../evil'] },
+      })).rejects.toThrow('Invalid composite workspace manifest');
     } finally {
       rmSync(composite, { recursive: true, force: true });
     }
@@ -5296,10 +6152,13 @@ describe('Per-agent tool filtering', () => {
     try {
       symlinkSync(outside, path.join(composite, 'repos', 'api'));
       writeCompositeWorkspaceManifest(composite, ['api']);
-      const { hooks, scopeAlias } = await createSnapshotPlugin(composite);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      await expect(execute({ repositoryIds: ['api'] }, snapshotContext(scopeAlias))).rejects.toThrow('symlink');
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(composite);
+      await expect(captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['api'] },
+      })).rejects.toThrow('symlink');
     } finally {
       rmSync(composite, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
@@ -5316,10 +6175,13 @@ describe('Per-agent tool filtering', () => {
     gitAt(api, ['config', 'core.worktree', outside]);
     writeCompositeWorkspaceManifest(composite, ['api']);
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(composite);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      await expect(execute({ repositoryIds: ['api'] }, snapshotContext(scopeAlias))).rejects.toThrow('does not match the authorized repository root');
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(composite);
+      await expect(captureDashSource({
+        hooks,
+        primary: dashPrimary,
+        scope: scopeAlias,
+        snapshotInput: { repositoryIds: ['api'] },
+      })).rejects.toThrow('does not match the authorized repository root');
     } finally {
       rmSync(composite, { recursive: true, force: true });
     }
@@ -5329,10 +6191,8 @@ describe('Per-agent tool filtering', () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-root-'));
     createGitRepository(repository);
     try {
-      const { hooks, scopeAlias } = await createSnapshotPlugin(repository);
-      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
-
-      expect(JSON.parse(await execute({}, snapshotContext(scopeAlias))).repository.root).toBe(repository);
+      const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(repository);
+      expect((await captureDashSource({ hooks, primary: dashPrimary, scope: scopeAlias })).preview.repository.root).toBe(repository);
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }

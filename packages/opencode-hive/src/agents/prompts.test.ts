@@ -354,7 +354,7 @@ describe('Specialized reviewer prompts', () => {
       'baseSha',
       'headSha',
       'verified PR commits',
-      'explicit local scope',
+      'local snapshot scope',
       'unverified local checkout',
       'targetRef',
       'provider refs',
@@ -1245,6 +1245,20 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('branchDeleted');
       expect(hiveToolsContent).toContain('pruned');
       expect(hiveToolsContent).toContain('message');
+    });
+  });
+
+  describe('private review runtime docs alignment', () => {
+    it('documents optional provider enrichment and exact deterministic scope capabilities', () => {
+      expect(readmeContent).toContain('optional bounded `gh` CLI dependency');
+      expect(readmeContent).toContain('provider lookup is unavailable, the runtime falls back directly');
+      expect(readmeContent).toContain('retries once against the local checkout only when every failure is a matching missing base/head OID');
+      expect(readmeContent).toContain('records all such failures in canonical repository-ID order');
+      expect(readmeContent).toContain('one normal cleanup plus one runtime-authenticated recovery exception');
+      expect(readmeContent).toContain('MCP, Railway, Vercel, and other remote-service tools are not authorized for these lanes');
+      expect(readmeContent).toContain('this is name-based runtime trust, not a cryptographic caller identity');
+      expect(readmeContent).toContain('The scope researcher can call only `hive_repositories_status`, `hive_plan_read`, `hive_status`, `hive_git_snapshot`, `hive_vulnerability_compare_report_read`, `hive_review_workspace_create`, `hive_review_workspace_cleanup`');
+      expect(readmeContent).toContain('`hive_git_snapshot` is the sole object check');
     });
   });
 

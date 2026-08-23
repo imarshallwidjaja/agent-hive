@@ -9,9 +9,12 @@ import {
   parseVulnerabilityReviewArgs,
   renderDashReviewArgumentBlock,
   renderVulnerabilityReviewArgumentBlock,
+  VULNERABILITY_REVIEW_SCOPE_MODES,
 } from './renderers.js';
 import { resolveCouncilMembers } from './council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './types.js';
+import { VULNERABILITY_REVIEW_LENSES } from '../agents/vulnerability-review-lanes.js';
+import { REVIEW_ROLE_POLICIES } from '../review-tool-policy.js';
 
 const builtInAgents: Record<string, HiveCommandAgentDescriptor> = {
   'hive-master': {
@@ -164,6 +167,7 @@ describe('hive command renderers', () => {
     ['--task', 'Missing value'],
     ['--feature', 'Missing value'],
     ['--compare', 'Missing value'],
+    ['--compare ""', 'Path must be repository-relative'],
     ['--range main...HEAD --range release...HEAD', 'Duplicate singleton flag'],
     ['--base main --base release', 'Duplicate singleton flag'],
     ['--base main --target HEAD --target release', 'Duplicate singleton flag'],
@@ -232,6 +236,21 @@ describe('hive command renderers', () => {
     expect(block).toContain('Fixed overrides (JSON): {"repositoryIds":["web"],"comparePath":"reports/prior.md"}');
     expect(block).not.toContain('current-change');
     expect(renderVulnerabilityReviewArgumentBlock('')).toBe('');
+  });
+
+  it('preserves exact provider descriptor eligibility without normalizing line separators', () => {
+    const url = 'https://github.com/example/project/pull/295';
+    expect(parseVulnerabilityReviewArgs(`${url} --repo api --path src`).githubPullRequest).toEqual({
+      owner: 'example',
+      repository: 'project',
+      number: 295,
+    });
+    expect(parseVulnerabilityReviewArgs(`review ${url}`).githubPullRequest).toBeUndefined();
+    expect(parseVulnerabilityReviewArgs(`${url} --base main`).githubPullRequest).toBeUndefined();
+    for (const separator of ['\r', '\n', '\u0085', '\u2028', '\u2029']) {
+      expect(parseVulnerabilityReviewArgs(`${separator}${url} --repo api`).githubPullRequest).toBeUndefined();
+      expect(parseVulnerabilityReviewArgs(`${url}${separator} --path src`).githubPullRequest).toBeUndefined();
+    }
   });
 
   it('returns structured non-empty guidance for every command with empty and non-empty args', () => {
@@ -680,7 +699,7 @@ describe('hive command renderers', () => {
       githubPullRequest: null,
     });
     expect(output).toContain('When `githubPullRequest` is null, provider lookup is not authorized.');
-    expect(output).toContain('dispatch Stage A immediately without provider lookup as `explicit local scope`');
+    expect(output).toContain('dispatch Stage A immediately without provider lookup as `local snapshot scope`');
     expect(output).toContain('ordinary descriptions, paths, tasks, features, local refs, ranges, SHAs, non-GitHub URLs');
   });
 
@@ -696,10 +715,10 @@ describe('hive command renderers', () => {
     });
     expect(output).toContain('Empty `rawIntent` never authorizes provider lookup.');
     expect(output).toContain('existing no-argument local inference semantics');
-    expect(output).toContain('dispatch Stage A directly as `explicit local scope`');
+    expect(output).toContain('dispatch Stage A directly as `local snapshot scope`');
   });
 
-  it('makes hostname-pinned GitHub metadata an optional bounded enrichment before its Stage A handoff', () => {
+  it('assigns bounded GitHub enrichment and fallback authority to the runtime', () => {
     const args = 'https://github.com/example/project/pull/295';
     const output = render('dash-review', args);
 
@@ -708,28 +727,17 @@ describe('hive command renderers', () => {
       repository: 'project',
       number: 295,
     });
-    const recipe = "`gh api --hostname github.com --method GET 'repos/<owner>/<repository>/pulls/<number>' --jq '{baseSha:.base.sha,headSha:.head.sha}'`";
-    expect(output).toContain('Optional GitHub PR metadata enrichment:');
-    expect(output).toContain('For this validated descriptor only');
-    expect(output).toContain('at most one read-only metadata attempt');
-    expect(output).toContain('`gh` is already available');
-    expect(output).toContain('short explicit timeout');
-    expect(output).toContain(recipe);
-    expect(output).toContain('separately validated descriptor components');
-    expect(output).toContain('never pass `rawIntent` or a reconstructed URL');
-    expect(output).toContain('consume exactly `baseSha` and `headSha`');
+    expect(output).toContain('Runtime-owned provider enrichment:');
+    expect(output).toContain('runtime, not the primary or scope model');
+    expect(output).toContain('at most one bounded non-interactive hostname-pinned `gh api` argument vector');
+    expect(output).toContain('never passes `rawIntent`');
+    expect(output).toContain('structured missing-ref for its expected base/head OID');
+    expect(output).toContain('runtime-produced `sourceResolution`');
+    expect(output).toContain('must not perform provider CLI or network lookup, authorize fallback');
     expect(output).not.toContain('gh pr view');
-    expect(output).toContain('exactly 40 hexadecimal characters');
     expect(output).not.toContain('git cat-file');
-    expect(output).toContain('candidate `baseRef` and `targetRef`');
-    expect(output).toContain('canonical local commit-object check');
-    expect(output).toContain('Do not install `gh`, start a login flow, retry, prompt, fetch, or wait beyond that timeout.');
-    expect(output).toContain('CLI absence, inability to set the timeout, execution error, authentication failure, network failure, timeout, missing output, or malformed OID');
-    expect(output).toContain('falls immediately to `unverified local checkout`');
-    expect(output).toContain('valid metadata SHA is missing from the local repository');
-    expect(output.indexOf(recipe)).toBeLessThan(output.indexOf('Stage A, mandatory scope/lead scout:'));
     expect(output.indexOf('Provider-neutral scope resolution and Stage A handoff:'))
-      .toBeLessThan(output.indexOf('Optional GitHub PR metadata enrichment:'));
+      .toBeLessThan(output.indexOf('Runtime-owned provider enrichment:'));
   });
 
   it('defines exactly three scope states with PR-only fallback and strict explicit local selectors', () => {
@@ -738,24 +746,25 @@ describe('hive command renderers', () => {
     expect(output).toContain('exactly three scope states');
     const declarationStart = output.indexOf('- Use exactly three scope states and these exact labels.');
     const declaration = output.slice(declarationStart, output.indexOf('\n', declarationStart));
-    expect([...declaration.matchAll(/`(verified PR commits|explicit local scope|unverified local checkout)`/g)]
+    expect([...declaration.matchAll(/`(verified PR commits|local snapshot scope|unverified local checkout)`/g)]
       .map((match) => match[1])).toEqual([
         'verified PR commits',
-        'explicit local scope',
+        'local snapshot scope',
         'unverified local checkout',
       ]);
     expect(output).toContain('provider `baseSha` and `headSha`');
     expect(output).toContain('successful snapshot of those exact SHAs');
-    expect(output).toContain('only for the validated PR-descriptor branch');
-    expect(output).toContain('retry exactly once');
+    expect(output).toContain('runtime local-checkout fallback branches');
+    expect(output).toContain('provider lookup is unavailable, the runtime directly captures the local checkout');
+    expect(output).toContain('every failed selected repository reports a structured missing-ref for its expected base/head OID');
+    expect(output).toContain('strict failure denies fallback regardless of completion order');
+    expect(output).toContain('before one local-checkout retry');
     expect(output).toContain('unverified local checkout');
-    expect(output).toContain('omit `targetRef`');
-    expect(output).toContain('never pass literal `HEAD`');
     expect(output).toContain('resolved `comparisonTarget`');
     expect(output).toContain('current HEAD commit SHA');
     expect(output).toContain('dirty fingerprint/provenance');
-    expect(output).toContain('Never synthesize provider refs');
-    expect(output).toContain('Do not fetch');
+    expect(output).toContain('synthesizes provider refs');
+    expect(output).toContain('fetches');
     expect(output).toContain('FETCH_HEAD');
     expect(output).toContain('index, worktree, or Git configuration');
     expect(output).toContain('explicit operator-supplied refs');
@@ -764,10 +773,22 @@ describe('hive command renderers', () => {
     expect(output).toContain('PR identity was not verified');
     expect(output).toContain('not proven to match the PR URL');
     expect(output).toContain('must not return NEEDS_DISCUSSION solely');
-    expect(output).toContain('Stage A must not perform direct or local CLI Git object checks; `hive_git_snapshot` is the sole permitted object-resolution exception.');
+    expect(output).toContain('`hive_git_snapshot` is the sole permitted object-resolution exception');
     expect(output).not.toContain('invoke local Git object checks');
     expect(output).toContain('The exact allowed review-workspace lifecycle is: delegated Stage A `hive_review_workspace_create`, primary `hive_review_workspace_claim`, primary post-review `hive_review_workspace_inspect`, and exactly one primary `hive_review_workspace_cleanup`.');
+    expect(output).toContain('one runtime-authenticated recovery cleanup exception');
     expect(output).not.toContain('sole lifecycle exception');
+  });
+
+  it('keeps dash human-facing tool claims equal to the enforced deep-lane policy', () => {
+    const output = render('dash-review');
+    const claim = output.match(/Dash deep lanes have only ([^.]+)\./);
+    expect(claim).not.toBeNull();
+    expect([...claim![1]!.matchAll(/`([^`]+)`/g)].map((match) => match[1])).toEqual(
+      REVIEW_ROLE_POLICIES['dash-review:deep'].tools,
+    );
+    expect(output).toContain('No MCP, Railway, Vercel, or other remote-service capability is authorized');
+    expect(output).not.toContain('Read-only Railway/Vercel');
   });
 
   it('propagates all scope states and provenance through Stage A, downstream prompts, verdict, and final sections', () => {
@@ -784,7 +805,7 @@ describe('hive command renderers', () => {
     ];
 
     for (const section of sections) {
-      for (const state of ['verified PR commits', 'explicit local scope', 'unverified local checkout']) {
+      for (const state of ['verified PR commits', 'local snapshot scope', 'unverified local checkout']) {
         expect(section).toContain(state);
       }
       expect(section).toContain('comparisonTarget');
@@ -870,9 +891,9 @@ describe('hive command renderers', () => {
     expect(downstream).toContain('Never rely on default cwd');
     expect(downstream).toContain('manifest');
     expect(downstream).toContain('never guess filenames');
-    expect(downstream).toContain('local CLI and retrieval tools');
+    expect(downstream).toContain('dash deep-lane tools enabled by policy');
     expect(downstream).toContain('Do not inspect live source paths');
-    expect(downstream).toContain('Remote mutation');
+    expect(downstream).toContain('remote-service tools are not authorized');
     expect(output).toContain('parallel blocking `task()` calls only');
   });
 
@@ -918,8 +939,23 @@ describe('hive command renderers', () => {
   it('renders the exact conversational Stage 1 packet and acceptance contract', () => {
     const output = render('vuln-review');
     const stage1SchemaBlocks = [
+      `type VulnerabilityReviewScopeMode =
+  | 'current-change'
+  | 'git-comparison'
+  | 'hive-task'
+  | 'hive-feature'
+  | 'whole-repository';
+
+type VulnerabilityReviewLensId =
+  | 'trust-and-identity'
+  | 'untrusted-data'
+  | 'secrets-and-platform'
+  | 'stateful-abuse'
+  | \`custom:\${string}\`;
+
+type ReviewSourceResolution = unknown; // Opaque runtime-owned JSON; copy unchanged.`,
       `type ResolvePacket = {
-  schema: 'hive-vuln-review-stage1/v2';
+  schema: 'hive-vuln-review-stage1/v3';
   stage: 'resolve';
   attempt: 1 | 2;
   intent: string;
@@ -939,12 +975,12 @@ describe('hive command renderers', () => {
 };`,
       `type ResolveResult =
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'BOUNDED';
       candidate: AcceptedCandidate;
     }
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'NEEDS_CLARIFICATION';
       question: string;
       reason: 'conflict' | 'ambiguous-target' | 'broad-expansion' | 'missing-boundary';
@@ -954,13 +990,14 @@ describe('hive command renderers', () => {
       };
     }
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'STOP';
       reason: 'invalid-fixed-override' | 'unresolvable-metadata' | 'denied-expansion' | 'second-ambiguity' | 'compare-unavailable' | 'snapshot-unavailable' | 'packet-invalid';
       message: string;
     };`,
       `type AcceptedCandidate = {
-  schema: 'hive-vuln-review-stage1/v2';
+  schema: 'hive-vuln-review-stage1/v3';
+  sourceResolution: ReviewSourceResolution;
   normalizedIntent: string;
   fixedOverrides: ResolvePacket['fixedOverrides'];
   inferredScope: {
@@ -1008,6 +1045,7 @@ describe('hive command renderers', () => {
     paths?: string[];
     scopeMode: VulnerabilityReviewScopeMode;
     hiveScope?: \`task:\${string}\` | \`feature:\${string}\`;
+    sourceResolutionFingerprint: string;
   };
   preview: {
     sourceFingerprint: string;
@@ -1033,7 +1071,7 @@ describe('hive command renderers', () => {
   scopeEcho: string;
 };`,
       `type MaterializePacket = {
-  schema: 'hive-vuln-review-stage1/v2';
+  schema: 'hive-vuln-review-stage1/v3';
   stage: 'materialize';
   acceptedState: 'BOUNDED';
   scopeEcho: string;
@@ -1041,7 +1079,7 @@ describe('hive command renderers', () => {
 };`,
       `type MaterializeResult =
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'READY';
       scopeEcho: string;
       runId: string;
@@ -1053,6 +1091,7 @@ describe('hive command renderers', () => {
       sourceFingerprint: string;
       materializedFingerprint: string;
       repositoryFingerprints: Array<{ repositoryId: string; snapshotFingerprint: string }>;
+      sourceResolutionFingerprint: string;
       excludedRepositoryIds: string[];
       truncated: boolean;
       threatContext: AcceptedCandidate['threatContext'];
@@ -1060,14 +1099,16 @@ describe('hive command renderers', () => {
       compare: AcceptedCandidate['compare'];
     }
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'STOP';
-      reason: 'candidate-mismatch' | 'create-denied' | 'source-drift' | 'scope-drift' | 'cleanup-uncertain' | 'create-needs-discussion' | 'packet-invalid';
+      reason: 'candidate-mismatch' | 'create-needs-discussion';
       message: string;
-      cleanup: { attempted: boolean; cleaned: boolean | null };
+      cleanup:
+        | { attempted: false; cleaned: null }
+        | { attempted: true; cleaned: boolean; runId: string; workspacePath: string; errors: string[] };
     }
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'STOP';
       reason: 'cleanup-recovery-required';
       message: string;
@@ -1081,6 +1122,9 @@ describe('hive command renderers', () => {
     }
     expect(output).toContain('BOUNDED | NEEDS_CLARIFICATION | STOP');
     expect(output).toContain('Every Stage 1 `task` prompt and result must be JSON only, with no surrounding prose.');
+    expect(output).toContain('Every object shape and union variant in the Stage 1 schema is closed');
+    expect(output).toContain('`ReviewSourceResolution` is an opaque runtime-owned JSON value');
+    expect(output).toContain('`createInput.sourceResolutionFingerprint` must equal that value\'s runtime-produced `provenance.fingerprint`');
     expect(output).toContain('ask exactly the returned `question` through the `question` tool once');
     expect(output).toContain('Only the exact case-sensitive answer `Yes` advances.');
     expect(output).toContain('complete normalized non-ephemeral `proposal`');
@@ -1089,6 +1133,10 @@ describe('hive command renderers', () => {
     expect(output).toContain("STOP(reason: 'second-ambiguity')");
     expect(output).toContain('emit the exact `scopeEcho` before materialize');
     expect(output).toContain('forward only `candidate.createInput` to `hive_review_workspace_create`');
+    expect(output).toContain('allowed clarification attempt 2 receives the exact cached original snapshot output');
+    expect(output).toContain('Concurrent calls or different snapshot input terminate Stage 1');
+    expect(output).toContain('Provider-unavailable fallback captures the local checkout directly');
+    expect(output).toContain('records those failures in canonical repository-ID order');
     expect(output).toContain('Never call `hive_review_workspace_create` before accepting a schema-valid `BOUNDED` candidate');
     expect(output).toContain("STOP(reason: 'cleanup-recovery-required')");
     expect(output).toContain('call `hive_review_workspace_cleanup({ runId })` as the exact originating private primary without an ownership token');
@@ -1103,11 +1151,24 @@ describe('hive command renderers', () => {
     }
   });
 
+  it('renders scope-mode and lens unions from the runtime inventories', () => {
+    const output = render('vuln-review');
+    const scopeUnion = output.match(/type VulnerabilityReviewScopeMode =([\s\S]*?);\n\n/);
+    const lensUnion = output.match(/type VulnerabilityReviewLensId =([\s\S]*?);\n\n/);
+    expect([...scopeUnion![1]!.matchAll(/'([^']+)'/g)].map((match) => match[1])).toEqual(
+      VULNERABILITY_REVIEW_SCOPE_MODES,
+    );
+    expect([...lensUnion![1]!.matchAll(/'([^']+)'/g)].map((match) => match[1])).toEqual(
+      VULNERABILITY_REVIEW_LENSES.map(({ id }) => id),
+    );
+    expect(lensUnion![1]).toContain('`custom:${string}`');
+  });
+
   it('renders no vulnerability argument block or implicit selector for empty command input', () => {
     const output = render('vuln-review');
 
     expect(output).not.toContain('## Explicit Vulnerability Review Arguments');
-    expect(output).not.toContain('current-change');
+    expect(output).toContain('If no selector is fixed, no mode is implied.');
   });
 
   it('defines exact report metadata, root-cause encoding, comparison outcomes, and terminal states', () => {

@@ -3,6 +3,14 @@ import type { HiveCommandKey } from './registry.js';
 import type { HiveCommandContext, HiveCommandRenderers } from './types.js';
 import { COMMAND_BEHAVIOR } from './command-bodies.js';
 import { resolveCouncilMembers } from './council.js';
+import {
+  parseGitHubPullRequestDescriptor,
+  type GitHubPullRequestDescriptor,
+} from '../review-source-resolution.js';
+import {
+  compareUnicodeCodePoints,
+  sortedUniqueCodePoints,
+} from '../review-runtime-kernel.js';
 
 type CommandSectionInput = {
   doItems: string[];
@@ -18,26 +26,26 @@ type ParsedCouncilArgs = {
   error?: string;
 };
 
-export type DashReviewGitHubPullRequestDescriptor = {
-  owner: string;
-  repository: string;
-  number: number;
-};
+export type DashReviewGitHubPullRequestDescriptor = GitHubPullRequestDescriptor;
 
 export type ParsedDashReviewArgs = {
   rawIntent: string;
   githubPullRequest: DashReviewGitHubPullRequestDescriptor | null;
 };
 
-export type VulnerabilityReviewScopeMode =
-  | 'current-change'
-  | 'git-comparison'
-  | 'hive-task'
-  | 'hive-feature'
-  | 'whole-repository';
+export const VULNERABILITY_REVIEW_SCOPE_MODES = [
+  'current-change',
+  'git-comparison',
+  'hive-task',
+  'hive-feature',
+  'whole-repository',
+] as const;
+
+export type VulnerabilityReviewScopeMode = typeof VULNERABILITY_REVIEW_SCOPE_MODES[number];
 
 export type ParsedVulnerabilityReviewArgs = {
   intent: string;
+  githubPullRequest?: GitHubPullRequestDescriptor;
   overrides: {
     repositoryIds?: string[];
     paths?: string[];
@@ -55,7 +63,6 @@ export type ParsedVulnerabilityReviewArgs = {
 const COUNCIL_USAGE = 'Usage: /council [--group <group>] <directive>';
 const VULNERABILITY_REVIEW_USAGE = 'Usage: /vuln-review [intent] [--repo <id>] [--path <relative-path>] [--range <base>...<target> | --base <ref> [--target <ref>] | --task <task-folder> | --feature <feature-name> | --whole-repo] [--compare <local-prior-report.md>]';
 const HIVE_SCOPE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const DASH_REVIEW_GITHUB_PULL_REQUEST_PATTERN = /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9._-]{1,100})\/pull\/([1-9][0-9]*)\/?$/;
 
 function formatList(items: string[]): string {
   return items.map((item) => `- ${item}`).join('\n');
@@ -101,25 +108,9 @@ function topicOrCurrent(args: string, fallback: string): string {
 
 export function parseDashReviewArgs(args: string): ParsedDashReviewArgs {
   const rawIntent = args;
-  if (/[\r\n\u0085\u2028\u2029]/u.test(rawIntent)) {
-    return { rawIntent, githubPullRequest: null };
-  }
-  const match = DASH_REVIEW_GITHUB_PULL_REQUEST_PATTERN.exec(rawIntent.trim());
-  if (!match) {
-    return { rawIntent, githubPullRequest: null };
-  }
-  const [, owner, repository, numberText] = match;
-  const number = Number(numberText);
-  if (repository === '.' || repository === '..' || !Number.isSafeInteger(number)) {
-    return { rawIntent, githubPullRequest: null };
-  }
   return {
     rawIntent,
-    githubPullRequest: {
-      owner: owner!,
-      repository: repository!,
-      number,
-    },
+    githubPullRequest: parseGitHubPullRequestDescriptor(rawIntent),
   };
 }
 
@@ -179,24 +170,12 @@ function tokenizeArgs(args: string): string[] {
   return tokens;
 }
 
-export function compareUnicodeCodePoints(left: string, right: string): number {
-  const leftPoints = Array.from(left, (character) => character.codePointAt(0)!);
-  const rightPoints = Array.from(right, (character) => character.codePointAt(0)!);
-  const sharedLength = Math.min(leftPoints.length, rightPoints.length);
-  for (let index = 0; index < sharedLength; index += 1) {
-    if (leftPoints[index] !== rightPoints[index]) {
-      return leftPoints[index]! - rightPoints[index]!;
-    }
-  }
-  return leftPoints.length - rightPoints.length;
-}
-
 export function isCanonicalHiveScopeIdentifier(value: string): boolean {
   return HIVE_SCOPE_IDENTIFIER_PATTERN.test(value) && !value.includes('..');
 }
 
 function sortedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)].sort(compareUnicodeCodePoints);
+  return sortedUniqueCodePoints(values);
 }
 
 export function normalizeVulnerabilityReviewPath(value: string): string {
@@ -230,6 +209,7 @@ function vulnerabilityReviewArgumentError(message: string): ParsedVulnerabilityR
 }
 
 export function parseVulnerabilityReviewArgs(args: string): ParsedVulnerabilityReviewArgs {
+  const providerDescriptorEligible = !/[\r\n\u0085\u2028\u2029]/u.test(args);
   const tokens = tokenizeArgs(args);
   const repositories: string[] = [];
   const paths: string[] = [];
@@ -307,7 +287,7 @@ export function parseVulnerabilityReviewArgs(args: string): ParsedVulnerabilityR
   let comparePath: string | undefined;
   try {
     normalizedPaths = normalizeVulnerabilityReviewPaths(paths);
-    comparePath = compare ? normalizeVulnerabilityReviewPath(compare) : undefined;
+    comparePath = compare === undefined ? undefined : normalizeVulnerabilityReviewPath(compare);
   } catch (error) {
     return vulnerabilityReviewArgumentError((error as Error).message);
   }
@@ -329,8 +309,13 @@ export function parseVulnerabilityReviewArgs(args: string): ParsedVulnerabilityR
   }
   if (comparePath) overrides.comparePath = comparePath;
 
+  const intent = intentTokens.join(' ').trim();
+  const githubPullRequest = providerDescriptorEligible && overrides.selector === undefined
+    ? parseGitHubPullRequestDescriptor(intent)
+    : null;
   return {
-    intent: intentTokens.join(' ').trim(),
+    intent,
+    ...(githubPullRequest ? { githubPullRequest } : {}),
     overrides,
   };
 }

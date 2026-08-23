@@ -29,6 +29,7 @@ describe('buildDashReviewLanes', () => {
     expect(scope?.tools?.hive_git_snapshot).toBe(true);
     expect(scope?.tools?.hive_review_workspace_create).toBe(true);
     expect(scope?.tools?.hive_feature_create).toBe(false);
+    expect(scope?.permission?.['*']).toBe('deny');
     expect(scope?.permission?.bash).toBeUndefined();
     expect(scope?.permission?.edit).toBe('deny');
     expect(scope?.permission?.task).toBe('deny');
@@ -38,9 +39,11 @@ describe('buildDashReviewLanes', () => {
     expect(code?.tools?.hive_repositories_status).toBe(true);
     expect(code?.tools?.hive_plan_read).toBe(true);
     expect(code?.tools?.hive_status).toBe(true);
-    expect(code?.permission?.bash).toBeUndefined();
-    expect(code?.prompt).toContain('local CLI and retrieval tools');
-    expect(code?.prompt).toContain('Remote mutation');
+    expect(code?.permission?.['*']).toBe('deny');
+    expect(code?.permission?.bash).toBe('allow');
+    expect(code?.prompt).toContain('enabled dash deep-lane tools');
+    expect(code?.prompt).toContain('MCP, Railway, Vercel, and other remote-service tools are not authorized');
+    expect(code?.prompt).toContain('shell effects');
     expect(code?.prompt).toContain('self-reported');
     expect(code?.prompt).toContain('non-attributable');
     expect(code?.prompt).toContain('generic rollback');
@@ -155,28 +158,25 @@ describe('buildDashReviewLanes', () => {
       stateDeclarationStart,
       scope.prompt.indexOf('.', stateDeclarationStart),
     );
-    expect([...stateDeclaration.matchAll(/`(verified PR commits|explicit local scope|unverified local checkout)`/g)]
+    expect([...stateDeclaration.matchAll(/`(verified PR commits|local snapshot scope|unverified local checkout)`/g)]
       .map((match) => match[1])).toEqual([
         'verified PR commits',
-        'explicit local scope',
+        'local snapshot scope',
         'unverified local checkout',
       ]);
-    expect(scope.prompt).toContain('primary-provided candidate `baseSha` and `headSha`');
-    expect(scope.prompt).toContain('canonical local commit-object check');
-    expect(scope.prompt).toContain('only for the validated PR-descriptor branch');
-    expect(scope.prompt).toContain('retry exactly once');
-    expect(scope.prompt).toContain('omit `targetRef`');
-    expect(scope.prompt).toContain('Never pass literal `HEAD`');
-    expect(scope.prompt).toContain('resolved `comparisonTarget`');
-    expect(scope.prompt).toContain('current HEAD commit SHA');
-    expect(scope.prompt).toContain('dirty fingerprint/provenance');
-    expect(scope.prompt).toContain('fallback reason');
+    expect(scope.prompt).toContain('runtime-produced `sourceResolution`');
+    expect(scope.prompt).toContain('runtime owns provider candidate OIDs');
+    expect(scope.prompt).toContain('Never retry, authorize fallback, change candidate refs, reconstruct provenance');
+    expect(scope.prompt).toContain('structured missing-provider-OID failure');
+    expect(scope.prompt).toContain('dirty-aware change groups');
+    expect(scope.prompt).toContain('canonical provenance fingerprint');
     expect(scope.prompt).toContain('Never synthesize provider refs');
-    expect(scope.prompt).toContain('Invalid explicit local refs fail');
+    expect(scope.prompt).toContain('Explicit local refs remain strict');
     expect(scope.prompt).toContain('Do not use provider CLI or network lookup');
-    expect(scope.prompt).toContain('Do not fetch or checkout');
-    expect(scope.prompt).toContain('refs, `FETCH_HEAD`, the index, worktree, or Git configuration');
-    expect(scope.prompt).toContain('Stage A must not perform direct or local CLI Git object checks; `hive_git_snapshot` is the sole permitted object-resolution exception.');
+    expect(scope.prompt).toContain('must not run direct CLI Git object checks');
+    expect(scope.prompt).toContain('Never fetch, checkout');
+    expect(scope.prompt).toContain('FETCH_HEAD, the index, worktree, or Git configuration');
+    expect(scope.prompt).toContain('hive_git_snapshot is the sole permitted object-resolution exception');
     expect(scope.prompt).not.toContain('invoke local Git object checks');
     expect(scope.prompt).not.toContain('You may use normal local CLI');
     expect(scope.prompt).toContain('without claim');

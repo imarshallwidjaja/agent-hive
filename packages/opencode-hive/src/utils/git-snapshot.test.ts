@@ -11,6 +11,7 @@ import {
   fingerprintReviewWorkspace,
   serializeReviewSourceScopeFingerprint,
   inspectGitSnapshot,
+  GitSnapshotError,
   materializeReviewWorkspace,
   parseNameStatusPaths,
 } from './git-snapshot.js';
@@ -202,6 +203,46 @@ describe('inspectGitSnapshot', () => {
     await expect(inspectGitSnapshot(repository, { range: 'main...unrelated' })).rejects.toThrow('No merge base');
   });
 
+  it('classifies a valid missing ref structurally without exposing Git stderr', async () => {
+    const missing = '9'.repeat(40);
+    try {
+      await inspectGitSnapshot(repository, { baseRef: missing, targetRef: 'HEAD' });
+      throw new Error('expected missing ref failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(GitSnapshotError);
+      expect(error).toMatchObject({
+        code: 'missing-ref',
+        details: { field: 'baseRef', ref: missing },
+      });
+      expect((error as Error).message).not.toContain('fatal:');
+    }
+  });
+
+  it('does not classify a broken ref database entry as a missing ref', async () => {
+    writeFileSync(path.join(repository, '.git', 'refs', 'heads', 'broken-ref'), 'not-an-object-id\n');
+
+    try {
+      await inspectGitSnapshot(repository, { baseRef: 'broken-ref', targetRef: 'HEAD' });
+      throw new Error('expected broken ref failure');
+    } catch (error) {
+      expect(error).not.toMatchObject({ code: 'missing-ref' });
+    }
+  });
+
+  it('does not classify corrupt object storage as a missing ref', async () => {
+    const base = git(['rev-parse', 'HEAD^']);
+    const objectPath = path.join(repository, '.git', 'objects', base.slice(0, 2), base.slice(2));
+    chmodSync(objectPath, 0o644);
+    writeFileSync(objectPath, 'corrupt object');
+
+    try {
+      await inspectGitSnapshot(repository, { baseRef: base, targetRef: 'HEAD' });
+      throw new Error('expected corrupt object failure');
+    } catch (error) {
+      expect(error).not.toMatchObject({ code: 'missing-ref' });
+    }
+  });
+
   it('does not execute repository textconv, external diff, or fsmonitor helpers', async () => {
     if (process.platform === 'win32') return;
     const marker = path.join(repository, 'helper-ran');
@@ -270,7 +311,14 @@ describe('inspectGitSnapshot', () => {
   it('reports an explicit output-boundary failure instead of a raw maxBuffer error', async () => {
     write('src/one.ts', `export const payload = '${'x'.repeat(9 * 1024 * 1024)}';\n`);
 
-    await expect(inspectGitSnapshot(repository, {})).rejects.toThrow('Git snapshot output exceeded');
+    try {
+      await inspectGitSnapshot(repository, {});
+      throw new Error('expected output boundary failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(GitSnapshotError);
+      expect(error).toMatchObject({ code: 'output-truncated' });
+      expect((error as Error).message).toContain('Git snapshot output exceeded');
+    }
   });
 
   it('derives the empty tree from a SHA-256 repository when the installed Git supports it', async () => {
@@ -453,6 +501,29 @@ describe('inspectGitSnapshot', () => {
     });
     expect(first).toBe(second);
     expect(fingerprintReviewSourceScope(input)).toBe(createHash('sha256').update(first).digest('hex'));
+  });
+
+  it('orders fingerprint repositories by Unicode code point without normalizing canonical equivalents', () => {
+    const decomposed = 'e\u0301';
+    const composed = '\u00e9';
+    const snapshots = ['repo_', composed, 'repo.', decomposed, 'repo-'].map((repositoryId, index) => ({
+      repositoryId,
+      sourceRoot: `/source/${index}`,
+      fingerprint: String(index),
+    }));
+    const serialized = JSON.parse(serializeReviewSourceScopeFingerprint({
+      manifestRepositoryIds: [],
+      selectedRepositoryIds: [],
+      snapshots,
+    })) as { snapshots: Array<{ repositoryId: string }> };
+
+    expect(serialized.snapshots.map(({ repositoryId }) => repositoryId)).toEqual([
+      decomposed,
+      'repo-',
+      'repo.',
+      'repo_',
+      composed,
+    ]);
   });
 
   it('fingerprints repository materializations with stable repository ordering', () => {

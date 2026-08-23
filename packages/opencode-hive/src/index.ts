@@ -18,19 +18,16 @@ import { CODE_REVIEWER_PROMPT } from './agents/code-reviewer.js';
 import { SIMPLICITY_REVIEWER_PROMPT } from './agents/simplicity-reviewer.js';
 import { APPROACH_ADVISOR_PROMPT } from './agents/approach-advisor.js';
 import { DASH_REVIEWER_PROMPT } from './agents/dash-reviewer.js';
-import { buildDashReviewLanes, UNIVERSAL_METADATA_HIVE_TOOLS as UNIVERSAL_METADATA_HIVE_TOOLS_TUPLE } from './agents/dash-review-lanes.js';
+import { buildDashReviewLanes } from './agents/dash-review-lanes.js';
 import type { DashReviewLaneSource } from './agents/dash-review-lanes.js';
 import { VULNERABILITY_REVIEWER_PROMPT } from './agents/vulnerability-reviewer.js';
 import {
-  VULNERABILITY_REVIEW_PRIMARY_AGENT,
   VULNERABILITY_REVIEW_PRIMARY_PROMPT,
 } from './agents/vulnerability-review-primary.js';
 import {
   buildVulnerabilityReviewLanes,
   buildVulnerabilityReviewPermission,
   buildVulnerabilityReviewToolConfig,
-  isVulnerabilityReviewToolAllowed,
-  vulnerabilityReviewRoleForAgent,
 } from './agents/vulnerability-review-lanes.js';
 import type {
   VulnerabilityReviewLane,
@@ -322,11 +319,12 @@ import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
 import { HIVE_COMMANDS, type HiveCommandKey } from './commands/registry.js';
 import {
-  compareUnicodeCodePoints,
   hiveCommandRenderers,
   isCanonicalHiveScopeIdentifier,
+  parseDashReviewArgs,
   parseVulnerabilityReviewArgs,
   renderDashReviewArgumentBlock,
+  VULNERABILITY_REVIEW_SCOPE_MODES,
   type VulnerabilityReviewScopeMode,
 } from './commands/renderers.js';
 import {
@@ -336,6 +334,29 @@ import {
   readVulnerabilityCompareReport,
 } from './vulnerability-review-invocation.js';
 import type { AcceptedCandidate } from './vulnerability-review-invocation.js';
+import { DashReviewInvocationStore } from './dash-review-invocation.js';
+import {
+  collectReviewSnapshotSet,
+  REVIEW_SOURCE_RESOLUTION_ADAPTERS,
+  resolveFixedVulnerabilityReviewSourceInput,
+  resolveReviewSource,
+} from './review-source-resolution.js';
+import type { ReviewSourceRequest, ReviewSourceResolution } from './review-source-resolution.js';
+import {
+  authorizeReviewTool,
+  buildReviewPermission,
+  buildReviewToolConfig,
+  REVIEW_ROLE_POLICIES,
+  resolveReviewCallerPolicy,
+  reviewTaskTargets,
+} from './review-tool-policy.js';
+import type { ReviewRuntimeLane } from './review-tool-policy.js';
+import {
+  compareUnicodeCodePoints,
+  DASH_REVIEW_PRIMARY_AGENT,
+  REVIEW_UNIVERSAL_METADATA_TOOLS,
+  VULNERABILITY_REVIEW_PRIMARY_AGENT,
+} from './review-runtime-kernel.js';
 import { COMMAND_BEHAVIOR } from './commands/command-bodies.js';
 import { isReadOnlyCouncilEligibleBase, resolveCouncilMembers } from './commands/council.js';
 import type {
@@ -445,10 +466,8 @@ type SystemTransformHook = (
 ) => Promise<void>;
 
 const RUNTIME_ID = `pid-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-const DASH_REVIEW_PRIMARY_AGENT = '__hive_dash_review_primary';
 const REVIEW_ARGUMENT_GUARD_PLACEHOLDER = '$2147483647';
 const MAX_COMPOSITE_SNAPSHOT_REPOSITORIES = 32;
-const UNIVERSAL_METADATA_HIVE_TOOLS = new Set<string>(UNIVERSAL_METADATA_HIVE_TOOLS_TUPLE);
 
 const plugin: Plugin = async (ctx) => {
   const { directory, client, worktree } = ctx;
@@ -513,14 +532,16 @@ const plugin: Plugin = async (ctx) => {
   let runtimeVulnerabilityReviewLanes: VulnerabilityReviewLane[] = [];
   let runtimeArchitectTaskTargets = new Set<string>();
   const runtimeTaskChildSessions = new Set<string>();
-  const dashReviewPendingCommandSessions = new Set<string>();
   const vulnerabilityReviewPendingCommandSessions = new Set<string>();
   const vulnerabilityReviewStage1Sessions = new Set<string>();
+  const dashReviewInvocations = new DashReviewInvocationStore();
+  const vulnerabilityReviewSourceRequests = new Map<string, ReviewSourceRequest>();
   const vulnerabilityReviewInvocations = new VulnerabilityReviewInvocationStore();
   type VulnerabilityTaskReservation = NonNullable<ReturnType<VulnerabilityReviewInvocationStore['reserveResolve']>>;
   const vulnerabilityTaskReservations = new Map<string, Map<string, VulnerabilityTaskReservation>>();
   const materializeCandidates = new WeakMap<VulnerabilityTaskReservation, AcceptedCandidate>();
   const vulnerabilityConsumerReservations = new Map<string, VulnerabilityTaskReservation>();
+  const vulnerabilitySourceRequests = new WeakMap<VulnerabilityTaskReservation, ReviewSourceRequest>();
   const materializeCreateResults = new WeakMap<VulnerabilityTaskReservation, {
     caller: ReturnType<typeof inferReviewWorkspaceCaller>;
     result: Record<string, unknown>;
@@ -563,6 +584,18 @@ const plugin: Plugin = async (ctx) => {
         .map((lane) => lane.taskTarget),
       },
     ];
+  const reviewRuntimeLanes = (): ReviewRuntimeLane[] => [
+    ...runtimeDashReviewLanes.map((lane) => ({
+      workflow: 'dash-review' as const,
+      role: lane.baseAgent === 'scout-researcher' ? 'scope' as const : 'deep' as const,
+      taskTarget: lane.taskTarget,
+    })),
+    ...runtimeVulnerabilityReviewLanes.map((lane) => ({
+      workflow: 'vulnerability-review' as const,
+      role: lane.role,
+      taskTarget: lane.taskTarget,
+    })),
+  ];
   const vulnerabilityPrimaryCaller = (sessionId: string) => ({
     workflow: 'vulnerability-review' as const,
     role: 'primary' as const,
@@ -618,7 +651,7 @@ const plugin: Plugin = async (ctx) => {
     cleanup: Awaited<ReturnType<typeof cleanupWorkspaceWithoutReturningToken>>,
     message: string,
   ) => ({
-    schema: 'hive-vuln-review-stage1/v2',
+    schema: 'hive-vuln-review-stage1/v3',
     state: 'STOP',
     reason: 'cleanup-recovery-required',
     message,
@@ -634,16 +667,6 @@ const plugin: Plugin = async (ctx) => {
       runId: cleanup.runId,
     },
   });
-  const dashReviewAllowedHiveTools = (agent: string): ReadonlySet<string> | undefined => {
-    if (agent === DASH_REVIEW_PRIMARY_AGENT) {
-      return new Set([...UNIVERSAL_METADATA_HIVE_TOOLS, 'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup']);
-    }
-    const lane = runtimeDashReviewLanes.find((candidate) => candidate.taskTarget === agent);
-    if (!lane) return undefined;
-    return lane.baseAgent === 'scout-researcher'
-      ? new Set([...UNIVERSAL_METADATA_HIVE_TOOLS, 'hive_git_snapshot', 'hive_review_workspace_create'])
-      : new Set(UNIVERSAL_METADATA_HIVE_TOOLS);
-  };
   const disabledMcps = configService.getDisabledMcps();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message ?? null;
   if (configFallbackWarning) {
@@ -790,13 +813,14 @@ const plugin: Plugin = async (ctx) => {
     },
     snapshotInput: GitSnapshotInput,
   ) => {
-    const snapshots = await Promise.all(resolved.repositories.map(async (repository) => ({
-      repositoryId: repository.id,
-      snapshot: await inspectGitSnapshot(repository.path, reviewSnapshotInputForRepository(repository.path, snapshotInput)),
-    })));
+    const { snapshots } = await collectReviewSnapshotSet(resolved, async (repository) => (
+      inspectGitSnapshot(repository.path, reviewSnapshotInputForRepository(repository.path, snapshotInput))
+    ));
     const fingerprintInput = {
       manifestRepositoryIds: resolved.manifestRepositoryIds,
-      selectedRepositoryIds: resolved.selectedRepositoryIds,
+      selectedRepositoryIds: resolved.selectedRepositoryIds.length > 0
+        ? resolved.selectedRepositoryIds
+        : snapshots.map(({ repositoryId }) => repositoryId).sort(compareUnicodeCodePoints),
       snapshots: snapshots.map(({ repositoryId, snapshot }) => ({
         repositoryId,
         sourceRoot: snapshot.repository.root,
@@ -821,7 +845,9 @@ const plugin: Plugin = async (ctx) => {
     })));
     const sourceFingerprint = fingerprintReviewSourceScope({
       manifestRepositoryIds: resolved.manifestRepositoryIds,
-      selectedRepositoryIds: resolved.selectedRepositoryIds,
+      selectedRepositoryIds: resolved.selectedRepositoryIds.length > 0
+        ? resolved.selectedRepositoryIds
+        : captures.map(({ repositoryId }) => repositoryId).sort(compareUnicodeCodePoints),
       snapshots: captures.map(({ repositoryId, materialization }) => ({
         repositoryId,
         sourceRoot: materialization.snapshot.repository.root,
@@ -832,6 +858,33 @@ const plugin: Plugin = async (ctx) => {
       captures.map(({ repositoryId, materialization }) => ({ repositoryId, fingerprint: materialization.fingerprint })),
     );
     return { captures, sourceFingerprint, materializedFingerprint };
+  };
+  const capturedReviewSourceMatches = (
+    resolved: Awaited<ReturnType<typeof resolveSnapshotRepositories>>,
+    capture: Awaited<ReturnType<typeof captureReviewWorkspace>>,
+    sourceResolution: ReviewSourceResolution,
+  ): boolean => {
+    const manifestRepositoryIds = [...resolved.manifestRepositoryIds].sort(compareUnicodeCodePoints);
+    const selectedRepositoryIds = capture.captures
+      .map(({ repositoryId }) => repositoryId)
+      .sort(compareUnicodeCodePoints);
+    const capturedRepositories = [...capture.captures]
+      .sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId));
+    return capture.sourceFingerprint === sourceResolution.provenance.sourceFingerprint
+      && isDeepStrictEqual(manifestRepositoryIds, sourceResolution.provenance.manifestRepositoryIds)
+      && isDeepStrictEqual(selectedRepositoryIds, sourceResolution.provenance.selectedRepositoryIds)
+      && capturedRepositories.length === sourceResolution.provenance.repositories.length
+      && capturedRepositories.every(({ repositoryId, materialization }, index) => {
+        const expected = sourceResolution.provenance.repositories[index];
+        const snapshot = materialization.snapshot;
+        return expected?.repositoryId === repositoryId
+          && expected.sourceRoot === snapshot.repository.root
+          && expected.currentHead === snapshot.repository.currentHead
+          && expected.comparisonBase === (snapshot.scope.comparisonBase ?? null)
+          && expected.comparisonTarget === snapshot.scope.comparisonTarget
+          && expected.mergeBase === (snapshot.scope.mergeBase ?? null)
+          && expected.snapshotFingerprint === snapshot.fingerprint;
+      });
   };
   const createReviewRunId = (workflow: 'dash-review' | 'vulnerability-review'): string => {
     return `${workflow}-${randomUUID()}`;
@@ -1763,6 +1816,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
               ? event.properties?.info?.id
               : undefined;
       if (lifecycleSessionID) {
+        dashReviewInvocations.revokeForSession(lifecycleSessionID);
         vulnerabilityReviewInvocations.revokeForSession(lifecycleSessionID);
         vulnerabilityConsumerReservations.delete(lifecycleSessionID);
         vulnerabilityReviewStage1Sessions.delete(lifecycleSessionID);
@@ -1774,7 +1828,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           if (hintID.startsWith(`${sessionID}\u0000`)) taskTraceInjectedHintIDs.delete(hintID);
         }
         runtimeTaskChildSessions.delete(sessionID);
-        dashReviewPendingCommandSessions.delete(sessionID);
+        vulnerabilityReviewSourceRequests.delete(sessionID);
         try {
           const results = await reviewWorkspaceService.cleanupOwnedBySession(sessionID, ['dash-review', 'vulnerability-review']);
           for (const result of results) {
@@ -1815,16 +1869,39 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         return;
       }
       if (
-        dashReviewPendingCommandSessions.has(input.sessionID)
-        && input.agent === DASH_REVIEW_PRIMARY_AGENT
-      ) {
-        dashReviewPendingCommandSessions.delete(input.sessionID);
-      }
-      if (
         vulnerabilityReviewPendingCommandSessions.has(input.sessionID)
         && input.agent === VULNERABILITY_REVIEW_PRIMARY_AGENT
       ) {
         vulnerabilityReviewPendingCommandSessions.delete(input.sessionID);
+      }
+      const dashScope = runtimeDashReviewLanes.find((lane) => lane.baseAgent === 'scout-researcher')?.taskTarget;
+      const dashBinding = dashScope
+        && input.agent === dashScope
+        && output.message.agent === dashScope
+        ? dashReviewInvocations.beginConsumerBinding({
+            childSessionID: input.sessionID,
+            inputAgent: input.agent,
+            messageAgent: output.message.agent,
+          })
+        : undefined;
+      if (dashBinding) {
+        try {
+          const response = await client.session.get({
+            path: { id: input.sessionID },
+            query: { directory },
+          });
+          if (response.data) {
+            dashReviewInvocations.commitConsumerBinding(dashBinding, {
+              id: response.data.id,
+              parentID: response.data.parentID,
+              time: response.data.time,
+            });
+          } else {
+            dashReviewInvocations.revokeConsumerBinding(dashBinding);
+          }
+        } catch {
+          dashReviewInvocations.revokeConsumerBinding(dashBinding);
+        }
       }
       const scopeScout = runtimeVulnerabilityReviewLanes.find((lane) => lane.role === 'scope-scout')?.taskTarget;
       const binding = scopeScout
@@ -2019,7 +2096,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
     "command.execute.before": async (input, output) => {
       if (input.command === 'dash-review') {
-        dashReviewPendingCommandSessions.add(input.sessionID);
+        const parsed = parseDashReviewArgs(input.arguments);
+        dashReviewInvocations.replaceInvocation(
+          input.sessionID,
+          REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parsed),
+        );
         output.parts.push({
           type: 'text',
           text: `\n\n${renderDashReviewArgumentBlock(input.arguments)}`,
@@ -2036,6 +2117,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         vulnerabilityReviewPendingCommandSessions.delete(input.sessionID);
         const parsed = parseVulnerabilityReviewArgs(input.arguments);
         if (parsed.error) throw new Error(parsed.error);
+        vulnerabilityReviewSourceRequests.set(
+          input.sessionID,
+          REVIEW_SOURCE_RESOLUTION_ADAPTERS['vulnerability-review'](parsed),
+        );
         vulnerabilityReviewInvocations.replaceInvocation({
           primarySessionID: input.sessionID,
           fixedOverrides: parsed.overrides,
@@ -2063,13 +2148,29 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         throw new Error('Task trace summarizer tools are disabled.');
       }
       const caller = input.sessionID ? sessionService.getGlobal(input.sessionID)?.agent : undefined;
-      const allowedHiveTools = caller ? dashReviewAllowedHiveTools(caller) : undefined;
-      const isDashReviewScopeLane = caller
-        ? runtimeDashReviewLanes.some((lane) => lane.taskTarget === caller && lane.baseAgent === 'scout-researcher')
-        : false;
-      const vulnerabilityReviewRole = caller
-        ? vulnerabilityReviewRoleForAgent(caller, runtimeVulnerabilityReviewLanes)
-        : undefined;
+      const runtimeReviewLanes = reviewRuntimeLanes();
+      const callerPolicy = resolveReviewCallerPolicy(caller, runtimeReviewLanes);
+      const vulnerabilityReviewRole = callerPolicy?.workflow === 'vulnerability-review' ? callerPolicy.role : undefined;
+      const dashReviewRole = callerPolicy?.workflow === 'dash-review' ? callerPolicy.role : undefined;
+      if (dashReviewInvocations.isCommandSession(input.sessionID) && !dashReviewRole) {
+        throw new Error('dash-review tool authorization failed closed: exact primary caller identity is unavailable.');
+      }
+      if (caller && callerPolicy) {
+        const decision = authorizeReviewTool({
+          workflow: callerPolicy.workflow,
+          role: callerPolicy.role,
+          tool: input.tool,
+          caller,
+          target: typeof output.args?.subagent_type === 'string' ? output.args.subagent_type : undefined,
+        }, runtimeReviewLanes);
+        if ('reason' in decision) {
+          if (input.tool === 'task' && decision.reason === 'target') {
+            // Workflow sequencing below preserves stricter task-target errors and reservations.
+          } else {
+            throw new Error(`${callerPolicy.workflow} tool is not authorized: ${input.tool} (${decision.reason})`);
+          }
+        }
+      }
       if ((input.tool === 'task' || input.tool === 'question') && input.sessionID) {
         let parentID: string | undefined;
         try {
@@ -2159,6 +2260,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         if (!stage1Reservation) {
           rejectStage1Task('Vulnerability review Stage 1 packet is invalid, out of order, non-blocking, or already consumed.');
         }
+        if (stage === 'resolve') {
+          const sourceRequest = vulnerabilityReviewSourceRequests.get(input.sessionID);
+          if (!sourceRequest) {
+            rejectStage1Task('Vulnerability review Stage 1 source resolution is unavailable.');
+          }
+          vulnerabilitySourceRequests.set(stage1Reservation, sourceRequest);
+        }
         if (stage === 'materialize') {
           materializeCandidates.set(stage1Reservation, parseMaterializePacket(packet).candidate);
         }
@@ -2204,30 +2312,31 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         clarificationHandles.set(input.callID, clarificationHandle);
         vulnerabilityClarificationHandles.set(input.sessionID, clarificationHandles);
       }
-      const pendingDashReviewCommand = dashReviewPendingCommandSessions.has(input.sessionID);
       const pendingVulnerabilityReviewCommand = vulnerabilityReviewPendingCommandSessions.has(input.sessionID);
-      if (pendingDashReviewCommand && !caller) {
-        throw new Error('dash-review tool authorization failed closed: caller identity is unavailable.');
-      }
       if (pendingVulnerabilityReviewCommand && !caller) {
         throw new Error('vulnerability-review tool authorization failed closed: caller identity is unavailable.');
       }
-      if (allowedHiveTools) {
-        if (isDashReviewScopeLane && !allowedHiveTools.has(input.tool)) {
-          throw new Error(`dash-review tool is not authorized: ${input.tool}`);
-        } else if (input.tool === 'task') {
+      if (dashReviewRole) {
+        if (input.tool === 'task') {
           const target = typeof output.args?.subagent_type === 'string'
             ? output.args.subagent_type
             : undefined;
-          const authorizedTargets = new Set(runtimeDashReviewLanes.map((lane) => lane.taskTarget));
+          const authorizedTargets = new Set(reviewTaskTargets(REVIEW_ROLE_POLICIES['dash-review:primary'], runtimeReviewLanes));
           if (caller !== DASH_REVIEW_PRIMARY_AGENT || !target || !authorizedTargets.has(target)) {
             throw new Error('dash-review task target is not authorized.');
           }
-        } else if ((HIVE_TOOL_NAMES as readonly string[]).includes(input.tool) && !allowedHiveTools.has(input.tool)) {
-          throw new Error(`dash-review tool is not authorized: ${input.tool}`);
+          const targetLane = runtimeDashReviewLanes.find((lane) => lane.taskTarget === target);
+          if (targetLane?.baseAgent === 'scout-researcher') {
+            if (!input.callID || !dashReviewInvocations.reserveScope({
+              primarySessionID: input.sessionID,
+              callID: input.callID,
+              expectedAgent: target,
+              reservedAt: Date.now(),
+            })) {
+              throw new Error('dash-review scope dispatch requires one fresh command-bound task authority.');
+            }
+          }
         }
-      } else if (pendingDashReviewCommand && !caller) {
-          throw new Error('dash-review tool authorization failed closed: caller identity is unavailable.');
       }
       if (vulnerabilityReviewRole) {
         if (
@@ -2238,14 +2347,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           vulnerabilityReviewInvocations.revokeForSession(input.sessionID);
           throw new Error('Vulnerability comparison reader accepts no arguments.');
         }
-        if (!isVulnerabilityReviewToolAllowed(vulnerabilityReviewRole, input.tool)) {
-          throw new Error(`vulnerability-review tool is not authorized: ${input.tool}`);
-        }
         if (input.tool === 'task' && !stage1Reservation) {
           const target = typeof output.args?.subagent_type === 'string'
             ? output.args.subagent_type
             : undefined;
-          const authorizedTargets = new Set(runtimeVulnerabilityReviewLanes.map((lane) => lane.taskTarget));
+          const authorizedTargets = new Set(reviewTaskTargets(REVIEW_ROLE_POLICIES['vulnerability-review:primary'], runtimeReviewLanes));
           if (
             caller !== VULNERABILITY_REVIEW_PRIMARY_AGENT
             || !target
@@ -2344,7 +2450,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       const cleanupResult = actual?.cleanup && typeof actual.cleanup === 'object' && !Array.isArray(actual.cleanup)
         ? actual.cleanup as Record<string, unknown>
         : undefined;
-      const cleanupRecoveryCandidateRunId = actual?.schema === 'hive-vuln-review-stage1/v2'
+      const cleanupRecoveryCandidateRunId = actual?.schema === 'hive-vuln-review-stage1/v3'
         && actual.state === 'STOP'
         && actual.reason === 'cleanup-recovery-required'
         && typeof cleanupResult?.runId === 'string'
@@ -2444,7 +2550,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 'Materialize authority was revoked before completion and workspace cleanup was not confirmed.',
               )
             : {
-                schema: 'hive-vuln-review-stage1/v2',
+                schema: 'hive-vuln-review-stage1/v3',
                 state: 'STOP',
                 reason: 'candidate-mismatch',
                 message: 'Materialize authority was revoked before completion.',
@@ -2475,20 +2581,22 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         'sourceFingerprint',
         'materializedFingerprint',
         'repositoryFingerprints',
+        'sourceResolutionFingerprint',
         'excludedRepositoryIds',
         'truncated',
         'threatContext',
         'selectedLenses',
         'compare',
-      ].sort();
+      ].sort(compareUnicodeCodePoints);
       let valid = actual?.state === 'READY'
-        && result?.schema === 'hive-vuln-review-stage1/v2'
+        && result?.schema === 'hive-vuln-review-stage1/v3'
         && result.state === 'READY'
-        && isDeepStrictEqual(Object.keys(result).sort(), readyFields)
+        && isDeepStrictEqual(Object.keys(result).sort(compareUnicodeCodePoints), readyFields)
         && result.scopeEcho === candidate.scopeEcho
         && isDeepStrictEqual(result.scopeDescriptor, candidate.expectedScopeDescriptor)
         && result.sourceFingerprint === candidate.preview.sourceFingerprint
         && isDeepStrictEqual(result.repositoryFingerprints, candidate.preview.repositories)
+        && result.sourceResolutionFingerprint === candidate.sourceResolution.provenance.fingerprint
         && result.runId === actual.runId
         && result.ownershipToken === actual.ownershipToken
         && result.workspacePath === actual.workspacePath
@@ -2498,6 +2606,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         && result.sourceFingerprint === actual.sourceFingerprint
         && result.materializedFingerprint === actual.materializedFingerprint
         && isDeepStrictEqual(result.repositoryFingerprints, actual.repositoryFingerprints)
+        && result.sourceResolutionFingerprint === actual.sourceResolutionFingerprint
         && isDeepStrictEqual(result.excludedRepositoryIds, actual.excludedRepositoryIds)
         && result.truncated === actual.truncated
         && isDeepStrictEqual(result.threatContext, candidate.threatContext)
@@ -2541,7 +2650,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 'Materialized workspace did not preserve the accepted Stage 1 candidate and cleanup was not confirmed.',
               )
             : {
-                schema: 'hive-vuln-review-stage1/v2',
+                schema: 'hive-vuln-review-stage1/v3',
                 state: 'STOP',
                 reason: actual?.state === 'NEEDS_DISCUSSION' ? 'create-needs-discussion' : 'candidate-mismatch',
                 message: 'Materialized workspace did not preserve the accepted Stage 1 candidate and create result.',
@@ -2609,8 +2718,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             vulnerabilityReviewInvocations.revokeForSession(context.sessionID);
             throw new Error('Vulnerability comparison reader accepts no arguments.');
           }
-          const role = vulnerabilityReviewRoleForAgent(context.agent, runtimeVulnerabilityReviewLanes);
-          if (role !== 'scope-scout') {
+          const policy = resolveReviewCallerPolicy(context.agent, reviewRuntimeLanes());
+          if (policy?.workflow !== 'vulnerability-review' || policy.role !== 'scope-scout') {
             throw new Error('Vulnerability comparison reader caller is not authorized.');
           }
           const compareCapability = vulnerabilityReviewInvocations.takeCompareForConsumer({
@@ -2663,9 +2772,36 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           maxPatchBytes: tool.schema.number().optional(),
           scopeMode: tool.schema.string().optional().describe('Required normalized vulnerability-review mode; omitted for other review workflows.'),
           hiveScope: tool.schema.string().optional().describe('Normalized task:<folder> or feature:<name> identity for vulnerability Hive scope.'),
+          sourceResolutionFingerprint: tool.schema.string().optional().describe('Runtime-owned vulnerability source-resolution fingerprint.'),
         },
         async execute(input, context) {
           const caller = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
+          let dashSourceResolution: ReviewSourceResolution | undefined;
+          if (caller.workflow === 'dash-review') {
+            let response: Awaited<ReturnType<typeof client.session.get>>;
+            try {
+              response = await client.session.get({
+                path: { id: context.sessionID },
+                query: { directory },
+              });
+            } catch {
+              throw new Error('Review workspace creation requires exact dash-review create authority.');
+            }
+            dashSourceResolution = response.data
+              ? dashReviewInvocations.takeCreate({
+                  session: {
+                    id: response.data.id,
+                    parentID: response.data.parentID,
+                    time: response.data.time,
+                  },
+                  agent: context.agent,
+                  createInput: input,
+                })
+              : undefined;
+            if (!dashSourceResolution) {
+              throw new Error('Review workspace creation requires exact dash-review create authority.');
+            }
+          }
           let materializeReservation: VulnerabilityTaskReservation | undefined;
           let recoveryPrimarySessionID: string | undefined;
           if (caller.workflow === 'vulnerability-review') {
@@ -2708,20 +2844,14 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             }
             recoveryPrimarySessionID = response.data.parentID;
           }
-          const { repositoryIds, scopeMode, hiveScope, ...snapshotInput } = input;
+          const { repositoryIds, scopeMode, hiveScope, sourceResolutionFingerprint, ...snapshotInput } = input;
           let vulnerabilityScope: {
             mode: VulnerabilityReviewScopeMode;
             comparisonBase: string | null;
             hiveScope: string | null;
           } | undefined;
           if (caller.workflow === 'vulnerability-review') {
-            const validModes = new Set<VulnerabilityReviewScopeMode>([
-              'current-change',
-              'git-comparison',
-              'hive-task',
-              'hive-feature',
-              'whole-repository',
-            ]);
+            const validModes = new Set<VulnerabilityReviewScopeMode>(VULNERABILITY_REVIEW_SCOPE_MODES);
             if (!scopeMode || !validModes.has(scopeMode as VulnerabilityReviewScopeMode)) {
               throw new Error('Vulnerability review requires a valid normalized scopeMode before workspace creation.');
             }
@@ -2831,6 +2961,16 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             const resolved = await resolveSnapshotRepositories(repositoryIds, caller.workflow === 'vulnerability-review');
             const capture = await captureReviewWorkspace(resolved, snapshotInput);
             lastFingerprint = capture.sourceFingerprint;
+            if (dashSourceResolution && !capturedReviewSourceMatches(resolved, capture, dashSourceResolution)) {
+              return finishMaterializeCreate({
+                state: 'NEEDS_DISCUSSION',
+                reason: 'source-drift',
+                stale: true,
+                sourceFingerprint: capture.sourceFingerprint,
+                expectedSourceFingerprint: dashSourceResolution.provenance.sourceFingerprint,
+                recovery: 'Source topology or content changed after the command-bound snapshot. Rerun dash-review; no source changes were reverted.',
+              });
+            }
             const runId = createReviewRunId(caller.workflow);
             let workspace: Awaited<ReturnType<typeof reviewWorkspaceService.create>> | undefined;
             try {
@@ -2888,6 +3028,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                   repositoryId,
                   snapshotFingerprint: materialization.snapshot.fingerprint,
                 })),
+                ...(caller.workflow === 'vulnerability-review' ? { sourceResolutionFingerprint } : {}),
                 excludedRepositoryIds: resolved.excludedRepositoryIds,
                 truncated: capture.captures.some(({ materialization }) => materialization.snapshot.omissions.patch.truncated),
                 snapshots: capture.captures.map(({ repositoryId, materialization }) => ({ repositoryId, snapshot: materialization.snapshot })),
@@ -3116,40 +3257,149 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         async execute(input, context) {
           const caller = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
           const { repositoryIds, ...snapshotInput } = input;
-          const resolved = await resolveSnapshotRepositories(repositoryIds, caller.workflow === 'vulnerability-review');
-          if (!resolved.composite) {
-            const repository = resolved.repositories[0]!.path;
-            const scopedInput = caller.workflow === 'vulnerability-review'
-              ? reviewSnapshotInputForRepository(repository, snapshotInput)
-              : snapshotInput;
-            return JSON.stringify(await inspectGitSnapshot(repository, scopedInput), null, 2);
+          let request: ReviewSourceRequest | undefined;
+          let vulnerabilityReservation: VulnerabilityTaskReservation | undefined;
+          let dashSnapshotAuthority: Parameters<DashReviewInvocationStore['recordSnapshot']>[0] | undefined;
+          if (caller.workflow === 'vulnerability-review') {
+            vulnerabilityReservation = vulnerabilityConsumerReservations.get(context.sessionID);
+            request = vulnerabilityReservation
+              ? vulnerabilitySourceRequests.get(vulnerabilityReservation)
+              : undefined;
+          } else {
+            let response: Awaited<ReturnType<typeof client.session.get>>;
+            try {
+              response = await client.session.get({
+                path: { id: context.sessionID },
+                query: { directory },
+              });
+            } catch {
+              throw new Error('Git snapshot requires exact dash-review source authority.');
+            }
+            const action = response.data
+              ? dashReviewInvocations.beginSnapshot({
+                  session: {
+                    id: response.data.id,
+                    parentID: response.data.parentID,
+                    time: response.data.time,
+                  },
+                  agent: context.agent,
+                  snapshotInput: input,
+                })
+              : { kind: 'deny' as const, reason: 'authority' as const };
+            if (action.kind === 'replay') return action.output;
+            if (action.kind === 'deny') {
+              if (action.reason === 'different-input') {
+                throw new Error('Dash review source was already resolved with different input.');
+              }
+              throw new Error('Git snapshot requires exact dash-review source authority.');
+            }
+            request = action.request;
+            dashSnapshotAuthority = action.authority;
           }
-          const snapshots = await Promise.all(resolved.repositories.map(async (repository) => ({
-            repositoryId: repository.id,
-            snapshot: await inspectGitSnapshot(
-              repository.path,
-              caller.workflow === 'vulnerability-review'
-                ? reviewSnapshotInputForRepository(repository.path, snapshotInput)
-                : snapshotInput,
-            ),
-          })));
-          const fingerprint = fingerprintReviewSourceScope({
-            manifestRepositoryIds: resolved.manifestRepositoryIds,
-            selectedRepositoryIds: resolved.selectedRepositoryIds,
-            snapshots: snapshots.map(({ repositoryId, snapshot }) => ({
-              repositoryId,
-              sourceRoot: snapshot.repository.root,
-              fingerprint: snapshot.fingerprint,
-            })),
-          });
-          return JSON.stringify({
-            composite: true,
-            manifestRepositoryIds: resolved.manifestRepositoryIds,
-            selectedRepositoryIds: resolved.selectedRepositoryIds,
-            excludedRepositoryIds: resolved.excludedRepositoryIds,
-            fingerprint,
-            snapshots,
-          }, null, 2);
+          if (!request) {
+            throw new Error('Vulnerability review source resolution requires exact resolve authority.');
+          }
+          let selectedRepositoryIds: string[] | undefined;
+          let effectiveSnapshotInput: GitSnapshotInput;
+          let sourceAuthorityInput: Record<string, unknown> | undefined;
+          try {
+            if (caller.workflow === 'vulnerability-review') {
+              const effective = resolveFixedVulnerabilityReviewSourceInput(request, input);
+              selectedRepositoryIds = effective.repositoryIds;
+              effectiveSnapshotInput = effective.snapshotInput;
+              sourceAuthorityInput = {
+                ...(selectedRepositoryIds === undefined ? {} : { repositoryIds: selectedRepositoryIds }),
+                ...effectiveSnapshotInput,
+              };
+            } else {
+              selectedRepositoryIds = request.repositoryIds ?? repositoryIds;
+              effectiveSnapshotInput = snapshotInput;
+            }
+          } catch (error) {
+            if (vulnerabilityReservation) {
+              vulnerabilityReviewInvocations.revokeForFailedTaskAfter(vulnerabilityReservation);
+            }
+            if (dashSnapshotAuthority) dashReviewInvocations.revokeSnapshot(dashSnapshotAuthority);
+            throw error;
+          }
+          const vulnerabilitySourceAction = vulnerabilityReservation
+            ? vulnerabilityReviewInvocations.beginSourceResolution(vulnerabilityReservation, sourceAuthorityInput!)
+            : undefined;
+          if (caller.workflow === 'vulnerability-review') {
+            if (!vulnerabilitySourceAction) {
+              throw new Error('Vulnerability review source resolution was denied after invocation source authority was consumed.');
+            }
+            if (vulnerabilitySourceAction.kind === 'replay') return vulnerabilitySourceAction.output;
+          }
+          try {
+            let resolvedTopology: Awaited<ReturnType<typeof resolveSnapshotRepositories>> | undefined;
+            let captured: Awaited<ReturnType<typeof reviewSnapshotSet>> | undefined;
+            const sourceResolution = await resolveReviewSource({
+              ...(request.descriptor
+                ? { descriptor: request.descriptor, paths: effectiveSnapshotInput.paths }
+                : { explicitLocal: effectiveSnapshotInput }),
+              repositoryIds: selectedRepositoryIds,
+              notRequestedReason: request.notRequestedReason,
+            }, {
+              resolveRepositories: async (ids) => {
+                resolvedTopology = await resolveSnapshotRepositories(ids, caller.workflow === 'vulnerability-review');
+                return resolvedTopology;
+              },
+              snapshotExecutor: async (topology, sourceInput) => {
+                captured = await reviewSnapshotSet(topology, sourceInput);
+                return captured;
+              },
+            });
+            if (!resolvedTopology || !captured) throw new Error(`${caller.workflow} source resolution did not capture a snapshot.`);
+            const output = !resolvedTopology.composite
+              ? JSON.stringify({
+                  ...captured.snapshots[0]!.snapshot,
+                  sourceResolution,
+                }, null, 2)
+              : JSON.stringify({
+                  composite: true,
+                  manifestRepositoryIds: resolvedTopology.manifestRepositoryIds,
+                  selectedRepositoryIds: resolvedTopology.selectedRepositoryIds,
+                  excludedRepositoryIds: resolvedTopology.excludedRepositoryIds,
+                  fingerprint: captured.fingerprint,
+                  snapshots: captured.snapshots,
+                  sourceResolution,
+                }, null, 2);
+            if (caller.workflow === 'vulnerability-review') {
+              if (
+                !vulnerabilityReservation
+                || !vulnerabilityReviewInvocations.recordSourceResolution(
+                  vulnerabilityReservation,
+                  sourceAuthorityInput!,
+                  sourceResolution,
+                  output,
+                )
+              ) {
+                throw new Error('Vulnerability review source resolution lost exact resolve authority.');
+              }
+            } else if (
+              !dashSnapshotAuthority
+              || !dashReviewInvocations.recordSnapshot(dashSnapshotAuthority, {
+                output,
+                sourceResolution,
+                createInput: {
+                  ...(sourceResolution.provenance.manifestRepositoryIds.length > 0
+                    ? { repositoryIds: sourceResolution.provenance.selectedRepositoryIds }
+                    : {}),
+                  ...sourceResolution.snapshotInput,
+                },
+              })
+            ) {
+              throw new Error('Dash review source resolution lost exact command authority.');
+            }
+            return output;
+          } catch (error) {
+            if (vulnerabilityReservation) {
+              vulnerabilityReviewInvocations.revokeSourceResolution(vulnerabilityReservation);
+            }
+            if (dashSnapshotAuthority) dashReviewInvocations.revokeSnapshot(dashSnapshotAuthority);
+            throw error;
+          }
         },
       }),
 
@@ -4296,7 +4546,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       function agentTools(allowed: string[]): Record<string, boolean> {
         const result: Record<string, boolean> = {};
         for (const tool of HIVE_TOOL_NAMES) {
-          if (!UNIVERSAL_METADATA_HIVE_TOOLS.has(tool) && !allowed.includes(tool)) {
+          if (!REVIEW_UNIVERSAL_METADATA_TOOLS.includes(tool as typeof REVIEW_UNIVERSAL_METADATA_TOOLS[number]) && !allowed.includes(tool)) {
             result[tool] = false;
           }
         }
@@ -4642,25 +4892,18 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         builtInRoutingDescriptions['vulnerability-reviewer'],
       );
 
+      const dashReviewPrimaryPermission = buildReviewPermission(REVIEW_ROLE_POLICIES['dash-review:primary']);
+      dashReviewPrimaryPermission.task = dashReviewTaskPermission;
+      dashReviewPrimaryPermission.edit = 'deny';
+      dashReviewPrimaryPermission.delegate = 'deny';
       const dashReviewerConfig = {
         temperature: 0.3,
         mode: 'primary' as const,
         hidden: true,
         description: 'Dash Reviewer - Read-only implementation review orchestrator for frozen-snapshot review commands.',
         prompt: DASH_REVIEWER_PROMPT + HIVE_SYSTEM_PROMPT,
-        tools: {
-          ...agentTools([]),
-          hive_review_workspace_claim: true,
-          hive_review_workspace_inspect: true,
-          hive_review_workspace_cleanup: true,
-        },
-        permission: {
-          edit: 'deny',
-          task: dashReviewTaskPermission,
-          delegate: 'deny',
-          question: 'allow',
-          skill: 'allow',
-        },
+        tools: buildReviewToolConfig(REVIEW_ROLE_POLICIES['dash-review:primary'], HIVE_TOOL_NAMES),
+        permission: dashReviewPrimaryPermission,
       };
       const vulnerabilityReviewPrimaryPermission = buildVulnerabilityReviewPermission('primary');
       vulnerabilityReviewPrimaryPermission.task = vulnerabilityReviewTaskPermission;
@@ -4850,9 +5093,6 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         existingNames: existingAgentNames,
         hiveTools: HIVE_TOOL_NAMES,
       });
-      for (const lane of dashReviewLanes.lanes) {
-        dashReviewTaskPermission[lane.taskTarget] = 'allow';
-      }
       runtimeDashReviewLanes = dashReviewLanes.lanes;
       const vulnerabilityReviewCustomSpecialists: VulnerabilityReviewLaneSource[] = Object.entries(customAgentConfigs)
         .flatMap(([agentName, agentConfig]) => {
@@ -4889,10 +5129,14 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         ],
         hiveTools: HIVE_TOOL_NAMES,
       });
-      for (const lane of vulnerabilityReviewLanes.lanes) {
-        vulnerabilityReviewTaskPermission[lane.taskTarget] = 'allow';
-      }
       runtimeVulnerabilityReviewLanes = vulnerabilityReviewLanes.lanes;
+      const configuredReviewLanes = reviewRuntimeLanes();
+      for (const target of reviewTaskTargets(REVIEW_ROLE_POLICIES['dash-review:primary'], configuredReviewLanes)) {
+        dashReviewTaskPermission[target] = 'allow';
+      }
+      for (const target of reviewTaskTargets(REVIEW_ROLE_POLICIES['vulnerability-review:primary'], configuredReviewLanes)) {
+        vulnerabilityReviewTaskPermission[target] = 'allow';
+      }
 
       // Build agents map based on agentMode
       const allAgents: Record<string, unknown> = {};

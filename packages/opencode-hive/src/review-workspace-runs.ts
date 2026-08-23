@@ -15,6 +15,7 @@ import {
   type GitSnapshotInput,
   type ReviewMaterialization,
 } from './utils/git-snapshot.js';
+import { sortedUniqueCodePoints } from './review-runtime-kernel.js';
 
 export type ReviewWorkspaceWorkflowAliases = {
   workflow: ReviewWorkspaceWorkflow;
@@ -28,15 +29,7 @@ type ReviewWorkspaceToolContext = {
 };
 
 function normalizedStrings(values: readonly string[] | undefined): string[] {
-  return [...new Set(values ?? [])].sort((left, right) => {
-    const leftPoints = Array.from(left, (character) => character.codePointAt(0)!);
-    const rightPoints = Array.from(right, (character) => character.codePointAt(0)!);
-    const sharedLength = Math.min(leftPoints.length, rightPoints.length);
-    for (let index = 0; index < sharedLength; index += 1) {
-      if (leftPoints[index] !== rightPoints[index]) return leftPoints[index]! - rightPoints[index]!;
-    }
-    return leftPoints.length - rightPoints.length;
-  });
+  return sortedUniqueCodePoints(values);
 }
 
 function normalizedScopePaths(values: readonly string[] | undefined): string[] {

@@ -882,7 +882,7 @@ Do it
       expect(appended).toContain(`Raw arguments (JSON string): ${JSON.stringify(rawArguments)}`);
       expect(appended).toContain('Normalized intent (JSON string): ""');
       expect(appended).toContain(`Fixed overrides (JSON): ${JSON.stringify(fixedOverrides)}`);
-      expect(appended).not.toContain('current-change');
+      expect(parts.at(-1)?.text).not.toContain('current-change');
       expect(appended).not.toContain('Normalized flags:');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

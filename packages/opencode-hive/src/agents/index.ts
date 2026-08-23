@@ -28,7 +28,6 @@ export { codeReviewerAgent, CODE_REVIEWER_PROMPT } from './code-reviewer';
 export { simplicityReviewerAgent, SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 export { approachAdvisorAgent, APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 export { vulnerabilityReviewerAgent, VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
-export { VULNERABILITY_REVIEW_PRIMARY_AGENT, VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-primary';
 
 
 /**

@@ -4,6 +4,7 @@ import { constants, promises as fs } from 'node:fs';
 import { devNull } from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import { compareUnicodeCodePoints } from '../review-runtime-kernel.js';
 
 const execFileAsync = promisify(execFile);
 const MAX_GIT_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -49,6 +50,29 @@ type CapturedContent = {
 };
 
 type ChangedPathGroup = 'comparison' | 'staged' | 'unstaged' | 'untracked';
+
+export type GitSnapshotErrorCode =
+  | 'missing-ref'
+  | 'merge-base-unavailable'
+  | 'output-truncated'
+  | 'timeout';
+
+export class GitSnapshotError extends Error {
+  constructor(
+    readonly code: GitSnapshotErrorCode,
+    readonly details: { field?: 'baseRef' | 'targetRef'; ref?: string; repositoryId?: string } = {},
+  ) {
+    const message = code === 'missing-ref' && details.field && details.ref
+      ? `Git snapshot could not resolve ${details.field}.`
+      : code === 'merge-base-unavailable'
+        ? 'No merge base for the requested comparison; snapshot scope is incomplete.'
+        : code === 'output-truncated'
+          ? `Git snapshot output exceeded ${MAX_GIT_OUTPUT_BYTES} bytes.`
+          : `Git snapshot timed out after ${GIT_TIMEOUT_MS}ms.`;
+    super(message);
+    this.name = 'GitSnapshotError';
+  }
+}
 
 export interface GitSnapshot {
   repository: { root: string; currentHead: string };
@@ -263,6 +287,8 @@ function hardenedGitEnvironment(): NodeJS.ProcessEnv {
     GIT_NO_LAZY_FETCH: '1',
     GIT_PROTOCOL_FROM_USER: '0',
     GIT_PAGER: 'cat',
+    LANG: 'C',
+    LC_ALL: 'C',
     PAGER: 'cat',
   };
 }
@@ -270,10 +296,10 @@ function hardenedGitEnvironment(): NodeJS.ProcessEnv {
 function normalizeGitError(error: unknown): never {
   const failure = error as { code?: unknown; killed?: unknown; signal?: unknown; message?: unknown };
   if (failure.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || String(failure.message).includes('maxBuffer')) {
-    throw new Error(`Git snapshot output exceeded ${MAX_GIT_OUTPUT_BYTES} bytes.`);
+    throw new GitSnapshotError('output-truncated');
   }
   if (failure.killed === true || failure.signal === 'SIGTERM' || failure.code === 'ETIMEDOUT') {
-    throw new Error(`Git snapshot timed out after ${GIT_TIMEOUT_MS}ms.`);
+    throw new GitSnapshotError('timeout');
   }
   throw error;
 }
@@ -337,9 +363,9 @@ async function runGitWithStdin(repository: string, args: string[], input: Buffer
     child.on('close', (code) => {
       clearTimeout(timeout);
       if (overflowed) {
-        reject(new Error(`Git snapshot output exceeded ${MAX_GIT_OUTPUT_BYTES} bytes.`));
+        reject(new GitSnapshotError('output-truncated'));
       } else if (timedOut) {
-        reject(new Error(`Git snapshot timed out after ${GIT_TIMEOUT_MS}ms.`));
+        reject(new GitSnapshotError('timeout'));
       } else if (code !== 0) {
         reject(new Error(`Git snapshot command failed with exit code ${code}.`));
       } else {
@@ -366,7 +392,7 @@ function parseNullSeparatedTokens(content: Buffer): string[] {
 }
 
 function parseNullSeparatedPaths(content: Buffer): string[] {
-  return parseNullSeparatedTokens(content).sort();
+  return parseNullSeparatedTokens(content).sort(compareUnicodeCodePoints);
 }
 
 function parseLsFilesStages(content: Buffer): Array<{ mode: string; path: string }> {
@@ -409,7 +435,7 @@ async function assertNoInScopeSubmoduleGitlinks(
     return;
   }
   throw new Error(
-    `Unsupported in-scope submodule gitlink: ${[...new Set(gitlinks)].sort().join(', ')}; snapshot scope is incomplete.`,
+    `Unsupported in-scope submodule gitlink: ${[...new Set(gitlinks)].sort(compareUnicodeCodePoints).join(', ')}; snapshot scope is incomplete.`,
   );
 }
 
@@ -426,7 +452,7 @@ async function assertNoConcealedIndexPaths(repository: string, pathArgs: string[
     return [];
   });
   if (concealed.length > 0) {
-    throw new Error(`Concealed tracked paths (${concealed.sort().join(', ')}); snapshot scope is incomplete.`);
+    throw new Error(`Concealed tracked paths (${concealed.sort(compareUnicodeCodePoints).join(', ')}); snapshot scope is incomplete.`);
   }
 }
 
@@ -529,7 +555,7 @@ function normalizeScopedPaths(paths: string[] | undefined): string[] {
     }
     return normalizedPath;
   });
-  return [...new Set(normalized)].sort();
+  return [...new Set(normalized)].sort(compareUnicodeCodePoints);
 }
 
 function resolveLimit(value: number | undefined, fallback: number, maximum: number, field: string): number {
@@ -580,8 +606,25 @@ function truncateUtf8(content: string, maxBytes: number): string {
   return content.slice(0, end);
 }
 
-async function resolveCommit(repository: string, ref: string): Promise<string> {
-  return (await runGit(repository, ['rev-parse', '--verify', `${ref}^{commit}`])).toString('utf8').trim();
+async function resolveCommit(
+  repository: string,
+  ref: string,
+  field?: 'baseRef' | 'targetRef',
+): Promise<string> {
+  try {
+    return (await runGit(repository, ['rev-parse', '--verify', `${ref}^{commit}`])).toString('utf8').trim();
+  } catch (error) {
+    const failure = error as { code?: unknown; stderr?: unknown };
+    const stderr = Buffer.isBuffer(failure.stderr)
+      ? failure.stderr.toString('utf8').trim()
+      : typeof failure.stderr === 'string'
+        ? failure.stderr.trim()
+        : '';
+    if (field && typeof failure.code === 'number' && stderr === 'fatal: Needed a single revision') {
+      throw new GitSnapshotError('missing-ref', { field, ref });
+    }
+    throw error;
+  }
 }
 
 async function firstParent(repository: string, commit: string): Promise<string | undefined> {
@@ -626,26 +669,26 @@ export async function inspectGitSnapshot(repositoryDirectory: string, input: Git
     const parsed = parseRange(input.range);
     baseRef = parsed.baseRef;
     targetRef = parsed.targetRef;
-    const base = await resolveCommit(repository, parsed.baseRef);
-    const target = await resolveCommit(repository, parsed.targetRef);
+    const base = await resolveCommit(repository, parsed.baseRef, 'baseRef');
+    const target = await resolveCommit(repository, parsed.targetRef, 'targetRef');
     mergeBase = await resolveMergeBase(repository, base, target);
     if (!mergeBase) {
-      throw new Error(`No merge base for ${parsed.baseRef} and ${parsed.targetRef}; snapshot scope is incomplete.`);
+      throw new GitSnapshotError('merge-base-unavailable');
     }
     comparisonBase = parsed.mergeBase ? mergeBase : base;
     comparisonTarget = target;
   } else {
     const target = targetRef
-      ? await resolveCommit(repository, assertSafeRef(targetRef, 'targetRef'))
+      ? await resolveCommit(repository, assertSafeRef(targetRef, 'targetRef'), 'targetRef')
       : currentHead;
     const base = baseRef
-      ? await resolveCommit(repository, assertSafeRef(baseRef, 'baseRef'))
+      ? await resolveCommit(repository, assertSafeRef(baseRef, 'baseRef'), 'baseRef')
       : await firstParent(repository, target);
     comparisonBase = base ?? await resolveEmptyTree(repository);
     comparisonTarget = target;
     mergeBase = base ? await resolveMergeBase(repository, base, target) : undefined;
     if (base && !mergeBase) {
-      throw new Error(`No merge base for the requested comparison; snapshot scope is incomplete.`);
+      throw new GitSnapshotError('merge-base-unavailable');
     }
   }
 
@@ -783,7 +826,7 @@ export function parseNameStatusPaths(content: Buffer): string[] {
     const changedPath = tokens[index++];
     if (changedPath) paths.push(changedPath);
   }
-  return [...new Set(paths)].sort();
+  return [...new Set(paths)].sort(compareUnicodeCodePoints);
 }
 
 export type ReviewSourceScopeFingerprintInput = {
@@ -802,7 +845,7 @@ export function serializeReviewSourceScopeFingerprint(input: ReviewSourceScopeFi
     manifestRepositoryIds: input.manifestRepositoryIds,
     selectedRepositoryIds: input.selectedRepositoryIds,
     snapshots: [...input.snapshots]
-      .sort((left, right) => left.repositoryId.localeCompare(right.repositoryId))
+      .sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId))
       .map(({ repositoryId, sourceRoot, fingerprint }) => ({ repositoryId, sourceRoot, fingerprint })),
   });
 }
@@ -816,7 +859,7 @@ export function fingerprintLegacyReviewSourceScope(input: ReviewSourceScopeFinge
     manifestRepositoryIds: input.manifestRepositoryIds,
     selectedRepositoryIds: input.selectedRepositoryIds,
     snapshots: [...input.snapshots]
-      .sort((left, right) => left.repositoryId.localeCompare(right.repositoryId))
+      .sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId))
       .map(({ repositoryId, fingerprint }) => ({ repositoryId, fingerprint })),
   })).digest('hex');
 }
@@ -825,7 +868,7 @@ export function compactMaterializationDescriptors(
   entries: readonly ReviewMaterializationEntry[],
 ): ReviewMaterializationEntryDescriptor[] {
   return [...entries]
-    .sort((left, right) => left.path.localeCompare(right.path))
+    .sort((left, right) => compareUnicodeCodePoints(left.path, right.path))
     .map(({ path, kind }) => ({ path, kind }));
 }
 
@@ -833,14 +876,14 @@ export function fingerprintReviewRepositoryMaterializations(
   captures: Array<{ repositoryId: string; fingerprint: string }>,
 ): string {
   return createHash('sha256').update(JSON.stringify(
-    [...captures].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId)),
+    [...captures].sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId)),
   )).digest('hex');
 }
 
 function materializationFingerprint(entries: readonly ReviewMaterializationEntry[]): string {
   const hash = createHash('sha256');
   hash.update('hive-review-materialization-v1\0');
-  for (const entry of [...entries].sort((left, right) => left.path.localeCompare(right.path))) {
+  for (const entry of [...entries].sort((left, right) => compareUnicodeCodePoints(left.path, right.path))) {
     hash.update(entry.path);
     hash.update('\0');
     hash.update(entry.kind);
@@ -960,7 +1003,7 @@ export async function captureReviewMaterialization(
   const deadline = Date.now() + UNTRACKED_CAPTURE_TIMEOUT_MS;
   let remainingBytes = MAX_UNTRACKED_TOTAL_BYTES;
   const entries: ReviewMaterializationEntry[] = [];
-  for (const relativePath of [...changedPaths].sort()) {
+  for (const relativePath of [...changedPaths].sort(compareUnicodeCodePoints)) {
     const entry = await captureMaterializationEntry(repository, relativePath, deadline, remainingBytes);
     if (entry.content) remainingBytes -= entry.content.byteLength;
     entries.push(entry);
@@ -975,7 +1018,7 @@ export async function fingerprintReviewWorkspace(
   const deadline = Date.now() + UNTRACKED_CAPTURE_TIMEOUT_MS;
   let remainingBytes = MAX_UNTRACKED_TOTAL_BYTES;
   const entries: ReviewMaterializationEntry[] = [];
-  for (const expected of [...expectedEntries].sort((left, right) => left.path.localeCompare(right.path))) {
+  for (const expected of [...expectedEntries].sort((left, right) => compareUnicodeCodePoints(left.path, right.path))) {
     const entry = await captureWorkspaceEntry(workspace, expected, deadline, remainingBytes);
     if (entry.content) remainingBytes -= entry.content.byteLength;
     entries.push(entry);

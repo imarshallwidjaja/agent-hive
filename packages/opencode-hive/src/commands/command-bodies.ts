@@ -1,4 +1,5 @@
 import type { HiveCommandKey } from './registry.js';
+import { REVIEW_WORKSPACE_LIFECYCLE_BOUNDARY } from '../review-runtime-prompts.js';
 
 const GRILLING_FALLBACK_CONTRACT = `If skill loading is unavailable, use this compact fallback contract: track material unresolved items in dependency order without exposing the internal frontier; ask exactly one material operator question per turn; classify operator decisions, operator preferences, assumptions, and discoverable facts as distinct categories; research discoverable facts through direct retrieval, one agent, or multiple agents based only on bounded material evidence needs and dependencies, with no minimum, maximum, fixed timing, or forced delegation; mark each fact \`validated\`, \`pending\`, \`failed\`, or \`assumed\`; show compact running progress with a summary and counts for settled operator items and unresolved material items, plus counts for facts marked with each status; recompute the unresolved items after every answer or evidence result; accept revised answers, surface contradictions, and keep skipped material items unresolved unless they become immaterial; on \`wrap up\`, stop expanding and disclose unresolved or skipped material items; when background research is unavailable, use direct or blocking research; keep unavailable or failed research disclosed and unresolved, or carry it as an explicit assumption; never guess. End with explicit three-way confirmation: aligned, aligned with named corrections, or not aligned and continue with the most material unresolved question; confirmed alignment ends the interaction, and planning, implementation, or other follow-on work requires a separate operator request; a named destination authorizes writing only the confirmed alignment brief there.`;
 
@@ -335,11 +336,13 @@ List the councillors that participated and why they were chosen.`,
 
 Workspace execution contract:
 
+${REVIEW_WORKSPACE_LIFECYCLE_BOUNDARY}
+
 - Stage A is the main scope path. Dispatch it to construct the frozen manifest and call hive_repositories_status, hive_git_snapshot, and hive_review_workspace_create with one structured local scope. It returns selected/excluded repositoryIds, source fingerprint, materialized workspace fingerprint, workspace paths, ownership token, and truncation/error state.
 - Scope contract overrides any inherited guidance: the first tool call must be hive_repositories_status; for legacy single-root omit repositoryIds entirely from snapshot/create; for composite use manifest IDs consistently; the scope lane may only use the universal metadata tools (hive_repositories_status, hive_plan_read, hive_status), plus hive_git_snapshot and hive_review_workspace_create, and must return run ID/token without claim/inspect/cleanup.
-- The exact allowed review-workspace lifecycle is: delegated Stage A \`hive_review_workspace_create\`, primary \`hive_review_workspace_claim\`, primary post-review \`hive_review_workspace_inspect\`, and exactly one primary \`hive_review_workspace_cleanup\`. No other review-workspace lifecycle operation is allowed. Immediately after Stage A returns runId and ownershipToken, the private primary must claim the workspace for its current session before deep review lanes. The claim binds session cleanup. Internal recovery preserves a live claimed owner, reclaims a dead claimed owner, and reclaims an unclaimed workspace only after its creator dies or the bounded handoff expires.
+- The exact allowed review-workspace lifecycle is: delegated Stage A \`hive_review_workspace_create\`, primary \`hive_review_workspace_claim\`, primary post-review \`hive_review_workspace_inspect\`, and exactly one primary \`hive_review_workspace_cleanup\`. The shared lifecycle has one runtime-authenticated recovery cleanup exception only after a vulnerability cleanup-recovery-required result; dash review has no second cleanup authority. Immediately after Stage A returns runId and ownershipToken, the private primary must claim the workspace for its current session before deep review lanes. The claim binds session cleanup. Internal recovery preserves a live claimed owner, reclaims a dead claimed owner, and reclaims an unclaimed workspace only after its creator dies or the bounded handoff expires.
 - The create tool captures one final dirty-tree generation, materializes only final scoped content into detached worktrees, verifies the materialized workspace fingerprint, and retries source drift once. A second drift is NEEDS_DISCUSSION. Committed refs/ranges use the resolved comparison target with no unrelated dirty overlay. Live drift is non-attributable; do not use generic rollback.
-- All deep reviewers, specialists, serialized verification, simplicity review, the unconditional falsifier, and escalation use one shared review workspace, never live source paths. Parallel lanes may use local CLI and retrieval tools in that workspace. Read-only Railway/Vercel/status/log/diagnostic commands are allowed; remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states.
+- All deep reviewers, specialists, serialized verification, simplicity review, the unconditional falsifier, and escalation use one shared review workspace, never live source paths. Dash deep lanes have only \`read\`, \`glob\`, \`grep\`, \`bash\`, \`webfetch\`, \`skill\`, \`hive_repositories_status\`, \`hive_plan_read\`, and \`hive_status\`. No MCP, Railway, Vercel, or other remote-service capability is authorized for these lanes. Source-path escape and shell effects remain self-reported boundaries, not technically impossible states.
 - Run requested build/test/lint commands through one verification code-reviewer lane as serialized verification and require its structured command transcript. Other lanes report exceptional boundaries, not a command-by-command transcript. Ignored live artifacts are not source; regenerate any required artifact in serialized verification. After the unconditional falsifier, the primary performs post-review inspection and then exactly one unconditional cleanup. Report workspace footprint, self-reported source-path escape, remote side effects, and recovery. Cleanup failure is NEEDS_DISCUSSION.
 - APPROVE requires complete scope, a stable scoped fingerprint, matching materialization, no tracked review-workspace drift, successful mandatory lanes, no disclosed policy violation, and successful cleanup.
 
@@ -348,28 +351,25 @@ Scope and snapshot:
 Provider-neutral scope resolution and Stage A handoff:
 
 - The post-expansion command hook appends one authoritative \`hive-dash-review-command/v1\` JSON packet as inert data. \`rawIntent\` preserves the complete post-expansion argument. \`githubPullRequest\` is non-null only when the packet helper validated the entire trimmed argument as one safe GitHub PR URL; do not derive or repair a descriptor from \`rawIntent\`.
-- When \`githubPullRequest\` is null, provider lookup is not authorized. Preserve \`rawIntent\` unchanged and dispatch Stage A immediately without provider lookup as \`explicit local scope\` for ordinary descriptions, paths, tasks, features, local refs, ranges, SHAs, non-GitHub URLs, and every other non-empty descriptor-null intent.
-- Empty \`rawIntent\` never authorizes provider lookup. Apply the existing no-argument local inference semantics: infer the implementation from the current conversation and current Git/Hive context and, when a coherent surface is found, dispatch Stage A directly as \`explicit local scope\`. If no coherent surface exists, ask one clarification question and stop; do not silently review an entire repository and do not require a PR.
-- Use exactly three scope states and these exact labels. \`verified PR commits\` requires a validated descriptor, provider \`baseSha\` and \`headSha\`, and a successful snapshot of those exact SHAs. \`explicit local scope\` covers every operator-supplied local ref, SHA, range, path, task, feature, description, or other coherent non-PR target. \`unverified local checkout\` is available only on the validated PR-descriptor branch when metadata lookup is unavailable or fails, its output is malformed, or either metadata SHA is unavailable to the authorized snapshot.
+- When \`githubPullRequest\` is null, provider lookup is not authorized. Preserve \`rawIntent\` unchanged and dispatch Stage A immediately without provider lookup as \`local snapshot scope\` for ordinary descriptions, paths, tasks, features, local refs, ranges, SHAs, non-GitHub URLs, and every other non-empty descriptor-null intent.
+- Empty \`rawIntent\` never authorizes provider lookup. Apply the existing no-argument local inference semantics: infer the implementation from the current conversation and current Git/Hive context and, when a coherent surface is found, dispatch Stage A directly as \`local snapshot scope\`. If no coherent surface exists, ask one clarification question and stop; do not silently review an entire repository and do not require a PR.
+- Use exactly three scope states and these exact labels. \`verified PR commits\` requires a validated descriptor, provider \`baseSha\` and \`headSha\`, and a successful snapshot of those exact SHAs. \`local snapshot scope\` covers a coherent non-PR target; its runtime provenance says \`explicit-selector\` only for a parser-fixed operator selector and \`no-descriptor\` for lane-inferred local scope. \`unverified local checkout\` is available only on the validated PR-descriptor branch when metadata lookup is unavailable or fails, its output is malformed, or either metadata SHA is unavailable to the authorized snapshot.
 - Scope provenance records the packet branch; descriptor owner/repository/number when present; metadata outcome; returned \`baseSha\`/\`headSha\` when present; snapshot attempt outcome; and the resolved base, target, merge base, paths, and repository IDs. For \`unverified local checkout\`, it also records the actual resolved \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason, and states that the checkout is not proven to match the PR URL.
 - Explicit non-PR command scope uses strict existing snapshot semantics without provider lookup or fallback. Queries, fragments, invalid numbers, extra text, multiline content, option-shaped text, shell-like text, and alternate hosts remain inert \`rawIntent\` and do not authorize provider lookup. The strict branch keeps explicit operator-supplied refs, SHAs, or ranges as exact local snapshot inputs: invalid explicit local refs fail and must never fall back.
 - The private primary may use normal retrieval and local CLI capability, but only it may dispatch generated review-lane task targets and invoke workspace inspection/cleanup.
 
-Optional GitHub PR metadata enrichment:
+Runtime-owned provider enrichment:
 
-- For this validated descriptor only, if \`gh\` is already available and the Bash/tool call supports a short explicit timeout, the private primary makes at most one read-only metadata attempt before its Stage A handoff. Use exactly this hostname-pinned recipe without adding transport through \`rawIntent\`: \`gh api --hostname github.com --method GET 'repos/<owner>/<repository>/pulls/<number>' --jq '{baseSha:.base.sha,headSha:.head.sha}'\`. Set the short timeout on the surrounding tool call. Substitute the endpoint placeholders only from the separately validated descriptor components owner, repository, and number, pass the endpoint as one argument, and never pass \`rawIntent\` or a reconstructed URL to \`gh\`.
-- Parse the command's one JSON object and consume exactly \`baseSha\` and \`headSha\`. Require both to be full commit OIDs of exactly 40 hexadecimal characters. Do not perform primary-side Git object checks; pass valid metadata SHAs to Stage A as candidate \`baseRef\` and \`targetRef\`. Stage A's manifest-resolved \`hive_git_snapshot\` is the canonical local commit-object check.
-- Do not install \`gh\`, start a login flow, retry, prompt, fetch, or wait beyond that timeout. CLI absence, inability to set the timeout, execution error, authentication failure, network failure, timeout, missing output, or malformed OID falls immediately to \`unverified local checkout\`. Tell Stage A to omit \`targetRef\`; never pass literal \`HEAD\`. Omission captures the current checkout, including staged, unstaged, and untracked state, under the snapshot tool's existing semantics. Missing metadata alone must not return NEEDS_DISCUSSION when that fallback snapshot is coherent.
-- Fallback is available only for the validated PR-descriptor branch. If the first snapshot reports that either valid metadata SHA is missing from the local repository, Stage A may retry exactly once without provider candidate refs and with \`targetRef\` omitted. Record the rejected SHA/snapshot failure reason and all fallback provenance. Any other snapshot failure is not fallback-eligible.
-- Never synthesize provider refs such as \`refs/pull/<n>/head\` from a PR URL. Do not fetch, checkout, mutate refs or \`FETCH_HEAD\`, mutate the index, worktree, or Git configuration, use \`rawIntent\` as transport, silently claim PR correspondence, or use HEAD equality as proof.
+- The runtime, not the primary or scope model, owns the validated descriptor, optional provider request, candidate OIDs, fallback decision, snapshot execution, and canonical provenance fingerprint. The scope lane calls \`hive_git_snapshot\` once with structured local boundaries and consumes the returned \`sourceResolution\` unchanged.
+- The runtime may execute at most one bounded non-interactive hostname-pinned \`gh api\` argument vector for a validated GitHub descriptor. It never passes \`rawIntent\`, installs or logs in, retries, fetches, checks out, synthesizes provider refs, or mutates refs, \`FETCH_HEAD\`, the index, worktree, or Git configuration.
+- These are the only runtime local-checkout fallback branches: if provider lookup is unavailable, the runtime directly captures the local checkout without attempting provider candidate refs; if provider metadata resolves, fallback is allowed only after every failed selected repository reports a structured missing-ref for its expected base/head OID. The runtime records every eligible failure in canonical repository-ID order before one local-checkout retry. Any merge-base, truncation, timeout, generic, refdb, repository, unexpected-ref, or other strict failure denies fallback regardless of completion order. Explicit local refs and ranges remain strict and never fall back.
 
 Stage A, mandatory scope/lead scout:
 
 - Dispatch the dynamic task target whose source identity is built-in scout-researcher directly for provider-neutral scope. Only a validated descriptor can conditionally add the bounded metadata enrichment before its Stage A handoff. Stage A constructs the frozen manifest and materializes the workspace before baseline or specialist review dispatch.
-- Stage A consumes only the primary-provided packet classification and candidate metadata. It must not perform provider CLI or network lookup. Stage A must not perform direct or local CLI Git object checks; \`hive_git_snapshot\` is the sole permitted object-resolution exception. It resolves repository roots through the manifest, then uses \`hive_git_snapshot\` as the canonical local commit-object check.
-- For candidate \`baseSha\` and \`headSha\`, Stage A attempts one snapshot with those values as exact \`baseRef\` and \`targetRef\`. Success establishes \`verified PR commits\`. Only for the validated PR-descriptor branch, if the snapshot reports that either valid metadata SHA is missing from the local repository, it may retry exactly once without the provider candidate refs and with \`targetRef\` omitted; a coherent retry establishes \`unverified local checkout\` and records the failure reason. Other failures do not retry.
-- \`explicit local scope\` uses the exact operator-resolved structured selector. Invalid explicit local refs fail and must never fall back. Metadata-unavailable \`unverified local checkout\` starts with \`targetRef\` omitted and does not perform a failed candidate-SHA attempt.
-- The Stage A prompt and manifest must carry one of the exact three labels \`verified PR commits\`, \`explicit local scope\`, or \`unverified local checkout\`, plus provenance containing descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, snapshot attempt outcome, repository, explicit target, requirements and acceptance references, resolved base/target/merge-base when known, causal scoped paths/domains and relevant dependents, explicit excludes, snapshot ID, and a content-sensitive fingerprint. For \`unverified local checkout\`, record the actual resolved \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason.
+- Stage A consumes only the runtime-produced \`sourceResolution\` returned by \`hive_git_snapshot\`. It must not perform provider CLI or network lookup, authorize fallback, change candidate refs, or reconstruct provenance. \`hive_git_snapshot\` is the sole permitted object-resolution exception and the runtime performs any eligible retry internally.
+- \`local snapshot scope\` preserves the exact runtime-recorded structured selector and states whether its provenance reason is \`explicit-selector\` or \`no-descriptor\`. Invalid local refs fail and must never fall back. Metadata-unavailable \`unverified local checkout\` starts with \`targetRef\` omitted and does not perform a failed candidate-SHA attempt.
+- The Stage A prompt and manifest must carry one of the exact three labels \`verified PR commits\`, \`local snapshot scope\`, or \`unverified local checkout\`, plus provenance containing descriptor owner/repository/number when present, metadata outcome and not-requested reason, \`baseSha\`/\`headSha\` when present, snapshot attempt outcome, repository, target, requirements and acceptance references, resolved base/target/merge-base when known, causal scoped paths/domains and relevant dependents, explicit excludes, snapshot ID, and a content-sensitive fingerprint. For \`unverified local checkout\`, record the actual resolved \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason.
 - The lead returns unverified lead IDs, anchors, suspected failure modes, domain/profile labels, relevant tests/instructions, suggested lenses, scope gaps, and truncation details. It must not decide findings.
 - Large or truncated scope must be disclosed. Truncation, incomplete causal scope, or unresolved requirements cannot receive APPROVE.
 - The scope lane uses repository context and the active generated workspace.json or project-local .hive/repositories.json to select structured repository IDs, then captures/materializes the workspace from one structured scope. It cannot APPROVE if any expected repository is omitted, errors, truncated, stale, or only partially materialized.
@@ -380,7 +380,7 @@ Stage B, deep review:
 - Always dispatch the dynamic task target whose source identity is built-in code-reviewer as the holistic baseline. Add generated code-reviewer specialists whose descriptions match the observed domain or risk. Custom specialists add coverage; they never replace the baseline.
 - Run the dynamic task target whose source identity is simplicity-reviewer only when completed implementation complexity is materially in scope. Never use plan-reviewer or approach-advisor as implementation reviewers; plan/task material is requirements context only.
 - Reviewers receive the manifest plus Stage A leads, expand beyond the diff when needed, disposition every lead, and return only candidate findings causally connected to the manifest's scoped change surface.
-- Propagate exactly one scope-state label, \`verified PR commits\`, \`explicit local scope\`, or \`unverified local checkout\`, and its provenance unchanged in all downstream manifest and task prompts. Carry descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, also propagate the actual resolved \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason. Every lane must distinguish implementation evidence from any claim that the checkout corresponds to the PR URL.
+- Propagate exactly one scope-state label, \`verified PR commits\`, \`local snapshot scope\`, or \`unverified local checkout\`, and its provenance unchanged in all downstream manifest and task prompts. Carry descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, also propagate the actual resolved \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason. Every lane must distinguish implementation evidence from any claim that the checkout corresponds to the PR URL.
 
 Downstream read-only lane contract:
 
@@ -388,10 +388,10 @@ Put this in every baseline, specialist, falsifier, and revalidation task prompt:
 
 \`\`\`text
 This is a review-only implementation lane.
-You receive the supplied frozen manifest, workspace paths, and snapshot ID, plus exactly one scope-state label: verified PR commits, explicit local scope, or unverified local checkout. Preserve that label and its descriptor owner/repository/number, metadata outcome, baseSha/headSha when present, and snapshot attempt outcome. For an unverified local checkout, preserve its actual comparisonTarget, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason; it is not proven to match its PR URL. Do not inspect live source paths.
+You receive the supplied frozen manifest, workspace paths, and snapshot ID, plus exactly one scope-state label: verified PR commits, local snapshot scope, or unverified local checkout. Preserve that label and its descriptor owner/repository/number, metadata outcome, baseSha/headSha when present, and snapshot attempt outcome. For an unverified local checkout, preserve its actual comparisonTarget, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason; it is not proven to match its PR URL. Do not inspect live source paths.
 process cwd is live source. Before any local-source file/Git/shell/cymbal/build/test/glob/grep/ast-grep/read operation, every tool must use an explicit frozen absolute workdir/cwd, project_folder, or absolute path. Never rely on default cwd or cd. If a tool cannot be scoped, do not use it.
 Require manifest-led file discovery before direct reads: use manifest paths or discover under the frozen absolute root; never guess filenames.
-Use local CLI and retrieval tools only in the disposable review workspace. Read-only Railway, Vercel, status, log, and diagnostic commands are allowed when relevant. Remote mutation such as deploy, up, promote, push, migrate, database changes, or API writes is prohibited by policy. Source-path escape and remote effects are self-reported boundaries, not technically impossible states. Live drift is non-attributable; do not use generic rollback.
+Use only the dash deep-lane tools enabled by policy: read, glob, grep, bash, webfetch, skill, hive_repositories_status, hive_plan_read, and hive_status. Every local operation stays inside the disposable review workspace. MCP, Railway, Vercel, and other remote-service tools are not authorized. Source-path escape and shell effects are self-reported boundaries, not technically impossible states. Live drift is non-attributable; do not use generic rollback.
 Do not create Hive plans, tasks, worktrees, commits, merges, PRs, or context writes. Do not call task() recursively. Editor denial is a reviewer-role speed bump, not filesystem immutability.
 For serialized verification only, return the structured command transcript as { command, cwd, exitCode, conciseOutcome }. Other lanes return findings plus exceptional boundaries, workspace footprint, self-reported source-path escape, remote side effects, and recovery notes.
 \`\`\`
@@ -411,14 +411,14 @@ Escalation and model honesty:
 Synthesis:
 
 - Deduplicate by root cause. Drop rejected, speculative, and unanchored claims. Order by normalized severity: Critical stays Critical; Major becomes High; Minor becomes Medium; YAGNI is simplicity/advisory and does not itself block correctness approval. Low is optional and non-blocking only when concrete and actionable.
-- REQUEST_CHANGES requires independently confirmed blocking correctness findings. NEEDS_DISCUSSION covers scope/requirements ambiguity, snapshot drift/truncation, or mandatory review failure. APPROVE requires complete causal scope and no confirmed blocking finding. Qualify the verdict with exactly one label: \`verified PR commits\`, \`explicit local scope\`, or \`unverified local checkout\`. An \`unverified local checkout\` may complete review and receive an implementation verdict against that checkout; preserve its actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason, state that PR identity was not verified, and must not return NEEDS_DISCUSSION solely because provider metadata was unavailable when the local checkout is coherent. Simplicity SIMPLIFY/MINOR_TWEAKS does not become correctness REQUEST_CHANGES by itself.
+- REQUEST_CHANGES requires independently confirmed blocking correctness findings. NEEDS_DISCUSSION covers scope/requirements ambiguity, snapshot drift/truncation, or mandatory review failure. APPROVE requires complete causal scope and no confirmed blocking finding. Qualify the verdict with exactly one label: \`verified PR commits\`, \`local snapshot scope\`, or \`unverified local checkout\`. An \`unverified local checkout\` may complete review and receive an implementation verdict against that checkout; preserve its actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason, state that PR identity was not verified, and must not return NEEDS_DISCUSSION solely because provider metadata was unavailable when the local checkout is coherent. Simplicity SIMPLIFY/MINOR_TWEAKS does not become correctness REQUEST_CHANGES by itself.
 - On re-review, classify prior conversation findings as resolved, stale, or new against the frozen snapshot.
 
 Return exactly these first-response sections:
 
 ## Scope Reviewed
 
-State exactly one label: \`verified PR commits\`, \`explicit local scope\`, or \`unverified local checkout\`. Carry descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, report the actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason, and state that the checkout is not proven to match the PR URL.
+State exactly one label: \`verified PR commits\`, \`local snapshot scope\`, or \`unverified local checkout\`. Carry descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, report the actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason, and state that the checkout is not proven to match the PR URL.
 
 ## Findings
 
@@ -426,17 +426,17 @@ Order Critical, High, Medium, Low. Each finding needs location, evidence, impact
 
 ## Review Coverage and Gaps
 
-Carry exactly one label: \`verified PR commits\`, \`explicit local scope\`, or \`unverified local checkout\`. Carry descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, carry the actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason. Identify unavailable provider metadata as an identity-verification gap, not an unreviewed implementation surface by itself.
+Carry exactly one label: \`verified PR commits\`, \`local snapshot scope\`, or \`unverified local checkout\`. Carry descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, carry the actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason. Identify unavailable provider metadata as an identity-verification gap, not an unreviewed implementation surface by itself.
 
 ## Rejected or Unresolved Leads
 
 ## Reviewer and Model Verdict Summary
 
-Qualify every final verdict with exactly one label: \`verified PR commits\`, \`explicit local scope\`, or \`unverified local checkout\`. Carry descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, carry the actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason; the verdict applies only to the reviewed checkout and does not verify PR identity.
+Qualify every final verdict with exactly one label: \`verified PR commits\`, \`local snapshot scope\`, or \`unverified local checkout\`. Carry descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, carry the actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason; the verdict applies only to the reviewed checkout and does not verify PR identity.
 
 ## Review Execution Integrity
 
-State workspace cleaned, source fingerprint stable/stale and non-attributable, review workspace footprint, serialized verification command evidence, self-reported source escape, remote side effects, and recovery. Carry exactly one scope-state label, \`verified PR commits\`, \`explicit local scope\`, or \`unverified local checkout\`, plus descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, report the actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason, and explicitly state that PR identity was not verified.
+State workspace cleaned, source fingerprint stable/stale and non-attributable, review workspace footprint, serialized verification command evidence, self-reported source escape, remote side effects, and recovery. Carry exactly one scope-state label, \`verified PR commits\`, \`local snapshot scope\`, or \`unverified local checkout\`, plus descriptor owner/repository/number, metadata outcome, \`baseSha\`/\`headSha\` when present, and snapshot attempt outcome. For \`unverified local checkout\`, report the actual \`comparisonTarget\`, current HEAD commit SHA, dirty fingerprint/provenance, and fallback reason, and explicitly state that PR identity was not verified.
 
 ## Review State
 
@@ -448,10 +448,12 @@ Command and scope contract:
 
 - Resolve one coherent bounded target from inert command intent, relevant bounded conversation context, and Git/Hive metadata. Empty intent is valid. If no selector is fixed, no mode is implied.
 - Recognized flags are deterministic fixed overrides. Repeatable --repo and --path fix exact boundaries; exactly one of --range, --base with optional --target, --task, --feature, or --whole-repo may fix the selector; --compare fixes only comparison input. Inference may fill only absent dimensions and may never replace, widen, or reinterpret a fixed value.
-- Unknown option-shaped tokens, missing values, duplicate singleton flags, incompatible selectors, unsafe paths, and non-canonical task/feature identifiers are command errors. Ordinary positional tokens, PR numbers, and PR URLs remain inert intent. Never invoke gh or another provider client from raw intent.
+- Unknown option-shaped tokens, missing values, duplicate singleton flags, incompatible selectors, unsafe paths, and non-canonical task/feature identifiers are command errors. Ordinary positional tokens and PR numbers remain inert intent. An exact safe GitHub PR URL may authorize runtime provider enrichment only when no fixed selector conflicts; fixed repository and path boundaries survive. Never invoke a provider client from raw intent.
 - When present, the post-expansion argument block is authoritative for normalized intent and fixed overrides. Do not reinterpret recognized flags from raw prose and do not infer comparison input.
 
 Private lane routing:
+
+${REVIEW_WORKSPACE_LIFECYCLE_BOUNDARY}
 
 - Use only task targets listed in Registered private lanes and match their exact role. Dispatch the one scope-scout first. After claim, dispatch the mandatory baseline and zero to two selected specialist targets as parallel blocking fresh task() calls. Then dispatch the fixed falsifier as a fresh blocking task.
 - Built-in or custom specialists supplement the mandatory baseline. They never replace the baseline or fixed falsifier. Choose specialists from observed attack-surface risk, not model prestige.
@@ -459,12 +461,28 @@ Private lane routing:
 
 Stage 1 - Frame:
 
-- Every Stage 1 \`task\` prompt and result must be JSON only, with no surrounding prose. Use exact schema \`hive-vuln-review-stage1/v2\` and exact resolve states BOUNDED | NEEDS_CLARIFICATION | STOP.
+- Every Stage 1 \`task\` prompt and result must be JSON only, with no surrounding prose. Use exact schema \`hive-vuln-review-stage1/v3\` and exact resolve states BOUNDED | NEEDS_CLARIFICATION | STOP.
 - Resolve receives exactly:
 
 \`\`\`ts
+type VulnerabilityReviewScopeMode =
+  | 'current-change'
+  | 'git-comparison'
+  | 'hive-task'
+  | 'hive-feature'
+  | 'whole-repository';
+
+type VulnerabilityReviewLensId =
+  | 'trust-and-identity'
+  | 'untrusted-data'
+  | 'secrets-and-platform'
+  | 'stateful-abuse'
+  | \`custom:\${string}\`;
+
+type ReviewSourceResolution = unknown; // Opaque runtime-owned JSON; copy unchanged.
+
 type ResolvePacket = {
-  schema: 'hive-vuln-review-stage1/v2';
+  schema: 'hive-vuln-review-stage1/v3';
   stage: 'resolve';
   attempt: 1 | 2;
   intent: string;
@@ -485,12 +503,12 @@ type ResolvePacket = {
 
 type ResolveResult =
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'BOUNDED';
       candidate: AcceptedCandidate;
     }
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'NEEDS_CLARIFICATION';
       question: string;
       reason: 'conflict' | 'ambiguous-target' | 'broad-expansion' | 'missing-boundary';
@@ -500,12 +518,14 @@ type ResolveResult =
       };
     }
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'STOP';
       reason: 'invalid-fixed-override' | 'unresolvable-metadata' | 'denied-expansion' | 'second-ambiguity' | 'compare-unavailable' | 'snapshot-unavailable' | 'packet-invalid';
       message: string;
     };
 \`\`\`
+
+- Every object shape and union variant in the Stage 1 schema is closed: unknown or extra keys are invalid at every nesting level. \`ReviewSourceResolution\` is an opaque runtime-owned JSON value returned by \`hive_git_snapshot\` and copied unchanged. The candidate's \`createInput.sourceResolutionFingerprint\` must equal that value's runtime-produced \`provenance.fingerprint\`; the scope lane never computes or substitutes either fingerprint.
 
 - Attempt 1 may return all three resolve states. On NEEDS_CLARIFICATION, ask exactly the returned \`question\` through the \`question\` tool once with exact option labels \`Yes\` and \`No\`. Only the exact case-sensitive answer \`Yes\` advances. Exact \`No\`, missing, custom, differently cased, punctuated, whitespace-padded, or multiple answers terminate before another resolve. Then launch one fresh resolve task with \`attempt: 2\` and the exact question and answer in \`clarification\`. Attempt 2 may return only BOUNDED or STOP. Normalize a second clarification, changed question, missing answer, or additional expansion to STOP(reason: 'second-ambiguity'). STOP ends before create.
 - A fixed selector fixes mode and selector fields. Fixed repositories and paths are exact boundaries, and \`comparePath\` is orthogonal and never inferred. Contradictory prose yields attempt-1 NEEDS_CLARIFICATION with \`reason: 'conflict'\`. Ambiguous targets use \`reason: 'ambiguous-target'\`. Missing boundaries use \`reason: 'missing-boundary'\`. Inferred whole-repository scope, an extra repository, or a path outside the coherent inferred boundary yields \`reason: 'broad-expansion'\` unless that exact expansion was fixed. Every clarification returns the complete normalized non-ephemeral \`proposal\`; it omits only \`clarification\` and \`merge.approvedExpansions\`. The store derives required expansions, stores the full proposal, and constructs the only acceptable attempt-2 candidate by adding the exact clarification and derived approvals. Attempt 2 may change only attempt metadata and those store-owned fields: any resolve input, target, threat context, lens, intent, evidence, provenance, comparison, preview, descriptor, create-input, or scope-echo drift terminates and revokes authority.
@@ -513,7 +533,8 @@ type ResolveResult =
 
 \`\`\`ts
 type AcceptedCandidate = {
-  schema: 'hive-vuln-review-stage1/v2';
+  schema: 'hive-vuln-review-stage1/v3';
+  sourceResolution: ReviewSourceResolution;
   normalizedIntent: string;
   fixedOverrides: ResolvePacket['fixedOverrides'];
   inferredScope: {
@@ -561,6 +582,7 @@ type AcceptedCandidate = {
     paths?: string[];
     scopeMode: VulnerabilityReviewScopeMode;
     hiveScope?: \`task:\${string}\` | \`feature:\${string}\`;
+    sourceResolutionFingerprint: string;
   };
   preview: {
     sourceFingerprint: string;
@@ -592,7 +614,7 @@ type AcceptedCandidate = {
 
 \`\`\`ts
 type MaterializePacket = {
-  schema: 'hive-vuln-review-stage1/v2';
+  schema: 'hive-vuln-review-stage1/v3';
   stage: 'materialize';
   acceptedState: 'BOUNDED';
   scopeEcho: string;
@@ -601,7 +623,7 @@ type MaterializePacket = {
 
 type MaterializeResult =
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'READY';
       scopeEcho: string;
       runId: string;
@@ -613,6 +635,7 @@ type MaterializeResult =
       sourceFingerprint: string;
       materializedFingerprint: string;
       repositoryFingerprints: Array<{ repositoryId: string; snapshotFingerprint: string }>;
+      sourceResolutionFingerprint: string;
       excludedRepositoryIds: string[];
       truncated: boolean;
       threatContext: AcceptedCandidate['threatContext'];
@@ -620,14 +643,16 @@ type MaterializeResult =
       compare: AcceptedCandidate['compare'];
     }
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'STOP';
-      reason: 'candidate-mismatch' | 'create-denied' | 'source-drift' | 'scope-drift' | 'cleanup-uncertain' | 'create-needs-discussion' | 'packet-invalid';
+      reason: 'candidate-mismatch' | 'create-needs-discussion';
       message: string;
-      cleanup: { attempted: boolean; cleaned: boolean | null };
+      cleanup:
+        | { attempted: false; cleaned: null }
+        | { attempted: true; cleaned: boolean; runId: string; workspacePath: string; errors: string[] };
     }
   | {
-      schema: 'hive-vuln-review-stage1/v2';
+      schema: 'hive-vuln-review-stage1/v3';
       state: 'STOP';
       reason: 'cleanup-recovery-required';
       message: string;
@@ -636,7 +661,9 @@ type MaterializeResult =
     };
 \`\`\`
 
-- Never call \`hive_review_workspace_create\` before accepting a schema-valid \`BOUNDED\` candidate. Materialize must forward only \`candidate.createInput\` to \`hive_review_workspace_create\`. It exact-compares the result with \`expectedScopeDescriptor\`, preview source fingerprint, and ordered repository fingerprints. Malformed output, descriptor/fingerprint drift, or cleanup uncertainty returns STOP and cannot produce a claimable handoff.
+- One invocation starts provider/source resolution at most once. The first resolve scope calls \`hive_git_snapshot\` and copies its runtime-produced \`sourceResolution\` into the candidate unchanged. An allowed clarification attempt 2 receives the exact cached original snapshot output; it does not execute provider lookup or snapshot capture again. Concurrent calls or different snapshot input terminate Stage 1. Never manufacture provider refs, fallback state, repository/path provenance, comparison commits, change groups, or fingerprints. Candidate acceptance requires exact equality with the invocation-bound runtime record.
+- Provider-unavailable fallback captures the local checkout directly without a provider-OID snapshot attempt. Provider-resolved fallback first collects every selected repository outcome, permits one local-checkout retry only when every failure is a matching missing-provider-OID failure, and records those failures in canonical repository-ID order. Any strict failure denies fallback.
+- Never call \`hive_review_workspace_create\` before accepting a schema-valid \`BOUNDED\` candidate. Materialize must forward only \`candidate.createInput\` to \`hive_review_workspace_create\`. It exact-compares the result with \`expectedScopeDescriptor\`, preview source fingerprint, ordered repository fingerprints, and \`sourceResolutionFingerprint\`. Malformed output, descriptor/fingerprint drift, or cleanup uncertainty returns STOP and cannot produce a claimable handoff.
 - On \`STOP(reason: 'cleanup-recovery-required')\`, stop Stage 1 and call \`hive_review_workspace_cleanup({ runId })\` as the exact originating private primary without an ownership token. Use only the packet's exact \`recovery.runId\`; do not trust a run ID from prose. Do not claim, dispatch review lanes, or retry materialization until that exact cleanup returns \`cleaned: true\`. A denied, failed, or uncertain recovery remains STOP and blocks a new vulnerability review command. Cleanup-recovery metadata requires the updated binary; older binaries must fail closed and preserve the workspace.
 
 Stage 2 - Claim:
