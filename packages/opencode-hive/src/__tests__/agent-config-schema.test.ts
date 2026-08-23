@@ -50,6 +50,59 @@ describe('agent_hive schema customAgents contract', () => {
     });
   });
 
+  it('exposes routing descriptions only for the seven customizable built-in agents', () => {
+    const customizable = [
+      'scout-researcher',
+      'forager-worker',
+      'plan-reviewer',
+      'code-reviewer',
+      'simplicity-reviewer',
+      'approach-advisor',
+      'vulnerability-reviewer',
+    ];
+    const nonCustomizable = [
+      'hive-master',
+      'architect-planner',
+      'swarm-orchestrator',
+      'hive-helper',
+      'hive-builder',
+    ];
+
+    for (const name of customizable) {
+      expect(schema.properties.agents.properties[name].$ref).toBe('#/$defs/routingAgentConfig');
+    }
+    for (const name of nonCustomizable) {
+      expect(schema.properties.agents.properties[name].$ref).toBe('#/$defs/agentConfig');
+    }
+
+    expect(validateConfigShape({
+      agents: {
+        'forager-worker': { description: '  Default for backend implementation.  ' },
+      },
+    })).toBe(true);
+    expect(validateConfigShape({
+      agents: {
+        'forager-worker': { description: '   ' },
+      },
+    })).toBe(true);
+    expect(validateConfigShape({
+      agents: {
+        'hive-builder': { description: 'Not configurable' },
+      },
+    })).toBe(false);
+  });
+
+  it('rejects whitespace-only custom agent descriptions', () => {
+    expect(validateConfigShape({
+      customAgents: {
+        'forager-ui': {
+          baseAgent: 'forager-worker',
+          description: '   ',
+        },
+      },
+    })).toBe(false);
+  });
+
   it('reserves built-in and plugin-managed agent names', () => {
     expectReservedNameToFail('hive-master');
     expectReservedNameToFail('architect-planner');

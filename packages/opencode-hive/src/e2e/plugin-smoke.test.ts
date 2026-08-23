@@ -16,6 +16,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
+import { CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 type PluginHooks = Awaited<ReturnType<typeof plugin>>;
@@ -243,6 +244,24 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     fs.writeFileSync(path.join(testRoot, '.gitignore'), '.hive/\n');
     execSync("git add README.md .gitignore", { cwd: testRoot });
     execSync('git commit -m "init"', { cwd: testRoot });
+  });
+
+  it('keeps canonical routing descriptions effective without persisting them during initialization', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_routing_defaults');
+    const opencodeConfig: Record<string, any> = { agent: {} };
+
+    await hooks.config!(opencodeConfig);
+
+    const stored = JSON.parse(fs.readFileSync(
+      path.join(testRoot, '.config', 'opencode', 'agent_hive.json'),
+      'utf-8',
+    ));
+    for (const baseAgent of CUSTOM_AGENT_BASES) {
+      expect(stored.agents?.[baseAgent]).not.toHaveProperty('description');
+      expect(opencodeConfig.agent[baseAgent]?.description).toBe(
+        DEFAULT_ROUTING_AGENT_DESCRIPTIONS[baseAgent],
+      );
+    }
   });
 
   afterEach(() => {
@@ -1027,6 +1046,22 @@ Do it
 
   it("returns task tool call using @file prompt", async () => {
 
+    const configPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      agents: {
+        'forager-worker': {
+          description: '  Default for ordinary backend implementation.  ',
+        },
+      },
+      customAgents: {
+        'forager-backend': {
+          baseAgent: 'forager-worker',
+          description: 'Use for backend implementation involving persistence or service boundaries.',
+        },
+      },
+    }));
+
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -1107,7 +1142,12 @@ Do it
       {
         name: "forager-worker",
         baseAgent: "forager-worker",
-        description: "Default implementation worker",
+        description: "Default for ordinary backend implementation.",
+      },
+      {
+        name: "forager-backend",
+        baseAgent: "forager-worker",
+        description: "Use for backend implementation involving persistence or service boundaries.",
       },
       {
         name: "forager-example-template",
@@ -1119,6 +1159,9 @@ Do it
     expect(execStart.taskToolCall?.description).toBe("Hive: 01-first-task");
     expect(execStart.taskToolCall?.prompt).toContain(`@${expectedPromptPath}`);
     expect(execStart.instructions).toContain("task({");
+    expect(execStart.instructions).toContain("Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.");
+    expect(execStart.instructions).toContain('Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.');
+    expect(execStart.instructions).not.toContain('or when the operator explicitly names it');
     expect(execStart.instructions).toContain(
       "prompt: \"Follow instructions in @.hive/features/01_task-mode-feature/tasks/01-first-task/worker-prompt.md\""
     );
@@ -1544,7 +1587,7 @@ Do it
       {
         name: "forager-worker",
         baseAgent: "forager-worker",
-        description: "Default implementation worker",
+        description: "Default for ordinary implementation, bug fixes, and refactoring in an isolated worktree.",
       },
       {
         name: "forager-example-template",
@@ -1560,6 +1603,16 @@ Do it
     expect(execStart.eligibleAgents?.find((agent) => agent.name === "reviewer-security")).toBeUndefined();
     expect(execStart.instructions).toContain("Choose one of the eligible forager-derived agents below.");
     expect(execStart.instructions).toContain("Default to `forager-worker` if no specialist is a better match.");
+    expect(execStart.instructions).toContain("Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.");
+    expect(execStart.instructions).toContain('Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.');
+    expect(execStart.instructions).not.toContain('or when the operator explicitly names it');
+    expect(execStart.instructions).toContain(`Default to \`forager-worker\` if no specialist is a better match.
+Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.
+Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.
+
+- \`forager-worker\` — Default for ordinary implementation, bug fixes, and refactoring in an isolated worktree.
+- \`forager-example-template\` — Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.
+- \`forager-ui\` — Use for UI-heavy implementation tasks.`);
     expect(execStart.instructions).toContain("`taskToolCall.subagent_type` is prefilled with the default for convenience");
     expect(execStart.instructions).toContain("`forager-ui` — Use for UI-heavy implementation tasks.");
     expect(execStart.taskToolCall?.subagent_type).toBe("forager-worker");
@@ -2325,9 +2378,10 @@ Do it
     expect(architectPrompt).toContain("## Configured Auto-Load Skills");
     expect(architectPrompt).toContain('skill({ name: "brainstorming" })');
     expect(architectPrompt).not.toContain(brainstormingSkill!.template);
-    expect(architectPrompt).toContain("Configured Custom Subagents");
+    expect(architectPrompt).toContain("Configured Custom Subagents and Built-In Defaults");
     expect(architectPrompt).toContain("`scout-docs`");
-    expect(architectPrompt).toContain("`reviewer-security`");
+    expect(architectPrompt).not.toContain("`forager-ui` — kind: custom overlay");
+    expect(architectPrompt).not.toContain("`reviewer-security` — kind: custom overlay");
     expect(architectPrompt).toContain("the scout researcher whose description best fits the research slice");
     expect(architectPrompt).toContain("Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match");
     expect(architectPrompt).toContain("task({ subagent_type: \"<chosen-researcher>\"");
@@ -2338,7 +2392,7 @@ Do it
     const swarmOutput = { system: ["OpenCode provider base prompt"] };
     await systemTransform?.({ sessionID: "sess", agent: "swarm-orchestrator" }, swarmOutput);
     const swarmPrompt = swarmOutput.system[0];
-    expect(swarmPrompt).toContain("Configured Custom Subagents");
+    expect(swarmPrompt).toContain("Configured Custom Subagents and Built-In Defaults");
     expect(swarmPrompt).toContain("`scout-docs`");
     expect(swarmPrompt).toContain("`reviewer-security`");
     expect(swarmPrompt).toContain("the code reviewer whose description best fits the review lens");

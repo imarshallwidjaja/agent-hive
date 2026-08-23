@@ -5,6 +5,7 @@ import {
   CUSTOM_AGENT_BASES,
   CUSTOM_AGENT_RESERVED_NAMES,
   DEFAULT_HIVE_CONFIG,
+  DEFAULT_ROUTING_AGENT_DESCRIPTIONS,
 } from '../types.js';
 import { isValidRepositoryConfig } from '../utils/repositoryConfig.js';
 import { acquireLockSync, writeAtomic } from '../utils/paths.js';
@@ -167,12 +168,33 @@ export class ConfigService {
     const release = acquireLockSync(this.configPath);
     try {
       const current = this.readStored();
+      const mergedAgentUpdates = updates.agents
+        ? Object.fromEntries(
+            Object.entries(updates.agents).map(([agentName, incoming]) => {
+              const declaration: AgentModelConfig & { description?: string } = {
+                ...current.agents?.[agentName as BuiltInAgentName],
+                ...incoming,
+              };
+              if (
+                this.isObjectRecord(incoming)
+                && 'description' in incoming
+                && (
+                  incoming.description === undefined
+                  || (typeof incoming.description === 'string' && incoming.description.trim() === '')
+                )
+              ) {
+                delete declaration.description;
+              }
+              return [agentName, declaration];
+            }),
+          ) as NonNullable<HiveConfig['agents']>
+        : undefined;
       const stored: Partial<HiveConfig> = {
         ...current,
         ...updates,
-        agents: updates.agents ? {
+        agents: mergedAgentUpdates ? {
           ...current.agents,
-          ...updates.agents,
+          ...mergedAgentUpdates,
         } : current.agents,
         customAgents: updates.customAgents
           ? {
@@ -221,6 +243,8 @@ export class ConfigService {
   /**
    * Get agent-specific model config
    */
+  getAgentConfig(agent: BuiltInAgentName): AgentModelConfig;
+  getAgentConfig(agent: string): AgentModelConfig | ResolvedCustomAgentConfig;
   getAgentConfig(agent: string): AgentModelConfig | ResolvedCustomAgentConfig {
     const config = this.get();
 
@@ -243,6 +267,11 @@ export class ConfigService {
 
     const customAgents = this.getCustomAgentConfigs();
     return customAgents[agent] ?? {};
+  }
+
+  getRoutingAgentDescription(baseAgent: CustomAgentBase): string {
+    const configured = this.get().agents?.[baseAgent]?.description?.trim();
+    return configured || DEFAULT_ROUTING_AGENT_DESCRIPTIONS[baseAgent];
   }
 
   getCustomAgentConfigs(): Record<string, ResolvedCustomAgentConfig> {
@@ -282,7 +311,7 @@ export class ConfigService {
       const additionalAutoLoadSkills = Array.isArray(autoLoadSkillsValue)
         ? autoLoadSkillsValue.filter((skill): skill is string => typeof skill === 'string')
         : [];
-      const baseAgentConfig = this.getAgentConfig(baseAgent) as AgentModelConfig;
+      const baseAgentConfig = this.getAgentConfig(baseAgent);
       const effectiveAutoLoadSkills = this.resolveAutoLoadSkills(
         baseAgentConfig.autoLoadSkills ?? [],
         additionalAutoLoadSkills,
@@ -467,10 +496,25 @@ export class ConfigService {
 
     const mergedBuiltInAgents = BUILT_IN_AGENT_NAMES.reduce<NonNullable<HiveConfig['agents']>>(
       (acc, agentName) => {
-        acc[agentName] = {
+        const storedAgent = stored.agents?.[agentName];
+        const mergedAgent: AgentModelConfig & { description?: string } = {
           ...DEFAULT_HIVE_CONFIG.agents?.[agentName],
-          ...stored.agents?.[agentName],
+          ...storedAgent,
         };
+        if (
+          this.isSupportedCustomAgentBase(agentName)
+          && storedAgent
+          && 'description' in storedAgent
+          && storedAgent.description !== undefined
+        ) {
+          const description = storedAgent.description.trim();
+          if (description) {
+            mergedAgent.description = description;
+          } else {
+            delete mergedAgent.description;
+          }
+        }
+        acc[agentName] = mergedAgent;
         return acc;
       },
       {},
@@ -555,8 +599,8 @@ export class ConfigService {
     }
 
     if (this.isObjectRecord(config.agents)) {
-      for (const declaration of Object.values(config.agents)) {
-        if (!this.isValidAgentConfigDeclaration(declaration)) {
+      for (const [agentName, declaration] of Object.entries(config.agents)) {
+        if (!this.isValidAgentConfigDeclaration(agentName, declaration)) {
           return false;
         }
       }
@@ -682,12 +726,22 @@ export class ConfigService {
     return true;
   }
 
-  private isValidAgentConfigDeclaration(value: unknown): boolean {
+  private isValidAgentConfigDeclaration(agentName: string, value: unknown): boolean {
     if (!this.isObjectRecord(value)) {
       return false;
     }
 
     const declaration = value as Record<string, unknown>;
+
+    if (
+      declaration.description !== undefined
+      && (
+        !this.isSupportedCustomAgentBase(agentName)
+        || typeof declaration.description !== 'string'
+      )
+    ) {
+      return false;
+    }
 
     if (declaration.model !== undefined && typeof declaration.model !== 'string') {
       return false;

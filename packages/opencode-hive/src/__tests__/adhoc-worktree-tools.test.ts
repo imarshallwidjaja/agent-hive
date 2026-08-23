@@ -279,6 +279,21 @@ describe('ad-hoc worktree plugin tools', () => {
     delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     delete process.env.OPENCODE_EXPERIMENTAL;
     initGitRoot(testRoot);
+    const configPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      agents: {
+        'forager-worker': {
+          description: '  Default for ordinary backend implementation.  ',
+        },
+      },
+      customAgents: {
+        'forager-backend': {
+          baseAgent: 'forager-worker',
+          description: 'Use for backend implementation involving persistence or service boundaries.',
+        },
+      },
+    }));
     const hooks = await loadHooks(testRoot);
     const toolContext = createToolContext('sess_adhoc_gate_closed_worker');
 
@@ -293,6 +308,9 @@ describe('ad-hoc worktree plugin tools', () => {
       branch?: string;
       nextAction?: string;
       launchMode?: string;
+      defaultAgent?: string;
+      eligibleAgents?: Array<{ name: string; baseAgent: string; description: string }>;
+      instructions?: string;
       sessionPolicy?: typeof HIVE_SESSION_POLICY;
       taskToolCall?: {
         subagent_type?: string;
@@ -307,6 +325,24 @@ describe('ad-hoc worktree plugin tools', () => {
 
     expect(result.success).toBe(true);
     expect(result.launchMode).toBe('blocking_task_call');
+    expect(result.defaultAgent).toBe('forager-worker');
+    expect(result.eligibleAgents).toEqual([
+      {
+        name: 'forager-worker',
+        baseAgent: 'forager-worker',
+        description: 'Default for ordinary backend implementation.',
+      },
+      {
+        name: 'forager-backend',
+        baseAgent: 'forager-worker',
+        description: 'Use for backend implementation involving persistence or service boundaries.',
+      },
+      {
+        name: 'forager-example-template',
+        baseAgent: 'forager-worker',
+        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
+      },
+    ]);
     expect(result.sessionPolicy).toEqual(HIVE_SESSION_POLICY);
     expect(result.taskToolCall).toEqual({
       subagent_type: 'forager-worker',
@@ -319,6 +355,11 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(result.backgroundTaskCall).toBeUndefined();
     expect(result.backgroundScope).toBeUndefined();
     expect(result.nextAction).toContain('launch the returned `taskToolCall`');
+    expect(result.instructions).toContain('Default to `forager-worker` if no specialist is a better match.');
+    expect(result.instructions).toContain("Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.");
+    expect(result.instructions).toContain('Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.');
+    expect(result.instructions).not.toContain('or when the operator explicitly names it');
+    expect(result.instructions).toContain('override `taskToolCall.subagent_type` and, when used, `backgroundTaskCall.subagent_type` when a custom overlay in `eligibleAgents` is a closer fit');
     expect(result.nextAction).not.toContain('Work in the ad-hoc worktree');
     expect(fs.existsSync(path.join(testRoot, '.hive', 'background-jobs.json'))).toBe(false);
   });

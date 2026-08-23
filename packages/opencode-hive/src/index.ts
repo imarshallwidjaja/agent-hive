@@ -276,55 +276,6 @@ function buildBackgroundDelegationPromptAppendix(
   return '';
 }
 
-type CompatibleCustomAgentConfig = {
-  baseAgent: CustomAgentBase;
-  description: string;
-  model?: string;
-  variant?: string;
-  autoLoadSkills?: string[];
-};
-
-function getCustomAgentConfigsCompat(configService: ConfigService): Record<string, CompatibleCustomAgentConfig> {
-  const serviceWithMethod = configService as ConfigService & {
-    getCustomAgentConfigs?: () => Record<string, CompatibleCustomAgentConfig>;
-    get?: () => { customAgents?: Record<string, unknown> };
-  };
-
-  if (typeof serviceWithMethod.getCustomAgentConfigs === 'function') {
-    return serviceWithMethod.getCustomAgentConfigs();
-  }
-
-  const rawConfig = serviceWithMethod.get?.() as { customAgents?: Record<string, unknown> } | undefined;
-  const rawCustomAgents = rawConfig?.customAgents;
-  if (!rawCustomAgents || typeof rawCustomAgents !== 'object') {
-    return {};
-  }
-
-  const compatibleEntries = Object.entries(rawCustomAgents).flatMap(([name, config]) => {
-    if (!config || typeof config !== 'object') {
-      return [];
-    }
-
-    const record = config as Record<string, unknown>;
-    const baseAgent = record.baseAgent;
-    if (typeof baseAgent !== 'string' || !(CUSTOM_AGENT_BASES as readonly string[]).includes(baseAgent)) {
-      return [];
-    }
-
-    return [[name, {
-      baseAgent: baseAgent as CustomAgentBase,
-      description: typeof record.description === 'string' ? record.description : 'Custom subagent',
-      model: typeof record.model === 'string' ? record.model : undefined,
-      variant: typeof record.variant === 'string' ? record.variant : undefined,
-      autoLoadSkills: Array.isArray(record.autoLoadSkills)
-        ? record.autoLoadSkills.filter((skill): skill is string => typeof skill === 'string')
-        : [],
-    } satisfies CompatibleCustomAgentConfig]];
-  });
-
-  return Object.fromEntries(compatibleEntries);
-}
-
 // ============================================================================
 import {
   WorktreeService,
@@ -352,6 +303,7 @@ import {
   readText,
   resolveFeatureDirectoryName,
   type CustomAgentBase,
+  type ResolvedCustomAgentConfig,
   type WorktreeInfo,
   type AdhocWorktreeInfo,
   type AdhocCommitResult,
@@ -400,6 +352,82 @@ import {
   injectTaskTraceHint,
   TASK_TRACE_SUMMARIZER_AGENT,
 } from './task-trace.js';
+
+function renderSubagentRoutingCard(
+  name: string,
+  kind: 'default' | 'custom overlay',
+  baseAgent: CustomAgentBase,
+  description: string,
+): string {
+  return `- \`${name}\` — kind: ${kind}; base: \`${baseAgent}\`; ${description}`;
+}
+
+const AUTONOMOUS_ROUTING_GUIDANCE = "Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.";
+const CANDIDATE_SPECIFIC_ROUTING_GUARD = 'Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.';
+
+function buildForagerEligibleAgents(configService: ConfigService): Array<{
+  name: string;
+  baseAgent: 'forager-worker';
+  description: string;
+}> {
+  return [
+    {
+      name: 'forager-worker',
+      baseAgent: 'forager-worker',
+      description: configService.getRoutingAgentDescription('forager-worker'),
+    },
+    ...Object.entries(configService.getCustomAgentConfigs())
+      .filter((entry): entry is [string, ResolvedCustomAgentConfig & { baseAgent: 'forager-worker' }] => (
+        entry[1].baseAgent === 'forager-worker'
+      ))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, config]) => ({
+        name,
+        baseAgent: config.baseAgent,
+        description: config.description,
+      })),
+  ];
+}
+
+function formatEligibleAgentChoices(
+  eligibleAgents: ReadonlyArray<{ name: string; description: string }>,
+): string {
+  return eligibleAgents
+    .map((candidate) => `- \`${candidate.name}\` — ${candidate.description}`)
+    .join('\n');
+}
+
+function buildSubagentRoutingAppendix(
+  baseAgents: readonly CustomAgentBase[],
+  customAgentConfigs: Record<string, ResolvedCustomAgentConfig>,
+  descriptions: Record<CustomAgentBase, string>,
+): string {
+  const customEntries = Object.entries(customAgentConfigs);
+  if (!customEntries.some(([, config]) => baseAgents.includes(config.baseAgent))) {
+    return '';
+  }
+
+  const cards = baseAgents.flatMap((baseAgent) => [
+    renderSubagentRoutingCard(baseAgent, 'default', baseAgent, descriptions[baseAgent]),
+    ...customEntries
+      .filter(([, config]) => config.baseAgent === baseAgent)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, config]) => renderSubagentRoutingCard(
+        name,
+        'custom overlay',
+        config.baseAgent,
+        config.description,
+      )),
+  ]);
+
+  return `\n\n## Configured Custom Subagents and Built-In Defaults
+Custom subagents are scoped specialists, not automatic model upgrades.
+For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.
+${AUTONOMOUS_ROUTING_GUIDANCE}
+${CANDIDATE_SPECIFIC_ROUTING_GUARD}
+Do not choose a custom subagent only because the task is important, large, complex, or quality-sensitive.
+${cards.join('\n')}`;
+}
 
 /**
  * Core plugin implementation.
@@ -925,7 +953,7 @@ const plugin: Plugin = async (ctx) => {
     },
   });
 
-  const customAgentConfigsForClassification = getCustomAgentConfigsCompat(configService);
+  const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
   const runtimeContext = detectContext(worktree || directory);
   const taskWorkerRecovery = runtimeContext.isWorktree && runtimeContext.feature && runtimeContext.task
     ? {
@@ -1320,23 +1348,8 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       repos: promptRepoInfo,
     });
 
-    const customAgentConfigs = getCustomAgentConfigsCompat(configService);
     const defaultAgent = 'forager-worker';
-    const eligibleAgents = [
-      {
-        name: defaultAgent,
-        baseAgent: defaultAgent,
-        description: 'Default implementation worker',
-      },
-      ...Object.entries(customAgentConfigs)
-        .filter(([, config]) => config.baseAgent === 'forager-worker')
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([name, config]) => ({
-          name,
-          baseAgent: config.baseAgent,
-          description: config.description,
-        })),
-    ];
+    const eligibleAgents = buildForagerEligibleAgents(configService);
     const agent = defaultAgent;
 
     const rawStatus = taskService.getRawStatus(feature, task);
@@ -1381,8 +1394,10 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
 Choose one of the eligible forager-derived agents below.
 Default to \`${defaultAgent}\` if no specialist is a better match.
+${AUTONOMOUS_ROUTING_GUIDANCE}
+${CANDIDATE_SPECIFIC_ROUTING_GUARD}
 
-${eligibleAgents.map((candidate) => `- \`${candidate.name}\` — ${candidate.description}`).join('\n')}
+${formatEligibleAgentChoices(eligibleAgents)}
 
 Use OpenCode's built-in \`task\` tool with the chosen \`subagent_type\` and the provided ${backgroundEnabled ? '\`backgroundTaskCall.prompt\` value when this worker is an independent lane and safe foreground work can continue. Use the blocking \`taskToolCall.prompt\` value when the next meaningful step depends on the worker and no non-overlapping foreground work exists.' : '\`taskToolCall.prompt\` value.'}
 \`taskToolCall.subagent_type\` is prefilled with the default for convenience; override it when a specialist in \`eligibleAgents\` is a better match.
@@ -3741,13 +3756,15 @@ NEXT: Ask your first clarifying question about this feature.`;
                 }
               : undefined;
             const shouldAutoSpawnWorker = autoSpawnWorker !== false;
+            const defaultAgent = 'forager-worker';
+            const eligibleAgents = buildForagerEligibleAgents(configService);
             const adhocWorkerPrompt = buildAdhocWorkerPrompt({
               runId: info.runId,
               workspacePath,
               branch: info.branch,
               instructions: blankToUndefined(workerInstructions),
             });
-            const subagent_type = 'forager-worker';
+            const subagent_type = defaultAgent;
             const description = `Ad-hoc: ${info.runId}`;
             const { taskToolCall, backgroundTaskCall, launchMode, sessionPolicy } = buildAdhocWorkerLaunchPayloads({
               subagent_type,
@@ -3779,9 +3796,21 @@ NEXT: Ask your first clarifying question about this feature.`;
               ...(backgroundScope ? { backgroundScope } : {}),
               ...(backgroundOwnership ? { backgroundOwnership } : {}),
               launchMode,
+              defaultAgent,
+              eligibleAgents,
               ...(sessionPolicy ? { sessionPolicy } : {}),
               ...(taskToolCall ? { taskToolCall } : {}),
               ...(backgroundTaskCall ? { backgroundTaskCall } : {}),
+              ...(taskToolCall ? {
+                instructions: `Choose one of the eligible forager-derived agents below.
+Default to \`${defaultAgent}\` if no specialist is a better match.
+${AUTONOMOUS_ROUTING_GUIDANCE}
+${CANDIDATE_SPECIFIC_ROUTING_GUARD}
+
+${formatEligibleAgentChoices(eligibleAgents)}
+
+The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`; override \`taskToolCall.subagent_type\` and, when used, \`backgroundTaskCall.subagent_type\` when a custom overlay in \`eligibleAgents\` is a closer fit. Preserve the returned prompt, description, wait mode, and fresh terminal session semantics.`,
+              } : {}),
               ...(workerLaunchSuppressed ? { workerLaunch: 'suppressed' as const } : {}),
               nextAction: adhocCreateNextAction({
                 shouldAutoSpawnWorker,
@@ -4317,7 +4346,7 @@ NEXT: Ask your first clarifying question about this feature.`;
         primary_tools: [...existingPrimaryTools.filter((tool) => tool !== 'question' && tool !== 'task'), 'question'],
       };
 
-      const customAgentConfigs = getCustomAgentConfigsCompat(configService);
+      const customAgentConfigs = configService.getCustomAgentConfigs();
       const architectTaskPermission: Record<string, 'allow' | 'deny'> = {
         '*': 'deny',
         'scout-researcher': 'allow',
@@ -4340,16 +4369,38 @@ NEXT: Ask your first clarifying question about this feature.`;
       const vulnerabilityReviewTaskPermission: Record<string, 'allow' | 'deny'> = {
         '*': 'deny',
       };
-      const customSubagentAppendix = Object.keys(customAgentConfigs).length === 0
-        ? ''
-        : `\n\n## Configured Custom Subagents\nCustom subagents are scoped specialists, not automatic model upgrades.
-For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.
-Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or review/approach risk lens; use the built-in base agent when no configured custom subagent is a closer fit.
-Require explicit operator naming only when the selected custom subagent's own description explicitly requires it.
-Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.\n${Object.entries(customAgentConfigs)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([name, config]) => `- \`${name}\` — derived from \`${config.baseAgent}\`; ${config.description}`)
-          .join('\n')}`;
+      const builtInRoutingDescriptions = Object.fromEntries(
+        CUSTOM_AGENT_BASES.map((baseAgent) => [
+          baseAgent,
+          configService.getRoutingAgentDescription(baseAgent),
+        ]),
+      ) as Record<CustomAgentBase, string>;
+      const architectRoutingBases = [
+        'scout-researcher',
+        'plan-reviewer',
+        'approach-advisor',
+      ] as const;
+      const builderRoutingBases = [
+        'scout-researcher',
+        'forager-worker',
+        'code-reviewer',
+        'simplicity-reviewer',
+      ] as const;
+      const allSubagentRoutingAppendix = buildSubagentRoutingAppendix(
+        CUSTOM_AGENT_BASES,
+        customAgentConfigs,
+        builtInRoutingDescriptions,
+      );
+      const architectSubagentRoutingAppendix = buildSubagentRoutingAppendix(
+        architectRoutingBases,
+        customAgentConfigs,
+        builtInRoutingDescriptions,
+      );
+      const builderSubagentRoutingAppendix = buildSubagentRoutingAppendix(
+        builderRoutingBases,
+        customAgentConfigs,
+        builtInRoutingDescriptions,
+      );
 
       // Build auto-load skill guidance for each agent
       const hiveUserConfig = configService.getAgentConfig('hive-master');
@@ -4366,7 +4417,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const hivePrompt = QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hiveAutoLoadSkillsAppendix + hiveBackgroundDelegationAppendix + (agentMode === 'unified' ? customSubagentAppendix : '');
+      const hivePrompt = QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + hiveAutoLoadSkillsAppendix + hiveBackgroundDelegationAppendix + (agentMode === 'unified' ? allSubagentRoutingAppendix : '');
       runtimeAgentPrompts.set('hive-master', hivePrompt);
       const hiveConfig = {
         model: hiveUserConfig.model,
@@ -4412,7 +4463,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         variant: architectUserConfig.variant,
         temperature: architectUserConfig.temperature ?? 0.7,
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
-        prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadSkillsAppendix + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : ''),
+        prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadSkillsAppendix + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? architectSubagentRoutingAppendix : ''),
         tools: agentTools([
           'hive_feature_create', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_context_write', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
@@ -4444,7 +4495,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const swarmPrompt = SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadSkillsAppendix + swarmBackgroundDelegationAppendix + (agentMode === 'dedicated' ? customSubagentAppendix : '');
+      const swarmPrompt = SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + swarmAutoLoadSkillsAppendix + swarmBackgroundDelegationAppendix + (agentMode === 'dedicated' ? allSubagentRoutingAppendix : '');
       runtimeAgentPrompts.set('swarm-orchestrator', swarmPrompt);
       const swarmConfig = {
         model: swarmUserConfig.model,
@@ -4481,7 +4532,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         variant: scoutUserConfig.variant,
         temperature: scoutUserConfig.temperature ?? 0.5,
         mode: 'subagent' as const,
-        description: 'Scout (Explorer/Researcher/Retrieval) - Researches codebase + external docs/data.',
+        description: builtInRoutingDescriptions['scout-researcher'],
         prompt: SCOUT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + scoutAutoLoadSkillsAppendix,
         tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status']),
         permission: {
@@ -4508,7 +4559,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         variant: foragerUserConfig.variant,
         temperature: foragerUserConfig.temperature ?? 0.3,
         mode: 'subagent' as const,
-        description: 'Forager (Worker/Coder) - Executes tasks directly in isolated worktrees. Never delegates.',
+        description: builtInRoutingDescriptions['forager-worker'],
         tools: agentTools(['hive_plan_read', 'hive_worktree_commit', 'hive_context_write']),
         permission: {
           task: "deny",
@@ -4568,27 +4619,27 @@ Do not choose a custom subagent only because the task is important, complex, or 
       const planReviewerConfig = buildReviewerConfig(
         'plan-reviewer',
         PLAN_REVIEWER_PROMPT,
-        'Plan Reviewer - Reviews Hive plans for worker readiness, references, dependencies, and executable verification. OKAY/REJECT verdict.',
+        builtInRoutingDescriptions['plan-reviewer'],
       );
       const codeReviewerConfig = buildReviewerConfig(
         'code-reviewer',
         CODE_REVIEWER_PROMPT,
-        'Code Reviewer - Reviews implementation diffs against task or plan requirements for correctness, tests, risk, scope creep, YAGNI, and dead code.',
+        builtInRoutingDescriptions['code-reviewer'],
       );
       const simplicityReviewerConfig = buildReviewerConfig(
         'simplicity-reviewer',
         SIMPLICITY_REVIEWER_PROMPT,
-        'Simplicity Reviewer - Final post-implementation cleanup reviewer for YAGNI, dead code, duplication, unnecessary abstractions, and safe deletion-biased simplification.',
+        builtInRoutingDescriptions['simplicity-reviewer'],
       );
       const approachAdvisorConfig = buildReviewerConfig(
         'approach-advisor',
         APPROACH_ADVISOR_PROMPT,
-        'Approach Advisor - Read-only technical advisor for approach, architecture, hard debugging direction, and tradeoffs.',
+        builtInRoutingDescriptions['approach-advisor'],
       );
       const vulnerabilityReviewerConfig = buildReviewerConfig(
         'vulnerability-reviewer',
         VULNERABILITY_REVIEWER_PROMPT,
-        'Vulnerability Reviewer - Read-only application-security reviewer focused on evidenced attacker-to-impact paths and root-cause triage.',
+        builtInRoutingDescriptions['vulnerability-reviewer'],
       );
 
       const dashReviewerConfig = {
@@ -4650,7 +4701,7 @@ Do not choose a custom subagent only because the task is important, complex, or 
         preparedNativeHiveSkills.skillsByName,
         skippedHiveSkills,
       );
-      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadSkillsAppendix + builderBackgroundDelegationAppendix + customSubagentAppendix;
+      const builderPrompt = HIVE_BUILDER_PROMPT + builderAutoLoadSkillsAppendix + builderBackgroundDelegationAppendix + builderSubagentRoutingAppendix;
       runtimeAgentPrompts.set('hive-builder', builderPrompt);
       const builderConfig = {
         model: builderUserConfig.model,

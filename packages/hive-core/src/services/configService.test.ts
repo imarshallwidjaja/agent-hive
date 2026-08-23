@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { ConfigService } from "./configService";
-import { DEFAULT_HIVE_CONFIG } from "../types";
+import { CUSTOM_AGENT_BASES, DEFAULT_HIVE_CONFIG, DEFAULT_ROUTING_AGENT_DESCRIPTIONS } from "../types";
 
 let originalHome: string | undefined;
 let tempHome: string;
@@ -275,6 +275,79 @@ describe("ConfigService defaults", () => {
     });
   });
 
+  it('loads and trims routing descriptions for customizable built-in agents', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        agents: {
+          'scout-researcher': {
+            description: '  Default for repository-local research.  ',
+          },
+          'forager-worker': {
+            variant: 'high',
+          },
+        },
+      }),
+    );
+
+    const config = service.get();
+    expect(config.agents?.['scout-researcher']?.description).toBe('Default for repository-local research.');
+    expect(config.agents?.['forager-worker']?.description).toBeUndefined();
+    expect(service.getRoutingAgentDescription('scout-researcher')).toBe('Default for repository-local research.');
+    expect(service.getRoutingAgentDescription('forager-worker')).toBe(
+      DEFAULT_ROUTING_AGENT_DESCRIPTIONS['forager-worker'],
+    );
+  });
+
+  it('treats a blank configurable built-in routing description as omitted', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        agents: {
+          'forager-worker': {
+            description: '   ',
+            variant: 'high',
+          },
+        },
+      }),
+    );
+
+    expect(service.get().agents?.['forager-worker']).toMatchObject({ variant: 'high' });
+    expect(service.get().agents?.['forager-worker']?.description).toBeUndefined();
+    expect(service.getRoutingAgentDescription('forager-worker')).toBe(
+      DEFAULT_ROUTING_AGENT_DESCRIPTIONS['forager-worker'],
+    );
+    expect(service.getLastFallbackWarning()).toBeNull();
+  });
+
+  it('falls back when a non-customizable built-in declares a routing description', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        agents: {
+          'hive-builder': {
+            description: 'Not configurable',
+          },
+        },
+      }),
+    );
+
+    expect(service.get()).toEqual(DEFAULT_HIVE_CONFIG);
+    expect(service.getLastFallbackWarning()?.reason).toBe('validation_error');
+  });
+
   it("treats non-object customAgents as empty without dropping other config", () => {
     const service = new ConfigService();
     const configPath = service.getPath();
@@ -374,6 +447,13 @@ describe("ConfigService defaults", () => {
       expect(config).toEqual(DEFAULT_HIVE_CONFIG);
       expect(service.getActiveReadSourceType()).toBe('global');
       expect(fs.existsSync(service.getPath())).toBe(true);
+      const stored = JSON.parse(fs.readFileSync(service.getPath(), 'utf-8'));
+      for (const baseAgent of CUSTOM_AGENT_BASES) {
+        expect(stored.agents?.[baseAgent]).not.toHaveProperty('description');
+        expect(service.getRoutingAgentDescription(baseAgent)).toBe(
+          DEFAULT_ROUTING_AGENT_DESCRIPTIONS[baseAgent],
+        );
+      }
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true });
     }
@@ -1350,6 +1430,55 @@ describe('ConfigService repository manifest validation', () => {
 });
 
 describe('ConfigService write validation and persistence', () => {
+  it.each([
+    ['undefined', undefined],
+    ['whitespace', '   '],
+  ] as const)('preserves an existing agent declaration when %s clears its routing description', (_label, description) => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      agents: {
+        'forager-worker': {
+          model: 'user/forager-model',
+          variant: 'high',
+          temperature: 0.4,
+          autoLoadSkills: ['custom-skill'],
+          description: 'Use for backend implementation.',
+        },
+      },
+    }));
+
+    const updated = service.set({
+      agents: {
+        'forager-worker': {
+          description,
+        },
+      },
+    });
+
+    const expectedAgent = {
+      model: 'user/forager-model',
+      variant: 'high',
+      temperature: 0.4,
+      autoLoadSkills: ['custom-skill'],
+    };
+    expect(updated.agents?.['forager-worker']).toMatchObject(expectedAgent);
+    expect(updated.agents?.['forager-worker']?.description).toBeUndefined();
+    expect(service.getRoutingAgentDescription('forager-worker')).toBe(
+      DEFAULT_ROUTING_AGENT_DESCRIPTIONS['forager-worker'],
+    );
+    const stored = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(stored.agents['forager-worker']).toEqual(expectedAgent);
+
+    const reloaded = new ConfigService();
+    expect(reloaded.get().agents?.['forager-worker']).toMatchObject(expectedAgent);
+    expect(reloaded.get().agents?.['forager-worker']?.description).toBeUndefined();
+    expect(reloaded.getRoutingAgentDescription('forager-worker')).toBe(
+      DEFAULT_ROUTING_AGENT_DESCRIPTIONS['forager-worker'],
+    );
+  });
+
   it('persists only stored values and requested updates without restoring omitted defaults', () => {
     const service = new ConfigService();
     const configPath = service.getPath();

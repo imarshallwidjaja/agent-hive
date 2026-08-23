@@ -337,6 +337,11 @@ export interface AgentModelConfig {
   variant?: string;
 }
 
+export interface RoutingAgentConfig extends AgentModelConfig {
+  /** Human-facing routing description. Omission inherits the canonical Hive default. */
+  description?: string;
+}
+
 export const BUILT_IN_AGENT_NAMES = [
   'hive-master',
   'architect-planner',
@@ -365,6 +370,16 @@ export const CUSTOM_AGENT_BASES = [
 ] as const;
 
 export type CustomAgentBase = (typeof CUSTOM_AGENT_BASES)[number];
+
+export const DEFAULT_ROUTING_AGENT_DESCRIPTIONS: Record<CustomAgentBase, string> = {
+  'scout-researcher': 'Default for bounded routine research, local code lookup, codebase exploration, and external docs or data retrieval.',
+  'forager-worker': 'Default for ordinary implementation, bug fixes, and refactoring in an isolated worktree.',
+  'plan-reviewer': 'Default for ordinary plan review covering worker readiness, references, dependencies, and executable verification.',
+  'code-reviewer': 'Default for ordinary implementation review covering correctness, tests, risk, scope creep, YAGNI, and dead code.',
+  'simplicity-reviewer': 'Default for ordinary post-implementation simplicity review covering unnecessary abstractions, duplication, dead code, and safe deletion.',
+  'approach-advisor': 'Default for ordinary read-only approach advice on technical direction, architecture, debugging, and tradeoffs.',
+  'vulnerability-reviewer': 'Default for application-security review focused on evidenced attacker-to-impact paths and root-cause triage.',
+};
 
 export const CUSTOM_AGENT_RESERVED_NAMES = [
   ...BUILT_IN_AGENT_NAMES,
@@ -454,21 +469,21 @@ export interface HiveConfig {
     /** Swarm Orchestrator */
     'swarm-orchestrator'?: AgentModelConfig;
     /** Scout Researcher */
-    'scout-researcher'?: AgentModelConfig;
+    'scout-researcher'?: RoutingAgentConfig;
     /** Forager Worker */
-    'forager-worker'?: AgentModelConfig;
+    'forager-worker'?: RoutingAgentConfig;
     /** Hive Helper */
     'hive-helper'?: AgentModelConfig;
     /** Plan Reviewer */
-    'plan-reviewer'?: AgentModelConfig;
+    'plan-reviewer'?: RoutingAgentConfig;
     /** Code Reviewer */
-    'code-reviewer'?: AgentModelConfig;
+    'code-reviewer'?: RoutingAgentConfig;
     /** Simplicity Reviewer */
-    'simplicity-reviewer'?: AgentModelConfig;
+    'simplicity-reviewer'?: RoutingAgentConfig;
     /** Approach Advisor */
-    'approach-advisor'?: AgentModelConfig;
+    'approach-advisor'?: RoutingAgentConfig;
     /** Vulnerability Reviewer */
-    'vulnerability-reviewer'?: AgentModelConfig;
+    'vulnerability-reviewer'?: RoutingAgentConfig;
     /** Hive Builder (ad-hoc executor) */
     'hive-builder'?: AgentModelConfig;
   };

@@ -112,11 +112,11 @@
           "description": "Swarm Orchestrator"
         },
         "scout-researcher": {
-          "$ref": "#/$defs/agentConfig",
+          "$ref": "#/$defs/routingAgentConfig",
           "description": "Scout Researcher"
         },
         "forager-worker": {
-          "$ref": "#/$defs/agentConfig",
+          "$ref": "#/$defs/routingAgentConfig",
           "description": "Forager Worker"
         },
         "hive-helper": {
@@ -124,23 +124,23 @@
           "description": "Hive Helper"
         },
         "plan-reviewer": {
-          "$ref": "#/$defs/agentConfig",
+          "$ref": "#/$defs/routingAgentConfig",
           "description": "Plan Reviewer"
         },
         "code-reviewer": {
-          "$ref": "#/$defs/agentConfig",
+          "$ref": "#/$defs/routingAgentConfig",
           "description": "Code Reviewer"
         },
         "simplicity-reviewer": {
-          "$ref": "#/$defs/agentConfig",
+          "$ref": "#/$defs/routingAgentConfig",
           "description": "Simplicity Reviewer"
         },
         "approach-advisor": {
-          "$ref": "#/$defs/agentConfig",
+          "$ref": "#/$defs/routingAgentConfig",
           "description": "Approach Advisor"
         },
         "vulnerability-reviewer": {
-          "$ref": "#/$defs/agentConfig",
+          "$ref": "#/$defs/routingAgentConfig",
           "description": "Vulnerability Reviewer"
         },
         "hive-builder": {
@@ -328,6 +328,44 @@
         }
       }
     },
+    "routingAgentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-facing routing description. Non-whitespace text is trimmed and used; omit it or use a blank string to inherit the canonical Hive default."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model to use (provider/model-id)"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Legacy field kept for config compatibility. Native skill visibility is controlled by OpenCode skills.paths registration and disableSkills, not by per-agent skills allowlists."
+        },
+        "autoLoadSkills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Native discovered or Hive bundled skill names to advertise in this agent prompt as high-priority skill tool load guidance. Native/user skills are resolved by frontmatter name and take precedence over Hive bundles."
+        },
+        "variant": {
+          "type": "string",
+          "description": "Variant key for model reasoning/effort level (e.g., 'low', 'medium', 'high', 'max'). Must match a key in opencode.json provider.<provider>.models.<model>.variants"
+        }
+      }
+    },
     "customAgentConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -352,6 +390,7 @@
         "description": {
           "type": "string",
           "minLength": 1,
+          "pattern": "\\S",
           "description": "Human-facing description injected into delegation guidance"
         },
         "model": {

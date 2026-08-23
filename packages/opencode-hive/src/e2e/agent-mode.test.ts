@@ -203,7 +203,10 @@ describe("agentMode gating", () => {
     const architectPrompt = opencodeConfig.agent["architect-planner"]?.prompt as string;
     expect(architectPrompt).toContain("## Configured Custom Subagents");
     expect(architectPrompt).toContain("scout-docs");
-    expect(architectPrompt).toContain("forager-ui");
+    expect(architectPrompt).toContain('`plan-reviewer` — kind: default');
+    expect(architectPrompt).toContain('`approach-advisor` — kind: default');
+    expect(architectPrompt).not.toContain('`forager-ui` — kind: custom overlay');
+    expect(architectPrompt).not.toContain('`reviewer-security` — kind: custom overlay');
 
     expect(opencodeConfig.agent["swarm-orchestrator"]?.prompt).toBeUndefined();
     const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
@@ -227,6 +230,10 @@ describe("agentMode gating", () => {
     expect(builderPrompt).toContain("## Configured Custom Subagents");
     expect(builderPrompt).toContain("scout-docs");
     expect(builderPrompt).toContain("forager-ui");
+    expect(builderPrompt).toContain("reviewer-security");
+    expect(builderPrompt).not.toContain('`plan-reviewer` — kind: default');
+    expect(builderPrompt).not.toContain('`approach-advisor` — kind: default');
+    expect(builderPrompt).not.toContain('`vulnerability-reviewer` — kind: default');
 
     expect(opencodeConfig.agent["forager-ui"]?.prompt).toBeUndefined();
     const foragerUiOutput = { system: ["OpenCode provider base prompt"] };
