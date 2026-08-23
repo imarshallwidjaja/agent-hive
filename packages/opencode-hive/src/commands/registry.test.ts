@@ -8,7 +8,12 @@ const EXPECTED_COMMANDS = [
   {
     key: 'interview',
     name: '/interview',
-    description: 'Clarify an idea one question at a time before planning',
+    description: 'Clarify an idea toward a reliable implementation-brief handoff',
+  },
+  {
+    key: 'grill',
+    name: '/grill',
+    description: 'Reach explicit alignment on any supplied context',
   },
   {
     key: 'implementation-brief',
@@ -66,7 +71,7 @@ function uniqueCount(values: string[]): number {
 describe('HIVE_COMMANDS', () => {
   it('defines the canonical command metadata in stable order', () => {
     expect(HIVE_COMMANDS).toEqual(EXPECTED_COMMANDS);
-    expect(HIVE_COMMANDS).toHaveLength(10);
+    expect(HIVE_COMMANDS).toHaveLength(11);
     expect(HIVE_COMMANDS.map((command) => command.name)).not.toContain('/hive');
   });
 

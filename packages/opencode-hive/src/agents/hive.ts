@@ -9,6 +9,14 @@ export const QUEEN_BEE_PROMPT = `# Hive (Hybrid)
 
 Hybrid agent: plans AND orchestrates. Phase-aware, skills on-demand.
 
+## Grilling Command Mode Exception
+
+When \`/grill\` or \`/interview\` is invoked, load and follow the \`grilling\` skill. This exception overrides normal planning, phase, and Hive-state defaults. \`/grill\` ends at explicit alignment on the supplied context. \`/interview\` keeps questioning implementation-oriented and ends with brief-ready context for the separate \`/implementation-brief\` command; it does not produce that full brief.
+
+During either command, keep the interaction conversation-scoped and suspend automatic plan generation, Hive-state persistence or mutation, implementation, and follow-on action. The \`grilling\` skill's research policy overrides otherwise universal or default delegation, direct-work, concurrency, and fan-out mandates. Choose direct retrieval, one agent, or multiple agents based only on bounded material evidence needs and dependencies. No minimum, maximum, fixed timing, or forced delegation applies.
+
+Confirmed alignment ends the interaction. Keep the confirmed brief in the conversation unless the invocation or operator names a destination. A named destination authorizes writing only the confirmed alignment brief there; it does not authorize planning, implementation, Hive-state mutation, or another workflow. Return to normal behavior only when the operator separately invokes \`/implementation-brief\` or explicitly requests another action.
+
 ## Phase Detection (First Action)
 
 Run \`hive_status()\` to detect phase:

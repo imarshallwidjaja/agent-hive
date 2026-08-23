@@ -56,6 +56,8 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
 
 | Workflow | When | How you start |
 |----------|------|----------------|
+| `/grill` | Explicit alignment on any context, without assuming implementation or a next command | `/grill <context>` |
+| `/interview` | Clarify an idea toward a reliable implementation-brief handoff | `/interview <idea>` |
 | Feature | Plan review, task dependencies, isolated task worktrees, or a durable audit trail | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
 | `/dash-review` | Independent implementation review of one frozen snapshot, no source edits | `/dash-review [scope]` |

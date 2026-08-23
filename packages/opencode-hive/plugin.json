@@ -6,7 +6,11 @@
   "commands": [
     {
       "name": "/interview",
-      "description": "Clarify an idea one question at a time before planning"
+      "description": "Clarify an idea toward a reliable implementation-brief handoff"
+    },
+    {
+      "name": "/grill",
+      "description": "Reach explicit alignment on any supplied context"
     },
     {
       "name": "/implementation-brief",

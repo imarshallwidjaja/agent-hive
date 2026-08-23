@@ -76,6 +76,16 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["__hive_dash_review_primary"]).toBeDefined();
     expect(opencodeConfig.agent["__hive_vulnerability_review_primary"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("hive-master");
+
+    const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
+      | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
+      | undefined;
+    const hiveOutput = { system: ["OpenCode provider base prompt"] };
+    await systemTransform?.({ sessionID: "sess_grill_unified", agent: "hive-master" }, hiveOutput);
+    expect(hiveOutput.system[0]).toContain('## Grilling Command Mode Exception');
+    expect(hiveOutput.system[0]).toContain('When `/grill` or `/interview` is invoked');
+    expect(hiveOutput.system[0]).toContain("The `grilling` skill's research policy overrides otherwise universal or default delegation, direct-work, concurrency, and fan-out mandates");
+    expect(hiveOutput.system[0]).toContain('separately invokes `/implementation-brief` or explicitly requests another action');
   });
 
   it("registers dedicated agents in dedicated mode", async () => {
@@ -115,6 +125,10 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["__hive_dash_review_primary"]).toBeDefined();
     expect(opencodeConfig.agent["__hive_vulnerability_review_primary"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("architect-planner");
+    expect(opencodeConfig.agent["architect-planner"].prompt).toContain('## Grilling Command Mode Exception');
+    expect(opencodeConfig.agent["architect-planner"].prompt).toContain('When `/grill` or `/interview` is invoked');
+    expect(opencodeConfig.agent["architect-planner"].prompt).toContain("The `grilling` skill's research policy overrides otherwise universal or default delegation, direct-work, concurrency, and fan-out mandates");
+    expect(opencodeConfig.agent["architect-planner"].prompt).toContain('separately invokes `/implementation-brief` or explicitly requests another action');
   });
 
   it('does not render dedicated-mode route prose in command output', async () => {

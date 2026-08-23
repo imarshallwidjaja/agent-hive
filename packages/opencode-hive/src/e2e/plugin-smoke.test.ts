@@ -718,6 +718,13 @@ Do it
     }
 
     expect(configCommands.interview.template).toContain('$ARGUMENTS');
+    expect(configCommands.grill.template).toContain('$ARGUMENTS');
+    expect(configCommands.grill.template).toContain('Load the `grilling` skill');
+    for (const command of ['interview', 'grill'] as const) {
+      expect(configCommands[command].template).toContain('settled operator items');
+      expect(configCommands[command].template).toContain('confirmed alignment ends the interaction');
+      expect(configCommands[command].template).toContain('named destination authorizes writing only the confirmed alignment brief there');
+    }
     expect(configCommands.council.template).toContain('Runtime arguments: $ARGUMENTS');
     expect(configCommands.council.template).toContain('Only --group <group> selects a non-default group');
     expect(configCommands.council.template).toContain('## Council Result');
@@ -881,7 +888,8 @@ Do it
     const configCommands = opencodeConfig.command as Record<string, { description?: string; template?: string }>;
     expect(configCommands.hive).toEqual(existingCommand);
     expect(configCommands['user-check']).toEqual(existingCommand);
-    expect(configCommands.interview.description).toBe('Clarify an idea one question at a time before planning');
+    expect(configCommands.interview.description).toBe('Clarify an idea toward a reliable implementation-brief handoff');
+    expect(configCommands.grill.description).toBe('Reach explicit alignment on any supplied context');
   });
 
   it('sanitizes configured council groups in OpenCode command templates', async () => {

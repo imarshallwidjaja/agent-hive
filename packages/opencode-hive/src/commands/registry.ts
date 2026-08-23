@@ -4,7 +4,12 @@ export const HIVE_COMMANDS = [
   {
     key: 'interview',
     name: '/interview',
-    description: 'Clarify an idea one question at a time before planning',
+    description: 'Clarify an idea toward a reliable implementation-brief handoff',
+  },
+  {
+    key: 'grill',
+    name: '/grill',
+    description: 'Reach explicit alignment on any supplied context',
   },
   {
     key: 'implementation-brief',

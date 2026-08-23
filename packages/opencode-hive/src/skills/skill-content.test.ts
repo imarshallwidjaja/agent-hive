@@ -9,6 +9,39 @@ function expectInSessionDesignDocumentationPolicy(content: string) {
 }
 
 describe('skill content', () => {
+  it('bundles grilling as a general-purpose dependency-aware alignment engine', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'grilling');
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toMatch(/^Use when /);
+    expect(skill!.template).toContain('dependency-aware frontier');
+    expect(skill!.template).toContain('exactly one material operator question per turn');
+    expect(skill!.template).toContain('operator decisions, operator preferences, assumptions');
+    expect(skill!.template).not.toContain('operator decisions and preferences');
+    expect(skill!.template).toContain('discoverable facts');
+    expect(skill!.template).toContain('validated');
+    expect(skill!.template).toContain('pending');
+    expect(skill!.template).toContain('failed');
+    expect(skill!.template).toContain('assumed');
+    expect(skill!.template).toContain('wrap up');
+    expect(skill!.template).toContain('three-way alignment confirmation');
+    expect(skill!.template).toContain('No fixed question cap');
+    expect(skill!.template).toContain('conversation-scoped');
+    expect(skill!.template).toContain('If research is unavailable or fails');
+    expect(skill!.template).toContain('keep the fact unresolved');
+    expect(skill!.template).toContain('carry it as an explicit assumption');
+    expect(skill!.template).toContain('Never guess');
+    expect(skill!.template).toContain('settled operator items');
+    expect(skill!.template).toContain('unresolved material items');
+    expect(skill!.template).toContain('counts for facts marked');
+    expect(skill!.template).toContain('- operator decisions\n- operator preferences');
+    expect(skill!.template).toContain('Confirmed alignment ends the interaction');
+    expect(skill!.template).toContain('requires a separate operator request');
+    expect(skill!.template).toContain('A named destination authorizes writing only the confirmed alignment brief there');
+    expect(skill!.template).toContain('No minimum, maximum, fixed research timing, or forced delegation applies');
+    expect(skill!.template).not.toMatch(/After 2-3|mandatory fan-out|minimum lanes|maximum lanes/i);
+  });
+
   it('bundles adversarial-review with explicit read-only multi-pass constraints', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review');
 

@@ -1,83 +1,43 @@
 import type { HiveCommandKey } from './registry.js';
 
+const GRILLING_FALLBACK_CONTRACT = `If skill loading is unavailable, use this compact fallback contract: track material unresolved items in dependency order without exposing the internal frontier; ask exactly one material operator question per turn; classify operator decisions, operator preferences, assumptions, and discoverable facts as distinct categories; research discoverable facts through direct retrieval, one agent, or multiple agents based only on bounded material evidence needs and dependencies, with no minimum, maximum, fixed timing, or forced delegation; mark each fact \`validated\`, \`pending\`, \`failed\`, or \`assumed\`; show compact running progress with a summary and counts for settled operator items and unresolved material items, plus counts for facts marked with each status; recompute the unresolved items after every answer or evidence result; accept revised answers, surface contradictions, and keep skipped material items unresolved unless they become immaterial; on \`wrap up\`, stop expanding and disclose unresolved or skipped material items; when background research is unavailable, use direct or blocking research; keep unavailable or failed research disclosed and unresolved, or carry it as an explicit assumption; never guess. End with explicit three-way confirmation: aligned, aligned with named corrections, or not aligned and continue with the most material unresolved question; confirmed alignment ends the interaction, and planning, implementation, or other follow-on work requires a separate operator request; a named destination authorizes writing only the confirmed alignment brief there.`;
+
 export const COMMAND_BEHAVIOR: Record<HiveCommandKey, string> = {
-  interview: `Conduct a focused interview to help the operator clarify an idea, make decisions, and surface the right next steps.
+  interview: `Conduct an implementation-oriented interview using the shared \`grilling\` interaction engine.
 
-Use the operator-provided topic, prompt, or context from runtime arguments when provided.
+Load the \`grilling\` skill before asking questions. ${GRILLING_FALLBACK_CONTRACT}
 
-Your job is to collect the decisions, constraints, assumptions, goals, and unresolved questions that matter for moving the work forward.
+Use the operator-provided idea and current session context. Prioritize collecting the real problem, users, outcomes, success criteria, scope, non-goals, constraints, domain rules, edge cases, alternatives, and parity, migration, or compatibility concerns. When useful, offer 2-4 concise options with a recommendation first.
 
-Optimize for a strong handoff into \`/implementation-brief\` when the discussion is heading toward implementation planning.
-Do not force the interview into that workflow when the operator is still brainstorming, exploring options, or shaping the problem.
+Do not jump into implementation, write code, create plans, mutate Hive state, or start follow-on work. Verify repository facts or mark them as pending.
 
-Do not jump into implementation.
-Do not write code.
-Do not create Hive plans or mutate Hive state during the interview.
-Do not invent repository facts, file paths, or code references that have not already been established in this session.
+This endpoint clarifies the idea toward a reliable \`/implementation-brief\` handoff. It produces brief-ready context for the separate \`/implementation-brief\` command, not the full implementation brief. Conclude once the material implementation frontier is covered; do not use a fixed question count. Keep a short running summary while the interview continues. The operator may remain brainstorming, exploring options, or use \`wrap up\`; do not force premature planning.
 
-Interview rules:
-
-- Ask exactly one question at a time.
-- Prefer the \`question\` tool for each turn when it helps the operator answer cleanly.
-- Focus on the highest-ambiguity, highest-risk, and highest-value questions first.
-- When using the \`question\` tool, prefer 2-4 concise options with useful descriptions, put your recommended option first when there is a sensible default, and leave custom input available when the options are incomplete.
-- Base each next question on what you just learned. Skip questions whose answers are already obvious.
-- Keep the interview tight and decision-oriented. Usually 4-7 questions is enough. Do not ask more than 8 questions unless the operator explicitly wants a deeper interview.
-- After each answer, reply with a short running summary covering what is now decided, what constraints are clear, and what still needs clarification.
-- If the operator supplied goals or requirements in runtime arguments, treat them as steering context for the interview rather than repeating them mechanically.
-- If there are no more useful high-value questions, conclude the interview immediately.
-
-Prioritize collecting:
-
-- the real problem being solved
-- the shape of the idea if the operator is still brainstorming
-- who the change is for and how it will be used
-- the desired outcome and success criteria
-- hard constraints, non-goals, and compatibility expectations
-- scope boundaries for the next implementation effort
-- alternative directions or tradeoffs when the right path is still unclear
-- important domain rules, workflows, or edge cases
-- unknowns that must be validated against the live codebase before implementation planning
-
-Use the current session as source of truth for any already-established technical context.
-If the session already contains relevant repo findings, capture them accurately.
-If it does not, clearly mark codebase details as "needs validation" rather than guessing.
-
-Stop the interview when you have enough information to produce a useful clarified brief and a sensible next step.
-
-At the end, output all of the following:
+At the end, output:
 
 ## Interview Summary
 
-- problem
-- target outcome
-- scope
-- non-goals
-- constraints
-- decisions made
-- open questions
+- problem, target outcome, scope, and non-goals
+- operator decisions
+- operator preferences
+- constraints, established facts with status, and assumptions
+- disagreements and open questions
 
 ## Recommended Next Step
 
-Choose the most sensible next step based on the interview outcome.
-
-- If the interview produced enough clarity for planning, recommend \`/implementation-brief\` and explain why.
-- If the operator is still deciding direction, recommend continuing brainstorming or narrowing the problem first.
-- If important repo or product facts are still unknown, say that validation or exploration is needed before implementation planning.
+Recommend \`/implementation-brief\` only when enough context exists for a reliable implementation brief. Otherwise recommend continued brainstorming, validation, or narrowing.
 
 ## Context For \`/implementation-brief\`
 
-When implementation planning is the likely next step, write a compact handoff block that an operator can keep in the session or pass as extra context. It must include:
+When implementation planning is appropriate, include the problem, high-value scope, confirmed decisions, preferences, assumptions needing validation, technical unknowns, parity, migration, or compatibility concerns, and expected planning outcome. Otherwise say plainly that this handoff is not ready. After alignment is confirmed, stop; producing the implementation brief or taking any other recommended action requires a separate operator request.`,
 
-- problem being solved
-- exact high-value scope to target next
-- confirmed decisions from the interview
-- assumptions that still need codebase validation
-- repo questions and technical unknowns the planning pass must resolve
-- parity, migration, or compatibility concerns if any were identified
-- expected implementation-planning outcome
+  grill: `For \`/grill\`, use the shared \`grilling\` interaction engine to reach explicit operator-agent alignment on any supplied context.
 
-If implementation planning is not yet the right next step, say so plainly and do not fabricate this handoff block.`,
+Load the \`grilling\` skill before asking questions. ${GRILLING_FALLBACK_CONTRACT}
+
+This command is general-purpose. Do not assume software, implementation, Hive features, plans, or a next command. Use material coverage rather than a fixed question cap. Stop when no unresolved item could materially change shared understanding. Honor \`wrap up\` by preparing alignment from current evidence and clearly retaining unresolved items.
+
+Finish with an alignment brief covering topic and interpretation, operator decisions, operator preferences, established facts with provenance and status, assumptions, constraints, scope, disagreements, and open questions. Then require the shared skill's explicit three-way alignment confirmation. Confirmed alignment ends the interaction. Keep the confirmed brief in the conversation unless the operator names a destination; a named destination authorizes writing only the confirmed alignment brief there. Planning, implementation, or other follow-on work requires a separate operator request.`,
 
   'implementation-brief': `Turn the current exploration in this session into an implementation brief that the operator can pass to \`/hive-plan\`.
 

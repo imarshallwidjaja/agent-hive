@@ -61,7 +61,8 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 
 | Command | Purpose |
 |---------|---------|
-| `/interview` | Clarify an idea one question at a time before planning. |
+| `/interview` | Clarify an idea toward a reliable implementation-brief handoff. |
+| `/grill <context>` | Reach explicit alignment on any context through material questions and researched facts. |
 | `/implementation-brief` | Produce a copy-paste-ready brief for a later Hive plan. |
 | `/hive-plan` | Create or update the Hive feature plan from a spec or brief. |
 | `/approve-sync-plan` | Approve the active plan and sync executable tasks. |
@@ -80,13 +81,15 @@ Routing depends on `agentMode`:
 
 | Command set | Unified mode | Dedicated mode |
 |-------------|--------------|----------------|
-| `/interview`, `/implementation-brief`, `/hive-plan`, `/council-directive`, `/council` | Use `hive-master`. | Route or delegate to `architect-planner`. |
+| `/interview`, `/grill`, `/implementation-brief`, `/hive-plan`, `/council-directive`, `/council` | Use `hive-master`. | Route or delegate to `architect-planner`. |
 | `/approve-sync-plan`, `/start-execution` | Use `hive-master`. | Route or delegate to `swarm-orchestrator`. |
 | `/dash-review` | Bound by `config.command` to a private review primary. | Bound by `config.command` to a private review primary. |
 | `/vuln-review` | Bound by `config.command` to a private vulnerability-review primary. | Bound by `config.command` to a private vulnerability-review primary. |
 | `/compact-summary` | Use `hive-master`. | Route or delegate to `scout-researcher`. |
 
 Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
+
+Use `/interview <idea>` to clarify an idea toward a reliable implementation-brief handoff. It keeps questions implementation-oriented and prepares context for the separate `/implementation-brief` command rather than producing that full brief. Use `/grill <context>` when the endpoint is explicit shared understanding of any topic. Both ask one material question per turn and do not automatically create a plan, implement, or start follow-on work; confirmed alignment ends the interaction, and later action requires a separate operator request. A named destination authorizes writing only the confirmed alignment brief there. Discoverable facts are researched without forced fan-out. Unavailable or failed research is disclosed as unresolved or an explicit assumption; it is never guessed.
 
 Use `/dash-review` when you want an independent implementation review of one frozen snapshot. It does not edit source, create Hive tasks, or start a fix; give any later fix instruction to the feature orchestrator or `hive-builder`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#dash-review). The rest of this section is the command contract.
 

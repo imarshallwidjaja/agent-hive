@@ -270,7 +270,7 @@ describe('hive command renderers', () => {
       backgroundGuidance: { available: true },
     });
 
-    for (const command of ['interview', 'hive-plan', 'start-execution', 'council'] as const) {
+    for (const command of ['interview', 'grill', 'hive-plan', 'start-execution', 'council'] as const) {
       const output = render(command, 'Investigate command routing', context);
 
       expect(output).toContain('Background:');
@@ -286,19 +286,20 @@ describe('hive command renderers', () => {
     }
   });
 
-  it('adds interview-specific gate-open timing and guardrail guidance', () => {
+  it('gives grill commands outcome-triggered gate-open research guidance without fixed fan-out policy', () => {
     const context = createContext({
       backgroundGuidance: { available: true },
     });
 
-    const output = render('interview', 'shape the release flow', context);
+    for (const command of ['interview', 'grill'] as const) {
+      const output = render(command, 'shape the release flow', context);
 
-    expect(output).toContain('After 2-3 clarifying questions');
-    expect(output).toContain('concrete, self-contained validation questions');
-    expect(output).toContain('will not be contradicted by remaining open interview questions');
-    expect(output).toContain('Do not report background results mid-interview');
-    expect(output).toContain('natural pause');
-    expect(output).toContain('Distinguish validated facts from pending assumptions');
+      expect(output).toContain('bounded material research questions');
+      expect(output).toContain('operator decisions');
+      expect(output).toContain('pending evidence');
+      expect(output).not.toMatch(/After 2-3|\b\d+\s*(?:-|to)\s*\d+\s+(?:questions|lanes)|up to \d+ (?:questions|lanes)/i);
+      expect(output).not.toContain('mandatory fan-out');
+    }
   });
 
   it('does not render dedicated-mode route prose', () => {
@@ -335,17 +336,87 @@ describe('hive command renderers', () => {
 
   it('anchors interview behavior: one question, running summary, implementation-brief handoff', () => {
     const output = render('interview', 'new feature idea');
-    expect(output).toContain('Ask exactly one question at a time');
+    const body = output.split('\n---\n')[1];
+    expect(output).toContain('Load the `grilling` skill');
+    expect(output).toContain('exactly one material operator question per turn');
     expect(output).toContain('running summary');
     expect(output).toContain('## Interview Summary');
     expect(output).toContain('/implementation-brief');
     expect(output).toMatch(/highest-ambiguity|highest-risk|highest-value/);
     expect(output).toContain('Prioritize collecting');
-    expect(output).toContain('needs validation');
+    expect(output).toContain('mark them as pending');
     expect(output).toContain('brainstorming, exploring options');
     expect(output).toContain('2-4 concise options');
     expect(output).toContain('## Context For `/implementation-brief`');
     expect(output).toContain('parity, migration, or compatibility concerns');
+    expect(output).toContain('brief-ready context for the separate `/implementation-brief` command');
+    expect(output).toContain('not the full implementation brief');
+    expect(output).toContain('except to write the confirmed alignment brief to a named destination');
+    expect(output).not.toContain('Do not write code, edit files, create plans');
+    expect(body).toContain('- operator decisions');
+    expect(body).toContain('- operator preferences');
+    expect(output).not.toContain('The specialized endpoint is enough context for a reliable implementation brief');
+    expect(output).not.toMatch(/Usually 4-7|more than 8 questions/);
+
+    const noArgumentOutput = render('interview', '');
+    expect(noArgumentOutput).toContain('Topic: clarify the operator idea for an implementation-brief handoff');
+    expect(noArgumentOutput).not.toContain('clarify the operator idea before planning');
+  });
+
+  it('renders one complete skill-unavailable grilling fallback for both commands', () => {
+    const fallbackFor = (command: 'interview' | 'grill'): string => {
+      const output = render(command, 'shape the release flow');
+      const fallback = output.match(/If skill loading is unavailable,[^\n]+/)?.[0];
+      expect(fallback, command).toBeDefined();
+      return fallback!;
+    };
+
+    const interviewFallback = fallbackFor('interview');
+    const grillFallback = fallbackFor('grill');
+    expect(interviewFallback).toBe(grillFallback);
+
+    for (const phrase of [
+      'material unresolved items in dependency order',
+      'exactly one material operator question per turn',
+      'operator decisions, operator preferences, assumptions, and discoverable facts',
+      'direct retrieval, one agent, or multiple agents',
+      '`validated`, `pending`, `failed`, or `assumed`',
+      'settled operator items',
+      'unresolved material items',
+      'counts for facts marked',
+      'after every answer or evidence result',
+      'accept revised answers',
+      'surface contradictions',
+      'skipped material items',
+      '`wrap up`',
+      'direct or blocking research',
+      'explicit three-way confirmation',
+      'confirmed alignment ends the interaction',
+      'separate operator request',
+      'named destination authorizes writing only the confirmed alignment brief there',
+      'never guess',
+    ]) {
+      expect(interviewFallback).toContain(phrase);
+    }
+  });
+
+  it('anchors grill behavior: general-purpose material coverage and explicit alignment', () => {
+    const output = render('grill', 'choose a neighborhood for a community event');
+
+    expect(output).toContain('Load the `grilling` skill');
+    expect(output).toContain('any supplied context');
+    expect(output).toContain('exactly one material operator question per turn');
+    expect(output).toContain('materially change shared understanding');
+    expect(output).toContain('wrap up');
+    expect(output).toContain('three-way alignment confirmation');
+    expect(output).toContain('established facts with provenance');
+    expect(output).toContain('operator decisions, operator preferences');
+    expect(output).toContain('disagreements');
+    expect(output).toContain('open questions');
+    expect(output).toContain('conversation');
+    expect(output).not.toContain('/implementation-brief');
+    expect(output).not.toContain('Hive plan');
+    expect(output).not.toContain('write code');
   });
 
   it('anchors implementation-brief: revalidate repo, /hive-plan handoff, and separate body/wrapper contracts', () => {

@@ -114,6 +114,35 @@ describe('Primary agent subagent concurrency guidance', () => {
   });
 });
 
+describe('/grill and /interview primary-agent mode exception', () => {
+  const routedPrimaryPrompts = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Architect', ARCHITECT_BEE_PROMPT],
+  ] as const;
+
+  it('keeps both grilling commands conversation-scoped until separately authorized action', () => {
+    for (const [name, prompt] of routedPrimaryPrompts) {
+      expect(prompt, name).toContain('## Grilling Command Mode Exception');
+      expect(prompt, name).toContain('When `/grill` or `/interview` is invoked');
+      expect(prompt, name).toContain('`/grill` ends at explicit alignment');
+      expect(prompt, name).toContain('`/interview` keeps questioning implementation-oriented');
+      expect(prompt, name).toContain('context for the separate `/implementation-brief`');
+      expect(prompt, name).toContain('suspend automatic plan generation, Hive-state persistence or mutation, implementation, and follow-on action');
+      expect(prompt, name).toContain('Confirmed alignment ends the interaction');
+      expect(prompt, name).toContain('separately invokes `/implementation-brief` or explicitly requests another action');
+      expect(prompt, name).toContain('A named destination authorizes writing only the confirmed alignment brief there');
+    }
+  });
+
+  it('lets the grilling research policy override normal delegation and fan-out mandates', () => {
+    for (const [name, prompt] of routedPrimaryPrompts) {
+      expect(prompt, name).toContain("The `grilling` skill's research policy overrides otherwise universal or default delegation, direct-work, concurrency, and fan-out mandates");
+      expect(prompt, name).toContain('Choose direct retrieval, one agent, or multiple agents based only on bounded material evidence needs and dependencies');
+      expect(prompt, name).toContain('No minimum, maximum, fixed timing, or forced delegation applies');
+    }
+  });
+});
+
 describe('Fresh-session delegation contract', () => {
   const primaryPrompts = [
     ['Hive', QUEEN_BEE_PROMPT],
@@ -1091,12 +1120,29 @@ describe('README.md documentation', () => {
   const readmeContent = readFileSync(README_PATH, 'utf-8');
   const ROOT_README_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'README.md');
   const rootReadmeContent = readFileSync(ROOT_README_PATH, 'utf-8');
+  const OPERATOR_GUIDE_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'docs', 'OPERATOR-GUIDE.md');
+  const operatorGuideContent = readFileSync(OPERATOR_GUIDE_PATH, 'utf-8');
   const HIVE_TOOLS_PATH = path.resolve(import.meta.dir, '..', '..', 'docs', 'HIVE-TOOLS.md');
   const hiveToolsContent = readFileSync(HIVE_TOOLS_PATH, 'utf-8');
   const VSCODE_README_PATH = path.resolve(import.meta.dir, '..', '..', '..', 'vscode-hive', 'README.md');
   const vscodeReadmeContent = readFileSync(VSCODE_README_PATH, 'utf-8');
   const PHILOSOPHY_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'PHILOSOPHY.md');
   const philosophyContent = readFileSync(PHILOSOPHY_PATH, 'utf-8');
+
+  describe('grilling command docs alignment', () => {
+    it('documents the separate-action, destination, and unavailable-research boundaries', () => {
+      for (const content of [readmeContent, operatorGuideContent]) {
+        expect(content).toContain('do not automatically create a plan, implement, or start follow-on work');
+        expect(content).toContain('a separate operator request');
+        expect(content).toContain('A named destination authorizes writing only the confirmed alignment brief there');
+        expect(content).toContain('Unavailable or failed research is disclosed as unresolved or an explicit assumption');
+        expect(content).toContain('never guessed');
+      }
+
+      expect(rootReadmeContent).toContain('without assuming implementation or a next command');
+      expect(rootReadmeContent).toContain('implementation-brief handoff');
+    });
+  });
 
   describe('delegation planning alignment', () => {
     it('contains the heading "### Planning-mode delegation"', () => {

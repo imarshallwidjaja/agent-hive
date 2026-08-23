@@ -62,12 +62,16 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 
 | Workflow | Use it when | Start |
 |----------|-------------|-------|
+| `/grill` | You want explicit shared understanding of any supplied context without assuming a software workflow | `/grill <context>` |
+| `/interview` | Clarify an idea toward a reliable implementation-brief handoff | `/interview <idea>` |
 | Feature | You need a reviewed plan, task dependencies, isolated task worktrees, or a durable execution record | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | The work is bounded, is not a feature, and should not create feature or task records | Talk to `hive-builder` (dedicated) or `hive-master` (unified) |
 | `/dash-review` | You want an independent implementation review of one frozen snapshot, with no source edits | `/dash-review [scope]` |
 | `/vuln-review` | You are authorized to assess the source and want a bounded static security review | `/vuln-review [intent] [flags]` |
 
 `/council` is a lighter read-only advice run. It does not replace dash-review or vuln-review.
+
+`/grill` and `/interview` share the same one-question-at-a-time interaction engine. `/grill` ends at explicit alignment on the supplied context. `/interview` keeps questions implementation-oriented and prepares context for the separate `/implementation-brief` command rather than producing that full brief. They do not automatically create a plan, implement, or start follow-on work; confirmed alignment ends the interaction, and later action requires a separate operator request. A named destination authorizes writing only the confirmed alignment brief there. Neither command uses a fixed question count or forced research fan-out. Unavailable or failed research is disclosed as unresolved or an explicit assumption; it is never guessed.
 
 ## Feature lifecycle
 

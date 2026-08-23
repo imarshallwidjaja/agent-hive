@@ -394,24 +394,46 @@ function renderUsage(context: HiveCommandContext, error: string): string {
 export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
   interview(args, context) {
     return renderHybridCommand('interview', context, {
-      details: [`Topic: ${topicOrCurrent(args, 'clarify the operator idea before planning')}`],
+      details: [`Topic: ${topicOrCurrent(args, 'clarify the operator idea for an implementation-brief handoff')}`],
       doItems: [
-        'Ask exactly one question at a time and wait for the answer before continuing.',
+        'Load the `grilling` skill and use its shared interaction engine.',
+        'Ask exactly one material operator question per turn and wait for the answer before continuing.',
         'Choose the highest-ambiguity, highest-risk, or highest-value missing decision first.',
-        'After each answer, include a short running summary of decisions, constraints, and open questions.',
+        'After each answer, show compact progress with settled operator decisions and operator preferences listed separately, unresolved material items, and fact-status counts.',
       ],
       doNotItems: [
-        'Do not write code, edit files, create plans, or mutate Hive state during the interview.',
+        'Do not write code, create plans, or mutate Hive state during the interview; do not edit files except to write the confirmed alignment brief to a named destination.',
         'Do not invent repository facts; verify them or label them as assumptions.',
+        'Do not automatically produce an implementation brief or start follow-on work after alignment.',
       ],
       backgroundItems: backgroundItems(context, [
-        'After 2-3 clarifying questions, delegate concrete, self-contained validation questions to independent background lanes when they can run while the interview continues.',
-        'Only delegate when the validation target is bounded and will not be contradicted by remaining open interview questions.',
-        'Do not report background results mid-interview unless they resolve the operator\'s current question or the interview reaches a natural pause.',
-        'Distinguish validated facts from pending assumptions until those lanes finish.',
+        'Use direct retrieval, one agent, or multiple agents, including independent background lanes when useful, only for bounded material research questions and based on their evidence needs and dependencies.',
+        'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
       ]),
       outputItems: [
         '## Interview Summary, ## Recommended Next Step, and ## Context For /implementation-brief when appropriate.',
+      ],
+    });
+  },
+
+  grill(args, context) {
+    return renderHybridCommand('grill', context, {
+      details: [`Context: ${topicOrCurrent(args, 'the context supplied in this conversation')}`],
+      doItems: [
+        'Load the `grilling` skill and use its shared interaction engine.',
+        'Ask exactly one material operator question per turn until no unresolved item could materially change shared understanding.',
+        'End with the skill\'s explicit three-way alignment confirmation.',
+      ],
+      doNotItems: [
+        'Do not assume the context concerns software, implementation, a Hive feature, a plan, or a next command.',
+        'Do not persist grilling state or expose the internal dependency frontier.',
+      ],
+      backgroundItems: backgroundItems(context, [
+        'Use direct retrieval, one agent, or multiple agents, including independent background lanes when useful, only for bounded material research questions and based on their evidence needs and dependencies.',
+        'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
+      ]),
+      outputItems: [
+        'A conversation-scoped alignment brief covering interpretation, operator decisions, operator preferences, established facts with provenance and status, assumptions, constraints, scope, disagreements, and open questions, followed by three-way alignment confirmation.',
       ],
     });
   },
