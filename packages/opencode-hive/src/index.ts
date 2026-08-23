@@ -4344,8 +4344,8 @@ NEXT: Ask your first clarifying question about this feature.`;
         ? ''
         : `\n\n## Configured Custom Subagents\nCustom subagents are scoped specialists, not automatic model upgrades.
 For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.
-Choose a custom subagent when its description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names it.
-Use the built-in base agent when no configured custom description is a closer task fit.
+Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or review/approach risk lens; use the built-in base agent when no configured custom subagent is a closer fit.
+Require explicit operator naming only when the selected custom subagent's own description explicitly requires it.
 Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.\n${Object.entries(customAgentConfigs)
           .sort(([left], [right]) => left.localeCompare(right))
           .map(([name, config]) => `- \`${name}\` — derived from \`${config.baseAgent}\`; ${config.description}`)

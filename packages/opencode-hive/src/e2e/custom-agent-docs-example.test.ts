@@ -113,8 +113,9 @@ describe('e2e: published custom-agent docs example', () => {
     expect(architectPrompt).toContain(
       'For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.'
     );
-    expect(architectPrompt).toContain("Choose a custom subagent when its description matches the task's domain, workflow, artifact type, or review/approach risk lens, or when the operator explicitly names it.");
-    expect(architectPrompt).toContain('Use the built-in base agent when no configured custom description is a closer task fit.');
+    expect(architectPrompt).toContain("Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or review/approach risk lens; use the built-in base agent when no configured custom subagent is a closer fit.");
+    expect(architectPrompt).toContain("Require explicit operator naming only when the selected custom subagent's own description explicitly requires it.");
+    expect(architectPrompt).not.toContain('or when the operator explicitly names it');
     expect(architectPrompt).toContain('Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.');
     expect(architectPrompt).not.toContain('exception routes, not capability upgrades');
     expect(architectPrompt).toContain('`scout-docs`');
@@ -128,6 +129,12 @@ describe('e2e: published custom-agent docs example', () => {
     await systemTransform?.({ sessionID: 'sess_docs_swarm', agent: 'swarm-orchestrator' }, swarmOutput);
     const swarmPrompt = swarmOutput.system[0];
     expect(swarmPrompt).toContain('## Configured Custom Subagents');
+    expect(swarmPrompt).toContain('Custom subagents are scoped specialists, not automatic model upgrades.');
+    expect(swarmPrompt).toContain('Require explicit operator naming only when the selected custom subagent\'s own description explicitly requires it.');
+    expect(swarmPrompt).not.toContain('or when the operator explicitly names it');
+    expect(swarmPrompt).toContain("Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or review/approach risk lens; use the built-in base agent when no configured custom subagent is a closer fit.");
+    expect(swarmPrompt).toContain('Do not choose a custom subagent only because the task is important, complex, or quality-sensitive.');
+    expect(swarmPrompt).not.toContain('exception routes, not capability upgrades');
     expect(swarmPrompt).toContain('`scout-docs`');
     expect(swarmPrompt).toContain('`forager-ui`');
     expect(swarmPrompt).toContain('`reviewer-security`');
