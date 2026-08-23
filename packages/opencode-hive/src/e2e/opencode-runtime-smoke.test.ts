@@ -136,6 +136,7 @@ type ChatCompletionRequestMessage = {
 
 type ChatCompletionRequestBody = {
   model?: unknown;
+  stream?: unknown;
   tools?: unknown;
   messages?: unknown;
 };
@@ -193,54 +194,78 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
         : [];
       const hasToolResult = messages.some((message) => message.role === 'tool' && typeof message.tool_call_id === 'string');
 
-      res.writeHead(200, { 'content-type': 'application/json' });
-
-      if (!hasToolResult) {
-        res.end(jsonResponse({
-          id: 'chatcmpl-runtime-tool',
-          object: 'chat.completion',
-          created: 1,
-          model: RUNTIME_MODEL_ID,
-          choices: [
-            {
-              index: 0,
-              finish_reason: 'tool_calls',
-              message: {
-                role: 'assistant',
-                content: '',
-                tool_calls: [
-                  {
-                    id: 'call_runtime_feature_create',
-                    type: 'function',
-                    function: {
-                      name: 'hive_feature_create',
-                      arguments: JSON.stringify({ name: 'rt-feature' }),
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-        }));
+      if (body.stream !== true) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(jsonResponse({ error: 'streaming required' }));
         return;
       }
 
-      res.end(jsonResponse({
-        id: 'chatcmpl-runtime-final',
-        object: 'chat.completion',
-        created: 2,
-        model: RUNTIME_MODEL_ID,
-        choices: [
-          {
+      res.writeHead(200, {
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        'content-type': 'text/event-stream',
+      });
+
+      if (!hasToolResult) {
+        res.end([
+          `data: ${jsonResponse({
+            id: 'chatcmpl-runtime-tool',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: RUNTIME_MODEL_ID,
+            choices: [{
+              index: 0,
+              delta: {
+                role: 'assistant',
+                tool_calls: [{
+                  index: 0,
+                  id: 'call_runtime_feature_create',
+                  type: 'function',
+                  function: {
+                    name: 'hive_feature_create',
+                    arguments: JSON.stringify({ name: 'rt-feature' }),
+                  },
+                }],
+              },
+              finish_reason: null,
+            }],
+          })}\n\n`,
+          `data: ${jsonResponse({
+            id: 'chatcmpl-runtime-tool',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: RUNTIME_MODEL_ID,
+            choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+          })}\n\n`,
+          'data: [DONE]\n\n',
+        ].join(''));
+        return;
+      }
+
+      res.end([
+        `data: ${jsonResponse({
+          id: 'chatcmpl-runtime-final',
+          object: 'chat.completion.chunk',
+          created: 2,
+          model: RUNTIME_MODEL_ID,
+          choices: [{
             index: 0,
-            finish_reason: 'stop',
-            message: {
+            delta: {
               role: 'assistant',
               content: 'rt-feature created. Planning mode is active.',
             },
-          },
-        ],
-      }));
+            finish_reason: null,
+          }],
+        })}\n\n`,
+        `data: ${jsonResponse({
+          id: 'chatcmpl-runtime-final',
+          object: 'chat.completion.chunk',
+          created: 2,
+          model: RUNTIME_MODEL_ID,
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join(''));
       return;
     }
 
@@ -464,10 +489,11 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
       runtimeSuccess.promptCompleted = true;
 
       const providerRequests = providerServer.getRequests();
-      expect(providerServer.getRequestCount()).toBe(1);
-      expect(providerRequests).toHaveLength(1);
+      expect(providerServer.getRequestCount()).toBe(2);
+      expect(providerRequests).toHaveLength(2);
       expect(providerRequests[0]).toMatchObject({
         model: RUNTIME_MODEL_ID,
+        stream: true,
         tools: expect.arrayContaining([
           expect.objectContaining({
             type: 'function',
@@ -490,6 +516,32 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
           expect.objectContaining({
             role: 'user',
             content: 'Create a Hive feature named rt-feature.',
+          }),
+        ]),
+      );
+
+      const secondRequestMessages = Array.isArray(providerRequests[1]?.messages)
+        ? (providerRequests[1].messages as ChatCompletionRequestMessage[])
+        : [];
+      expect(secondRequestMessages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            tool_calls: expect.arrayContaining([
+              expect.objectContaining({
+                id: 'call_runtime_feature_create',
+                type: 'function',
+                function: expect.objectContaining({
+                  name: 'hive_feature_create',
+                  arguments: JSON.stringify({ name: 'rt-feature' }),
+                }),
+              }),
+            ]),
+          }),
+          expect.objectContaining({
+            role: 'tool',
+            tool_call_id: 'call_runtime_feature_create',
+            content: expect.any(String),
           }),
         ]),
       );
