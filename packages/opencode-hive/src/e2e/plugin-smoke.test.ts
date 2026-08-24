@@ -814,12 +814,17 @@ Do it
       expect(template).not.toContain('$ARGUMENTS');
       expect(template).not.toContain(packetMarker);
 
-      for (const [name, rawArguments, descriptor, reviewInstructions, descriptorSource] of [
-        ['exact PR URL', 'https://github.com/example/project/pull/295', {
-          owner: 'example',
-          repository: 'project',
+      for (const [name, rawArguments, githubPullRequest, reviewInstructions, descriptorSource] of [
+        ['exact PR URL', 'https://github.com/AURIN-OFFICE/data-etl/pull/295', {
+          owner: 'AURIN-OFFICE',
+          repository: 'data-etl',
           number: 295,
         }, '', 'standalone-url'],
+        ['embedded PR URL', 'Review https://github.com/AURIN-OFFICE/data-etl/pull/295 and preserve the NHSD scheduling question.', {
+          owner: 'AURIN-OFFICE',
+          repository: 'data-etl',
+          number: 295,
+        }, 'Review and preserve the NHSD scheduling question.', 'embedded-url'],
         ['ordinary text', 'feature/retry-restore', null, 'feature/retry-restore', 'none'],
         ['multiline shell-like text', `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`, null, `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`, 'none'],
       ] as const) {
@@ -835,7 +840,7 @@ Do it
         const expectedPacket = {
           schema: 'hive-dash-review-command/v2',
           rawIntent: rawArguments,
-          descriptor,
+          githubPullRequest,
           reviewInstructions,
           descriptorSource,
         };
@@ -843,7 +848,7 @@ Do it
         expect(rendered.split(packetMarker)).toHaveLength(2);
         expect(parts.at(-1)?.text.trim()).toBe(`${packetMarker}${JSON.stringify(expectedPacket)}`);
         expect(rendered).not.toContain('## Explicit Command Scope');
-        expect(rendered).not.toContain('{"schema":"hive-dash-review-command/v2","rawIntent":"","descriptor":null}');
+        expect(parts.at(-1)?.text).not.toContain('"descriptor"');
       }
 
       expect(fs.existsSync(marker)).toBe(false);

@@ -1017,8 +1017,8 @@ export async function resolveReviewSource(
 }
 
 export const REVIEW_SOURCE_RESOLUTION_ADAPTERS = {
-  'dash-review': (parsed: Pick<ParsedDashReviewArgs, 'descriptor'>): ReviewSourceRequest => ({
-    descriptor: parsed.descriptor,
+  'dash-review': (parsed: Pick<ParsedDashReviewArgs, 'githubPullRequest'>): ReviewSourceRequest => ({
+    descriptor: parsed.githubPullRequest,
     fixedSnapshotInput: {},
     notRequestedReason: 'no-descriptor',
   }),

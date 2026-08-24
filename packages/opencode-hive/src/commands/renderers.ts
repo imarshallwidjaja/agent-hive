@@ -30,7 +30,7 @@ export type DashReviewGitHubPullRequestDescriptor = GitHubPullRequestDescriptor;
 
 export type ParsedDashReviewArgs = {
   rawIntent: string;
-  descriptor: DashReviewGitHubPullRequestDescriptor | null;
+  githubPullRequest: DashReviewGitHubPullRequestDescriptor | null;
   reviewInstructions: string;
   descriptorSource: 'none' | 'standalone-url' | 'embedded-url';
 };
@@ -120,7 +120,7 @@ export function parseDashReviewArgs(args: string): ParsedDashReviewArgs {
   ) {
     return {
       rawIntent,
-      descriptor: null,
+      githubPullRequest: null,
       reviewInstructions: rawIntent,
       descriptorSource: 'none',
     };
@@ -129,7 +129,7 @@ export function parseDashReviewArgs(args: string): ParsedDashReviewArgs {
   if (standalone) {
     return {
       rawIntent,
-      descriptor: standalone,
+      githubPullRequest: standalone,
       reviewInstructions: '',
       descriptorSource: 'standalone-url',
     };
@@ -146,7 +146,7 @@ export function parseDashReviewArgs(args: string): ParsedDashReviewArgs {
   if (!match || !candidate || !embedded || rawIntent.trim() === candidate) {
     return {
       rawIntent,
-      descriptor: null,
+      githubPullRequest: null,
       reviewInstructions: rawIntent,
       descriptorSource: 'none',
     };
@@ -158,7 +158,7 @@ export function parseDashReviewArgs(args: string): ParsedDashReviewArgs {
   const separator = /\s$/u.test(rawPrefix) || /^\s/u.test(rawSuffix) ? ' ' : '';
   return {
     rawIntent,
-    descriptor: embedded,
+    githubPullRequest: embedded,
     reviewInstructions: prefix && suffix ? `${prefix}${separator}${suffix}` : prefix || suffix,
     descriptorSource: 'embedded-url',
   };

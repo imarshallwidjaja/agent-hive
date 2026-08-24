@@ -120,7 +120,7 @@ function render(command: HiveCommandKey, args = '', context: HiveCommandContext 
 function dashReviewArgumentPacket(output: string): {
   schema: 'hive-dash-review-command/v2';
   rawIntent: string;
-  descriptor: null | {
+  githubPullRequest: null | {
     owner: string;
     repository: string;
     number: number;
@@ -574,7 +574,7 @@ describe('hive command renderers', () => {
       'https://github.com/example/project/pull/295',
       {
         rawIntent: 'https://github.com/example/project/pull/295',
-        descriptor: {
+        githubPullRequest: {
           owner: 'example',
           repository: 'project',
           number: 295,
@@ -587,7 +587,7 @@ describe('hive command renderers', () => {
       '  https://github.com/Example/project.js/pull/295/  ',
       {
         rawIntent: '  https://github.com/Example/project.js/pull/295/  ',
-        descriptor: {
+        githubPullRequest: {
           owner: 'Example',
           repository: 'project.js',
           number: 295,
@@ -600,7 +600,7 @@ describe('hive command renderers', () => {
       'https://github.com/example/.github/pull/1',
       {
         rawIntent: 'https://github.com/example/.github/pull/1',
-        descriptor: {
+        githubPullRequest: {
           owner: 'example',
           repository: '.github',
           number: 1,
@@ -626,7 +626,7 @@ describe('hive command renderers', () => {
     for (const args of [`${control}${url}`, `${url}${control}`]) {
       expect(parseDashReviewArgs(args)).toEqual({
         rawIntent: args,
-        descriptor: null,
+        githubPullRequest: null,
         reviewInstructions: args,
         descriptorSource: 'none',
       });
@@ -638,7 +638,7 @@ describe('hive command renderers', () => {
 
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      descriptor: {
+      githubPullRequest: {
         owner: 'NHSDigital',
         repository: 'nhs-login',
         number: 295,
@@ -653,7 +653,7 @@ describe('hive command renderers', () => {
 
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      descriptor: {
+      githubPullRequest: {
         owner: 'NHSDigital',
         repository: 'nhs-login',
         number: 295,
@@ -672,7 +672,7 @@ describe('hive command renderers', () => {
 
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      descriptor: {
+      githubPullRequest: {
         owner: 'NHSDigital',
         repository: 'nhs-login',
         number: 295,
@@ -693,7 +693,7 @@ describe('hive command renderers', () => {
     ],
   ])('keeps embedded PR lookup authorized for ordinary %s', (_case, args) => {
     expect(parseDashReviewArgs(args)).toMatchObject({
-      descriptor: {
+      githubPullRequest: {
         owner: 'example',
         repository: 'project',
         number: 295,
@@ -716,7 +716,7 @@ describe('hive command renderers', () => {
   ])('extracts a PR URL at explicit %s boundaries without consuming punctuation', (_case, args, reviewInstructions) => {
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      descriptor: {
+      githubPullRequest: {
         owner: 'example',
         repository: 'project',
         number: 295,
@@ -731,7 +731,7 @@ describe('hive command renderers', () => {
 
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      descriptor: {
+      githubPullRequest: {
         owner: 'example',
         repository: 'project',
         number: 295,
@@ -756,7 +756,7 @@ describe('hive command renderers', () => {
   ])('does not authorize provider lookup for embedded %s input', (_case, args) => {
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      descriptor: null,
+      githubPullRequest: null,
       reviewInstructions: args,
       descriptorSource: 'none',
     });
@@ -788,7 +788,7 @@ describe('hive command renderers', () => {
   ])('keeps embedded PR input with %s provider-neutral', (_case, args) => {
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      descriptor: null,
+      githubPullRequest: null,
       reviewInstructions: args,
       descriptorSource: 'none',
     });
@@ -825,19 +825,19 @@ describe('hive command renderers', () => {
   ])('leaves non-exact or unsafe dash-review intent unvalidated: %s', (args) => {
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      descriptor: null,
+      githubPullRequest: null,
       reviewInstructions: args,
       descriptorSource: 'none',
     });
   });
 
   it('accepts only safe-integer GitHub pull request numbers', () => {
-    expect(parseDashReviewArgs('https://github.com/example/project/pull/9007199254740991').descriptor).toEqual({
+    expect(parseDashReviewArgs('https://github.com/example/project/pull/9007199254740991').githubPullRequest).toEqual({
       owner: 'example',
       repository: 'project',
       number: Number.MAX_SAFE_INTEGER,
     });
-    expect(parseDashReviewArgs('https://github.com/example/project/pull/9007199254740992').descriptor).toBeNull();
+    expect(parseDashReviewArgs('https://github.com/example/project/pull/9007199254740992').githubPullRequest).toBeNull();
   });
 
   it('JSON-frames multiline and shell-like dash-review intent without promoting it to instructions', () => {
@@ -847,7 +847,7 @@ describe('hive command renderers', () => {
     expect(dashReviewArgumentPacket(output)).toEqual({
       schema: 'hive-dash-review-command/v2',
       rawIntent: args,
-      descriptor: null,
+      githubPullRequest: null,
       reviewInstructions: args,
       descriptorSource: 'none',
     });
@@ -887,11 +887,11 @@ describe('hive command renderers', () => {
     expect(packet).toEqual({
       schema: 'hive-dash-review-command/v2',
       rawIntent: args,
-      descriptor: null,
+      githubPullRequest: null,
       reviewInstructions: args,
       descriptorSource: 'none',
     });
-    expect(output).toContain('When `descriptor` is null, provider lookup is not authorized.');
+    expect(output).toContain('When `githubPullRequest` is null, provider lookup is not authorized.');
     expect(output).toContain('dispatch Stage A immediately without provider lookup as `local snapshot scope`');
     expect(output).toContain('ordinary descriptions, paths, tasks, features, local refs, ranges, SHAs, non-GitHub URLs');
   });
@@ -904,7 +904,7 @@ describe('hive command renderers', () => {
     expect(packet).toEqual({
       schema: 'hive-dash-review-command/v2',
       rawIntent: '',
-      descriptor: null,
+      githubPullRequest: null,
       reviewInstructions: '',
       descriptorSource: 'none',
     });
@@ -917,7 +917,7 @@ describe('hive command renderers', () => {
     const args = 'https://github.com/example/project/pull/295';
     const output = render('dash-review', args);
 
-    expect(dashReviewArgumentPacket(renderDashReviewArgumentBlock(args)).descriptor).toEqual({
+    expect(dashReviewArgumentPacket(renderDashReviewArgumentBlock(args)).githubPullRequest).toEqual({
       owner: 'example',
       repository: 'project',
       number: 295,

@@ -121,11 +121,18 @@ describe('shared review source resolution', () => {
   });
 
   it('adapts embedded PR instructions without carrying raw intent into provider authority', () => {
-    const rawIntent = 'Review https://github.com/NHSDigital/nhs-login/pull/295 and preserve the NHSD scheduling question.';
-    const request = REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parseDashReviewArgs(rawIntent));
+    const rawIntent = 'Review https://github.com/AURIN-OFFICE/data-etl/pull/295 and preserve the NHSD scheduling question.';
+    const parsed = parseDashReviewArgs(rawIntent);
+    const request = REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parsed);
 
+    expect(parsed).toEqual({
+      rawIntent,
+      githubPullRequest: { owner: 'AURIN-OFFICE', repository: 'data-etl', number: 295 },
+      reviewInstructions: 'Review and preserve the NHSD scheduling question.',
+      descriptorSource: 'embedded-url',
+    });
     expect(request).toEqual({
-      descriptor: { owner: 'NHSDigital', repository: 'nhs-login', number: 295 },
+      descriptor: { owner: 'AURIN-OFFICE', repository: 'data-etl', number: 295 },
       fixedSnapshotInput: {},
       notRequestedReason: 'no-descriptor',
     });
