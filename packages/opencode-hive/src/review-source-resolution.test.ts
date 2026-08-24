@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'bun:test';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   collectReviewSnapshotSet,
   parseGitHubPullRequestDescriptor,
@@ -8,8 +13,8 @@ import {
   resolveGitHubPullRequest,
   resolveReviewSource,
 } from './review-source-resolution.js';
-import { parseVulnerabilityReviewArgs } from './commands/renderers.js';
-import { GitSnapshotError } from './utils/git-snapshot.js';
+import { parseDashReviewArgs, parseVulnerabilityReviewArgs } from './commands/renderers.js';
+import { GitSnapshotError, inspectGitSnapshot } from './utils/git-snapshot.js';
 import type { GitSnapshot, GitSnapshotInput } from './utils/git-snapshot.js';
 
 const descriptor = { owner: 'Example', repository: 'project.js', number: 295 };
@@ -115,6 +120,39 @@ describe('shared review source resolution', () => {
     }]);
   });
 
+  it('adapts embedded PR instructions without carrying raw intent into provider authority', () => {
+    const rawIntent = 'Review https://github.com/NHSDigital/nhs-login/pull/295 and preserve the NHSD scheduling question.';
+    const request = REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parseDashReviewArgs(rawIntent));
+
+    expect(request).toEqual({
+      descriptor: { owner: 'NHSDigital', repository: 'nhs-login', number: 295 },
+      fixedSnapshotInput: {},
+      notRequestedReason: 'no-descriptor',
+    });
+    expect(JSON.stringify(request)).not.toContain(rawIntent);
+    expect(JSON.stringify(request)).not.toContain('NHSD scheduling question');
+  });
+
+  it.each([
+    ['line-start subshell group', 'Review https://github.com/example/project/pull/295\n(gh api /user)'],
+    ['line-start brace group', 'Review https://github.com/example/project/pull/295\n{ gh api /user\n}'],
+    ['double-quoted long option', 'Review https://github.com/example/project/pull/295 "--target" main'],
+    ['single-quoted short option', "Review https://github.com/example/project/pull/295 '-t' main"],
+  ])('does not call the provider executor for embedded PR input with %s', async (_case, rawIntent) => {
+    const request = REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parseDashReviewArgs(rawIntent));
+    const { dependencies: deps, providerCalls } = dependencies();
+
+    await resolveReviewSource(request.descriptor
+      ? { descriptor: request.descriptor }
+      : {
+          explicitLocal: request.fixedSnapshotInput,
+          notRequestedReason: request.notRequestedReason,
+        }, deps);
+
+    expect(providerCalls).toEqual([]);
+    expect(request.descriptor).toBeNull();
+  });
+
   it.each([
     ['cli-unavailable', Object.assign(new Error('missing'), { code: 'ENOENT' })],
     ['timeout', Object.assign(new Error('late'), { code: 'ETIMEDOUT' })],
@@ -161,6 +199,133 @@ describe('shared review source resolution', () => {
         patch: { truncated: false, omittedBytes: 0 },
       },
     });
+    expect(resolution.provenanceEnvelope).toEqual({
+      schema: 'hive-review-provenance/v1',
+      scopeState: 'verified PR commits',
+      descriptor,
+      metadataOutcome: { kind: 'resolved', baseSha, headSha },
+      baseSha,
+      headSha,
+      snapshotAttemptOutcome: { outcome: 'resolved' },
+      comparisonTarget: headSha,
+      currentHead: 'c'.repeat(40),
+      currentHeadMatchesProviderHead: false,
+      dirtyFingerprint: null,
+      fallbackReason: null,
+      snapshotId: resolution.provenance.fingerprint,
+      sourceFingerprint: resolution.provenance.sourceFingerprint,
+      selectedRepositoryIds: ['root'],
+      truncated: false,
+      errors: [],
+    });
+  });
+
+  it('fails explicitly instead of falling back to a stale checkout when a required provider OID is missing', async () => {
+    const { dependencies: deps, snapshotInputs } = dependencies({
+      snapshot: async (input) => {
+        if (input.targetRef) {
+          throw new GitSnapshotError('missing-ref', {
+            field: 'targetRef',
+            ref: headSha,
+            repositoryId: 'root',
+          });
+        }
+        return snapshot(input, true);
+      },
+    });
+
+    const error = await resolveReviewSource({
+      descriptor,
+      providerOidPolicy: 'require-exact',
+    }, deps).catch((failure) => failure);
+
+    expect(error).toMatchObject({ code: 'provider-oid-unavailable' });
+    expect(snapshotInputs).toEqual([{ baseRef: baseSha, targetRef: headSha }]);
+  });
+
+  it('leaves live Git state unchanged when exact provider OID resolution fails', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-provider-oid-missing-'));
+    const git = (args: string[]) => execFileSync('git', ['-C', repository, ...args], {
+      encoding: 'utf8',
+      shell: false,
+    }).trim();
+    try {
+      git(['init', '-b', 'main']);
+      git(['config', 'user.email', 'snapshot@example.test']);
+      git(['config', 'user.name', 'Snapshot Test']);
+      writeFileSync(path.join(repository, 'tracked.txt'), 'initial\n');
+      git(['add', 'tracked.txt']);
+      git(['commit', '-m', 'initial']);
+      const localBaseSha = git(['rev-parse', 'HEAD']);
+      const missingHeadSha = 'f'.repeat(40);
+      writeFileSync(path.join(repository, 'tracked.txt'), 'unstaged\n');
+      writeFileSync(path.join(repository, 'staged.txt'), 'staged\n');
+      git(['add', 'staged.txt']);
+      writeFileSync(path.join(repository, 'untracked.txt'), 'untracked\n');
+      const gitDirectory = path.join(repository, '.git');
+      mkdirSync(gitDirectory, { recursive: true });
+      writeFileSync(path.join(gitDirectory, 'FETCH_HEAD'), 'sentinel-fetch-head\n');
+      const before = {
+        head: git(['rev-parse', 'HEAD']),
+        index: createHash('sha256').update(readFileSync(path.join(gitDirectory, 'index'))).digest('hex'),
+        status: git(['status', '--porcelain=v1', '--untracked-files=all']),
+        fetchHead: readFileSync(path.join(gitDirectory, 'FETCH_HEAD'), 'utf8'),
+      };
+
+      const error = await resolveReviewSource({
+        descriptor,
+        providerOidPolicy: 'require-exact',
+      }, {
+        providerExecutor: async () => ({
+          stdout: JSON.stringify({ baseSha: localBaseSha, headSha: missingHeadSha }),
+        }),
+        resolveRepositories: async () => ({
+          manifestRepositoryIds: ['root'],
+          selectedRepositoryIds: ['root'],
+          repositories: [{ id: 'root', path: repository }],
+        }),
+        snapshotExecutor: async (topology, input) => collectReviewSnapshotSet(
+          topology,
+          async (entry) => inspectGitSnapshot(entry.path, input),
+        ),
+      }).catch((failure) => failure);
+
+      expect(error).toMatchObject({
+        code: 'provider-oid-unavailable',
+        failures: [{ field: 'head', missingOid: missingHeadSha, repositoryId: 'root' }],
+      });
+      expect({
+        head: git(['rev-parse', 'HEAD']),
+        index: createHash('sha256').update(readFileSync(path.join(gitDirectory, 'index'))).digest('hex'),
+        status: git(['status', '--porcelain=v1', '--untracked-files=all']),
+        fetchHead: readFileSync(path.join(gitDirectory, 'FETCH_HEAD'), 'utf8'),
+      }).toEqual(before);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the compact provenance complete when optional patch material is truncated', async () => {
+    const { dependencies: deps } = dependencies({
+      snapshot: async (input) => ({
+        ...snapshot(input),
+        omissions: {
+          changedPaths: { comparison: 3, staged: 0, unstaged: 0, untracked: 0 },
+          patch: { truncated: true, omittedBytes: 4096 },
+        },
+      }),
+    });
+
+    const resolution = await resolveReviewSource({ descriptor }, deps);
+
+    expect(resolution.provenanceEnvelope).toMatchObject({
+      schema: 'hive-review-provenance/v1',
+      snapshotId: expect.stringMatching(/^[a-f0-9]{64}$/),
+      sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      selectedRepositoryIds: ['root'],
+      truncated: true,
+      errors: [],
+    });
   });
 
   it('falls back once to a dirty-aware local checkout only for one missing provider OID', async () => {
@@ -201,6 +366,10 @@ describe('shared review source resolution', () => {
     expect(resolution.kind).toBe('provider-local-fallback');
     expect(resolution.provider).toEqual({ kind: 'unavailable', reason: 'auth-network-execution' });
     expect(resolution.provenance.snapshot).toEqual({ outcome: 'fallback', reason: 'provider-unavailable' });
+    expect(resolution.provenanceEnvelope).toMatchObject({
+      fallbackReason: 'provider-unavailable',
+      errors: ['provider:auth-network-execution'],
+    });
   });
 
   it.each([

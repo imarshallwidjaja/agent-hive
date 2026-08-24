@@ -130,6 +130,7 @@ async function createHooksForTest(
   testRoot: string,
   sessionID: string,
   worktree = testRoot,
+  client: PluginInput['client'] = OPENCODE_CLIENT,
 ): Promise<{
   hooks: PluginHooks;
   toolContext: ToolContext;
@@ -139,7 +140,7 @@ async function createHooksForTest(
     worktree,
     serverUrl: new URL("http://localhost:1"),
     project: createProject(worktree),
-    client: OPENCODE_CLIENT,
+    client,
     $: createStubShell(),
   };
 
@@ -813,14 +814,14 @@ Do it
       expect(template).not.toContain('$ARGUMENTS');
       expect(template).not.toContain(packetMarker);
 
-      for (const [name, rawArguments, githubPullRequest] of [
+      for (const [name, rawArguments, descriptor, reviewInstructions, descriptorSource] of [
         ['exact PR URL', 'https://github.com/example/project/pull/295', {
           owner: 'example',
           repository: 'project',
           number: 295,
-        }],
-        ['ordinary text', 'feature/retry-restore', null],
-        ['multiline shell-like text', `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`, null],
+        }, '', 'standalone-url'],
+        ['ordinary text', 'feature/retry-restore', null, 'feature/retry-restore', 'none'],
+        ['multiline shell-like text', `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`, null, `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`, 'none'],
       ] as const) {
         const parts = await runOpenCodeV114CommandPath({
           hooks,
@@ -832,18 +833,75 @@ Do it
         });
         const rendered = parts.map((part) => part.text).join('\n');
         const expectedPacket = {
-          schema: 'hive-dash-review-command/v1',
+          schema: 'hive-dash-review-command/v2',
           rawIntent: rawArguments,
-          githubPullRequest,
+          descriptor,
+          reviewInstructions,
+          descriptorSource,
         };
 
         expect(rendered.split(packetMarker)).toHaveLength(2);
         expect(parts.at(-1)?.text.trim()).toBe(`${packetMarker}${JSON.stringify(expectedPacket)}`);
         expect(rendered).not.toContain('## Explicit Command Scope');
-        expect(rendered).not.toContain('{"schema":"hive-dash-review-command/v1","rawIntent":"","githubPullRequest":null}');
+        expect(rendered).not.toContain('{"schema":"hive-dash-review-command/v2","rawIntent":"","descriptor":null}');
       }
 
       expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(dashRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('establishes the private dash-review primary before the real command path dispatches Stage A', async () => {
+    const dashRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-e2e-dash-review-routing-'));
+    try {
+      execSync('git init', { cwd: dashRoot });
+      execSync('git config user.email "test@example.com"', { cwd: dashRoot });
+      execSync('git config user.name "Test"', { cwd: dashRoot });
+      fs.writeFileSync(path.join(dashRoot, 'README.md'), 'dash review routing test');
+      execSync('git add README.md', { cwd: dashRoot });
+      execSync('git commit -m "init"', { cwd: dashRoot });
+      const client = {
+        ...(OPENCODE_CLIENT as any),
+        session: {
+          ...(OPENCODE_CLIENT as any).session,
+          get: async ({ path: inputPath }: { path: { id: string } }) => ({
+            data: {
+              id: inputPath.id,
+              parentID: undefined,
+              time: { created: Date.now(), updated: Date.now() },
+            },
+          }),
+        },
+      } as PluginInput['client'];
+      const { hooks } = await createHooksForTest(dashRoot, 'sess_dash_review_routing', dashRoot, client);
+      const config: Record<string, any> = {};
+      await hooks.config!(config);
+      const scopeTarget = Object.entries(config.agent as Record<string, any>)
+        .find(([, agent]) => agent.tools?.hive_review_workspace_create === true)?.[0];
+      expect(scopeTarget).toBeString();
+
+      await runOpenCodeV114CommandPath({
+        hooks,
+        command: 'dash-review',
+        sessionID: 'sess_dash_review_routing',
+        arguments: 'Review https://github.com/NHSDigital/nhs-login/pull/295 and preserve the NHSD scheduling question.',
+        template: config.command['dash-review'].template,
+        cwd: dashRoot,
+      });
+
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: 'sess_dash_review_routing',
+        callID: 'stage-a-dispatch',
+      } as any, {
+        args: {
+          description: 'Resolve the command-bound review source',
+          prompt: 'Use only runtime-owned command state.',
+          subagent_type: scopeTarget,
+          background: false,
+        },
+      } as any)).resolves.toBeUndefined();
     } finally {
       fs.rmSync(dashRoot, { recursive: true, force: true });
     }

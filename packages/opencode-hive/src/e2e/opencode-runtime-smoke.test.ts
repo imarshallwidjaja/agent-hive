@@ -193,6 +193,10 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
         ? ((body as { messages: unknown[] }).messages as ChatCompletionRequestMessage[])
         : [];
       const hasToolResult = messages.some((message) => message.role === 'tool' && typeof message.tool_call_id === 'string');
+      const serializedMessages = JSON.stringify(messages);
+      const requestsLargeSnapshot = serializedMessages.includes('runtime_large_snapshot');
+      const requestsNativeTask = serializedMessages.includes('runtime_native_task');
+      const nativeTaskChild = serializedMessages.includes('NATIVE_TASK_CHILD_FINAL_ONLY');
 
       if (body.stream !== true) {
         res.writeHead(400, { 'content-type': 'application/json' });
@@ -206,7 +210,22 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
         'content-type': 'text/event-stream',
       });
 
-      if (!hasToolResult) {
+      if (!hasToolResult && !nativeTaskChild) {
+        const toolName = requestsNativeTask
+          ? 'task'
+          : requestsLargeSnapshot
+            ? 'runtime_large_snapshot'
+            : 'hive_feature_create';
+        const toolArguments = requestsNativeTask
+          ? {
+              description: 'Runtime task metadata probe',
+              prompt: 'NATIVE_TASK_CHILD_FINAL_ONLY: return a short final response without tools.',
+              subagent_type: 'scout-researcher',
+              background: false,
+            }
+          : requestsLargeSnapshot
+            ? {}
+            : { name: 'rt-feature' };
         res.end([
           `data: ${jsonResponse({
             id: 'chatcmpl-runtime-tool',
@@ -219,11 +238,11 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
                 role: 'assistant',
                 tool_calls: [{
                   index: 0,
-                  id: 'call_runtime_feature_create',
+                   id: requestsNativeTask ? 'call_runtime_native_task' : 'call_runtime_feature_create',
                   type: 'function',
                   function: {
-                    name: 'hive_feature_create',
-                    arguments: JSON.stringify({ name: 'rt-feature' }),
+                    name: toolName,
+                    arguments: JSON.stringify(toolArguments),
                   },
                 }],
               },
@@ -306,9 +325,40 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
     fs.mkdirSync(path.join(projectDir, ".opencode", "plugin"), { recursive: true });
 
     const hivePluginEntry = pickHivePluginEntry();
+    const pluginRuntimeEntry = import.meta.resolve('@opencode-ai/plugin');
+    const snapshotSerializerEntry = path.resolve(import.meta.dir, '..', 'review-source-resolution.ts');
 
     const pluginFile = path.join(projectDir, ".opencode", "plugin", "hive.ts");
-    const pluginSource = `import hive from ${JSON.stringify(hivePluginEntry)}\nexport const HivePlugin = hive\n`;
+    const pluginSource = `import hive from ${JSON.stringify(hivePluginEntry)}
+import { tool } from ${JSON.stringify(pluginRuntimeEntry)}
+import { serializeReviewSnapshotOutput } from ${JSON.stringify(snapshotSerializerEntry)}
+
+export const HivePlugin = hive
+export const RuntimeLargeSnapshotPlugin = async () => ({
+  tool: {
+    runtime_large_snapshot: tool({
+      description: 'Return envelope-first oversized snapshot output for runtime truncation verification.',
+      args: {},
+      async execute() {
+        return serializeReviewSnapshotOutput({
+          provenance: {
+            schema: 'hive-review-provenance/v1',
+            sourceFingerprint: 'runtime-envelope-source-fingerprint',
+          } as any,
+          sourceResolution: {
+            schema: 'hive-review-source-resolution/v1',
+            marker: 'runtime-source-resolution-before-optional-data',
+          } as any,
+          snapshot: {
+            optionalPatch: 'x'.repeat(70 * 1024),
+            tailMarker: 'TAIL_MARKER_SHOULD_BE_TRUNCATED',
+          },
+        })
+      },
+    }),
+  },
+})
+`;
     fs.writeFileSync(pluginFile, pluginSource);
 
     const previousCwd = process.cwd();
@@ -407,13 +457,14 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
           const raw = (await client.tool.ids({ query: { directory: projectDir } })) as unknown;
           return extractStringArray(raw);
         },
-        EXPECTED_TOOLS,
+        [...EXPECTED_TOOLS, 'runtime_large_snapshot'],
         15000
       );
 
       for (const toolName of EXPECTED_TOOLS) {
         expect(ids).toContain(toolName);
       }
+      expect(ids).toContain('runtime_large_snapshot');
       runtimeSuccess.toolsLoaded = true;
 
       const session = (await client.session.create({
@@ -566,8 +617,123 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
         expect(typeof part.sessionID).toBe('string');
       }
 
+      const largeSession = (await client.session.create({
+        body: { title: 'runtime tool-output truncation' },
+        query: { directory: projectDir },
+      })) as unknown;
+      const largeSessionID = isRecord(largeSession) && typeof largeSession.id === 'string'
+        ? largeSession.id
+        : null;
+      expect(largeSessionID).not.toBeNull();
+      if (!largeSessionID) return;
+      const largePermissionTask = approvePermissions(largeSessionID);
+      const largePromptAbort = new AbortController();
+      const largePromptTimer = setTimeout(() => largePromptAbort.abort(), 120000);
+      try {
+        await client.session.prompt({
+          path: { id: largeSessionID },
+          query: { directory: projectDir },
+          signal: largePromptAbort.signal,
+          body: {
+            model: {
+              providerID: RUNTIME_PROVIDER_ID,
+              modelID: RUNTIME_MODEL_ID,
+            },
+            system: 'Call runtime_large_snapshot exactly once with no arguments.',
+            tools: { runtime_large_snapshot: true },
+            parts: [{ type: 'text', text: 'Run runtime_large_snapshot.' }],
+          },
+        });
+      } finally {
+        clearTimeout(largePromptTimer);
+      }
+      const truncationRequests = providerServer.getRequests();
+      expect(providerServer.getRequestCount()).toBe(4);
+      expect(truncationRequests).toHaveLength(4);
+      const truncationMessages = Array.isArray(truncationRequests[3]?.messages)
+        ? truncationRequests[3].messages as ChatCompletionRequestMessage[]
+        : [];
+      const truncatedToolMessage = truncationMessages.find((message) => (
+        message.role === 'tool'
+        && message.tool_call_id === 'call_runtime_feature_create'
+      ));
+      expect(typeof truncatedToolMessage?.content).toBe('string');
+      const truncatedContent = String(truncatedToolMessage?.content ?? '');
+      expect(Buffer.byteLength(truncatedContent, 'utf8')).toBeLessThan(55 * 1024);
+      expect(truncatedContent).toContain('hive-review-provenance/v1');
+      expect(truncatedContent).toContain('runtime-envelope-source-fingerprint');
+      expect(truncatedContent).toContain('runtime-source-resolution-before-optional-data');
+      expect(truncatedContent).toContain('truncated');
+      expect(truncatedContent).not.toContain('TAIL_MARKER_SHOULD_BE_TRUNCATED');
+
+      const taskParent = (await runtimeSession.create({
+        body: { title: 'runtime native task metadata' },
+        query: { directory: projectDir },
+      })) as unknown;
+      const taskParentID = isRecord(taskParent) && typeof taskParent.id === 'string'
+        ? taskParent.id
+        : null;
+      expect(taskParentID).not.toBeNull();
+      if (!taskParentID) return;
+      const decoy = (await runtimeSession.create({
+        body: { title: 'same-parent decoy', parentID: taskParentID },
+        query: { directory: projectDir },
+      })) as unknown;
+      const decoyID = isRecord(decoy) && typeof decoy.id === 'string' ? decoy.id : null;
+      expect(decoyID).not.toBeNull();
+      const taskPermissionTask = approvePermissions(taskParentID);
+      const taskPromptAbort = new AbortController();
+      const taskPromptTimer = setTimeout(() => taskPromptAbort.abort(), 120000);
+      try {
+        await client.session.prompt({
+          path: { id: taskParentID },
+          query: { directory: projectDir },
+          signal: taskPromptAbort.signal,
+          body: {
+            model: {
+              providerID: RUNTIME_PROVIDER_ID,
+              modelID: RUNTIME_MODEL_ID,
+            },
+            system: 'Call runtime_native_task by invoking task exactly once.',
+            tools: { task: true },
+            parts: [{ type: 'text', text: 'Run runtime_native_task now.' }],
+          },
+        });
+      } finally {
+        clearTimeout(taskPromptTimer);
+      }
+      const taskMessages = await runtimeSession.messages({
+        path: { id: taskParentID },
+        query: { directory: projectDir },
+      });
+      const taskParts = Array.isArray(taskMessages)
+        ? taskMessages.flatMap((entry) => isRecord(entry) && Array.isArray(entry.parts) ? entry.parts : [])
+        : [];
+      const nativeTaskPart = taskParts.find((part) => isRecord(part) && part.type === 'tool' && part.tool === 'task');
+      const nativeTaskState = isRecord(nativeTaskPart) && isRecord(nativeTaskPart.state)
+        ? nativeTaskPart.state
+        : undefined;
+      const nativeTaskMetadata = isRecord(nativeTaskPart) && isRecord(nativeTaskPart.metadata)
+        ? nativeTaskPart.metadata
+        : isRecord(nativeTaskState?.metadata)
+          ? nativeTaskState.metadata
+          : undefined;
+      const nativeTaskChildID = typeof nativeTaskMetadata?.sessionId === 'string'
+        ? nativeTaskMetadata.sessionId
+        : null;
+      expect(nativeTaskChildID).not.toBeNull();
+      expect(nativeTaskChildID).not.toBe(decoyID);
+      if (nativeTaskChildID) {
+        expect(await runtimeSession.get({
+          path: { id: nativeTaskChildID },
+          query: { directory: projectDir },
+        })).toMatchObject({ id: nativeTaskChildID, parentID: taskParentID });
+      }
+
       abortController.abort();
       await permissionTask.catch(() => undefined);
+      await largePermissionTask.catch(() => undefined);
+      await taskPermissionTask.catch(() => undefined);
 
       expect(runtimeSuccess).toEqual({
         serverStarted: true,

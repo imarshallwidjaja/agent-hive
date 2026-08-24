@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import * as path from 'node:path';
 import type { ReviewSourceRequest, ReviewSourceResolution } from './review-source-resolution.js';
 
 type SessionIdentity = {
@@ -7,15 +8,48 @@ type SessionIdentity = {
   time?: { created?: number };
 };
 
-type ScopeReservation = {
+export type DashReviewAuthorizationReason =
+  | 'missing-primary-runtime-identity'
+  | 'invocation-not-registered'
+  | 'primary-agent-mismatch'
+  | 'child-not-bound-to-invocation'
+  | 'capability-expired'
+  | 'runtime-generated-version-mismatch'
+  | 'scope-already-reserved'
+  | 'invalid-task-dispatch'
+  | 'snapshot-in-progress'
+  | 'snapshot-input-mismatch'
+  | 'snapshot-not-resolved'
+  | 'create-input-mismatch'
+  | 'capability-consumed'
+  | 'workspace-create-failed'
+  | 'workspace-not-created'
+  | 'workspace-not-claimed'
+  | 'workspace-identity-mismatch'
+  | 'workspace-cleaned'
+  | 'source-stale'
+  | 'session-ended';
+
+type TaskReservation = {
+  kind: 'scope' | 'deep';
   callID: string;
   expectedAgent: string;
   reservedAt: number;
+  expiresAt: number;
+  childSessionID?: string;
   childSession?: {
     id: string;
     parentID: string;
     created: number;
+    ended?: boolean;
   };
+};
+
+type WorkspaceLifecycle = {
+  runId: string;
+  ownershipToken: string;
+  workspacePath: string;
+  claimed: boolean;
 };
 
 type SnapshotRecord =
@@ -32,9 +66,14 @@ type SnapshotRecord =
 type InvocationRecord = {
   generation: symbol;
   primarySessionID: string;
-  request: ReviewSourceRequest;
-  scope?: ScopeReservation;
+  primaryAgent: string;
+  runtimeVersion: number;
+  expiresAt: number;
+  request?: ReviewSourceRequest;
+  scope?: TaskReservation;
+  deepTasks: Map<string, TaskReservation>;
   snapshot?: SnapshotRecord;
+  workspace?: WorkspaceLifecycle;
 };
 
 type BindingCandidate = {
@@ -43,58 +82,246 @@ type BindingCandidate = {
   callID: string;
   expectedAgent: string;
   reservedAt: number;
+  expiresAt: number;
+  runtimeVersion: number;
+  kind: TaskReservation['kind'];
 };
 
 type BindingSnapshot = Readonly<Record<never, never>>;
 type SnapshotAuthority = Readonly<Record<never, never>>;
+export type DashCreateAuthority = Readonly<Record<never, never>>;
 
 type DashSnapshotAction =
   | { kind: 'execute'; request: ReviewSourceRequest; authority: SnapshotAuthority }
   | { kind: 'replay'; output: string }
-  | { kind: 'deny'; reason: 'authority' | 'different-input' | 'in-progress' };
+  | { kind: 'deny'; reason: DashReviewAuthorizationReason };
+
+export type DashCreateAction =
+  | { kind: 'execute'; sourceResolution: ReviewSourceResolution; authority: DashCreateAuthority }
+  | { kind: 'deny'; reason: DashReviewAuthorizationReason };
+
+type AuthorizationResult =
+  | { allowed: true; agent: string }
+  | { allowed: false; reason: DashReviewAuthorizationReason };
+
+export type DashReviewLaneAuthorization =
+  | {
+    allowed: true;
+    role: TaskReservation['kind'];
+    workspacePath?: string;
+  }
+  | { allowed: false; reason: DashReviewAuthorizationReason };
+
+type TerminalAudit = {
+  reason: DashReviewAuthorizationReason;
+  terminatedAt: number;
+  runtimeVersion: number;
+  commandAuthorizationReleased?: boolean;
+};
+
+const DEFAULT_CAPABILITY_TTL_MS = 5 * 60 * 1000;
+const MAX_AUDIT_SESSIONS = 128;
 
 export class DashReviewInvocationStore {
   private readonly invocations = new Map<string, InvocationRecord>();
-  private readonly commandSessions = new Set<string>();
   private readonly bindingAuthorities = new WeakMap<BindingSnapshot, { childSessionID: string; candidates: BindingCandidate[] }>();
   private readonly snapshotAuthorities = new WeakMap<SnapshotAuthority, { primarySessionID: string; generation: symbol }>();
+  private readonly createAuthorities = new WeakMap<DashCreateAuthority, { primarySessionID: string; generation: symbol }>();
+  private readonly terminalAudit = new Map<string, TerminalAudit>();
+  private readonly now: () => number;
+  private readonly capabilityTtlMs: number;
 
-  replaceInvocation(primarySessionID: string, request: ReviewSourceRequest): void {
-    this.commandSessions.add(primarySessionID);
-    this.invocations.delete(primarySessionID);
-    this.invocations.set(primarySessionID, {
+  constructor(options: {
+    now?: () => number;
+    capabilityTtlMs?: number;
+  } = {}) {
+    this.now = options.now ?? Date.now;
+    this.capabilityTtlMs = options.capabilityTtlMs ?? DEFAULT_CAPABILITY_TTL_MS;
+  }
+
+  replaceInvocation(input: {
+    primarySessionID: string;
+    primaryAgent: string;
+    runtimeVersion: number;
+    request: ReviewSourceRequest;
+  }): void {
+    const now = this.now();
+    this.invocations.delete(input.primarySessionID);
+    this.terminalAudit.delete(input.primarySessionID);
+    this.invocations.set(input.primarySessionID, {
       generation: Symbol('dash-review-invocation'),
-      primarySessionID,
-      request: structuredClone(request),
+      primarySessionID: input.primarySessionID,
+      primaryAgent: input.primaryAgent,
+      runtimeVersion: input.runtimeVersion,
+      expiresAt: now + this.capabilityTtlMs,
+      request: structuredClone(input.request),
+      deepTasks: new Map(),
     });
   }
 
-  isCommandSession(sessionID: string): boolean {
-    return this.commandSessions.has(sessionID);
+  authorizePrimary(input: {
+    sessionID: string;
+    primaryAgent?: string;
+    runtimeVersion: number;
+  }): AuthorizationResult {
+    const record = this.invocations.get(input.sessionID);
+    if (!record) {
+      return {
+        allowed: false,
+        reason: this.terminalAudit.get(input.sessionID)?.reason ?? 'invocation-not-registered',
+      };
+    }
+    if (!input.primaryAgent) return { allowed: false, reason: 'missing-primary-runtime-identity' };
+    if (input.primaryAgent !== record.primaryAgent) {
+      this.stop(record, 'primary-agent-mismatch');
+      return { allowed: false, reason: 'primary-agent-mismatch' };
+    }
+    if (input.runtimeVersion !== record.runtimeVersion) {
+      this.stop(record, 'runtime-generated-version-mismatch');
+      return { allowed: false, reason: 'runtime-generated-version-mismatch' };
+    }
+    if (!record.workspace && this.isExpired(record)) {
+      this.stop(record, 'capability-expired');
+      return { allowed: false, reason: 'capability-expired' };
+    }
+    return { allowed: true, agent: record.primaryAgent };
+  }
+
+  hasActiveInvocation(sessionID: string): boolean {
+    return this.invocations.has(sessionID);
+  }
+
+  confirmPrimaryIdentity(input: {
+    sessionID: string;
+    observedAgent?: string;
+    runtimeVersion: number;
+  }): AuthorizationResult {
+    const record = this.invocations.get(input.sessionID);
+    if (!record) return { allowed: false, reason: 'invocation-not-registered' };
+    if (!input.observedAgent) {
+      this.stop(record, 'missing-primary-runtime-identity');
+      return { allowed: false, reason: 'missing-primary-runtime-identity' };
+    }
+    return this.authorizePrimary({
+      sessionID: input.sessionID,
+      primaryAgent: input.observedAgent,
+      runtimeVersion: input.runtimeVersion,
+    });
+  }
+
+  terminalReasonForSession(sessionID: string): DashReviewAuthorizationReason | undefined {
+    return this.terminalAudit.get(sessionID)?.reason;
+  }
+
+  hasTerminalPrimaryAuthorization(sessionID: string): boolean {
+    const audit = this.terminalAudit.get(sessionID);
+    return audit !== undefined && audit.commandAuthorizationReleased !== true;
   }
 
   reserveScope(input: {
     primarySessionID: string;
+    primaryAgent: string;
+    runtimeVersion: number;
     callID: string;
     expectedAgent: string;
     reservedAt: number;
-  }): boolean {
-    const record = this.invocations.get(input.primarySessionID);
+    background: unknown;
+  }): { allowed: true } | { allowed: false; reason: DashReviewAuthorizationReason } {
+    const primary = this.authorizePrimary({
+      sessionID: input.primarySessionID,
+      primaryAgent: input.primaryAgent,
+      runtimeVersion: input.runtimeVersion,
+    });
+    if ('reason' in primary) return primary;
+    const record = this.invocations.get(input.primarySessionID)!;
+    if (record.workspace) return { allowed: false, reason: 'capability-consumed' };
+    if (record.scope !== undefined) {
+      this.stop(record, 'scope-already-reserved');
+      return { allowed: false, reason: 'scope-already-reserved' };
+    }
     if (
-      !record
-      || record.scope !== undefined
-      || !input.callID
+      !input.callID
       || !input.expectedAgent
       || !Number.isFinite(input.reservedAt)
+      || input.background !== false
     ) {
-      if (record?.scope !== undefined) this.stop(record);
-      return false;
+      return { allowed: false, reason: 'invalid-task-dispatch' };
     }
     record.scope = {
+      kind: 'scope',
       callID: input.callID,
       expectedAgent: input.expectedAgent,
       reservedAt: input.reservedAt,
+      expiresAt: input.reservedAt + this.capabilityTtlMs,
     };
+    return { allowed: true };
+  }
+
+  reserveDeep(input: {
+    primarySessionID: string;
+    primaryAgent: string;
+    runtimeVersion: number;
+    callID: string;
+    expectedAgent: string;
+    reservedAt: number;
+    background: unknown;
+  }):
+    | { allowed: true; runId: string; workspacePath: string }
+    | { allowed: false; reason: DashReviewAuthorizationReason } {
+    const primary = this.authorizePrimary({
+      sessionID: input.primarySessionID,
+      primaryAgent: input.primaryAgent,
+      runtimeVersion: input.runtimeVersion,
+    });
+    if ('reason' in primary) return primary;
+    const record = this.invocations.get(input.primarySessionID)!;
+    if (!record.workspace?.claimed) return { allowed: false, reason: 'workspace-not-claimed' };
+    if (
+      !input.callID
+      || !input.expectedAgent
+      || !Number.isFinite(input.reservedAt)
+      || input.background !== false
+    ) {
+      return { allowed: false, reason: 'invalid-task-dispatch' };
+    }
+    if (record.scope?.callID === input.callID || record.deepTasks.has(input.callID)) {
+      return { allowed: false, reason: 'scope-already-reserved' };
+    }
+    record.deepTasks.set(input.callID, {
+      kind: 'deep',
+      callID: input.callID,
+      expectedAgent: input.expectedAgent,
+      reservedAt: input.reservedAt,
+      expiresAt: input.reservedAt + this.capabilityTtlMs,
+    });
+    return {
+      allowed: true,
+      runId: record.workspace.runId,
+      workspacePath: record.workspace.workspacePath,
+    };
+  }
+
+  bindTaskChild(input: {
+    primarySessionID: string;
+    callID: string;
+    childSessionID: string;
+    expectedAgent?: string;
+    runtimeVersion: number;
+  }): boolean {
+    if (!input.primarySessionID || !input.callID || !input.childSessionID) return false;
+    const record = this.invocations.get(input.primarySessionID);
+    if (!record || record.runtimeVersion !== input.runtimeVersion) return false;
+    const reservation = this.taskReservation(record, input.callID);
+    if (!reservation || (input.expectedAgent && reservation.expectedAgent !== input.expectedAgent)) return false;
+    if (this.now() >= reservation.expiresAt) {
+      this.stop(record, 'capability-expired', input.childSessionID);
+      return false;
+    }
+    if (reservation.childSessionID && reservation.childSessionID !== input.childSessionID) {
+      this.stop(record, 'child-not-bound-to-invocation', input.childSessionID);
+      return false;
+    }
+    reservation.childSessionID = input.childSessionID;
     return true;
   }
 
@@ -102,17 +329,34 @@ export class DashReviewInvocationStore {
     childSessionID: string;
     inputAgent: string;
     messageAgent: string;
+    runtimeVersion: number;
   }): BindingSnapshot | undefined {
     if (!input.childSessionID || !input.inputAgent || input.inputAgent !== input.messageAgent) return undefined;
     const candidates: BindingCandidate[] = [];
     for (const record of this.invocations.values()) {
-      if (record.scope && record.scope.childSession === undefined && record.scope.expectedAgent === input.inputAgent) {
+      if (record.runtimeVersion !== input.runtimeVersion) {
+        this.stop(record, 'runtime-generated-version-mismatch', input.childSessionID);
+        continue;
+      }
+      for (const reservation of this.taskReservations(record)) {
+        if (
+          reservation.childSessionID !== input.childSessionID
+          || reservation.childSession !== undefined
+          || reservation.expectedAgent !== input.inputAgent
+        ) continue;
+        if (this.now() >= reservation.expiresAt) {
+          this.stop(record, 'capability-expired', input.childSessionID);
+          continue;
+        }
         candidates.push({
           primarySessionID: record.primarySessionID,
           generation: record.generation,
-          callID: record.scope.callID,
-          expectedAgent: record.scope.expectedAgent,
-          reservedAt: record.scope.reservedAt,
+          callID: reservation.callID,
+          expectedAgent: reservation.expectedAgent,
+          reservedAt: reservation.reservedAt,
+          expiresAt: reservation.expiresAt,
+          runtimeVersion: record.runtimeVersion,
+          kind: reservation.kind,
         });
       }
     }
@@ -133,31 +377,38 @@ export class DashReviewInvocationStore {
       || typeof session.parentID !== 'string'
       || typeof session.time?.created !== 'number'
       || !Number.isFinite(session.time.created)
-    ) {
-      if (authority) this.revokeBindingCandidates(authority.candidates);
-      return false;
-    }
+    ) return false;
     for (const candidate of authority.candidates) {
-      if (candidate.primarySessionID !== session.parentID || session.time.created < candidate.reservedAt) continue;
+      if (
+        candidate.primarySessionID !== session.parentID
+        || session.time.created < candidate.reservedAt
+        || session.time.created >= candidate.expiresAt
+      ) continue;
       const record = this.invocations.get(candidate.primarySessionID);
-      const scope = record?.scope;
+      const reservation = record ? this.taskReservation(record, candidate.callID) : undefined;
       if (
         !record
         || record.generation !== candidate.generation
-        || !scope
-        || scope.callID !== candidate.callID
-        || scope.expectedAgent !== candidate.expectedAgent
-        || scope.reservedAt !== candidate.reservedAt
-        || scope.childSession !== undefined
+        || record.runtimeVersion !== candidate.runtimeVersion
+        || !reservation
+        || reservation.kind !== candidate.kind
+        || reservation.callID !== candidate.callID
+        || reservation.expectedAgent !== candidate.expectedAgent
+        || reservation.reservedAt !== candidate.reservedAt
+        || reservation.childSessionID !== session.id
+        || reservation.childSession !== undefined
       ) continue;
-      scope.childSession = {
+      if (this.now() >= reservation.expiresAt) {
+        this.stop(record, 'capability-expired', session.id);
+        return false;
+      }
+      reservation.childSession = {
         id: session.id,
         parentID: session.parentID,
         created: session.time.created,
       };
       return true;
     }
-    this.revokeBindingCandidates(authority.candidates);
     return false;
   }
 
@@ -167,33 +418,38 @@ export class DashReviewInvocationStore {
       : undefined;
     if (!authority) return false;
     this.bindingAuthorities.delete(snapshot);
-    this.revokeBindingCandidates(authority.candidates);
     return true;
   }
 
   beginSnapshot(input: {
     session: SessionIdentity;
     agent: string;
+    runtimeVersion: number;
     snapshotInput: unknown;
   }): DashSnapshotAction {
     const record = this.recordForBoundChild(input.session.id, input.agent);
-    if (!record || !this.matchesBoundSession(record.scope!.childSession!, input.session)) {
-      if (record) this.stop(record);
-      return { kind: 'deny', reason: 'authority' };
-    }
-    if (record.snapshot?.state === 'resolving') {
-      this.stop(record);
+    if (!record) {
       return {
         kind: 'deny',
-        reason: isDeepStrictEqual(record.snapshot.input, input.snapshotInput) ? 'in-progress' : 'different-input',
+        reason: this.terminalAudit.get(input.session.id)?.reason ?? 'child-not-bound-to-invocation',
       };
+    }
+    const invalid = this.validateBoundRecord(record, input.session, input.runtimeVersion);
+    if (invalid) return { kind: 'deny', reason: invalid };
+    if (!record.request) return { kind: 'deny', reason: 'snapshot-not-resolved' };
+    if (record.snapshot?.state === 'resolving') {
+      const reason = isDeepStrictEqual(record.snapshot.input, input.snapshotInput)
+        ? 'snapshot-in-progress'
+        : 'snapshot-input-mismatch';
+      this.stop(record, reason, input.session.id);
+      return { kind: 'deny', reason };
     }
     if (record.snapshot?.state === 'resolved') {
       if (isDeepStrictEqual(record.snapshot.input, input.snapshotInput)) {
         return { kind: 'replay', output: record.snapshot.output };
       }
-      this.stop(record);
-      return { kind: 'deny', reason: 'different-input' };
+      this.stop(record, 'snapshot-input-mismatch', input.session.id);
+      return { kind: 'deny', reason: 'snapshot-input-mismatch' };
     }
     const authority = Object.freeze({});
     record.snapshot = {
@@ -234,37 +490,289 @@ export class DashReviewInvocationStore {
     const match = this.matchingSnapshotAuthority(authority);
     this.snapshotAuthorities.delete(authority);
     if (!match) return false;
-    this.stop(match.record);
+    this.stop(match.record, 'workspace-create-failed', match.record.scope?.childSession?.id);
     return true;
   }
 
   takeCreate(input: {
     session: SessionIdentity;
     agent: string;
+    runtimeVersion: number;
     createInput: Record<string, unknown>;
-  }): ReviewSourceResolution | undefined {
+  }): DashCreateAction {
     const record = this.recordForBoundChild(input.session.id, input.agent);
-    const snapshot = record?.snapshot;
-    if (
-      !record
-      || !this.matchesBoundSession(record.scope!.childSession!, input.session)
-      || snapshot?.state !== 'resolved'
-      || snapshot.createConsumed
-      || !isDeepStrictEqual(snapshot.createInput, input.createInput)
-    ) {
-      if (record && snapshot?.state === 'resolved' && !isDeepStrictEqual(snapshot.createInput, input.createInput)) this.stop(record);
-      return undefined;
+    if (!record) {
+      return {
+        kind: 'deny',
+        reason: this.terminalAudit.get(input.session.id)?.reason ?? 'child-not-bound-to-invocation',
+      };
+    }
+    const invalid = this.validateBoundRecord(record, input.session, input.runtimeVersion);
+    if (invalid) return { kind: 'deny', reason: invalid };
+    const snapshot = record.snapshot;
+    if (snapshot?.state !== 'resolved') {
+      this.stop(record, 'snapshot-not-resolved', input.session.id);
+      return { kind: 'deny', reason: 'snapshot-not-resolved' };
+    }
+    if (snapshot.createConsumed) return { kind: 'deny', reason: 'capability-consumed' };
+    if (!isDeepStrictEqual(snapshot.createInput, input.createInput)) {
+      this.stop(record, 'create-input-mismatch', input.session.id);
+      return { kind: 'deny', reason: 'create-input-mismatch' };
     }
     snapshot.createConsumed = true;
-    return structuredClone(snapshot.sourceResolution);
+    const authority = Object.freeze({});
+    this.createAuthorities.set(authority, {
+      primarySessionID: record.primarySessionID,
+      generation: record.generation,
+    });
+    return {
+      kind: 'execute',
+      sourceResolution: structuredClone(snapshot.sourceResolution),
+      authority,
+    };
+  }
+
+  completeCreate(input: {
+    authority: DashCreateAuthority;
+    runId: string;
+    ownershipToken: string;
+    workspacePath: string;
+  }): boolean {
+    const record = this.matchingCreateAuthority(input.authority);
+    this.createAuthorities.delete(input.authority);
+    if (!record) return false;
+    if (!input.runId || !input.ownershipToken || !path.isAbsolute(input.workspacePath) || record.workspace) return false;
+    record.workspace = {
+      runId: input.runId,
+      ownershipToken: input.ownershipToken,
+      workspacePath: input.workspacePath,
+      claimed: false,
+    };
+    return true;
+  }
+
+  authorizeWorkspaceClaim(input: {
+    primarySessionID: string;
+    primaryAgent: string;
+    runtimeVersion: number;
+    runId: string;
+    ownershipToken: string;
+  }): AuthorizationResult {
+    const primary = this.authorizePrimary({
+      sessionID: input.primarySessionID,
+      primaryAgent: input.primaryAgent,
+      runtimeVersion: input.runtimeVersion,
+    });
+    if ('reason' in primary) return primary;
+    const workspace = this.invocations.get(input.primarySessionID)?.workspace;
+    if (!workspace) return { allowed: false, reason: 'workspace-not-created' };
+    if (workspace.runId !== input.runId || workspace.ownershipToken !== input.ownershipToken) {
+      return { allowed: false, reason: 'workspace-identity-mismatch' };
+    }
+    return primary;
+  }
+
+  recordWorkspaceClaimed(input: {
+    primarySessionID: string;
+    runId: string;
+    ownershipToken: string;
+  }): boolean {
+    const workspace = this.invocations.get(input.primarySessionID)?.workspace;
+    if (!workspace || workspace.runId !== input.runId || workspace.ownershipToken !== input.ownershipToken) return false;
+    workspace.claimed = true;
+    return true;
+  }
+
+  restoreClaimedWorkspace(input: {
+    primarySessionID: string;
+    primaryAgent: string;
+    runtimeVersion: number;
+    runId: string;
+    ownershipToken: string;
+    workspacePath: string;
+  }): boolean {
+    if (
+      !input.primarySessionID
+      || !input.primaryAgent
+      || !Number.isFinite(input.runtimeVersion)
+      || !input.runId
+      || !input.ownershipToken
+      || !path.isAbsolute(input.workspacePath)
+    ) return false;
+    const existing = this.invocations.get(input.primarySessionID);
+    if (existing) {
+      const workspace = existing.workspace;
+      if (
+        existing.primaryAgent !== input.primaryAgent
+        || existing.runtimeVersion !== input.runtimeVersion
+        || !workspace
+        || workspace.runId !== input.runId
+        || workspace.ownershipToken !== input.ownershipToken
+        || workspace.workspacePath !== input.workspacePath
+      ) return false;
+      workspace.claimed = true;
+      return true;
+    }
+    this.terminalAudit.delete(input.primarySessionID);
+    this.invocations.set(input.primarySessionID, {
+      generation: Symbol('dash-review-recovered-invocation'),
+      primarySessionID: input.primarySessionID,
+      primaryAgent: input.primaryAgent,
+      runtimeVersion: input.runtimeVersion,
+      expiresAt: Number.POSITIVE_INFINITY,
+      deepTasks: new Map(),
+      workspace: {
+        runId: input.runId,
+        ownershipToken: input.ownershipToken,
+        workspacePath: input.workspacePath,
+        claimed: true,
+      },
+    });
+    return true;
+  }
+
+  authorizeWorkspaceAccess(input: {
+    primarySessionID: string;
+    primaryAgent: string;
+    runtimeVersion: number;
+    runId: string;
+    ownershipToken: string;
+  }): AuthorizationResult {
+    const claim = this.authorizeWorkspaceClaim(input);
+    if (!claim.allowed) return claim;
+    const workspace = this.invocations.get(input.primarySessionID)!.workspace!;
+    return workspace.claimed ? claim : { allowed: false, reason: 'workspace-not-claimed' };
+  }
+
+  abortCreate(authority: DashCreateAuthority, reason: DashReviewAuthorizationReason): boolean {
+    const record = this.matchingCreateAuthority(authority);
+    this.createAuthorities.delete(authority);
+    if (!record) return false;
+    this.stop(record, reason, record.scope?.childSession?.id);
+    return true;
+  }
+
+  abortForSession(sessionID: string, reason: DashReviewAuthorizationReason): boolean {
+    const primary = this.invocations.get(sessionID);
+    if (primary) {
+      this.stop(primary, reason);
+      return true;
+    }
+    for (const record of this.invocations.values()) {
+      if (this.taskReservations(record).some((reservation) => reservation.childSession?.id === sessionID)) {
+        this.stop(record, reason, sessionID);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  finishScopeTask(input: { primarySessionID: string; callID: string; completed: boolean }): void {
+    const record = this.invocations.get(input.primarySessionID);
+    const reservation = record ? this.taskReservation(record, input.callID) : undefined;
+    if (!record || !reservation) return;
+    if (reservation.kind === 'deep') {
+      record.deepTasks.delete(input.callID);
+      return;
+    }
+    if (!record.workspace || !input.completed) {
+      this.stop(record, 'workspace-create-failed', reservation.childSession?.id ?? reservation.childSessionID);
+    }
+  }
+
+  authorizeLaneChild(input: {
+    sessionID: string;
+    agent: string;
+    runtimeVersion: number;
+  }): DashReviewLaneAuthorization {
+    for (const record of this.invocations.values()) {
+      const reservation = this.taskReservations(record).find((candidate) => (
+        candidate.childSession?.id === input.sessionID
+        && candidate.expectedAgent === input.agent
+      ));
+      if (!reservation) continue;
+      if (record.runtimeVersion !== input.runtimeVersion) {
+        this.stop(record, 'runtime-generated-version-mismatch', input.sessionID);
+        return { allowed: false, reason: 'runtime-generated-version-mismatch' };
+      }
+      if (reservation.childSession?.ended) return { allowed: false, reason: 'session-ended' };
+      if (reservation.kind === 'deep') {
+        if (!record.workspace?.claimed) return { allowed: false, reason: 'workspace-not-claimed' };
+        return { allowed: true, role: 'deep', workspacePath: record.workspace.workspacePath };
+      }
+      return { allowed: true, role: 'scope' };
+    }
+    return {
+      allowed: false,
+      reason: this.terminalAudit.get(input.sessionID)?.reason ?? 'child-not-bound-to-invocation',
+    };
+  }
+
+  releaseForAgentTransition(sessionID: string): boolean {
+    const record = this.invocations.get(sessionID);
+    if (record) this.stop(record, 'primary-agent-mismatch');
+    const audit = this.terminalAudit.get(sessionID);
+    if (!audit) return false;
+    audit.commandAuthorizationReleased = true;
+    return true;
+  }
+
+  completeForSession(sessionID: string): boolean {
+    const record = this.invocations.get(sessionID);
+    if (!record) return false;
+    this.stop(record, 'workspace-cleaned');
+    return true;
   }
 
   revokeForSession(sessionID: string): void {
     const primary = this.invocations.get(sessionID);
-    if (primary) this.stop(primary);
-    for (const record of this.invocations.values()) {
-      if (record.scope?.childSession?.id === sessionID) this.stop(record);
+    if (primary) {
+      this.stop(primary, 'session-ended');
+      return;
     }
+    for (const record of this.invocations.values()) {
+      const reservation = this.taskReservations(record).find((candidate) => candidate.childSession?.id === sessionID);
+      const child = reservation?.childSession;
+      if (!reservation || !child) continue;
+      if (reservation.kind === 'scope' && record.workspace) {
+        child.ended = true;
+        this.recordAudit(sessionID, {
+          reason: 'session-ended',
+          terminatedAt: this.now(),
+          runtimeVersion: record.runtimeVersion,
+        });
+      } else if (reservation.kind === 'scope') {
+        this.stop(record, 'session-ended', sessionID);
+      } else {
+        record.deepTasks.delete(reservation.callID);
+        this.recordAudit(sessionID, {
+          reason: 'session-ended',
+          terminatedAt: this.now(),
+          runtimeVersion: record.runtimeVersion,
+        });
+      }
+      return;
+    }
+  }
+
+  private validateBoundRecord(
+    record: InvocationRecord,
+    session: SessionIdentity,
+    runtimeVersion: number,
+  ): DashReviewAuthorizationReason | undefined {
+    if (record.runtimeVersion !== runtimeVersion) {
+      this.stop(record, 'runtime-generated-version-mismatch', session.id);
+      return 'runtime-generated-version-mismatch';
+    }
+    if (this.isExpired(record)) {
+      this.stop(record, 'capability-expired', session.id);
+      return 'capability-expired';
+    }
+    if (!this.matchesBoundSession(record.scope!.childSession!, session)) {
+      this.stop(record, 'child-not-bound-to-invocation', session.id);
+      return 'child-not-bound-to-invocation';
+    }
+    return undefined;
   }
 
   private matchingSnapshotAuthority(authority: SnapshotAuthority): { record: InvocationRecord } | undefined {
@@ -277,27 +785,72 @@ export class DashReviewInvocationStore {
     return { record };
   }
 
+  private matchingCreateAuthority(authority: DashCreateAuthority): InvocationRecord | undefined {
+    const token = authority && typeof authority === 'object'
+      ? this.createAuthorities.get(authority)
+      : undefined;
+    if (!token) return undefined;
+    const record = this.invocations.get(token.primarySessionID);
+    if (!record || record.generation !== token.generation) return undefined;
+    return record;
+  }
+
   private recordForBoundChild(sessionID: string, agent: string): InvocationRecord | undefined {
     for (const record of this.invocations.values()) {
-      if (record.scope?.childSession?.id === sessionID && record.scope.expectedAgent === agent) return record;
+      if (
+        record.scope?.childSession?.id === sessionID
+        && record.scope.childSession.ended !== true
+        && record.scope.expectedAgent === agent
+      ) return record;
     }
     return undefined;
   }
 
-  private matchesBoundSession(bound: NonNullable<ScopeReservation['childSession']>, session: SessionIdentity): boolean {
+  private taskReservations(record: InvocationRecord): TaskReservation[] {
+    return [
+      ...(record.scope ? [record.scope] : []),
+      ...record.deepTasks.values(),
+    ];
+  }
+
+  private taskReservation(record: InvocationRecord, callID: string): TaskReservation | undefined {
+    if (record.scope?.callID === callID) return record.scope;
+    return record.deepTasks.get(callID);
+  }
+
+  private matchesBoundSession(bound: NonNullable<TaskReservation['childSession']>, session: SessionIdentity): boolean {
     return session.id === bound.id
       && session.parentID === bound.parentID
       && session.time?.created === bound.created;
   }
 
-  private revokeBindingCandidates(candidates: readonly BindingCandidate[]): void {
-    for (const candidate of candidates) {
-      const record = this.invocations.get(candidate.primarySessionID);
-      if (record?.generation === candidate.generation) this.stop(record);
-    }
+  private isExpired(record: InvocationRecord): boolean {
+    return this.now() >= (record.scope?.expiresAt ?? record.expiresAt);
   }
 
-  private stop(record: InvocationRecord): void {
-    if (this.invocations.get(record.primarySessionID) === record) this.invocations.delete(record.primarySessionID);
+  private stop(
+    record: InvocationRecord,
+    reason: DashReviewAuthorizationReason,
+    childSessionID?: string,
+  ): void {
+    if (this.invocations.get(record.primarySessionID) !== record) return;
+    this.invocations.delete(record.primarySessionID);
+    const audit = {
+      reason,
+      terminatedAt: this.now(),
+      runtimeVersion: record.runtimeVersion,
+    };
+    this.recordAudit(record.primarySessionID, audit);
+    if (childSessionID) this.recordAudit(childSessionID, audit);
+  }
+
+  private recordAudit(sessionID: string, audit: TerminalAudit): void {
+    this.terminalAudit.delete(sessionID);
+    this.terminalAudit.set(sessionID, audit);
+    while (this.terminalAudit.size > MAX_AUDIT_SESSIONS) {
+      const oldest = this.terminalAudit.keys().next().value;
+      if (typeof oldest !== 'string') break;
+      this.terminalAudit.delete(oldest);
+    }
   }
 }

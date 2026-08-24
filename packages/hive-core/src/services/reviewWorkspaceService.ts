@@ -121,6 +121,16 @@ export interface ReviewWorkspaceCleanupResult {
   errors: string[];
 }
 
+export interface ReviewWorkspaceAuthorizationRecovery {
+  runId: string;
+  workspacePath: string;
+  workflow: ReviewWorkspaceWorkflow;
+  creatorAgent: string;
+  creatorSessionId: string;
+  ownerAgent?: string;
+  ownerSessionId?: string;
+}
+
 export interface ReviewWorkspaceLease extends ReviewWorkspaceLeaseInput {
   schemaVersion: 1;
   sourceFingerprintVersion: ReviewWorkspaceSourceFingerprintVersion;
@@ -1116,6 +1126,18 @@ export class ReviewWorkspaceService {
     }
   }
 
+  private assertActiveAuthorizationLease(metadata: ReviewWorkspaceMetadata): void {
+    if (metadata.ownerSessionId) {
+      if (metadata.ownerRecoveryExpiresAt !== undefined && this.now >= metadata.ownerRecoveryExpiresAt) {
+        throw new Error('Review workspace owner recovery lease has expired.');
+      }
+      return;
+    }
+    if (this.now >= metadata.handoffExpiresAt!) {
+      throw new Error('Review workspace handoff lease has expired.');
+    }
+  }
+
   private lease(metadata: ReviewWorkspaceMetadata): ReviewWorkspaceLease {
     return {
       schemaVersion: metadata.schemaVersion,
@@ -1641,12 +1663,10 @@ export class ReviewWorkspaceService {
       if (metadata.state !== 'sealed') throw this.metadataError(runId);
       this.assertOwnershipToken(metadata, ownershipToken);
       if (metadata.workflow !== caller.workflow) throw new Error('Review workspace workflow claim was denied.');
+      this.assertActiveAuthorizationLease(metadata);
       if (metadata.ownerSessionId) {
         if (metadata.ownerSessionId !== caller.sessionId || metadata.ownerAgent !== caller.agent) {
           throw new Error('Review workspace is already claimed by another owner.');
-        }
-        if (metadata.ownerRecoveryExpiresAt !== undefined && this.now >= metadata.ownerRecoveryExpiresAt) {
-          throw new Error('Review workspace owner recovery lease has expired.');
         }
         if (metadata.ownerPid !== ownerPid && this.isProcessAlive(metadata.ownerPid!)) {
           throw new Error('Review workspace is already claimed by a live owner process.');
@@ -1690,6 +1710,82 @@ export class ReviewWorkspaceService {
     });
   }
 
+  private async recoverAuthorizationWithPolicy(
+    runId: string,
+    ownershipToken: string,
+    workflow: ReviewWorkspaceWorkflow,
+    requireActiveLease: boolean,
+  ): Promise<ReviewWorkspaceAuthorizationRecovery> {
+    this.assertSafeRunId(runId);
+    return this.withRunLock(runId, async (reviewRoot) => {
+      const metadata = await this.readMetadata(runId);
+      if (!metadata || metadata.state !== 'sealed') throw this.metadataError(runId);
+      this.assertOwnershipToken(metadata, ownershipToken);
+      if (metadata.workflow !== workflow) throw new Error('Review workspace workflow recovery was denied.');
+      if (requireActiveLease) this.assertActiveAuthorizationLease(metadata);
+      const workspacePath = await this.resolveContainedWorkspaceAtRoot(reviewRoot, runId);
+      await this.resolveRepositories(metadata, workspacePath);
+      return {
+        runId,
+        workspacePath,
+        workflow: metadata.workflow,
+        creatorAgent: metadata.creatorAgent,
+        creatorSessionId: metadata.creatorSessionId,
+        ...(metadata.ownerAgent ? { ownerAgent: metadata.ownerAgent } : {}),
+        ...(metadata.ownerSessionId ? { ownerSessionId: metadata.ownerSessionId } : {}),
+      };
+    });
+  }
+
+  async recoverAuthorization(
+    runId: string,
+    ownershipToken: string,
+    workflow: ReviewWorkspaceWorkflow,
+  ): Promise<ReviewWorkspaceAuthorizationRecovery> {
+    return this.recoverAuthorizationWithPolicy(runId, ownershipToken, workflow, true);
+  }
+
+  async recoverOwnerAuthorization(
+    runId: string,
+    ownershipToken: string,
+    caller: ReviewWorkspaceCaller,
+  ): Promise<ReviewWorkspaceAuthorizationRecovery> {
+    this.assertSafeRunId(runId);
+    const ownerPid = this.callerPid(caller);
+    return this.withRunLock(runId, async (reviewRoot) => {
+      const metadata = await this.readMetadata(runId);
+      if (!metadata || metadata.state !== 'sealed') throw this.metadataError(runId);
+      this.assertOwnershipToken(metadata, ownershipToken);
+      this.assertOwnerCaller(metadata, caller);
+      this.assertActiveAuthorizationLease(metadata);
+      if (metadata.ownerPid !== ownerPid && this.isProcessAlive(metadata.ownerPid!)) {
+        throw new Error('Review workspace is already claimed by a live owner process.');
+      }
+      const workspacePath = await this.resolveContainedWorkspaceAtRoot(reviewRoot, runId);
+      await this.resolveRepositories(metadata, workspacePath);
+      metadata.ownerPid = ownerPid;
+      delete metadata.ownerRecoveryExpiresAt;
+      await this.writeMetadata(reviewRoot, metadata);
+      return {
+        runId,
+        workspacePath,
+        workflow: metadata.workflow,
+        creatorAgent: metadata.creatorAgent,
+        creatorSessionId: metadata.creatorSessionId,
+        ownerAgent: metadata.ownerAgent!,
+        ownerSessionId: metadata.ownerSessionId!,
+      };
+    });
+  }
+
+  async recoverCleanupAuthorization(
+    runId: string,
+    ownershipToken: string,
+    workflow: ReviewWorkspaceWorkflow,
+  ): Promise<ReviewWorkspaceAuthorizationRecovery> {
+    return this.recoverAuthorizationWithPolicy(runId, ownershipToken, workflow, false);
+  }
+
   async matchesSourceRepositoryRoots(
     runId: string,
     ownershipToken: string,
@@ -1720,6 +1816,7 @@ export class ReviewWorkspaceService {
       if (metadata.state !== 'sealed' || !metadata.baseline) throw this.metadataError(runId);
       this.assertOwnershipToken(metadata, ownershipToken);
       this.assertOwnerCaller(metadata, caller);
+      this.assertActiveAuthorizationLease(metadata);
       const workspacePath = await this.resolveContainedWorkspaceAtRoot(reviewRoot, runId);
       const repositories = await this.resolveRepositories(metadata, workspacePath);
       const inspections: Record<string, ReviewWorkspaceRepositoryInspection> = {};
@@ -1979,18 +2076,27 @@ export class ReviewWorkspaceService {
     }
   }
 
-  async cleanup(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceCleanupResult> {
+  private async cleanupWithPolicy(
+    runId: string,
+    ownershipToken: string,
+    caller: ReviewWorkspaceCaller,
+    requireExisting: boolean,
+  ): Promise<ReviewWorkspaceCleanupResult> {
     this.assertSafeRunId(runId);
     const reviewRoot = await this.inspectReviewRoot(false);
     const workspacePath = reviewRoot
       ? this.getWorkspacePath(reviewRoot, runId)
       : path.join(await this.projectRoot, '.hive', '.worktrees', 'review', runId);
-    if (!reviewRoot) return { runId, cleaned: true, workspacePath, errors: [] };
+    if (!reviewRoot) {
+      if (requireExisting) throw new Error(`Review workspace not found: ${runId}`);
+      return { runId, cleaned: true, workspacePath, errors: [] };
+    }
 
     const initialMetadata = await this.readMetadata(runId);
     const initialWorkspace = await this.resolveContainedWorkspaceOrNull(reviewRoot, runId);
     if (!initialMetadata) {
       if (initialWorkspace) throw new Error(`Review workspace ${runId} exists without valid metadata; preserved.`);
+      if (requireExisting) throw new Error(`Review workspace not found: ${runId}`);
       return { runId, cleaned: true, workspacePath, errors: [] };
     }
 
@@ -2000,6 +2106,7 @@ export class ReviewWorkspaceService {
       const containedWorkspace = await this.resolveContainedWorkspaceOrNull(reviewRoot, runId);
       if (!metadata) {
         if (containedWorkspace) throw new Error(`Review workspace ${runId} exists without valid metadata; preserved.`);
+        if (requireExisting) throw new Error(`Review workspace not found: ${runId}`);
         return { runId, cleaned: true, workspacePath, errors: [] };
       }
       this.assertOwnershipToken(metadata, ownershipToken);
@@ -2009,6 +2116,14 @@ export class ReviewWorkspaceService {
     } finally {
       await this.releaseRunLock(lock);
     }
+  }
+
+  async cleanup(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceCleanupResult> {
+    return this.cleanupWithPolicy(runId, ownershipToken, caller, false);
+  }
+
+  async cleanupExisting(runId: string, ownershipToken: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceCleanupResult> {
+    return this.cleanupWithPolicy(runId, ownershipToken, caller, true);
   }
 
   async cleanupRecovery(runId: string, caller: ReviewWorkspaceCaller): Promise<ReviewWorkspaceCleanupResult> {

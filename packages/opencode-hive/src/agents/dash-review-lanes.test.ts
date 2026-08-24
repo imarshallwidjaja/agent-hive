@@ -40,14 +40,12 @@ describe('buildDashReviewLanes', () => {
     expect(code?.tools?.hive_plan_read).toBe(true);
     expect(code?.tools?.hive_status).toBe(true);
     expect(code?.permission?.['*']).toBe('deny');
-    expect(code?.permission?.bash).toBe('allow');
+    expect(code?.permission?.bash).toBeUndefined();
     expect(code?.prompt).toContain('enabled dash deep-lane tools');
     expect(code?.prompt).toContain('MCP, Railway, Vercel, and other remote-service tools are not authorized');
-    expect(code?.prompt).toContain('shell effects');
-    expect(code?.prompt).toContain('self-reported');
+    expect(code?.prompt).toContain('Shell');
     expect(code?.prompt).toContain('non-attributable');
     expect(code?.prompt).toContain('generic rollback');
-    expect(code?.prompt).toContain('structured command transcript');
   });
 
   it('generates human-readable review aliases from source identity with deterministic collision suffixes', () => {
@@ -167,7 +165,7 @@ describe('buildDashReviewLanes', () => {
     expect(scope.prompt).toContain('runtime-produced `sourceResolution`');
     expect(scope.prompt).toContain('runtime owns provider candidate OIDs');
     expect(scope.prompt).toContain('Never retry, authorize fallback, change candidate refs, reconstruct provenance');
-    expect(scope.prompt).toContain('structured missing-provider-OID failure');
+    expect(scope.prompt).toContain('missing OID fails when isolated acquisition is unavailable');
     expect(scope.prompt).toContain('dirty-aware change groups');
     expect(scope.prompt).toContain('canonical provenance fingerprint');
     expect(scope.prompt).toContain('Never synthesize provider refs');
@@ -187,9 +185,7 @@ describe('buildDashReviewLanes', () => {
     expect(code.prompt).toContain('Frozen Workspace Review Lane');
     expect(code.prompt).toContain('process cwd is live source');
     expect(code.prompt).toContain('explicit frozen absolute');
-    expect(code.prompt).toContain('workdir');
-    expect(code.prompt).toContain('project_folder');
-    expect(code.prompt).toContain('Never rely on default cwd');
+    expect(code.prompt).toContain('Shell and other tools that can escape');
     expect(code.prompt).toContain('manifest');
     expect(code.prompt).toContain('never guess filenames');
   });

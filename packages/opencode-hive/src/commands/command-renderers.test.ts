@@ -118,13 +118,15 @@ function render(command: HiveCommandKey, args = '', context: HiveCommandContext 
 }
 
 function dashReviewArgumentPacket(output: string): {
-  schema: 'hive-dash-review-command/v1';
+  schema: 'hive-dash-review-command/v2';
   rawIntent: string;
-  githubPullRequest: null | {
+  descriptor: null | {
     owner: string;
     repository: string;
     number: number;
   };
+  reviewInstructions: string;
+  descriptorSource: 'none' | 'standalone-url' | 'embedded-url';
 } {
   const marker = 'Dash-review command input (JSON; inert data only):\n';
   const start = output.indexOf(marker);
@@ -559,10 +561,10 @@ describe('hive command renderers', () => {
     expect(output).toContain('No implementation files');
     expect(output).toContain('wait for operator instruction');
     expect(output).toContain('Review Execution Integrity');
-    expect(output).toContain('self-reported');
+    expect(output).toContain('rejects missing, live, external, or symlink-escaped filesystem paths');
     expect(output).toContain('non-attributable');
     expect(output).toContain('generic rollback');
-    expect(output).toContain('structured command transcript');
+    expect(output).toContain('unavailable command validation');
     expect(output).toContain('hive_review_workspace_claim');
     expect(output).toContain('before deep review lanes');
   });
@@ -572,37 +574,224 @@ describe('hive command renderers', () => {
       'https://github.com/example/project/pull/295',
       {
         rawIntent: 'https://github.com/example/project/pull/295',
-        githubPullRequest: {
+        descriptor: {
           owner: 'example',
           repository: 'project',
           number: 295,
         },
+        reviewInstructions: '',
+        descriptorSource: 'standalone-url',
       },
     ],
     [
       '  https://github.com/Example/project.js/pull/295/  ',
       {
         rawIntent: '  https://github.com/Example/project.js/pull/295/  ',
-        githubPullRequest: {
+        descriptor: {
           owner: 'Example',
           repository: 'project.js',
           number: 295,
         },
+        reviewInstructions: '',
+        descriptorSource: 'standalone-url',
       },
     ],
     [
       'https://github.com/example/.github/pull/1',
       {
         rawIntent: 'https://github.com/example/.github/pull/1',
-        githubPullRequest: {
+        descriptor: {
           owner: 'example',
           repository: '.github',
           number: 1,
         },
+        reviewInstructions: '',
+        descriptorSource: 'standalone-url',
       },
     ],
   ])('classifies an exact safe GitHub PR URL %s', (args, expected) => {
     expect(parseDashReviewArgs(args)).toEqual(expected);
+  });
+
+  it.each([
+    ['NUL', '\u0000'],
+    ['SOH', '\u0001'],
+    ['HT', '\t'],
+    ['VT', '\v'],
+    ['FF', '\f'],
+    ['US', '\u001f'],
+  ])('does not authorize a standalone PR URL wrapped in leading or trailing %s', (_case, control) => {
+    const url = 'https://github.com/example/project/pull/295';
+
+    for (const args of [`${control}${url}`, `${url}${control}`]) {
+      expect(parseDashReviewArgs(args)).toEqual({
+        rawIntent: args,
+        descriptor: null,
+        reviewInstructions: args,
+        descriptorSource: 'none',
+      });
+    }
+  });
+
+  it('extracts one safe embedded PR URL while preserving the NHSD scheduling requirement', () => {
+    const args = 'Review https://github.com/NHSDigital/nhs-login/pull/295 and preserve the NHSD scheduling question.';
+
+    expect(parseDashReviewArgs(args)).toEqual({
+      rawIntent: args,
+      descriptor: {
+        owner: 'NHSDigital',
+        repository: 'nhs-login',
+        number: 295,
+      },
+      reviewInstructions: 'Review and preserve the NHSD scheduling question.',
+      descriptorSource: 'embedded-url',
+    });
+  });
+
+  it('keeps ordinary hyphenated prose and safe punctuation around an embedded PR URL', () => {
+    const args = 'Review retry-safe scheduling: https://github.com/NHSDigital/nhs-login/pull/295, preserving the NHSD question.';
+
+    expect(parseDashReviewArgs(args)).toEqual({
+      rawIntent: args,
+      descriptor: {
+        owner: 'NHSDigital',
+        repository: 'nhs-login',
+        number: 295,
+      },
+      reviewInstructions: 'Review retry-safe scheduling: , preserving the NHSD question.',
+      descriptorSource: 'embedded-url',
+    });
+  });
+
+  it('extracts one safe PR URL from normal inert multiline prose', () => {
+    const args = [
+      'Review the authentication boundary in',
+      'https://github.com/NHSDigital/nhs-login/pull/295',
+      'Keep the existing NHSD scheduling question in scope.',
+    ].join('\n');
+
+    expect(parseDashReviewArgs(args)).toEqual({
+      rawIntent: args,
+      descriptor: {
+        owner: 'NHSDigital',
+        repository: 'nhs-login',
+        number: 295,
+      },
+      reviewInstructions: 'Review the authentication boundary in Keep the existing NHSD scheduling question in scope.',
+      descriptorSource: 'embedded-url',
+    });
+  });
+
+  it.each([
+    [
+      'parenthesized prose',
+      'Review (URL) carefully, then inspect https://github.com/example/project/pull/295.',
+    ],
+    [
+      'contractions and quoted normal words',
+      `Review the maintainer's "target" note, then inspect https://github.com/example/project/pull/295.`,
+    ],
+  ])('keeps embedded PR lookup authorized for ordinary %s', (_case, args) => {
+    expect(parseDashReviewArgs(args)).toMatchObject({
+      descriptor: {
+        owner: 'example',
+        repository: 'project',
+        number: 295,
+      },
+      descriptorSource: 'embedded-url',
+    });
+  });
+
+  it.each([
+    [
+      'parentheses',
+      'Review (https://github.com/example/project/pull/295) carefully.',
+      'Review () carefully.',
+    ],
+    [
+      'trailing comma',
+      'Review https://github.com/example/project/pull/295, carefully.',
+      'Review , carefully.',
+    ],
+  ])('extracts a PR URL at explicit %s boundaries without consuming punctuation', (_case, args, reviewInstructions) => {
+    expect(parseDashReviewArgs(args)).toEqual({
+      rawIntent: args,
+      descriptor: {
+        owner: 'example',
+        repository: 'project',
+        number: 295,
+      },
+      reviewInstructions,
+      descriptorSource: 'embedded-url',
+    });
+  });
+
+  it('uses a trailing colon as a safe URL delimiter without dropping it from reviewer instructions', () => {
+    const args = 'https://github.com/example/project/pull/295: focus auth';
+
+    expect(parseDashReviewArgs(args)).toEqual({
+      rawIntent: args,
+      descriptor: {
+        owner: 'example',
+        repository: 'project',
+        number: 295,
+      },
+      reviewInstructions: ': focus auth',
+      descriptorSource: 'embedded-url',
+    });
+  });
+
+  it.each([
+    ['multiple PR URLs', 'Review https://github.com/example/one/pull/1 against https://github.com/example/two/pull/2'],
+    ['conflicting alternate host', 'Review https://github.com/example/one/pull/1 and https://gitlab.com/example/two/pull/2'],
+    ['javascript pseudo-URL', 'Review javascript:https://github.com/example/one/pull/1 carefully'],
+    ['identifier-prefixed pseudo-URL', 'Review nothttps://github.com/example/one/pull/1 carefully'],
+    ['query', 'Review https://github.com/example/one/pull/1?diff=split carefully'],
+    ['fragment', 'Review https://github.com/example/one/pull/1#discussion carefully'],
+    ['userinfo', 'Review https://user@github.com/example/one/pull/1 carefully'],
+    ['port', 'Review https://github.com:443/example/one/pull/1 carefully'],
+    ['encoded path', 'Review https://github.com/example%2Fother/one/pull/1 carefully'],
+    ['control character', 'Review https://github.com/example/one/pull/1\u0001carefully'],
+    ['shell-like suffix', 'Review https://github.com/example/one/pull/1; gh api /user'],
+  ])('does not authorize provider lookup for embedded %s input', (_case, args) => {
+    expect(parseDashReviewArgs(args)).toEqual({
+      rawIntent: args,
+      descriptor: null,
+      reviewInstructions: args,
+      descriptorSource: 'none',
+    });
+  });
+
+  it.each([
+    ['single background operator', 'Review https://github.com/example/one/pull/1 & gh api /user'],
+    ['attached background operator', 'Review https://github.com/example/one/pull/1 then x&gh api /user'],
+    ['pipe operator', 'Review https://github.com/example/one/pull/1 | gh api /user'],
+    ['attached pipe operator', 'Review https://github.com/example/one/pull/1 then x|gh api /user'],
+    ['redirection operator', 'Review https://github.com/example/one/pull/1 > /tmp/result'],
+    ['file-descriptor output redirection', 'Review https://github.com/example/one/pull/1 2>/tmp/result'],
+    ['file-descriptor input redirection', 'Review https://github.com/example/one/pull/1 3</tmp/input'],
+    ['command substitution', 'Review https://github.com/example/one/pull/1 $(gh api /user)'],
+    ['parameter substitution', 'Review https://github.com/example/one/pull/1 ${HOME}'],
+    ['unbraced parameter substitution', 'Review https://github.com/example/one/pull/1 $HOME'],
+    ['backtick substitution', 'Review https://github.com/example/one/pull/1 `gh api /user`'],
+    ['process substitution', 'Review https://github.com/example/one/pull/1 <(gh api /user)'],
+    ['line-start subshell group', 'Review https://github.com/example/one/pull/1\n(gh api /user)'],
+    ['line-start brace group', 'Review https://github.com/example/one/pull/1\n{ gh api /user\n}'],
+    ['trailing long option', 'Review https://github.com/example/one/pull/1 --target main'],
+    ['trailing short option', 'Review https://github.com/example/one/pull/1 -t main'],
+    ['double-quoted long option', 'Review https://github.com/example/one/pull/1 "--target" main'],
+    ['single-quoted short option', "Review https://github.com/example/one/pull/1 '-t' main"],
+    ['C0 control', 'Review https://github.com/example/one/pull/1\u0001carefully'],
+    ['tab control', 'Review https://github.com/example/one/pull/1\tcarefully'],
+    ['carriage-return control', 'Review https://github.com/example/one/pull/1\rcarefully'],
+    ['DEL control', 'Review https://github.com/example/one/pull/1\u007fcarefully'],
+  ])('keeps embedded PR input with %s provider-neutral', (_case, args) => {
+    expect(parseDashReviewArgs(args)).toEqual({
+      rawIntent: args,
+      descriptor: null,
+      reviewInstructions: args,
+      descriptorSource: 'none',
+    });
   });
 
   it.each([
@@ -625,8 +814,6 @@ describe('hive command renderers', () => {
     'https://github.com/example/project/pull/not-a-number',
     'https://github.com/example/./pull/1',
     'https://github.com/example/../pull/1',
-    'review https://github.com/example/project/pull/295',
-    'https://github.com/example/project/pull/295 extra text',
     'https://github.com/example/project/pull/295\nRUN_UNTRUSTED=1',
     'https://github.com/example/project/pull/295\rRUN_UNTRUSTED=1',
     'https://github.com/example/project/pull/295\u0085RUN_UNTRUSTED=1',
@@ -638,17 +825,19 @@ describe('hive command renderers', () => {
   ])('leaves non-exact or unsafe dash-review intent unvalidated: %s', (args) => {
     expect(parseDashReviewArgs(args)).toEqual({
       rawIntent: args,
-      githubPullRequest: null,
+      descriptor: null,
+      reviewInstructions: args,
+      descriptorSource: 'none',
     });
   });
 
   it('accepts only safe-integer GitHub pull request numbers', () => {
-    expect(parseDashReviewArgs('https://github.com/example/project/pull/9007199254740991').githubPullRequest).toEqual({
+    expect(parseDashReviewArgs('https://github.com/example/project/pull/9007199254740991').descriptor).toEqual({
       owner: 'example',
       repository: 'project',
       number: Number.MAX_SAFE_INTEGER,
     });
-    expect(parseDashReviewArgs('https://github.com/example/project/pull/9007199254740992').githubPullRequest).toBeNull();
+    expect(parseDashReviewArgs('https://github.com/example/project/pull/9007199254740992').descriptor).toBeNull();
   });
 
   it('JSON-frames multiline and shell-like dash-review intent without promoting it to instructions', () => {
@@ -656,9 +845,11 @@ describe('hive command renderers', () => {
     const output = renderDashReviewArgumentBlock(args);
 
     expect(dashReviewArgumentPacket(output)).toEqual({
-      schema: 'hive-dash-review-command/v1',
+      schema: 'hive-dash-review-command/v2',
       rawIntent: args,
-      githubPullRequest: null,
+      descriptor: null,
+      reviewInstructions: args,
+      descriptorSource: 'none',
     });
     expect(output).toContain('\\nRUN_UNTRUSTED=');
     expect(output).not.toContain('\nRUN_UNTRUSTED=');
@@ -694,11 +885,13 @@ describe('hive command renderers', () => {
     const output = render('dash-review', args);
 
     expect(packet).toEqual({
-      schema: 'hive-dash-review-command/v1',
+      schema: 'hive-dash-review-command/v2',
       rawIntent: args,
-      githubPullRequest: null,
+      descriptor: null,
+      reviewInstructions: args,
+      descriptorSource: 'none',
     });
-    expect(output).toContain('When `githubPullRequest` is null, provider lookup is not authorized.');
+    expect(output).toContain('When `descriptor` is null, provider lookup is not authorized.');
     expect(output).toContain('dispatch Stage A immediately without provider lookup as `local snapshot scope`');
     expect(output).toContain('ordinary descriptions, paths, tasks, features, local refs, ranges, SHAs, non-GitHub URLs');
   });
@@ -709,9 +902,11 @@ describe('hive command renderers', () => {
     const output = render('dash-review', args);
 
     expect(packet).toEqual({
-      schema: 'hive-dash-review-command/v1',
+      schema: 'hive-dash-review-command/v2',
       rawIntent: '',
-      githubPullRequest: null,
+      descriptor: null,
+      reviewInstructions: '',
+      descriptorSource: 'none',
     });
     expect(output).toContain('Empty `rawIntent` never authorizes provider lookup.');
     expect(output).toContain('existing no-argument local inference semantics');
@@ -722,16 +917,18 @@ describe('hive command renderers', () => {
     const args = 'https://github.com/example/project/pull/295';
     const output = render('dash-review', args);
 
-    expect(dashReviewArgumentPacket(renderDashReviewArgumentBlock(args)).githubPullRequest).toEqual({
+    expect(dashReviewArgumentPacket(renderDashReviewArgumentBlock(args)).descriptor).toEqual({
       owner: 'example',
       repository: 'project',
       number: 295,
     });
     expect(output).toContain('Runtime-owned provider enrichment:');
     expect(output).toContain('runtime, not the primary or scope model');
-    expect(output).toContain('at most one bounded non-interactive hostname-pinned `gh api` argument vector');
+    expect(output).toContain('one bounded non-interactive hostname-pinned `gh api` argument vector for initial metadata');
+    expect(output).toContain('one identical bounded freshness request immediately before materialization');
     expect(output).toContain('never passes `rawIntent`');
-    expect(output).toContain('structured missing-ref for its expected base/head OID');
+    expect(output).toContain('or `reviewInstructions`');
+    expect(output).toContain('`provider-oid-unavailable`');
     expect(output).toContain('runtime-produced `sourceResolution`');
     expect(output).toContain('must not perform provider CLI or network lookup, authorize fallback');
     expect(output).not.toContain('gh pr view');
@@ -754,21 +951,21 @@ describe('hive command renderers', () => {
       ]);
     expect(output).toContain('provider `baseSha` and `headSha`');
     expect(output).toContain('successful snapshot of those exact SHAs');
-    expect(output).toContain('runtime local-checkout fallback branches');
-    expect(output).toContain('provider lookup is unavailable, the runtime directly captures the local checkout');
-    expect(output).toContain('every failed selected repository reports a structured missing-ref for its expected base/head OID');
-    expect(output).toContain('strict failure denies fallback regardless of completion order');
-    expect(output).toContain('before one local-checkout retry');
+    expect(output).toContain('If provider lookup is unavailable, the runtime may directly capture an `unverified local checkout`');
+    expect(output).toContain('provider metadata resolves, use its exact base/head OIDs');
+    expect(output).toContain('fail explicitly with `provider-oid-unavailable` instead of using a stale local fallback');
+    expect(output).toContain('provider-head movement');
+    expect(output).toContain('failed freshness revalidation');
     expect(output).toContain('unverified local checkout');
-    expect(output).toContain('resolved `comparisonTarget`');
-    expect(output).toContain('current HEAD commit SHA');
-    expect(output).toContain('dirty fingerprint/provenance');
+    expect(output).toContain('`comparisonTarget`');
+    expect(output).toContain('`currentHead`');
+    expect(output).toContain('`dirtyFingerprint`');
     expect(output).toContain('synthesizes provider refs');
-    expect(output).toContain('fetches');
+    expect(output).toContain('fetches into the live checkout');
     expect(output).toContain('FETCH_HEAD');
     expect(output).toContain('index, worktree, or Git configuration');
-    expect(output).toContain('explicit operator-supplied refs');
-    expect(output).toContain('invalid explicit local refs fail');
+    expect(output).toContain('Explicit non-PR command scope uses strict existing snapshot semantics');
+    expect(output).toContain('Invalid explicit local refs fail');
     expect(output).toContain('must never fall back');
     expect(output).toContain('PR identity was not verified');
     expect(output).toContain('not proven to match the PR URL');
@@ -787,7 +984,7 @@ describe('hive command renderers', () => {
     expect([...claim![1]!.matchAll(/`([^`]+)`/g)].map((match) => match[1])).toEqual(
       REVIEW_ROLE_POLICIES['dash-review:deep'].tools,
     );
-    expect(output).toContain('No MCP, Railway, Vercel, or other remote-service capability is authorized');
+    expect(output).toContain('No shell, MCP, Railway, Vercel, or other remote-service capability is authorized');
     expect(output).not.toContain('Read-only Railway/Vercel');
   });
 
@@ -809,14 +1006,15 @@ describe('hive command renderers', () => {
         expect(section).toContain(state);
       }
       expect(section).toContain('comparisonTarget');
-      expect(section).toContain('current HEAD commit SHA');
-      expect(section).toContain('dirty fingerprint/provenance');
-      expect(section).toContain('fallback reason');
+      expect(section).toContain('currentHead');
+      expect(section).toContain('dirtyFingerprint');
+      expect(section).toContain('fallbackReason');
     }
-    expect(output).toContain('descriptor owner/repository/number');
-    expect(output).toContain('metadata outcome');
-    expect(output).toContain('`baseSha`/`headSha`');
-    expect(output).toContain('snapshot attempt outcome');
+    expect(output).toContain('`descriptor`');
+    expect(output).toContain('`metadataOutcome`');
+    expect(output).toContain('`baseSha`');
+    expect(output).toContain('`headSha`');
+    expect(output).toContain('`snapshotAttemptOutcome`');
   });
 
   it('renders dash-review routing from configured reviewer descriptors without hardcoded specialist names', () => {
@@ -883,7 +1081,7 @@ describe('hive command renderers', () => {
     expect(bootstrap).toContain('materialized workspace fingerprint');
     expect(bootstrap).toContain('without claim');
     expect(bootstrap).not.toContain('supplied frozen manifest');
-    expect(downstream).toContain('supplied frozen manifest, workspace paths, and snapshot ID');
+    expect(downstream).toContain('supplied frozen manifest, workspace paths, snapshot ID, reviewer requirements');
     expect(downstream).toContain('process cwd is live source');
     expect(downstream).toContain('explicit frozen absolute');
     expect(downstream).toContain('workdir');
@@ -901,6 +1099,9 @@ describe('hive command renderers', () => {
     const output = render('dash-review', 'api change');
 
     expect(output).toContain('post-expansion command hook appends one authoritative');
+    expect(output).toContain('Safe LF-separated inert prose with exactly one bounded safe PR URL authorizes provider lookup.');
+    expect(output).toContain('Unsafe controls or shell-shaped multiline input remains provider-neutral.');
+    expect(output).not.toContain('multiline or control content');
     expect(output).not.toContain('$ARGUMENTS');
   });
 

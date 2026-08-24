@@ -1,4 +1,4 @@
-export const REVIEW_SOURCE_RESOLUTION_BOUNDARY = 'Provider outcome, snapshot resolution, fallback authority, and provenance are runtime-owned. Preserve the returned sourceResolution unchanged. Never fetch, checkout, synthesize or mutate refs, FETCH_HEAD, the index, worktree, or Git configuration.';
+export const REVIEW_SOURCE_RESOLUTION_BOUNDARY = 'Provider outcome, exact-OID snapshot resolution, freshness revalidation, and provenance are runtime-owned. Preserve the returned sourceResolution and compact provenance envelope unchanged. Never fetch, checkout, synthesize or mutate live refs, FETCH_HEAD, the index, worktree, or Git configuration.';
 
 export const REVIEW_FROZEN_WORKSPACE_BOUNDARY = 'Use only the supplied frozen absolute workspace paths. Process cwd is live source and is never an authorized source path. Do not roll back live source or review-workspace state.';
 

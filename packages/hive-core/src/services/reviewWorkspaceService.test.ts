@@ -524,6 +524,37 @@ describe('ReviewWorkspaceService', () => {
     await expect(fs.access(workspace.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('rejects claim and authorization recovery exactly at persisted creator handoff expiry', async () => {
+    const source = await createRepository('sealed-handoff-authority-expiry');
+    let now = 1_000;
+    const service = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+    });
+    const workspace = await createWorkspace(service, {
+      runId: 'review-sealed-handoff-authority-expiry',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+
+    now = 1_100;
+
+    await expect(service.recoverAuthorization(
+      workspace.runId,
+      workspace.ownershipToken,
+      'dash-review',
+    )).rejects.toThrow('handoff lease has expired');
+    await expect(service.claim(
+      workspace.runId,
+      workspace.ownershipToken,
+      primaryCaller(),
+    )).rejects.toThrow('handoff lease has expired');
+    await expect(service.cleanup(
+      workspace.runId,
+      workspace.ownershipToken,
+      creatorCaller,
+    )).resolves.toMatchObject({ cleaned: true });
+  });
+
   it('sweeps an unclaimed sealed workspace when its creator PID is dead', async () => {
     const source = await createRepository('sealed-creator-dead');
     const service = createReviewWorkspaceService(source.path, { isProcessAlive: () => false });
@@ -1312,6 +1343,114 @@ describe('ReviewWorkspaceService', () => {
     });
     expect(await restartedService.read(workspace.runId, workspace.ownershipToken, adoptedOwner)).not.toHaveProperty('ownerRecoveryExpiresAt');
     await restartedService.cleanup(workspace.runId, workspace.ownershipToken, adoptedOwner);
+  });
+
+  it('atomically recovers the exact dead owner into the current runtime before the recovery lease expires', async () => {
+    const source = await createRepository('dead-owner-authorization-recovery');
+    let now = 1_000;
+    const service = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+      isProcessAlive: (pid: number) => pid === process.pid,
+    });
+    const workspace = await createWorkspace(service, {
+      runId: 'review-dead-owner-authorization-recovery',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    await service.claim(workspace.runId, workspace.ownershipToken, primaryCaller('recovered-owner', 4242));
+    await service.cleanupExpired();
+    expect(JSON.parse(await fs.readFile(reviewMetadataPath(source.path, workspace.runId), 'utf8')).ownerRecoveryExpiresAt).toBe(1_100);
+
+    now = 1_050;
+    const restartedService = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+      isProcessAlive: (pid: number) => pid === process.pid,
+    });
+    const owner = primaryCaller('recovered-owner');
+    await expect(restartedService.recoverOwnerAuthorization(
+      workspace.runId,
+      'wrong-token',
+      owner,
+    )).rejects.toThrow('ownership token');
+    await expect(restartedService.recoverOwnerAuthorization(
+      workspace.runId,
+      workspace.ownershipToken,
+      primaryCaller('wrong-owner'),
+    )).rejects.toThrow('owner capability');
+
+    await expect(restartedService.recoverOwnerAuthorization(
+      workspace.runId,
+      workspace.ownershipToken,
+      owner,
+    )).resolves.toMatchObject({
+      runId: workspace.runId,
+      workflow: 'dash-review',
+      ownerSessionId: owner.sessionId,
+      ownerAgent: owner.agent,
+    });
+    expect(await restartedService.read(workspace.runId, workspace.ownershipToken, owner)).toMatchObject({
+      ownerPid: process.pid,
+    });
+    expect(await restartedService.read(workspace.runId, workspace.ownershipToken, owner)).not.toHaveProperty('ownerRecoveryExpiresAt');
+
+    now = 1_101;
+    await restartedService.cleanupExpired();
+    await expect(restartedService.inspect(workspace.runId, workspace.ownershipToken, owner)).resolves.toMatchObject({
+      runId: workspace.runId,
+    });
+    await restartedService.cleanup(workspace.runId, workspace.ownershipToken, owner);
+  });
+
+  it('rejects claimed authority exactly at persisted owner recovery expiry after restart', async () => {
+    const source = await createRepository('dead-owner-authority-expiry');
+    const setupService = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(setupService, {
+      runId: 'review-dead-owner-authority-expiry',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    const ownerSessionId = 'expired-owner-session';
+    const ownerPid = 4242;
+    await setupService.claim(
+      workspace.runId,
+      workspace.ownershipToken,
+      primaryCaller(ownerSessionId, ownerPid),
+    );
+    let now = 1_000;
+    const recoveryService = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+      isProcessAlive: (pid: number) => pid === process.pid,
+    });
+    await recoveryService.cleanupExpired();
+    now = 1_100;
+    const restartedService = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+      isProcessAlive: (pid: number) => pid === process.pid,
+    });
+    const owner = primaryCaller(ownerSessionId);
+
+    await expect(restartedService.recoverAuthorization(
+      workspace.runId,
+      workspace.ownershipToken,
+      'dash-review',
+    )).rejects.toThrow('owner recovery lease has expired');
+    await expect(restartedService.inspect(
+      workspace.runId,
+      workspace.ownershipToken,
+      owner,
+    )).rejects.toThrow('owner recovery lease has expired');
+    await expect(restartedService.claim(
+      workspace.runId,
+      workspace.ownershipToken,
+      primaryCaller(owner.sessionId),
+    )).rejects.toThrow('owner recovery lease has expired');
+    await expect(restartedService.cleanup(
+      workspace.runId,
+      workspace.ownershipToken,
+      owner,
+    )).resolves.toMatchObject({ cleaned: true });
   });
 
   it('rejects owner adoption by a live competing PID or mismatched capability', async () => {

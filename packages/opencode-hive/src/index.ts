@@ -335,11 +335,15 @@ import {
 } from './vulnerability-review-invocation.js';
 import type { AcceptedCandidate } from './vulnerability-review-invocation.js';
 import { DashReviewInvocationStore } from './dash-review-invocation.js';
+import type { DashCreateAuthority } from './dash-review-invocation.js';
 import {
   collectReviewSnapshotSet,
+  revalidateReviewProviderHead,
+  reviewProvenanceEnvelope,
   REVIEW_SOURCE_RESOLUTION_ADAPTERS,
   resolveFixedVulnerabilityReviewSourceInput,
   resolveReviewSource,
+  serializeReviewSnapshotOutput,
 } from './review-source-resolution.js';
 import type { ReviewSourceRequest, ReviewSourceResolution } from './review-source-resolution.js';
 import {
@@ -373,6 +377,76 @@ import {
   injectTaskTraceHint,
   TASK_TRACE_SUMMARIZER_AGENT,
 } from './task-trace.js';
+
+const DASH_REVIEW_LIFECYCLE_TOOLS = new Set([
+  'task', 'question', 'hive_git_snapshot', 'hive_review_workspace_create',
+  'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup',
+]);
+const DASH_REVIEW_PERSISTED_RECOVERY_TOOLS = new Set([
+  'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup',
+]);
+
+function taskChildSessionID(metadata: unknown): string | undefined {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+  const value = (metadata as Record<string, unknown>).sessionId;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function runtimeTaskChildBinding(event: unknown): {
+  primarySessionID: string;
+  callID: string;
+  childSessionID: string;
+  expectedAgent?: string;
+} | undefined {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) return undefined;
+  const record = event as Record<string, unknown>;
+  if (record.type !== 'message.part.updated' || !record.properties || typeof record.properties !== 'object') return undefined;
+  const part = (record.properties as Record<string, unknown>).part;
+  if (!part || typeof part !== 'object' || Array.isArray(part)) return undefined;
+  const toolPart = part as Record<string, unknown>;
+  if (toolPart.type !== 'tool' || toolPart.tool !== 'task') return undefined;
+  const state = toolPart.state && typeof toolPart.state === 'object' && !Array.isArray(toolPart.state)
+    ? toolPart.state as Record<string, unknown>
+    : undefined;
+  const metadata = taskChildSessionID(toolPart.metadata) ?? taskChildSessionID(state?.metadata);
+  const taskInput = state?.input && typeof state.input === 'object' && !Array.isArray(state.input)
+    ? state.input as Record<string, unknown>
+    : undefined;
+  if (typeof toolPart.sessionID !== 'string' || typeof toolPart.callID !== 'string' || !metadata) return undefined;
+  return {
+    primarySessionID: toolPart.sessionID,
+    callID: toolPart.callID,
+    childSessionID: metadata,
+    ...(typeof taskInput?.subagent_type === 'string' ? { expectedAgent: taskInput.subagent_type } : {}),
+  };
+}
+
+async function assertFrozenWorkspaceToolBoundary(
+  toolName: string,
+  args: Record<string, unknown> | undefined,
+  workspacePath: string,
+): Promise<void> {
+  const field = toolName === 'read' ? 'filePath' : toolName === 'glob' || toolName === 'grep' ? 'path' : undefined;
+  if (!field) return;
+  const candidate = args?.[field];
+  if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) {
+    throw new Error(`dash-review frozen workspace authorization requires an absolute ${field}.`);
+  }
+  let root: string;
+  let target: string;
+  try {
+    [root, target] = await Promise.all([
+      fs.promises.realpath(workspacePath),
+      fs.promises.realpath(candidate),
+    ]);
+  } catch {
+    throw new Error('dash-review frozen workspace authorization could not verify the requested path.');
+  }
+  const relative = path.relative(root, target);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('dash-review frozen workspace authorization denied a live or external source path.');
+  }
+}
 
 function renderSubagentRoutingCard(
   name: string,
@@ -529,6 +603,11 @@ const plugin: Plugin = async (ctx) => {
   let runtimeBackgroundGuidance: BackgroundDelegationAvailability = { available: false, reason: 'availability-unknown' };
   let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
   let runtimeDashReviewLanes: HiveCommandDashReviewLane[] = [];
+  let runtimeDashReviewVersion = 0;
+  let runtimeDashReviewCommandBinding: {
+    agent: string;
+    runtimeVersion: number;
+  } | undefined;
   let runtimeVulnerabilityReviewLanes: VulnerabilityReviewLane[] = [];
   let runtimeArchitectTaskTargets = new Set<string>();
   const runtimeTaskChildSessions = new Set<string>();
@@ -596,6 +675,61 @@ const plugin: Plugin = async (ctx) => {
       taskTarget: lane.taskTarget,
     })),
   ];
+  const recoverDashWorkspaceAuthorization = async (
+    runId: string,
+    ownershipToken: string,
+    caller: ReturnType<typeof inferReviewWorkspaceCaller>,
+  ) => {
+    if (caller.workflow !== 'dash-review' || caller.role !== 'primary') {
+      throw new Error('Review workspace recovery was denied.');
+    }
+    const recovered = await reviewWorkspaceService.recoverAuthorization(
+      runId,
+      ownershipToken,
+      'dash-review',
+    );
+    if (recovered.ownerSessionId || recovered.ownerAgent) {
+      if (recovered.ownerSessionId !== caller.sessionId || recovered.ownerAgent !== caller.agent) {
+        throw new Error('Review workspace recovery was denied.');
+      }
+      return recovered;
+    }
+    const scopeAgents = new Set(runtimeDashReviewLanes
+      .filter((lane) => lane.baseAgent === 'scout-researcher')
+      .map((lane) => lane.taskTarget));
+    if (!scopeAgents.has(recovered.creatorAgent)) throw new Error('Review workspace recovery was denied.');
+    const creatorSession = await client.session.get({
+      path: { id: recovered.creatorSessionId },
+      query: { directory },
+    });
+    if (
+      creatorSession.data?.id !== recovered.creatorSessionId
+      || creatorSession.data.parentID !== caller.sessionId
+    ) {
+      throw new Error('Review workspace recovery was denied.');
+    }
+    return recovered;
+  };
+  const recoverDashWorkspaceCleanupAuthorization = async (
+    runId: string,
+    ownershipToken: string,
+    caller: ReturnType<typeof inferReviewWorkspaceCaller>,
+  ) => {
+    if (caller.workflow !== 'dash-review' || caller.role !== 'primary') {
+      throw new Error('Review workspace cleanup recovery was denied.');
+    }
+    const recovered = await reviewWorkspaceService.recoverCleanupAuthorization(
+      runId,
+      ownershipToken,
+      'dash-review',
+    );
+    if (
+      recovered.ownerSessionId !== caller.sessionId
+      || recovered.ownerAgent !== caller.agent
+    ) {
+      throw new Error('Review workspace cleanup recovery was denied.');
+    }
+  };
   const vulnerabilityPrimaryCaller = (sessionId: string) => ({
     workflow: 'vulnerability-review' as const,
     role: 'primary' as const,
@@ -1784,6 +1918,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
   return {
     event: async (input) => {
+      const dashTaskBinding = runtimeTaskChildBinding(input.event);
+      if (dashTaskBinding) {
+        dashReviewInvocations.bindTaskChild({
+          ...dashTaskBinding,
+          runtimeVersion: runtimeDashReviewVersion,
+        });
+      }
       const ephemeralEventSessionID = (input.event as { properties?: { sessionID?: string; info?: { id?: string } } }).properties?.sessionID
         ?? (input.event as { properties?: { info?: { id?: string } } }).properties?.info?.id;
       if (ephemeralEventSessionID && taskTraceEphemeralSessionIDs.has(ephemeralEventSessionID)) return;
@@ -1868,21 +2009,41 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         if (output.message.variant === undefined && taskTraceConfig.variant) output.message.variant = taskTraceConfig.variant;
         return;
       }
+      const observedDashAgent = input.agent ?? output.message.agent;
+      if (
+        observedDashAgent
+        && observedDashAgent !== DASH_REVIEW_PRIMARY_AGENT
+        && (
+          dashReviewInvocations.hasActiveInvocation(input.sessionID)
+          || dashReviewInvocations.hasTerminalPrimaryAuthorization(input.sessionID)
+        )
+      ) {
+        dashReviewInvocations.releaseForAgentTransition(input.sessionID);
+      } else if (dashReviewInvocations.hasActiveInvocation(input.sessionID)) {
+          const confirmation = dashReviewInvocations.confirmPrimaryIdentity({
+            sessionID: input.sessionID,
+            observedAgent: observedDashAgent,
+            runtimeVersion: runtimeDashReviewVersion,
+          });
+          if ('reason' in confirmation) {
+            throw new Error(`dash-review command routing denied: ${confirmation.reason}.`);
+          }
+      }
       if (
         vulnerabilityReviewPendingCommandSessions.has(input.sessionID)
         && input.agent === VULNERABILITY_REVIEW_PRIMARY_AGENT
       ) {
         vulnerabilityReviewPendingCommandSessions.delete(input.sessionID);
       }
-      const dashScope = runtimeDashReviewLanes.find((lane) => lane.baseAgent === 'scout-researcher')?.taskTarget;
-      const dashBinding = dashScope
-        && input.agent === dashScope
-        && output.message.agent === dashScope
-        ? dashReviewInvocations.beginConsumerBinding({
-            childSessionID: input.sessionID,
-            inputAgent: input.agent,
-            messageAgent: output.message.agent,
-          })
+      const dashLane = runtimeDashReviewLanes.find((lane) => lane.taskTarget === input.agent);
+      const dashBinding = dashLane
+        && output.message.agent === dashLane.taskTarget
+          ? dashReviewInvocations.beginConsumerBinding({
+              childSessionID: input.sessionID,
+              inputAgent: dashLane.taskTarget,
+              messageAgent: output.message.agent,
+              runtimeVersion: runtimeDashReviewVersion,
+            })
         : undefined;
       if (dashBinding) {
         try {
@@ -1941,9 +2102,16 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           vulnerabilityReviewInvocations.revokeConsumerBinding(binding);
         }
       }
+      const dashPrimaryIdentity = input.agent === DASH_REVIEW_PRIMARY_AGENT
+        ? dashReviewInvocations.authorizePrimary({
+            sessionID: input.sessionID,
+            primaryAgent: DASH_REVIEW_PRIMARY_AGENT,
+            runtimeVersion: runtimeDashReviewVersion,
+          })
+        : undefined;
       const variantHook = createVariantHook(
         configService,
-        sessionService,
+        dashPrimaryIdentity?.allowed ? undefined : sessionService,
         customAgentConfigsForClassification,
         taskWorkerRecovery,
       );
@@ -2096,11 +2264,20 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
     "command.execute.before": async (input, output) => {
       if (input.command === 'dash-review') {
+        const commandBinding = runtimeDashReviewCommandBinding;
+        if (!commandBinding) {
+          throw new Error('dash-review command routing denied: missing-primary-runtime-identity.');
+        }
+        if (commandBinding.agent !== DASH_REVIEW_PRIMARY_AGENT) {
+          throw new Error('dash-review command routing denied: primary-agent-mismatch.');
+        }
         const parsed = parseDashReviewArgs(input.arguments);
-        dashReviewInvocations.replaceInvocation(
-          input.sessionID,
-          REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parsed),
-        );
+        dashReviewInvocations.replaceInvocation({
+          primarySessionID: input.sessionID,
+          primaryAgent: commandBinding.agent,
+          runtimeVersion: commandBinding.runtimeVersion,
+          request: REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parsed),
+        });
         output.parts.push({
           type: 'text',
           text: `\n\n${renderDashReviewArgumentBlock(input.arguments)}`,
@@ -2147,13 +2324,56 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       if (taskTraceEphemeralSessionIDs.has(input.sessionID)) {
         throw new Error('Task trace summarizer tools are disabled.');
       }
-      const caller = input.sessionID ? sessionService.getGlobal(input.sessionID)?.agent : undefined;
+      const storedCaller = input.sessionID ? sessionService.getGlobal(input.sessionID)?.agent : undefined;
+      const dashPrimaryIdentity = input.sessionID
+        ? dashReviewInvocations.authorizePrimary({
+            sessionID: input.sessionID,
+            primaryAgent: DASH_REVIEW_PRIMARY_AGENT,
+            runtimeVersion: runtimeDashReviewVersion,
+          })
+        : { allowed: false as const, reason: 'missing-primary-runtime-identity' as const };
+      const caller = dashPrimaryIdentity.allowed ? dashPrimaryIdentity.agent : storedCaller;
+      const dashPrimaryDenialReason = 'reason' in dashPrimaryIdentity
+        ? dashPrimaryIdentity.reason
+        : undefined;
+      const terminalDashReason = input.sessionID
+        ? dashReviewInvocations.terminalReasonForSession(input.sessionID)
+        : undefined;
+      const storedDashLane = runtimeDashReviewLanes.find((lane) => lane.taskTarget === storedCaller);
+      const isPersistedDashWorkspaceRecovery = storedCaller === DASH_REVIEW_PRIMARY_AGENT
+        && dashPrimaryDenialReason === 'invocation-not-registered'
+        && DASH_REVIEW_PERSISTED_RECOVERY_TOOLS.has(input.tool);
+      if (
+        DASH_REVIEW_LIFECYCLE_TOOLS.has(input.tool)
+        && !dashPrimaryIdentity.allowed
+        && !isPersistedDashWorkspaceRecovery
+        && (
+          storedCaller === DASH_REVIEW_PRIMARY_AGENT
+          || dashReviewInvocations.hasTerminalPrimaryAuthorization(input.sessionID)
+          || (storedDashLane !== undefined && terminalDashReason !== undefined)
+        )
+      ) {
+        throw new Error(`dash-review lifecycle authorization denied: ${terminalDashReason ?? dashPrimaryDenialReason}`);
+      }
       const runtimeReviewLanes = reviewRuntimeLanes();
       const callerPolicy = resolveReviewCallerPolicy(caller, runtimeReviewLanes);
       const vulnerabilityReviewRole = callerPolicy?.workflow === 'vulnerability-review' ? callerPolicy.role : undefined;
       const dashReviewRole = callerPolicy?.workflow === 'dash-review' ? callerPolicy.role : undefined;
-      if (dashReviewInvocations.isCommandSession(input.sessionID) && !dashReviewRole) {
-        throw new Error('dash-review tool authorization failed closed: exact primary caller identity is unavailable.');
+      const dashLaneAuthorization = dashReviewRole === 'scope' || dashReviewRole === 'deep'
+        ? dashReviewInvocations.authorizeLaneChild({
+            sessionID: input.sessionID,
+            agent: caller!,
+            runtimeVersion: runtimeDashReviewVersion,
+          })
+        : undefined;
+      if (dashLaneAuthorization && 'reason' in dashLaneAuthorization) {
+        throw new Error(`dash-review lane authorization denied: ${dashLaneAuthorization.reason}`);
+      }
+      if (
+        dashLaneAuthorization?.allowed
+        && dashLaneAuthorization.role !== dashReviewRole
+      ) {
+        throw new Error('dash-review lane authorization denied: child-not-bound-to-invocation');
       }
       if (caller && callerPolicy) {
         const decision = authorizeReviewTool({
@@ -2170,6 +2390,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             throw new Error(`${callerPolicy.workflow} tool is not authorized: ${input.tool} (${decision.reason})`);
           }
         }
+      }
+      if (dashLaneAuthorization?.allowed && dashLaneAuthorization.role === 'deep') {
+        await assertFrozenWorkspaceToolBoundary(
+          input.tool,
+          output.args as Record<string, unknown> | undefined,
+          dashLaneAuthorization.workspacePath!,
+        );
       }
       if ((input.tool === 'task' || input.tool === 'question') && input.sessionID) {
         let parentID: string | undefined;
@@ -2199,6 +2426,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       if (
         (input.tool === 'task' || input.tool === 'question')
         && input.callID
+        && caller !== DASH_REVIEW_PRIMARY_AGENT
         && !reserveVulnerabilityToolCallID(input.sessionID, input.tool, input.callID)
       ) {
         throw new Error('Vulnerability review Stage 1 rejected a reused session/tool callID because exact callback identity is unavailable.');
@@ -2316,6 +2544,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       if (pendingVulnerabilityReviewCommand && !caller) {
         throw new Error('vulnerability-review tool authorization failed closed: caller identity is unavailable.');
       }
+      let dashTaskReservation: {
+        kind: 'scope' | 'deep';
+        target: string;
+      } | undefined;
       if (dashReviewRole) {
         if (input.tool === 'task') {
           const target = typeof output.args?.subagent_type === 'string'
@@ -2326,16 +2558,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             throw new Error('dash-review task target is not authorized.');
           }
           const targetLane = runtimeDashReviewLanes.find((lane) => lane.taskTarget === target);
-          if (targetLane?.baseAgent === 'scout-researcher') {
-            if (!input.callID || !dashReviewInvocations.reserveScope({
-              primarySessionID: input.sessionID,
-              callID: input.callID,
-              expectedAgent: target,
-              reservedAt: Date.now(),
-            })) {
-              throw new Error('dash-review scope dispatch requires one fresh command-bound task authority.');
-            }
-          }
+          if (!targetLane) throw new Error('dash-review task target is not authorized.');
+          dashTaskReservation = {
+            kind: targetLane.baseAgent === 'scout-researcher' ? 'scope' : 'deep',
+            target,
+          };
         }
       }
       if (vulnerabilityReviewRole) {
@@ -2373,7 +2600,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         const session = sessionService.getGlobal(input.sessionID);
         const decision = shouldRejectTaskIdReuse({
           tool: input.tool,
-          sessionKind: session?.sessionKind,
+          sessionKind: dashReviewRole === 'primary' ? 'primary' : session?.sessionKind,
           args: output.args as Record<string, unknown> | undefined,
         });
         if (decision.reject) {
@@ -2382,6 +2609,35 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       await backgroundJobAdapter['tool.execute.before'](input, output);
+      if (dashTaskReservation) {
+        const reservationInput = {
+          primarySessionID: input.sessionID,
+          primaryAgent: DASH_REVIEW_PRIMARY_AGENT,
+          runtimeVersion: runtimeDashReviewVersion,
+          callID: input.callID,
+          expectedAgent: dashTaskReservation.target,
+          reservedAt: Date.now(),
+          background: output.args?.background,
+        };
+        if (dashTaskReservation.kind === 'scope') {
+          const reservation = dashReviewInvocations.reserveScope(reservationInput);
+          if ('reason' in reservation) {
+            throw new Error(`dash-review scope dispatch denied: ${reservation.reason}`);
+          }
+        } else {
+          const reservation = dashReviewInvocations.reserveDeep(reservationInput);
+          if ('reason' in reservation) {
+            throw new Error(`dash-review deep dispatch denied: ${reservation.reason}`);
+          }
+          const prompt = typeof output.args?.prompt === 'string' ? output.args.prompt : '';
+          const boundary = JSON.stringify({
+            schema: 'hive-dash-review-frozen-workspace/v1',
+            runId: reservation.runId,
+            workspacePath: reservation.workspacePath,
+          });
+          output.args.prompt = `${prompt}${prompt ? '\n\n' : ''}Runtime-authenticated frozen workspace boundary (JSON):\n${boundary}`;
+        }
+      }
       if (input.tool === 'task' && typeof output.args?.task_id === 'string' && output.args.task_id.trim()) {
         runtimeTaskChildSessions.add(output.args.task_id.trim());
       }
@@ -2429,6 +2685,23 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       metadata: any;
     } | undefined) => {
       if (taskTraceEphemeralSessionIDs.has(input.sessionID)) return;
+      if (input.tool === 'task') {
+        const childSessionID = taskChildSessionID(output?.metadata);
+        if (childSessionID) {
+          dashReviewInvocations.bindTaskChild({
+            primarySessionID: input.sessionID,
+            callID: input.callID,
+            childSessionID,
+            expectedAgent: typeof input.args?.subagent_type === 'string' ? input.args.subagent_type : undefined,
+            runtimeVersion: runtimeDashReviewVersion,
+          });
+        }
+        dashReviewInvocations.finishScopeTask({
+          primarySessionID: input.sessionID,
+          callID: input.callID,
+          completed: output !== undefined,
+        });
+      }
       const clarificationHandles = vulnerabilityClarificationHandles.get(input.sessionID);
       const clarificationHandle = input.tool === 'question'
         ? clarificationHandles?.get(input.callID)
@@ -2777,6 +3050,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         async execute(input, context) {
           const caller = inferReviewWorkspaceCaller(context, 'creator', reviewWorkspaceWorkflowAliases());
           let dashSourceResolution: ReviewSourceResolution | undefined;
+          let dashCreateAuthority: DashCreateAuthority | undefined;
+          const abortDashCreate = () => {
+            if (!dashCreateAuthority) return;
+            dashReviewInvocations.abortCreate(dashCreateAuthority, 'workspace-create-failed');
+            dashCreateAuthority = undefined;
+          };
           if (caller.workflow === 'dash-review') {
             let response: Awaited<ReturnType<typeof client.session.get>>;
             try {
@@ -2785,9 +3064,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 query: { directory },
               });
             } catch {
-              throw new Error('Review workspace creation requires exact dash-review create authority.');
+              dashReviewInvocations.abortForSession(context.sessionID, 'child-not-bound-to-invocation');
+              throw new Error('Review workspace creation denied: child-not-bound-to-invocation.');
             }
-            dashSourceResolution = response.data
+            const createAction = response.data
               ? dashReviewInvocations.takeCreate({
                   session: {
                     id: response.data.id,
@@ -2795,12 +3075,15 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                     time: response.data.time,
                   },
                   agent: context.agent,
+                  runtimeVersion: runtimeDashReviewVersion,
                   createInput: input,
                 })
-              : undefined;
-            if (!dashSourceResolution) {
-              throw new Error('Review workspace creation requires exact dash-review create authority.');
+              : { kind: 'deny' as const, reason: 'child-not-bound-to-invocation' as const };
+            if (createAction.kind === 'deny') {
+              throw new Error(`Review workspace creation denied: ${createAction.reason}.`);
             }
+            dashSourceResolution = createAction.sourceResolution;
+            dashCreateAuthority = createAction.authority;
           }
           let materializeReservation: VulnerabilityTaskReservation | undefined;
           let recoveryPrimarySessionID: string | undefined;
@@ -2918,12 +3201,38 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
               hiveScope: hiveScope ?? null,
             };
           }
-          normalizeReviewWorkspaceSourceScope(repositoryIds, snapshotInput);
-          await reviewWorkspaceService.cleanupExpired();
+          try {
+            normalizeReviewWorkspaceSourceScope(repositoryIds, snapshotInput);
+            await reviewWorkspaceService.cleanupExpired();
+          } catch (error) {
+            abortDashCreate();
+            throw error;
+          }
           let lastFingerprint = '';
           const finishMaterializeCreate = (
             result: Record<string, unknown>,
           ): string => {
+            if (dashCreateAuthority) {
+              const authority = dashCreateAuthority;
+              dashCreateAuthority = undefined;
+              if (result.state === 'READY') {
+                if (
+                  typeof result.runId !== 'string'
+                  || typeof result.ownershipToken !== 'string'
+                  || typeof result.workspacePath !== 'string'
+                  || !dashReviewInvocations.completeCreate({
+                    authority,
+                    runId: result.runId,
+                    ownershipToken: result.ownershipToken,
+                    workspacePath: result.workspacePath,
+                  })
+                ) {
+                  throw new Error('Review workspace creation lost command-bound create authority.');
+                }
+              } else {
+                dashReviewInvocations.abortCreate(authority, 'source-stale');
+              }
+            }
             if (materializeReservation) {
               materializeCreateResults.set(materializeReservation, { caller, result });
               vulnerabilityReviewInvocations.recordMaterializeCreateResult(
@@ -2933,6 +3242,31 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             }
             return JSON.stringify(result, null, 2);
           };
+          let dashProviderFreshness: Awaited<ReturnType<typeof revalidateReviewProviderHead>> | undefined;
+          try {
+            dashProviderFreshness = dashSourceResolution
+              ? await revalidateReviewProviderHead(dashSourceResolution)
+              : undefined;
+          } catch (error) {
+            abortDashCreate();
+            throw error;
+          }
+          if (
+            dashSourceResolution
+            && dashProviderFreshness
+            && (dashProviderFreshness.outcome === 'moved' || dashProviderFreshness.outcome === 'unavailable')
+          ) {
+            return finishMaterializeCreate({
+              state: 'NEEDS_DISCUSSION',
+              reason: dashProviderFreshness.outcome === 'moved'
+                ? 'provider-head-moved'
+                : 'provider-head-revalidation-unavailable',
+              stale: true,
+              providerFreshness: dashProviderFreshness,
+              provenance: reviewProvenanceEnvelope(dashSourceResolution),
+              recovery: 'Provider head freshness could not be confirmed. Rerun dash-review from a fresh command invocation.',
+            });
+          }
           const cleanupWorkspace = async (
             workspace: Awaited<ReturnType<typeof reviewWorkspaceService.create>>,
           ) => {
@@ -3028,6 +3362,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                   repositoryId,
                   snapshotFingerprint: materialization.snapshot.fingerprint,
                 })),
+                ...(dashSourceResolution ? {
+                  provenance: reviewProvenanceEnvelope(dashSourceResolution),
+                  providerFreshness: dashProviderFreshness,
+                } : {}),
                 ...(caller.workflow === 'vulnerability-review' ? { sourceResolutionFingerprint } : {}),
                 excludedRepositoryIds: resolved.excludedRepositoryIds,
                 truncated: capture.captures.some(({ materialization }) => materialization.snapshot.omissions.patch.truncated),
@@ -3050,9 +3388,14 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           };
           return finishMaterializeCreate(result);
           };
-          return caller.workflow === 'vulnerability-review'
-            ? reviewWorkspaceService.withVulnerabilityMaterialization(materialize)
-            : materialize();
+          try {
+            return await (caller.workflow === 'vulnerability-review'
+              ? reviewWorkspaceService.withVulnerabilityMaterialization(materialize)
+              : materialize());
+          } catch (error) {
+            abortDashCreate();
+            throw error;
+          }
         },
       }),
 
@@ -3064,6 +3407,26 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         },
         async execute({ runId, ownershipToken }, context) {
           const caller = inferReviewWorkspaceCaller(context, 'primary', reviewWorkspaceWorkflowAliases());
+          let recoveredDashWorkspace: Awaited<ReturnType<typeof recoverDashWorkspaceAuthorization>> | undefined;
+          if (caller.workflow === 'dash-review') {
+            const authorization = dashReviewInvocations.authorizeWorkspaceClaim({
+              primarySessionID: context.sessionID,
+              primaryAgent: context.agent,
+              runtimeVersion: runtimeDashReviewVersion,
+              runId,
+              ownershipToken,
+            });
+            if ('reason' in authorization) {
+              if (authorization.reason !== 'invocation-not-registered') {
+                throw new Error(`Dash review workspace claim requires exact lifecycle authority: ${authorization.reason}.`);
+              }
+              try {
+                recoveredDashWorkspace = await recoverDashWorkspaceAuthorization(runId, ownershipToken, caller);
+              } catch {
+                throw new Error('Review workspace ownership claim was denied.');
+              }
+            }
+          }
           if (
             caller.workflow === 'vulnerability-review'
             && !vulnerabilityReviewInvocations.authorizeReadyWorkspace({
@@ -3077,6 +3440,23 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           await reviewWorkspaceService.claim(runId, ownershipToken, caller).catch(() => {
             throw new Error('Review workspace ownership claim was denied.');
           });
+          if (caller.workflow === 'dash-review') {
+            const recorded = recoveredDashWorkspace
+              ? dashReviewInvocations.restoreClaimedWorkspace({
+                  primarySessionID: context.sessionID,
+                  primaryAgent: context.agent,
+                  runtimeVersion: runtimeDashReviewVersion,
+                  runId,
+                  ownershipToken,
+                  workspacePath: recoveredDashWorkspace.workspacePath,
+                })
+              : dashReviewInvocations.recordWorkspaceClaimed({
+                  primarySessionID: context.sessionID,
+                  runId,
+                  ownershipToken,
+                });
+            if (!recorded) throw new Error('Dash review workspace claim lost exact lifecycle authority.');
+          }
           if (
             caller.workflow === 'vulnerability-review'
             && !vulnerabilityReviewInvocations.recordClaimed({
@@ -3099,9 +3479,48 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         },
         async execute({ runId, ownershipToken }, context) {
           const caller = inferReviewWorkspaceCaller(context, 'primary', reviewWorkspaceWorkflowAliases());
+          let recoverDashInvocation = false;
+          if (caller.workflow === 'dash-review') {
+            const authorization = dashReviewInvocations.authorizeWorkspaceAccess({
+              primarySessionID: context.sessionID,
+              primaryAgent: context.agent,
+              runtimeVersion: runtimeDashReviewVersion,
+              runId,
+              ownershipToken,
+            });
+            if ('reason' in authorization) {
+              if (authorization.reason !== 'invocation-not-registered') {
+                throw new Error(`Review workspace inspection was denied: ${authorization.reason}.`);
+              }
+              recoverDashInvocation = true;
+            }
+          }
+          if (recoverDashInvocation) {
+            await reviewWorkspaceService.recoverOwnerAuthorization(runId, ownershipToken, caller).catch(() => {
+              throw new Error('Review workspace inspection was denied.');
+            });
+          }
           const inspection = await reviewWorkspaceService.inspect(runId, ownershipToken, caller).catch(() => {
             throw new Error('Review workspace inspection was denied.');
           });
+          if (
+            recoverDashInvocation
+            && (
+              inspection.lease.workflow !== 'dash-review'
+              || inspection.lease.ownerAgent !== context.agent
+              || inspection.lease.ownerSessionId !== context.sessionID
+              || !dashReviewInvocations.restoreClaimedWorkspace({
+                primarySessionID: context.sessionID,
+                primaryAgent: context.agent,
+                runtimeVersion: runtimeDashReviewVersion,
+                runId,
+                ownershipToken,
+                workspacePath: inspection.workspacePath,
+              })
+            )
+          ) {
+            throw new Error('Review workspace inspection was denied.');
+          }
           const lease = inspection.lease;
           const { lease: _lease, ...workspaceInspection } = inspection;
           let source: {
@@ -3226,6 +3645,23 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             }
           }
           if (typeof ownershipToken !== 'string') throw new Error('Review workspace cleanup was denied.');
+          if (caller.workflow === 'dash-review' && dashReviewInvocations.hasActiveInvocation(context.sessionID)) {
+            const authorization = dashReviewInvocations.authorizeWorkspaceAccess({
+              primarySessionID: context.sessionID,
+              primaryAgent: context.agent,
+              runtimeVersion: runtimeDashReviewVersion,
+              runId,
+              ownershipToken,
+            });
+            if ('reason' in authorization) {
+              throw new Error(`Review workspace cleanup was denied: ${authorization.reason}.`);
+            }
+          }
+          if (caller.workflow === 'dash-review') {
+            await recoverDashWorkspaceCleanupAuthorization(runId, ownershipToken, caller).catch(() => {
+              throw new Error('Review workspace cleanup was denied.');
+            });
+          }
           if (
             caller.workflow === 'vulnerability-review'
             && caller.role === 'primary'
@@ -3236,9 +3672,14 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
               ownershipToken,
             });
           }
-          const result = await reviewWorkspaceService.cleanup(runId, ownershipToken, caller).catch(() => {
+          const result = await (caller.workflow === 'dash-review'
+            ? reviewWorkspaceService.cleanupExisting(runId, ownershipToken, caller)
+            : reviewWorkspaceService.cleanup(runId, ownershipToken, caller)).catch(() => {
             throw new Error('Review workspace cleanup was denied.');
           });
+          if (caller.workflow === 'dash-review' && result.cleaned) {
+            dashReviewInvocations.completeForSession(context.sessionID);
+          }
           return JSON.stringify(result, null, 2);
         },
       }),
@@ -3273,7 +3714,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 query: { directory },
               });
             } catch {
-              throw new Error('Git snapshot requires exact dash-review source authority.');
+              dashReviewInvocations.abortForSession(context.sessionID, 'child-not-bound-to-invocation');
+              throw new Error('Git snapshot denied: child-not-bound-to-invocation.');
             }
             const action = response.data
               ? dashReviewInvocations.beginSnapshot({
@@ -3283,15 +3725,16 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                     time: response.data.time,
                   },
                   agent: context.agent,
+                  runtimeVersion: runtimeDashReviewVersion,
                   snapshotInput: input,
                 })
-              : { kind: 'deny' as const, reason: 'authority' as const };
+              : { kind: 'deny' as const, reason: 'child-not-bound-to-invocation' as const };
             if (action.kind === 'replay') return action.output;
             if (action.kind === 'deny') {
-              if (action.reason === 'different-input') {
+              if (action.reason === 'snapshot-input-mismatch') {
                 throw new Error('Dash review source was already resolved with different input.');
               }
-              throw new Error('Git snapshot requires exact dash-review source authority.');
+              throw new Error(`Git snapshot denied: ${action.reason}.`);
             }
             request = action.request;
             dashSnapshotAuthority = action.authority;
@@ -3340,6 +3783,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 : { explicitLocal: effectiveSnapshotInput }),
               repositoryIds: selectedRepositoryIds,
               notRequestedReason: request.notRequestedReason,
+              ...(caller.workflow === 'dash-review' ? { providerOidPolicy: 'require-exact' as const } : {}),
             }, {
               resolveRepositories: async (ids) => {
                 resolvedTopology = await resolveSnapshotRepositories(ids, caller.workflow === 'vulnerability-review');
@@ -3351,20 +3795,20 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
               },
             });
             if (!resolvedTopology || !captured) throw new Error(`${caller.workflow} source resolution did not capture a snapshot.`);
-            const output = !resolvedTopology.composite
-              ? JSON.stringify({
-                  ...captured.snapshots[0]!.snapshot,
-                  sourceResolution,
-                }, null, 2)
-              : JSON.stringify({
-                  composite: true,
-                  manifestRepositoryIds: resolvedTopology.manifestRepositoryIds,
-                  selectedRepositoryIds: resolvedTopology.selectedRepositoryIds,
-                  excludedRepositoryIds: resolvedTopology.excludedRepositoryIds,
-                  fingerprint: captured.fingerprint,
-                  snapshots: captured.snapshots,
-                  sourceResolution,
-                }, null, 2);
+            const output = serializeReviewSnapshotOutput({
+              provenance: reviewProvenanceEnvelope(sourceResolution),
+              sourceResolution,
+              snapshot: !resolvedTopology.composite
+                ? captured.snapshots[0]!.snapshot as unknown as Record<string, unknown>
+                : {
+                    composite: true,
+                    manifestRepositoryIds: resolvedTopology.manifestRepositoryIds,
+                    selectedRepositoryIds: resolvedTopology.selectedRepositoryIds,
+                    excludedRepositoryIds: resolvedTopology.excludedRepositoryIds,
+                    fingerprint: captured.fingerprint,
+                    snapshots: captured.snapshots,
+                  },
+            });
             if (caller.workflow === 'vulnerability-review') {
               if (
                 !vulnerabilityReservation
@@ -5094,6 +5538,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         hiveTools: HIVE_TOOL_NAMES,
       });
       runtimeDashReviewLanes = dashReviewLanes.lanes;
+      runtimeDashReviewVersion += 1;
       const vulnerabilityReviewCustomSpecialists: VulnerabilityReviewLaneSource[] = Object.entries(customAgentConfigs)
         .flatMap(([agentName, agentConfig]) => {
           if (agentConfig.baseAgent !== 'vulnerability-reviewer') return [];
@@ -5213,6 +5658,13 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           }),
         ),
       );
+      const dashReviewCommandConfig = hiveConfigCommands['dash-review'] as { agent?: string } | undefined;
+      runtimeDashReviewCommandBinding = dashReviewCommandConfig?.agent
+        ? {
+            agent: dashReviewCommandConfig.agent,
+            runtimeVersion: runtimeDashReviewVersion,
+          }
+        : undefined;
 
       const configCommand = opencodeConfig.command as Record<string, unknown> | undefined;
       if (!configCommand) {

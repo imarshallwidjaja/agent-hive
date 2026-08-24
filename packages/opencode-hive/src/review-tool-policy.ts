@@ -68,7 +68,7 @@ export const REVIEW_ROLE_POLICIES = {
     workflow: 'dash-review',
     role: 'deep',
     caller: { kind: 'lane-role', role: 'deep' },
-    tools: ['read', 'glob', 'grep', 'bash', 'webfetch', 'skill', ...REVIEW_UNIVERSAL_METADATA_TOOLS],
+    tools: ['read', 'glob', 'grep', 'webfetch', 'skill', ...REVIEW_UNIVERSAL_METADATA_TOOLS],
     taskTargetRoles: [],
   },
   'vulnerability-review:primary': {

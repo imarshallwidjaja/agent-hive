@@ -81,7 +81,7 @@ describe('shared fail-closed review tool policy', () => {
       'hive_git_snapshot', 'hive_review_workspace_create',
     ]);
     expect(deep.tools).toEqual([
-      'read', 'glob', 'grep', 'bash', 'webfetch', 'skill',
+      'read', 'glob', 'grep', 'webfetch', 'skill',
       'hive_repositories_status', 'hive_plan_read', 'hive_status',
     ]);
   });

@@ -75,6 +75,17 @@ export class ReviewSnapshotSetError extends Error {
   }
 }
 
+export class ReviewProviderOidUnavailableError extends Error {
+  readonly code = 'provider-oid-unavailable';
+  readonly failures: readonly SnapshotFailure[];
+
+  constructor(failures: SnapshotFailure[]) {
+    super('[provider-oid-unavailable] Exact provider OIDs are unavailable in the selected local repository object stores; isolated acquisition is unavailable.');
+    this.name = 'ReviewProviderOidUnavailableError';
+    this.failures = Object.freeze(structuredClone(failures));
+  }
+}
+
 export async function collectReviewSnapshotSet(
   topology: SnapshotTopology,
   execute: (repository: SnapshotTopology['repositories'][number]) => Promise<GitSnapshot>,
@@ -104,7 +115,7 @@ export async function collectReviewSnapshotSet(
   };
 }
 
-export type ReviewSourceResolution = {
+type ReviewSourceResolutionCore = {
   schema: 'hive-review-source-resolution/v1';
   kind: ReviewResolutionKind;
   descriptor: GitHubPullRequestDescriptor | null;
@@ -131,6 +142,30 @@ export type ReviewSourceResolution = {
     sourceFingerprint: string;
     fingerprint: string;
   };
+};
+
+export type ReviewProvenanceEnvelope = {
+  schema: 'hive-review-provenance/v1';
+  scopeState: 'verified PR commits' | 'local snapshot scope' | 'unverified local checkout';
+  descriptor: GitHubPullRequestDescriptor | null;
+  metadataOutcome: ReviewProviderOutcome;
+  baseSha: string | null;
+  headSha: string | null;
+  snapshotAttemptOutcome: SnapshotOutcome;
+  comparisonTarget: string | null;
+  currentHead: string | null;
+  currentHeadMatchesProviderHead: boolean | null;
+  dirtyFingerprint: string | null;
+  fallbackReason: string | null;
+  snapshotId: string;
+  sourceFingerprint: string;
+  selectedRepositoryIds: string[];
+  truncated: boolean;
+  errors: string[];
+};
+
+export type ReviewSourceResolution = ReviewSourceResolutionCore & {
+  provenanceEnvelope?: ReviewProvenanceEnvelope;
 };
 
 export type ReviewSourceRequest = {
@@ -426,10 +461,82 @@ function sourceFingerprint(input: {
   });
 }
 
+function singleValue(values: readonly string[]): string | null {
+  const unique = new Set(values);
+  return unique.size === 1 ? values[0]! : null;
+}
+
+function buildReviewProvenanceEnvelope(resolution: ReviewSourceResolutionCore): ReviewProvenanceEnvelope {
+  const dirtyRepositories = resolution.provenance.repositories.filter(({ changedPaths }) => (
+    changedPaths.staged.length > 0
+    || changedPaths.unstaged.length > 0
+    || changedPaths.untracked.length > 0
+  ));
+  const fallbackReason = resolution.provenance.snapshot.outcome === 'fallback'
+    ? resolution.provenance.snapshot.reason
+    : null;
+  const headSha = resolution.candidateShas?.headSha ?? null;
+  const errors = resolution.provider.kind === 'unavailable'
+    ? [`provider:${resolution.provider.reason}`]
+    : resolution.provenance.snapshot.outcome === 'fallback'
+        && resolution.provenance.snapshot.reason === 'missing-provider-oid'
+      ? resolution.provenance.snapshot.failures.map(({ repositoryId, field }) => (
+          `snapshot:${repositoryId}:${field}:missing-ref`
+        ))
+      : [];
+  return {
+    schema: 'hive-review-provenance/v1',
+    scopeState: resolution.kind === 'provider-verified'
+      ? 'verified PR commits'
+      : resolution.kind === 'explicit-local'
+        ? 'local snapshot scope'
+        : 'unverified local checkout',
+    descriptor: structuredClone(resolution.descriptor),
+    metadataOutcome: structuredClone(resolution.provider),
+    baseSha: resolution.candidateShas?.baseSha ?? null,
+    headSha,
+    snapshotAttemptOutcome: structuredClone(resolution.provenance.snapshot),
+    comparisonTarget: singleValue(resolution.provenance.repositories.map(({ comparisonTarget }) => comparisonTarget)),
+    currentHead: singleValue(resolution.provenance.repositories.map(({ currentHead }) => currentHead)),
+    currentHeadMatchesProviderHead: headSha === null
+      ? null
+      : resolution.provenance.repositories.every(({ currentHead }) => currentHead === headSha),
+    dirtyFingerprint: dirtyRepositories.length === 0
+      ? null
+      : fingerprint(dirtyRepositories.map(({ repositoryId, snapshotFingerprint }) => ({ repositoryId, snapshotFingerprint }))),
+    fallbackReason,
+    snapshotId: resolution.provenance.fingerprint,
+    sourceFingerprint: resolution.provenance.sourceFingerprint,
+    selectedRepositoryIds: [...resolution.provenance.selectedRepositoryIds],
+    truncated: resolution.provenance.repositories.some(({ omissions }) => (
+      omissions.patch.truncated
+      || Object.values(omissions.changedPaths).some((count) => count > 0)
+    )),
+    errors,
+  };
+}
+
+export function reviewProvenanceEnvelope(resolution: ReviewSourceResolution): ReviewProvenanceEnvelope {
+  return resolution.provenanceEnvelope ?? buildReviewProvenanceEnvelope(resolution);
+}
+
+export function serializeReviewSnapshotOutput(input: {
+  provenance: ReviewProvenanceEnvelope;
+  sourceResolution: ReviewSourceResolution;
+  snapshot: Record<string, unknown>;
+}): string {
+  const { provenance: _provenance, sourceResolution: _sourceResolution, ...snapshot } = input.snapshot;
+  return JSON.stringify({
+    provenance: input.provenance,
+    sourceResolution: input.sourceResolution,
+    ...snapshot,
+  }, null, 2);
+}
+
 export function parseReviewSourceResolution(value: unknown): ReviewSourceResolution {
   const record = recordValue(value, [
     'schema', 'kind', 'descriptor', 'provider', 'candidateShas', 'snapshotInput', 'provenance',
-  ], [], 'sourceResolution');
+  ], ['provenanceEnvelope'], 'sourceResolution');
   if (record.schema !== 'hive-review-source-resolution/v1') throw new Error('sourceResolution.schema: invalid');
   if (!['explicit-local', 'provider-verified', 'provider-local-fallback'].includes(String(record.kind))) {
     throw new Error('sourceResolution.kind: invalid');
@@ -514,7 +621,7 @@ export function parseReviewSourceResolution(value: unknown): ReviewSourceResolut
       error: null,
     };
   });
-  const result: ReviewSourceResolution = {
+  const result: ReviewSourceResolutionCore = {
     schema: 'hive-review-source-resolution/v1',
     kind: record.kind as ReviewResolutionKind,
     descriptor,
@@ -601,6 +708,13 @@ export function parseReviewSourceResolution(value: unknown): ReviewSourceResolut
   if (result.provenance.fingerprint !== expectedFingerprint) {
     throw new Error('sourceResolution.provenance.fingerprint: fingerprint mismatch');
   }
+  if (record.provenanceEnvelope !== undefined) {
+    const provenanceEnvelope = buildReviewProvenanceEnvelope(result);
+    if (!isDeepEqual(record.provenanceEnvelope, provenanceEnvelope)) {
+      throw new Error('sourceResolution.provenanceEnvelope: inconsistent');
+    }
+    return { ...result, provenanceEnvelope };
+  }
   return result;
 }
 
@@ -676,6 +790,39 @@ export async function resolveGitHubPullRequest(
   } catch {
     return { kind: 'unavailable', reason: 'malformed-response' };
   }
+}
+
+export type ReviewProviderFreshness =
+  | { outcome: 'not-applicable' }
+  | { outcome: 'current'; baseSha: string; headSha: string }
+  | { outcome: 'moved'; expectedBaseSha: string; expectedHeadSha: string; baseSha: string; headSha: string }
+  | { outcome: 'unavailable'; reason: Extract<ReviewProviderOutcome, { kind: 'unavailable' }>['reason'] };
+
+export async function revalidateReviewProviderHead(
+  resolution: ReviewSourceResolution,
+  executor: ReviewProviderExecutor = defaultProviderExecutor,
+): Promise<ReviewProviderFreshness> {
+  if (!resolution.descriptor || resolution.provider.kind !== 'resolved') return { outcome: 'not-applicable' };
+  const current = await resolveGitHubPullRequest(resolution.descriptor, executor);
+  if (current.kind !== 'resolved') {
+    return {
+      outcome: 'unavailable',
+      reason: current.kind === 'unavailable' ? current.reason : 'malformed-response',
+    };
+  }
+  if (
+    current.baseSha !== resolution.provider.baseSha
+    || current.headSha !== resolution.provider.headSha
+  ) {
+    return {
+      outcome: 'moved',
+      expectedBaseSha: resolution.provider.baseSha,
+      expectedHeadSha: resolution.provider.headSha,
+      baseSha: current.baseSha,
+      headSha: current.headSha,
+    };
+  }
+  return { outcome: 'current', baseSha: current.baseSha, headSha: current.headSha };
 }
 
 function normalizedSnapshotInput(input: GitSnapshotInput, snapshots: SnapshotSet): GitSnapshotInput {
@@ -767,12 +914,16 @@ function sourceResolution(
     snapshotInput,
     provenance,
   };
-  return parseReviewSourceResolution({
+  const finalized = {
     ...basis,
     provenance: {
       ...provenance,
       fingerprint: fingerprintReviewSourceResolutionAuthority(basis),
     },
+  };
+  return parseReviewSourceResolution({
+    ...finalized,
+    provenanceEnvelope: buildReviewProvenanceEnvelope(finalized),
   });
 }
 
@@ -783,6 +934,7 @@ export async function resolveReviewSource(
     repositoryIds?: string[];
     paths?: string[];
     notRequestedReason?: Extract<ReviewProviderOutcome, { kind: 'not-requested' }>['reason'];
+    providerOidPolicy?: 'allow-local-fallback' | 'require-exact';
   },
   dependencies: ReviewSourceResolutionDependencies,
 ): Promise<ReviewSourceResolution> {
@@ -848,6 +1000,9 @@ export async function resolveReviewSource(
       });
     }
     failures.sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId));
+    if (input.providerOidPolicy === 'require-exact') {
+      throw new ReviewProviderOidUnavailableError(failures);
+    }
     const snapshotInput = paths.length > 0 ? { paths } : {};
     const snapshots = await dependencies.snapshotExecutor(topology, snapshotInput);
     return sourceResolution(
@@ -862,8 +1017,8 @@ export async function resolveReviewSource(
 }
 
 export const REVIEW_SOURCE_RESOLUTION_ADAPTERS = {
-  'dash-review': (parsed: Pick<ParsedDashReviewArgs, 'githubPullRequest'>): ReviewSourceRequest => ({
-    descriptor: parsed.githubPullRequest,
+  'dash-review': (parsed: Pick<ParsedDashReviewArgs, 'descriptor'>): ReviewSourceRequest => ({
+    descriptor: parsed.descriptor,
     fixedSnapshotInput: {},
     notRequestedReason: 'no-descriptor',
   }),

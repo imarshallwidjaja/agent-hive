@@ -30,7 +30,9 @@ export type DashReviewGitHubPullRequestDescriptor = GitHubPullRequestDescriptor;
 
 export type ParsedDashReviewArgs = {
   rawIntent: string;
-  githubPullRequest: DashReviewGitHubPullRequestDescriptor | null;
+  descriptor: DashReviewGitHubPullRequestDescriptor | null;
+  reviewInstructions: string;
+  descriptorSource: 'none' | 'standalone-url' | 'embedded-url';
 };
 
 export const VULNERABILITY_REVIEW_SCOPE_MODES = [
@@ -108,15 +110,63 @@ function topicOrCurrent(args: string, fallback: string): string {
 
 export function parseDashReviewArgs(args: string): ParsedDashReviewArgs {
   const rawIntent = args;
+  const hasOptionToken = /(?:^|\s)(?:--?[A-Za-z0-9][^\s]*|"--?[A-Za-z0-9][^"\s]*"|'--?[A-Za-z0-9][^'\s]*')(?=\s|$)/u.test(rawIntent);
+  const hasShellSyntax = /[\u0000-\u0009\u000b-\u001f\u007f\u0085\u2028\u2029;`|&<>]|\$(?:\(|\{|\[|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!_-])|(?:^|[\r\n])\s*[A-Za-z_][A-Za-z0-9_]*=/u.test(rawIntent);
+  const hasShellCommandGroup = /(?:^|[\r\n])\s*[({]/u.test(rawIntent);
+  if (
+    hasOptionToken
+    || hasShellSyntax
+    || hasShellCommandGroup
+  ) {
+    return {
+      rawIntent,
+      descriptor: null,
+      reviewInstructions: rawIntent,
+      descriptorSource: 'none',
+    };
+  }
+  const standalone = parseGitHubPullRequestDescriptor(rawIntent);
+  if (standalone) {
+    return {
+      rawIntent,
+      descriptor: standalone,
+      reviewInstructions: '',
+      descriptorSource: 'standalone-url',
+    };
+  }
+  const urlMatches = [...rawIntent.matchAll(/https?:\/\/\S*/giu)];
+  const match = urlMatches.length === 1 ? urlMatches[0] : undefined;
+  const matchIndex = match?.index;
+  const hasSafeLeftBoundary = matchIndex === 0
+    || (matchIndex !== undefined && /[\s([{'",]/u.test(rawIntent[matchIndex - 1]!));
+  const candidate = match?.[0].replace(/[\])},.!:'"]+$/u, '');
+  const embedded = candidate && hasSafeLeftBoundary
+    ? parseGitHubPullRequestDescriptor(candidate)
+    : null;
+  if (!match || !candidate || !embedded || rawIntent.trim() === candidate) {
+    return {
+      rawIntent,
+      descriptor: null,
+      reviewInstructions: rawIntent,
+      descriptorSource: 'none',
+    };
+  }
+  const rawPrefix = rawIntent.slice(0, matchIndex);
+  const rawSuffix = rawIntent.slice(matchIndex! + candidate.length);
+  const prefix = rawPrefix.trimEnd();
+  const suffix = rawSuffix.trimStart();
+  const separator = /\s$/u.test(rawPrefix) || /^\s/u.test(rawSuffix) ? ' ' : '';
   return {
     rawIntent,
-    githubPullRequest: parseGitHubPullRequestDescriptor(rawIntent),
+    descriptor: embedded,
+    reviewInstructions: prefix && suffix ? `${prefix}${separator}${suffix}` : prefix || suffix,
+    descriptorSource: 'embedded-url',
   };
 }
 
 export function renderDashReviewArgumentBlock(args: string): string {
   const packet = {
-    schema: 'hive-dash-review-command/v1' as const,
+    schema: 'hive-dash-review-command/v2' as const,
     ...parseDashReviewArgs(args),
   };
   const json = JSON.stringify(packet)
