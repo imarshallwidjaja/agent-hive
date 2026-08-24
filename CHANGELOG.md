@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-08-24
+
+### Added
+
+- `/grill` provides a general-purpose, one-question-at-a-time workflow for researching material facts and reaching explicit alignment on supplied context. `/interview` now uses the same interaction engine with implementation-oriented questions and a separate `/implementation-brief` handoff boundary.
+
+### Changed
+
+- Dash and vulnerability reviews now share deterministic source resolution, provenance, invocation authority, workspace lifecycle boundaries, and exact fail-closed tool policies. GitHub pull-request metadata remains optional and bounded; unavailable provider metadata falls back only to an explicitly recorded, dirty-aware local snapshot when the failure class permits it.
+
+### Fixed
+
+- Built-in callable subagents remain the default when no custom overlay is a closer fit. Primary agents can autonomously select configured custom specialists from their descriptions, seven callable base-agent descriptions can be overridden with canonical fallback, and explicit operator naming is required only when a custom description says so.
+
 ## [2.3.2] - 2026-08-21
 
 ### Fixed
