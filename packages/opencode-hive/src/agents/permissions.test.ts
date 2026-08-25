@@ -3122,16 +3122,18 @@ describe('Per-agent tool filtering', () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-provider-head-moved-'));
     createGitRepository(repository);
     const provider = installMovingProviderFixture(repository);
+    const statusArgs = ['-c', 'core.excludesFile=/dev/null', 'status', '--porcelain=v1', '--untracked-files=all'];
     const previousPath = process.env.PATH;
     process.env.PATH = `${provider.bin}${path.delimiter}${previousPath ?? ''}`;
     try {
       const before = {
         head: gitAt(repository, ['rev-parse', 'HEAD']),
-        status: gitAt(repository, ['status', '--porcelain=v1', '--untracked-files=all']),
+        status: gitAt(repository, statusArgs),
         fetchHead: existsSync(path.join(repository, '.git', 'FETCH_HEAD'))
           ? readFileSync(path.join(repository, '.git', 'FETCH_HEAD'), 'utf8')
           : null,
       };
+      expect(before.status).toBe('?? .hive/moving-provider-bin/gh');
       const { hooks, scopeAlias, dashPrimary } = await createSnapshotPlugin(repository);
       const grant = await captureDashSource({
         hooks,
@@ -3179,11 +3181,18 @@ describe('Per-agent tool filtering', () => {
       expect(readFileSync(provider.countFile, 'utf8')).toBe('xx');
       expect({
         head: gitAt(repository, ['rev-parse', 'HEAD']),
-        status: gitAt(repository, ['status', '--porcelain=v1', '--untracked-files=all']),
+        status: gitAt(repository, statusArgs),
         fetchHead: existsSync(path.join(repository, '.git', 'FETCH_HEAD'))
           ? readFileSync(path.join(repository, '.git', 'FETCH_HEAD'), 'utf8')
           : null,
-      }).toEqual(before);
+      }).toEqual({
+        ...before,
+        status: [
+          '?? .hive/moving-provider-bin/gh',
+          '?? .hive/moving-provider-count',
+          '?? .hive/sessions.json',
+        ].join('\n'),
+      });
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
