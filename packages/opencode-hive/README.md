@@ -546,7 +546,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | ID | Description |
 |----|-------------|
 | `adversarial-review` | Explicit adversarial / red-team / multi-pass review posture |
-| `agents-md-mastery` | Bootstrap, review, or prune AGENTS.md memory |
+| `agents-md-mastery` | Bootstrap, review, or prune AGENTS.md by placing rules next to the code they govern |
 | `ast-grep` | Structural code search via the ast-grep MCP tools |
 | `background-delegation` | Env-gated background wait-mode and board protocol |
 | `brainstorming` | Explore intent and design before implementation |

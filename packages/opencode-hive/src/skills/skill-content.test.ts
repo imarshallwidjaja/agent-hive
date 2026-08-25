@@ -334,6 +334,29 @@ describe('skill content', () => {
     }
   });
 
+  it('teaches AGENTS.md as progressive placement rather than a repository map', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'agents-md-mastery');
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toMatch(/^Use when /);
+
+    const template = skill!.template;
+    expect(template).toContain(
+      'If I delete this sentence, could a competent agent reasonably make a different decision?'
+    );
+    expect(template).toContain('narrowest directory where it remains true');
+    expect(template).toContain('Do not map the repository in AGENTS.md');
+    expect(template).toContain('Name the current choice');
+    expect(template).toContain('Do not record rejected alternatives');
+    expect(template).toContain('Do not invent build commands');
+    expect(template).not.toContain('packages/hive-core');
+    expect(template).not.toContain('Keep total under 500 lines');
+    expect(template).not.toContain('Gotchas section exists and is populated');
+    expect(template).not.toContain('Build/test commands are first');
+    expect(template).not.toContain('Missing build/test commands');
+    expect(template).not.toContain('Auth lives in `/lib/auth`');
+  });
+
   it('scopes only Hive-tool workflow skill descriptions to Agent Hive', () => {
     const hiveToolPattern = /\bhive_[a-zA-Z0-9_]+\b/;
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `agents-md-mastery` teaches progressive placement of nested AGENTS.md next to real code, write-what-exists, and sentence-level pruning. It no longer asks agents to bootstrap a repository map, invented build commands, line-count targets, or a required Gotchas section.
+
 ## [2.3.3] - 2026-08-24
 
 ### Added

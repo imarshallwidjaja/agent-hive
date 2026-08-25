@@ -7,255 +7,163 @@ description: "Use when bootstrapping, reviewing, or pruning AGENTS.md memory and
 
 ## Overview
 
-**AGENTS.md is pseudo-memory loaded at session start.** Every line shapes agent behavior for the entire session. Quality beats quantity. Write for agents, not humans.
+AGENTS.md is durable behavioral memory. Every line is loaded into later sessions. A bad entry misleads agents for a long time. A missing entry repeats the same mistake.
 
-Unlike code comments or READMEs, AGENTS.md entries persist across all agent sessions. A bad entry misleads agents hundreds of times. A missing entry causes the same mistake repeatedly.
+Write so a future agent acts differently. Prefer a short file of decision-changing rules over a long file that tries to cover the repository.
 
-**Core principle:** Optimize for agent comprehension and behavioral change, not human readability.
-
-## The Iron Law
+## Iron Law
 
 ```
 EVERY ENTRY MUST CHANGE AGENT BEHAVIOR
 ```
 
-If an entry doesn't:
-- Prevent a specific mistake
-- Enable a capability the agent would otherwise miss
-- Override a default assumption that breaks in this codebase
+Keep an entry only if it:
 
-...then it doesn't belong in AGENTS.md.
+- Prevents a specific recurring mistake
+- Selects a workflow the agent would otherwise miss
+- Preserves a non-obvious convention, ownership boundary, or gotcha
 
-**Test:** Would a fresh agent session make a mistake without this entry? If no → noise.
+If it only documents what the agent can already observe, it does not belong.
 
-## When to Use
+**Prune test:** If I delete this sentence, could a competent agent reasonably make a different decision? If no, delete it.
+
+A related test: would a fresh session make a mistake without this entry? If no, it is noise.
+
+## Progressive Placement
+
+Instructions load from the repository root inward to the files in scope. A nested `AGENTS.md` owns a narrower path. It refines the root. It overrides a root rule only when it names that override.
+
+Place a rule at the narrowest directory where it remains true. Add a nested `AGENTS.md` in the same change as that directory only if the directory has a rule that is not true at root. Do not add an empty or repeating nested file. Do not create instruction files for paths that do not exist.
+
+This is how the instruction set grows: by real placement next to the code it governs, as that code appears.
+
+Do not map the repository in AGENTS.md as a directory tree, component catalogue, or "where things live" diagram. That map is overlooked, goes stale, and becomes a second source of truth that no longer matches the tree. Discovery is the tree plus nested files beside the code.
+
+Commands, package managers, and test runners belong in the files that actually invoke them. Mention a command in AGENTS.md only when an agent would still pick the wrong tool after those files exist.
+
+Prefer `AGENTS.md`, and `.agents/` if the repository uses it, over vendor IDE rule directories as source of truth.
+
+## Write What Exists
+
+Name the current choice. Refer only to files, packages, services, directories, commands, and product objects that exist in this repository.
+
+Do not record rejected alternatives, discarded options, or "we considered X" history. Git history is enough for what was left behind.
+
+Do not put a standing job, milestone, or product object in AGENTS.md unless that object exists in the tree. A job line licenses the agent to invent architecture.
+
+Do not seed intended component names, future directories, or example paths that an agent will copy as layout.
+
+Wrong:
+> We considered Redis for sessions, then chose Postgres. Do not use Redis as the session store.
+
+Right:
+> Sessions are stored in Postgres.
+
+Keep a Wrong/Right pair only when it teaches a writing shape the prose does not already make obvious. Delete pairs that restate the paragraph above.
+
+## Names
+
+Name code, files, docs, components, and concepts by purpose, responsibility, domain meaning, or outcome. A name must make sense in isolation.
+
+Do not name things after phases, options, workstreams, ticket numbers, or labels that only make sense in the current conversation or an external document. A planning identifier may appear only when it is a first-class concept whose meaning is defined and available alongside the artifact.
+
+## When To Use
 
 | Trigger | Action |
-|---------|--------|
-| New project bootstrap | Write initial AGENTS.md with build/test/style basics |
-| Feature completion | Review the full feature record, then edit AGENTS.md directly for approved durable learnings |
-| Periodic review | Audit for stale/redundant entries (quarterly) |
-| Quality issues | Agent repeating mistakes? Check if AGENTS.md has the fix |
+| --- | --- |
+| New repository bootstrap | Write working philosophy, placement protocol, write-what-exists, and the prune bar. Do not invent build commands, a stack, or a layout the tree does not have. |
+| Language or component first lands | Put local rules in that directory's `AGENTS.md` if they are not true at root. Record the toolchain in the component manifest, not as a stack list in root AGENTS.md. |
+| Feature completion | Review the feature record, then propose durable learnings that still pass the prune test. |
+| Repeated agent mistake | Add the missing rule at the narrowest true scope. |
+| Periodic review | Prune stale, redundant, generic, and structure-map entries. |
 
-## What Makes Good Agent Memory
+## Signal Versus Noise
 
-### Signal Entries (Keep)
+**Signal** (keep when the tree already chose this and agents still miss it):
 
-✅ **Project-specific conventions:**
-- "We use Zustand, not Redux — never add Redux"
-- "Auth lives in `/lib/auth` — never create auth elsewhere"
-- "Run `bun test` not `npm test` (we don't use npm)"
+- `Run bun test. This repository does not use npm.`
+- `Use .js extensions for local imports. This is ESM.`
+- `Use ensureDir. ensureDirSync does not exist.`
+- `Worktrees do not share node_modules. Install in each worktree.`
+- A nested `AGENTS.md` beside the code it governs, for a rule that is not true at root.
 
-✅ **Non-obvious patterns:**
-- "Use `.js` extension for local imports (ESM requirement)"
-- "Worktrees don't share `node_modules` — run `bun install` in each"
-- "SandboxConfig is in `dockerSandboxService.ts`, NOT `types.ts`"
+**Noise** (remove):
 
-✅ **Gotchas that break builds:**
-- "Never use `ensureDirSync` — doesn't exist. Use `ensureDir` (sync despite name)"
-- "Import from `../utils/paths.js` not `./paths` (ESM strict)"
+- Observable facts: `This project uses TypeScript`
+- Generic advice: `Use descriptive variable names`
+- Code summaries: `FeatureService manages features`
+- History and metadata: created-on, original author, license text already in LICENSE
+- Directory maps: a labelled tree of packages in root AGENTS.md
+- Future layout: a `worker/` note because workers will need extra rules later
+- Restating Wrong/Right examples
+- A root line that says where a subsystem lives. If that directory has a local rule, put it in that directory's nested file after the directory exists.
 
-### Noise Entries (Remove)
+Zustand versus Redux is signal only after the tree has already chosen one. Name the current tool. Do not freeze a stack list to pre-empt that choice, and do not keep the rejected tool in the instruction.
 
-❌ **Agent already knows:**
-- "This project uses TypeScript" (agent detects from files)
-- "We follow semantic versioning" (universal convention)
-- "Use descriptive variable names" (generic advice)
+## Maintenance Workflow
 
-❌ **Irrelevant metadata:**
-- "Created on January 2024"
-- "Originally written by X"
-- "License: MIT" (in LICENSE file already)
+1. Gather evidence from the conversation, diffs, failures, repository, and existing instructions.
+2. Classify each candidate: root AGENTS.md, nested AGENTS.md, other durable docs, or not durable.
+3. Re-read the proposed target for duplicates, conflicts, stale wording, and structure maps.
+4. Present exact proposed text, destination, evidence, and operation.
+5. Wait for item-level approval. Apply only accepted items to the approved target.
+6. Show the resulting diff. Summarize applied, rejected, and unchanged items.
 
-❌ **Describes what code does:**
-- "FeatureService manages features" (agent can read code)
-- "The system uses git worktrees" (observable from commands)
+Do not auto-approve. One bad entry pollutes every later session.
 
-### Rule of Thumb
+Provisional one-off preferences stay out of AGENTS.md until repeated or mature evidence shows they are useful.
 
-**Signal:** Changes how agent acts  
-**Noise:** Documents what agent observes
+## When To Prune
 
-## Section Structure for Fast Comprehension
+Remove entries that are outdated, redundant, too generic, describing code, or proven unnecessary.
 
-Agents read AGENTS.md top-to-bottom once at session start. Put high-value info first:
+Also remove:
 
-```markdown
-# Project Name
+- Directory trees and "where things live" sections
+- Commands for tools that are not in the tree
+- Job or milestone lines naming objects that are not in the tree
+- Nested files for paths that do not exist
+- Wrong/Right blocks that only repeat the preceding paragraph
+- Sentences that fail the prune test
 
-## Build & Test Commands
-# ← Agents need this IMMEDIATELY
-bun run build
-bun run test
-bun run release:check
-
-## Code Style
-# ← Prevents syntax/import errors
-- Semicolons: Yes
-- Quotes: Single
-- Imports: Use `.js` extension
-
-## Architecture
-# ← Key directories, where things live
-packages/
-├── hive-core/      # Shared logic
-├── opencode-hive/  # Plugin
-└── vscode-hive/    # Extension
-
-## Important Patterns
-# ← How to do common tasks correctly
-Use `readText` from paths.ts, not fs.readFileSync
-
-## Gotchas & Anti-Patterns
-# ← Things that break or mislead
-NEVER use `ensureDirSync` — doesn't exist
-```
-
-**Keep total under 500 lines.** Beyond that, agents lose focus and miss critical entries.
-
-## The Maintenance Workflow
-
-After completing a feature, review the full feature record before editing AGENTS.md:
-
-1. **Read the whole source of truth:**
-   - Feature goals and plan
-   - Task reports
-   - Context files
-   - Existing AGENTS.md and relevant repo docs
-
-2. **Draft only missing durable learnings:**
-   - Prefer the smallest direct edit to AGENTS.md or the owning repo document
-   - Do not add entries already covered by existing docs or visible code
-
-3. **Review each proposal:**
-   - Read the proposed change
-   - Ask: "Does this change agent behavior?"
-   - Check: Is this already obvious from code/files?
-
-4. **Accept signal, reject noise:**
-   - ❌ "TypeScript is used" → Agent detects this
-   - ✅ "Use `.js` extension for imports" → Prevents build failures
-
-5. **Escalate conflicts:**
-   - If a proposed learning conflicts with existing docs or instructions, inform the operator
-   - Present the evidence and your recommendation before editing
-
-6. **Apply approved changes directly:**
-   - Edit AGENTS.md or the owning repo doc
-   - Review the diff before finalizing
-
-**Warning:** Don't auto-approve all proposals. One bad entry pollutes all future sessions.
-
-## When to Prune
-
-Remove entries when they become:
-
-**Outdated:**
-- "We use Redux" → Project migrated to Zustand
-- "Node 16 compatibility required" → Now on Node 22
-
-**Redundant:**
-- "Use single quotes" + "Strings use single quotes" → Keep one
-- Near-duplicates in different sections
-
-**Too generic:**
-- "Write clear code" → Applies to any project
-- "Test your changes" → Universal advice
-
-**Describing code:**
-- "TaskService manages tasks" → Agent can read `TaskService` class
-- "Worktrees are in `.hive/.worktrees/`" → Observable from filesystem
-
-**Proven unnecessary:**
-- Entry added 6 months ago, but agents haven't hit that issue since
+Silence is not evidence that a hard-won safety rule is unnecessary. Preserve gotchas unless evidence shows they are obsolete.
 
 ## Red Flags
 
-| Warning Sign | Why It's Bad | Fix |
-|-------------|-------------|-----|
-| AGENTS.md > 800 lines | Agents lose focus, miss critical info | Prune aggressively |
-| Describes what code does | Agent can read code | Remove descriptions |
-| Missing build/test commands | First thing agents need | Add at top |
-| No gotchas section | Agents repeat past mistakes | Document failure modes |
-| Generic best practices | Doesn't change behavior | Remove or make specific |
-| Outdated patterns | Misleads agents | Prune during sync |
+| Warning | Why | Fix |
+| --- | --- | --- |
+| Architecture or layout map in AGENTS.md | Second source of truth; goes stale | Delete the map. Put local rules beside the code |
+| Invented build/test commands on bootstrap | Agents run commands that do not exist | Add commands only after they exist and agents pick the wrong one |
+| Required empty Gotchas section | Forces noise | Add a gotcha when one is proven |
+| Example paths that look like intended components | Agents create those directories | Use clearly counterfactual examples, or none |
+| Nested AGENTS.md on every mkdir | Empty or copy-paste files | Add only when a local rule exists |
+| AGENTS.md as comprehensive reference | Agents miss the few rules that matter | Filter. Link to real docs that own the detail |
+| Historical "we considered X" | Rejected-alternative leakage | Name the current choice only |
+| Line-count targets (500, 800) as quality | Length is not the prune bar | Use the prune test |
 
 ## Anti-Patterns
 
-| Anti-Pattern | Better Approach |
-|-------------|----------------|
-| "Document everything" | Document only what changes behavior |
-| "Keep for historical record" | Version control is history |
-| "Might be useful someday" | Add when proven necessary |
-| "Explains the system" | Agents read code for that |
-| "Comprehensive reference" | AGENTS.md is a filter, not docs |
-
-## Good Examples
-
-**Build Commands (High value, agents need immediately):**
-```markdown
-## Build & Test Commands
-bun run build              # Build all packages
-bun run test               # Run all tests
-bun run release:check      # Full CI check
-```
-
-**Project-Specific Convention (Prevents mistakes):**
-```markdown
-## Code Style
-- Imports: Use `.js` extension for local imports (ESM requirement)
-- Paths: Import from `../utils/paths.js` never `./paths`
-```
-
-**Non-Obvious Gotcha (Prevents build failure):**
-```markdown
-## Important Patterns
-Use `ensureDir` from paths.ts — sync despite name
-NEVER use `ensureDirSync` (doesn't exist)
-```
-
-## Bad Examples
-
-**Generic advice (agent already knows):**
-```markdown
-## Best Practices
-- Use meaningful variable names
-- Write unit tests
-- Follow DRY principle
-```
-
-**Describes code (agent can read it):**
-```markdown
-## Architecture
-The FeatureService class manages features. It has methods
-for create, read, update, and delete operations.
-```
-
-**Irrelevant metadata:**
-```markdown
-## Project History
-Created in January 2024 by the platform team.
-Originally built for internal use.
-```
+| Anti-pattern | Better approach |
+| --- | --- |
+| Document everything | Document only what changes a decision |
+| Keep it for history | Git is history |
+| Might be useful someday | Add when proven |
+| Explain the system | Agents read the tree and the owning docs |
+| Comprehensive architecture section | Nested files next to the code |
+| One root file for all future conventions | Progressive placement as directories appear |
 
 ## Verification
 
 Before finalizing AGENTS.md updates:
 
-- [ ] Every entry answers: "What mistake does this prevent?"
-- [ ] No generic advice that applies to all projects
-- [ ] Build/test commands are first
-- [ ] Gotchas section exists and is populated
-- [ ] Total length under 500 lines (800 absolute max)
-- [ ] No entries describing what code does
-- [ ] Fresh agent session would benefit from each entry
+- Every remaining sentence passes the prune test
+- No directory map, component catalogue, or future-layout sketch
+- Nested files exist only beside code they govern, and only for rules not true at root
+- Named commands, packages, and product objects exist in the tree
+- No rejected-alternative history
+- No generic advice that applies to every project
+- A fresh agent session would act differently because of each remaining entry
 
 ## Summary
 
-AGENTS.md is **behavioral memory**, not documentation:
-- Write for agents, optimize for behavior change
-- Signal = prevents mistakes, Noise = describes observables
-- Sync after features, prune quarterly
-- Test: Would agent make a mistake without this entry?
-
-**Quality > quantity. Every line counts.**
+Place rules next to the code they govern as that code appears. Do not draw the tree in the instruction file. Name what exists. Delete any sentence a competent agent would decide the same way without.
