@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { execSync } from "child_process";
+import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -16,7 +17,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS } from 'hive-core';
+import { CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 type PluginHooks = Awaited<ReturnType<typeof plugin>>;
@@ -3677,12 +3678,12 @@ Do it
     expect(workerSession.featureName).toBe("plan-bind-feature");
   });
 
-  it("hive_context_write binds featureName to global session", async () => {
+  it("uses directory for the global root sentinel and resolves an omitted feature from the session binding", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
-      worktree: testRoot,
+      worktree: "/",
       serverUrl: new URL("http://localhost:1"),
-      project: createProject(testRoot),
+      project: { ...createProject("/"), id: "global" },
       client: OPENCODE_CLIENT,
       $: createStubShell(),
     };
@@ -3700,16 +3701,29 @@ Do it
       { name: "notes", content: "test notes", feature: "ctx-bind-feature" },
       workerContext
     );
+    const omittedOutput = await hooks.tool!.hive_context_write.execute(
+      { name: "follow-up", content: "bound notes" },
+      workerContext,
+    );
 
-    expect(output).toContain('Context file written');
+    expect(output).toContain("Context file written");
+    expect(omittedOutput).toContain(path.join("01_ctx-bind-feature", "context", "follow-up.md"));
     expect(fs.readFileSync(path.join(
       testRoot,
-      '.hive',
-      'features',
-      '01_ctx-bind-feature',
-      'context',
-      'notes.md',
-    ), 'utf-8')).toBe('test notes');
+      ".hive",
+      "features",
+      "01_ctx-bind-feature",
+      "context",
+      "notes.md",
+    ), "utf-8")).toBe("test notes");
+    expect(fs.readFileSync(path.join(
+      testRoot,
+      ".hive",
+      "features",
+      "01_ctx-bind-feature",
+      "context",
+      "follow-up.md",
+    ), "utf-8")).toBe("bound notes");
 
     const sessionsPath = path.join(testRoot, ".hive", "sessions.json");
     expect(fs.existsSync(sessionsPath)).toBe(true);
@@ -3719,6 +3733,75 @@ Do it
     );
     expect(workerSession).toBeDefined();
     expect(workerSession.featureName).toBe("ctx-bind-feature");
+  });
+
+  it("preserves a non-root worktree for a global project", async () => {
+    const worktreeRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, "context-worktree-"));
+    const featureName = "global-worktree-feature";
+    new FeatureService(worktreeRoot).create(featureName);
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: worktreeRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: { ...createProject(worktreeRoot), id: "global" },
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const writerSessionID = "sess_global_worktree_writer";
+    const output = await hooks.tool!.hive_context_write.execute(
+      { name: "notes", content: "worktree notes", feature: featureName },
+      createToolContext(writerSessionID),
+    );
+
+    expect(output).toContain("Context file written");
+    expect(fs.readFileSync(path.join(
+      worktreeRoot,
+      ".hive",
+      "features",
+      "01_global-worktree-feature",
+      "context",
+      "notes.md",
+    ), "utf-8")).toBe("worktree notes");
+    expect(readGlobalSessionFeatureName(worktreeRoot, writerSessionID)).toBe(featureName);
+    expect(fs.existsSync(path.join(testRoot, ".hive"))).toBe(false);
+  });
+
+  it("does not redirect the root sentinel for a non-global project", async () => {
+    const featureName = `root-boundary-${randomUUID()}`;
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: "/",
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject("/"),
+      client: OPENCODE_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const createOutput = await hooks.tool!.hive_feature_create.execute(
+      { name: featureName },
+      createToolContext("sess_root_boundary_owner")
+    );
+    expect(createOutput).toContain(`Feature "${featureName}" created`);
+
+    const writerSessionID = "sess_root_boundary_writer";
+    const output = await hooks.tool!.hive_context_write.execute(
+      { name: "notes", content: "must not be written", feature: featureName },
+      createToolContext(writerSessionID)
+    );
+
+    expect(output).toBe(`Error: Feature '${featureName}' not found. Create it first with hive_feature_create.`);
+    expect(fs.existsSync(path.join(
+      testRoot,
+      ".hive",
+      "features",
+      `01_${featureName}`,
+      "context",
+      "notes.md",
+    ))).toBe(false);
+    expect(readGlobalSessionFeatureName(testRoot, writerSessionID)).toBeUndefined();
   });
 
   it('uses a root session binding before an unrelated repository-active feature', async () => {

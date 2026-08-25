@@ -1234,7 +1234,10 @@ const plugin: Plugin = async (ctx) => {
   });
 
   const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
-  const runtimeContext = detectContext(worktree || directory);
+  // OpenCode global non-Git contexts use '/' as a sentinel; only that exact pair redirects to directory.
+  const runtimeContext = detectContext(
+    ctx.project?.id === 'global' && worktree === '/' ? directory : worktree || directory,
+  );
   const taskWorkerRecovery = runtimeContext.isWorktree && runtimeContext.feature && runtimeContext.task
     ? {
         featureName: runtimeContext.feature,
