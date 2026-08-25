@@ -255,7 +255,7 @@ This is a **bun workspaces** monorepo:
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Hive Plugin Tools (29 standard + 6 workflow-only)
+### Hive Plugin Tools (29 standard + 7 workflow-only)
 
 | Domain | Tools |
 |--------|-------|
@@ -270,11 +270,11 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 | Merge | hive_merge |
 | Context | hive_context_write |
 | Status | hive_status |
-| Workflow-only Review | hive_git_snapshot, hive_vulnerability_compare_report_read, hive_review_workspace_create, hive_review_workspace_claim, hive_review_workspace_inspect, hive_review_workspace_cleanup |
+| Workflow-only Review | hive_git_snapshot, hive_review_evidence_resolve, hive_vulnerability_compare_report_read, hive_review_workspace_create, hive_review_workspace_claim, hive_review_workspace_inspect, hive_review_workspace_cleanup |
 
 Task-backed worktree tools create feature/task records and appear in `hive_status`. Modern `hive_tasks_sync` reads numbered tasks only from `## Tasks`; pure suite or release checks belong in `## Final Verification` unless they write tracked artifacts. Ad-hoc worktree tools are for isolated Hive Builder work and do not create feature/task records. `hive_adhoc_worktree_create` defaults to auto-spawning a worker; gate-closed sessions launch the returned blocking `taskToolCall`, and background-enabled sessions may launch `backgroundTaskCall` when independent foreground work can continue. Set `autoSpawnWorker: false` only for inspection, routing, or setup-only ad-hoc worktrees. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task({ background: true, ... })` completion notifications and do not roll back files, branches, worktrees, commits, or reports. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
 
-The six review tools are runtime-gated capabilities for generated private review agents, not additional powers for the standard roles. Vulnerability Stage 1 resolves a bounded candidate first; only a fresh materialize call that exactly matches the stored accepted candidate can consume workspace-create authority before claim.
+The seven workflow-only tools are runtime-gated capabilities, not additional powers for standard roles. Review roles cannot call `hive_git_snapshot` directly; Stage A uses the one-shot `hive_review_evidence_resolve`. `/dash-review` accepts one Git, inline, or packet-fixed local-artifact kind. `/vuln-review` accepts Git only. Workspace create accepts only the invocation-bound resolution fingerprint plus the vulnerability source-resolution fingerprint when required.
 
 **Standard tool access is filtered per agent role:**
 - **Hive** — all 29 standard tools (hybrid agent)

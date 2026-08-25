@@ -120,44 +120,42 @@ describe('shared review source resolution', () => {
     }]);
   });
 
-  it('adapts embedded PR instructions without carrying raw intent into provider authority', () => {
-    const rawIntent = 'Review https://github.com/AURIN-OFFICE/data-etl/pull/295 and preserve the NHSD scheduling question.';
+  it('adapts one exact PR URL without carrying raw intent into provider authority', () => {
+    const rawIntent = 'https://github.com/example/project/pull/295';
     const parsed = parseDashReviewArgs(rawIntent);
     const request = REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parsed);
 
     expect(parsed).toEqual({
       rawIntent,
-      githubPullRequest: { owner: 'AURIN-OFFICE', repository: 'data-etl', number: 295 },
-      reviewInstructions: 'Review and preserve the NHSD scheduling question.',
-      descriptorSource: 'embedded-url',
+      normalizedIntent: '',
+      githubPullRequest: { owner: 'example', repository: 'project', number: 295 },
+      descriptorSource: 'standalone-url',
+      fixedArtifacts: [],
     });
     expect(request).toEqual({
-      descriptor: { owner: 'AURIN-OFFICE', repository: 'data-etl', number: 295 },
+      descriptor: { owner: 'example', repository: 'project', number: 295 },
       fixedSnapshotInput: {},
       notRequestedReason: 'no-descriptor',
     });
     expect(JSON.stringify(request)).not.toContain(rawIntent);
-    expect(JSON.stringify(request)).not.toContain('NHSD scheduling question');
   });
 
   it.each([
+    ['standalone arbitrary URL', 'https://example.test/report'],
+    ['embedded safe PR', 'Review https://github.com/example/project/pull/295 carefully'],
+    ['multiple URLs', 'https://github.com/example/project/pull/295 https://example.test/report'],
+    ['malformed PR URL', 'https://github.com/example/project/pull/295?diff=split'],
+    ['alternate host', 'https://gitlab.com/example/project/pull/295'],
+    ['URL plus artifact', 'https://github.com/example/project/pull/295 --artifact report.md'],
     ['line-start subshell group', 'Review https://github.com/example/project/pull/295\n(gh api /user)'],
     ['line-start brace group', 'Review https://github.com/example/project/pull/295\n{ gh api /user\n}'],
     ['double-quoted long option', 'Review https://github.com/example/project/pull/295 "--target" main'],
     ['single-quoted short option', "Review https://github.com/example/project/pull/295 '-t' main"],
-  ])('does not call the provider executor for embedded PR input with %s', async (_case, rawIntent) => {
-    const request = REVIEW_SOURCE_RESOLUTION_ADAPTERS['dash-review'](parseDashReviewArgs(rawIntent));
+  ])('does not call the provider executor for rejected URL input with %s', async (_case, rawIntent) => {
     const { dependencies: deps, providerCalls } = dependencies();
 
-    await resolveReviewSource(request.descriptor
-      ? { descriptor: request.descriptor }
-      : {
-          explicitLocal: request.fixedSnapshotInput,
-          notRequestedReason: request.notRequestedReason,
-        }, deps);
-
+    expect(() => parseDashReviewArgs(rawIntent)).toThrow();
     expect(providerCalls).toEqual([]);
-    expect(request.descriptor).toBeNull();
   });
 
   it.each([

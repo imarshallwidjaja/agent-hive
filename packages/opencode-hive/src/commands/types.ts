@@ -28,7 +28,7 @@ export interface HiveCommandContext {
 export interface HiveCommandDashReviewLane {
   taskTarget: string;
   sourceAgent: string;
-  baseAgent: 'scout-researcher' | 'code-reviewer' | 'simplicity-reviewer';
+  baseAgent: 'scout-researcher' | 'code-reviewer' | 'simplicity-reviewer' | 'approach-advisor';
   description: string;
   model?: string;
   variant?: string;

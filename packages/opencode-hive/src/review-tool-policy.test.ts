@@ -72,23 +72,59 @@ describe('shared fail-closed review tool policy', () => {
     const deep = REVIEW_ROLE_POLICIES['dash-review:deep'];
 
     expect(primary.tools).toEqual([
-      'read', 'glob', 'grep', 'bash', 'webfetch', 'task', 'question', 'skill',
+      'task', 'question',
       'hive_repositories_status', 'hive_plan_read', 'hive_status',
       'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup',
     ]);
     expect(scope.tools).toEqual([
       'hive_repositories_status', 'hive_plan_read', 'hive_status',
-      'hive_git_snapshot', 'hive_review_workspace_create',
+      'hive_review_evidence_resolve', 'hive_review_workspace_create',
     ]);
     expect(deep.tools).toEqual([
-      'read', 'glob', 'grep', 'webfetch', 'skill',
+      'read', 'glob', 'grep', 'ast_grep_find_code', 'ast_grep_find_code_by_rule', 'webfetch', 'skill',
       'hive_repositories_status', 'hive_plan_read', 'hive_status',
     ]);
   });
 
+  it.each(['inline', 'local-artifacts'] as const)(
+    'narrows authenticated dash deep lanes to frozen local tools for %s evidence',
+    (evidenceKind) => {
+      for (const tool of ['read', 'glob', 'grep', 'ast_grep_find_code', 'ast_grep_find_code_by_rule', 'skill']) {
+        expect(authorizeReviewTool({
+          workflow: 'dash-review',
+          role: 'deep',
+          tool,
+          caller: 'dash-deep',
+          evidenceKind,
+        }, runtimeLanes)).toEqual({ allowed: true });
+      }
+      for (const tool of ['webfetch', 'hive_repositories_status', 'hive_plan_read', 'hive_status']) {
+        expect(authorizeReviewTool({
+          workflow: 'dash-review',
+          role: 'deep',
+          tool,
+          caller: 'dash-deep',
+          evidenceKind,
+        }, runtimeLanes)).toEqual({ allowed: false, reason: 'evidence kind' });
+      }
+    },
+  );
+
+  it('retains the explicit Git deep-lane references', () => {
+    for (const tool of ['webfetch', 'hive_repositories_status', 'hive_plan_read', 'hive_status']) {
+      expect(authorizeReviewTool({
+        workflow: 'dash-review',
+        role: 'deep',
+        tool,
+        caller: 'dash-deep',
+        evidenceKind: 'git',
+      }, runtimeLanes)).toEqual({ allowed: true });
+    }
+  });
+
   it('preserves vulnerability role differences including compare and cleanup', () => {
     expect(REVIEW_ROLE_POLICIES['vulnerability-review:scope-scout'].tools).toEqual([
-      'hive_repositories_status', 'hive_plan_read', 'hive_status', 'hive_git_snapshot',
+      'hive_repositories_status', 'hive_plan_read', 'hive_status', 'hive_review_evidence_resolve',
       'hive_vulnerability_compare_report_read', 'hive_review_workspace_create',
       'hive_review_workspace_cleanup',
       'ast_grep_dump_syntax_tree', 'ast_grep_find_code', 'ast_grep_find_code_by_rule',
@@ -109,7 +145,7 @@ describe('shared fail-closed review tool policy', () => {
     [{ workflow: 'dash-review', role: 'deep', tool: 'unknown_user_mcp', caller: 'dash-deep' }, 'unknown tool'],
     [{ workflow: 'dash-review', role: 'primary', tool: 'task', caller: '__hive_dash_review_primary', target: 'forager' }, 'target'],
     [{ workflow: 'dash-review', role: 'primary', tool: 'task', target: 'dash-scope' }, 'caller'],
-    [{ workflow: 'dash-review', role: 'scope', tool: 'hive_git_snapshot', caller: 'dash-scope-extra' }, 'caller'],
+    [{ workflow: 'dash-review', role: 'scope', tool: 'hive_review_evidence_resolve', caller: 'dash-scope-extra' }, 'caller'],
   ] as const)('denies fail-closed input: %j', (input, reason) => {
     expect(authorizeReviewTool(input as never, runtimeLanes)).toEqual({ allowed: false, reason });
   });

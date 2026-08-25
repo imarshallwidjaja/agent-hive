@@ -48,7 +48,7 @@ export const HIVE_COMMANDS = [
   {
     key: 'dash-review',
     name: '/dash-review',
-    description: 'Review an implementation snapshot without changing files',
+    description: 'Review one Git, inline, or local-artifact evidence bundle without changing files',
     agent: DASH_REVIEW_PRIMARY_AGENT,
   },
   {

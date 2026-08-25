@@ -65,6 +65,7 @@ describe('review workspace run descriptors', () => {
       repositoryIds: ['web', 'api'],
       snapshot: { paths: ['src'] },
       selectedRepositoryIds: ['web', 'api'],
+      resolutionFingerprint: '4'.repeat(64),
       sourceFingerprint: '2'.repeat(64),
       materializedFingerprint: '3'.repeat(64),
       materializations: [{ repositoryId: 'api', materialization }],
@@ -79,6 +80,7 @@ describe('review workspace run descriptors', () => {
     expect(JSON.stringify(lease)).not.toContain('secret-content');
     expect(JSON.stringify(lease)).not.toContain('/trusted/target');
     expect(lease.scopeFingerprint).toBe(fingerprintReviewWorkspaceScope(lease.sourceScope));
+    expect(lease.resolutionFingerprint).toBe('4'.repeat(64));
     expect(lease.sourceFingerprint).not.toBe(lease.materializedFingerprint);
   });
 
@@ -100,6 +102,7 @@ describe('review workspace run descriptors', () => {
       repositoryIds: ['web', 'api'],
       snapshot: { paths: ['src/web.ts', 'src/../src/api.ts'] },
       selectedRepositoryIds: ['web', 'api'],
+      resolutionFingerprint: '4'.repeat(64),
       vulnerabilityScope: {
         mode: 'hive-task',
         repositories: ['web', 'api', 'web'],
@@ -133,6 +136,7 @@ describe('review workspace run descriptors', () => {
       repositoryIds: [supplementary, privateUse],
       snapshot: { paths: [`${supplementary}/path`, `${privateUse}/path`] },
       selectedRepositoryIds: [supplementary, privateUse],
+      resolutionFingerprint: '4'.repeat(64),
       vulnerabilityScope: {
         mode: 'current-change',
         repositories: [supplementary, privateUse],
@@ -157,6 +161,7 @@ describe('review workspace run descriptors', () => {
       repositoryIds: undefined,
       snapshot: {},
       selectedRepositoryIds: ['root'],
+      resolutionFingerprint: '4'.repeat(64),
       sourceFingerprint: '2'.repeat(64),
       materializedFingerprint: '3'.repeat(64),
       materializations: [],

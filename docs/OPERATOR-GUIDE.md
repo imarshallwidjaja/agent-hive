@@ -66,7 +66,7 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 | `/interview` | Clarify an idea toward a reliable implementation-brief handoff | `/interview <idea>` |
 | Feature | You need a reviewed plan, task dependencies, isolated task worktrees, or a durable execution record | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | The work is bounded, is not a feature, and should not create feature or task records | Talk to `hive-builder` (dedicated) or `hive-master` (unified) |
-| `/dash-review` | You want an independent implementation review of one frozen snapshot, with no source edits | `/dash-review [scope]` |
+| `/dash-review` | You want a read-only Git, process/concept, or local-artifact review | `/dash-review [intent] [--artifact <file>]` |
 | `/vuln-review` | You are authorized to assess the source and want a bounded static security review | `/vuln-review [intent] [flags]` |
 
 `/council` is a lighter read-only advice run. It does not replace dash-review or vuln-review.
@@ -117,15 +117,17 @@ If the request grows task dependencies, a reviewed plan, or a durable audit trai
 
 ## `/dash-review`
 
-Use this when you want a second look at an implementation without the reviewer changing source or starting a fix.
+Use this when you want a read-only second opinion without starting a fix.
 
-1. Run `/dash-review` with a branch, ref, range, path, task, feature, or other coherent target. Arguments win. With no argument, it infers only when the conversation and Git/Hive context already name one surface; otherwise it asks one question and stops.
-2. A scope researcher freezes a disposable workspace at `.hive/.worktrees/review/<runId>`. Reviewers work in that copy. Live source is not the review tree.
-3. Parallel review lanes read the frozen snapshot and return findings. The first response is review-only: scope, coverage gaps, verdicts, execution integrity, and APPROVE, REQUEST_CHANGES, or NEEDS_DISCUSSION.
-4. Hive inspects the workspace against the frozen baseline, then cleans it up. Nothing from the review tree is copied back to source.
-5. If you want a fix, say so later to the feature orchestrator or to `hive-builder`. Dash-review does not create Hive state, tasks, commits, or patches.
+1. Git review: run `/dash-review`, provide an exact GitHub PR URL, or describe the current Git target. A PR fixes Git evidence. Empty arguments can resolve only Git evidence.
+2. Process or concept review: provide nonempty natural-language intent. Stage A can select inline evidence with subject kind `process`, `concept`, or `general`; this uses advisory lanes rather than implementation severity semantics.
+3. Local files: repeat `--artifact <project-relative-file>`. Example: `/dash-review review these outputs --artifact reports/result.bin --artifact notes/review.txt`. Artifact paths come only from the command packet. They cannot be supplied later by a model. One bundle accepts at most 32 files, 16 MiB per file, and 32 MiB total.
+4. One invocation resolves one evidence kind. PR plus artifact, arbitrary URL evidence, absolute/private/traversing paths, symlinks, and mixed kind-specific fields fail before acquisition.
+5. Git freezes under `.hive/.worktrees/review/<runId>`. Inline and artifact evidence freezes under `.hive/.worktrees/review-evidence/<runId>`. The primary claims, reviewers read only that absolute workspace, then the primary inspects and cleans it.
+6. The response includes scope/source/resolution fingerprints, requested questions answered, limitations, integrity, and cleanup. Git/code review remains findings-first. Process/concept review leads with direct answers and advice.
+7. If you want a fix, ask the feature orchestrator or `hive-builder` later. Dash-review writes no source, Hive tasks, commits, patches, or report file.
 
-This is an independent implementation review, not a security assessment and not proof that tests passed on your machine. Flags, workspace locking, and lane contracts: [Operator Commands](../packages/opencode-hive/README.md#operator-commands).
+`/vuln-review` remains Git-only. It rejects inline and artifact evidence before `BOUNDED`. Tool details and lane contracts: [Operator Commands](../packages/opencode-hive/README.md#operator-commands).
 
 ## `/vuln-review`
 

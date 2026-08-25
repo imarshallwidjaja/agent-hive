@@ -215,26 +215,29 @@ These primary-orchestrator-only tools inspect one native OpenCode child session.
 - `helperStatus.mergeEligibility` is the canonical operator surface for whether completed task work has a live worktree and can be considered for merge or cleanup.
 - Background board state is intentionally separate. Reconcile terminal background jobs first, then refresh `hive_status` before making dependent task or merge decisions.
 
-## Private Review Workflow Tools (6 workflow-only tools)
+## Review and Snapshot Runtime Tools (7 workflow-only tools)
 
 `/dash-review` and `/vuln-review` use runtime-gated review tools. These tools are registered with the plugin but are not general-purpose operator or agent tools. Exact workflow identity, private-agent identity, pending-session state, ownership token, and lifecycle state provide runtime gates for each call.
 
 | Tool | Purpose | Authorized caller |
 |------|---------|-------------------|
-| `hive_git_snapshot` | Preview one structured, atomic read-only Git snapshot set without raw Git commands or flags | A generated private scope lane |
+| `hive_git_snapshot` | Preview a structured read-only Git snapshot set outside private review workflows | Non-review callers; all `/dash-review` and `/vuln-review` roles are denied |
+| `hive_review_evidence_resolve` | Resolve one invocation-bound `git`, `inline`, or `local-artifacts` evidence kind and return compact fingerprints/provenance | The exact bound Stage A child; vulnerability review accepts `git` only |
 | `hive_vulnerability_compare_report_read` | Consume the current vulnerability invocation's normalized prior-report capability; accepts neither a path nor a token and has no arguments | The bound vulnerability scope lane only |
-| `hive_review_workspace_create` | Materialize one frozen disposable workspace from structured repository/ref/path scope and return its run ID, ownership token, paths, and fingerprints | The active workflow's generated private scope lane |
+| `hive_review_workspace_create` | Materialize the stored evidence plan from its exact `resolutionFingerprint`; vulnerability review also supplies its stored source-resolution fingerprint | The active workflow's generated private scope lane |
 | `hive_review_workspace_claim` | Bind a created workspace to the active private primary session | The same workflow's private primary, with the returned token |
 | `hive_review_workspace_inspect` | Compare the workspace with its materialized baseline and revalidate the live source identity | The owning private primary |
 | `hive_review_workspace_cleanup` | Remove the disposable workspace and release its persisted run state | The owning private primary, or the vulnerability scope lane with exact failed-materialize cleanup authority |
 
 ### Review workspace lifecycle and gates
 
-- Create accepts structured scope aliases only. It does not accept raw Git commands or arbitrary Git flags. Repository IDs, paths, refs, and optional Hive task/feature identity are validated before materialization.
-- Vulnerability Stage 1 has separate resolve and materialize calls. Resolve can preview. Resolve cannot create. Only a fresh materialize call that exact-matches the stored `AcceptedCandidate` can consume the server's one-use create authority, and it must do so before capture. A second ambiguity, malformed packet, create drift, or cleanup uncertainty stops before claim.
+- The command hook stores immutable review intent. A validated PR fixes Git; `--artifact` fixes packet-owned local artifacts; empty dash arguments permit Git only. One invocation resolves once. Mixed kinds, replay, wrong child/primary/version, expiry, and model-supplied artifact paths fail closed.
+- Create accepts fingerprints only. Git refs, repository IDs, paths, Hive scope, inline bytes, and artifact paths come from runtime-owned resolution/candidate state and are not caller arguments.
+- `/dash-review` dispatches Git to `ReviewWorkspaceService` and inline/artifacts to `ReviewEvidenceBundleService`. Claim, inspect, cleanup, restart recovery, duplicate cleanup, and stale-run sweeping route from persisted owner metadata.
+- Vulnerability Stage 1 rejects non-Git evidence before `BOUNDED`. Resolve cannot create. Only a fresh materialize call that exact-matches the stored `AcceptedCandidate`, evidence resolution, and source resolution can consume create authority.
 - Shared dash and vulnerability preview normalization excludes internal review state from live untracked capture. It adds no public `excludePaths` parameter. Vulnerability READY requires strict descriptor, source-fingerprint, and ordered repository-fingerprint equality for both single and composite scopes.
 - The scope lane returns a READY ownership token to the private primary but cannot claim or inspect the run. It can clean only an exact create result reserved for failed materialization; it cannot clean an accepted workspace. Deep review lanes cannot call any lifecycle tool. The private primary can claim, inspect, and clean but cannot create the workspace.
-- Claim must succeed before deep lanes start. Inspection runs after review and before cleanup. Cleanup is attempted even after lane, drift, or integrity failure.
+- Claim must succeed before deep lanes start. Runtime-bound deep children receive evidence kind, run ID, workspace path, and scope/source/resolution fingerprints. Local-path tools require absolute realpath containment under that workspace with no live-source fallback.
 - Inspection compares tracked content, untracked additions, and the materialized fingerprint, then checks whether the corresponding live source identity stayed stable. A mismatch is reported; it is not repaired or rolled back.
 - Persisted lease metadata supports bounded handoff, session-deletion cleanup, dead-owner recovery, and stale-run sweeping. Recovery validates recorded Git identity before removing a registered worktree and preserves anomalies it cannot safely attribute.
 - Workflow agent registration, per-role tool permissions, exact private task targets, caller inference, and persisted ownership checks are separate runtime gates. A prompt instruction alone is not the authorization boundary.

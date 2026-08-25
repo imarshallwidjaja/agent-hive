@@ -54,6 +54,27 @@ export type {
   ReviewWorkspaceVulnerabilityScopeDescriptor,
   ReviewWorkspaceWorkflow,
 } from './reviewWorkspaceService.js';
+export {
+  ReviewEvidenceBundleService,
+  REVIEW_EVIDENCE_BUNDLE_SCHEMA_VERSION,
+} from './reviewEvidenceBundleService.js';
+export type {
+  ReviewEvidenceBundleWorkflow,
+  ReviewEvidenceBundleKind,
+  ReviewEvidenceBundleCaller,
+  ReviewEvidenceBundleConfig,
+  ReviewEvidenceBundleItemInput,
+  ReviewEvidenceBundleInlineManifestItem,
+  ReviewEvidenceBundleArtifactManifestItem,
+  ReviewEvidenceBundleManifestItem,
+  ReviewEvidenceBundleManifest,
+  ReviewEvidenceBundleCreateOptions,
+  ReviewEvidenceBundleArtifactCapture,
+  ReviewEvidenceBundleInfo,
+  ReviewEvidenceBundleInspection,
+  ReviewEvidenceBundleAuthorizationRecovery,
+  ReviewEvidenceBundleCleanupResult,
+} from './reviewEvidenceBundleService.js';
 export { ContextService } from './contextService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService } from './sessionService.js';

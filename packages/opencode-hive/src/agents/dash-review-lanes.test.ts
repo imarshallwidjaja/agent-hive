@@ -2,6 +2,29 @@ import { describe, expect, it } from 'bun:test';
 import { buildDashReviewLanes } from './dash-review-lanes.js';
 
 describe('buildDashReviewLanes', () => {
+  it('generates advisory-only lanes for inline and artifact evidence', () => {
+    const { agents, lanes } = buildDashReviewLanes({
+      sources: [{
+        name: 'approach-advisor',
+        baseAgent: 'approach-advisor',
+        description: 'Process and concept advisor',
+        prompt: 'Advise on the approach.',
+      }],
+      existingNames: [],
+      hiveTools: ['read', 'glob', 'grep', 'ast_grep_find_code', 'hive_review_workspace_create'],
+    });
+
+    expect(lanes).toEqual([expect.objectContaining({
+      taskTarget: 'review-approach-advisor',
+      baseAgent: 'approach-advisor',
+    })]);
+    expect(agents['review-approach-advisor']?.prompt).toContain('advisory methodology');
+    expect(agents['review-approach-advisor']?.prompt).toContain('inline or artifact evidence');
+    expect(agents['review-approach-advisor']?.prompt).toContain('Do not apply implementation code-review semantics');
+    expect(agents['review-approach-advisor']?.tools?.ast_grep_find_code).toBe(true);
+    expect(agents['review-approach-advisor']?.tools?.hive_review_workspace_create).toBe(false);
+  });
+
   it('preserves normal local tools while denying task recursion and Hive lifecycle mutation', () => {
     const { agents, lanes } = buildDashReviewLanes({
       sources: [{
@@ -14,7 +37,7 @@ describe('buildDashReviewLanes', () => {
         description: 'Verification reviewer',
       }],
       existingNames: ['review-scout-researcher'],
-      hiveTools: ['hive_feature_create', 'hive_context_write', 'hive_git_snapshot', 'hive_review_workspace_create', 'hive_repositories_status', 'hive_plan_read', 'hive_status'],
+      hiveTools: ['hive_feature_create', 'hive_context_write', 'hive_git_snapshot', 'hive_review_evidence_resolve', 'hive_review_workspace_create', 'hive_repositories_status', 'hive_plan_read', 'hive_status', 'ast_grep_find_code', 'ast_grep_find_code_by_rule'],
     });
 
     const scope = agents['review-scout-researcher-2'];
@@ -26,7 +49,8 @@ describe('buildDashReviewLanes', () => {
     expect(scope?.tools?.hive_repositories_status).toBe(true);
     expect(scope?.tools?.hive_plan_read).toBe(true);
     expect(scope?.tools?.hive_status).toBe(true);
-    expect(scope?.tools?.hive_git_snapshot).toBe(true);
+    expect(scope?.tools?.hive_git_snapshot).toBe(false);
+    expect(scope?.tools?.hive_review_evidence_resolve).toBe(true);
     expect(scope?.tools?.hive_review_workspace_create).toBe(true);
     expect(scope?.tools?.hive_feature_create).toBe(false);
     expect(scope?.permission?.['*']).toBe('deny');
@@ -35,6 +59,7 @@ describe('buildDashReviewLanes', () => {
     expect(scope?.permission?.task).toBe('deny');
     expect(scope?.permission?.delegate).toBe('deny');
     expect(code?.tools?.hive_git_snapshot).toBe(false);
+    expect(code?.tools?.ast_grep_find_code).toBe(true);
     expect(code?.tools?.hive_review_workspace_create).toBe(false);
     expect(code?.tools?.hive_repositories_status).toBe(true);
     expect(code?.tools?.hive_plan_read).toBe(true);
@@ -42,6 +67,8 @@ describe('buildDashReviewLanes', () => {
     expect(code?.permission?.['*']).toBe('deny');
     expect(code?.permission?.bash).toBeUndefined();
     expect(code?.prompt).toContain('enabled dash deep-lane tools');
+    expect(code?.prompt).toContain('ast_grep_find_code');
+    expect(code?.prompt).toContain('ast_grep_find_code_by_rule');
     expect(code?.prompt).toContain('MCP, Railway, Vercel, and other remote-service tools are not authorized');
     expect(code?.prompt).toContain('Shell');
     expect(code?.prompt).toContain('non-attributable');
@@ -132,7 +159,7 @@ describe('buildDashReviewLanes', () => {
         prompt: 'Review code carefully',
       }],
       existingNames: [],
-      hiveTools: ['hive_repositories_status', 'hive_git_snapshot', 'hive_review_workspace_create', 'hive_status'],
+      hiveTools: ['hive_repositories_status', 'hive_review_evidence_resolve', 'hive_review_workspace_create', 'hive_status'],
     });
 
     const scope = agents['review-scout-researcher']!;
@@ -151,7 +178,7 @@ describe('buildDashReviewLanes', () => {
     expect(scope.prompt).not.toContain('do not call `hive_status`');
     expect(scope.prompt).toContain('omit `repositoryIds`');
     expect(scope.prompt).toContain('exactly three scope states');
-    const stateDeclarationStart = scope.prompt.indexOf('Use exactly three scope states:');
+    const stateDeclarationStart = scope.prompt.indexOf('For Git evidence use exactly three scope states:');
     const stateDeclaration = scope.prompt.slice(
       stateDeclarationStart,
       scope.prompt.indexOf('.', stateDeclarationStart),
@@ -162,7 +189,7 @@ describe('buildDashReviewLanes', () => {
         'local snapshot scope',
         'unverified local checkout',
       ]);
-    expect(scope.prompt).toContain('runtime-produced `sourceResolution`');
+    expect(scope.prompt).toContain('runtime-produced resolution');
     expect(scope.prompt).toContain('runtime owns provider candidate OIDs');
     expect(scope.prompt).toContain('Never retry, authorize fallback, change candidate refs, reconstruct provenance');
     expect(scope.prompt).toContain('missing OID fails when isolated acquisition is unavailable');
@@ -174,7 +201,7 @@ describe('buildDashReviewLanes', () => {
     expect(scope.prompt).toContain('must not run direct CLI Git object checks');
     expect(scope.prompt).toContain('Never fetch, checkout');
     expect(scope.prompt).toContain('FETCH_HEAD, the index, worktree, or Git configuration');
-    expect(scope.prompt).toContain('hive_git_snapshot is the sole permitted object-resolution exception');
+    expect(scope.prompt).toContain('hive_review_evidence_resolve is the sole evidence-acquisition exception');
     expect(scope.prompt).not.toContain('invoke local Git object checks');
     expect(scope.prompt).not.toContain('You may use normal local CLI');
     expect(scope.prompt).toContain('without claim');
@@ -188,6 +215,8 @@ describe('buildDashReviewLanes', () => {
     expect(code.prompt).toContain('Shell and other tools that can escape');
     expect(code.prompt).toContain('manifest');
     expect(code.prompt).toContain('never guess filenames');
+    expect(code.prompt).toContain('ast_grep_find_code');
+    expect(code.prompt).toContain('ast_grep_find_code_by_rule');
   });
 
   it('keeps final collision aliases within MAX_ALIAS_LENGTH for 4+ digit suffixes', () => {

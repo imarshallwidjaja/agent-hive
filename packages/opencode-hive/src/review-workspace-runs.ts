@@ -93,6 +93,7 @@ export function createReviewWorkspaceLeaseInput(input: {
   repositoryIds: readonly string[] | undefined;
   snapshot: GitSnapshotInput;
   selectedRepositoryIds: readonly string[];
+  resolutionFingerprint: string;
   vulnerabilityScope?: Omit<ReviewWorkspaceVulnerabilityScopeDescriptor, 'schema'>;
   sourceFingerprint: string;
   materializedFingerprint: string;
@@ -127,6 +128,7 @@ export function createReviewWorkspaceLeaseInput(input: {
     sourceScope,
     scopeDescriptor,
     selectedRepositoryIds,
+    resolutionFingerprint: input.resolutionFingerprint,
     scopeFingerprint: scopeDescriptor
       ? fingerprintReviewWorkspaceVulnerabilityScope(scopeDescriptor)
       : fingerprintReviewWorkspaceScope(sourceScope),

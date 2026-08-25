@@ -328,17 +328,15 @@ describe('Specialized reviewer prompts', () => {
   it('keeps dash-reviewer as a read-only review orchestrator rather than a reviewer or fixer', () => {
     expect(DASH_REVIEWER_PROMPT).toContain('review orchestrator');
     expect(DASH_REVIEWER_PROMPT).toContain('not a reviewer or fixer');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not edit files');
-    expect(DASH_REVIEWER_PROMPT).toContain('normal local CLI and retrieval tools');
-    expect(DASH_REVIEWER_PROMPT).toContain('review workspace');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not perform any other Hive or source mutation');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not use direct `hive_git_snapshot`');
+    expect(DASH_REVIEWER_PROMPT).toContain('realpath containment');
+    expect(DASH_REVIEWER_PROMPT).toContain('untrusted data');
     expect(DASH_REVIEWER_PROMPT).toContain('native `task()`');
-    expect(DASH_REVIEWER_PROMPT).toContain('generated review-lane task targets');
-    expect(DASH_REVIEWER_PROMPT).toContain('hive_review_workspace_claim');
-    expect(DASH_REVIEWER_PROMPT).toContain('before deep review lanes');
-    expect(DASH_REVIEWER_PROMPT).toContain('The exact allowed review-workspace lifecycle is: delegated Stage A `hive_review_workspace_create`, primary `hive_review_workspace_claim`, primary post-review `hive_review_workspace_inspect`, and exactly one primary `hive_review_workspace_cleanup`.');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not perform any other Hive or source mutation');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not clean or reset source');
+    expect(DASH_REVIEWER_PROMPT).toContain('runtime-rendered review-lane aliases');
+    expect(DASH_REVIEWER_PROMPT).toContain('hive_review_evidence_resolve');
+    expect(DASH_REVIEWER_PROMPT).toContain('primary claim, primary inspect, and primary cleanup');
+    expect(DASH_REVIEWER_PROMPT).toContain('orchestration tools only');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not inspect local files, run shell or Git commands, or access the network');
     expect(DASH_REVIEWER_PROMPT).not.toContain('sole lifecycle exception');
     expect(DASH_REVIEWER_PROMPT).not.toContain('commit, merge, clean up');
     expect(DASH_REVIEWER_PROMPT).not.toContain('scope/lead scout');
@@ -1249,16 +1247,21 @@ describe('README.md documentation', () => {
   });
 
   describe('private review runtime docs alignment', () => {
-    it('documents optional provider enrichment and exact deterministic scope capabilities', () => {
-      expect(readmeContent).toContain('optional bounded `gh` CLI dependency');
-      expect(readmeContent).toContain('provider lookup is unavailable, the runtime falls back directly');
-      expect(readmeContent).toContain('retries once against the local checkout only when every failure is a matching missing base/head OID');
-      expect(readmeContent).toContain('records all such failures in canonical repository-ID order');
-      expect(readmeContent).toContain('one normal cleanup plus one runtime-authenticated recovery exception');
-      expect(readmeContent).toContain('MCP, Railway, Vercel, and other remote-service tools are not authorized for these lanes');
+    it('documents invocation-bound multi-kind evidence and frozen path capabilities', () => {
+      expect(readmeContent).toContain('`hive-dash-review-command/v3`');
+      expect(readmeContent).toContain('A PR fixes Git evidence');
+      expect(readmeContent).toContain('Artifact paths come only from the command packet');
+      expect(readmeContent).toContain('Review roles cannot call `hive_git_snapshot` directly');
+      expect(readmeContent).toContain('Inline and artifact evidence uses `ReviewEvidenceBundleService`');
+      expect(readmeContent).toContain('realpaths remain inside the claimed frozen workspace');
       expect(readmeContent).toContain('this is name-based runtime trust, not a cryptographic caller identity');
-      expect(readmeContent).toContain('The scope researcher can call only `hive_repositories_status`, `hive_plan_read`, `hive_status`, `hive_git_snapshot`, `hive_vulnerability_compare_report_read`, `hive_review_workspace_create`, `hive_review_workspace_cleanup`');
-      expect(readmeContent).toContain('`hive_git_snapshot` is the sole object check');
+      expect(readmeContent).toContain('The scope researcher can call only `hive_repositories_status`, `hive_plan_read`, `hive_status`, `hive_review_evidence_resolve`, `hive_vulnerability_compare_report_read`, `hive_review_workspace_create`, `hive_review_workspace_cleanup`');
+      expect(readmeContent).toContain('vulnerability review accepts Git evidence only');
+      for (const content of [readmeContent, operatorGuideContent]) {
+        expect(content).toContain('32 files');
+        expect(content).toContain('16 MiB per file');
+        expect(content).toContain('32 MiB total');
+      }
     });
   });
 

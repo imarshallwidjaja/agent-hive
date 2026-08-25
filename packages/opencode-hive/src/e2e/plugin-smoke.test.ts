@@ -769,9 +769,9 @@ Do it
     const dashPrimary = agents['__hive_dash_review_primary'];
 
     expect(configCommands['dash-review'].agent).toBe('__hive_dash_review_primary');
-    expect(configCommands['dash-review'].template).toContain('No implementation files');
+    expect(configCommands['dash-review'].template).toContain('no implementation files');
     expect(configCommands['dash-review'].template).toContain('hive_review_workspace_claim');
-    expect(configCommands['dash-review'].template).toContain('before deep review lanes');
+    expect(configCommands['dash-review'].template).toContain('dispatches deep lanes only after claim');
     expect(dashPrimary).toBeDefined();
     expect(dashPrimary.mode).toBe('primary');
     expect(dashPrimary.hidden).toBe(true);
@@ -814,19 +814,13 @@ Do it
       expect(template).not.toContain('$ARGUMENTS');
       expect(template).not.toContain(packetMarker);
 
-      for (const [name, rawArguments, githubPullRequest, reviewInstructions, descriptorSource] of [
-        ['exact PR URL', 'https://github.com/AURIN-OFFICE/data-etl/pull/295', {
-          owner: 'AURIN-OFFICE',
-          repository: 'data-etl',
+      for (const [name, rawArguments, githubPullRequest, normalizedIntent, descriptorSource] of [
+        ['exact PR URL', 'https://github.com/example/project/pull/295', {
+          owner: 'example',
+          repository: 'project',
           number: 295,
         }, '', 'standalone-url'],
-        ['embedded PR URL', 'Review https://github.com/AURIN-OFFICE/data-etl/pull/295 and preserve the NHSD scheduling question.', {
-          owner: 'AURIN-OFFICE',
-          repository: 'data-etl',
-          number: 295,
-        }, 'Review and preserve the NHSD scheduling question.', 'embedded-url'],
         ['ordinary text', 'feature/retry-restore', null, 'feature/retry-restore', 'none'],
-        ['multiline shell-like text', `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`, null, `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`, 'none'],
       ] as const) {
         const parts = await runOpenCodeV114CommandPath({
           hooks,
@@ -838,11 +832,14 @@ Do it
         });
         const rendered = parts.map((part) => part.text).join('\n');
         const expectedPacket = {
-          schema: 'hive-dash-review-command/v2',
-          rawIntent: rawArguments,
-          githubPullRequest,
-          reviewInstructions,
-          descriptorSource,
+          schema: 'hive-dash-review-command/v3',
+          intent: {
+            rawIntent: rawArguments,
+            normalizedIntent,
+            githubPullRequest,
+            descriptorSource,
+            fixedArtifacts: [],
+          },
         };
 
         expect(rendered.split(packetMarker)).toHaveLength(2);
@@ -850,6 +847,30 @@ Do it
         expect(rendered).not.toContain('## Explicit Command Scope');
         expect(parts.at(-1)?.text).not.toContain('"descriptor"');
       }
+
+      for (const rawArguments of [
+        'Review https://github.com/example/project/pull/295 carefully.',
+        'https://example.test/report',
+        'https://github.com/example/project/pull/295 --artifact report.md',
+      ]) {
+        await expect(runOpenCodeV114CommandPath({
+          hooks,
+          command: 'dash-review',
+          sessionID: `sess_dash_review_rejected_url_${rawArguments.length}`,
+          arguments: rawArguments,
+          template,
+          cwd: dashRoot,
+        })).rejects.toThrow('only an exact safe GitHub pull-request URL');
+      }
+
+      await expect(runOpenCodeV114CommandPath({
+        hooks,
+        command: 'dash-review',
+        sessionID: 'sess_dash_review_arguments_shell',
+        arguments: `review this scope\n!\`touch "${marker}"\`\n$(gh api /user)`,
+        template,
+        cwd: dashRoot,
+      })).rejects.toThrow('shell or control syntax');
 
       expect(fs.existsSync(marker)).toBe(false);
     } finally {
@@ -890,7 +911,7 @@ Do it
         hooks,
         command: 'dash-review',
         sessionID: 'sess_dash_review_routing',
-        arguments: 'Review https://github.com/NHSDigital/nhs-login/pull/295 and preserve the NHSD scheduling question.',
+        arguments: 'https://github.com/example/project/pull/295',
         template: config.command['dash-review'].template,
         cwd: dashRoot,
       });
@@ -942,8 +963,13 @@ Do it
         paths: [normalizedPath],
       };
       expect(fs.existsSync(marker)).toBe(false);
-      expect(appended).toContain(`Raw arguments (JSON string): ${JSON.stringify(rawArguments)}`);
-      expect(appended).toContain('Normalized intent (JSON string): ""');
+      expect(appended).toContain(`Review intent packet (JSON): ${JSON.stringify({
+        rawIntent: rawArguments,
+        normalizedIntent: '',
+        githubPullRequest: null,
+        descriptorSource: 'none',
+        fixedArtifacts: [],
+      })}`);
       expect(appended).toContain(`Fixed overrides (JSON): ${JSON.stringify(fixedOverrides)}`);
       expect(parts.at(-1)?.text).not.toContain('current-change');
       expect(appended).not.toContain('Normalized flags:');

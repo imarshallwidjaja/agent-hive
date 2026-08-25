@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import {
   fingerprintReviewWorkspaceSourceScope,
+  REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,
   ReviewWorkspaceService,
   type ReviewWorkspaceCaller,
   type ReviewWorkspaceCreateOptions,
@@ -68,6 +69,7 @@ function createLease(repositoryIds: readonly string[]): ReviewWorkspaceLeaseInpu
     sourceScope,
     scopeDescriptor: null,
     selectedRepositoryIds,
+    resolutionFingerprint: 'e'.repeat(64),
     scopeFingerprint: fingerprintReviewWorkspaceSourceScope(sourceScope),
     sourceFingerprint: '0'.repeat(64),
     materializedFingerprint: '1'.repeat(64),
@@ -108,6 +110,14 @@ function createWorkspace(
 
 function reviewMetadataPath(projectRoot: string, runId: string): string {
   return path.join(projectRoot, '.hive', '.worktrees', 'review', '.runs', `${runId}.json`);
+}
+
+async function downgradeWorkspaceMetadataToLegacyV1(projectRoot: string, runId: string): Promise<void> {
+  const metadataPath = reviewMetadataPath(projectRoot, runId);
+  const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as Record<string, unknown>;
+  metadata.schemaVersion = 1;
+  delete metadata.resolutionFingerprint;
+  await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
 }
 
 function materializationLockPath(projectRoot: string): string {
@@ -192,6 +202,8 @@ describe('ReviewWorkspaceService', () => {
     });
 
     expect(workspace.workspacePath).toBe(path.join(source.path, '.hive', '.worktrees', 'review', 'review-single'));
+    expect(REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION).toBe(2);
+    expect(JSON.parse(await fs.readFile(reviewMetadataPath(source.path, workspace.runId), 'utf8')).schemaVersion).toBe(2);
     expect(await simpleGit(workspace.workspacePath).raw(['symbolic-ref', '-q', 'HEAD']).catch(() => '')).toBe('');
     expect((await source.git.branch()).all).not.toContain('hive/review/review-single');
 
@@ -200,6 +212,7 @@ describe('ReviewWorkspaceService', () => {
     await service.claim(workspace.runId, workspace.ownershipToken, primaryCaller());
     const inspection = await service.inspect('review-single', workspace.ownershipToken, primaryCaller());
 
+    expect(inspection.lease.resolutionFingerprint).toBe('e'.repeat(64));
     expect(inspection.integrity.trackedClean).toBe(false);
     expect(inspection.repositories.root.trackedChanges).toContain('tracked.txt');
     expect(inspection.repositories.root.untrackedChanges).toContain('generated.log');
@@ -1098,7 +1111,7 @@ describe('ReviewWorkspaceService', () => {
     const original = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
     const lease = await service.read(workspace.runId, workspace.ownershipToken, creatorCaller);
 
-    expect(original.schemaVersion).toBe(1);
+    expect(original.schemaVersion).toBe(2);
     expect(original).not.toHaveProperty('workspacePath');
     expect(await fs.readFile(metadataPath, 'utf8')).not.toContain(workspace.ownershipToken);
     expect(lease).not.toHaveProperty('ownershipTokenHash');
@@ -1106,7 +1119,8 @@ describe('ReviewWorkspaceService', () => {
     expect(JSON.stringify(lease)).not.toContain(source.path);
 
     const invalidDescriptors: unknown[] = [
-      { ...original, schemaVersion: 2 },
+      { ...original, schemaVersion: 1 },
+      Object.fromEntries(Object.entries(original).filter(([key]) => key !== 'resolutionFingerprint')),
       { ...original, workspacePath: workspace.workspacePath },
       { ...original, scopeFingerprint: 'f'.repeat(64) },
       {
@@ -1125,6 +1139,119 @@ describe('ReviewWorkspaceService', () => {
 
     await fs.writeFile(metadataPath, JSON.stringify(original), 'utf8');
     await service.cleanup(workspace.runId, workspace.ownershipToken, creatorCaller);
+  });
+
+  it('keeps an unclaimed schema-v1 workspace cleanup-only with exact creator authority', async () => {
+    const source = await createRepository('legacy-unclaimed');
+    const service = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(service, {
+      runId: 'review-legacy-unclaimed',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    await downgradeWorkspaceMetadataToLegacyV1(source.path, workspace.runId);
+    const restarted = createReviewWorkspaceService(source.path);
+
+    await expect(restarted.claim(workspace.runId, workspace.ownershipToken, primaryCaller()))
+      .rejects.toThrow('Invalid review workspace metadata');
+    await expect(restarted.read(workspace.runId, workspace.ownershipToken, creatorCaller))
+      .rejects.toThrow('Invalid review workspace metadata');
+    await expect(restarted.recoverAuthorization(workspace.runId, workspace.ownershipToken, 'dash-review'))
+      .rejects.toThrow('Invalid review workspace metadata');
+    await expect(restarted.inspect(workspace.runId, workspace.ownershipToken, primaryCaller()))
+      .rejects.toThrow('Invalid review workspace metadata');
+    await expect(restarted.cleanupExisting(workspace.runId, 'wrong-token', creatorCaller))
+      .rejects.toThrow('ownership token');
+    await expect(restarted.cleanupExisting(workspace.runId, workspace.ownershipToken, {
+      ...creatorCaller,
+      sessionId: 'wrong-creator',
+    })).rejects.toThrow('creator capability');
+    await expect(restarted.cleanupExisting(workspace.runId, workspace.ownershipToken, creatorCaller))
+      .resolves.toMatchObject({ cleaned: true });
+    expect(await pathExists(workspace.workspacePath)).toBe(false);
+    expect(await pathExists(reviewMetadataPath(source.path, workspace.runId))).toBe(false);
+  });
+
+  it('keeps a claimed schema-v1 workspace cleanup-only with exact owner authority', async () => {
+    const source = await createRepository('legacy-claimed');
+    const service = createReviewWorkspaceService(source.path);
+    const owner = primaryCaller('legacy-owner', 4242);
+    const workspace = await createWorkspace(service, {
+      runId: 'review-legacy-claimed',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    await service.claim(workspace.runId, workspace.ownershipToken, owner);
+    await downgradeWorkspaceMetadataToLegacyV1(source.path, workspace.runId);
+    const restarted = createReviewWorkspaceService(source.path, { isProcessAlive: () => false });
+
+    await expect(restarted.recoverOwnerAuthorization(workspace.runId, workspace.ownershipToken, owner))
+      .rejects.toThrow('Invalid review workspace metadata');
+    await expect(restarted.cleanupExisting(workspace.runId, 'wrong-token', owner))
+      .rejects.toThrow('ownership token');
+    await expect(restarted.cleanupExisting(workspace.runId, workspace.ownershipToken, primaryCaller('wrong-owner')))
+      .rejects.toThrow('owner capability');
+    await expect(restarted.cleanupExisting(workspace.runId, workspace.ownershipToken, creatorCaller))
+      .rejects.toThrow('owner capability');
+    await expect(restarted.cleanupExisting(workspace.runId, workspace.ownershipToken, owner))
+      .resolves.toMatchObject({ cleaned: true });
+    expect(await pathExists(workspace.workspacePath)).toBe(false);
+  });
+
+  it('cleans a schema-v1 registration whose contained checkout disappeared', async () => {
+    const source = await createRepository('legacy-missing-checkout');
+    const service = createReviewWorkspaceService(source.path);
+    const workspace = await createWorkspace(service, {
+      runId: 'review-legacy-missing-checkout',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    await downgradeWorkspaceMetadataToLegacyV1(source.path, workspace.runId);
+    await fs.rm(workspace.workspacePath, { recursive: true, force: true });
+    const restarted = createReviewWorkspaceService(source.path);
+
+    await expect(restarted.recoverCleanupAuthorization(
+      workspace.runId,
+      workspace.ownershipToken,
+      'dash-review',
+    )).resolves.toMatchObject({ workspacePath: workspace.workspacePath });
+    await expect(restarted.cleanupExisting(workspace.runId, workspace.ownershipToken, creatorCaller))
+      .resolves.toMatchObject({ cleaned: true });
+    expect(await source.git.raw(['worktree', 'list', '--porcelain'])).not.toContain(workspace.workspacePath);
+  });
+
+  it('sweeps expired unclaimed and dead-owner schema-v1 workspaces without upgrading them', async () => {
+    const source = await createRepository('legacy-sweep');
+    let now = 1_000;
+    const service = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+      isProcessAlive: () => false,
+    });
+    const unclaimed = await createWorkspace(service, {
+      runId: 'review-legacy-sweep-unclaimed',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    const claimed = await createWorkspace(service, {
+      runId: 'review-legacy-sweep-claimed',
+      repositories: [{ id: 'root', sourcePath: source.path, commit: 'HEAD' }],
+    });
+    await service.claim(claimed.runId, claimed.ownershipToken, primaryCaller('dead-owner', 4242));
+    await downgradeWorkspaceMetadataToLegacyV1(source.path, unclaimed.runId);
+    await downgradeWorkspaceMetadataToLegacyV1(source.path, claimed.runId);
+    now = 1_100;
+    const sweepErrors: string[] = [];
+    const restarted = createReviewWorkspaceService(source.path, {
+      now: () => now,
+      reviewWorkspaceHandoffMs: 100,
+      isProcessAlive: () => false,
+      onSweepError: (runId: string, error: Error) => sweepErrors.push(`${runId}:${error.message}`),
+    });
+
+    await restarted.cleanupExpired();
+
+    expect(sweepErrors).toEqual([]);
+    for (const workspace of [unclaimed, claimed]) {
+      expect(await pathExists(workspace.workspacePath)).toBe(false);
+      expect(await pathExists(reviewMetadataPath(source.path, workspace.runId))).toBe(false);
+    }
   });
 
   it('atomically replaces metadata while preserving readers of the previous descriptor', async () => {
@@ -1167,7 +1294,7 @@ describe('ReviewWorkspaceService', () => {
     const restartedService = createReviewWorkspaceService(source.path);
     const inspection = await restartedService.inspect(workspace.runId, workspace.ownershipToken, owner);
     expect(inspection.lease).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: workspace.runId,
       ownerSessionId: owner.sessionId,
       ownerPid: owner.pid,
@@ -1213,6 +1340,7 @@ describe('ReviewWorkspaceService', () => {
         sourceScope,
         scopeDescriptor,
         selectedRepositoryIds: ['root'],
+        resolutionFingerprint: 'e'.repeat(64),
         scopeFingerprint: createHash('sha256').update(JSON.stringify(scopeDescriptor)).digest('hex'),
         sourceFingerprint: '2'.repeat(64),
         materializedFingerprint: '3'.repeat(64),
@@ -1276,6 +1404,7 @@ describe('ReviewWorkspaceService', () => {
         sourceScope: { repositoryIds: [], snapshot: { paths: [] } },
         scopeDescriptor: validTaskScope,
         selectedRepositoryIds: ['root'],
+        resolutionFingerprint: 'e'.repeat(64),
         scopeFingerprint: createHash('sha256').update(JSON.stringify(validTaskScope)).digest('hex'),
         sourceFingerprint: '2'.repeat(64),
         materializedFingerprint: '3'.repeat(64),

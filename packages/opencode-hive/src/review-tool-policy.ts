@@ -44,6 +44,8 @@ export const VULNERABILITY_REVIEW_APPROVED_MCP_TOOLS = [
 ] as const;
 
 const VULNERABILITY_DEEP = ['read', 'glob', 'grep', ...VULNERABILITY_REVIEW_APPROVED_MCP_TOOLS] as const;
+const DASH_DEEP_LOCAL_TOOLS = ['read', 'glob', 'grep', 'ast_grep_find_code', 'ast_grep_find_code_by_rule'] as const;
+const DASH_DEEP_NON_GIT_TOOLS = new Set<string>([...DASH_DEEP_LOCAL_TOOLS, 'skill']);
 
 export const REVIEW_ROLE_POLICIES = {
   'dash-review:primary': {
@@ -51,7 +53,7 @@ export const REVIEW_ROLE_POLICIES = {
     role: 'primary',
     caller: { kind: 'exact-agent', agent: DASH_REVIEW_PRIMARY_AGENT },
     tools: [
-      'read', 'glob', 'grep', 'bash', 'webfetch', 'task', 'question', 'skill',
+      'task', 'question',
       ...REVIEW_UNIVERSAL_METADATA_TOOLS,
       'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup',
     ],
@@ -61,14 +63,14 @@ export const REVIEW_ROLE_POLICIES = {
     workflow: 'dash-review',
     role: 'scope',
     caller: { kind: 'lane-role', role: 'scope' },
-    tools: [...REVIEW_UNIVERSAL_METADATA_TOOLS, 'hive_git_snapshot', 'hive_review_workspace_create'],
+    tools: [...REVIEW_UNIVERSAL_METADATA_TOOLS, 'hive_review_evidence_resolve', 'hive_review_workspace_create'],
     taskTargetRoles: [],
   },
   'dash-review:deep': {
     workflow: 'dash-review',
     role: 'deep',
     caller: { kind: 'lane-role', role: 'deep' },
-    tools: ['read', 'glob', 'grep', 'webfetch', 'skill', ...REVIEW_UNIVERSAL_METADATA_TOOLS],
+    tools: [...DASH_DEEP_LOCAL_TOOLS, 'webfetch', 'skill', ...REVIEW_UNIVERSAL_METADATA_TOOLS],
     taskTargetRoles: [],
   },
   'vulnerability-review:primary': {
@@ -84,7 +86,7 @@ export const REVIEW_ROLE_POLICIES = {
     caller: { kind: 'lane-role', role: 'scope-scout' },
     tools: [
       ...REVIEW_UNIVERSAL_METADATA_TOOLS,
-      'hive_git_snapshot',
+      'hive_review_evidence_resolve',
       'hive_vulnerability_compare_report_read',
       'hive_review_workspace_create',
       'hive_review_workspace_cleanup',
@@ -179,6 +181,7 @@ export function authorizeReviewTool(
     tool: string;
     caller?: string;
     target?: string;
+    evidenceKind?: 'git' | 'inline' | 'local-artifacts';
   },
   runtimeLanes: readonly ReviewRuntimeLane[] = [],
 ): { allowed: true } | { allowed: false; reason: string } {
@@ -191,6 +194,12 @@ export function authorizeReviewTool(
     return { allowed: false, reason: 'caller' };
   }
   if (!policy.tools.includes(input.tool)) return { allowed: false, reason: 'unknown tool' };
+  if (policy.workflow === 'dash-review' && policy.role === 'deep') {
+    if (!input.evidenceKind) return { allowed: false, reason: 'evidence kind' };
+    if (input.evidenceKind !== 'git' && !DASH_DEEP_NON_GIT_TOOLS.has(input.tool)) {
+      return { allowed: false, reason: 'evidence kind' };
+    }
+  }
   if (input.tool === 'task') {
     const targets = reviewTaskTargets(policy, runtimeLanes);
     if (!input.target || !targets.includes(input.target)) return { allowed: false, reason: 'target' };

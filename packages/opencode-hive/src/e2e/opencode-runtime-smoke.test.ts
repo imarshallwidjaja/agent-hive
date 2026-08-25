@@ -326,12 +326,9 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
 
     const hivePluginEntry = pickHivePluginEntry();
     const pluginRuntimeEntry = import.meta.resolve('@opencode-ai/plugin');
-    const snapshotSerializerEntry = path.resolve(import.meta.dir, '..', 'review-source-resolution.ts');
-
     const pluginFile = path.join(projectDir, ".opencode", "plugin", "hive.ts");
     const pluginSource = `import hive from ${JSON.stringify(hivePluginEntry)}
 import { tool } from ${JSON.stringify(pluginRuntimeEntry)}
-import { serializeReviewSnapshotOutput } from ${JSON.stringify(snapshotSerializerEntry)}
 
 export const HivePlugin = hive
 export const RuntimeLargeSnapshotPlugin = async () => ({
@@ -340,7 +337,7 @@ export const RuntimeLargeSnapshotPlugin = async () => ({
       description: 'Return envelope-first oversized snapshot output for runtime truncation verification.',
       args: {},
       async execute() {
-        return serializeReviewSnapshotOutput({
+        return JSON.stringify({
           provenance: {
             schema: 'hive-review-provenance/v1',
             sourceFingerprint: 'runtime-envelope-source-fingerprint',
@@ -349,11 +346,9 @@ export const RuntimeLargeSnapshotPlugin = async () => ({
             schema: 'hive-review-source-resolution/v1',
             marker: 'runtime-source-resolution-before-optional-data',
           } as any,
-          snapshot: {
-            optionalPatch: 'x'.repeat(70 * 1024),
-            tailMarker: 'TAIL_MARKER_SHOULD_BE_TRUNCATED',
-          },
-        })
+          optionalPatch: 'x'.repeat(70 * 1024),
+          tailMarker: 'TAIL_MARKER_SHOULD_BE_TRUNCATED',
+        }, null, 2)
       },
     }),
   },

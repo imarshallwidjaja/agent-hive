@@ -2,8 +2,15 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
-import type { ParsedDashReviewArgs, ParsedVulnerabilityReviewArgs } from './commands/renderers.js';
-import { compareUnicodeCodePoints, safeGitRef, sortedUniqueCodePoints } from './review-runtime-kernel.js';
+import type { ParsedVulnerabilityReviewArgs } from './commands/renderers.js';
+import type { ReviewIntentPacket } from './review-evidence-resolution.js';
+import {
+  canonicalJson,
+  compareUnicodeCodePoints,
+  isDeepEqual,
+  safeGitRef,
+  sortedUniqueCodePoints,
+} from './review-runtime-kernel.js';
 import {
   fingerprintReviewSourceScope,
   GitSnapshotError,
@@ -419,30 +426,12 @@ function parseSnapshotOutcome(value: unknown): SnapshotOutcome {
   };
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .filter(([, child]) => child !== undefined)
-      .sort(([left], [right]) => compareUnicodeCodePoints(left, right))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-      .join(',')}}`;
-  }
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new Error('Canonical authority contains an unsupported value.');
-  return encoded;
-}
-
 function fingerprint(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value)).digest('hex');
 }
 
 export function fingerprintReviewSourceResolutionAuthority(value: unknown): string {
   return fingerprint(value);
-}
-
-function isDeepEqual(left: unknown, right: unknown): boolean {
-  return canonicalJson(left) === canonicalJson(right);
 }
 
 function sourceFingerprint(input: {
@@ -518,19 +507,6 @@ function buildReviewProvenanceEnvelope(resolution: ReviewSourceResolutionCore): 
 
 export function reviewProvenanceEnvelope(resolution: ReviewSourceResolution): ReviewProvenanceEnvelope {
   return resolution.provenanceEnvelope ?? buildReviewProvenanceEnvelope(resolution);
-}
-
-export function serializeReviewSnapshotOutput(input: {
-  provenance: ReviewProvenanceEnvelope;
-  sourceResolution: ReviewSourceResolution;
-  snapshot: Record<string, unknown>;
-}): string {
-  const { provenance: _provenance, sourceResolution: _sourceResolution, ...snapshot } = input.snapshot;
-  return JSON.stringify({
-    provenance: input.provenance,
-    sourceResolution: input.sourceResolution,
-    ...snapshot,
-  }, null, 2);
 }
 
 export function parseReviewSourceResolution(value: unknown): ReviewSourceResolution {
@@ -1017,7 +993,7 @@ export async function resolveReviewSource(
 }
 
 export const REVIEW_SOURCE_RESOLUTION_ADAPTERS = {
-  'dash-review': (parsed: Pick<ParsedDashReviewArgs, 'githubPullRequest'>): ReviewSourceRequest => ({
+  'dash-review': (parsed: Pick<ReviewIntentPacket, 'githubPullRequest'>): ReviewSourceRequest => ({
     descriptor: parsed.githubPullRequest,
     fixedSnapshotInput: {},
     notRequestedReason: 'no-descriptor',

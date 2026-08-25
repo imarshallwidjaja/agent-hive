@@ -51,6 +51,7 @@ export const HIVE_TOOL_NAMES = [
   'hive_context_write',
   'hive_status',
   'hive_git_snapshot',
+  'hive_review_evidence_resolve',
   'hive_vulnerability_compare_report_read',
   'hive_review_workspace_create',
   'hive_review_workspace_claim',

@@ -60,7 +60,7 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
 | `/interview` | Clarify an idea toward a reliable implementation-brief handoff | `/interview <idea>` |
 | Feature | Plan review, task dependencies, isolated task worktrees, or a durable audit trail | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
-| `/dash-review` | Independent implementation review of one frozen snapshot, no source edits | `/dash-review [scope]` |
+| `/dash-review` | Read-only Git, process/concept, or local-artifact review in one frozen workspace | `/dash-review [intent] [--artifact <file>]` |
 | `/vuln-review` | Authorized bounded static security review of one frozen snapshot | `/vuln-review [intent] [flags]` |
 
 By default (dedicated mode), `architect-planner` and `swarm-orchestrator` handle

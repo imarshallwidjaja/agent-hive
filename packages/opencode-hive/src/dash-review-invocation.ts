@@ -1,6 +1,15 @@
 import { isDeepStrictEqual } from 'node:util';
 import * as path from 'node:path';
-import type { ReviewSourceRequest, ReviewSourceResolution } from './review-source-resolution.js';
+import type { DashReviewCommandPacket } from './commands/renderers.js';
+import {
+  fingerprintReviewIntent,
+  parseReviewEvidenceResolution,
+  parseReviewIntentPacket,
+  type ReviewEvidenceResolution,
+  type ReviewIntentPacket,
+} from './review-evidence-resolution.js';
+import type { ReviewSourceResolution } from './review-source-resolution.js';
+import type { FrozenWorkspaceRootIdentity } from './review-frozen-workspace.js';
 
 type SessionIdentity = {
   id: string;
@@ -17,10 +26,10 @@ export type DashReviewAuthorizationReason =
   | 'runtime-generated-version-mismatch'
   | 'scope-already-reserved'
   | 'invalid-task-dispatch'
-  | 'snapshot-in-progress'
-  | 'snapshot-input-mismatch'
-  | 'snapshot-not-resolved'
-  | 'create-input-mismatch'
+  | 'evidence-resolution-in-progress'
+  | 'evidence-kind-mismatch'
+  | 'evidence-not-resolved'
+  | 'resolution-fingerprint-mismatch'
   | 'capability-consumed'
   | 'workspace-create-failed'
   | 'workspace-not-created'
@@ -50,16 +59,28 @@ type WorkspaceLifecycle = {
   ownershipToken: string;
   workspacePath: string;
   claimed: boolean;
+  boundary: DashReviewEvidenceBoundary;
+  frozenRoot?: FrozenWorkspaceRootIdentity;
 };
 
-type SnapshotRecord =
-  | { state: 'resolving'; input: unknown; token: SnapshotAuthority }
+export type DashReviewMaterializationPlan =
+  | { kind: 'git'; sourceResolution: ReviewSourceResolution }
+  | { kind: 'inline'; bytes: Uint8Array }
+  | { kind: 'local-artifacts'; sourcePaths: string[] };
+
+export type DashReviewEvidenceBoundary = {
+  kind: ReviewEvidenceResolution['kind'];
+  scopeFingerprint: string;
+  sourceFingerprint: string;
+  resolutionFingerprint: string;
+};
+
+type EvidenceRecord =
+  | { state: 'resolving'; kind: ReviewEvidenceResolution['kind']; token: EvidenceAuthority }
   | {
     state: 'resolved';
-    input: unknown;
-    output: string;
-    sourceResolution: ReviewSourceResolution;
-    createInput: Record<string, unknown>;
+    resolution: ReviewEvidenceResolution;
+    plan: DashReviewMaterializationPlan;
     createConsumed: boolean;
   };
 
@@ -69,10 +90,10 @@ type InvocationRecord = {
   primaryAgent: string;
   runtimeVersion: number;
   expiresAt: number;
-  request?: ReviewSourceRequest;
+  packet?: DashReviewCommandPacket;
   scope?: TaskReservation;
   deepTasks: Map<string, TaskReservation>;
-  snapshot?: SnapshotRecord;
+  evidence?: EvidenceRecord;
   workspace?: WorkspaceLifecycle;
 };
 
@@ -88,16 +109,20 @@ type BindingCandidate = {
 };
 
 type BindingSnapshot = Readonly<Record<never, never>>;
-type SnapshotAuthority = Readonly<Record<never, never>>;
+type EvidenceAuthority = Readonly<Record<never, never>>;
 export type DashCreateAuthority = Readonly<Record<never, never>>;
 
-type DashSnapshotAction =
-  | { kind: 'execute'; request: ReviewSourceRequest; authority: SnapshotAuthority }
-  | { kind: 'replay'; output: string }
+export type DashEvidenceResolutionAction =
+  | { kind: 'execute'; intent: ReviewIntentPacket; authority: EvidenceAuthority }
   | { kind: 'deny'; reason: DashReviewAuthorizationReason };
 
 export type DashCreateAction =
-  | { kind: 'execute'; sourceResolution: ReviewSourceResolution; authority: DashCreateAuthority }
+  | {
+      kind: 'execute';
+      resolution: ReviewEvidenceResolution;
+      plan: DashReviewMaterializationPlan;
+      authority: DashCreateAuthority;
+    }
   | { kind: 'deny'; reason: DashReviewAuthorizationReason };
 
 type AuthorizationResult =
@@ -109,6 +134,8 @@ export type DashReviewLaneAuthorization =
     allowed: true;
     role: TaskReservation['kind'];
     workspacePath?: string;
+    boundary?: DashReviewEvidenceBoundary;
+    frozenRoot?: FrozenWorkspaceRootIdentity;
   }
   | { allowed: false; reason: DashReviewAuthorizationReason };
 
@@ -125,7 +152,7 @@ const MAX_AUDIT_SESSIONS = 128;
 export class DashReviewInvocationStore {
   private readonly invocations = new Map<string, InvocationRecord>();
   private readonly bindingAuthorities = new WeakMap<BindingSnapshot, { childSessionID: string; candidates: BindingCandidate[] }>();
-  private readonly snapshotAuthorities = new WeakMap<SnapshotAuthority, { primarySessionID: string; generation: symbol }>();
+  private readonly evidenceAuthorities = new WeakMap<EvidenceAuthority, { primarySessionID: string; generation: symbol }>();
   private readonly createAuthorities = new WeakMap<DashCreateAuthority, { primarySessionID: string; generation: symbol }>();
   private readonly terminalAudit = new Map<string, TerminalAudit>();
   private readonly now: () => number;
@@ -143,8 +170,15 @@ export class DashReviewInvocationStore {
     primarySessionID: string;
     primaryAgent: string;
     runtimeVersion: number;
-    request: ReviewSourceRequest;
+    packet: DashReviewCommandPacket;
   }): void {
+    if (input.packet.schema !== 'hive-dash-review-command/v3') {
+      throw new Error('dash-review command packet schema is invalid.');
+    }
+    const packet: DashReviewCommandPacket = {
+      schema: 'hive-dash-review-command/v3',
+      intent: parseReviewIntentPacket(input.packet.intent),
+    };
     const now = this.now();
     this.invocations.delete(input.primarySessionID);
     this.terminalAudit.delete(input.primarySessionID);
@@ -154,7 +188,7 @@ export class DashReviewInvocationStore {
       primaryAgent: input.primaryAgent,
       runtimeVersion: input.runtimeVersion,
       expiresAt: now + this.capabilityTtlMs,
-      request: structuredClone(input.request),
+      packet: structuredClone(packet),
       deepTasks: new Map(),
     });
   }
@@ -234,7 +268,7 @@ export class DashReviewInvocationStore {
     });
     if ('reason' in primary) return primary;
     const record = this.invocations.get(input.primarySessionID)!;
-    if (record.workspace) return { allowed: false, reason: 'capability-consumed' };
+    if (record.workspace || record.evidence?.state === 'resolved') return { allowed: false, reason: 'capability-consumed' };
     if (record.scope !== undefined) {
       this.stop(record, 'scope-already-reserved');
       return { allowed: false, reason: 'scope-already-reserved' };
@@ -266,7 +300,7 @@ export class DashReviewInvocationStore {
     reservedAt: number;
     background: unknown;
   }):
-    | { allowed: true; runId: string; workspacePath: string }
+    | { allowed: true; runId: string; workspacePath: string; boundary: DashReviewEvidenceBoundary }
     | { allowed: false; reason: DashReviewAuthorizationReason } {
     const primary = this.authorizePrimary({
       sessionID: input.primarySessionID,
@@ -275,7 +309,7 @@ export class DashReviewInvocationStore {
     });
     if ('reason' in primary) return primary;
     const record = this.invocations.get(input.primarySessionID)!;
-    if (!record.workspace?.claimed) return { allowed: false, reason: 'workspace-not-claimed' };
+    if (!record.workspace?.claimed || !record.workspace.frozenRoot) return { allowed: false, reason: 'workspace-not-claimed' };
     if (
       !input.callID
       || !input.expectedAgent
@@ -298,6 +332,7 @@ export class DashReviewInvocationStore {
       allowed: true,
       runId: record.workspace.runId,
       workspacePath: record.workspace.workspacePath,
+      boundary: structuredClone(record.workspace.boundary),
     };
   }
 
@@ -421,12 +456,12 @@ export class DashReviewInvocationStore {
     return true;
   }
 
-  beginSnapshot(input: {
+  beginEvidenceResolution(input: {
     session: SessionIdentity;
     agent: string;
     runtimeVersion: number;
-    snapshotInput: unknown;
-  }): DashSnapshotAction {
+    requestedKind: ReviewEvidenceResolution['kind'];
+  }): DashEvidenceResolutionAction {
     const record = this.recordForBoundChild(input.session.id, input.agent);
     if (!record) {
       return {
@@ -436,59 +471,87 @@ export class DashReviewInvocationStore {
     }
     const invalid = this.validateBoundRecord(record, input.session, input.runtimeVersion);
     if (invalid) return { kind: 'deny', reason: invalid };
-    if (!record.request) return { kind: 'deny', reason: 'snapshot-not-resolved' };
-    if (record.snapshot?.state === 'resolving') {
-      const reason = isDeepStrictEqual(record.snapshot.input, input.snapshotInput)
-        ? 'snapshot-in-progress'
-        : 'snapshot-input-mismatch';
-      this.stop(record, reason, input.session.id);
-      return { kind: 'deny', reason };
+    if (!record.packet) return { kind: 'deny', reason: 'evidence-not-resolved' };
+    if (record.evidence?.state === 'resolving') {
+      return { kind: 'deny', reason: 'evidence-resolution-in-progress' };
     }
-    if (record.snapshot?.state === 'resolved') {
-      if (isDeepStrictEqual(record.snapshot.input, input.snapshotInput)) {
-        return { kind: 'replay', output: record.snapshot.output };
-      }
-      this.stop(record, 'snapshot-input-mismatch', input.session.id);
-      return { kind: 'deny', reason: 'snapshot-input-mismatch' };
+    if (record.evidence?.state === 'resolved') return { kind: 'deny', reason: 'capability-consumed' };
+    const intent = record.packet.intent;
+    const fixedKind = intent.githubPullRequest
+      ? 'git'
+      : intent.fixedArtifacts.length > 0
+        ? 'local-artifacts'
+        : intent.normalizedIntent.trim().length === 0
+          ? 'git'
+          : undefined;
+    if (
+      (fixedKind !== undefined && input.requestedKind !== fixedKind)
+      || (fixedKind === undefined && input.requestedKind === 'local-artifacts')
+    ) {
+      this.stop(record, 'evidence-kind-mismatch', input.session.id);
+      return { kind: 'deny', reason: 'evidence-kind-mismatch' };
     }
     const authority = Object.freeze({});
-    record.snapshot = {
+    record.evidence = {
       state: 'resolving',
-      input: structuredClone(input.snapshotInput),
+      kind: input.requestedKind,
       token: authority,
     };
-    this.snapshotAuthorities.set(authority, {
+    this.evidenceAuthorities.set(authority, {
       primarySessionID: record.primarySessionID,
       generation: record.generation,
     });
-    return { kind: 'execute', request: structuredClone(record.request), authority };
+    return { kind: 'execute', intent: structuredClone(intent), authority };
   }
 
-  recordSnapshot(
-    authority: SnapshotAuthority,
+  recordEvidenceResolution(
+    authority: EvidenceAuthority,
     result: {
-      output: string;
-      sourceResolution: ReviewSourceResolution;
-      createInput: Record<string, unknown>;
+      resolution: ReviewEvidenceResolution;
+      plan: DashReviewMaterializationPlan;
     },
   ): boolean {
-    const match = this.matchingSnapshotAuthority(authority);
-    if (!match || match.record.snapshot?.state !== 'resolving' || match.record.snapshot.token !== authority) return false;
-    this.snapshotAuthorities.delete(authority);
-    match.record.snapshot = {
+    const match = this.matchingEvidenceAuthority(authority);
+    const evidence = match?.record.evidence;
+    if (!match || evidence?.state !== 'resolving' || evidence.token !== authority || !match.record.packet) return false;
+    this.evidenceAuthorities.delete(authority);
+    let resolution: ReviewEvidenceResolution;
+    try {
+      resolution = parseReviewEvidenceResolution(result.resolution);
+      if (
+        resolution.kind !== evidence.kind
+        || resolution.intentFingerprint !== fingerprintReviewIntent(match.record.packet.intent)
+        || result.plan.kind !== resolution.kind
+      ) throw new Error('resolution mismatch');
+      if (result.plan.kind === 'git') {
+        if (resolution.kind !== 'git' || !isDeepStrictEqual(result.plan.sourceResolution, resolution.evidence.sourceResolution)) {
+          throw new Error('Git materialization plan mismatch');
+        }
+      } else if (result.plan.kind === 'inline') {
+        if (
+          resolution.kind !== 'inline'
+          || !Buffer.from(result.plan.bytes).equals(Buffer.from(match.record.packet.intent.normalizedIntent, 'utf8'))
+        ) throw new Error('Inline materialization plan mismatch');
+      } else if (
+        resolution.kind !== 'local-artifacts'
+        || !isDeepStrictEqual(result.plan.sourcePaths, match.record.packet.intent.fixedArtifacts)
+      ) throw new Error('Artifact materialization plan mismatch');
+    } catch {
+      this.stop(match.record, 'evidence-not-resolved', match.record.scope?.childSession?.id);
+      return false;
+    }
+    match.record.evidence = {
       state: 'resolved',
-      input: match.record.snapshot.input,
-      output: result.output,
-      sourceResolution: structuredClone(result.sourceResolution),
-      createInput: structuredClone(result.createInput),
+      resolution: structuredClone(resolution),
+      plan: structuredClone(result.plan),
       createConsumed: false,
     };
     return true;
   }
 
-  revokeSnapshot(authority: SnapshotAuthority): boolean {
-    const match = this.matchingSnapshotAuthority(authority);
-    this.snapshotAuthorities.delete(authority);
+  revokeEvidenceResolution(authority: EvidenceAuthority): boolean {
+    const match = this.matchingEvidenceAuthority(authority);
+    this.evidenceAuthorities.delete(authority);
     if (!match) return false;
     this.stop(match.record, 'workspace-create-failed', match.record.scope?.childSession?.id);
     return true;
@@ -498,7 +561,7 @@ export class DashReviewInvocationStore {
     session: SessionIdentity;
     agent: string;
     runtimeVersion: number;
-    createInput: Record<string, unknown>;
+    resolutionFingerprint: string;
   }): DashCreateAction {
     const record = this.recordForBoundChild(input.session.id, input.agent);
     if (!record) {
@@ -509,17 +572,17 @@ export class DashReviewInvocationStore {
     }
     const invalid = this.validateBoundRecord(record, input.session, input.runtimeVersion);
     if (invalid) return { kind: 'deny', reason: invalid };
-    const snapshot = record.snapshot;
-    if (snapshot?.state !== 'resolved') {
-      this.stop(record, 'snapshot-not-resolved', input.session.id);
-      return { kind: 'deny', reason: 'snapshot-not-resolved' };
+    const evidence = record.evidence;
+    if (evidence?.state !== 'resolved') {
+      this.stop(record, 'evidence-not-resolved', input.session.id);
+      return { kind: 'deny', reason: 'evidence-not-resolved' };
     }
-    if (snapshot.createConsumed) return { kind: 'deny', reason: 'capability-consumed' };
-    if (!isDeepStrictEqual(snapshot.createInput, input.createInput)) {
-      this.stop(record, 'create-input-mismatch', input.session.id);
-      return { kind: 'deny', reason: 'create-input-mismatch' };
+    if (evidence.createConsumed) return { kind: 'deny', reason: 'capability-consumed' };
+    if (evidence.resolution.resolutionFingerprint !== input.resolutionFingerprint) {
+      this.stop(record, 'resolution-fingerprint-mismatch', input.session.id);
+      return { kind: 'deny', reason: 'resolution-fingerprint-mismatch' };
     }
-    snapshot.createConsumed = true;
+    evidence.createConsumed = true;
     const authority = Object.freeze({});
     this.createAuthorities.set(authority, {
       primarySessionID: record.primarySessionID,
@@ -527,7 +590,8 @@ export class DashReviewInvocationStore {
     });
     return {
       kind: 'execute',
-      sourceResolution: structuredClone(snapshot.sourceResolution),
+      resolution: structuredClone(evidence.resolution),
+      plan: structuredClone(evidence.plan),
       authority,
     };
   }
@@ -537,16 +601,26 @@ export class DashReviewInvocationStore {
     runId: string;
     ownershipToken: string;
     workspacePath: string;
+    boundary: DashReviewEvidenceBoundary;
   }): boolean {
     const record = this.matchingCreateAuthority(input.authority);
     this.createAuthorities.delete(input.authority);
     if (!record) return false;
     if (!input.runId || !input.ownershipToken || !path.isAbsolute(input.workspacePath) || record.workspace) return false;
+    if (record.evidence?.state !== 'resolved' || record.evidence.createConsumed !== true) return false;
+    const resolution = record.evidence.resolution;
+    if (
+      input.boundary.kind !== resolution.kind
+      || input.boundary.resolutionFingerprint !== resolution.resolutionFingerprint
+      || !/^[a-f0-9]{64}$/.test(input.boundary.scopeFingerprint)
+      || !/^[a-f0-9]{64}$/.test(input.boundary.sourceFingerprint)
+    ) return false;
     record.workspace = {
       runId: input.runId,
       ownershipToken: input.ownershipToken,
       workspacePath: input.workspacePath,
       claimed: false,
+      boundary: structuredClone(input.boundary),
     };
     return true;
   }
@@ -576,10 +650,18 @@ export class DashReviewInvocationStore {
     primarySessionID: string;
     runId: string;
     ownershipToken: string;
+    frozenRoot: FrozenWorkspaceRootIdentity;
   }): boolean {
     const workspace = this.invocations.get(input.primarySessionID)?.workspace;
-    if (!workspace || workspace.runId !== input.runId || workspace.ownershipToken !== input.ownershipToken) return false;
+    if (
+      !workspace
+      || workspace.runId !== input.runId
+      || workspace.ownershipToken !== input.ownershipToken
+      || workspace.workspacePath !== input.frozenRoot.canonicalPath
+      || input.frozenRoot.serviceKind !== (workspace.boundary.kind === 'git' ? 'git' : 'evidence-bundle')
+    ) return false;
     workspace.claimed = true;
+    workspace.frozenRoot = structuredClone(input.frozenRoot);
     return true;
   }
 
@@ -590,6 +672,8 @@ export class DashReviewInvocationStore {
     runId: string;
     ownershipToken: string;
     workspacePath: string;
+    boundary: DashReviewEvidenceBoundary;
+    frozenRoot: FrozenWorkspaceRootIdentity;
   }): boolean {
     if (
       !input.primarySessionID
@@ -598,6 +682,9 @@ export class DashReviewInvocationStore {
       || !input.runId
       || !input.ownershipToken
       || !path.isAbsolute(input.workspacePath)
+      || !input.boundary
+      || input.workspacePath !== input.frozenRoot.canonicalPath
+      || input.frozenRoot.serviceKind !== (input.boundary.kind === 'git' ? 'git' : 'evidence-bundle')
     ) return false;
     const existing = this.invocations.get(input.primarySessionID);
     if (existing) {
@@ -609,8 +696,11 @@ export class DashReviewInvocationStore {
         || workspace.runId !== input.runId
         || workspace.ownershipToken !== input.ownershipToken
         || workspace.workspacePath !== input.workspacePath
+        || !isDeepStrictEqual(workspace.boundary, input.boundary)
+        || (workspace.frozenRoot !== undefined && !isDeepStrictEqual(workspace.frozenRoot, input.frozenRoot))
       ) return false;
       workspace.claimed = true;
+      workspace.frozenRoot = structuredClone(input.frozenRoot);
       return true;
     }
     this.terminalAudit.delete(input.primarySessionID);
@@ -626,6 +716,8 @@ export class DashReviewInvocationStore {
         ownershipToken: input.ownershipToken,
         workspacePath: input.workspacePath,
         claimed: true,
+        boundary: structuredClone(input.boundary),
+        frozenRoot: structuredClone(input.frozenRoot),
       },
     });
     return true;
@@ -641,7 +733,7 @@ export class DashReviewInvocationStore {
     const claim = this.authorizeWorkspaceClaim(input);
     if (!claim.allowed) return claim;
     const workspace = this.invocations.get(input.primarySessionID)!.workspace!;
-    return workspace.claimed ? claim : { allowed: false, reason: 'workspace-not-claimed' };
+    return workspace.claimed && workspace.frozenRoot ? claim : { allowed: false, reason: 'workspace-not-claimed' };
   }
 
   abortCreate(authority: DashCreateAuthority, reason: DashReviewAuthorizationReason): boolean {
@@ -697,8 +789,14 @@ export class DashReviewInvocationStore {
       }
       if (reservation.childSession?.ended) return { allowed: false, reason: 'session-ended' };
       if (reservation.kind === 'deep') {
-        if (!record.workspace?.claimed) return { allowed: false, reason: 'workspace-not-claimed' };
-        return { allowed: true, role: 'deep', workspacePath: record.workspace.workspacePath };
+        if (!record.workspace?.claimed || !record.workspace.frozenRoot) return { allowed: false, reason: 'workspace-not-claimed' };
+        return {
+          allowed: true,
+          role: 'deep',
+          workspacePath: record.workspace.workspacePath,
+          boundary: structuredClone(record.workspace.boundary),
+          frozenRoot: structuredClone(record.workspace.frozenRoot),
+        };
       }
       return { allowed: true, role: 'scope' };
     }
@@ -775,9 +873,9 @@ export class DashReviewInvocationStore {
     return undefined;
   }
 
-  private matchingSnapshotAuthority(authority: SnapshotAuthority): { record: InvocationRecord } | undefined {
+  private matchingEvidenceAuthority(authority: EvidenceAuthority): { record: InvocationRecord } | undefined {
     const token = authority && typeof authority === 'object'
-      ? this.snapshotAuthorities.get(authority)
+      ? this.evidenceAuthorities.get(authority)
       : undefined;
     if (!token) return undefined;
     const record = this.invocations.get(token.primarySessionID);

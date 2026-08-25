@@ -17,6 +17,24 @@ export function compareUnicodeCodePoints(left: string, right: string): number {
   return leftPoints.length - rightPoints.length;
 }
 
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => compareUnicodeCodePoints(left, right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new Error('Canonical review authority contains an unsupported value.');
+  return encoded;
+}
+
+export function isDeepEqual(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
 export function sortedUniqueCodePoints(values: readonly string[] | undefined): string[] {
   return [...new Set(values ?? [])].sort(compareUnicodeCodePoints);
 }
