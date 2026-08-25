@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.4] - 2026-08-26
+
+### Added
+
+- `/dash-review` extends its existing frozen Git workflow with one invocation-bound inline (`process`/`concept`/`general`) or packet-fixed `local-artifacts` evidence kind. Inline and local-artifact reviews use advisory, approach-advisor-derived lanes rather than Git implementation-review semantics. Local-artifact bundles accept at most 32 files, 16 MiB per file, and 32 MiB total. Stage A resolves the kind once through `hive_review_evidence_resolve` and freezes evidence before deep review; `/vuln-review` remains Git-only.
+
 ### Changed
 
 - `agents-md-mastery` teaches progressive placement of nested AGENTS.md next to real code, write-what-exists, and sentence-level pruning. It no longer asks agents to bootstrap a repository map, invented build commands, line-count targets, or a required Gotchas section.
+
+### Fixed
+
+- `/dash-review` binds one-shot acquisition, workspace lifecycle, and deep-lane access to exact runtime agent and task identities. It preserves validated Git provenance, recovers persisted ownership after restart through claim, inspect, and cleanup, and denies live-checkout reads or mutation. After a handoff or owner-recovery lease expires, claim and authorization recovery fail closed; cleanup of that expired run can still remove the workspace.
+- Only an exact standalone GitHub pull-request URL is translated into Git evidence, while the public `githubPullRequest` packet field is preserved. Prose-embedded, parenthesized, or multiple URLs fail closed before acquisition; pass the bare URL.
+- OpenCode global non-Git contexts that report `project.id=global` with `worktree=/` now resolve Hive session and context writes from the project directory. Real worktree metadata remains authoritative for worker ownership and mismatch checks.
 
 ## [2.3.3] - 2026-08-24
 
