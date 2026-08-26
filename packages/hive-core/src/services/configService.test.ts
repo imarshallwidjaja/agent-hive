@@ -71,7 +71,7 @@ describe("ConfigService defaults", () => {
         model: 'anthropic/claude-sonnet-4-20250514',
         temperature: 0.2,
         variant: 'high',
-        autoLoadSkills: ['test-driven-development'],
+        autoLoadSkills: ['verification'],
       },
       'reviewer-example-template': {
         baseAgent: 'code-reviewer',
@@ -384,7 +384,7 @@ describe("ConfigService defaults", () => {
         model: 'anthropic/claude-sonnet-4-20250514',
         temperature: 0.2,
         variant: 'high',
-        autoLoadSkills: ['test-driven-development'],
+        autoLoadSkills: ['verification'],
       },
       'reviewer-example-template': {
         baseAgent: 'code-reviewer',
@@ -538,7 +538,7 @@ describe("ConfigService defaults", () => {
         {
           agents: {
             "forager-worker": {
-              autoLoadSkills: ["custom-skill", "verification"],
+              autoLoadSkills: ["test-driven-development", "custom-skill", "verification"],
             },
           },
         },
@@ -549,8 +549,8 @@ describe("ConfigService defaults", () => {
 
     const config = service.getAgentConfig("forager-worker");
     expect(config.autoLoadSkills).toEqual([
-      "test-driven-development",
       "verification",
+      "test-driven-development",
       "custom-skill",
     ]);
   });
@@ -811,7 +811,6 @@ describe("ConfigService defaults", () => {
 
     expect(custom["forager-ui"]?.variant).toBe("high");
     expect(custom["forager-ui"]?.autoLoadSkills).toEqual([
-      "test-driven-development",
       "verification",
       "ui-focus",
     ]);

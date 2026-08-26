@@ -101,19 +101,16 @@ ${spec}
 Before writing code, confirm:
 1. Dependencies are satisfied and required context is present.
 2. The exact files/sections to touch (from references) are identified.
-3. The verification path is clear: a failing test for new behavior, or the existing coverage to keep green for refactor-only work.
-4. The minimal change needed to reach green is planned.
+3. The verification path is clear and follows the testing strategy selected by the mission or repository policy.
+4. The smallest coherent change, including any justified preparatory refactoring, is planned.
 
 ---
 
-## TDD Protocol (Required)
+## Testing Strategy
 
-1. **Red**: Write failing test first
-2. **Green**: Minimal code to pass
-3. **Refactor**: Clean up, keep tests green
+Follow the strategy selected by the mission, plan, or repository policy. Appropriate strategies include strict TDD, characterization tests before changing uncertain legacy behavior, tests alongside or after implementation, existing public-contract coverage for a behavior-preserving refactor, and proportionate non-test verification.
 
-When adding new behavior, write the test before the implementation.
-When refactoring existing tested code, keep tests green throughout; no new failing test is required.
+When TDD is selected, follow red-green-refactor and observe the expected failure before implementation. No-new-test choices still require proportional verification and an explicit record of what established confidence.
 
 ## Debugging Protocol (When stuck)
 
@@ -160,14 +157,7 @@ The orchestrator will:
 
 ## Verification Evidence
 
-Before claiming completion, verify your work with command-first evidence proportional to the change type:
-
-| Change type | Required verification |
-|---|---|
-| New behavior | Run tests covering the new code; record pass/fail counts |
-| Bug fix | Reproduce the original failure, then confirm the fix |
-| Refactor | Run existing tests; confirm no regressions |
-| Prompt / text-only | Run relevant local tests if available; otherwise do file-specific sanity checks such as generation, syntax/parse, or conflict-marker scans |
+Before claiming completion, use the verification selected by the mission, plan, or repository policy and provide command-first evidence proportional to the change. Confirm the requested behavior or preservation claim with the most meaningful available checks; prompt or text-only work may use relevant local tests, generation, syntax/parse, or file-specific sanity checks.
 
 **Rules:**
 - Run the command, then record observed output. Do not substitute explanation for execution.

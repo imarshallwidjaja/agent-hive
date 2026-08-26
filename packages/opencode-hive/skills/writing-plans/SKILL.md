@@ -5,161 +5,79 @@ description: "Agent Hive workflow skill for turning requirements into an approve
 
 # Writing Plans
 
-## Overview
+## Purpose
 
-Write comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as worker-branch tasks. DRY. YAGNI. TDD. Frequent commits.
+Write an executable plan for a capable engineer who lacks the planning session's context. Ground it in repository evidence and the requested behavior. Carry forward call-site contracts, ownership boundaries, constraints, acceptance criteria, verification, and any justified preparatory refactoring.
 
-Assume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.
+During planning, implementation files remain read-only; Hive planning state may be written with `hive_feature_create`, `hive_plan_write` or `hive_plan_patch`, and `hive_context_write`. Do not open implementation worktrees. Use `hive_plan_patch` with the revision from `hive_plan_read` for bounded amendments. If sequencing, dependencies, or scope changes after tasks exist, record the required refresh in the planning handoff. The orchestrator performs `hive_tasks_sync({ refreshPending: true })` after review or approval.
 
-**Announce at start:** "I'm using the writing-plans skill to create the implementation plan."
+## Planning Standard
 
-**Context:** Planning is read-only. Use `hive_feature_create` + `hive_plan_write`/`hive_plan_patch` + `hive_context_write` and avoid worktrees during planning.
-
-**Save initial plans or major rewrites to:** `hive_plan_write` (writes the full `.hive/features/<feature>/plan.md`)
-
-**Apply bounded review amendments with:** `hive_plan_patch` using `expectedRevision` from `hive_plan_read`. If task sequencing, dependencies, or scope changed, run `hive_tasks_sync({ refreshPending: true })` explicitly after review/approval; patching never syncs tasks automatically.
-
-**Maintain context with:** `hive_context_write({ feature: "feature-name", name: "learnings", content: ... })` or another focused context name when durable notes would help future workers. Pass the feature explicitly from a repository-root planning session until that session is bound.
+- Cite repository evidence as `file:line` references and explain why each reference matters.
+- State requested behavior and call-site contracts, including inputs, outputs, errors, side effects, and caller-visible risk policy where relevant.
+- Identify ownership boundaries and the design knowledge each affected module should own or hide.
+- Record constraints, non-goals, must-not-do guardrails, and assumptions that affect correctness or scope.
+- State the context-selected testing strategy for each behavior: TDD when examples discover a contract, algorithm, or regression; characterization tests before poorly understood legacy changes; tests alongside or after implementation when design needs exploration or behavior is clear; existing contract coverage for a pure internal refactor; or proportionate no-new-test verification with concrete rationale. Ask only when repository evidence and requirements leave a material choice unresolved. Keep tests with their implementation task by default.
+- Include bounded behavior-preserving preparatory refactoring only when it directly lowers risk for the requested outcome. Mark it separately from behavior change and say how preservation is checked.
+- Code snippets only when exact syntax removes material ambiguity. Describe contracts and observable outcomes instead of transcribing the implementation.
+- Use durable domain names. Planning phases, option labels, task numbers, and ticket language do not belong in lasting code names.
 
 ## Worker-Branch Task Granularity
 
-numbered tasks are worker-branch units, not micro-steps. Split by dependency, path ownership, verification boundary, or independently deliverable behavior. Reads, runs, and commits are steps inside a task. Typical plan has roughly 3-12 tasks; more than 12 needs justification or grouping.
+Numbered tasks are coordination boundaries, not module boundaries. One task can cover tightly coupled code, tests, docs, and generated artifacts when they share one outcome and owner. Split by dependency, path ownership, verification boundary, or independently deliverable behavior. Reads, commands, and commits are steps inside a task. A typical plan has roughly 3-12 tasks; larger plans need grouping or justification.
 
 ## Plan Structure
 
-**Every plan MUST follow this structure:**
+Every plan uses this shape:
 
-````markdown
+```markdown
 # [Feature Name]
 
 ## Discovery
-
 ### Original Request
-- "{User's exact words}"
-
 ### Interview Summary
-- {Point}: {Decision}
-
 ### Research Findings
-- `{file:lines}`: {Finding}
 
----
-
-## Non-Goals (What we're NOT building)
-- {Explicit exclusion}
-
----
+## Non-Goals
 
 ## Design Summary
-
-{Concise human-facing summary of the feature before task details. Optional Mermaid is allowed here for dependency or sequence overview only.}
-
----
+[Readable behavior, contracts, ownership, constraints, and testing strategy]
 
 ## Tasks
-
-### 1. Task Name
-
-Use the Task Structure template below for every task.
-````
-
-
-## Task Structure
-
-The **Depends on** annotation declares task execution order:
-- **Depends on**: none — No dependencies; can run immediately or in parallel
-- **Depends on**: 1 — Depends on task 1
-- **Depends on**: 1, 3 — Depends on tasks 1 and 3
-
-Always include **Depends on** for each task. Use `none` to enable parallel starts.
-
-````markdown
-### N. Task Name
-
+### 1. [Outcome-oriented title]
 **Depends on**: none
-
-**Files:**
-- Create: `exact/path/to/file.py`
-- Modify: `exact/path/to/existing.py:123-145`
-- Test: `tests/exact/path/to/test.py`
-
+**Repos**: [manifest repository IDs when applicable]
+**Files**:
+- Modify: `exact/path/file.ts:lines`
+- Test: `exact/path/file.test.ts`
 **What to do**:
-- Write the failing test
-  ```python
-  def test_specific_behavior():
-      result = function(input)
-      assert result == expected
-  ```
-- Run test to verify it fails
-  - Run: `pytest tests/path/test.py::test_name -v`
-  - Expected: FAIL with "function not defined"
-- Write minimal implementation
-  ```python
-  def function(input):
-      return expected
-  ```
-- Run test to verify it passes
-  - Run: `pytest tests/path/test.py::test_name -v`
-  - Expected: PASS
-- Commit
-  ```bash
-  git add tests/path/test.py src/path/file.py
-  git commit -m "feat: add specific feature"
-  ```
-
+- [Requested behavior and contract]
+- [Ownership or integration boundary]
+- [Testing strategy and any justified preparatory refactoring]
 **Must NOT do**:
-- {Task guardrail}
-
+- [Guardrail]
 **References**:
-- `{file:lines}` — {Why this reference matters}
-
+- `path:lines` - [Why it matters]
 **Verify**:
-- [ ] Run: `{command}` → {expected}
-- [ ] {Additional acceptance criteria}
+- Run: `[agent-executable command]` -> [expected result]
+- Observe: [acceptance signal]
 
-All verification MUST be agent-executable (no human intervention):
-✅ `bun test` → all pass
-✅ `curl -X POST /api/x` → 201
-❌ "User manually tests..."
-❌ "Visually confirm..."
-````
+## Final Verification
+- Run: `[non-branching integrated check]` -> [expected result]
+```
 
-## Remember
-- Exact file paths always
-- Complete code in plan (not "add validation")
-- Exact commands with expected output
-- Reference relevant skills with @ syntax
-- DRY, YAGNI, TDD, frequent commits
-- numbered tasks are worker-branch units, not micro-steps
-- Split tasks by dependency, path ownership, verification boundary, or independently deliverable behavior
-- Reads, runs, and commits are steps inside a task
-- Typical plan has roughly 3-12 tasks; more than 12 needs justification or grouping
-- All acceptance criteria must be agent-executable (zero human intervention)
-- Treat `context/overview.md` as the human-facing review surface
-- `plan.md` remains execution truth
-- Every plan needs a concise human-facing summary before `## Tasks`
-- The `Design Summary` in `plan.md` should stay readable and review-friendly even though overview-first review happens in `context/overview.md`
-- Optional Mermaid is allowed only in that pre-task summary section
-- Mermaid is for dependency or sequence overview only and is never required
-- Keep Discovery, Non-Goals, diagrams, and tasks in the same `plan.md` file
-- Use context files only for durable notes that help future workers
+Always include **Depends on**. Use `none` for parallel starts or task numbers for explicit dependencies. For manifest-backed projects, include **Repos** and prefer one repository per task unless a shared contract or coordinated change makes a multi-repository task coherent.
 
-## Execution Handoff
+Keep pure checks under `## Final Verification`; numbered tasks should write tracked implementation, test, documentation, or generated artifacts. Verification must be agent-executable unless a manual step is an unavoidable product requirement and its owner and signal are explicit.
 
-After saving the plan, ask whether to consult `plan-reviewer` before offering execution choice.
+## Review Surfaces
 
-Plan complete and saved to `.hive/features/<feature>/plan.md`.
+- `plan.md` remains execution truth and contains Discovery, Non-Goals, Design Summary, Tasks, and Final Verification.
+- `context/overview.md` is the primary human-facing review surface and history.
+- The Design Summary remains readable before `## Tasks`.
+- Mermaid is optional and limited to useful dependency or sequence overviews.
+- Context files hold durable notes that help later workers, not duplicated plan text.
 
-Two execution options:
-1. Subagent-Driven (this session) - I dispatch fresh subagent per task, review between tasks, fast iteration
-2. Parallel Session (separate) - Open new session with executing-plans, batch execution with checkpoints
+## Handoff
 
-Which approach?
-
-**If Subagent-Driven chosen:**
-- Stay in this session
-- Fresh subagent per task + code review
-
-**If Parallel Session chosen:**
-- Guide them to open new session in worktree
-- **REQUIRED SUB-SKILL:** New session uses \`skill({ name: "executing-plans" })\`
+After saving the plan, ask whether to consult `plan-reviewer`. Then offer execution through the current orchestrator or a separate session using `executing-plans`. The orchestrator owns task synchronization and execution; the plan does not prescribe a universal commit cadence or test ritual beyond the selected strategy.

@@ -546,7 +546,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `executing-plans` | Execute an approved plan with review checkpoints |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `systematic-debugging` | Root-cause investigation before fixes |
-| `test-driven-development` | Red-green-refactor for features and bugfixes |
+| `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
 | `verification` | Fresh evidence before completion or verification claims |
 | `verification-before-completion` | Deprecated wrapper; use `verification` completion gate mode |
 | `verification-reviewer` | Deprecated wrapper; use `verification` report mode |
@@ -605,7 +605,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | Agent | autoLoadSkills default |
 |-------|------------------------|
 | `hive-master` | `parallel-exploration` |
-| `forager-worker` | `test-driven-development`, `verification` |
+| `forager-worker` | `verification` |
 | `hive-builder` | `verification`, `parallel-exploration` |
 | `hive-helper` | (none) |
 | `scout-researcher` | (none) |

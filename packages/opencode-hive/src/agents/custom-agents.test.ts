@@ -9,6 +9,11 @@ import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { buildCustomSubagents } from './custom-agents';
 import { CUSTOM_AGENT_RESERVED_NAMES } from 'hive-core';
+import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
+
+function countOccurrences(content: string, needle: string): number {
+  return content.split(needle).length - 1;
+}
 
 describe('buildCustomSubagents', () => {
   it('builds derived subagents for scout, forager, and reviewer bases', () => {
@@ -190,6 +195,7 @@ describe('buildCustomSubagents', () => {
     expect(derived['forager-ui'].model).toBe('custom/model');
     expect(derived['forager-ui'].temperature).toBe(0.2);
     expect(derived['forager-ui'].variant).toBe('high');
+    expect(countOccurrences(derived['forager-ui'].prompt!, ENGINEERING_JUDGMENT_PROMPT)).toBe(1);
 
     expect(derived['reviewer-security'].mode).toBe('subagent');
     expect(derived['reviewer-security'].prompt).toContain(CODE_REVIEWER_PROMPT);
@@ -197,6 +203,7 @@ describe('buildCustomSubagents', () => {
     expect(derived['reviewer-security'].tools).toEqual(baseAgents['code-reviewer'].tools);
     expect(derived['reviewer-security'].description).toBe('Use for security-focused review passes.');
     expect(derived['reviewer-security'].model).toBe('base/code-model');
+    expect(countOccurrences(derived['reviewer-security'].prompt!, ENGINEERING_JUDGMENT_PROMPT)).toBe(1);
 
     expect(derived['reviewer-minimalist'].mode).toBe('subagent');
     expect(derived['reviewer-minimalist'].prompt).toContain(SIMPLICITY_REVIEWER_PROMPT);
@@ -280,6 +287,7 @@ describe('buildCustomSubagents', () => {
     expect(registeredRuntimePrompts['forager-ui']).toContain('# Base forager skills');
     expect(registeredRuntimePrompts['forager-ui']).toContain('# forager-ui auto-load guidance');
     expect(registeredRuntimePrompts['forager-ui']).not.toContain('Use for UI-heavy implementation tasks.');
+    expect(countOccurrences(registeredRuntimePrompts['forager-ui'], ENGINEERING_JUDGMENT_PROMPT)).toBe(1);
   });
 });
 

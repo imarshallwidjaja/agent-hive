@@ -17,6 +17,59 @@ import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-prim
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { buildWorkerPrompt } from '../utils/worker-prompt';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
+import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
+
+function countOccurrences(content: string, needle: string): number {
+  return content.split(needle).length - 1;
+}
+
+describe('Engineering judgment prompt reach', () => {
+  const includedPrompts = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Architect', ARCHITECT_BEE_PROMPT],
+    ['Forager', FORAGER_BEE_PROMPT],
+    ['Plan Reviewer', PLAN_REVIEWER_PROMPT],
+    ['Code Reviewer', CODE_REVIEWER_PROMPT],
+    ['Simplicity Reviewer', SIMPLICITY_REVIEWER_PROMPT],
+  ] as const;
+
+  const omittedPrompts = [
+    ['Swarm', SWARM_BEE_PROMPT],
+    ['Scout', SCOUT_BEE_PROMPT],
+    ['Hive Helper', HIVE_HELPER_PROMPT],
+    ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ['Approach Advisor', APPROACH_ADVISOR_PROMPT],
+    ['Dash Reviewer', DASH_REVIEWER_PROMPT],
+    ['Vulnerability Review Primary', VULNERABILITY_REVIEW_PRIMARY_PROMPT],
+    ['Vulnerability Reviewer', VULNERABILITY_REVIEWER_PROMPT],
+  ] as const;
+
+  it('includes the canonical fragment exactly once in planners, workers, and ordinary reviewers', () => {
+    for (const [name, prompt] of includedPrompts) {
+      expect(countOccurrences(prompt, ENGINEERING_JUDGMENT_PROMPT), name).toBe(1);
+    }
+  });
+
+  it('omits the fragment from unrelated researchers, orchestrators, helpers, and specialized reviewers', () => {
+    for (const [name, prompt] of omittedPrompts) {
+      expect(prompt, name).not.toContain(ENGINEERING_JUDGMENT_PROMPT);
+    }
+  });
+
+  it('keeps the canonical fragment compact', () => {
+    expect(ENGINEERING_JUDGMENT_PROMPT.split('\n').length).toBeLessThanOrEqual(40);
+    expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_000);
+  });
+
+  it('anchors role-specific application at existing decision points', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain('When drafting the plan');
+    expect(QUEEN_BEE_PROMPT).toContain('When drafting the plan');
+    expect(FORAGER_BEE_PROMPT).toContain('Apply Engineering Judgment during PLAN and VERIFY');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Apply Engineering Judgment only as an execution-readiness lens');
+    expect(CODE_REVIEWER_PROMPT).toContain('Apply Engineering Judgment to the changed scope');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('total cognitive burden and ownership clarity');
+  });
+});
 
 describe('Orchestrator synthesis-before-delegation', () => {
   it('Hive prompt contains synthesis-before-delegating reminder', () => {
@@ -631,7 +684,7 @@ describe('Architect (Planner) prompt', () => {
   });
 
   it('contains expanded clearance checklist', () => {
-    expect(ARCHITECT_BEE_PROMPT).toContain('Test strategy confirmed');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Testing and verification strategy resolved');
     expect(ARCHITECT_BEE_PROMPT).toContain('blocking questions outstanding');
   });
 
@@ -641,7 +694,28 @@ describe('Architect (Planner) prompt', () => {
   });
 
   it('contains test strategy assessment', () => {
-    expect(ARCHITECT_BEE_PROMPT).toContain('Test Strategy');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Contextual Testing Strategy');
+  });
+
+  it('hands pending-task refresh to the orchestrator instead of calling it as Architect', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain('orchestrator owns');
+    expect(ARCHITECT_BEE_PROMPT).toContain('hive_tasks_sync({ refreshPending: true })');
+    expect(ARCHITECT_BEE_PROMPT).toContain('record the required refresh in the planning handoff');
+    expect(ARCHITECT_BEE_PROMPT).not.toContain('run `hive_tasks_sync({ refreshPending: true })` explicitly');
+  });
+
+  it('resolves and records testing strategy without defaulting to separate test tasks', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain(
+      'Resolve the testing and verification strategy from repository evidence, requirements, and risk'
+    );
+    expect(ARCHITECT_BEE_PROMPT).toContain(
+      'Ask only when repository evidence and requirements do not resolve a material choice'
+    );
+    expect(ARCHITECT_BEE_PROMPT).toContain('Record the selected strategy and rationale in the draft');
+    expect(ARCHITECT_BEE_PROMPT).toContain('embed them in the same implementation task');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Require proportionate verification');
+    expect(ARCHITECT_BEE_PROMPT).toContain('keep tests with the implementation task');
+    expect(ARCHITECT_BEE_PROMPT).toContain('do not create separate test tasks by default');
   });
 
   it('creates the feature before writing draft context', () => {

@@ -11,8 +11,6 @@ Random fixes waste time and create new bugs. Quick patches mask underlying issue
 
 **Core principle:** ALWAYS find root cause before attempting fixes. Symptom fixes are failure.
 
-**Violating the letter of this process is violating the spirit of debugging.**
-
 ## The Iron Law
 
 ```
@@ -171,32 +169,34 @@ You MUST complete each phase before proceeding to the next.
 
 **Fix the root cause, not the symptom:**
 
-1. **Create Failing Test Case**
-   - Simplest possible reproduction
-   - Automated test if possible
-   - One-off test script if no framework
-   - MUST have before fixing
-   - Use the \`skill({ name: "test-driven-development" })\` skill for writing proper failing tests
+1. **Select Durable Testing and Verification**
+   - Reproduction or equivalent root-cause evidence is required before a fix.
+   - Select the durable testing and verification strategy from the defect, repository evidence, and mission.
+   - Use strict TDD only when that strategy is selected; then load \`test-driven-development\` and observe the expected failure before implementation.
+   - Other valid strategies include characterization tests before changing uncertain legacy behavior, tests alongside or after implementation when behavior is clear or design needs exploration, existing contract coverage for a pure internal refactor, and proportionate no-new-test verification with concrete rationale.
 
-2. **Implement Single Fix**
+2. **Prepare Safely When Needed**
+   - Permit tightly bounded behavior-preserving preparatory refactoring when the current structure makes a safe fix awkward.
+   - Keep the preservation work tied to the defect, verify existing behavior, and separate it from the intended behavior change.
+
+3. **Implement Single Fix**
    - Address the root cause identified
    - ONE change at a time
    - No "while I'm here" improvements
-   - No bundled refactoring
 
-3. **Verify Fix**
-   - Test passes now?
-   - No other tests broken?
+4. **Verify Fix**
+   - Does the selected check now pass?
+   - Did existing relevant checks remain green?
    - Issue actually resolved?
 
-4. **If Fix Doesn't Work**
+5. **If Fix Doesn't Work**
    - STOP
    - Count: How many fixes have you tried?
    - If < 3: Return to Phase 1, re-analyze with new information
-   - **If ≥ 3: STOP and question the architecture (step 5 below)**
+   - **If ≥ 3: STOP and question the architecture (step 6 below)**
    - DON'T attempt Fix #4 without architectural discussion
 
-5. **If 3+ Fixes Failed: Question Architecture**
+6. **If 3+ Fixes Failed: Question Architecture**
 
    **Pattern indicating architectural problem:**
    - Each fix reveals new shared state/coupling/problem in different place
@@ -218,7 +218,7 @@ If you catch yourself thinking:
 - "Quick fix for now, investigate later"
 - "Just try changing X and see if it works"
 - "Add multiple changes, run tests"
-- "Skip the test, I'll manually verify"
+- "Skip meaningful verification; the fix is obvious"
 - "It's probably X, let me fix that"
 - "I don't fully understand but this might work"
 - "Pattern says X but I'll adapt it differently"
@@ -229,7 +229,7 @@ If you catch yourself thinking:
 
 **ALL of these mean: STOP. Return to Phase 1.**
 
-**If 3+ fixes failed:** Question the architecture (see Phase 4.5)
+**If 3+ fixes failed:** Question the architecture (see Phase 4.6)
 
 ## your human partner's Signals You're Doing It Wrong
 
@@ -249,7 +249,7 @@ If you catch yourself thinking:
 | "Issue is simple, don't need process" | Simple issues have root causes too. Process is fast for simple bugs. |
 | "Emergency, no time for process" | Systematic debugging is FASTER than guess-and-check thrashing. |
 | "Just try this first, then investigate" | First fix sets the pattern. Do it right from the start. |
-| "I'll write test after confirming fix works" | Untested fixes don't stick. Test first proves it. |
+| "No new test means no verification is needed" | Every selected strategy still requires proportionate evidence that the defect is resolved. |
 | "Multiple fixes at once saves time" | Can't isolate what worked. Causes new bugs. |
 | "Reference too long, I'll adapt the pattern" | Partial understanding guarantees bugs. Read it completely. |
 | "I see the problem, let me fix it" | Seeing symptoms ≠ understanding root cause. |
@@ -262,7 +262,7 @@ If you catch yourself thinking:
 | **1. Root Cause** | Read errors, reproduce, check changes, gather evidence | Understand WHAT and WHY |
 | **2. Pattern** | Find working examples, compare | Identify differences |
 | **3. Hypothesis** | Form theory, test minimally | Confirmed or new hypothesis |
-| **4. Implementation** | Create test, fix, verify | Bug resolved, tests pass |
+| **4. Implementation** | Select strategy, prepare if needed, fix, verify | Bug resolved with proportionate evidence |
 
 ## When Process Reveals "No Root Cause"
 
@@ -284,7 +284,7 @@ These techniques are part of systematic debugging and available in this director
 - **`condition-based-waiting.md`** - Replace arbitrary timeouts with condition polling
 
 **Related skills:**
-- **skill({ name: "test-driven-development" })** - For creating failing test case (Phase 4, Step 1)
+- **test-driven-development** - Load only when strict TDD is the selected strategy
 - **skill({ name: "verification" })** - Verify fix worked before claiming success
 
 ## Real-World Impact

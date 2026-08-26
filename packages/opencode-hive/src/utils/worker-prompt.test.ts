@@ -237,37 +237,39 @@ UNIQUE_MARKER_12345
     expect(prompt).toContain('file-specific sanity checks');
   });
 
-  it('uses conditional verification path in pre-implementation checklist', () => {
+  it('follows the mission-selected testing strategy instead of imposing TDD', () => {
     const params = createTestParams();
     const prompt = buildWorkerPrompt(params);
 
     expect(prompt).toContain('The verification path is clear');
-    expect(prompt).toContain('failing test for new behavior');
-    expect(prompt).toContain('existing coverage to keep green for refactor-only work');
+    expect(prompt).toContain('testing strategy selected by the mission or repository policy');
+    expect(prompt).toContain('## Testing Strategy');
+    expect(prompt).toContain('When TDD is selected');
+    expect(prompt).not.toContain('## TDD Protocol (Required)');
     expect(prompt).not.toContain('The first failing test to write is clear (TDD).');
   });
 
-  it('places TDD guidance before completion protocol', () => {
+  it('places testing strategy guidance before completion protocol', () => {
     const params = createTestParams();
     const prompt = buildWorkerPrompt(params);
 
-    const tddIndex = prompt.indexOf('## TDD Protocol');
+    const testingIndex = prompt.indexOf('## Testing Strategy');
     const completionIndex = prompt.indexOf('## Completion Protocol');
-    expect(tddIndex).toBeGreaterThan(-1);
+    expect(testingIndex).toBeGreaterThan(-1);
     expect(completionIndex).toBeGreaterThan(-1);
-    expect(tddIndex).toBeLessThan(completionIndex);
+    expect(testingIndex).toBeLessThan(completionIndex);
   });
 
-  it('allows refactor-only work in TDD section', () => {
+  it('requires proportional verification when the selected strategy adds no tests', () => {
     const params = createTestParams();
     const prompt = buildWorkerPrompt(params);
 
-    expect(prompt).toContain('refactor');
-    const tddSection = prompt.slice(
-      prompt.indexOf('## TDD Protocol'),
-      prompt.indexOf('##', prompt.indexOf('## TDD Protocol') + 1)
-    );
-    expect(tddSection.toLowerCase()).toContain('refactor');
+    expect(prompt).toContain('characterization tests');
+    expect(prompt).toContain('tests alongside or after implementation');
+    expect(prompt).toContain('existing public-contract coverage for a behavior-preserving refactor');
+    expect(prompt).toContain('No-new-test choices still require proportional verification');
+    expect(prompt).toContain('verification selected by the mission, plan, or repository policy');
+    expect(prompt).not.toContain('| New behavior | Run tests covering the new code; record pass/fail counts |');
   });
 });
 

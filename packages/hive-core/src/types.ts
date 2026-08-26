@@ -567,7 +567,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
       model: 'anthropic/claude-sonnet-4-20250514',
       temperature: 0.2,
       variant: 'high',
-      autoLoadSkills: ['test-driven-development'],
+      autoLoadSkills: ['verification'],
     },
     'reviewer-example-template': {
       baseAgent: 'code-reviewer',
@@ -599,7 +599,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
     'forager-worker': {
       model: DEFAULT_AGENT_MODELS['forager-worker'],
       temperature: 0.3,
-      autoLoadSkills: ['test-driven-development', 'verification'],
+      autoLoadSkills: ['verification'],
     },
     'hive-helper': {
       model: DEFAULT_AGENT_MODELS['hive-helper'],

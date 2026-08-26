@@ -417,7 +417,7 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(builderPrompt).not.toContain('runnable tasks');
     expect(scoutGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(scoutPrompt).not.toContain(parallelExplorationSkill.template);
-    expect(foragerGuidance).toContain(skillToolCall('test-driven-development'));
+    expect(foragerGuidance).not.toContain(skillToolCall('test-driven-development'));
     expect(foragerGuidance).toContain(skillToolCall('verification'));
     expect(foragerPrompt).not.toContain(tddSkill.template);
     expect(foragerPrompt).not.toContain(verificationSkill.template);
@@ -486,7 +486,7 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(scoutDocsPrompt).not.toContain(parallelExplorationSkill.template);
     expect(countOccurrences(foragerUiPrompt, skillToolCall('brainstorming'))).toBe(1);
     expect(countOccurrences(foragerUiPrompt, skillToolCall('parallel-exploration'))).toBe(1);
-    expect(countOccurrences(foragerUiPrompt, skillToolCall('test-driven-development'))).toBe(1);
+    expect(countOccurrences(foragerUiPrompt, skillToolCall('test-driven-development'))).toBe(0);
     expect(countOccurrences(foragerUiPrompt, skillToolCall('native-file-skill'))).toBe(1);
     expect(foragerUiPrompt).not.toContain(brainstormingSkill.template);
     expect(foragerUiPrompt).not.toContain(parallelExplorationSkill.template);
@@ -500,7 +500,7 @@ describe('config hook autoLoadSkills guidance', () => {
       agentMode: 'unified',
       agents: {
         'forager-worker': {
-          autoLoadSkills: ['brainstorming'],
+          autoLoadSkills: ['brainstorming', 'test-driven-development'],
         },
       },
     });

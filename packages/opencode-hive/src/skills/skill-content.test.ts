@@ -111,6 +111,86 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('Treat `plan.md` as the human-facing review surface and execution truth');
   });
 
+  it('makes writing plans evidence-led and testing-strategy-aware without implementation ceremony', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans');
+    const template = skill!.template;
+
+    expect(skill).toBeDefined();
+    for (const requirement of [
+      'repository evidence',
+      'requested behavior',
+      'call-site contracts',
+      'ownership boundaries',
+      'acceptance criteria',
+      'verification',
+      'preparatory refactoring',
+      'selected testing strategy',
+      'coordination boundaries, not module boundaries',
+    ]) {
+      expect(template.toLowerCase(), requirement).toContain(requirement.toLowerCase());
+    }
+    expect(template).toContain('Code snippets only when exact syntax removes material ambiguity');
+    expect(template).not.toContain('Complete code in plan');
+    expect(template).not.toContain('Write the failing test');
+    expect(template).not.toContain('frequent commits');
+  });
+
+  it('keeps planning implementation-read-only and hands task refresh to the orchestrator', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans');
+    const template = skill!.template;
+
+    expect(skill).toBeDefined();
+    expect(template).toContain('implementation files remain read-only');
+    expect(template).toContain('Hive planning state may be written');
+    expect(template).toContain('record the required refresh in the planning handoff');
+    expect(template).toContain('orchestrator performs `hive_tasks_sync({ refreshPending: true })`');
+    expect(template).not.toContain('run `hive_tasks_sync({ refreshPending: true })` after review or approval');
+  });
+
+  it('scopes strict TDD mechanics to an explicitly selected testing strategy', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'test-driven-development');
+    const template = skill!.template;
+    const scope = template.slice(template.indexOf('## Scope'), template.indexOf('## Red-Green-Refactor'));
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toContain('TDD has been selected');
+    expect(template).toContain('operator, plan, or repository policy');
+    expect(template).toContain('examples are the useful design technique');
+    expect(scope).toContain('TDD is one testing strategy');
+    expect(scope).toContain('active plan and repository policy');
+    expect(scope).not.toContain('characterization tests');
+    expect(scope).not.toContain('tests alongside or after implementation');
+    expect(scope).not.toContain('existing public-contract coverage');
+    expect(scope).not.toContain('proportionate non-test verification');
+    expect(template).toContain('characterization tests');
+    expect(template).toContain('tests alongside or after implementation');
+    expect(template).toContain('existing public-contract coverage');
+    expect(template).toContain('proportionate non-test verification');
+    expect(template).toContain('Verify RED');
+    expect(template).toContain('Verify GREEN');
+    expect(template).not.toContain('Thinking "skip TDD just this once"? Stop. That\'s rationalization.');
+    expect(template).not.toContain('Every new function/method has a test');
+    expect(template).not.toContain('Tests-after are biased by your implementation');
+  });
+
+  it('keeps systematic debugging root-cause-first with contextual durable verification', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'systematic-debugging');
+    const template = skill!.template;
+
+    expect(skill).toBeDefined();
+    expect(template).toContain('Reproduction or equivalent root-cause evidence is required before a fix');
+    expect(template).toContain('Select the durable testing and verification strategy from the defect, repository evidence, and mission');
+    expect(template).toContain('Use strict TDD only when that strategy is selected');
+    expect(template).toContain('characterization tests');
+    expect(template).toContain('tests alongside or after implementation');
+    expect(template).toContain('existing contract coverage');
+    expect(template).toContain('proportionate no-new-test verification');
+    expect(template).toContain('tightly bounded behavior-preserving preparatory refactoring');
+    expect(template).not.toContain('MUST have before fixing');
+    expect(template).not.toContain('No bundled refactoring');
+    expect(template).not.toContain('Violating the letter of this process');
+  });
+
   it('documents task() fan-out paths for parallel-exploration', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
 
