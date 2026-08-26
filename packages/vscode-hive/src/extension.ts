@@ -250,7 +250,7 @@ class HiveExtension {
         }
 
         const confirmResult = await vscode.window.showWarningMessage(
-          `Archive feature "${featureName}"? This removes it from active feature selection and normal agent status, but keeps its .hive files for audit or manual recovery. It does not delete worktrees, branches, tasks, or commits.`,
+          `Archive feature "${featureName}"? This excludes it from implicit sole-live resolution and normal agent status, but keeps its .hive files for audit or manual recovery. It does not delete worktrees, branches, tasks, or commits.`,
           { modal: true },
           'Archive Feature'
         )

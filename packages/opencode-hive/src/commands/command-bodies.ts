@@ -81,7 +81,7 @@ Prioritize active discovery. Use tools to find current repository information an
 
 Always validate technical designs against the discovered information and the repository's current state to ensure the plan is feasible and well-informed.
 
-Use \`hive_feature_create\`, \`hive_context_write\`, and \`hive_plan_write\` as appropriate. Pass the feature explicitly to \`hive_context_write\` from a repository-root planning session until that session is bound. Read back state with \`hive_plan_read\` and \`hive_status\`.
+Use \`hive_feature_create\`, \`hive_context_write\`, and \`hive_plan_write\` as appropriate. If a feature-scoped tool reports multiple live candidates, retry with the explicit \`feature\` argument, or \`name\` for \`hive_feature_complete\`. Read back state with \`hive_plan_read\` and \`hive_status\`.
 
 Present: feature and plan status, plan readback, task breakdown, recommended execution order, session strategy, applied operator input, and remaining decision points.`,
 
@@ -89,7 +89,7 @@ Present: feature and plan status, plan readback, task breakdown, recommended exe
 
 Follow this workflow exactly:
 
-1. Identify the active feature name (\`hive_status\`).
+1. Resolve the feature with \`hive_status\`; if it reports multiple live candidates, retry with an explicit feature.
 2. Read the plan and verify it is ready for execution (\`hive_plan_read\`).
 3. Approve the plan (\`hive_plan_approve\`).
 4. Sync tasks from the approved plan (\`hive_tasks_sync\`).

@@ -14,7 +14,6 @@ const FEATURE_FILE = 'feature.json';
 const STATUS_FILE = 'status.json';
 const REPORT_FILE = 'report.md';
 const APPROVED_FILE = 'APPROVED';
-const ACTIVE_FEATURE_FILE = 'active-feature';
 
 export function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, '/');
@@ -26,10 +25,6 @@ export function getHivePath(projectRoot: string): string {
 
 export function getFeaturesPath(projectRoot: string): string {
   return path.join(getHivePath(projectRoot), FEATURES_DIR);
-}
-
-export function getActiveFeaturePath(projectRoot: string): string {
-  return path.join(getHivePath(projectRoot), ACTIVE_FEATURE_FILE);
 }
 
 export function getGlobalSessionsPath(projectRoot: string): string {

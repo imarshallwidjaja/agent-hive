@@ -548,37 +548,26 @@ Do it
     expect(fs.existsSync(path.join(testRoot, '.hive', 'features', 'future-feature'))).toBe(false);
   });
 
-  it('rejects unbound root context writes instead of using the repository-active feature', async () => {
-    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_active_feature_owner');
-    await hooks.tool!.hive_feature_create.execute({ name: 'unrelated-active-feature' }, toolContext);
+  it('writes an unbound root context to the sole live feature and binds the session', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_sole_feature_owner');
+    await hooks.tool!.hive_feature_create.execute({ name: 'sole-live-feature' }, toolContext);
 
-    const unboundSessionID = 'sess_unbound_context_write';
+    const unboundSessionID = 'sess_sole_feature_context_write';
     const output = await hooks.tool!.hive_context_write.execute(
-      { name: 'unsafe-notes', content: '# Must not be written' },
+      { name: 'notes', content: '# Sole feature notes' },
       createToolContext(unboundSessionID),
     );
 
-    expect(output).toContain('Error: No feature specified');
-    expect(output).toContain('provide feature param');
-    expect(fs.existsSync(path.join(
+    expect(output).toContain(path.join('01_sole-live-feature', 'context', 'notes.md'));
+    expect(fs.readFileSync(path.join(
       testRoot,
       '.hive',
       'features',
-      '01_unrelated-active-feature',
+      '01_sole-live-feature',
       'context',
-      'unsafe-notes.md',
-    ))).toBe(false);
-
-    expect(readGlobalSessionFeatureName(testRoot, unboundSessionID)).toBeUndefined();
-
-    const featureJson = JSON.parse(fs.readFileSync(path.join(
-      testRoot,
-      '.hive',
-      'features',
-      '01_unrelated-active-feature',
-      'feature.json',
-    ), 'utf-8')) as { sessionId?: string };
-    expect(featureJson.sessionId).toBeUndefined();
+      'notes.md',
+    ), 'utf-8')).toBe('# Sole feature notes');
+    expect(readGlobalSessionFeatureName(testRoot, unboundSessionID)).toBe('sole-live-feature');
   });
 
   it("keeps checked-in plugin.json aligned with the runtime contract", async () => {
@@ -1083,55 +1072,155 @@ Do it
     expect(councilTemplate).not.toContain('- Council synthesis with recommendation');
   });
 
-  it("writes logical active-feature names and status fallback prefers the shared pointer", async () => {
-    const ctx: PluginInput = {
-      directory: testRoot,
-      worktree: testRoot,
-      serverUrl: new URL("http://localhost:1"),
-      project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
-      $: createStubShell(),
-    };
+  it('returns sorted live candidates and performs no mutation when feature resolution is ambiguous', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_ambiguous_feature');
+    await hooks.tool!.hive_feature_create.execute({ name: 'zeta-feature' }, toolContext);
+    await hooks.tool!.hive_feature_create.execute({ name: 'alpha-feature' }, toolContext);
 
-    const hooks = await plugin(ctx);
-    const toolContext = createToolContext("sess_active_feature_pointer");
-
-    await hooks.tool!.hive_feature_create.execute(
-      { name: "zeta-feature" },
-      toolContext
+    const output = await hooks.tool!.hive_plan_write.execute(
+      {
+        content: createSingleTaskPlan(
+          'Ambiguous Plan',
+          'This integration test verifies that repository ambiguity returns every live candidate and never selects or mutates one implicitly.',
+        ),
+      },
+      toolContext,
     );
 
-    expect(
-      fs.readFileSync(path.join(testRoot, ".hive", "active-feature"), "utf-8")
-    ).toBe("zeta-feature");
+    expect(output).toContain('Multiple live features found: alpha-feature, zeta-feature');
+    expect(output).toContain('explicit `feature` argument');
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'features', '01_zeta-feature', 'plan.md'))).toBe(false);
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'features', '02_alpha-feature', 'plan.md'))).toBe(false);
+  });
 
-    await hooks.tool!.hive_feature_create.execute(
-      { name: "alpha-feature" },
-      toolContext
+  it('keeps non-feature worktree sessions unbound through chat.message and returns logical ambiguity candidates', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_non_feature_worktree_setup');
+    await hooks.tool!.hive_feature_create.execute({ name: 'zeta-feature' }, toolContext);
+    await hooks.tool!.hive_feature_create.execute({ name: 'alpha-feature' }, toolContext);
+
+    for (const namespace of ['adhoc', 'review']) {
+      const sessionID = `sess_${namespace}_worker`;
+      const worktreePath = path.join(testRoot, '.hive', '.worktrees', namespace, `${namespace}-run`);
+      fs.mkdirSync(worktreePath, { recursive: true });
+      const { hooks: worktreeHooks, toolContext: worktreeContext } = await createHooksForTest(
+        testRoot,
+        sessionID,
+        worktreePath,
+      );
+
+      await worktreeHooks['chat.message']?.(
+        { sessionID, agent: 'forager-worker' },
+        { message: {} as any, parts: [] },
+      );
+      const raw = await worktreeHooks.tool!.hive_status.execute({}, worktreeContext);
+      const result = JSON.parse(raw as string) as {
+        reason?: string;
+        candidates?: string[];
+        error?: string;
+      };
+
+      expect(result.reason).toBe('feature_ambiguous');
+      expect(result.candidates).toEqual(['alpha-feature', 'zeta-feature']);
+      expect(result.error).toContain('Multiple live features found: alpha-feature, zeta-feature');
+      expect(readGlobalSessionFeatureName(testRoot, sessionID)).toBeUndefined();
+    }
+  });
+
+  it('requires an explicit name and leaves all features live when completion is ambiguous', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_ambiguous_completion');
+    await hooks.tool!.hive_feature_create.execute({ name: 'zeta-feature' }, toolContext);
+    await hooks.tool!.hive_feature_create.execute({ name: 'alpha-feature' }, toolContext);
+
+    const output = await hooks.tool!.hive_feature_complete.execute({}, toolContext);
+
+    expect(output).toContain('Multiple live features found: alpha-feature, zeta-feature');
+    expect(output).toContain('explicit `name` argument');
+    expect(new FeatureService(testRoot).get('alpha-feature')?.status).toBe('planning');
+    expect(new FeatureService(testRoot).get('zeta-feature')?.status).toBe('planning');
+  });
+
+  it('rejects explicitly blank feature arguments without completing the sole live feature', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_blank_explicit_feature');
+    await hooks.tool!.hive_feature_create.execute({ name: 'still-live-feature' }, toolContext);
+
+    for (const explicitBlank of ['', ' \t ']) {
+      const statusRaw = await hooks.tool!.hive_status.execute({ feature: explicitBlank }, toolContext);
+      const statusResult = JSON.parse(statusRaw as string) as {
+        reason?: string;
+        error?: string;
+        hint?: string;
+      };
+      const completionOutput = await hooks.tool!.hive_feature_complete.execute({ name: explicitBlank }, toolContext);
+
+      expect(statusResult.reason).toBe('invalid_argument');
+      expect(statusResult.error).toContain('must not be blank or whitespace-only');
+      expect(statusResult.hint).toContain('feature: "<feature-name>"');
+      expect(completionOutput).toContain('must not be blank or whitespace-only');
+      expect(completionOutput).toContain('name: "<feature-name>"');
+    }
+    expect(new FeatureService(testRoot).get('still-live-feature')?.status).toBe('planning');
+  });
+
+  it('excludes completed and archived features when resolving the sole live feature', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_live_status_candidates');
+    await hooks.tool!.hive_feature_create.execute({ name: 'completed-feature' }, toolContext);
+    await hooks.tool!.hive_feature_create.execute({ name: 'archived-feature' }, toolContext);
+    await hooks.tool!.hive_feature_create.execute({ name: 'live-feature' }, toolContext);
+    await hooks.tool!.hive_feature_complete.execute({ name: 'completed-feature' }, toolContext);
+    new FeatureService(testRoot).archive('archived-feature');
+
+    const raw = await hooks.tool!.hive_status.execute({}, createToolContext('sess_only_live_status'));
+    const result = JSON.parse(raw as string) as { feature?: { name?: string; status?: string } };
+
+    expect(result.feature).toMatchObject({ name: 'live-feature', status: 'planning' });
+  });
+
+  it('uses an explicit feature despite repository ambiguity', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_explicit_ambiguous_feature');
+    await hooks.tool!.hive_feature_create.execute({ name: 'zeta-feature' }, toolContext);
+    await hooks.tool!.hive_feature_create.execute({ name: 'alpha-feature' }, toolContext);
+
+    const output = await hooks.tool!.hive_plan_write.execute(
+      {
+        feature: 'zeta-feature',
+        content: createSingleTaskPlan(
+          'Explicit Plan',
+          'This integration test verifies that an explicit feature remains authoritative even when several live repository candidates exist.',
+        ),
+      },
+      toolContext,
     );
 
-    expect(
-      fs.readFileSync(path.join(testRoot, ".hive", "active-feature"), "utf-8")
-    ).toBe("alpha-feature");
+    expect(output).toContain(path.join('01_zeta-feature', 'plan.md'));
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'features', '01_zeta-feature', 'plan.md'))).toBe(true);
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'features', '02_alpha-feature', 'plan.md'))).toBe(false);
+  });
 
-    const statusRaw = await hooks.tool!.hive_status.execute({}, toolContext);
-    const status = JSON.parse(statusRaw as string) as {
-      feature?: { name?: string };
-    };
-
-    expect(status.feature?.name).toBe("alpha-feature");
-
-    await hooks.tool!.hive_feature_complete.execute(
-      { name: "alpha-feature" },
-      toolContext
+  it('uses a detected task-worktree feature before repository candidates', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_detected_feature_setup');
+    await hooks.tool!.hive_feature_create.execute({ name: 'detected-feature' }, toolContext);
+    await hooks.tool!.hive_feature_create.execute({ name: 'competing-feature' }, toolContext);
+    const worktreePath = path.join(testRoot, '.hive', '.worktrees', 'detected-feature', FIRST_TASK);
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const { hooks: worktreeHooks, toolContext: worktreeContext } = await createHooksForTest(
+      testRoot,
+      'sess_detected_feature_write',
+      worktreePath,
     );
 
-    const fallbackStatusRaw = await hooks.tool!.hive_status.execute({}, toolContext);
-    const fallbackStatus = JSON.parse(fallbackStatusRaw as string) as {
-      feature?: { name?: string };
-    };
+    const output = await worktreeHooks.tool!.hive_plan_write.execute(
+      {
+        content: createSingleTaskPlan(
+          'Detected Plan',
+          'This integration test verifies that a detected task-worktree feature wins before unrelated live repository candidates are considered.',
+        ),
+      },
+      worktreeContext,
+    );
 
-    expect(fallbackStatus.feature?.name).toBe("zeta-feature");
+    expect(output).toContain(path.join('01_detected-feature', 'plan.md'));
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'features', '01_detected-feature', 'plan.md'))).toBe(true);
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'features', '02_competing-feature', 'plan.md'))).toBe(false);
   });
 
   it("returns task tool call using @file prompt", async () => {
@@ -1735,7 +1824,7 @@ Candidate-specific conditions in an individual description still apply, includin
 
     expect(result.success).toBe(false);
     expect(result.terminal).toBe(true);
-    expect(result.error).toContain("No feature specified");
+    expect(result.error).toContain("No live feature could be resolved");
     expect(Array.isArray(result.hints)).toBe(true);
   });
 
@@ -1903,7 +1992,7 @@ Do it
     expect(result.hints?.length).toBeGreaterThan(0);
   });
 
-  it("returns structured terminal JSON when hive_status has no active feature", async () => {
+  it("returns structured terminal JSON when hive_status has no live feature", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -1923,12 +2012,14 @@ Do it
       terminal?: boolean;
       reason?: string;
       error?: string;
+      hint?: string;
     };
 
     expect(result.success).toBe(false);
     expect(result.terminal).toBe(true);
     expect(result.reason).toBe("feature_required");
-    expect(result.error).toContain("No feature specified");
+    expect(result.error).toContain("No live feature could be resolved");
+    expect(result.hint).toContain('hive_feature_create');
   });
 
   it("returns structured terminal JSON when hive_status feature is missing", async () => {
@@ -3634,7 +3725,7 @@ Do it
     expect(execStart.taskPromptMode).toBe("opencode-at-file");
   });
 
-  it("hive_plan_read binds featureName to global session", async () => {
+  it("hive_plan_read reuses its global session binding despite repository ambiguity", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -3661,12 +3752,30 @@ Do it
       },
       toolContext
     );
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "competing-plan-feature" },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_write.execute(
+      {
+        content: createSingleTaskPlan(
+          "Competing Plan Feature",
+          "This feature keeps the repository ambiguous while session resolution is verified."
+        ),
+        feature: "competing-plan-feature",
+      },
+      toolContext,
+    );
 
     const workerContext = createToolContext("sess_worker_plan_bind");
     await hooks.tool!.hive_plan_read.execute(
       { feature: "plan-bind-feature" },
       workerContext
     );
+    const boundRead = JSON.parse(await hooks.tool!.hive_plan_read.execute(
+      {},
+      workerContext,
+    ) as string) as { content: string };
 
     const sessionsPath = path.join(testRoot, ".hive", "sessions.json");
     expect(fs.existsSync(sessionsPath)).toBe(true);
@@ -3676,6 +3785,8 @@ Do it
     );
     expect(workerSession).toBeDefined();
     expect(workerSession.featureName).toBe("plan-bind-feature");
+    expect(boundRead.content).toContain('# Plan Bind Feature');
+    expect(boundRead.content).not.toContain('# Competing Plan Feature');
   });
 
   it("uses directory for the global root sentinel and resolves an omitted feature from the session binding", async () => {
@@ -3804,7 +3915,7 @@ Do it
     expect(readGlobalSessionFeatureName(testRoot, writerSessionID)).toBeUndefined();
   });
 
-  it('uses a root session binding before an unrelated repository-active feature', async () => {
+  it('uses a root session binding before unrelated live repository candidates', async () => {
     const { hooks } = await createHooksForTest(testRoot, 'sess_context_binding_setup');
     const boundContext = createToolContext('sess_bound_context_write');
 
@@ -3817,7 +3928,7 @@ Do it
       boundContext,
     );
     await hooks.tool!.hive_feature_create.execute(
-      { name: 'other-active-feature' },
+      { name: 'other-live-feature' },
       createToolContext('sess_other_feature_owner'),
     );
 
@@ -3839,7 +3950,7 @@ Do it
       testRoot,
       '.hive',
       'features',
-      '02_other-active-feature',
+      '02_other-live-feature',
       'context',
       'bound-notes.md',
     ))).toBe(false);
@@ -3852,8 +3963,8 @@ Do it
       createToolContext('sess_adhoc_bound_owner'),
     );
     await hooks.tool!.hive_feature_create.execute(
-      { name: 'unrelated-active-feature' },
-      createToolContext('sess_adhoc_active_owner'),
+      { name: 'unrelated-live-feature' },
+      createToolContext('sess_adhoc_live_owner'),
     );
 
     const adhocWorktreePath = path.join(
@@ -3896,13 +4007,14 @@ Do it
       'follow-up-notes.md',
     ), 'utf-8')).toBe('follow-up');
 
-    expect(unboundOutput).toContain('Error: No feature specified');
+    expect(unboundOutput).toContain('Multiple live features found: adhoc-bound-feature, unrelated-live-feature');
+    expect(unboundOutput).toContain('explicit `feature` argument');
     expect(unboundOutput).not.toContain("Feature 'adhoc'");
     expect(fs.existsSync(path.join(
       testRoot,
       '.hive',
       'features',
-      '02_unrelated-active-feature',
+      '02_unrelated-live-feature',
       'context',
       'unsafe-notes.md',
     ))).toBe(false);

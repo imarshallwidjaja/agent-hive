@@ -45,8 +45,7 @@ class FeatureItem extends vscode.TreeItem {
   constructor(
     public readonly name: string,
     public readonly feature: FeatureJson,
-    public readonly taskStats: { total: number; done: number },
-    public readonly isActive: boolean
+    public readonly taskStats: { total: number; done: number }
   ) {
     super(name, vscode.TreeItemCollapsibleState.Collapsed)
     
@@ -55,10 +54,6 @@ class FeatureItem extends vscode.TreeItem {
     
     this.contextValue = `feature-${feature.status}`
     this.iconPath = new vscode.ThemeIcon(STATUS_ICONS[feature.status] || 'package')
-    
-    if (isActive) {
-      this.resourceUri = vscode.Uri.parse('hive:active')
-    }
   }
 }
 
@@ -257,7 +252,6 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
   }
 
   private getAllFeatures(): FeatureItem[] {
-    const activeFeature = this.getActiveFeature()
     const features: FeatureItem[] = []
 
     const dirs = listFeatureDirectories(this.workspaceRoot)
@@ -268,17 +262,11 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
       const feature: FeatureJson = JSON.parse(fs.readFileSync(featureJsonPath, 'utf-8'))
       const taskStats = this.getTaskStats(dir.logicalName)
-      const isActive = dir.logicalName === activeFeature
 
-      features.push(new FeatureItem(dir.logicalName, feature, taskStats, isActive))
+      features.push(new FeatureItem(dir.logicalName, feature, taskStats))
     }
 
-    // Sort by active first, then by deterministic logical name
-    features.sort((a, b) => {
-      if (a.isActive && !b.isActive) return -1
-      if (!a.isActive && b.isActive) return 1
-      return a.name.localeCompare(b.name)
-    })
+    features.sort((a, b) => a.name.localeCompare(b.name))
 
     return features
   }
@@ -373,37 +361,6 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     }
   }
 
-  private getActiveFeature(): string | null {
-    const activePath = path.join(this.workspaceRoot, '.hive', 'active-feature')
-    const configuredActive = fs.existsSync(activePath)
-      ? fs.readFileSync(activePath, 'utf-8').trim()
-      : null
-
-    if (configuredActive) {
-      const feature = this.readFeature(configuredActive)
-      if (feature && !isTerminalFeatureStatus(feature.status)) {
-        return configuredActive
-      }
-    }
-
-    const available = listFeatureDirectories(this.workspaceRoot)
-      .map(entry => entry.logicalName)
-      .filter(name => {
-        const feature = this.readFeature(name)
-        return feature !== null && !isTerminalFeatureStatus(feature.status)
-      })
-      .sort((a, b) => a.localeCompare(b))
-
-    return available[0] ?? null
-  }
-
-  private readFeature(featureName: string): FeatureJson | null {
-    const featureJsonPath = path.join(getFeaturePath(this.workspaceRoot, featureName), 'feature.json')
-    if (!fs.existsSync(featureJsonPath)) return null
-
-    return JSON.parse(fs.readFileSync(featureJsonPath, 'utf-8'))
-  }
-
   private getReviewCommentCount(featureName: string, document: 'plan' | 'overview'): number {
     const featurePath = getFeaturePath(this.workspaceRoot, featureName)
     const canonicalPath = path.join(featurePath, 'comments', `${document}.json`)
@@ -421,8 +378,4 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       return 0
     }
   }
-}
-
-function isTerminalFeatureStatus(status: FeatureJson['status']): boolean {
-  return status === 'completed' || status === 'archived'
 }

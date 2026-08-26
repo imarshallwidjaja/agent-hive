@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as path from 'path';
 import { getFeaturePath, getGlobalSessionsPath, ensureDir, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
 import type { SessionInfo, SessionsJson } from '../types.js';
@@ -182,29 +181,7 @@ export class SessionService {
   }
 
   findFeatureBySession(sessionId: string): string | null {
-    const globalSession = this.getGlobal(sessionId);
-    if (globalSession?.featureName) {
-      return globalSession.featureName;
-    }
-
-    const featuresPath = path.join(this.projectRoot, '.hive', 'features');
-    if (!fs.existsSync(featuresPath)) return null;
-
-    const features = fs.readdirSync(featuresPath, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name);
-
-    for (const feature of features) {
-      const sessions = this.getSessions(feature);
-      if (sessions.sessions.some(s => s.sessionId === sessionId)) {
-        return feature;
-      }
-      if (sessions.master === sessionId) {
-        return feature;
-      }
-    }
-
-    return null;
+    return this.getGlobal(sessionId)?.featureName || null;
   }
 
   fork(featureName: string, fromSessionId?: string): SessionInfo {

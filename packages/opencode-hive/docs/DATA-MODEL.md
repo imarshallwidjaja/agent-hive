@@ -46,7 +46,7 @@ Single-repo projects use the git root directly; multi-repo topology, when needed
 ## Reserved Overview Convention
 
 - `context/overview.md` is the primary human-facing summary and review surface.
-- Update it with the existing context tool: `hive_context_write({ feature: "feature-name", name: "overview", content })` from a repository-root session until that session is bound.
+- Update it with the existing context tool: `hive_context_write({ feature: "feature-name", name: "overview", content })`. From a repository-root session, provide `feature` whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
 - `plan.md` remains the graph source of truth for plan-backed task generation, dependency parsing, and execution, and may still include a readable design summary before `## Tasks`.
 - `context/overview.md` is intentionally excluded from worker execution context so the narrative summary does not blur implementation truth.
 - Other context filenames remain durable free-form notes by default; files like `decisions.md`, `architecture.md`, and `constraints.md` are examples, not required schema.

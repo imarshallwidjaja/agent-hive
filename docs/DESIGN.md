@@ -13,7 +13,6 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 
 ```
 .hive/                    <- Shared data (all clients)
-├── active-feature        <- Active feature logical name pointer
 ├── features/             <- Feature-scoped work
 │   └── 01_feature-name/
 │       ├── feature.json  <- Feature metadata and state
@@ -56,37 +55,28 @@ packages/
 - `hive_worktree_start` writes the full prompt to `.hive/features/<feature>/tasks/<task>/worker-prompt.md` and returns `workerPromptPath` plus a short preview.
 - Prompt budgets default to last 10 tasks, 2000 chars per summary, 20KB per context file, 60KB total; `promptMeta`, `payloadMeta`, and `warnings` report sizes.
 
-## Feature Resolution (v0.5.0)
+## Feature Resolution
 
-All tools use logical feature names with `.hive/active-feature` as the shared active-feature pointer. Storage may be indexed for new features (`01_feature-name`) while tool input/output stays logical:
+Feature-scoped tools use logical feature names even when storage folders are indexed (`01_feature-name`). Omitted feature arguments resolve from local context without project-global selection state:
 
 ```typescript
-function resolveFeature(explicit?: string): string | null {
-  // 1. Use explicit parameter if provided
+function resolveFeature(explicit?: string, sessionId?: string): string | null {
   if (explicit) return explicit
-  
-  // 2. Use .hive/active-feature when it points at a live feature
-  const active = readActiveFeature()
-  if (active) return active
 
-  // 3. Detect from worktree path (.hive/.worktrees/{feature}/{task}/)
   const detected = detectContext(cwd)
-  if (detected?.feature) return detected.feature
-  
-  // 4. Fall back to the first non-completed feature in deterministic order
-  const features = listFeatures()
-  if (features.length > 0) return features[0]
-  
-  // 5. Require explicit parameter if none can be resolved
-  return null
+  if (detected.feature) return detected.feature
+
+  const bound = sessionId ? findFeatureBySession(sessionId) : null
+  if (bound) return bound
+
+  const liveFeatures = listLiveFeatures()
+  return liveFeatures.length === 1 ? liveFeatures[0] : null
 }
 ```
 
-This enables:
-- Multi-session support (parallel agents on different features)
-- Stable active-feature behavior via `.hive/active-feature`
-- Indexed storage without leaking folder names into status output
-- Explicit override (always specify feature when needed)
+When multiple live features remain, the tool returns their logical names and makes no mutation. Retry with the explicit `feature` argument, or the explicit `name` argument for `hive_feature_complete`. When no live feature exists, the response tells the agent to create one with `hive_feature_create`.
+
+This keeps task-worktree and session ownership authoritative, supports parallel feature sessions, and prevents alphabetical feature selection from becoming hidden orchestration state.
 
 ## Session Tracking
 
@@ -260,8 +250,8 @@ Top-level `filesChanged` and `conflicts` flatten per-repo paths as `repoId:path`
 
 ## Key Principles
 
-- **No global state** — All tools accept explicit feature parameter
-- **Detection-first** — Worktree path reveals feature context
+- **No global selection state** — Feature tools use explicit, path, session, or sole-live resolution
+- **Detection-first** — Task-worktree paths override session and repository fallback
 - **Isolation** — Each task in own worktree, safe to discard
 - **Audit trail** — Every action logged to `.hive/`
 - **Agent-friendly** — Minimal overhead during execution

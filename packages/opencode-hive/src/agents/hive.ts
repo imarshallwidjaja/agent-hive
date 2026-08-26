@@ -114,7 +114,7 @@ Use the lightweight context model explicitly:
 - all other names = durable free-form context
 
 Treat the reserved names above as special-purpose files, not general notes. Use context files for durable worker notes, decisions, and research.
-From a repository-root planning session, pass the feature explicitly until the session is bound: \`hive_context_write({ feature: "feature-name", name: "learnings", content: ... })\`.
+From a repository-root planning session, use an explicit feature when needed: \`hive_context_write({ feature: "feature-name", name: "learnings", content: ... })\`. If multiple live features remain after path and session resolution, retry the feature-scoped tool with the explicit \`feature\` argument, or \`name\` for \`hive_feature_complete\`, using one of the candidates returned by the tool.
 
 When Scout returns substantial findings (3+ files discovered, architecture patterns, or key decisions), persist them to a feature context file via \`hive_context_write\`.
 

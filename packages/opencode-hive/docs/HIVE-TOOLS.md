@@ -285,9 +285,15 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Status | 1 | status |
 | **Total** | **29** | |
 
+## Feature Resolution
+
+Feature-scoped tools resolve an omitted feature in this order: current task worktree/path, current session binding, then the sole live feature. An explicit `feature` argument always wins; `hive_feature_complete` uses the equivalent `name` argument.
+
+If multiple live features remain, the tool returns their logical names without mutating any feature. Retry with the explicit `feature` or `name` argument using one of those candidates. If no live feature exists, create one with `hive_feature_create`.
+
 ## Reserved Overview Convention
 
 - There is no dedicated overview write tool.
-- Use `hive_context_write({ feature: "feature-name", name: "overview", content })` to maintain `.hive/features/<feature>/context/overview.md` from a repository-root session until that session is bound.
+- Use `hive_context_write({ feature: "feature-name", name: "overview", content })` to maintain `.hive/features/<feature>/context/overview.md`. Provide `feature` from a repository-root session whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
 - Humans review `context/overview.md` first; `plan.md` stays authoritative for execution and task parsing, and can still include a readable design summary before `## Tasks`.
 - `hive_status` and the VS Code extension surface the overview as the primary human-facing document.

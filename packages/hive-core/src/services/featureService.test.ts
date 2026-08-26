@@ -33,11 +33,6 @@ function setupIndexedFeature(directoryName: string, logicalName: string): string
   return featurePath;
 }
 
-function writeActiveFeature(name: string): void {
-  fs.mkdirSync(path.join(TEST_DIR, '.hive'), { recursive: true });
-  fs.writeFileSync(path.join(TEST_DIR, '.hive', 'active-feature'), name);
-}
-
 describe('FeatureService', () => {
   let service: FeatureService;
 
@@ -86,7 +81,7 @@ describe('FeatureService', () => {
     expect(info).not.toHaveProperty('hasOverview');
   });
 
-  it('creates new features in the next indexed folder while keeping the logical name', () => {
+  it('creates new features in the next indexed folder without writing project-global selection state', () => {
     setupFeature('legacy-feature');
     setupIndexedFeature('02_existing-feature', 'existing-feature');
 
@@ -97,7 +92,7 @@ describe('FeatureService', () => {
     expect(fs.existsSync(indexedPath)).toBe(true);
     expect(service.get('new-feature')).toMatchObject({ name: 'new-feature' });
     expect(service.list()).toEqual(['existing-feature', 'legacy-feature', 'new-feature']);
-    expect(fs.readFileSync(path.join(TEST_DIR, '.hive', 'active-feature'), 'utf-8')).toBe('new-feature');
+    expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'active-feature'))).toBe(false);
   });
 
   it('rejects duplicate logical feature names across legacy and indexed folders', () => {
@@ -106,28 +101,6 @@ describe('FeatureService', () => {
 
     expect(() => service.create('legacy-feature')).toThrow("Feature 'legacy-feature' already exists");
     expect(() => service.create('duplicate-feature')).toThrow("Feature 'duplicate-feature' already exists");
-  });
-
-  it('getActive prefers the active-feature pointer when it references a non-completed feature', () => {
-    setupFeature('beta-feature');
-    setupIndexedFeature('01_alpha-feature', 'alpha-feature');
-    writeActiveFeature('beta-feature');
-
-    expect(service.list()).toEqual(['alpha-feature', 'beta-feature']);
-    expect(service.getActive()).toMatchObject({ name: 'beta-feature' });
-  });
-
-  it('getActive ignores stale and completed pointers and falls back deterministically', () => {
-    setupFeature('zeta-feature');
-    setupIndexedFeature('01_alpha-feature', 'alpha-feature');
-    setupIndexedFeature('02_done-feature', 'done-feature');
-    service.updateStatus('done-feature', 'completed');
-
-    writeActiveFeature('missing-feature');
-    expect(service.getActive()).toMatchObject({ name: 'alpha-feature' });
-
-    writeActiveFeature('done-feature');
-    expect(service.getActive()).toMatchObject({ name: 'alpha-feature' });
   });
 
   it('archive sets status to archived with timestamp and optional reason', () => {
@@ -155,22 +128,6 @@ describe('FeatureService', () => {
 
   it('archive throws when feature does not exist', () => {
     expect(() => service.archive('nonexistent')).toThrow("Feature 'nonexistent' not found");
-  });
-
-  it('getActive excludes archived features', () => {
-    setupFeature('active-feature');
-    setupIndexedFeature('01_archived-feature', 'archived-feature');
-    service.archive('archived-feature', 'Done with this');
-
-    expect(service.getActive()).toMatchObject({ name: 'active-feature' });
-  });
-
-  it('getActive skips archived when it is the active-feature pointer', () => {
-    setupFeature('archived-alpha');
-    writeActiveFeature('archived-alpha');
-    service.archive('archived-alpha', 'Not worth it');
-
-    expect(service.getActive()).toBeNull();
   });
 
   it('default list excludes archived features', () => {

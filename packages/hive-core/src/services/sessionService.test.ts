@@ -206,11 +206,14 @@ describe('SessionService', () => {
       expect(found).toBe('feature-find');
     });
 
-    it('falls back to feature scan when not in global sessions.json', () => {
-      setupFeature('feature-fallback');
-      service.track('feature-fallback', 'sess-old');
-      const found = service.findFeatureBySession('sess-old');
-      expect(found).toBe('feature-fallback');
+    it('does not resolve from feature-local sessions when the global binding is absent', () => {
+      setupFeature('feature-local-only');
+      service.bindFeature('sess-local-only', 'feature-local-only');
+      fs.rmSync(getGlobalSessionsPath(PROJECT_ROOT));
+
+      const found = service.findFeatureBySession('sess-local-only');
+
+      expect(found).toBeNull();
     });
   });
 });

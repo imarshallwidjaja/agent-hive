@@ -737,6 +737,10 @@ describe('Architect (Planner) prompt', () => {
       'hive_context_write({ feature: "feature-name", name: "execution-decisions"',
     );
     expect(SCOUT_BEE_PROMPT).toContain('feature: "{feature-name}"');
+    expect(QUEEN_BEE_PROMPT).toContain(
+      'If multiple live features remain after path and session resolution',
+    );
+    expect(QUEEN_BEE_PROMPT).toContain('`name` for `hive_feature_complete`');
     expect(HIVE_BUILDER_PROMPT).not.toContain('## Durable Notes');
     expect(HIVE_BUILDER_PROMPT).not.toContain('execution-decisions');
   });

@@ -78,7 +78,7 @@ describe('HiveSidebarProvider', () => {
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
   });
 
-  it('shows status and task progress for all features and keeps active feature first', async () => {
+  it('shows status and task progress for all features in stable logical-name order', async () => {
     const featureService = new FeatureService(testRoot);
     const planService = new PlanService(testRoot);
 
@@ -139,8 +139,6 @@ describe('HiveSidebarProvider', () => {
       JSON.stringify({ status: 'done', origin: 'plan' }, null, 2)
     );
 
-    fs.writeFileSync(path.join(testRoot, '.hive', 'active-feature'), 'gamma-feature\n');
-
     const provider = new HiveSidebarProvider(testRoot);
     const groups = await provider.getChildren();
     const statusGroups = groups.filter(item => 'groupName' in item);
@@ -152,16 +150,16 @@ describe('HiveSidebarProvider', () => {
     const completedGroup = statusGroups.find(item => item.groupName === 'Completed');
 
     expect(pendingGroup?.features.map(feature => feature.name)).toEqual([
-      'gamma-feature',
       'alpha-feature',
       'beta-feature',
+      'gamma-feature',
     ]);
     expect(pendingGroup?.features.map(feature => feature.description)).toEqual([
-      'Planning · 0/1',
       'Planning · 1/2',
       'Planning · 0/1',
+      'Planning · 0/1',
     ]);
-    expect((pendingGroup?.features[0] as any)?.resourceUri?.value).toBe('hive:active');
+    expect(pendingGroup?.features.every(feature => feature.resourceUri === undefined)).toBe(true);
     expect(inProgressGroup?.features.map(feature => feature.name)).toEqual(['executing-feature']);
     expect(inProgressGroup?.features[0]?.description).toBe('Executing · 0/1');
     expect(completedGroup?.features.map(feature => feature.name)).toEqual(['completed-feature']);
@@ -228,14 +226,14 @@ describe('HiveSidebarProvider', () => {
     expect(rootItems.map(item => item.label)).toEqual([]);
   });
 
-  it('shows archived features in a collapsed Archived group and excludes them from pending/active groups', async () => {
+  it('shows archived features in a collapsed Archived group and excludes them from pending groups', async () => {
     const featureService = new FeatureService(testRoot);
     const planService = new PlanService(testRoot);
 
-    featureService.create('active-feature');
+    featureService.create('planning-feature');
     featureService.create('archived-feature');
 
-    planService.write('active-feature', '# Plan\n');
+    planService.write('planning-feature', '# Plan\n');
     planService.write('archived-feature', '# Plan\n');
 
     const archivedPath = path.join(testRoot, '.hive', 'features', '02_archived-feature');
