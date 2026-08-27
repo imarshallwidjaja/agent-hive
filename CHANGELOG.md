@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.5] - 2026-08-27
+
+### Added
+
+- Architect, Hive, Forager, and ordinary review guidance now share human-centered Engineering Judgment for clear call-site contracts, cohesive boundaries, abstractions with current responsibility, and proportionate verification.
+
+### Changed
+
+- Testing guidance now selects public-contract, characterization, implementation-adjacent, existing-coverage, or proportionate non-test checks from the work context. Forager keeps verification as its default without automatically requiring test-driven development.
+- Feature resolution now uses an explicit feature, worktree or task context, canonical session ownership, then the sole live feature. When multiple live features remain, callers must select one explicitly.
+
+### Fixed
+
+- Hidden project-global `.hive/active-feature` selection is removed so one session cannot silently redirect another session's feature operations. The VS Code feature view no longer highlights or reorders a hidden active feature.
+
 ## [2.3.4] - 2026-08-26
 
 ### Added
