@@ -100,6 +100,75 @@ describe('skill content', () => {
     expectInSessionDesignDocumentationPolicy(skill!.template);
   });
 
+  it('lets concrete corrective feedback bypass brainstorming dialogue without bypassing engineering gates', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'brainstorming');
+    const template = skill!.template;
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toBe(
+      'Use before creative work such as creating features, building components, adding functionality, or modifying behavior.'
+    );
+    for (const qualifier of [
+      'wrong behavior',
+      'desired behavior',
+      'affected artifact',
+      'correction direction',
+    ]) {
+      expect(template).toContain(qualifier);
+    }
+    expect(template).toContain('Bare bug reports and vague feature requests do not qualify');
+    expect(template).toContain(
+      'If the operator explicitly asks to explore alternatives, discuss the change, or design it, keep the work exploratory even when the feedback is concrete.'
+    );
+    expect(template).toContain('Skip only the brainstorming dialogue and readiness prompt');
+    expect(template).toContain('planning, isolation, testing, and verification');
+    expect(template).toContain('Ask exactly one targeted question only when');
+    for (const ambiguity of [
+      'correctness',
+      'safety',
+      'data scope',
+      'persistence',
+      'UX',
+      'public contract',
+    ]) {
+      expect(template).toContain(ambiguity);
+    }
+    expect(template).toContain(
+      'If the question is unanswered, or material ambiguity remains after the answer, stop rather than guess or enter the ordinary brainstorming process'
+    );
+    expect(template).toContain(
+      '**Be flexible** - During ordinary brainstorming, go back and clarify when something does not make sense'
+    );
+    expect(template).toContain(
+      '**Challenge assumptions** - During ordinary brainstorming, surface fragile assumptions, ask what changes if they fail, and offer lean fallback options'
+    );
+    expect(template).toMatch(
+      /^- \*\*One question at a time\*\* - Don't overwhelm with multiple questions during ordinary brainstorming$/m
+    );
+    expect(template).toMatch(
+      /^- \*\*Explore alternatives\*\* - Propose 2-3 approaches during ordinary brainstorming or when the operator explicitly requests alternatives$/m
+    );
+    expect(template).toMatch(
+      /^- \*\*Incremental validation\*\* - Present ordinary brainstorming designs in sections and validate each$/m
+    );
+    expect(template).toMatch(
+      /^- After ordinary brainstorming, ask: "Ready to set up for implementation\?"$/m
+    );
+    expect(template).not.toMatch(
+      /^- \*\*Explore alternatives\*\* - Always propose 2-3 approaches before settling$/m
+    );
+    expect(template).not.toMatch(/^- Ask: "Ready to set up for implementation\?"$/m);
+    expect(template).not.toMatch(
+      /^- \*\*Incremental validation\*\* - Present design in sections, validate each$/m
+    );
+    expect(template).not.toMatch(
+      /^- \*\*Be flexible\*\* - Go back and clarify when something doesn't make sense$/m
+    );
+    expect(template).not.toMatch(
+      /^- \*\*Challenge assumptions\*\* - Surface fragile assumptions, ask what changes if they fail, offer lean fallback options$/m
+    );
+  });
+
   it('documents overview-first execution truth in writing-plans', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans');
 

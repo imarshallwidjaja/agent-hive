@@ -1,6 +1,6 @@
 ---
 name: brainstorming
-description: "Use before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
+description: "Use before creative work such as creating features, building components, adding functionality, or modifying behavior."
 ---
 
 # Brainstorming Ideas Into Designs
@@ -9,7 +9,23 @@ description: "Use before any creative work - creating features, building compone
 
 Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
 
-Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design in small sections (200-300 words), checking after each section whether it looks right so far.
+For ordinary creative work, start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design in small sections (200-300 words), checking after each section whether it looks right so far.
+
+## Corrective Feedback Fast Path
+
+Use this fast path only when operator corrective feedback concretely identifies all four:
+- The wrong behavior
+- The desired behavior
+- The affected artifact
+- The correction direction
+
+Bare bug reports and vague feature requests do not qualify. If the operator explicitly asks to explore alternatives, discuss the change, or design it, keep the work exploratory even when the feedback is concrete.
+
+For qualifying corrective feedback:
+- Skip only the brainstorming dialogue and readiness prompt: do not ask ordinary refinement questions, propose 2-3 approaches, or present and validate incremental design sections
+- Retain applicable project-context review, planning, isolation, testing, and verification requirements; if planning is required, enter that workflow without a readiness prompt
+- Ask exactly one targeted question only when a material ambiguity affects correctness, safety, data scope, persistence, UX, or a public contract
+- If the question is unanswered, or material ambiguity remains after the answer, stop rather than guess or enter the ordinary brainstorming process
 
 ## The Process
 
@@ -39,15 +55,15 @@ Start by understanding the current project context, then ask questions one at a 
 - Write a tracked design document only when the user explicitly requests one or the repository workflow explicitly requires one (for example an approved Hive plan or another named project artifact)
 
 **Implementation (if continuing):**
-- Ask: "Ready to set up for implementation?"
+- After ordinary brainstorming, ask: "Ready to set up for implementation?"
 - Use \`skill({ name: "writing-plans" })\` to create detailed implementation plan
 
 ## Key Principles
 
-- **One question at a time** - Don't overwhelm with multiple questions
+- **One question at a time** - Don't overwhelm with multiple questions during ordinary brainstorming
 - **Multiple choice preferred** - Easier to answer than open-ended when possible
 - **YAGNI ruthlessly** - Remove unnecessary features from all designs
-- **Explore alternatives** - Always propose 2-3 approaches before settling
-- **Incremental validation** - Present design in sections, validate each
-- **Be flexible** - Go back and clarify when something doesn't make sense
-- **Challenge assumptions** - Surface fragile assumptions, ask what changes if they fail, offer lean fallback options
+- **Explore alternatives** - Propose 2-3 approaches during ordinary brainstorming or when the operator explicitly requests alternatives
+- **Incremental validation** - Present ordinary brainstorming designs in sections and validate each
+- **Be flexible** - During ordinary brainstorming, go back and clarify when something does not make sense
+- **Challenge assumptions** - During ordinary brainstorming, surface fragile assumptions, ask what changes if they fail, and offer lean fallback options
