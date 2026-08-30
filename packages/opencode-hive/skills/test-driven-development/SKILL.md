@@ -15,7 +15,7 @@ TDD is one testing strategy, not a universal completion contract. Follow the act
 
 ### RED: Describe One Behavior
 
-Write one focused test through the public contract or intended call site. Prefer real behavior over mock interactions. Name the observable outcome and include meaningful boundary or error cases.
+Name the invariant and owning layer first. Write one focused test through the public contract or intended call site. Prefer real behavior over mock interactions. Name the observable outcome and include meaningful boundary or error cases.
 
 ### Verify RED
 
@@ -38,11 +38,13 @@ Run the narrow test, then the owning suite. Confirm the selected behavior passes
 
 Improve names, contracts, ownership, duplication, or dependency clarity while tests remain green. Keep refactoring intent distinct from behavior-change intent.
 
+Search for tests that assert the same invariant. Keep the strongest owned location, merge unique assertions, delete or simplify weaker duplicates, and rename by behavior not ticket or bug history. Do not leave extra files for a later cleanup pass.
+
 ## Test Quality
 
 - Test public contracts and observable behavior so tests survive internal refactoring.
 - Use implementation-detail assertions only when that implementation unit owns the contract.
-- Prefer one canonical owning suite; avoid duplicate coverage at several layers unless each proves a different failure mode.
+- Prefer one canonical owning suite. Placement decision order: (1) add to an existing test in an existing file, (2) add a new test to an existing canonical file, (3) create a new file inside the existing canonical suite, (4) create a standalone regression file only if the canonical suite cannot express the case cleanly, the case is deterministic, and it has durable contract value. Do not copy the same invariant across layers unless each layer proves a different named failure mode.
 - Mock only boundaries that cannot be exercised directly; do not test the mock's script instead of product behavior.
 - Do not require one test per function. Coverage follows behavior, risk, and contract ownership.
 

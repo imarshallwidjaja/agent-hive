@@ -202,6 +202,10 @@ describe('skill content', () => {
     expect(template).not.toContain('Complete code in plan');
     expect(template).not.toContain('Write the failing test');
     expect(template).not.toContain('frequent commits');
+    expect(template).toContain('When tests are selected');
+    expect(template).toContain('owning layer');
+    expect(template).toContain('canonical suite');
+    expect(template).toContain('must not plan a later test-cleanup pass');
   });
 
   it('keeps planning implementation-read-only and hands task refresh to the orchestrator', () => {
@@ -237,6 +241,13 @@ describe('skill content', () => {
     expect(template).toContain('proportionate non-test verification');
     expect(template).toContain('Verify RED');
     expect(template).toContain('Verify GREEN');
+    expect(template).toContain('Name the invariant and owning layer first');
+    expect(template).toContain('(1) add to an existing test in an existing file');
+    expect(template).toContain('(2) add a new test to an existing canonical file');
+    expect(template).toContain('(3) create a new file inside the existing canonical suite');
+    expect(template).toContain('(4) create a standalone regression file only if the canonical suite cannot express the case cleanly');
+    expect(template).toContain('delete or simplify weaker duplicates');
+    expect(template).toContain('Do not leave extra files for a later cleanup pass');
     expect(template).not.toContain('Thinking "skip TDD just this once"? Stop. That\'s rationalization.');
     expect(template).not.toContain('Every new function/method has a test');
     expect(template).not.toContain('Tests-after are biased by your implementation');
@@ -255,9 +266,17 @@ describe('skill content', () => {
     expect(template).toContain('existing contract coverage');
     expect(template).toContain('proportionate no-new-test verification');
     expect(template).toContain('tightly bounded behavior-preserving preparatory refactoring');
+    expect(template).toContain('first unintended side effect');
+    expect(template).toContain('Hidden write checks');
+    expect(template).toContain('Do not stop at the first contract, parsing, type, null, or schema error');
     expect(template).not.toContain('MUST have before fixing');
     expect(template).not.toContain('No bundled refactoring');
     expect(template).not.toContain('Violating the letter of this process');
+    expect(template).not.toContain('root-cause-tracing.md');
+    expect(template).not.toContain('defense-in-depth.md');
+    expect(template).not.toContain('condition-based-waiting.md');
+    expect(template).not.toContain('root-cause-finder');
+    expect(template).not.toContain('available in this directory');
   });
 
   it('documents task() fan-out paths for parallel-exploration', () => {
@@ -375,6 +394,26 @@ describe('skill content', () => {
     expect(skill!.template).toContain(
       'hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })',
     );
+  });
+
+  it('finishes executing-plans through verification and Hive merge instead of a generic finish menu', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans');
+    const template = skill!.template;
+    const completeDevelopment = template.slice(
+      template.indexOf('### Step 6: Complete Development'),
+      template.indexOf('## When to Stop and Ask for Help'),
+    );
+
+    expect(skill).toBeDefined();
+    expect(completeDevelopment).toContain('skill({ name: "verification" })');
+    expect(completeDevelopment).toContain('hive_merge');
+    expect(completeDevelopment).toContain('hive-helper');
+    expect(completeDevelopment).toContain('Do not present a generic merge/PR/keep/discard menu');
+    expect(completeDevelopment).toContain('do not use raw `git merge` / `git worktree remove` as the Hive finish path');
+    expect(completeDevelopment).not.toContain('present options');
+    expect(completeDevelopment).not.toContain('execute choice');
+    expect(template).not.toContain('verify tests, present options, execute choice');
+    expect(template).not.toContain('finishing-a-development-branch');
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {

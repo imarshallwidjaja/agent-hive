@@ -17,7 +17,7 @@ During planning, implementation files remain read-only; Hive planning state may 
 - State requested behavior and call-site contracts, including inputs, outputs, errors, side effects, and caller-visible risk policy where relevant.
 - Identify ownership boundaries and the design knowledge each affected module should own or hide.
 - Record constraints, non-goals, must-not-do guardrails, and assumptions that affect correctness or scope.
-- State the context-selected testing strategy for each behavior: TDD when examples discover a contract, algorithm, or regression; characterization tests before poorly understood legacy changes; tests alongside or after implementation when design needs exploration or behavior is clear; existing contract coverage for a pure internal refactor; or proportionate no-new-test verification with concrete rationale. Ask only when repository evidence and requirements leave a material choice unresolved. Keep tests with their implementation task by default.
+- State the context-selected testing strategy for each behavior: TDD when examples discover a contract, algorithm, or regression; characterization tests before poorly understood legacy changes; tests alongside or after implementation when design needs exploration or behavior is clear; existing contract coverage for a pure internal refactor; or proportionate no-new-test verification with concrete rationale. Ask only when repository evidence and requirements leave a material choice unresolved. Keep tests with their implementation task by default. When tests are selected, name the owning layer and canonical suite in the same implementation task; must not plan a later test-cleanup pass.
 - Include bounded behavior-preserving preparatory refactoring only when it directly lowers risk for the requested outcome. Mark it separately from behavior change and say how preservation is checked.
 - Code snippets only when exact syntax removes material ambiguity. Describe contracts and observable outcomes instead of transcribing the implementation.
 - Use durable domain names. Planning phases, option labels, task numbers, and ticket language do not belong in lasting code names.
@@ -53,7 +53,7 @@ Every plan uses this shape:
 **What to do**:
 - [Requested behavior and contract]
 - [Ownership or integration boundary]
-- [Testing strategy and any justified preparatory refactoring]
+- [Testing strategy; when tests are selected, owning layer and canonical suite; any justified preparatory refactoring]
 **Must NOT do**:
 - [Guardrail]
 **References**:

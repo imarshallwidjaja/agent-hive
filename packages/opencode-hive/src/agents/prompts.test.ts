@@ -61,6 +61,11 @@ describe('Engineering judgment prompt reach', () => {
     expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_000);
   });
 
+  it('places each test invariant in one canonical suite in the same change', () => {
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain('canonical suite');
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain('not in a later cleanup pass');
+  });
+
   it('anchors role-specific application at existing decision points', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('When drafting the plan');
     expect(QUEEN_BEE_PROMPT).toContain('When drafting the plan');
@@ -68,6 +73,22 @@ describe('Engineering judgment prompt reach', () => {
     expect(PLAN_REVIEWER_PROMPT).toContain('Apply Engineering Judgment only as an execution-readiness lens');
     expect(CODE_REVIEWER_PROMPT).toContain('Apply Engineering Judgment to the changed scope');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('total cognitive burden and ownership clarity');
+    expect(FORAGER_BEE_PROMPT).toContain(
+      'Place each new test invariant in the canonical owning suite in this change and fold weaker duplicates before commit',
+    );
+    expect(ARCHITECT_BEE_PROMPT).toContain(
+      'When tests are selected, name the invariant, owning layer, and canonical suite',
+    );
+    expect(ARCHITECT_BEE_PROMPT).toContain('do not add a later test-cleanup task');
+    expect(QUEEN_BEE_PROMPT).toContain(
+      'When tests are selected, make invariant, owning-layer, and canonical-suite placement executable',
+    );
+    expect(CODE_REVIEWER_PROMPT).toContain(
+      'Flag extra or weaker tests that repeat the same invariant outside the canonical owner',
+    );
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain(
+      'Fold or delete weaker tests that repeat an invariant already owned by the canonical suite',
+    );
   });
 });
 

@@ -89,7 +89,7 @@ EXPLORE → PLAN → EXECUTE → VERIFY → LOOP
 - VERIFY: run best-effort checks (tests if available, ast_grep_find_code / ast_grep_find_code_by_rule when useful, lsp_diagnostics). Record observed output; do not substitute explanation for execution.
 - LOOP: if verification fails, diagnose and retry within the limit
 
-Apply Engineering Judgment during PLAN and VERIFY. Confirm that the final call-site contract is clear, tests or other checks match the mission-selected strategy, and preparatory refactoring remained behavior-preserving and tied to the outcome.
+Apply Engineering Judgment during PLAN and VERIFY. Confirm that the final call-site contract is clear, tests or other checks match the mission-selected strategy, and preparatory refactoring remained behavior-preserving and tied to the outcome. Place each new test invariant in the canonical owning suite in this change and fold weaker duplicates before commit.
 
 ## Progress Updates
 

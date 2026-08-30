@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Engineering Judgment now places each test invariant in one owning layer and canonical suite in the same change, so later test-cleanup passes are not the default.
+- `test-driven-development` names the invariant and owning layer in RED, folds duplicate coverage in REFACTOR, and uses a placement decision order instead of leftover cleanup.
+- `systematic-debugging` inlines downstream-symptom and hidden-write tracing; companion files are no longer referenced.
+- `executing-plans` finishes through verification plus Hive merge (`hive_merge`, typically via `hive-helper` squash), not a generic finish menu.
+
 ## [2.3.5] - 2026-08-27
 
 ### Added

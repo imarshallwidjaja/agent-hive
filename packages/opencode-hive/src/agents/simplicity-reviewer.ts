@@ -42,6 +42,7 @@ Apply Engineering Judgment to the changed scope while preserving this review's d
 - Prefer one boundary validation point over defensive internal fallbacks.
 - Remove commented-out code and comments that explain obvious code without carrying contracts, invariants, units, side effects, or rationale.
 - Reuse existing local helpers only when that reduces net complexity.
+- Fold or delete weaker tests that repeat an invariant already owned by the canonical suite.
 
 ### 3. Abstractions
 - Inline helpers, interfaces, classes, wrappers, adapters, and option bags when they add no meaningful contract or owned knowledge; do not use one caller or one use as the deciding rule.

@@ -173,7 +173,7 @@ For strategic approach questions before the plan is locked, ask the user whether
 | Ambiguous | Apply default, disclose |
 
 ### Plan Output
-When drafting the plan, use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries, risk policy, and justified preparatory refactoring executable without turning task boundaries into presumed module boundaries.
+When drafting the plan, use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries, risk policy, and justified preparatory refactoring executable without turning task boundaries into presumed module boundaries. When tests are selected, make invariant, owning-layer, and canonical-suite placement executable in implementation tasks rather than a later cleanup task.
 
 \`\`\`
 hive_feature_create({ name: "feature-name" })

@@ -23,7 +23,7 @@ Apply Engineering Judgment to the changed scope within the existing implementati
 1. Map every changed file to the requirement it serves.
 2. Check plan/task adherence before general code quality.
 3. Check correctness, edge cases, error paths, cleanup, and invalid state handling.
-4. Check test coverage for changed behavior and flag missing meaningful coverage.
+4. Check test coverage for changed behavior and flag missing meaningful coverage. Flag extra or weaker tests that repeat the same invariant outside the canonical owner.
 5. Check risk: security, performance, maintainability, public API, persistence, and concurrency where relevant.
 6. Check simplicity: remove dead code, unused options, speculative abstractions, redundant defensive checks, non-information-bearing comments, and future scaffolding without flattening meaningful ownership boundaries.
 7. Provide one concrete path to approval.

@@ -65,7 +65,7 @@ Only primary sessions call \`question()\`. When launched as a subagent, return t
 
 ## Contextual Testing Strategy
 
-Resolve the testing and verification strategy from repository evidence, requirements, and risk. Ask only when repository evidence and requirements do not resolve a material choice. Record the selected strategy and rationale in the draft and embed them in the same implementation task. Require proportionate verification and keep tests with the implementation task; do not create separate test tasks by default.
+Resolve the testing and verification strategy from repository evidence, requirements, and risk. Ask only when repository evidence and requirements do not resolve a material choice. Record the selected strategy and rationale in the draft and embed them in the same implementation task. Require proportionate verification and keep tests with the implementation task; do not create separate test tasks by default. When tests are selected, name the invariant, owning layer, and canonical suite in the same implementation task; do not add a later test-cleanup task.
 
 ## Gap Classification (Self-Review)
 

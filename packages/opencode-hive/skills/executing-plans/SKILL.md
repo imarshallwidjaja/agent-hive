@@ -86,10 +86,12 @@ After applying review feedback (or if none):
 
 ### Step 6: Complete Development
 
-After all tasks complete and verified:
+After all tasks complete:
 - Announce: "I'm using the verification skill to complete this work."
-- **REQUIRED SUB-SKILL:** Use \`skill({ name: "verification" })\`
-- Follow that skill to verify tests, present options, execute choice
+- **REQUIRED SUB-SKILL:** Use `skill({ name: "verification" })`
+- Verify with evidence from that skill
+- Integrate through Hive merge (`hive_merge`, typically via `hive-helper` squash batch); do not use raw `git merge` / `git worktree remove` as the Hive finish path
+- Do not present a generic merge/PR/keep/discard menu
 
 ## When to Stop and Ask for Help
 
