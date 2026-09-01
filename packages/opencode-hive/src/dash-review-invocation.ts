@@ -8,6 +8,7 @@ import {
   type ReviewEvidenceResolution,
   type ReviewIntentPacket,
 } from './review-evidence-resolution.js';
+import { isBlockingTaskDispatch } from './review-runtime-kernel.js';
 import type { ReviewSourceResolution } from './review-source-resolution.js';
 import type { FrozenWorkspaceRootIdentity } from './review-frozen-workspace.js';
 
@@ -277,7 +278,7 @@ export class DashReviewInvocationStore {
       !input.callID
       || !input.expectedAgent
       || !Number.isFinite(input.reservedAt)
-      || input.background !== false
+      || !isBlockingTaskDispatch(input.background)
     ) {
       return { allowed: false, reason: 'invalid-task-dispatch' };
     }
@@ -314,7 +315,7 @@ export class DashReviewInvocationStore {
       !input.callID
       || !input.expectedAgent
       || !Number.isFinite(input.reservedAt)
-      || input.background !== false
+      || !isBlockingTaskDispatch(input.background)
     ) {
       return { allowed: false, reason: 'invalid-task-dispatch' };
     }

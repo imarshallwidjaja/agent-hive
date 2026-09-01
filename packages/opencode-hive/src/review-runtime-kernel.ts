@@ -7,6 +7,10 @@ export const REVIEW_UNIVERSAL_METADATA_TOOLS = [
   'hive_status',
 ] as const;
 
+export function isBlockingTaskDispatch(background: unknown): boolean {
+  return background === undefined || background === false;
+}
+
 export function compareUnicodeCodePoints(left: string, right: string): number {
   const leftPoints = Array.from(left, (character) => character.codePointAt(0)!);
   const rightPoints = Array.from(right, (character) => character.codePointAt(0)!);

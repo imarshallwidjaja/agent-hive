@@ -379,6 +379,7 @@ import type { ReviewRuntimeLane } from './review-tool-policy.js';
 import {
   compareUnicodeCodePoints,
   DASH_REVIEW_PRIMARY_AGENT,
+  isBlockingTaskDispatch,
   REVIEW_UNIVERSAL_METADATA_TOOLS,
   VULNERABILITY_REVIEW_PRIMARY_AGENT,
 } from './review-runtime-kernel.js';
@@ -2837,7 +2838,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             throw new Error('Vulnerability review deep dispatch requires a claimed READY Stage 1 workspace.');
           }
           const boundary = vulnerabilityReviewInvocations.deepWorkspace(input.sessionID);
-          if (!boundary || !input.callID || output.args?.background === true) {
+          if (!boundary || !input.callID || !isBlockingTaskDispatch(output.args?.background)) {
             throw new Error('Vulnerability review deep dispatch requires exact blocking task metadata and a claimed frozen workspace.');
           }
           const key = vulnerabilityDeepKey(input.sessionID, input.callID);

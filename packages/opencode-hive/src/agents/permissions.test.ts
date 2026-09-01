@@ -2367,7 +2367,7 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('does not consume Stage A reservation when task validation rejects and permits the corrected retry', async () => {
+  it('accepts omitted or false blocking mode and preserves Stage A reservation after rejection', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-dash-transactional-reservation-'));
     createGitRepository(repository);
     try {
@@ -2396,7 +2396,6 @@ describe('Per-agent tool filtering', () => {
         args: {
           prompt: 'Resolve the source.',
           subagent_type: scopeAlias,
-          background: false,
         },
       })).resolves.toBeUndefined();
 
@@ -2421,6 +2420,46 @@ describe('Per-agent tool filtering', () => {
           subagent_type: scopeAlias,
           background: false,
         },
+      })).resolves.toBeUndefined();
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves vulnerability Stage 1 authority after rejecting background dispatch', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-vulnerability-blocking-dispatch-'));
+    createGitRepository(repository);
+    try {
+      const { hooks, vulnerabilityScopeAlias } = await createSnapshotPlugin(repository);
+      const config: { command?: Record<string, { agent?: string }> } = {};
+      await hooks.config?.(config);
+      const primary = config.command?.['vuln-review']?.agent!;
+      const command = hooks['command.execute.before']!;
+      const message = hooks['chat.message']!;
+      const before = hooks['tool.execute.before']!;
+      const packet = {
+        schema: 'hive-vuln-review-stage1/v3',
+        stage: 'resolve',
+        attempt: 1,
+        intent: '',
+        conversationSummary: 'Review the current change.',
+        fixedOverrides: {},
+        clarification: null,
+      };
+      await command({ command: 'vuln-review', sessionID: 'vuln-primary', arguments: '' }, { parts: [] });
+      await message({ sessionID: 'vuln-primary', agent: primary }, {
+        message: { agent: primary }, parts: [],
+      } as any);
+
+      await expect(before({
+        tool: 'task', sessionID: 'vuln-primary', callID: 'background-resolve',
+      }, {
+        args: { prompt: JSON.stringify(packet), subagent_type: vulnerabilityScopeAlias, background: true },
+      })).rejects.toThrow('non-blocking');
+      await expect(before({
+        tool: 'task', sessionID: 'vuln-primary', callID: 'blocking-resolve',
+      }, {
+        args: { prompt: JSON.stringify(packet), subagent_type: vulnerabilityScopeAlias },
       })).resolves.toBeUndefined();
     } finally {
       rmSync(repository, { recursive: true, force: true });
@@ -2491,8 +2530,13 @@ describe('Per-agent tool filtering', () => {
 
       const primaryContext = { ...snapshotContext(dashPrimary), sessionID: 'dash-primary' };
       await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
+      await expect(before({
+        tool: 'task', sessionID: 'dash-primary', callID: 'claimed-deep',
+      }, {
+        args: { prompt: 'Review.', subagent_type: deepAlias, background: true },
+      })).rejects.toThrow('invalid-task-dispatch');
       const deepOutput = {
-        args: { prompt: 'Review.', subagent_type: deepAlias, background: false },
+        args: { prompt: 'Review.', subagent_type: deepAlias },
       };
       await expect(before({
         tool: 'task', sessionID: 'dash-primary', callID: 'claimed-deep',
@@ -4315,8 +4359,14 @@ describe('Per-agent tool filtering', () => {
       const primaryContext = { ...snapshotContext(primary), sessionID: 'vuln-primary' };
       const baseline = findVulnerabilityReviewLanes(config.agent).find(([, lane]) => lane.prompt?.includes('mandatory cross-cutting baseline'))?.[0]!;
       await claim({ runId: created.runId, ownershipToken: created.ownershipToken }, primaryContext);
+      await expect(before({ tool: 'task', sessionID: 'vuln-primary', callID: 'deep-background-true' }, {
+        args: { prompt: 'Review.', subagent_type: baseline, background: true },
+      })).rejects.toThrow('exact blocking task metadata');
+      await expect(before({ tool: 'task', sessionID: 'vuln-primary', callID: 'deep-background-string' }, {
+        args: { prompt: 'Review.', subagent_type: baseline, background: 'false' },
+      })).rejects.toThrow('exact blocking task metadata');
       const deepOutput = {
-        args: { prompt: 'Review the frozen workspace.', subagent_type: baseline, background: false },
+        args: { prompt: 'Review the frozen workspace.', subagent_type: baseline },
       };
       await expect(before({ tool: 'task', sessionID: 'vuln-primary', callID: 'deep-after-ready' }, deepOutput))
         .resolves.toBeUndefined();
