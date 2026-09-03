@@ -60,7 +60,7 @@ Breadth, ambiguity, multi-domain or multi-repository scope, whole-incident RCA, 
 
 ### 2. Select Researcher For Each Bounded Slice
 
-Choose the researcher only after each slice passes the one-window bound check. Use `scout-researcher` by default for each bounded exploratory slice. Use `scout-researcher-capable` only when one already-bounded question needs stronger synthesis, such as conflicting evidence or dense evidence on a named surface, or when the operator explicitly names it. Other configured scout-derived custom subagents remain valid when their domain or workflow clearly matches an already-bounded question. Capable or custom Scouts do not relax the one-window boundary and never replace decomposition or fan-out.
+Choose the researcher only after each slice passes the one-window bound check. Use `scout-researcher` by default for each bounded exploratory slice. Select a configured scout-derived custom subagent only when its own description is a closer domain or workflow match for that already-bounded question, or when the operator explicitly names it, and fall back to built-in `scout-researcher` when no configured description is a closer fit. Custom Scouts do not relax the one-window boundary and never replace decomposition or fan-out.
 
 ### 3. Decide Wait Mode And Dispatch
 

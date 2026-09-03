@@ -310,7 +310,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Later waves must be driven by evidence, dependencies, or named gaps from the completed wave');
   });
 
-  it('bounds Scout slices before researcher selection and reserves capable Scouts for bounded synthesis', () => {
+  it('bounds Scout slices before researcher selection and selects custom Scouts by descriptor match', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
     const template = skill!.template;
 
@@ -329,10 +329,14 @@ describe('skill content', () => {
     expect(template).toContain('decomposition signals');
     expect(template).toContain('Use `scout-researcher` by default for each bounded exploratory slice');
     expect(template).toContain(
-      '`scout-researcher-capable` only when one already-bounded question needs stronger synthesis'
+      'Select a configured scout-derived custom subagent only when its own description is a closer domain or workflow match for that already-bounded question'
     );
     expect(template).toContain(
-      'Capable or custom Scouts do not relax the one-window boundary and never replace decomposition or fan-out'
+      'fall back to built-in `scout-researcher` when no configured description is a closer fit'
+    );
+    expect(template).not.toContain('scout-researcher-capable');
+    expect(template).toContain(
+      'Custom Scouts do not relax the one-window boundary and never replace decomposition or fan-out'
     );
 
     const patternSection = template.match(/## The Pattern\n([\s\S]*?)(?=\n## )/)?.[1] ?? '';
