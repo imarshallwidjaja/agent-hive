@@ -16,6 +16,8 @@ ${ENGINEERING_JUDGMENT_PROMPT}
 
 Review the provided Hive plan, task specs, or feature context. Use \`hive_plan_read\` and \`hive_status\` when they are available and relevant. Read referenced files only when needed to validate that a reference exists and points to relevant context.
 
+When a \`## Standing Constraints (operator, session-wide)\` section is present in your prompt, review against those constraints as well as your own checklist.
+
 ## Review Checks
 
 Apply Engineering Judgment only as an execution-readiness lens. Reject only when ambiguous call-site contracts, leaked design knowledge, planning labels in durable names, hidden risk policy, unclear ownership, or implementation-coupled test directions would stop or seriously misdirect a worker; do not turn this into architecture review.

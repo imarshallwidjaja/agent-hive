@@ -7,7 +7,12 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { buildWorkerPrompt, type WorkerPromptParams } from './worker-prompt.js';
+import {
+  buildStandingConstraintsBlock,
+  buildWorkerPrompt,
+  STANDING_CONSTRAINTS_HEADING,
+  type WorkerPromptParams,
+} from './worker-prompt.js';
 
 // ============================================================================
 // Test helpers
@@ -375,5 +380,59 @@ describe('buildWorkerPrompt edge cases', () => {
     
     // Should not throw
     expect(prompt).toContain('# Task: test');
+  });
+});
+
+// ============================================================================
+// Operator standing constraints
+// ============================================================================
+
+describe('buildWorkerPrompt standing constraints', () => {
+  const CONSTRAINTS = 'Follow stop-slop. Humanise the writing. Write like Ivan.';
+
+  it('emits nothing and stays byte-identical when no register is set', () => {
+    const baseline = buildWorkerPrompt(createTestParams());
+
+    expect(baseline).not.toContain(STANDING_CONSTRAINTS_HEADING);
+    expect(baseline.endsWith('---\n\nBegin your task now.\n')).toBe(true);
+    expect(buildWorkerPrompt(createTestParams({ standingConstraints: undefined }))).toBe(baseline);
+    expect(buildWorkerPrompt(createTestParams({ standingConstraints: '' }))).toBe(baseline);
+    expect(buildWorkerPrompt(createTestParams({ standingConstraints: '   \n  ' }))).toBe(baseline);
+  });
+
+  it('emits the block immediately before "Begin your task now.", after and outside the spec', () => {
+    const params = createTestParams({ standingConstraints: CONSTRAINTS });
+    const prompt = buildWorkerPrompt(params);
+
+    expect(prompt.endsWith(`${buildStandingConstraintsBlock(CONSTRAINTS)}\n\nBegin your task now.\n`)).toBe(true);
+
+    const specIndex = prompt.indexOf(params.spec);
+    const headingIndex = prompt.indexOf(STANDING_CONSTRAINTS_HEADING);
+
+    expect(specIndex).toBeGreaterThan(-1);
+    expect(headingIndex).toBeGreaterThan(specIndex + params.spec.length);
+    expect(params.spec).not.toContain(STANDING_CONSTRAINTS_HEADING);
+    expect(params.spec).not.toContain(CONSTRAINTS);
+  });
+
+  it('emits the constraint text verbatim exactly once', () => {
+    const prompt = buildWorkerPrompt(createTestParams({ standingConstraints: CONSTRAINTS }));
+
+    expect(prompt.split(CONSTRAINTS)).toHaveLength(2);
+    expect(prompt.split(STANDING_CONSTRAINTS_HEADING)).toHaveLength(2);
+  });
+});
+
+describe('buildStandingConstraintsBlock', () => {
+  it('renders the sentinel heading, verbatim text, and conflict instruction', () => {
+    const block = buildStandingConstraintsBlock('Australian English. No emojis.');
+
+    expect(block).toBe([
+      STANDING_CONSTRAINTS_HEADING,
+      '',
+      'Australian English. No emojis.',
+      '',
+      'These are operator constraints for this session. They apply in addition to your task-specific instructions. If they conflict with your assignment, report the conflict rather than silently choosing one.',
+    ].join('\n'));
   });
 });

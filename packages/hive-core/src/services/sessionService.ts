@@ -2,6 +2,15 @@ import * as path from 'path';
 import { getFeaturePath, getGlobalSessionsPath, ensureDir, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
 import type { SessionInfo, SessionsJson } from '../types.js';
 
+/**
+ * Fields whose absence is meaningful state: an explicit `undefined` in a patch
+ * clears them instead of being ignored as "not supplied".
+ */
+const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
+  'directiveRecoveryState',
+  'standingConstraints',
+]);
+
 export class SessionService {
   constructor(private projectRoot: string) {}
 
@@ -12,7 +21,7 @@ export class SessionService {
 
     const { sessionId: _sessionId, ...rest } = patch;
     for (const [key, value] of Object.entries(rest) as Array<[keyof Omit<SessionInfo, 'sessionId'>, SessionInfo[keyof Omit<SessionInfo, 'sessionId'>]]>) {
-      if (value !== undefined || key === 'directiveRecoveryState') {
+      if (value !== undefined || CLEARABLE_SESSION_FIELDS.has(key)) {
         target[key] = value as never;
       }
     }

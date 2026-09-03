@@ -268,11 +268,14 @@ Sessions are tracked per feature in `sessions.json`:
       "taskFolder": "01-first-task",
       "startedAt": "2025-01-05T09:00:00Z",
       "lastActiveAt": "2025-01-05T10:30:00Z",
-      "messageCount": 42
+      "messageCount": 42,
+      "standingConstraints": "Australian English. No emojis."
     }
   ]
 }
 ```
+
+`standingConstraints` holds the operator's verbatim constraint text from `hive_constraints_set`, capped at 8000 characters. The runtime injects it into delegated task and worker prompts for that session. An empty string clears it.
 
 ## Migration from Legacy
 

@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { buildCompactionPrompt } from '../utils/compaction-prompt.js';
 import { buildCompactionReanchor } from '../utils/compaction-anchor.js';
+import { STANDING_CONSTRAINTS_HEADING } from '../utils/worker-prompt.js';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { SessionService } from 'hive-core';
 import type { Message, Part } from '@opencode-ai/sdk';
@@ -215,6 +216,48 @@ describe('compaction replay on supported hooks', () => {
 
     const cleared = sessionService.getGlobal('sess-replay');
     expect(cleared?.replayDirectivePending).toBe(false);
+  });
+
+  test('directive replay carries the operator standing constraints register', async () => {
+    const sessionService = new SessionService(testRoot);
+    sessionService.trackGlobal('sess-replay-constraints', {
+      agent: 'hive-master',
+      sessionKind: 'primary',
+      directivePrompt: 'Finish the parser task and report verification evidence.',
+      standingConstraints: 'Follow stop-slop. Humanise the writing. Write like Ivan.',
+      replayDirectivePending: false,
+    } as any);
+    await hooks.event?.({
+      event: { type: 'session.compacted', properties: { sessionID: 'sess-replay-constraints' } } as any,
+    });
+
+    const output = buildCompactionTransformOutput('sess-replay-constraints', testRoot);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+
+    const replayText = (output.messages[2].parts[0] as any).text as string;
+    expect(replayText).toContain('You are still Hive.');
+    expect(replayText).toContain('Finish the parser task and report verification evidence.');
+    expect(replayText).toContain(STANDING_CONSTRAINTS_HEADING);
+    expect(replayText).toContain('Follow stop-slop. Humanise the writing. Write like Ivan.');
+    expect(replayText.indexOf(STANDING_CONSTRAINTS_HEADING))
+      .toBeGreaterThan(replayText.indexOf('Finish the parser task and report verification evidence.'));
+  });
+
+  test('directive replay omits the constraints block when no register is set', async () => {
+    const sessionService = new SessionService(testRoot);
+    sessionService.trackGlobal('sess-replay-no-constraints', {
+      agent: 'hive-master',
+      sessionKind: 'primary',
+      directivePrompt: 'Finish the parser task and report verification evidence.',
+      replayDirectivePending: true,
+    } as any);
+
+    const output = buildCompactionTransformOutput('sess-replay-no-constraints', testRoot);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+
+    const replayText = (output.messages[2].parts[0] as any).text as string;
+    expect(replayText).toContain('You are still Hive.');
+    expect(replayText).not.toContain(STANDING_CONSTRAINTS_HEADING);
   });
 
   test('session.compacted marks replay pending for task-worker sessions with bounded recovery metadata', async () => {

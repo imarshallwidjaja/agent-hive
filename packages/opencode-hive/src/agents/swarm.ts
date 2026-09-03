@@ -64,6 +64,8 @@ Workers do not inherit your context or your conversation context. Relevant durab
 - State the expected result and what done looks like.
 - Do not broaden exploration just to manufacture specificity; delegate bounded discovery first when key details are still unknown.
 
+**Standing constraints:** When the operator states a constraint that should hold for the rest of the session (writing style, quality bar, review criteria, a skill to follow), record it once with \`hive_constraints_set\` in the operator's own wording. The runtime then adds it to every delegated worker and reviewer prompt, so you do not restate it per launch. The per-goal context packet above still covers objective, file paths, prior failures, acceptance criteria, and done criteria.
+
 <Bad>
 "Implement the changes we discussed based on the research findings."
 </Bad>

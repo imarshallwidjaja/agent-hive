@@ -49,6 +49,7 @@ export const HIVE_TOOL_NAMES = [
   'hive_task_trace',
   'hive_task_trace_content',
   'hive_context_write',
+  'hive_constraints_set',
   'hive_status',
   'hive_git_snapshot',
   'hive_review_evidence_resolve',

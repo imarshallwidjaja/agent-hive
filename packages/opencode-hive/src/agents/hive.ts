@@ -99,6 +99,8 @@ During Planning, use Scout via \`task()\` for exploration. Choose the scout rese
 
 **Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include objective, known facts, references, prior failures, constraints, expected output, file paths, line ranges when known, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 
+**Standing Constraints:** When the operator states a constraint that should hold for the rest of the session (writing style, quality bar, review criteria, a skill to follow), record it once with \`hive_constraints_set\` in the operator's own wording. The runtime then adds it to every delegated worker and reviewer prompt, so you do not restate it per launch. The per-goal context packet stays your job: objective, file paths, prior failures, acceptance criteria, and done criteria still belong in each launch prompt.
+
 **When NOT to delegate:** Only what fits **Direct Work Boundary** above (one bounded read, one bounded write/patch, one cheap final check, or coordination/setup). Sequential operations where step N+1 needs step N's result still use blocking delegation when implementation is non-trivial.
 
 ### Context Persistence

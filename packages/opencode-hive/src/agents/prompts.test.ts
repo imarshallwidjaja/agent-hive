@@ -15,7 +15,7 @@ import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { DASH_REVIEWER_PROMPT } from './dash-reviewer';
 import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-primary';
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
-import { buildWorkerPrompt } from '../utils/worker-prompt';
+import { buildWorkerPrompt, STANDING_CONSTRAINTS_HEADING } from '../utils/worker-prompt';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
 
@@ -122,6 +122,30 @@ describe('Orchestrator synthesis-before-delegation', () => {
     expect(SWARM_BEE_PROMPT).toContain('file paths and line ranges when known');
     expect(SWARM_BEE_PROMPT).toContain('expected result');
     expect(SWARM_BEE_PROMPT).toContain('what done looks like');
+  });
+});
+
+describe('Operator standing constraints prompt guidance', () => {
+  const constraintAwareReviewers = [
+    ['Plan Reviewer', PLAN_REVIEWER_PROMPT],
+    ['Code Reviewer', CODE_REVIEWER_PROMPT],
+    ['Simplicity Reviewer', SIMPLICITY_REVIEWER_PROMPT],
+  ] as const;
+
+  it('names the injected heading in reviewer and worker prompts', () => {
+    for (const [name, prompt] of [['Forager', FORAGER_BEE_PROMPT], ...constraintAwareReviewers] as const) {
+      expect(prompt, name).toContain(STANDING_CONSTRAINTS_HEADING);
+    }
+  });
+
+  it('keeps the constraint register out of reviewer and worker tool guidance', () => {
+    for (const [name, prompt] of [
+      ['Forager', FORAGER_BEE_PROMPT],
+      ['Scout', SCOUT_BEE_PROMPT],
+      ...constraintAwareReviewers,
+    ] as const) {
+      expect(prompt, name).not.toContain('hive_constraints_set');
+    }
   });
 });
 

@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Standard Hive Tools (29 total)
+## Standard Hive Tools (30 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -205,6 +205,21 @@ These primary-orchestrator-only tools inspect one native OpenCode child session.
 |------|---------|
 | `hive_context_write` | Write context file, including reserved `context/overview.md` via `name: "overview"` |
 
+### Operator Constraints (1 tool)
+| Tool | Purpose |
+|------|---------|
+| `hive_constraints_set` | Record the operator's standing constraints verbatim on the calling session |
+
+#### Operator constraints notes
+
+- Input is `{ constraints: string }`. Store the operator's own wording, not a paraphrase; the runtime forwards the text as given.
+- Passing an empty string clears the register for that session.
+- The cap is 8000 characters (UTF-16 code units, the JavaScript string length). An over-cap call is refused and nothing is stored; the text is never truncated.
+- Access is limited to primary orchestrators: `hive-master`, `swarm-orchestrator`, `architect-planner`, and `hive-builder`. Foragers, scouts, and reviewers cannot call it.
+- Once set, the runtime adds the stored text to every delegated `task()` prompt from that session, and from its task-created architect child, and to generated worker prompts, under the heading `## Standing Constraints (operator, session-wide)`. Workers and reviewers both receive it, so the orchestrator does not restate constraints per launch.
+- Injection is skipped for `/dash-review` and `/vuln-review` lanes. Those workflows are fixed policy with their own operator-intent contract.
+- Standing constraints are operator-scoped and session-wide. Plan-declared task requirements stay task-scoped. A worker that finds the two in conflict reports the conflict rather than choosing one.
+
 ### Status (1 tool)
 | Tool | Purpose |
 |------|---------|
@@ -282,8 +297,9 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Delegated Task Inspection | 2 | trace, source-backed content |
 | Merge | 1 | merge |
 | Context | 1 | write |
+| Operator Constraints | 1 | set |
 | Status | 1 | status |
-| **Total** | **29** | |
+| **Total** | **30** | |
 
 ## Feature Resolution
 

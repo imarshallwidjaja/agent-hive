@@ -58,6 +58,12 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 
 `hive-helper` is a runtime-only recovery assistant for merge recovery, state clarification, and safe append-only follow-up inside an approved feature DAG. It is not a seat you start from.
 
+## Standing constraints
+
+State a session-wide constraint once. Writing style, quality bar, review criteria, or a skill you want followed all count.
+
+The primary agent records your wording verbatim with `hive_constraints_set`. From then on the runtime adds it to every delegated worker and reviewer prompt in that session, so you do not repeat it per task and the agent does not have to remember to forward it. Restating the constraint replaces it; an empty value clears it. Constraints apply on top of the plan, not instead of it. A worker that finds your constraint conflicting with its assignment reports the conflict rather than picking one. `/dash-review` and `/vuln-review` run their own fixed contract and ignore the register.
+
 ## Choose a workflow
 
 | Workflow | Use it when | Start |

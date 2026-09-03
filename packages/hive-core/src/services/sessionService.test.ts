@@ -104,6 +104,30 @@ describe('SessionService', () => {
       expect(updated.messageCount).toBe(5);
     });
 
+    it('stores standing constraints and preserves them across unrelated updates', () => {
+      service.trackGlobal('sess-constraints', { agent: 'hive-master', sessionKind: 'primary' });
+      service.trackGlobal('sess-constraints', { standingConstraints: 'Australian English. No emojis.' });
+
+      const updated = service.trackGlobal('sess-constraints', { messageCount: 3 });
+
+      expect(updated.standingConstraints).toBe('Australian English. No emojis.');
+      expect(updated.agent).toBe('hive-master');
+    });
+
+    it('clears standing constraints when patched with undefined', () => {
+      service.trackGlobal('sess-constraints-clear', {
+        agent: 'hive-master',
+        sessionKind: 'primary',
+        standingConstraints: 'Australian English. No emojis.',
+      });
+
+      const cleared = service.trackGlobal('sess-constraints-clear', { standingConstraints: undefined });
+
+      expect(cleared.standingConstraints).toBeUndefined();
+      expect(cleared.agent).toBe('hive-master');
+      expect(service.getGlobal('sess-constraints-clear')?.standingConstraints).toBeUndefined();
+    });
+
     it('preserves earlier global sessions across successive writes', () => {
       service.trackGlobal('sess-a', { agent: 'hive-master', sessionKind: 'primary' });
       service.trackGlobal('sess-b', { agent: 'forager-worker', sessionKind: 'task-worker' });

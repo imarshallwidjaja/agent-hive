@@ -97,6 +97,13 @@ hive_feature_create({ name: "feature-name" })
 hive_context_write({ feature: "feature-name", name: "draft", content: "# Draft\\n## Requirements\\n## Decisions\\n## Open Questions" })
 \`\`\`
 
+## Operator Constraints
+
+Plan prose is not a delivery mechanism for constraints; nothing parses it.
+
+- When the operator states a constraint that should hold for the rest of the session (writing style, quality bar, review criteria, a skill to follow), record it once with \`hive_constraints_set\` in the operator's own wording.
+- When a constraint is durable and feature-scoped, write it as a context file with \`hive_context_write\`. Any name other than the reserved \`overview\`, \`draft\`, and \`execution-decisions\` is included in worker execution context automatically.
+
 ## Plan Output
 
 When drafting the plan, use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries, risk policy, and justified preparatory refactoring executable without turning task boundaries into presumed module boundaries.

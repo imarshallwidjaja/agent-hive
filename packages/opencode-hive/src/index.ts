@@ -316,7 +316,13 @@ import {
   type AdhocCleanupResult,
   type PlanPatchOperation,
 } from "hive-core";
-import { buildWorkerPrompt, type ContextFile as WorkerPromptContextFile, type CompletedTask } from "./utils/worker-prompt";
+import {
+  buildStandingConstraintsBlock,
+  buildWorkerPrompt,
+  STANDING_CONSTRAINTS_HEADING,
+  type ContextFile as WorkerPromptContextFile,
+  type CompletedTask,
+} from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
 import { applyTaskBudget, applyContextBudget, DEFAULT_BUDGET, type TruncationEvent } from "./utils/prompt-budgeting";
 import { writeWorkerPromptFile } from "./utils/prompt-file";
@@ -399,6 +405,9 @@ import {
   injectTaskTraceHint,
   TASK_TRACE_SUMMARIZER_AGENT,
 } from './task-trace.js';
+
+/** Hard cap on operator standing constraints. Over-cap input is refused, never truncated. */
+const STANDING_CONSTRAINTS_MAX_CHARS = 8000;
 
 const DASH_REVIEW_LIFECYCLE_TOOLS = new Set([
   'task', 'question', 'hive_review_evidence_resolve', 'hive_review_workspace_create',
@@ -1379,6 +1388,11 @@ const plugin: Plugin = async (ctx) => {
     sessionService.bindFeature(ctx.sessionID, feature, patch as any);
   };
 
+  const resolveStandingConstraints = (sessionID: string | undefined): string | undefined => {
+    if (!sessionID) return undefined;
+    return sessionService.getGlobal(sessionID)?.standingConstraints;
+  };
+
   type ReplayMessageInfo = {
     id: string;
     sessionID: string;
@@ -1419,7 +1433,7 @@ const plugin: Plugin = async (ctx) => {
     return !textParts.every((part) => part.synthetic === true);
   };
 
-  const buildDirectiveReplayText = (session: { agent?: string; baseAgent?: string; directivePrompt?: string; sessionKind?: string }): string | null => {
+  const buildDirectiveReplayText = (session: { agent?: string; baseAgent?: string; directivePrompt?: string; standingConstraints?: string; sessionKind?: string }): string | null => {
     if (!session.directivePrompt) return null;
     const agentName = session.agent ?? session.baseAgent;
     const roleByAgent: Record<string, string> = {
@@ -1434,6 +1448,7 @@ const plugin: Plugin = async (ctx) => {
       'hive-master': 'Hive',
     };
     const role = agentName ? roleByAgent[agentName] ?? 'current role' : 'current role';
+    const constraintsBlock = buildStandingConstraintsBlock(session.standingConstraints);
 
     return [
       `Post-compaction recovery: You are still ${role}.`,
@@ -1442,6 +1457,7 @@ const plugin: Plugin = async (ctx) => {
       'If the exact next step is not explicit in the original assignment, return control to the parent/orchestrator immediately instead of improvising.',
       '',
       session.directivePrompt,
+      ...(constraintsBlock ? ['', constraintsBlock] : []),
     ].join('\n');
   };
 
@@ -1717,6 +1733,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       previousAttempt,
       workspacePath: worktree.workspacePath,
       repos: promptRepoInfo,
+      standingConstraints: resolveStandingConstraints((toolContext as ToolContext)?.sessionID),
     });
 
     const defaultAgent = 'forager-worker';
@@ -2641,8 +2658,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           'git',
         );
       }
+      // Set only for task-created child sessions; reused below so a child's
+      // launches can fall back to the parent's standing constraints.
+      let parentID: string | undefined;
       if ((input.tool === 'task' || input.tool === 'question') && input.sessionID) {
-        let parentID: string | undefined;
         try {
           parentID = await getSessionParentID(input.sessionID);
         } catch {
@@ -2870,6 +2889,36 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       await backgroundJobAdapter['tool.execute.before'](input, output);
+
+      // Standing constraints are appended AFTER the background adapter snapshots
+      // output.args, so pending-launch prompt correlation keeps matching the
+      // prompt the orchestrator produced. The runtime-authenticated review
+      // boundary JSON below still lands last in the prompt.
+      //
+      // A task-created architect child has its own session and an empty
+      // register, so its planning-helper launches fall back one level to the
+      // parent's register. Depth is capped at 2 above, so one level is enough.
+      if (input.tool === 'task') {
+        const constraintsBlock = buildStandingConstraintsBlock(
+          resolveStandingConstraints(input.sessionID) ?? resolveStandingConstraints(parentID),
+        );
+        const prompt = typeof output.args?.prompt === 'string' ? output.args.prompt : '';
+        const target = typeof output.args?.subagent_type === 'string' ? output.args.subagent_type : '';
+        const isReviewLaneTarget = runtimeDashReviewLanes.some((lane) => lane.taskTarget === target)
+          || runtimeVulnerabilityReviewLanes.some((lane) => lane.taskTarget === target);
+        const isWorkerPromptReference = prompt.includes('Follow instructions in @')
+          && prompt.trimEnd().endsWith('worker-prompt.md');
+
+        if (
+          constraintsBlock
+          && !isReviewLaneTarget
+          && !isWorkerPromptReference
+          && !prompt.includes(STANDING_CONSTRAINTS_HEADING)
+        ) {
+          output.args.prompt = `${prompt}${prompt ? '\n\n' : ''}${constraintsBlock}`;
+        }
+      }
+
       if (vulnerabilityDeepReservation) {
         vulnerabilityDeepReservations.set(
           vulnerabilityDeepKey(vulnerabilityDeepReservation.primarySessionID, vulnerabilityDeepReservation.callID),
@@ -5233,6 +5282,47 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         },
       }),
 
+      hive_constraints_set: tool({
+        description: 'Register verbatim operator constraints for this session. Every later delegated task() launch from this session, or from its task-created architect child, carries them. Cap is 8000 characters (UTF-16 code units). Pass an empty string to clear the register.',
+        args: {
+          constraints: tool.schema.string().describe('Verbatim operator constraint text. Store the operator\'s words, not a paraphrase. Empty string clears the register.'),
+        },
+        async execute({ constraints }, toolContext) {
+          const sessionID = (toolContext as ToolContext)?.sessionID;
+          if (!sessionID) {
+            return respond({
+              success: false,
+              terminal: true,
+              reason: 'session_unavailable',
+              error: 'Standing constraints are keyed on the calling session, which is unavailable in this tool context.',
+            });
+          }
+
+          if (constraints.length > STANDING_CONSTRAINTS_MAX_CHARS) {
+            return respond({
+              success: false,
+              terminal: false,
+              reason: 'constraints_too_long',
+              error: `Standing constraints are ${constraints.length} characters (UTF-16 code units), over the ${STANDING_CONSTRAINTS_MAX_CHARS} character cap.`,
+              constraintsChars: constraints.length,
+              cap: STANDING_CONSTRAINTS_MAX_CHARS,
+              nextAction: 'Do not shorten or paraphrase the constraints yourself. Ask the operator which constraints to drop, then retry.',
+            });
+          }
+
+          if (!constraints.trim()) {
+            sessionService.trackGlobal(sessionID, { standingConstraints: undefined });
+            return respond({ success: true, cleared: true });
+          }
+
+          sessionService.trackGlobal(sessionID, { standingConstraints: constraints });
+          return respond({
+            success: true,
+            constraintsChars: constraints.length,
+          });
+        },
+      }),
+
       // Context Tools
       hive_context_write: tool({
         description: 'Write a context file for the feature. System-known names: overview = human-facing summary/history, draft = planner scratchpad, execution-decisions = orchestration log; all other names stay durable free-form context.',
@@ -5670,7 +5760,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
-          'hive_context_write', 'hive_status',
+          'hive_context_write', 'hive_constraints_set', 'hive_status',
         ]),
         permission: {
           question: "allow",
@@ -5701,7 +5791,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
         prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadSkillsAppendix + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? architectSubagentRoutingAppendix : ''),
         tools: agentTools([
-          'hive_feature_create', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_context_write', 'hive_status',
+          'hive_feature_create', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_context_write', 'hive_constraints_set', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
@@ -5743,7 +5833,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
-          'hive_context_write', 'hive_status',
+          'hive_context_write', 'hive_constraints_set', 'hive_status',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
         ]),
@@ -5942,7 +6032,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
-          'hive_context_write',
+          'hive_context_write', 'hive_constraints_set',
         ]),
         permission: {
           task: 'allow',

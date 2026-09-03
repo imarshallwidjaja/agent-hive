@@ -16,6 +16,8 @@ ${ENGINEERING_JUDGMENT_PROMPT}
 
 Use the provided task or plan reference, diff, changed files, acceptance criteria, and any verification output already supplied. If the task or plan is missing and multiple interpretations are plausible, mark NEEDS_DISCUSSION instead of inventing requirements.
 
+When a \`## Standing Constraints (operator, session-wide)\` section is present in your prompt, review against those constraints as well as your own checklist.
+
 ## Review Method
 
 Apply Engineering Judgment to the changed scope within the existing implementation-review finding bar.

@@ -8,6 +8,21 @@ export interface ContextFile {
   content: string;
 }
 
+/**
+ * Heading that marks the operator standing-constraints block. Shared by the
+ * worker prompt builder and the `task` dispatch hook so the two emitters cannot
+ * drift and so the hook can detect an already-injected block.
+ */
+export const STANDING_CONSTRAINTS_HEADING = '## Standing Constraints (operator, session-wide)';
+
+const STANDING_CONSTRAINTS_FOOTER = 'These are operator constraints for this session. They apply in addition to your task-specific instructions. If they conflict with your assignment, report the conflict rather than silently choosing one.';
+
+/** The operator text is emitted verbatim. */
+export function buildStandingConstraintsBlock(standingConstraints: string | undefined): string | null {
+  if (!standingConstraints || !standingConstraints.trim()) return null;
+  return `${STANDING_CONSTRAINTS_HEADING}\n\n${standingConstraints}\n\n${STANDING_CONSTRAINTS_FOOTER}`;
+}
+
 export interface CompletedTask {
   name: string;
   summary: string;
@@ -52,6 +67,12 @@ export interface WorkerPromptParams {
    */
   workspacePath?: string;
   repos?: Record<string, WorkerPromptRepo>;
+  /**
+   * Verbatim operator constraints for the orchestrator session that launched
+   * this worker. Emitted outside the spec so context budgeting cannot truncate
+   * them.
+   */
+  standingConstraints?: string;
 }
 
 /**
@@ -80,6 +101,7 @@ export function buildWorkerPrompt(params: WorkerPromptParams): string {
     previousAttempt,
     workspacePath,
     repos,
+    standingConstraints,
   } = params;
 
   const repoEntries = repos ? Object.entries(repos) : [];
@@ -130,6 +152,9 @@ Do NOT modify files outside this directory.`;
           nextAction: '**Remaining Assignment**: Continue the mission below from the preserved worktree state. Use the evidence above to avoid repeating completed work and address what remains.',
         }
       : undefined;
+  const constraintsBlock = buildStandingConstraintsBlock(standingConstraints);
+  const constraintsSection = constraintsBlock ? `${constraintsBlock}\n\n` : '';
+
   const recoverySection = recovery ? `
 ## ${recovery.heading}
 
@@ -329,6 +354,6 @@ hive_worktree_commit({
 
 ---
 
-Begin your task now.
+${constraintsSection}Begin your task now.
 `;
 }

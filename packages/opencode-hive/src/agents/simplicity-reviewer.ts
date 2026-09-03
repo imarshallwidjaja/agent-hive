@@ -18,6 +18,8 @@ Use the provided task or plan reference, diff, changed files, acceptance criteri
 
 If the task or plan is missing and the current requirement cannot be inferred from the changed code, mark NEEDS_DISCUSSION instead of inventing requirements.
 
+When a \`## Standing Constraints (operator, session-wide)\` section is present in your prompt, review against those constraints as well as your own checklist.
+
 ## Review Method
 
 Apply Engineering Judgment to the changed scope while preserving this review's deletion-biased finding bar for total cognitive burden and ownership clarity.

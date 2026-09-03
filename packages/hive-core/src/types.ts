@@ -224,6 +224,7 @@ export interface SessionInfo {
   sessionKind?: SessionKind;
   workerPromptPath?: string;
   directivePrompt?: string;
+  standingConstraints?: string;
   directiveRecoveryState?: DirectiveRecoveryState;
   replayDirectivePending?: boolean;
   startedAt: string;

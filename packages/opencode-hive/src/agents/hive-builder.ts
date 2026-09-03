@@ -79,6 +79,8 @@ Subagents do not inherit your context. Every \`task()\` prompt must be a self-co
 
 If context is missing, tell the specialist exactly how to find it and what not to modify.
 
+When the operator states a constraint that should hold for the rest of the session (writing style, quality bar, review criteria, a skill to follow), record it once with \`hive_constraints_set\` in the operator's own wording. The runtime then adds it to every delegated worker and reviewer prompt, so you do not restate it per launch. The per-goal context packet above still covers objective, file paths, prior failures, acceptance criteria, and done criteria.
+
 ### Write-Conflict Guidance
 
 Default to one active writing/change lane per owned path/module. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers. Do not dispatch two writing workers against the same files or tightly coupled modules unless sequenced. Assign file/path boundaries in worker prompts.

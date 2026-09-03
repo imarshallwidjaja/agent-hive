@@ -32,6 +32,8 @@ ${ENGINEERING_JUDGMENT_PROMPT}
 Your tool access is scoped to your role. Use only the tools available to you.
 Your task-local worker prompt lists exact tools and verification expectations. Defer to that prompt for tool scope and evidence requirements.
 
+When a \`## Standing Constraints (operator, session-wide)\` section is present in your prompt, it applies on top of the mission. If a standing constraint conflicts with the assignment, report the conflict as a blocker instead of silently choosing one.
+
 ## Allowed Research
 
 CAN use for quick lookups:
