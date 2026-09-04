@@ -217,6 +217,8 @@ export type DirectiveRecoveryState = 'available' | 'consumed' | 'escalated';
 
 export interface SessionInfo {
   sessionId: string;
+  parentSessionId?: string;
+  duplicatedFromSessionId?: string;
   featureName?: string;
   taskFolder?: string;
   agent?: string;

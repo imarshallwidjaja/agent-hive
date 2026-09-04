@@ -114,6 +114,29 @@ describe('SessionService', () => {
       expect(updated.agent).toBe('hive-master');
     });
 
+    it('tracks parentSessionId and duplicatedFromSessionId lineage', () => {
+      const child = service.trackGlobal('sess-child', {
+        parentSessionId: 'sess-parent',
+        sessionKind: 'subagent',
+      });
+      expect(child.parentSessionId).toBe('sess-parent');
+      expect(child.duplicatedFromSessionId).toBeUndefined();
+
+      const duplicated = service.trackGlobal('sess-dup', {
+        duplicatedFromSessionId: 'sess-original',
+        standingConstraints: 'Be concise.',
+      });
+      expect(duplicated.duplicatedFromSessionId).toBe('sess-original');
+      expect(duplicated.standingConstraints).toBe('Be concise.');
+
+      const patched = service.trackGlobal('sess-dup', {
+        messageCount: 2,
+      });
+      expect(patched.duplicatedFromSessionId).toBe('sess-original');
+      expect(patched.standingConstraints).toBe('Be concise.');
+      expect(patched.messageCount).toBe(2);
+    });
+
     it('clears standing constraints when patched with undefined', () => {
       service.trackGlobal('sess-constraints-clear', {
         agent: 'hive-master',

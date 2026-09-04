@@ -32,6 +32,18 @@ const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' }) 
     time: { created: 1, updated: 1 },
   },
 });
+(OPENCODE_CLIENT.session as unknown as { update: (input: any) => Promise<unknown> }).update = async (input) => ({
+  data: {
+    id: input.path.id,
+    parentID: SESSION_PARENTS[input.path.id],
+    projectID: 'test',
+    directory: '/tmp',
+    title: input.body?.title ?? 'Primary test session',
+    metadata: input.body?.metadata,
+    version: '1',
+    time: { created: 1, updated: 1 },
+  },
+});
 
 const TEST_ROOT_BASE = '/tmp/hive-standing-constraints';
 const TEST_PROCESS_CWD = process.cwd();

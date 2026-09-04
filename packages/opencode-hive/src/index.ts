@@ -695,6 +695,32 @@ const plugin: Plugin = async (ctx) => {
     }
     return response.data.parentID;
   };
+  const stampSessionOrigin = async (sessionID: string): Promise<void> => {
+    try {
+      const currentSession = await client.session.get({
+        path: { id: sessionID },
+        query: { directory },
+      });
+      const existingMeta = (currentSession?.data as any)?.metadata ?? {};
+      if (existingMeta.agentHive?.originSessionId !== sessionID) {
+        await (client.session.update as any)({
+          path: { id: sessionID },
+          query: { directory },
+          body: {
+            metadata: {
+              ...existingMeta,
+              agentHive: {
+                ...existingMeta.agentHive,
+                originSessionId: sessionID,
+              },
+            },
+          },
+        });
+      }
+    } catch {
+      // Best-effort stamp; non-fatal
+    }
+  };
   const reviewWorkspaceWorkflowAliases = (): ReviewWorkspaceWorkflowAliases[] => [
     {
       workflow: 'dash-review',
@@ -2163,10 +2189,27 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         (event.type === 'session.created' || event.type === 'session.updated')
         && event.properties?.info?.id
       ) {
-        if (event.properties.info.parentID) {
-          runtimeTaskChildSessions.add(event.properties.info.id);
+        const info = event.properties.info as any;
+        const eventSessionID = info.id as string;
+        const parentID = info.parentID as string | undefined;
+        if (parentID) {
+          runtimeTaskChildSessions.add(eventSessionID);
+          sessionService.trackGlobal(eventSessionID, { parentSessionId: parentID });
         } else {
-          runtimeTaskChildSessions.delete(event.properties.info.id);
+          runtimeTaskChildSessions.delete(eventSessionID);
+          if (event.type === 'session.created') {
+            const originSessionId = info.metadata?.agentHive?.originSessionId as string | undefined;
+            if (originSessionId && originSessionId !== eventSessionID) {
+              const originSession = sessionService.getGlobal(originSessionId);
+              sessionService.trackGlobal(eventSessionID, {
+                duplicatedFromSessionId: originSessionId,
+                ...(originSession?.standingConstraints ? { standingConstraints: originSession.standingConstraints } : {}),
+                ...(originSession?.sessionKind ? { sessionKind: originSession.sessionKind } : {}),
+                ...(originSession?.featureName ? { featureName: originSession.featureName } : {}),
+              });
+              await stampSessionOrigin(eventSessionID);
+            }
+          }
         }
       }
       if (event.type === 'session.deleted' && lifecycleSessionID) {
@@ -5316,6 +5359,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           }
 
           sessionService.trackGlobal(sessionID, { standingConstraints: constraints });
+          await stampSessionOrigin(sessionID);
           return respond({
             success: true,
             constraintsChars: constraints.length,
