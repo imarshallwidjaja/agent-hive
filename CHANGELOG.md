@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-04
+
+### Added
+
+- `hive_constraints_set` stores operator constraint text verbatim on orchestrator sessions and injects it under `## Standing Constraints (operator, session-wide)` into delegated `task()` prompts and `worker-prompt.md`.
+- Standing constraints propagate through subagent boundaries: task-created architect children fall back to the parent register, compaction replay carries the block, and reviewer/worker prompts acknowledge constraints and report plan conflicts.
+
+### Fixed
+
+- `parallel-exploration` selects scout-derived custom subagents by descriptor match or explicit operator naming rather than a hardcoded `scout-researcher-capable` identifier.
+- Review task dispatch normalizes omitted background mode to blocking across dash and vulnerability review lanes while preserving retryable authorization after invalid dispatches.
+
 ## [2.3.6] - 2026-09-01
 
 ### Changed
