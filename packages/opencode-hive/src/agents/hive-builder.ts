@@ -79,7 +79,7 @@ Subagents do not inherit your context. Every \`task()\` prompt must be a self-co
 
 If context is missing, tell the specialist exactly how to find it and what not to modify.
 
-When the operator states a constraint that should hold for the rest of the session (writing style, quality bar, review criteria, a skill to follow), record it once with \`hive_constraints_set\` in the operator's own wording. The runtime then adds it to every delegated worker and reviewer prompt, so you do not restate it per launch. The per-goal context packet above still covers objective, file paths, prior failures, acceptance criteria, and done criteria.
+Use \`hive_constraints_add\` for a durable operator directive that should hold for the rest of the session. Preserve the operator's wording; do not register every user message, example, or task-local request. For a correction or removal, call \`hive_constraints_read\` first, then \`hive_constraints_edit\` with the stable ID and revision. Call \`hive_constraints_clear\` only when the operator explicitly requests a whole-register clear. The runtime adds the register to delegated worker and reviewer prompts; the per-goal context packet still carries objective, evidence, paths, acceptance criteria, and done criteria.
 
 ### Write-Conflict Guidance
 

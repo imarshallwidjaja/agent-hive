@@ -1,6 +1,27 @@
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
 import { getFeaturePath, getGlobalSessionsPath, ensureDir, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
-import type { SessionInfo, SessionsJson } from '../types.js';
+import type { SessionInfo, SessionsJson, StandingConstraintEntry } from '../types.js';
+
+export const STANDING_CONSTRAINTS_MAX_CHARS = 8000;
+export const LEGACY_STANDING_CONSTRAINT_ID = 'legacy';
+
+export interface StandingConstraintRegister {
+  entries: StandingConstraintEntry[];
+  revision: number;
+  constraints: string;
+  constraintsChars: number;
+}
+
+export class StandingConstraintError extends Error {
+  constructor(
+    readonly reason: 'blank_constraint' | 'constraints_too_long' | 'constraint_not_found' | 'stale_revision',
+    message: string,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Fields whose absence is meaningful state: an explicit `undefined` in a patch
@@ -9,6 +30,7 @@ import type { SessionInfo, SessionsJson } from '../types.js';
 const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
   'directiveRecoveryState',
   'standingConstraints',
+  'standingConstraintEntries',
 ]);
 
 export class SessionService {
@@ -53,7 +75,7 @@ export class SessionService {
     writeJson(globalPath, data);
   }
 
-  private updateGlobalSessions(mutator: (data: SessionsJson) => SessionInfo): SessionInfo {
+  private updateGlobalSessions<T>(mutator: (data: SessionsJson) => T): T {
     const globalPath = getGlobalSessionsPath(this.projectRoot);
     ensureDir(path.dirname(globalPath));
     const release = acquireLockSync(globalPath);
@@ -126,6 +148,127 @@ export class SessionService {
   getGlobal(sessionId: string): SessionInfo | undefined {
     const data = this.getGlobalSessions();
     return data.sessions.find(s => s.sessionId === sessionId);
+  }
+
+  private standingConstraintRegister(session?: SessionInfo): StandingConstraintRegister {
+    const entries = session?.standingConstraintEntries
+      ? session.standingConstraintEntries.map((entry) => ({ ...entry }))
+      : session?.standingConstraints !== undefined
+        ? [{ id: LEGACY_STANDING_CONSTRAINT_ID, text: session.standingConstraints }]
+        : [];
+    const constraints = entries.map((entry) => entry.text).join('\n\n');
+    return {
+      entries,
+      revision: session?.standingConstraintsRevision ?? 0,
+      constraints,
+      constraintsChars: constraints.length,
+    };
+  }
+
+  private persistStandingConstraintRegister(
+    session: SessionInfo,
+    entries: StandingConstraintEntry[],
+    revision: number,
+  ): StandingConstraintRegister {
+    const constraints = entries.map((entry) => entry.text).join('\n\n');
+    if (constraints.length > STANDING_CONSTRAINTS_MAX_CHARS) {
+      throw new StandingConstraintError(
+        'constraints_too_long',
+        `Standing constraints are ${constraints.length} characters (UTF-16 code units), over the ${STANDING_CONSTRAINTS_MAX_CHARS} character cap.`,
+        { constraintsChars: constraints.length, cap: STANDING_CONSTRAINTS_MAX_CHARS },
+      );
+    }
+
+    session.standingConstraintEntries = entries.map((entry) => ({ ...entry }));
+    session.standingConstraintsRevision = revision;
+    session.standingConstraints = constraints || undefined;
+    session.lastActiveAt = new Date().toISOString();
+    return this.standingConstraintRegister(session);
+  }
+
+  private getOrCreateGlobalSession(data: SessionsJson, sessionId: string): SessionInfo {
+    let session = data.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (!session) {
+      const now = new Date().toISOString();
+      session = { sessionId, startedAt: now, lastActiveAt: now };
+      data.sessions.push(session);
+    }
+    return session;
+  }
+
+  readStandingConstraints(sessionId: string): StandingConstraintRegister {
+    return this.standingConstraintRegister(this.getGlobal(sessionId));
+  }
+
+  addStandingConstraint(sessionId: string, text: string): StandingConstraintRegister {
+    if (!text.trim()) {
+      throw new StandingConstraintError('blank_constraint', 'Standing constraint additions must not be blank.');
+    }
+
+    return this.updateGlobalSessions((data) => {
+      const session = this.getOrCreateGlobalSession(data, sessionId);
+      const current = this.standingConstraintRegister(session);
+      if (current.entries.some((entry) => entry.text === text)) {
+        return current;
+      }
+      return this.persistStandingConstraintRegister(
+        session,
+        [...current.entries, { id: `constraint-${randomUUID()}`, text }],
+        current.revision + 1,
+      );
+    });
+  }
+
+  editStandingConstraint(
+    sessionId: string,
+    id: string,
+    expectedRevision: number,
+    replacement: string | null,
+  ): StandingConstraintRegister {
+    if (replacement !== null && !replacement.trim()) {
+      throw new StandingConstraintError('blank_constraint', 'Standing constraint edits must not be blank. Use explicit removal instead.');
+    }
+
+    return this.updateGlobalSessions((data) => {
+      const session = this.getOrCreateGlobalSession(data, sessionId);
+      const current = this.standingConstraintRegister(session);
+      if (current.revision !== expectedRevision) {
+        throw new StandingConstraintError(
+          'stale_revision',
+          `Standing constraints changed since revision ${expectedRevision}; current revision is ${current.revision}.`,
+          { expectedRevision, revision: current.revision },
+        );
+      }
+      const index = current.entries.findIndex((entry) => entry.id === id);
+      if (index === -1) {
+        throw new StandingConstraintError('constraint_not_found', `Standing constraint ID "${id}" does not exist.`, { id });
+      }
+      if (replacement === current.entries[index]!.text) {
+        return current;
+      }
+      const entries = [...current.entries];
+      if (replacement === null) {
+        entries.splice(index, 1);
+      } else {
+        entries[index] = { ...entries[index]!, text: replacement };
+      }
+      return this.persistStandingConstraintRegister(session, entries, current.revision + 1);
+    });
+  }
+
+  clearStandingConstraints(sessionId: string, expectedRevision: number): StandingConstraintRegister {
+    return this.updateGlobalSessions((data) => {
+      const session = this.getOrCreateGlobalSession(data, sessionId);
+      const current = this.standingConstraintRegister(session);
+      if (current.revision !== expectedRevision) {
+        throw new StandingConstraintError(
+          'stale_revision',
+          `Standing constraints changed since revision ${expectedRevision}; current revision is ${current.revision}.`,
+          { expectedRevision, revision: current.revision },
+        );
+      }
+      return this.persistStandingConstraintRegister(session, [], current.revision + 1);
+    });
   }
 
   track(featureName: string, sessionId: string, taskFolder?: string): SessionInfo {

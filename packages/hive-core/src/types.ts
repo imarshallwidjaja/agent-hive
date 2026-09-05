@@ -215,6 +215,11 @@ export type SessionKind = 'primary' | 'subagent' | 'task-worker' | 'unknown';
 
 export type DirectiveRecoveryState = 'available' | 'consumed' | 'escalated';
 
+export interface StandingConstraintEntry {
+  id: string;
+  text: string;
+}
+
 export interface SessionInfo {
   sessionId: string;
   parentSessionId?: string;
@@ -227,6 +232,8 @@ export interface SessionInfo {
   workerPromptPath?: string;
   directivePrompt?: string;
   standingConstraints?: string;
+  standingConstraintEntries?: StandingConstraintEntry[];
+  standingConstraintsRevision?: number;
   directiveRecoveryState?: DirectiveRecoveryState;
   replayDirectivePending?: boolean;
   startedAt: string;

@@ -174,6 +174,70 @@ describe('SessionService', () => {
     });
   });
 
+  describe('standing constraint register', () => {
+    it('preserves additions, edits only the target, and makes duplicate additions idempotent', () => {
+      const first = service.addStandingConstraint('sess-register', 'A');
+      const second = service.addStandingConstraint('sess-register', 'B');
+      const duplicate = service.addStandingConstraint('sess-register', 'A');
+
+      expect(second.constraints).toBe('A\n\nB');
+      expect(second.revision).toBe(2);
+      expect(duplicate).toEqual(second);
+
+      const edited = service.editStandingConstraint(
+        'sess-register',
+        second.entries[1]!.id,
+        second.revision,
+        'B corrected',
+      );
+      expect(edited.constraints).toBe('A\n\nB corrected');
+      expect(edited.entries[0]).toEqual(first.entries[0]);
+      expect(edited.entries[1]!.id).toBe(second.entries[1]!.id);
+    });
+
+    it('rejects stale, missing, blank, and over-cap mutations without changing the register', () => {
+      const first = service.addStandingConstraint('sess-atomic', 'A');
+      const current = service.addStandingConstraint('sess-atomic', 'B');
+
+      expect(() => service.editStandingConstraint('sess-atomic', first.entries[0]!.id, first.revision, 'stale')).toThrow();
+      expect(service.readStandingConstraints('sess-atomic')).toEqual(current);
+      expect(() => service.editStandingConstraint('sess-atomic', 'missing', current.revision, null)).toThrow();
+      expect(() => service.editStandingConstraint('sess-atomic', current.entries[0]!.id, current.revision, '  ')).toThrow();
+      expect(() => service.addStandingConstraint('sess-atomic', 'C'.repeat(8000))).toThrow();
+      expect(service.readStandingConstraints('sess-atomic')).toEqual(current);
+    });
+
+    it('reads legacy strings as one deterministic entry and migrates them on mutation', () => {
+      service.trackGlobal('sess-legacy', { standingConstraints: 'Legacy verbatim text.' });
+
+      const firstRead = service.readStandingConstraints('sess-legacy');
+      const restarted = new SessionService(PROJECT_ROOT).readStandingConstraints('sess-legacy');
+      expect(firstRead).toEqual({
+        entries: [{ id: 'legacy', text: 'Legacy verbatim text.' }],
+        revision: 0,
+        constraints: 'Legacy verbatim text.',
+        constraintsChars: 21,
+      });
+      expect(restarted).toEqual(firstRead);
+
+      const added = new SessionService(PROJECT_ROOT).addStandingConstraint('sess-legacy', 'New text.');
+      expect(added.entries).toEqual([
+        { id: 'legacy', text: 'Legacy verbatim text.' },
+        expect.objectContaining({ text: 'New text.' }),
+      ]);
+      expect(added.revision).toBe(1);
+    });
+
+    it('keeps revision history after explicit whole-register clear', () => {
+      const added = service.addStandingConstraint('sess-clear-revision', 'A');
+      const cleared = service.clearStandingConstraints('sess-clear-revision', added.revision);
+
+      expect(cleared).toMatchObject({ entries: [], revision: 2, constraints: '' });
+      expect(() => service.clearStandingConstraints('sess-clear-revision', added.revision)).toThrow();
+      expect(service.readStandingConstraints('sess-clear-revision')).toEqual(cleared);
+    });
+  });
+
   describe('bindFeature', () => {
     it('binds a global session to a feature and preserves earlier metadata', () => {
       service.trackGlobal('sess-bind', { agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker' });

@@ -224,9 +224,24 @@ describe('compaction replay on supported hooks', () => {
       agent: 'hive-master',
       sessionKind: 'primary',
       directivePrompt: 'Finish the parser task and report verification evidence.',
-      standingConstraints: 'Follow stop-slop. Humanise the writing. Write like Ivan.',
       replayDirectivePending: false,
     } as any);
+    const obsolete = sessionService.addStandingConstraint('sess-replay-constraints', 'Use obsolete wording.');
+    const withTemporary = sessionService.addStandingConstraint('sess-replay-constraints', 'Remove this temporary constraint.');
+    const current = sessionService.editStandingConstraint(
+      'sess-replay-constraints',
+      obsolete.entries[0]!.id,
+      withTemporary.revision,
+      'Follow stop-slop. Humanise the writing. Write like Ivan.',
+    );
+    sessionService.editStandingConstraint(
+      'sess-replay-constraints',
+      withTemporary.entries[1]!.id,
+      current.revision,
+      null,
+    );
+    expect(sessionService.readStandingConstraints('sess-replay-constraints').constraints)
+      .toBe('Follow stop-slop. Humanise the writing. Write like Ivan.');
     await hooks.event?.({
       event: { type: 'session.compacted', properties: { sessionID: 'sess-replay-constraints' } } as any,
     });
@@ -239,6 +254,8 @@ describe('compaction replay on supported hooks', () => {
     expect(replayText).toContain('Finish the parser task and report verification evidence.');
     expect(replayText).toContain(STANDING_CONSTRAINTS_HEADING);
     expect(replayText).toContain('Follow stop-slop. Humanise the writing. Write like Ivan.');
+    expect(replayText).not.toContain('Use obsolete wording.');
+    expect(replayText).not.toContain('Remove this temporary constraint.');
     expect(replayText.indexOf(STANDING_CONSTRAINTS_HEADING))
       .toBeGreaterThan(replayText.indexOf('Finish the parser task and report verification evidence.'));
   });

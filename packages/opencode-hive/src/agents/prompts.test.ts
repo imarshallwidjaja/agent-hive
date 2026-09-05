@@ -144,7 +144,23 @@ describe('Operator standing constraints prompt guidance', () => {
       ['Scout', SCOUT_BEE_PROMPT],
       ...constraintAwareReviewers,
     ] as const) {
-      expect(prompt, name).not.toContain('hive_constraints_set');
+      expect(prompt, name).not.toContain('hive_constraints_');
+    }
+  });
+
+  it('guides orchestrators through add, read-before-edit, and explicit clear semantics', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Architect', ARCHITECT_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('hive_constraints_add');
+      expect(prompt, name).toContain('hive_constraints_read');
+      expect(prompt, name).toContain('hive_constraints_edit');
+      expect(prompt, name).toContain('hive_constraints_clear');
+      expect(prompt, name).toContain('every user message, example, or task-local request');
+      expect(prompt, name).toContain('only when the operator explicitly requests a whole-register clear');
     }
   });
 });

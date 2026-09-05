@@ -269,13 +269,18 @@ Sessions are tracked per feature in `sessions.json`:
       "startedAt": "2025-01-05T09:00:00Z",
       "lastActiveAt": "2025-01-05T10:30:00Z",
       "messageCount": 42,
-      "standingConstraints": "Australian English. No emojis."
+      "standingConstraints": "Australian English.\n\nNo emojis.",
+      "standingConstraintEntries": [
+        { "id": "constraint-...", "text": "Australian English." },
+        { "id": "constraint-...", "text": "No emojis." }
+      ],
+      "standingConstraintsRevision": 2
     }
   ]
 }
 ```
 
-`standingConstraints` holds the operator's verbatim constraint text from `hive_constraints_set`, capped at 8000 characters. The runtime injects it into delegated task and worker prompts for that session. An empty string clears it.
+`standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
 
 ## Migration from Legacy
 

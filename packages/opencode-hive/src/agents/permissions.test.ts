@@ -1690,20 +1690,22 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('hive_constraints_set is available only to primary orchestration agents', async () => {
+  it('constraint register tools are available only to primary orchestration agents', async () => {
     const agents = await buildConfig('dedicated');
-    for (const name of ['architect-planner', 'swarm-orchestrator', 'hive-builder'] as const) {
-      expect(agents[name]!.tools!['hive_constraints_set'], name).toBeUndefined();
-    }
-    for (const name of [
-      'scout-researcher',
-      'forager-worker',
-      'hive-helper',
-      'code-reviewer',
-      'plan-reviewer',
-      'simplicity-reviewer',
-    ] as const) {
-      expect(agents[name]!.tools!['hive_constraints_set'], name).toBe(false);
+    for (const toolName of ['hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear']) {
+      for (const name of ['architect-planner', 'swarm-orchestrator', 'hive-builder'] as const) {
+        expect(agents[name]!.tools![toolName], `${name}:${toolName}`).toBeUndefined();
+      }
+      for (const name of [
+        'scout-researcher',
+        'forager-worker',
+        'hive-helper',
+        'code-reviewer',
+        'plan-reviewer',
+        'simplicity-reviewer',
+      ] as const) {
+        expect(agents[name]!.tools![toolName], `${name}:${toolName}`).toBe(false);
+      }
     }
   });
 
@@ -8257,6 +8259,9 @@ describe('Per-agent tool filtering', () => {
     expect(tools['hive_background_reconcile']).toBeUndefined();
     expect(tools['hive_background_reconcile_batch']).toBeUndefined();
     expect(tools['hive_background_cancel']).toBeUndefined();
+    for (const toolName of ['hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear']) {
+      expect(tools[toolName]).toBeUndefined();
+    }
     expect(tools['hive_constraints_set']).toBeUndefined();
     expect(tools['hive_context_write']).toBeUndefined();
     // Disabled task-backed/plan/feature tools

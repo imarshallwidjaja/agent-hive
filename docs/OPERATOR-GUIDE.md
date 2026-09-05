@@ -62,7 +62,7 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 
 State a session-wide constraint once. Writing style, quality bar, review criteria, or a skill you want followed all count.
 
-The primary agent records your wording verbatim with `hive_constraints_set`. From then on the runtime adds it to every delegated worker and reviewer prompt in that session, so you do not repeat it per task and the agent does not have to remember to forward it. Restating the constraint replaces it; an empty value clears it. Constraints apply on top of the plan, not instead of it. A worker that finds your constraint conflicting with its assignment reports the conflict rather than picking one. `/dash-review` and `/vuln-review` run their own fixed contract and ignore the register.
+The primary agent adds each durable directive verbatim with `hive_constraints_add`; a repeated identical add is harmless and unrelated entries remain intact. A correction or removal starts with `hive_constraints_read`, then targets the returned stable ID through `hive_constraints_edit`. A whole-register clear uses `hive_constraints_clear` only when you explicitly request it. Edit and clear use revisions so a concurrent change cannot be overwritten. The runtime adds the register to delegated worker and reviewer prompts in that session. Task-local requests, examples, and ordinary messages do not belong in the register. Constraints apply on top of the plan, while `/dash-review` and `/vuln-review` use their own fixed contract and ignore the register.
 
 ## Choose a workflow
 

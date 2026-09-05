@@ -189,25 +189,52 @@ describe('operator standing constraints', () => {
     else process.env.OPENCODE_EXPERIMENTAL = originalExperimental;
   });
 
-  describe('hive_constraints_set', () => {
-    it('registers verbatim constraints on the calling session', async () => {
+  describe('constraint register tools', () => {
+    it('does not expose the removed whole-register replacement tool', async () => {
       const hooks = await loadHooks(testRoot);
+      expect(hooks.tool!.hive_constraints_set).toBeUndefined();
+    });
+
+    it('adds verbatim constraints without replacing entries and makes identical adds idempotent', async () => {
+      const hooks = await loadHooks(testRoot);
+      const toolContext = createToolContext('sess_add');
 
       const result = parseToolJson<{
         success?: boolean;
+        revision?: number;
+        constraints?: string;
         constraintsChars?: number;
-      }>(await hooks.tool!.hive_constraints_set.execute(
+        entries?: Array<{ id: string; text: string }>;
+      }>(await hooks.tool!.hive_constraints_add.execute(
         { constraints: CONSTRAINTS },
-        createToolContext('sess_set'),
+        toolContext,
       ));
 
       expect(result.success).toBe(true);
+      expect(result.revision).toBe(1);
+      expect(result.constraints).toBe(CONSTRAINTS);
       expect(result.constraintsChars).toBe(CONSTRAINTS.length);
+      expect(result.entries).toHaveLength(1);
+
+      const second = parseToolJson<{ revision: number; constraints: string; entries: Array<{ id: string; text: string }> }>(
+        await hooks.tool!.hive_constraints_add.execute({ constraints: 'Use Australian English.' }, toolContext),
+      );
+      expect(second.revision).toBe(2);
+      expect(second.constraints).toBe(`${CONSTRAINTS}\n\nUse Australian English.`);
+      expect(second.entries.map((entry) => entry.text)).toEqual([CONSTRAINTS, 'Use Australian English.']);
+
+      const duplicate = parseToolJson<{ revision: number; entries: Array<{ id: string; text: string }> }>(
+        await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, toolContext),
+      );
+      expect(duplicate.revision).toBe(2);
+      expect(duplicate.entries).toEqual(second.entries);
 
       const sessions = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'sessions.json'), 'utf-8')) as {
-        sessions: Array<{ sessionId: string; standingConstraints?: string }>;
+        sessions: Array<{ sessionId: string; standingConstraints?: string; standingConstraintsRevision?: number }>;
       };
-      expect(sessions.sessions.find((session) => session.sessionId === 'sess_set')?.standingConstraints).toBe(CONSTRAINTS);
+      const stored = sessions.sessions.find((session) => session.sessionId === 'sess_add');
+      expect(stored?.standingConstraints).toBe(`${CONSTRAINTS}\n\nUse Australian English.`);
+      expect(stored?.standingConstraintsRevision).toBe(2);
     });
 
     it('refuses over the cap and reports the actual length without truncating', async () => {
@@ -220,7 +247,7 @@ describe('operator standing constraints', () => {
         error?: string;
         constraintsChars?: number;
         cap?: number;
-      }>(await hooks.tool!.hive_constraints_set.execute(
+      }>(await hooks.tool!.hive_constraints_add.execute(
         { constraints: oversized },
         createToolContext('sess_cap'),
       ));
@@ -245,28 +272,44 @@ describe('operator standing constraints', () => {
       const atCap = 'C'.repeat(8000);
 
       const result = parseToolJson<{ success?: boolean; constraintsChars?: number }>(
-        await hooks.tool!.hive_constraints_set.execute({ constraints: atCap }, createToolContext('sess_at_cap')),
+        await hooks.tool!.hive_constraints_add.execute({ constraints: atCap }, createToolContext('sess_at_cap')),
       );
 
       expect(result.success).toBe(true);
       expect(result.constraintsChars).toBe(8000);
     });
 
-    it('clears the register on an empty or whitespace string so later launches are unaffected', async () => {
+    it('rejects blank additions and edits, removes explicitly, and clears only with a current revision', async () => {
       const hooks = await loadHooks(testRoot);
       const toolContext = createToolContext('sess_clear');
 
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, toolContext);
+      const blankAdd = parseToolJson<{ success: boolean; reason: string }>(
+        await hooks.tool!.hive_constraints_add.execute({ constraints: '  \n ' }, toolContext),
+      );
+      expect(blankAdd.success).toBe(false);
+      expect(blankAdd.reason).toBe('blank_constraint');
+
+      const added = parseToolJson<{ revision: number; entries: Array<{ id: string; text: string }> }>(
+        await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, toolContext),
+      );
       const before = await runTaskHook(hooks, 'sess_clear', {
         subagent_type: 'forager-worker',
         prompt: 'Do the work.',
       });
       expect(before.prompt).toContain(STANDING_CONSTRAINTS_HEADING);
 
-      const cleared = parseToolJson<{ success?: boolean; cleared?: boolean }>(
-        await hooks.tool!.hive_constraints_set.execute({ constraints: '' }, toolContext),
+      const blankEdit = parseToolJson<{ success: boolean; reason: string }>(
+        await hooks.tool!.hive_constraints_edit.execute({ id: added.entries[0]!.id, expectedRevision: added.revision, constraints: '' }, toolContext),
       );
-      expect(cleared).toEqual({ success: true, cleared: true });
+      expect(blankEdit.success).toBe(false);
+      expect(blankEdit.reason).toBe('blank_constraint');
+
+      const removed = parseToolJson<{ success: boolean; revision: number; entries: unknown[] }>(
+        await hooks.tool!.hive_constraints_edit.execute({ id: added.entries[0]!.id, expectedRevision: added.revision, remove: true }, toolContext),
+      );
+      expect(removed.success).toBe(true);
+      expect(removed.revision).toBe(2);
+      expect(removed.entries).toEqual([]);
 
       const afterEmpty = await runTaskHook(hooks, 'sess_clear', {
         subagent_type: 'forager-worker',
@@ -274,17 +317,56 @@ describe('operator standing constraints', () => {
       });
       expect(afterEmpty.prompt).toBe('Do the work.');
 
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, toolContext);
-      const clearedWs = parseToolJson<{ success?: boolean; cleared?: boolean }>(
-        await hooks.tool!.hive_constraints_set.execute({ constraints: '   \n\t ' }, toolContext),
+      const readded = parseToolJson<{ revision: number }>(
+        await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, toolContext),
       );
-      expect(clearedWs).toEqual({ success: true, cleared: true });
+      const stale = parseToolJson<{ success: boolean; reason: string; revision: number }>(
+        await hooks.tool!.hive_constraints_clear.execute({ expectedRevision: removed.revision }, toolContext),
+      );
+      expect(stale.success).toBe(false);
+      expect(stale.reason).toBe('stale_revision');
+      expect(stale.revision).toBe(readded.revision);
+
+      const cleared = parseToolJson<{ success: boolean; revision: number; entries: unknown[] }>(
+        await hooks.tool!.hive_constraints_clear.execute({ expectedRevision: readded.revision }, toolContext),
+      );
+      expect(cleared.success).toBe(true);
+      expect(cleared.entries).toEqual([]);
 
       const afterWs = await runTaskHook(hooks, 'sess_clear', {
         subagent_type: 'forager-worker',
         prompt: 'Do the work.',
       });
       expect(afterWs.prompt).toBe('Do the work.');
+    });
+
+    it('edits only the targeted entry and rejects stale revisions and missing IDs without changing state', async () => {
+      const hooks = await loadHooks(testRoot);
+      const toolContext = createToolContext('sess_edit');
+      await hooks.tool!.hive_constraints_add.execute({ constraints: 'A' }, toolContext);
+      const before = parseToolJson<{ revision: number; entries: Array<{ id: string; text: string }> }>(
+        await hooks.tool!.hive_constraints_add.execute({ constraints: 'B' }, toolContext),
+      );
+
+      const edited = parseToolJson<{ revision: number; constraints: string; entries: Array<{ id: string; text: string }> }>(
+        await hooks.tool!.hive_constraints_edit.execute({ id: before.entries[1]!.id, expectedRevision: before.revision, constraints: 'B corrected' }, toolContext),
+      );
+      expect(edited.constraints).toBe('A\n\nB corrected');
+      expect(edited.entries[0]).toEqual(before.entries[0]);
+
+      const stale = parseToolJson<{ success: boolean; reason: string }>(
+        await hooks.tool!.hive_constraints_edit.execute({ id: before.entries[0]!.id, expectedRevision: before.revision, constraints: 'A stale' }, toolContext),
+      );
+      expect(stale.reason).toBe('stale_revision');
+      const missing = parseToolJson<{ success: boolean; reason: string }>(
+        await hooks.tool!.hive_constraints_edit.execute({ id: 'missing', expectedRevision: edited.revision, remove: true }, toolContext),
+      );
+      expect(missing.reason).toBe('constraint_not_found');
+
+      const after = parseToolJson<{ revision: number; constraints: string }>(
+        await hooks.tool!.hive_constraints_read.execute({}, toolContext),
+      );
+      expect(after).toMatchObject({ revision: edited.revision, constraints: 'A\n\nB corrected' });
     });
   });
 
@@ -305,7 +387,7 @@ describe('operator standing constraints', () => {
 
     it('appends the block for ordinary worker and reviewer targets', async () => {
       const hooks = await loadHooks(testRoot);
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, createToolContext('sess_ordinary'));
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_ordinary'));
 
       for (const target of ['forager-worker', 'code-reviewer', 'simplicity-reviewer', 'scout-researcher']) {
         const args = await runTaskHook(hooks, 'sess_ordinary', {
@@ -318,7 +400,7 @@ describe('operator standing constraints', () => {
 
     it('appends the block when the launch has no prior prompt text', async () => {
       const hooks = await loadHooks(testRoot);
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, createToolContext('sess_no_prompt'));
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_no_prompt'));
 
       const args = await runTaskHook(hooks, 'sess_no_prompt', { subagent_type: 'forager-worker' });
 
@@ -328,7 +410,7 @@ describe('operator standing constraints', () => {
     it('does not append for dash review or vulnerability review lane targets', async () => {
       const hooks = await loadHooks(testRoot);
       const lanes = await resolveLaneTargets(hooks);
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, createToolContext('sess_lanes'));
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_lanes'));
 
       for (const target of [lanes.dash, lanes.vulnerability]) {
         const args = await runTaskHook(hooks, 'sess_lanes', {
@@ -341,7 +423,7 @@ describe('operator standing constraints', () => {
 
     it('does not append twice to a prompt that already carries the sentinel', async () => {
       const hooks = await loadHooks(testRoot);
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, createToolContext('sess_idempotent'));
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_idempotent'));
 
       const first = await runTaskHook(hooks, 'sess_idempotent', {
         subagent_type: 'forager-worker',
@@ -358,7 +440,7 @@ describe('operator standing constraints', () => {
 
     it('does not append to a Hive worker-prompt file reference', async () => {
       const hooks = await loadHooks(testRoot);
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, createToolContext('sess_worker_ref'));
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_worker_ref'));
       const prompt = 'Follow instructions in @.hive/features/01_demo/tasks/01-first-task/worker-prompt.md';
 
       const args = await runTaskHook(hooks, 'sess_worker_ref', {
@@ -371,7 +453,7 @@ describe('operator standing constraints', () => {
 
     it('keeps the register scoped to the session that set it', async () => {
       const hooks = await loadHooks(testRoot);
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, createToolContext('sess_owner'));
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_owner'));
 
       const args = await runTaskHook(hooks, 'sess_other', {
         subagent_type: 'forager-worker',
@@ -385,7 +467,7 @@ describe('operator standing constraints', () => {
       const hooks = await loadHooks(testRoot);
       // Architect task targets are only populated once the config hook runs.
       await hooks.config?.({} as never);
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, createToolContext('sess_architect_primary'));
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_architect_primary'));
       await hooks['chat.message']?.(
         { sessionID: 'sess_architect_child', agent: 'architect-planner' } as never,
         { message: { agent: 'architect-planner' }, parts: [] } as never,
@@ -435,7 +517,7 @@ Do it
       const unset = await startWorkerPrompt('constraint-unset-feature');
       expect(unset.workerPrompt).not.toContain(STANDING_CONSTRAINTS_HEADING);
 
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, toolContext);
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, toolContext);
       const set = await startWorkerPrompt('constraint-set-feature');
 
       expect(set.workerPrompt).toContain(CONSTRAINTS_BLOCK);
@@ -461,7 +543,7 @@ Do it
         { sessionID, agent: 'hive-builder' } as never,
         { message: {}, parts: [] } as never,
       );
-      await hooks.tool!.hive_constraints_set.execute({ constraints: CONSTRAINTS }, toolContext);
+      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, toolContext);
 
       const created = parseToolJson<{
         runId?: string;

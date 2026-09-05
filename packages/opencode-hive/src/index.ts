@@ -406,9 +406,6 @@ import {
   TASK_TRACE_SUMMARIZER_AGENT,
 } from './task-trace.js';
 
-/** Hard cap on operator standing constraints. Over-cap input is refused, never truncated. */
-const STANDING_CONSTRAINTS_MAX_CHARS = 8000;
-
 const DASH_REVIEW_LIFECYCLE_TOOLS = new Set([
   'task', 'question', 'hive_review_evidence_resolve', 'hive_review_workspace_create',
   'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup',
@@ -2204,6 +2201,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
               sessionService.trackGlobal(eventSessionID, {
                 duplicatedFromSessionId: originSessionId,
                 ...(originSession?.standingConstraints ? { standingConstraints: originSession.standingConstraints } : {}),
+                ...(originSession?.standingConstraintEntries ? { standingConstraintEntries: originSession.standingConstraintEntries } : {}),
+                ...(originSession?.standingConstraintsRevision !== undefined ? { standingConstraintsRevision: originSession.standingConstraintsRevision } : {}),
                 ...(originSession?.sessionKind ? { sessionKind: originSession.sessionKind } : {}),
                 ...(originSession?.featureName ? { featureName: originSession.featureName } : {}),
               });
@@ -5325,10 +5324,27 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         },
       }),
 
-      hive_constraints_set: tool({
-        description: 'Register verbatim operator constraints for this session. Every later delegated task() launch from this session, or from its task-created architect child, carries them. Cap is 8000 characters (UTF-16 code units). Pass an empty string to clear the register.',
+      hive_constraints_read: tool({
+        description: 'Read this session\'s standing constraint entries and revision. Use before editing, removing, or clearing constraints.',
+        args: {},
+        async execute(_args, toolContext) {
+          const sessionID = (toolContext as ToolContext)?.sessionID;
+          if (!sessionID) {
+            return respond({
+              success: false,
+              terminal: true,
+              reason: 'session_unavailable',
+              error: 'Standing constraints are keyed on the calling session, which is unavailable in this tool context.',
+            });
+          }
+          return respond({ success: true, ...sessionService.readStandingConstraints(sessionID) });
+        },
+      }),
+
+      hive_constraints_add: tool({
+        description: 'Add one verbatim durable operator directive to this session without replacing unrelated entries. Identical repeated additions are idempotent. Use only for session-wide directives, not every user message, example, or task-local request.',
         args: {
-          constraints: tool.schema.string().describe('Verbatim operator constraint text. Store the operator\'s words, not a paraphrase. Empty string clears the register.'),
+          constraints: tool.schema.string().describe('One verbatim session-wide operator directive. Must not be blank.'),
         },
         async execute({ constraints }, toolContext) {
           const sessionID = (toolContext as ToolContext)?.sessionID;
@@ -5340,30 +5356,72 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
               error: 'Standing constraints are keyed on the calling session, which is unavailable in this tool context.',
             });
           }
-
-          if (constraints.length > STANDING_CONSTRAINTS_MAX_CHARS) {
+          try {
+            const register = sessionService.addStandingConstraint(sessionID, constraints);
+            await stampSessionOrigin(sessionID);
+            return respond({ success: true, ...register });
+          } catch (error) {
+            const failure = error as { reason?: string; message?: string; details?: Record<string, unknown> };
+            if (!failure.reason) throw error;
             return respond({
               success: false,
               terminal: false,
-              reason: 'constraints_too_long',
-              error: `Standing constraints are ${constraints.length} characters (UTF-16 code units), over the ${STANDING_CONSTRAINTS_MAX_CHARS} character cap.`,
-              constraintsChars: constraints.length,
-              cap: STANDING_CONSTRAINTS_MAX_CHARS,
-              nextAction: 'Do not shorten or paraphrase the constraints yourself. Ask the operator which constraints to drop, then retry.',
+              reason: failure.reason,
+              error: failure.message,
+              ...failure.details,
+              nextAction: failure.reason === 'constraints_too_long'
+                ? 'Do not shorten or paraphrase constraints yourself. Read the register and ask the operator which entry to edit or remove.'
+                : 'Provide one non-blank session-wide operator directive.',
             });
           }
+        },
+      }),
 
-          if (!constraints.trim()) {
-            sessionService.trackGlobal(sessionID, { standingConstraints: undefined });
-            return respond({ success: true, cleared: true });
+      hive_constraints_edit: tool({
+        description: 'Edit or explicitly remove one standing constraint by stable ID. Read first, then pass that expected revision. Set constraints to replace the entry, or remove=true to remove it; do not supply both.',
+        args: {
+          id: tool.schema.string().describe('Stable constraint ID from hive_constraints_read.'),
+          expectedRevision: tool.schema.number().describe('Revision from hive_constraints_read. The edit is rejected atomically if the register changed.'),
+          constraints: tool.schema.string().optional().describe('Verbatim replacement text. Must not be blank. Omit when removing.'),
+          remove: tool.schema.boolean().optional().describe('Set true to explicitly remove this entry. Omit when replacing.'),
+        },
+        async execute({ id, expectedRevision, constraints, remove }, toolContext) {
+          const sessionID = (toolContext as ToolContext)?.sessionID;
+          if (!sessionID) {
+            return respond({ success: false, terminal: true, reason: 'session_unavailable', error: 'Standing constraints are keyed on the calling session, which is unavailable in this tool context.' });
           }
+          if (remove === true ? constraints !== undefined : constraints === undefined) {
+            return respond({ success: false, terminal: false, reason: 'invalid_edit', error: 'Provide either non-blank constraints or remove=true, but not both.' });
+          }
+          try {
+            const register = sessionService.editStandingConstraint(sessionID, id, expectedRevision, remove === true ? null : constraints!);
+            await stampSessionOrigin(sessionID);
+            return respond({ success: true, ...register });
+          } catch (error) {
+            const failure = error as { reason?: string; message?: string; details?: Record<string, unknown> };
+            if (!failure.reason) throw error;
+            return respond({ success: false, terminal: false, reason: failure.reason, error: failure.message, ...failure.details, nextAction: 'Call hive_constraints_read, then retry with a current ID and revision.' });
+          }
+        },
+      }),
 
-          sessionService.trackGlobal(sessionID, { standingConstraints: constraints });
-          await stampSessionOrigin(sessionID);
-          return respond({
-            success: true,
-            constraintsChars: constraints.length,
-          });
+      hive_constraints_clear: tool({
+        description: 'Clear the entire standing constraint register only when the operator explicitly requests a whole-register clear. Read first and pass that expected revision.',
+        args: {
+          expectedRevision: tool.schema.number().describe('Revision from hive_constraints_read. The clear is rejected atomically if the register changed.'),
+        },
+        async execute({ expectedRevision }, toolContext) {
+          const sessionID = (toolContext as ToolContext)?.sessionID;
+          if (!sessionID) {
+            return respond({ success: false, terminal: true, reason: 'session_unavailable', error: 'Standing constraints are keyed on the calling session, which is unavailable in this tool context.' });
+          }
+          try {
+            return respond({ success: true, ...sessionService.clearStandingConstraints(sessionID, expectedRevision) });
+          } catch (error) {
+            const failure = error as { reason?: string; message?: string; details?: Record<string, unknown> };
+            if (!failure.reason) throw error;
+            return respond({ success: false, terminal: false, reason: failure.reason, error: failure.message, ...failure.details, nextAction: 'Call hive_constraints_read, then retry with the current revision.' });
+          }
         },
       }),
 
@@ -5804,7 +5862,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
-          'hive_context_write', 'hive_constraints_set', 'hive_status',
+          'hive_context_write', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
         ]),
         permission: {
           question: "allow",
@@ -5835,7 +5893,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
         prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadSkillsAppendix + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? architectSubagentRoutingAppendix : ''),
         tools: agentTools([
-          'hive_feature_create', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_context_write', 'hive_constraints_set', 'hive_status',
+          'hive_feature_create', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_context_write', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
@@ -5877,7 +5935,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
-          'hive_context_write', 'hive_constraints_set', 'hive_status',
+          'hive_context_write', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
         ]),
@@ -6076,7 +6134,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
-          'hive_context_write', 'hive_constraints_set',
+          'hive_context_write', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear',
         ]),
         permission: {
           task: 'allow',

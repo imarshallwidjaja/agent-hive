@@ -90,12 +90,12 @@ describe('session origin stamp and lineage tracking', () => {
     });
   }
 
-  it('stamps session origin in metadata when hive_constraints_set is called', async () => {
+  it('stamps session origin in metadata when hive_constraints_add is called', async () => {
     const hooks = await loadTestHooks(testRoot);
     const sessionID = 'sess_primary_1';
 
     const result = parseToolJson<{ success?: boolean }>(
-      await hooks.tool!.hive_constraints_set.execute(
+      await hooks.tool!.hive_constraints_add.execute(
         { constraints: CONSTRAINTS },
         { sessionID, messageID: 'msg_1', agent: 'test', abort: new AbortController().signal },
       ),
@@ -154,17 +154,28 @@ describe('session origin stamp and lineage tracking', () => {
     expect(childRecord?.parentSessionId).toBe(parentID);
   });
 
-  it('migrates standing constraints and lineage when a root session is duplicated/forked', async () => {
+  it('preserves legacy standing constraints and lineage when a root session is duplicated/forked', async () => {
     const hooks = await loadTestHooks(testRoot);
     const origSessionID = 'sess_orig_root';
     const dupSessionID = 'sess_fork_root';
+    const structuredDupSessionID = 'sess_fork_structured';
+    const toolContext = (sessionID: string, messageID: string) => ({
+      sessionID,
+      messageID,
+      agent: 'test',
+      abort: new AbortController().signal,
+    });
 
-    // 1. Set constraints on original session
-    await hooks.tool!.hive_constraints_set.execute(
-      { constraints: CONSTRAINTS },
-      { sessionID: origSessionID, messageID: 'msg_1', agent: 'test', abort: new AbortController().signal },
-    );
-    expect(sessionStore[origSessionID]?.metadata?.agentHive?.originSessionId).toBe(origSessionID);
+    // 1. Seed the string-only shape written by earlier plugin versions.
+    fs.mkdirSync(path.join(testRoot, '.hive'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, '.hive', 'sessions.json'), JSON.stringify({
+      sessions: [{
+        sessionId: origSessionID,
+        standingConstraints: CONSTRAINTS,
+        startedAt: new Date().toISOString(),
+        lastActiveAt: new Date().toISOString(),
+      }],
+    }, null, 2));
 
     // 2. Simulate native session duplication / clone:
     // OpenCode forks clone the metadata so dupSessionID inherits originSessionId: origSessionID
@@ -186,14 +197,94 @@ describe('session origin stamp and lineage tracking', () => {
 
     // Verify .hive/sessions.json records duplicatedFromSessionId and migrated constraints
     const sessions = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'sessions.json'), 'utf-8')) as {
-      sessions: Array<{ sessionId: string; duplicatedFromSessionId?: string; standingConstraints?: string }>;
+      sessions: Array<{
+        sessionId: string;
+        duplicatedFromSessionId?: string;
+        standingConstraints?: string;
+        standingConstraintEntries?: Array<{ id: string; text: string }>;
+        standingConstraintsRevision?: number;
+      }>;
     };
     const dupRecord = sessions.sessions.find(s => s.sessionId === dupSessionID);
     expect(dupRecord?.duplicatedFromSessionId).toBe(origSessionID);
     expect(dupRecord?.standingConstraints).toBe(CONSTRAINTS);
+    expect(dupRecord?.standingConstraintEntries).toBeUndefined();
+    expect(dupRecord?.standingConstraintsRevision).toBeUndefined();
+
+    const register = parseToolJson<{ revision: number; entries: Array<{ id: string; text: string }> }>(
+      await hooks.tool!.hive_constraints_read.execute(
+        {},
+        { sessionID: dupSessionID, messageID: 'msg_read', agent: 'test', abort: new AbortController().signal },
+      ),
+    );
+    expect(register.revision).toBe(0);
+    expect(register.entries).toEqual([{ id: 'legacy', text: CONSTRAINTS }]);
+
+    const originRegister = parseToolJson<{
+      revision: number;
+      entries: Array<{ id: string; text: string }>;
+    }>(await hooks.tool!.hive_constraints_add.execute(
+      { constraints: 'Keep changes scoped to the requested files.' },
+      toolContext(origSessionID, 'msg_add_structured'),
+    ));
+    expect(originRegister.revision).toBe(1);
+    expect(originRegister.entries[0]).toEqual({ id: 'legacy', text: CONSTRAINTS });
+
+    await hooks.event?.({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: {
+            id: structuredDupSessionID,
+            metadata: {
+              agentHive: {
+                originSessionId: origSessionID,
+              },
+            },
+          },
+        },
+      } as any,
+    });
+
+    const structuredSessions = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'sessions.json'), 'utf-8')) as {
+      sessions: Array<{
+        sessionId: string;
+        duplicatedFromSessionId?: string;
+        standingConstraintEntries?: Array<{ id: string; text: string }>;
+        standingConstraintsRevision?: number;
+      }>;
+    };
+    const structuredDupRecord = structuredSessions.sessions.find(s => s.sessionId === structuredDupSessionID);
+    expect(structuredDupRecord?.duplicatedFromSessionId).toBe(origSessionID);
+    expect(structuredDupRecord?.standingConstraintEntries).toEqual(originRegister.entries);
+    expect(structuredDupRecord?.standingConstraintsRevision).toBe(originRegister.revision);
+
+    const editedFork = parseToolJson<{
+      revision: number;
+      entries: Array<{ id: string; text: string }>;
+      constraints: string;
+    }>(await hooks.tool!.hive_constraints_edit.execute(
+      {
+        id: originRegister.entries[0]!.id,
+        expectedRevision: originRegister.revision,
+        constraints: 'Fork-specific constraint.',
+      },
+      toolContext(structuredDupSessionID, 'msg_edit_fork'),
+    ));
+    const unchangedOrigin = parseToolJson<{
+      revision: number;
+      entries: Array<{ id: string; text: string }>;
+    }>(await hooks.tool!.hive_constraints_read.execute(
+      {},
+      toolContext(origSessionID, 'msg_read_origin'),
+    ));
+    expect(editedFork.entries[0]?.id).toBe(originRegister.entries[0]?.id);
+    expect(editedFork.constraints).toBe('Fork-specific constraint.\n\nKeep changes scoped to the requested files.');
+    expect(unchangedOrigin).toMatchObject(originRegister);
 
     // Verify dupSessionID was re-stamped with its new ID in metadata
     expect(sessionStore[dupSessionID]?.metadata?.agentHive?.originSessionId).toBe(dupSessionID);
+    expect(sessionStore[structuredDupSessionID]?.metadata?.agentHive?.originSessionId).toBe(structuredDupSessionID);
 
     // 3. Verify task() dispatch from dupSessionID carries the migrated standing constraints!
     const output = {

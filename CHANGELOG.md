@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced whole-register `hive_constraints_set` writes with targeted read, add, edit/remove, and explicit clear tools using stable entry IDs and atomic revision checks.
+
 ## [2.4.0] - 2026-09-04
 
 ### Added

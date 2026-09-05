@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Standard Hive Tools (30 total)
+## Standard Hive Tools (33 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -205,18 +205,24 @@ These primary-orchestrator-only tools inspect one native OpenCode child session.
 |------|---------|
 | `hive_context_write` | Write context file, including reserved `context/overview.md` via `name: "overview"` |
 
-### Operator Constraints (1 tool)
+`hive_context_write` replaces the named file. Read and preserve existing content before writing an update, especially for feature-scoped constraints.
+
+### Operator Constraints (4 tools)
 | Tool | Purpose |
 |------|---------|
-| `hive_constraints_set` | Record the operator's standing constraints verbatim on the calling session |
+| `hive_constraints_read` | Read entries, stable IDs, aggregate text, and revision |
+| `hive_constraints_add` | Add one verbatim directive without replacing unrelated entries |
+| `hive_constraints_edit` | Replace or explicitly remove one entry by ID and expected revision |
+| `hive_constraints_clear` | Clear the whole register by expected revision after an explicit operator request |
 
 #### Operator constraints notes
 
-- Input is `{ constraints: string }`. Store the operator's own wording, not a paraphrase; the runtime forwards the text as given.
-- Passing an empty string clears the register for that session.
-- The cap is 8000 characters (UTF-16 code units, the JavaScript string length). An over-cap call is refused and nothing is stored; the text is never truncated.
+- Add only durable session-wide operator directives, not every user message, example, or task-local request. Store the operator's own wording, not a paraphrase.
+- Call `hive_constraints_read` before correcting or removing an entry. `hive_constraints_edit` uses the returned stable ID and expected revision; removal requires `remove: true`.
+- Call `hive_constraints_clear` only when the operator explicitly requests a whole-register clear, using the revision from `hive_constraints_read`.
+- Blank additions and replacements, missing IDs, stale revisions, and aggregate content over 8000 UTF-16 code units are rejected without changing the register. Identical repeated additions are idempotent.
 - Access is limited to primary orchestrators: `hive-master`, `swarm-orchestrator`, `architect-planner`, and `hive-builder`. Foragers, scouts, and reviewers cannot call it.
-- Once set, the runtime adds the stored text to every delegated `task()` prompt from that session, and from its task-created architect child, and to generated worker prompts, under the heading `## Standing Constraints (operator, session-wide)`. Workers and reviewers both receive it, so the orchestrator does not restate constraints per launch.
+- The runtime adds the register text to every delegated `task()` prompt from that session, and from its task-created architect child, and to generated worker prompts, under the heading `## Standing Constraints (operator, session-wide)`.
 - Injection is skipped for `/dash-review` and `/vuln-review` lanes. Those workflows are fixed policy with their own operator-intent contract.
 - Standing constraints are operator-scoped and session-wide. Plan-declared task requirements stay task-scoped. A worker that finds the two in conflict reports the conflict rather than choosing one.
 

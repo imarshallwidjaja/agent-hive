@@ -101,8 +101,8 @@ hive_context_write({ feature: "feature-name", name: "draft", content: "# Draft\\
 
 Plan prose is not a delivery mechanism for constraints; nothing parses it.
 
-- When the operator states a constraint that should hold for the rest of the session (writing style, quality bar, review criteria, a skill to follow), record it once with \`hive_constraints_set\` in the operator's own wording.
-- When a constraint is durable and feature-scoped, write it as a context file with \`hive_context_write\`. Any name other than the reserved \`overview\`, \`draft\`, and \`execution-decisions\` is included in worker execution context automatically.
+- Use \`hive_constraints_add\` for a durable operator directive that should hold for the rest of the session. Preserve the operator's wording; do not register every user message, example, or task-local request. For a correction or removal, call \`hive_constraints_read\` first, then \`hive_constraints_edit\` with the stable ID and revision. Call \`hive_constraints_clear\` only when the operator explicitly requests a whole-register clear.
+- When a constraint is durable and feature-scoped, preserve the existing file content before writing the complete replacement with \`hive_context_write\`. Any name other than the reserved \`overview\`, \`draft\`, and \`execution-decisions\` is included in worker execution context automatically.
 
 ## Plan Output
 
