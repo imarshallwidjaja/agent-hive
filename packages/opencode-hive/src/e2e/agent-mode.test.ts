@@ -58,7 +58,12 @@ describe("agentMode gating", () => {
     };
 
     const hooks = await plugin(ctx);
-    const opencodeConfig: any = { agent: {} };
+    const opencodeConfig: any = {
+      agent: {
+        "hive-master": { mode: "all" },
+        "hive-builder": { mode: "subagent" },
+      },
+    };
     await hooks.config!(opencodeConfig);
 
     expect(opencodeConfig.agent["hive-master"]).toBeDefined();
@@ -76,6 +81,9 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["__hive_dash_review_primary"]).toBeDefined();
     expect(opencodeConfig.agent["__hive_vulnerability_review_primary"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("hive-master");
+    expect(opencodeConfig.agent["hive-master"].mode).toBe("primary");
+    expect(opencodeConfig.agent["hive-builder"].mode).toBe("primary");
+    expect(opencodeConfig.agent["scout-researcher"].mode).toBe("subagent");
 
     const systemTransform = hooks["experimental.chat.system.transform" as keyof typeof hooks] as
       | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
@@ -107,7 +115,13 @@ describe("agentMode gating", () => {
     };
 
     const hooks = await plugin(ctx);
-    const opencodeConfig: any = { agent: {} };
+    const opencodeConfig: any = {
+      agent: {
+        "architect-planner": { mode: "primary" },
+        "swarm-orchestrator": { mode: "all" },
+        "hive-builder": { mode: "subagent" },
+      },
+    };
     await hooks.config!(opencodeConfig);
 
     expect(opencodeConfig.agent["hive-master"]).toBeUndefined();
@@ -125,6 +139,10 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["__hive_dash_review_primary"]).toBeDefined();
     expect(opencodeConfig.agent["__hive_vulnerability_review_primary"]).toBeDefined();
     expect(opencodeConfig.default_agent).toBe("architect-planner");
+    expect(opencodeConfig.agent["architect-planner"].mode).toBe("all");
+    expect(opencodeConfig.agent["swarm-orchestrator"].mode).toBe("primary");
+    expect(opencodeConfig.agent["hive-builder"].mode).toBe("primary");
+    expect(opencodeConfig.agent["forager-worker"].mode).toBe("subagent");
     expect(opencodeConfig.agent["architect-planner"].prompt).toContain('## Grilling Command Mode Exception');
     expect(opencodeConfig.agent["architect-planner"].prompt).toContain('When `/grill` or `/interview` is invoked');
     expect(opencodeConfig.agent["architect-planner"].prompt).toContain("The `grilling` skill's research policy overrides otherwise universal or default delegation, direct-work, concurrency, and fan-out mandates");

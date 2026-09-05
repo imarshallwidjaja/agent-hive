@@ -105,6 +105,7 @@ function createStubClient(): unknown {
 }
 
 type AgentConfig = {
+  mode?: 'primary' | 'subagent' | 'all';
   permission?: Record<string, string | Record<string, string>>;
   tools?: Record<string, boolean>;
   prompt?: string;
@@ -1183,7 +1184,12 @@ describe('Agent permissions', () => {
     ] as const) {
       await trackAgent(sessionID, agent);
       await callTask(sessionID, 'forager-worker');
+      for (const forbiddenTarget of ['hive-master', 'swarm-orchestrator', 'hive-builder']) {
+        await expect(callTask(sessionID, forbiddenTarget), `${agent} -> ${forbiddenTarget}`).rejects.toThrow('primary-only');
+      }
     }
+    await callTask('root-hive', 'architect-planner');
+    await callTask('root-hive', 'forager-domain');
     await trackAgent('root-architect', 'architect-planner');
     await callTask('root-architect', 'scout-researcher');
 
@@ -1203,9 +1209,10 @@ describe('Agent permissions', () => {
       'approach-advisor',
       'existing-advisor-session',
     )).rejects.toThrow('fresh-session policy forbids task({ task_id })');
-    for (const target of ['forager-worker', 'forager-domain', 'code-reviewer', 'hive-builder']) {
+    for (const target of ['forager-worker', 'forager-domain', 'code-reviewer']) {
       await expect(callTask('architect-child', target), target).rejects.toThrow('not authorized');
     }
+    await expect(callTask('architect-child', 'hive-builder')).rejects.toThrow('primary-only');
 
     for (const [sessionID, agent] of [
       ['hive-child', 'hive-master'],

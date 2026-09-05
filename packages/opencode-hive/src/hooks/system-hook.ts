@@ -33,6 +33,7 @@ export const HIVE_SYSTEM_PROMPT = `
 
 **Important:** hive_worktree_commit commits to the task branch but does NOT merge.
 Task branches are integrated by the responsible orchestrator/helper flow. Swarm normally delegates merge batches to \`hive-helper\`; direct \`hive_merge\` is a recovery escape when the active role allows it.
+\`hive-master\`, \`swarm-orchestrator\`, and \`hive-builder\` are primary-only and are never valid native \`task()\` targets. \`architect-planner\` remains callable as a child for its bounded read-only helper exception.
 `;
 
 export const SUBAGENT_CLARIFICATION_PROMPT = `

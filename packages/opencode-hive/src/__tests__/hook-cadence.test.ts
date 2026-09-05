@@ -386,6 +386,11 @@ describe('HIVE_SYSTEM_PROMPT — no broad worker-startup reinjection', () => {
     expect(HIVE_SYSTEM_PROMPT).toMatch(/hive_worktree_commit/);
     expect(HIVE_SYSTEM_PROMPT).toMatch(/hive_merge/);
   });
+
+  it('states which orchestrators are never native task targets', () => {
+    expect(HIVE_SYSTEM_PROMPT).toContain('`hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only');
+    expect(HIVE_SYSTEM_PROMPT).toContain('`architect-planner` remains callable as a child');
+  });
 });
 
 describe('Compaction hook — no hive_status reinjection after compaction', () => {

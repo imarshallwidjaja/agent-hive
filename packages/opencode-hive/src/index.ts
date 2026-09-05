@@ -413,6 +413,9 @@ const DASH_REVIEW_LIFECYCLE_TOOLS = new Set([
 const DASH_REVIEW_PERSISTED_RECOVERY_TOOLS = new Set([
   'hive_review_workspace_claim', 'hive_review_workspace_inspect', 'hive_review_workspace_cleanup',
 ]);
+const PRIMARY_ONLY_TASK_TARGETS = new Set([
+  'hive-master', 'swarm-orchestrator', 'hive-builder',
+]);
 
 function taskChildSessionID(metadata: unknown): string | undefined {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
@@ -2600,6 +2603,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     "tool.execute.before": async (input, output) => {
       if (input.tool === 'task' && output.args?.subagent_type === TASK_TRACE_SUMMARIZER_AGENT) {
         throw new Error('The task trace summarizer cannot be dispatched through the native task tool.');
+      }
+      if (
+        input.tool === 'task'
+        && typeof output.args?.subagent_type === 'string'
+        && PRIMARY_ONLY_TASK_TARGETS.has(output.args.subagent_type)
+      ) {
+        throw new Error(`The ${output.args.subagent_type} agent is primary-only and cannot be dispatched through the native task tool.`);
       }
       if (taskTraceEphemeralSessionIDs.has(input.sessionID)) {
         throw new Error('Task trace summarizer tools are disabled.');
@@ -5851,6 +5861,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         model: hiveUserConfig.model,
         variant: hiveUserConfig.variant,
         temperature: hiveUserConfig.temperature ?? 0.5,
+        mode: 'primary' as const,
         description: 'Hive (Hybrid) - Plans + orchestrates. Detects phase, loads skills on-demand.',
         tools: agentTools([
           'hive_feature_create', 'hive_feature_complete',
@@ -5890,6 +5901,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         model: architectUserConfig.model,
         variant: architectUserConfig.variant,
         temperature: architectUserConfig.temperature ?? 0.7,
+        mode: 'all' as const,
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
         prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadSkillsAppendix + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? architectSubagentRoutingAppendix : ''),
         tools: agentTools([
@@ -5929,6 +5941,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         model: swarmUserConfig.model,
         variant: swarmUserConfig.variant,
         temperature: swarmUserConfig.temperature ?? 0.5,
+        mode: 'primary' as const,
         description: 'Swarm (Orchestrator) - Orchestrates execution. Delegates, spawns workers, verifies, merges.',
         tools: agentTools([
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
@@ -6128,6 +6141,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         model: builderUserConfig.model,
         variant: builderUserConfig.variant,
         temperature: builderUserConfig.temperature ?? 0.4,
+        mode: 'primary' as const,
         description: 'Hive Builder - Hive-aware ad-hoc orchestrator with lightweight worktree, delegation, verification, merge, and cleanup flow.',
         tools: agentTools([
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
