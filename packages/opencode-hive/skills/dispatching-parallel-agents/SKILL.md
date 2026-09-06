@@ -94,9 +94,11 @@ Parallelize by issuing multiple task() calls in the same assistant message.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
 
 ```typescript
-task({ subagent_type: '<chosen-researcher>', prompt: 'Investigate failure A' })
-task({ subagent_type: '<chosen-researcher>', prompt: 'Investigate failure B' })
+task({ subagent_type: '<chosen-worker-or-advisor>', prompt: 'Diagnose failure A and report without edits' })
+task({ subagent_type: '<chosen-worker-or-advisor>', prompt: 'Diagnose failure B and report without edits' })
 ```
+
+Choose the best-fit available descriptor for the requested output. Scout is for bounded source retrieval, not causal diagnosis or solution selection. A Forager diagnosis-only lane reports evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked; it must not fix, edit, commit, or perform destructive reproduction unless the mission separately authorizes implementation in appropriate isolation.
 
 ### 4. Review and Integrate
 

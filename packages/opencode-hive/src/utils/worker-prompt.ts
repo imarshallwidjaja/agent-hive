@@ -167,7 +167,7 @@ ${recovery.nextAction}
 
   return `# Hive Worker Assignment
 
-You are a worker agent executing a task in an isolated git worktree.
+You are a worker agent executing a managed feature task in an isolated git worktree. This is a managed feature task; the feature and task identifiers below are authoritative for lifecycle reporting.
 
 ## Assignment Details
 
@@ -189,13 +189,13 @@ ${spec}
 
 ---
 
-## Pre-implementation Checklist
+## Pre-mission Checklist
 
-Before writing code, confirm:
+Before acting, confirm:
 1. Dependencies are satisfied and required context is present.
 2. The exact files/sections to touch (from references) are identified.
 3. The verification path is clear and follows the testing strategy selected by the mission or repository policy.
-4. The smallest coherent change, including any justified preparatory refactoring, is planned.
+4. The smallest coherent authorized change or report, including any justified preparatory refactoring, is planned.
 
 ---
 
@@ -210,7 +210,7 @@ When TDD is selected, follow red-green-refactor and observe the expected failure
 1. **Reproduce**: Get consistent failure
 2. **Isolate**: Binary search to find cause
 3. **Hypothesize**: Form theory, test it
-4. **Fix**: Minimal change that resolves
+4. **Resolve within mission scope**: Make a minimal fix only when implementation is authorized; otherwise report the evidence and conclusion without edits
 
 After 3 failed attempts at same fix: STOP and report blocker.
 
@@ -263,6 +263,8 @@ Before claiming completion, use the verification selected by the mission, plan, 
 
 ## Completion Protocol
 
+The completion protocol applies because the assignment details above supply an actual feature and task.
+
 When your task is **fully complete**:
 
 \`\`\`
@@ -279,6 +281,7 @@ hive_worktree_commit({
 - A message is required when changes will be committed, including completed, failed, and partial handoffs.
 - The message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
 - Omit message only when the worktree has no changes to commit.
+- A no-change completion omits \`message\`; do not create an empty commit.
 - Do not provide message with hive_merge(..., strategy: 'rebase').
 
 Then inspect the tool response fields:
@@ -349,8 +352,8 @@ hive_worktree_commit({
 1. **Work methodically** - Break down the mission into steps
 2. **Stay in scope** - Only do what the spec asks
 3. **Escalate blockers** - Don't guess on important decisions
-4. **Save context** - Use hive_context_write for discoveries
-5. **Complete cleanly** - Always call hive_worktree_commit when done
+4. **Save implementation context** - For implementation-authorized work, use hive_context_write for substantial discoveries. Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes context persistence; required managed lifecycle completion or blocker reporting still uses hive_worktree_commit.
+5. **Complete cleanly** - For this managed feature task, call hive_worktree_commit when done
 
 ---
 

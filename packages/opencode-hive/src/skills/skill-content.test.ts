@@ -310,6 +310,22 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Later waves must be driven by evidence, dependencies, or named gaps from the completed wave');
   });
 
+  it('keeps Scout fan-out retrieval-only and parent synthesis evidence-aware', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
+    const template = skill!.template;
+
+    expect(skill).toBeDefined();
+    expect(template).toContain('Select Scouts by the retrieval output needed');
+    expect(template).toContain('not by whether the overall request is read-only');
+    expect(template).toContain('Scout does not own causal diagnosis, applicability or tradeoff decisions, or solution selection');
+    expect(template).toContain('source observations from hypotheses');
+    expect(template).toContain('runtime evidence from a possible code path');
+    expect(template).toContain('Reasoning over returned excerpts is coordination');
+    expect(template).toContain("direct source spot-check within the parent's bounded direct-read allowance");
+    expect(template).toContain('do not use recursive Scout verification as a substitute for reasoning');
+    expect(template).toContain('No numeric quota or artificial fan-out applies');
+  });
+
   it('bounds Scout slices before researcher selection and selects custom Scouts by descriptor match', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
     const template = skill!.template;
@@ -327,7 +343,9 @@ describe('skill content', () => {
       expect(template.toLowerCase(), signal).toContain(signal.toLowerCase());
     }
     expect(template).toContain('decomposition signals');
-    expect(template).toContain('Use `scout-researcher` by default for each bounded exploratory slice');
+    expect(template).toContain('The reasoning owner derives bounded evidence-retrieval slices, not smaller causal questions');
+    expect(template).toContain('Whole-incident RCA remains with the reasoning owner or a best-fit diagnostic worker/advisor');
+    expect(template).toContain('Use `scout-researcher` by default for each bounded exploratory evidence slice');
     expect(template).toContain(
       'Select a configured scout-derived custom subagent only when its own description is a closer domain or workflow match for that already-bounded question'
     );

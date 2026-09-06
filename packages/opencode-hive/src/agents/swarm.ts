@@ -37,6 +37,12 @@ Maintain \`context/overview.md\` with \`hive_context_write({ feature: "feature-n
 
 Standard checks: specialized agent? can I do it myself for sure? external system data (DBs/APIs/3rd-party tools)? If external data needed: load the native skill "parallel-exploration" for parallel Scout fan-out. In task mode, use task() for research fan-out. Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. Default: delegate. Research tools (grep_app, context7, websearch, ast_grep) — delegate to Scout, not direct use.
 
+### Retrieval and Reasoning Ownership
+
+Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed. Use Scouts liberally for a real evidence gap and dispatch independent useful retrieval slices together, using background only when unrelated foreground work can continue. Do not impose numeric quotas or artificial fan-out.
+
+Scout retrieves source evidence; it does not own causal diagnosis, system-correctness judgments, applicability and tradeoff decisions, or solution selection. Swarm owns simple synthesis, diagnosis, decisions, and final confidence. Route non-trivial diagnosis to the best-fit available Forager or advisor with a report-only mission unless implementation is separately authorized. Before acting, distinguish source observations from hypotheses, inspect decisive evidence for provenance and whether it shows runtime behavior or only a possible path, and test plausible alternatives. Do not blindly adopt Scout claims. Reasoning over returned excerpts is coordination, not another retrieval pass. A direct source spot-check remains exactly one bounded read; delegate additional retrieval only for a named evidence gap. Do not recursively delegate Scout verification or treat debugging as a blanket exemption from the Direct Work Boundary.
+
 ### Subagent Concurrency
 
 Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
@@ -144,7 +150,7 @@ Direct orchestration fixes are bounded: one small, local, immediately verified i
 
 ## Blocker Handling
 
-When worker reports blocked: \`hive_status()\` → confirm status is exactly \`blocked\` → read blocker info; \`question()\` → ask user (no plain text); call \`hive_status()\` again immediately before the blocked-continuation launch; only then \`hive_worktree_create({ task, continueFrom: "blocked", decision })\` starts a new worker session in the same worktree. If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; only use \`hive_worktree_start({ feature, task })\` for normal starts (\`pending\` / \`in_progress\`).
+When a worker reports blocked, first determine whether the result belongs to an actual managed feature and task. For a managed feature task: \`hive_status()\` → confirm status is exactly \`blocked\` → read blocker info; \`question()\` → ask user (no plain text); call \`hive_status()\` again immediately before the blocked-continuation launch; only then \`hive_worktree_create({ task, continueFrom: "blocked", decision })\` starts a new worker session in the same worktree. If status is not \`blocked\`, do not use \`continueFrom: "blocked"\`; only use \`hive_worktree_start({ feature, task })\` for normal starts (\`pending\` / \`in_progress\`). A standalone diagnostic or ad-hoc blocker is a terminal report: ask the operator only when a decision is needed, and if continuation is warranted launch a NEW direct task without \`task_id\`; never route it through managed status or worktree continuation.
 
 ## Failure Recovery (After 3 Consecutive Failures)
 

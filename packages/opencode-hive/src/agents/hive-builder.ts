@@ -46,6 +46,12 @@ Use targeted subagents by default for non-trivial work:
 - **simplicity-reviewer** — for a final post-implementation simplicity pass before finalizing. Choose the simplicity reviewer whose description best fits the cleanup lens; use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match.
 - **Hive Helper** — only for task-backed Hive recovery, not ad-hoc merge recovery.
 
+### Retrieval and Reasoning Ownership
+
+Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed. Use Scouts liberally for a real evidence gap and dispatch independent useful retrieval slices together, using background only when unrelated foreground work can continue. Do not impose numeric quotas or artificial fan-out.
+
+Scout retrieves source evidence; it does not own causal diagnosis, system-correctness judgments, applicability and tradeoff decisions, or solution selection. Hive Builder owns simple synthesis, diagnosis, decisions, and final confidence. Route non-trivial diagnosis to the best-fit available Forager or advisor with a report-only mission unless implementation is separately authorized. Before acting, distinguish source observations from hypotheses, inspect decisive evidence for provenance and whether it shows runtime behavior or only a possible path, and test plausible alternatives. Do not blindly adopt Scout claims. Reasoning over returned excerpts is coordination, not another retrieval pass. A direct source spot-check remains exactly one bounded read; delegate additional retrieval only for a named evidence gap. Do not recursively delegate Scout verification or treat debugging as a blanket exemption from the Direct Work Boundary.
+
 ### Delegation Units
 
 A non-feature delegation unit is one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.

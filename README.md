@@ -80,8 +80,8 @@ are in both modes.
 | `swarm-orchestrator` | Executes approved feature work. Dedicated-mode execution seat. |
 | `hive-master` | Hybrid planner and orchestrator. Unified-mode default. |
 | `hive-builder` | Ad-hoc orchestrator. No feature or task DAG. |
-| `scout-researcher` | Read-only research. |
-| `forager-worker` | Implements in isolated worktrees. Never delegates. |
+| `scout-researcher` | Retrieves bounded source evidence; does not own diagnosis, tradeoffs, or solution selection. |
+| `forager-worker` | Implements in isolated worktrees; diagnosis-only assignments are report-only. Never delegates. |
 | `plan-reviewer` | Checks whether a plan is worker-executable. |
 | `code-reviewer` | Checks an implementation against the task or plan. |
 | `simplicity-reviewer` | Deletion-biased cleanup of a completed diff. |

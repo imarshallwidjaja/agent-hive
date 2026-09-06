@@ -17,6 +17,8 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 **This skill is for read-only research.** For parallel implementation work, use \`skill({ name: "dispatching-parallel-agents" })\` with \`hive_worktree_start\`.
 
+Select Scouts by the retrieval output needed, not by whether the overall request is read-only. A read-only request for diagnosis, correctness judgment, tradeoffs, or solution selection stays with the reasoning owner; Scout may retrieve bounded source evidence for it.
+
 ## When to Use
 
 **Use when:**
@@ -40,13 +42,13 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 Split the investigation into independently answerable, non-overlapping questions. Each question should fit in one context window. If a request will not fit in one context window, narrow the slice, capture bounded findings, and return to Hive with recommended next steps instead of pushing toward an oversized final report. Good decomposition:
 
-Breadth, ambiguity, multi-domain or multi-repository scope, whole-incident RCA, and unknown targets are decomposition signals, not capable/custom Scout selection signals. When these signals are present, split the work into bounded slices before choosing any researcher.
+Breadth, ambiguity, multi-domain or multi-repository scope, evidence needs within a whole-incident RCA, and unknown targets are decomposition signals, not capable/custom Scout selection signals. The reasoning owner derives bounded evidence-retrieval slices, not smaller causal questions. Whole-incident RCA remains with the reasoning owner or a best-fit diagnostic worker/advisor; Scout only retrieves the named evidence slices.
 
 | Domain | Question Example |
 |--------|------------------|
 | Codebase | "Where is X implemented? What files define it?" |
 | Tests | "How is X tested? What test patterns exist?" |
-| Docs/OSS | "How do other projects implement X? What's the recommended pattern?" |
+| Docs/OSS | "How do other projects implement X? What pattern does each source recommend?" |
 | Config | "How is X configured? What environment variables affect it?" |
 
 **Bad decomposition (dependent questions):**
@@ -60,7 +62,7 @@ Breadth, ambiguity, multi-domain or multi-repository scope, whole-incident RCA, 
 
 ### 2. Select Researcher For Each Bounded Slice
 
-Choose the researcher only after each slice passes the one-window bound check. Use `scout-researcher` by default for each bounded exploratory slice. Select a configured scout-derived custom subagent only when its own description is a closer domain or workflow match for that already-bounded question, or when the operator explicitly names it, and fall back to built-in `scout-researcher` when no configured description is a closer fit. Custom Scouts do not relax the one-window boundary and never replace decomposition or fan-out.
+Choose the researcher only after each evidence-retrieval slice passes the one-window bound check. Use `scout-researcher` by default for each bounded exploratory evidence slice. Select a configured scout-derived custom subagent only when its own description is a closer domain or workflow match for that already-bounded question, or when the operator explicitly names it, and fall back to built-in `scout-researcher` when no configured description is a closer fit. Custom Scouts do not relax the one-window boundary and never replace decomposition or fan-out.
 
 ### 3. Decide Wait Mode And Dispatch
 
@@ -126,6 +128,8 @@ After the fan-out message, collect the task results through the normal `task()` 
 
 When each task completes, its result is returned directly. Collect the outputs from each task and proceed to synthesis.
 
+The parent owns synthesis and decisions. Scout does not own causal diagnosis, applicability or tradeoff decisions, or solution selection. Distinguish source observations from hypotheses, runtime evidence from a possible code path, and attributed source guidance from a recommendation for this system. Reasoning over returned excerpts is coordination. Keep any direct source spot-check within the parent's bounded direct-read allowance, and delegate another retrieval only for a named evidence gap; do not use recursive Scout verification as a substitute for reasoning.
+
 Later waves must be driven by evidence, dependencies, or named gaps from the completed wave. Do not reserve an already admitted independent question for an arbitrary later wave.
 
 ### 6. Cleanup (If Needed)
@@ -134,7 +138,7 @@ Combine results from all tasks:
 - Cross-reference findings (file X mentioned by tasks A and B)
 - Identify gaps (task C found nothing, need different approach)
 - Build coherent answer from parallel evidence
-- If the remaining work would no longer fit in one context window, return to Hive with bounded findings and recommended next steps
+- If the remaining retrieval would no longer fit in one context window, return to Hive with bounded findings and named retrieval gaps
 
 No manual cancellation is required in task mode.
 
@@ -178,8 +182,8 @@ Research [TOPIC] in external sources:
 
 Return:
 - Links to relevant docs/repos
-- Key recommendations
-- Patterns that apply to our codebase
+- Attributed source recommendations
+- Similarities and differences the caller can use to decide applicability
 ```
 
 ## Real Example
@@ -257,3 +261,5 @@ After using this pattern, verify:
 - [ ] All tasks spawned before collecting any results (true fan-out)
 - [ ] Verified `task()` fan-out pattern used for parallel exploration
 - [ ] Synthesized findings into coherent answer
+
+No numeric quota or artificial fan-out applies. Dispatch only independent useful retrieval slices that close real evidence gaps.

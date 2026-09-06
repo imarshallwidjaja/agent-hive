@@ -241,8 +241,8 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 
 #### Canonical Delegation Threshold
 
-- Delegate to a researcher when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
-- Local `read`/`grep`/`glob` is acceptable only for a single known file and a bounded question.
+- Route by the requested output rather than read-only status or whether paths are already known. Delegate bounded retrieval to a Scout when a real evidence gap makes delegation useful; keep causal diagnosis, correctness judgments, applicability, tradeoffs, and solution selection with the planner or orchestrator.
+- Bounded direct reads remain acceptable whether or not the path was known before inspection. Delegate additional retrieval when it closes a named evidence gap.
 
 ## Tools
 
@@ -670,14 +670,14 @@ Define plugin-only custom subagents with `customAgents`. Freshly initialized `ag
 - `baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, or `vulnerability-reviewer`
 - `description`: required non-whitespace delegation guidance injected into eligible primary planner/orchestrator prompts
 
-Custom subagents are scoped routing specialists, not model-upgrade switches. Primary agents choose them autonomously when their description is a closer match for the task's domain, workflow, artifact type, or concrete review/approach risk. They keep the built-in base agent when no configured description is a closer fit. Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it. Importance, size, generic complexity, quality sensitivity, and a stronger model are not routing reasons. At runtime, custom agent entries with reserved names, non-object declarations, unsupported `baseAgent` values, or missing, blank, or whitespace-only `description` values are skipped with warnings.
+Custom subagents are scoped routing specialists, not model-upgrade switches. Primary agents choose them autonomously when their description is a closer match for the requested output, task domain, workflow, artifact type, or concrete review/approach risk. They keep the built-in base agent when no configured description is a closer fit. A custom description specializes routing within the inherited base role; it cannot expand that role or override its prompt, tool, or permission boundaries. Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it. Importance, size, generic complexity, quality sensitivity, and a stronger model are not routing reasons. At runtime, custom agent entries with reserved names, non-object declarations, unsupported `baseAgent` values, or missing, blank, or whitespace-only `description` values are skipped with warnings.
 
 The same seven built-in bases allow an optional routing-description override under the existing `agents` map. Nonblank values are trimmed before publication. Omitted, blank, or whitespace-only values inherit the canonical default without dropping unrelated settings on that built-in. Putting `description` on a non-customizable built-in invalidates the stored global config. At runtime, Agent Hive rejects the entire stored config and falls back to defaults, so unrelated stored settings are ignored until the config is corrected. The runtime skip behavior above does not promise a per-entry fallback for arbitrary schema-invalid optional fields. Custom agents never inherit a base description; every custom entry must supply its own non-whitespace description.
 
 | Configurable base | Canonical default description |
 |-------------------|-------------------------------|
-| `scout-researcher` | Default for bounded routine research, local code lookup, codebase exploration, and external docs or data retrieval. |
-| `forager-worker` | Default for ordinary implementation, bug fixes, and refactoring in an isolated worktree. |
+| `scout-researcher` | Retrieves bounded internal or external code, context, and data evidence without owning diagnosis, tradeoffs, or solution selection. |
+| `forager-worker` | Implements and verifies changes in an isolated worktree; diagnosis-only assignments remain report-only. |
 | `plan-reviewer` | Default for ordinary plan review covering worker readiness, references, dependencies, and executable verification. |
 | `code-reviewer` | Default for ordinary implementation review covering correctness, tests, risk, scope creep, YAGNI, and dead code. |
 | `simplicity-reviewer` | Default for ordinary post-implementation simplicity review covering unnecessary abstractions, duplication, dead code, and safe deletion. |

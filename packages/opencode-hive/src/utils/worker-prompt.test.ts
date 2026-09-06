@@ -183,6 +183,26 @@ UNIQUE_MARKER_12345
     expect(prompt).toContain('verification evidence');
   });
 
+  it('limits the commit protocol to the supplied managed feature task', () => {
+    const prompt = buildWorkerPrompt(createTestParams());
+
+    expect(prompt).toContain('This is a managed feature task');
+    expect(prompt).toContain('The completion protocol applies because the assignment details above supply an actual feature and task');
+    expect(prompt).toContain('A no-change completion omits `message`; do not create an empty commit');
+  });
+
+  it('keeps debugging changes conditional on mission authorization', () => {
+    const prompt = buildWorkerPrompt(createTestParams({ spec: 'Diagnose and report only.' }));
+
+    expect(prompt).toContain('## Pre-mission Checklist');
+    expect(prompt).toContain('Make a minimal fix only when implementation is authorized');
+    expect(prompt).toContain('otherwise report the evidence and conclusion without edits');
+    expect(prompt).toContain('For implementation-authorized work, use hive_context_write for substantial discoveries');
+    expect(prompt).toContain('Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes context persistence');
+    expect(prompt).toContain('required managed lifecycle completion or blocker reporting still uses hive_worktree_commit');
+    expect(prompt).not.toContain('**Save context** - Use hive_context_write for discoveries');
+  });
+
   it('requires an explicit subject and body for every terminal status that may commit changes', () => {
     const prompt = buildWorkerPrompt(createTestParams());
 

@@ -1766,7 +1766,7 @@ Do it
       {
         name: "forager-worker",
         baseAgent: "forager-worker",
-        description: "Default for ordinary implementation, bug fixes, and refactoring in an isolated worktree.",
+        description: "Implements and verifies changes in an isolated worktree; diagnosis-only assignments remain report-only.",
       },
       {
         name: "forager-example-template",
@@ -1789,7 +1789,7 @@ Do it
 Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.
 Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.
 
-- \`forager-worker\` — Default for ordinary implementation, bug fixes, and refactoring in an isolated worktree.
+- \`forager-worker\` — Implements and verifies changes in an isolated worktree; diagnosis-only assignments remain report-only.
 - \`forager-example-template\` — Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.
 - \`forager-ui\` — Use for UI-heavy implementation tasks.`);
     expect(execStart.instructions).toContain("`taskToolCall.subagent_type` is prefilled with the default for convenience");

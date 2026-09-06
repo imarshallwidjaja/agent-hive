@@ -521,6 +521,7 @@ function buildSubagentRoutingAppendix(
 
   return `\n\n## Configured Custom Subagents and Built-In Defaults
 Custom subagents are scoped specialists, not automatic model upgrades.
+Descriptions specialize routing within the inherited base role; they do not expand that role or override its prompt boundaries.
 For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.
 ${AUTONOMOUS_ROUTING_GUIDANCE}
 ${CANDIDATE_SPECIFIC_ROUTING_GUARD}

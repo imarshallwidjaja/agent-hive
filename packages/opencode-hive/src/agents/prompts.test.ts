@@ -345,6 +345,31 @@ describe('Direct Work Boundary prompt hygiene', () => {
 });
 
 describe('Scout operating contract', () => {
+  it('owns retrieval and evidence summaries without taking over causal or design reasoning', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('Scout owns internal and external code, context, and data retrieval');
+    expect(SCOUT_BEE_PROMPT).toContain('concise factual summaries and deduplication');
+    expect(SCOUT_BEE_PROMPT).toContain('direct call and reference tracing');
+    expect(SCOUT_BEE_PROMPT).toContain('conflicting source evidence');
+    expect(SCOUT_BEE_PROMPT).toContain('attributed source recommendations');
+    expect(SCOUT_BEE_PROMPT).toContain('Do not diagnose the cause of an observed failure');
+    expect(SCOUT_BEE_PROMPT).toContain('Do not decide source applicability, tradeoffs, or a solution');
+    expect(SCOUT_BEE_PROMPT).toContain('retrieve bounded relevant evidence and state what reasoning remains for the caller');
+    expect(SCOUT_BEE_PROMPT).not.toContain('Actual Need:');
+    expect(SCOUT_BEE_PROMPT).not.toContain('| COMPREHENSIVE | Multi-source synthesis');
+  });
+
+  it('returns compact evidence packets with provenance, limits, contradictions, and retrieval gaps', () => {
+    for (const requirement of [
+      'source paths or URLs with excerpts for decisive facts',
+      'searched scope, limitations, and unknowns',
+      'contradictions when relevant',
+      'next retrieval gaps, not fix recommendations',
+    ]) {
+      expect(SCOUT_BEE_PROMPT).toContain(requirement);
+    }
+    expect(SCOUT_BEE_PROMPT).toContain('Do not emit empty sections or raw dumps');
+  });
+
   it('enforces a read-only contract', () => {
     expect(SCOUT_BEE_PROMPT).toContain('### Read-Only Contract');
     expect(SCOUT_BEE_PROMPT).toContain('Scout must never modify project state');
@@ -373,7 +398,7 @@ describe('Scout operating contract', () => {
   it('includes synthesis rules prohibiting speculation about unread files', () => {
     expect(SCOUT_BEE_PROMPT).toContain('## Synthesis Rules');
     expect(SCOUT_BEE_PROMPT).toContain('do not speculate about its contents');
-    expect(SCOUT_BEE_PROMPT).toContain('cited synthesis');
+    expect(SCOUT_BEE_PROMPT).toContain('concise factual summary');
   });
 
   it('forbids Scout from delegating or orchestrating other agents', () => {
@@ -384,12 +409,29 @@ describe('Scout operating contract', () => {
     expect(SCOUT_BEE_PROMPT).toContain('Answer the assigned primary question');
     expect(SCOUT_BEE_PROMPT).toContain('Follow subordinate evidence needed to answer it');
     expect(SCOUT_BEE_PROMPT).toContain('Do not investigate adjacent questions');
-    expect(SCOUT_BEE_PROMPT).toContain('fresh-lane recommendations');
+    expect(SCOUT_BEE_PROMPT).toContain('next retrieval gaps');
     expect(SCOUT_BEE_PROMPT).toMatch(/return partial findings if further progress requires scope expansion/i);
   });
 });
 
 describe('Forager verification and tool-scope clarity', () => {
+  it('keeps diagnosis-only assignments report-only', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('Diagnosis-only');
+    expect(FORAGER_BEE_PROMPT).toContain('evidence, hypotheses tested and untested');
+    expect(FORAGER_BEE_PROMPT).toContain('supported conclusion or unresolved status');
+    expect(FORAGER_BEE_PROMPT).toContain('does not authorize fixes, edits, commits, or destructive reproduction');
+    expect(FORAGER_BEE_PROMPT).toContain('standalone direct assignment');
+    expect(FORAGER_BEE_PROMPT).toContain('return the requested report without calling `hive_worktree_commit`');
+    expect(FORAGER_BEE_PROMPT).toContain('managed feature task');
+    expect(FORAGER_BEE_PROMPT).toContain('only when the mission authorizes implementation');
+    expect(FORAGER_BEE_PROMPT).toContain('Never revert unrelated or user changes');
+    expect(FORAGER_BEE_PROMPT).toContain('standalone or ad-hoc diagnosis');
+    expect(FORAGER_BEE_PROMPT).toContain('without calling Hive feature-task tools');
+    expect(FORAGER_BEE_PROMPT).toContain('Keep report-only diagnostic discoveries in the terminal handoff');
+    expect(FORAGER_BEE_PROMPT).toContain('unless the mission explicitly authorizes metadata persistence');
+    expect(FORAGER_BEE_PROMPT).toContain('completion or blocker reporting is lifecycle metadata');
+  });
+
   it('defers tool scope to worker prompt', () => {
     expect(FORAGER_BEE_PROMPT).toContain('tool access is scoped to your role');
     expect(FORAGER_BEE_PROMPT).toContain('worker prompt');
@@ -408,6 +450,62 @@ describe('Forager verification and tool-scope clarity', () => {
     expect(FORAGER_BEE_PROMPT).not.toContain('ast_grep_search');
     expect(FORAGER_BEE_PROMPT).not.toContain('ast_grep_replace');
     expect(FORAGER_BEE_PROMPT).not.toContain('ast_grep_scan-code');
+  });
+});
+
+describe('Primary retrieval and reasoning ownership', () => {
+  const primaryPrompts = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Architect', ARCHITECT_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+    ['Hive Builder', HIVE_BUILDER_PROMPT],
+  ] as const;
+
+  it('routes by requested output and keeps diagnosis and decisions with the parent', () => {
+    for (const [name, prompt] of primaryPrompts) {
+      expect(prompt, name).toContain('Route by the requested output');
+      expect(prompt, name).toContain('not by whether the work is read-only or whether file paths are known');
+      expect(prompt, name).toContain('Scout retrieves source evidence');
+      expect(prompt, name).toContain('causal diagnosis');
+      expect(prompt, name).toContain('applicability and tradeoff decisions');
+      expect(prompt, name).toContain('solution selection');
+      expect(prompt, name).toContain('source observations from hypotheses');
+      expect(prompt, name).toContain('runtime behavior or only a possible path');
+      expect(prompt, name).toContain('plausible alternatives');
+      expect(prompt, name).toContain('final confidence');
+      expect(prompt, name).toContain('report-only mission');
+    }
+
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('best-fit available Forager or advisor');
+      expect(prompt, name).toContain('unless implementation is separately authorized');
+    }
+
+    expect(ARCHITECT_BEE_PROMPT).toContain('best-fit permitted read-only advisor');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Do not launch a Forager or other execution worker');
+    expect(ARCHITECT_BEE_PROMPT).toContain('hand execution diagnosis that requires state changes back to the primary orchestrator');
+  });
+
+  it('uses Scouts for real evidence gaps without quotas or recursive verification', () => {
+    for (const [name, prompt] of primaryPrompts) {
+      expect(prompt, name).toContain('real evidence gap');
+      expect(prompt, name).toContain('independent useful retrieval slices together');
+      expect(prompt, name).toContain('Do not impose numeric quotas or artificial fan-out');
+      expect(prompt, name).toContain('Reasoning over returned excerpts is coordination');
+      expect(prompt, name).toContain('A direct source spot-check remains exactly one bounded read');
+      expect(prompt, name).toContain('delegate additional retrieval only for a named evidence gap');
+      expect(prompt, name).toContain('Do not recursively delegate Scout verification');
+      expect(prompt, name).toContain('debugging as a blanket exemption');
+    }
+  });
+
+  it('keeps advisory decisions with Hive while preserving material operator clarification', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('reason and advise as parent');
+    expect(QUEEN_BEE_PROMPT).toContain('ask the operator only when material ambiguity remains');
   });
 });
 
@@ -507,12 +605,10 @@ describe('Specialized reviewer prompts', () => {
 
 describe('Hive (Hybrid) prompt', () => {
   describe('delegation planning alignment', () => {
-    it('contains the Canonical Delegation Threshold block', () => {
+    it('contains output-based canonical delegation guidance', () => {
       expect(QUEEN_BEE_PROMPT).toContain('### Canonical Delegation Threshold');
-      expect(QUEEN_BEE_PROMPT).toContain('cannot name the file path upfront');
-      expect(QUEEN_BEE_PROMPT).toContain('expect to inspect 2+ files');
-      expect(QUEEN_BEE_PROMPT).toContain('open-ended');
-      expect(QUEEN_BEE_PROMPT).toContain('Local `read/grep/glob`');
+      expect(QUEEN_BEE_PROMPT).toContain('Route by the requested output');
+      expect(QUEEN_BEE_PROMPT).toContain('Bounded direct reads remain allowed');
     });
 
     it('contains read-only exploration is allowed', () => {
@@ -532,8 +628,8 @@ describe('Hive (Hybrid) prompt', () => {
       );
     });
 
-    it('includes internal codebase exploration in Research intent', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Internal codebase exploration');
+    it('includes internal codebase evidence in Retrieval intent', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('Source facts, code/context tracing, external data');
     });
 
     it('includes task() guidance for research', () => {
@@ -696,12 +792,10 @@ describe('Architect (Planner) prompt', () => {
       expect(ARCHITECT_BEE_PROMPT).not.toContain('Delegate work or spawn workers');
     });
 
-    it('contains the Canonical Delegation Threshold block', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('### Canonical Delegation Threshold');
-      expect(ARCHITECT_BEE_PROMPT).toContain('cannot name the file path upfront');
-      expect(ARCHITECT_BEE_PROMPT).toContain('expect to inspect 2+ files');
-      expect(ARCHITECT_BEE_PROMPT).toContain('open-ended');
-      expect(ARCHITECT_BEE_PROMPT).toContain('Local `read/grep/glob`');
+    it('contains output-based canonical delegation guidance', () => {
+      expect(ARCHITECT_BEE_PROMPT).toContain('### Canonical Delegation Guidance');
+      expect(ARCHITECT_BEE_PROMPT).toContain('requested output is bounded source evidence');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Bounded direct reads remain acceptable');
     });
 
     it('broadens research to include internal repo exploration', () => {
@@ -906,6 +1000,13 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('verify the task is still exactly `blocked`');
     });
 
+    it('keeps standalone diagnostic and ad-hoc blockers out of managed continuation', () => {
+      expect(SWARM_BEE_PROMPT).toContain('first determine whether the result belongs to an actual managed feature and task');
+      expect(SWARM_BEE_PROMPT).toContain('A standalone diagnostic or ad-hoc blocker is a terminal report');
+      expect(SWARM_BEE_PROMPT).toContain('launch a NEW direct task without `task_id`');
+      expect(SWARM_BEE_PROMPT).toContain('never route it through managed status or worktree continuation');
+    });
+
     it('forbids blocked-continuation loops on non-blocked statuses', () => {
       expect(SWARM_BEE_PROMPT).toContain('Never loop `continueFrom: "blocked"` on non-blocked statuses');
     });
@@ -1072,10 +1173,11 @@ describe('Forager (Worker/Coder) prompt', () => {
     );
     expect(FORAGER_BEE_PROMPT).toContain('For ad-hoc runs, do not call `hive_context_write` unless');
     expect(FORAGER_BEE_PROMPT).toContain('ad-hoc runs have no separate context persistence');
+    expect(FORAGER_BEE_PROMPT).toContain('When implementation is authorized and a feature/task worker prompt identifies a Hive feature');
   });
 
-  it('requires one meaningful task commit with a subject and body', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('one meaningful commit per feature task');
+  it('requires one meaningful managed-task commit with a subject and body when changes exist', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('one meaningful commit if tracked changes exist');
     expect(FORAGER_BEE_PROMPT).toContain('subject, a blank line, and a descriptive body');
     expect(FORAGER_BEE_PROMPT).toContain('message: "type(scope): concise subject\\n\\nDescribe what changed and why."');
   });
@@ -1208,7 +1310,7 @@ describe('Scout (Explorer/Researcher) prompt', () => {
 
   it('protects anti-speculation and cited-synthesis guidance', () => {
     expect(SCOUT_BEE_PROMPT).toContain('## Synthesis Rules');
-    expect(SCOUT_BEE_PROMPT).toContain('cited synthesis');
+    expect(SCOUT_BEE_PROMPT).toContain('concise factual summary');
     expect(SCOUT_BEE_PROMPT).toContain('unverified');
   });
 
@@ -1220,8 +1322,9 @@ describe('Scout (Explorer/Researcher) prompt', () => {
     expect(SCOUT_BEE_PROMPT).toContain('fit in one context window');
   });
 
-  it('teaches return-to-hive escalation', () => {
-    expect(SCOUT_BEE_PROMPT).toContain('return to Hive');
+  it('returns bounded findings and retrieval gaps to the caller', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('return to the caller with bounded findings and named retrieval gaps');
+    expect(SCOUT_BEE_PROMPT).not.toContain('return to Hive with recommended next steps');
   });
 });
 
@@ -1287,7 +1390,7 @@ describe('README.md documentation', () => {
     });
 
     it('explains task() delegation model', () => {
-      expect(readmeContent).toContain('Delegate to a researcher');
+      expect(readmeContent).toContain('Delegate bounded retrieval to a Scout');
       expect(readmeContent).toContain('Read-only exploration');
     });
 
@@ -1295,9 +1398,9 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain("don't implement");
     });
 
-    it('contains the Canonical Delegation Threshold content', () => {
-      expect(readmeContent).toContain('cannot name the file path upfront');
-      expect(readmeContent).toContain('2+ files');
+    it('contains output-based delegation guidance', () => {
+      expect(readmeContent).toContain('requested output');
+      expect(readmeContent).toContain('real evidence gap');
     });
   });
 

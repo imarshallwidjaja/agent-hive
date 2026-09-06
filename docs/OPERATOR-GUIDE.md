@@ -40,11 +40,11 @@ MO: inspect, classify direct vs delegated work, isolate in an ad-hoc worktree, d
 
 ### Subagents you will see
 
-Primaries launch these. Ask the primary for a named seat when you want that lens. Custom agents in `~/.config/opencode/agent_hive.json` derive from these bases; they are routing specialists, not a reason to pick a stronger model.
+Primaries launch these. Ask the primary for a named seat when you want that lens. Custom agents in `~/.config/opencode/agent_hive.json` derive from these bases; their descriptions specialize routing within the inherited role and cannot expand its prompt, tool, or permission boundaries.
 
-**`scout-researcher`** exists so primaries do not wander the tree themselves. Read-only research: local code, docs, and external lookup. It answers one assigned question, parallelizes independent evidence, and returns partial findings plus next-slice recommendations when the question will not fit one context window. It does not edit, implement, or launch other agents.
+**`scout-researcher`** retrieves bounded evidence from local code, docs, and external sources. It can summarize facts, trace calls and references, preserve contradictory evidence, and report attributed source recommendations. It does not diagnose observed failures, judge system correctness, decide applicability or tradeoffs, select solutions, edit, implement, or launch other agents. Primaries route by the requested output rather than read-only status: they own synthesis and decisions, check decisive provenance and plausible alternatives, and use Scouts when a real evidence gap makes delegation useful.
 
-**`forager-worker`** exists so implementation happens in isolation, against a written assignment, without the worker inventing extra scope. It codes in a task or ad-hoc worktree, runs best-effort checks, and commits through the Hive worktree tools. It never delegates. If three approaches fail, it stops and reports blocked instead of improvising a fourth.
+**`forager-worker`** implements in isolation against a written assignment without inventing extra scope. Implementation missions code and run best-effort checks; managed feature tasks complete through `hive_worktree_commit`, while ad-hoc workers return a report for the parent to commit. Diagnosis-only missions report evidence, tested and untested hypotheses, a supported conclusion or unresolved status, and requested options without fixing, editing, committing, or using destructive reproduction. It never delegates.
 
 **`plan-reviewer`** exists to catch plans that a worker cannot execute. Core question: can a capable worker run this without getting stuck? It checks work content, references, scope, dependencies, executable verification, and written assumptions. Verdict is OKAY or REJECT. It does not judge whether the architecture is optimal.
 

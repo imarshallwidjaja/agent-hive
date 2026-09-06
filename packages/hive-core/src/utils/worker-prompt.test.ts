@@ -24,6 +24,13 @@ describe('buildWorkerPrompt commit handoff', () => {
     expect(prompt).toContain('verification selected by the mission, plan, or repository policy');
     expect(prompt).not.toContain('| New behavior | Run tests covering the new code; record pass/fail counts |');
     expect(prompt).not.toContain('## TDD Protocol (Required)');
+    expect(prompt).toContain('## Pre-mission Checklist');
+    expect(prompt).toContain('Make a minimal fix only when implementation is authorized');
+    expect(prompt).toContain('otherwise report the evidence and conclusion without edits');
+    expect(prompt).toContain('For implementation-authorized work, use hive_context_write for substantial discoveries');
+    expect(prompt).toContain('Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes context persistence');
+    expect(prompt).toContain('required managed lifecycle completion or blocker reporting still uses hive_worktree_commit');
+    expect(prompt).not.toContain('**Save context** - Use hive_context_write for discoveries');
   });
 
   it('requires an explicit subject and body for every terminal status that may commit changes', () => {
@@ -43,5 +50,22 @@ describe('buildWorkerPrompt commit handoff', () => {
     expect(prompt).not.toContain('Optional git commit subject');
     expect(prompt).not.toContain('Omit message (or pass empty string) to use existing defaults');
     expect(prompt.match(/message: "type\(scope\): concise subject\\n\\nDescribe what changed and why\."/g)).toHaveLength(3);
+  });
+
+  it('identifies generated worker prompts as managed feature tasks with zero-diff completion', () => {
+    const prompt = buildWorkerPrompt({
+      feature: 'test-feature',
+      task: '01-test-task',
+      taskOrder: 1,
+      worktreePath: '/tmp/worktree',
+      branch: 'hive/test-feature/01-test-task',
+      plan: '# Plan',
+      contextFiles: [],
+      spec: 'Report whether an edit is needed.',
+    });
+
+    expect(prompt).toContain('This is a managed feature task');
+    expect(prompt).toContain('The completion protocol applies because the assignment details above supply an actual feature and task');
+    expect(prompt).toContain('A no-change completion omits `message`; do not create an empty commit');
   });
 });

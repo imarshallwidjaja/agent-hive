@@ -58,6 +58,8 @@ Every delegated task needs a context packet with objective and done criteria, re
 
 Choose specialists by descriptor, not by a fixed routing table. Inspect available built-in and custom specialist descriptions, choose the closest specialist for the lane's purpose and risk, prefer configured custom subagents only when their descriptor is a closer match, and fall back to built-in base specialists when no custom descriptor fits.
 
+Select by requested output, not by read-only status. Scout retrieves bounded source evidence; the primary owns synthesis, causal diagnosis, applicability and tradeoff decisions, system-correctness judgments, and solution selection. Custom descriptions specialize within the inherited base role and cannot expand it.
+
 ## Verification Routing
 
 Orchestrator owns final confidence, not every verification action. Workers and reviewers perform verification actions appropriate to their lane. The orchestrator validates outputs and verdicts, reconciles them with direct evidence, and may run cheap final integration checks.

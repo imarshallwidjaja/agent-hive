@@ -533,12 +533,41 @@ describe('hive command renderers', () => {
     expect(output).not.toContain('forager-smart');
     expect(output).not.toContain('approach-advisor-xhigh-reasoning');
     expect(output).toContain('read-only council session');
-    expect(output).toContain('one-paragraph verdict');
+    expect(output).toContain('base role shown in the rendered councillor roster');
+    expect(output).toContain('Scout-derived seats return evidence, unknowns, and contradictions only');
+    expect(output).toContain('Do not require a universal verdict');
+    expect(output).toContain('Missing Scout verdict language is not agreement');
     expect(output).toContain('do not average vague opinions');
-    expect(output).toContain('smallest useful set');
+    expect(output).toContain('without silently trimming or substituting seats');
     expect(output).toContain('## Agreement');
     expect(output).toContain('## Suggested Next Step');
     expect(output).not.toContain('Council aliases:');
+  });
+
+  it('renders mixed built-in and custom Scout council seats with their actual base roles', () => {
+    const context = createContext({
+      council: {
+        ...DEFAULT_COUNCIL_CONFIG,
+        defaultGroup: 'mixed',
+        groups: {
+          ...DEFAULT_COUNCIL_CONFIG.groups,
+          mixed: { members: ['scout-researcher', 'scout-docs', 'approach-advisor'] },
+        },
+      },
+      agents: {
+        ...builtInAgents,
+        'scout-docs': {
+          ...builtInAgents['scout-researcher'],
+          baseAgent: 'scout-researcher',
+          description: 'Documentation evidence retrieval.',
+        },
+      },
+    });
+
+    const output = render('council', 'compare the options', context);
+    expect(output).toContain('scout-researcher (scout-researcher)');
+    expect(output).toContain('scout-docs (scout-researcher)');
+    expect(output).toContain('approach-advisor (approach-advisor)');
   });
 
   it('renders dash-review as a one-kind frozen evidence review', () => {

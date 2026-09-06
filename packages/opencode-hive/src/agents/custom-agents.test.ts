@@ -178,6 +178,8 @@ describe('buildCustomSubagents', () => {
 
     expect(derived['scout-docs'].mode).toBe('subagent');
     expect(derived['scout-docs'].prompt).toContain(SCOUT_BEE_PROMPT);
+    expect(derived['scout-docs'].prompt).toContain('Do not diagnose the cause of an observed failure');
+    expect(derived['scout-docs'].prompt).not.toContain('Use for documentation-heavy research tasks.');
     expect(derived['scout-docs'].prompt).toContain('# scout-docs auto-load guidance');
     expect(derived['scout-docs'].permission).toEqual(baseAgents['scout-researcher'].permission);
     expect(derived['scout-docs'].tools).toEqual(baseAgents['scout-researcher'].tools);

@@ -281,18 +281,10 @@ Do not apply patches.
 Do not create commits, branches, PRs, plans, or worktrees.
 Do not claim to have changed anything.
 
-Return analysis, risks, tradeoffs, and recommendations only.
+Follow the base role shown in the rendered councillor roster. Scout-derived seats return evidence, unknowns, and contradictions only; they do not diagnose, choose, or recommend a solution. Other seats keep their own analysis and output contracts.
 \`\`\`
 
-Ask each councillor to return:
-
-- one-paragraph verdict
-- key reasoning
-- risks or objections
-- assumptions and unknowns
-- recommended next step
-
-If \`include\` names too many councillors after resolution, trim to the smallest useful set for synthesis, usually 3-4 seats, without violating the resolved member list shown in the command preamble.
+Ask each councillor for the evidence, reasoning, unknowns, objections, or recommendation its displayed base role owns. Do not require a universal verdict, approval label, or recommendation from every seat. Use the resolved member list without silently trimming or substituting seats.
 
 After all councillors respond, synthesize the result yourself.
 
@@ -303,6 +295,7 @@ Synthesis rules:
 - do not average vague opinions into a bland compromise
 - preserve the strongest disagreements when they are decision-relevant
 - give a clear recommendation even when the council is split
+- Missing Scout verdict language is not agreement. Scout evidence, unknowns, and contradictions inform the parent synthesis; the parent owns the council recommendation.
 
 When usable councillors are resolved and council runs, use this output format:
 

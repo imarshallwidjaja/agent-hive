@@ -382,8 +382,8 @@ export const CUSTOM_AGENT_BASES = [
 export type CustomAgentBase = (typeof CUSTOM_AGENT_BASES)[number];
 
 export const DEFAULT_ROUTING_AGENT_DESCRIPTIONS: Record<CustomAgentBase, string> = {
-  'scout-researcher': 'Default for bounded routine research, local code lookup, codebase exploration, and external docs or data retrieval.',
-  'forager-worker': 'Default for ordinary implementation, bug fixes, and refactoring in an isolated worktree.',
+  'scout-researcher': 'Retrieves bounded internal or external code, context, and data evidence without owning diagnosis, tradeoffs, or solution selection.',
+  'forager-worker': 'Implements and verifies changes in an isolated worktree; diagnosis-only assignments remain report-only.',
   'plan-reviewer': 'Default for ordinary plan review covering worker readiness, references, dependencies, and executable verification.',
   'code-reviewer': 'Default for ordinary implementation review covering correctness, tests, risk, scope creep, YAGNI, and dead code.',
   'simplicity-reviewer': 'Default for ordinary post-implementation simplicity review covering unnecessary abstractions, duplication, dead code, and safe deletion.',

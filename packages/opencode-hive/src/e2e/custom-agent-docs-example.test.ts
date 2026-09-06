@@ -37,8 +37,8 @@ const publishedExample = {
 };
 
 const builtInBaseDescriptions = {
-  'scout-researcher': 'Default for bounded routine research, local code lookup, codebase exploration, and external docs or data retrieval.',
-  'forager-worker': 'Default for ordinary implementation, bug fixes, and refactoring in an isolated worktree.',
+  'scout-researcher': 'Retrieves bounded internal or external code, context, and data evidence without owning diagnosis, tradeoffs, or solution selection.',
+  'forager-worker': 'Implements and verifies changes in an isolated worktree; diagnosis-only assignments remain report-only.',
   'plan-reviewer': 'Default for ordinary plan review covering worker readiness, references, dependencies, and executable verification.',
   'code-reviewer': 'Default for ordinary implementation review covering correctness, tests, risk, scope creep, YAGNI, and dead code.',
   'simplicity-reviewer': 'Default for ordinary post-implementation simplicity review covering unnecessary abstractions, duplication, dead code, and safe deletion.',
@@ -172,6 +172,7 @@ describe('e2e: published custom-agent docs example', () => {
     const architectPrompt = opencodeConfig.agent['architect-planner']?.prompt as string;
     expect(architectPrompt).toContain('## Configured Custom Subagents and Built-In Defaults');
     expect(architectPrompt).toContain('Custom subagents are scoped specialists, not automatic model upgrades.');
+    expect(architectPrompt).toContain('Descriptions specialize routing within the inherited base role; they do not expand that role');
     expect(architectPrompt).toContain(
       'For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.'
     );
@@ -244,6 +245,7 @@ describe('e2e: published custom-agent docs example', () => {
 
     const readmeContent = fs.readFileSync(README_PATH, 'utf-8');
     expect(readmeContent).toContain(routingGuard);
+    expect(readmeContent).toContain('A custom description specializes routing within the inherited base role; it cannot expand that role');
     expect(readmeContent).not.toContain(broadExplicitNameRoute);
     expect(readmeContent).toContain(
       'Putting `description` on a non-customizable built-in invalidates the stored global config. At runtime, Agent Hive rejects the entire stored config and falls back to defaults, so unrelated stored settings are ignored until the config is corrected.',

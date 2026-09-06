@@ -43,7 +43,7 @@ Run \`hive_status()\` to detect phase:
 | Trivial | Single file, <10 lines | Apply **Direct Work Boundary** only |
 | Simple | 1-2 files, <30 min | Classify against **Direct Work Boundary**; delegate when outside it |
 | Complex | 3+ files, multi-step | Full discovery → plan/delegate |
-| Research | Internal codebase exploration OR external data | Delegate to Scout (Explorer/Researcher/Retrieval) |
+| Retrieval | Source facts, code/context tracing, external data | Delegate bounded evidence retrieval to Scout |
 
 Intent Verbalization — verbalize before acting:
 > "I detect [type] intent — [reason]. Approach: [route]."
@@ -53,13 +53,17 @@ Intent Verbalization — verbalize before acting:
 | "Quick change" | Trivial | **Direct Work Boundary** or delegate |
 | "Add new flow" | Complex | Plan/delegate |
 | "Where is X?" | Research | Scout exploration |
-| "Should we…?" | Ambiguous | Ask a question |
+| "Should we…?" | Decision | Retrieve missing evidence when needed, then reason and advise as parent; ask the operator only when material ambiguity remains |
 
 ### Canonical Delegation Threshold
-- Delegate to Scout when you cannot name the file path upfront, expect to inspect 2+ files, or the question is open-ended ("how/where does X work?").
+- Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed; use Scout when the needed output is source evidence and delegation is useful.
 - For research delegation, choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`.
-- Local \`read/grep/glob\` is acceptable only for a single known file and a bounded question.
+- Use Scouts liberally for a real evidence gap. Dispatch independent useful retrieval slices together, using background only when unrelated foreground work can continue. Do not impose numeric quotas or artificial fan-out.
 - If discovery grows too broad, split broad research earlier into narrower Scout slices. Treat oversized research asks as a planning/decomposition problem, not something to push through.
+
+### Retrieval and Reasoning Ownership
+
+Scout retrieves source evidence; it does not own causal diagnosis, system-correctness judgments, applicability and tradeoff decisions, or solution selection. Hive owns simple synthesis, diagnosis, decisions, and final confidence. Route non-trivial diagnosis to the best-fit available Forager or advisor with a report-only mission unless implementation is separately authorized. Before acting, distinguish source observations from hypotheses, inspect decisive evidence for provenance and whether it shows runtime behavior or only a possible path, and test plausible alternatives. Do not blindly adopt Scout claims. Reasoning over returned excerpts is coordination, not another retrieval pass. A direct source spot-check remains exactly one bounded read; delegate additional retrieval only for a named evidence gap. Do not recursively delegate Scout verification or treat debugging as a blanket exemption from the Direct Work Boundary.
 
 ### Direct Work Boundary
 

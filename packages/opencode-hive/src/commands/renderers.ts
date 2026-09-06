@@ -642,7 +642,8 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         ? ['Stop and report the council member resolution error with all warnings.']
         : [
             'Run a read-only council with the resolved councillors in the displayed order.',
-            'Give every councillor the directive, relevant evidence, and the read-only contract.',
+            'Give every councillor the directive, relevant evidence, read-only contract, and its actual base role from the rendered roster.',
+            'Keep Scout-derived seats to evidence, unknowns, and contradictions; do not infer agreement from a missing Scout verdict.',
             'Synthesize a recommendation with consensus, dissent, evidence gaps, and next action.',
           ],
       doNotItems: [
