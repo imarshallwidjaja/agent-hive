@@ -23,6 +23,8 @@ describe('viewer-only VS Code manifest', () => {
     const commands = (pkg.contributes.commands ?? []).map((entry: { command: string }) => entry.command).sort();
     expect(commands).toEqual([
       'hive.copyToClipboard',
+      'hive.context.archive',
+      'hive.constraints.inspect',
       'hive.comment.create',
       'hive.comment.delete',
       'hive.comment.reply',
@@ -36,6 +38,18 @@ describe('viewer-only VS Code manifest', () => {
     expect(commands).not.toContain('hive.background.cancel');
     expect(commands).not.toContain('hive.background.reconcile');
     expect(commands).not.toContain('hive.background.ignore');
+  });
+
+  it('keeps selective context archive in the tree and constraints in a read-only text provider', () => {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    expect(pkg.contributes.menus.commandPalette).toContainEqual({ command: 'hive.context.archive', when: 'false' });
+    expect(pkg.contributes.menus['view/item/context']).toContainEqual({ command: 'hive.context.archive', when: 'view == hive.features && (viewItem == context-folder || viewItem == context-file)' });
+    const source = fs.readFileSync(new URL('../extension.ts', import.meta.url), 'utf8');
+    expect(source).toContain('registerTextDocumentContentProvider(SessionConstraintsProvider.scheme');
+    expect(source).toContain('onDidCloseTextDocument(document => this.sessionConstraintsProvider?.close(document.uri))');
+    expect(source).toContain('this.context.subscriptions.push(\n      this.sessionConstraintsProvider,');
+    expect(source).toContain('this.sessionConstraintsProvider?.refresh()');
+    expect(source).not.toContain('registerFileSystemProvider');
   });
 
   it('contributes the minimal Hive viewer views', () => {

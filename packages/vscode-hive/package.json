@@ -43,7 +43,9 @@
     "onCommand:hive.comment.resolve",
     "onCommand:hive.comment.delete",
     "onCommand:hive.feature.archive",
-    "onCommand:hive.job.archive"
+    "onCommand:hive.job.archive",
+    "onCommand:hive.context.archive",
+    "onCommand:hive.constraints.inspect"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -90,6 +92,14 @@
       }
     ],
     "commands": [
+      {
+        "command": "hive.context.archive",
+        "title": "Archive Context"
+      },
+      {
+        "command": "hive.constraints.inspect",
+        "title": "Hive: Inspect Session Standing Constraints"
+      },
       {
         "command": "hive.refresh",
         "title": "Hive: Refresh",
@@ -155,6 +165,10 @@
       ],
       "view/item/context": [
         {
+          "command": "hive.context.archive",
+          "when": "view == hive.features && (viewItem == context-folder || viewItem == context-file)"
+        },
+        {
           "command": "hive.openFile",
           "when": "viewItem == file"
         },
@@ -178,6 +192,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "hive.context.archive",
+          "when": "false"
+        },
         {
           "command": "hive.feature.archive",
           "when": "false"

@@ -145,6 +145,10 @@ export class SessionService {
     return session;
   }
 
+  listGlobal(): SessionInfo[] {
+    return this.getGlobalSessions().sessions;
+  }
+
   getGlobal(sessionId: string): SessionInfo | undefined {
     const data = this.getGlobalSessions();
     return data.sessions.find(s => s.sessionId === sessionId);

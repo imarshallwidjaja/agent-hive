@@ -153,6 +153,14 @@ After a worker fails or reports partial progress, start again through the normal
 
 When a worker is blocked, inspect the blocker and make the operator decision. The blocked path, [`hive_worktree_create`](../packages/opencode-hive/docs/HIVE-TOOLS.md#worktree-4-tools), launches a fresh worker in the existing worktree.
 
+## Inspect context and constraints in VS Code
+
+The Arkive extension keeps its three native views. In Features, expand Context to inspect Markdown documents, classifications, sizes, inclusion policy and durable budgets. Evidence exclusion applies to automatic prompt injection; it is not a privacy guarantee. `overview.md` still opens normally and supports review comments. Direct editor saves bypass managed context revisions and mutation-time caps.
+
+Use **Archive Context** on a Context folder or file to select documents, supply a reason and confirm their exact filenames. The operation uses the revision captured before selection. A stale revision fails without retrying; reopen the action to review current state. Cancelling any step leaves context unchanged.
+
+Use **Hive: Inspect Session Standing Constraints** in the command palette to explicitly select a session with entries from the authoritative project registry. The read-only document shows identity/scope, stable entry IDs and text, revision, and usage against the 8,000-character cap. It omits directive prompts, paths and recovery metadata. Inspection never chooses an active session or writes the registry. Manage directives in OpenCode. `.hive` changes and **Hive: Refresh** update open inspectors.
+
 ## Other review options
 
 - **Plan comments**: review requirements, dependencies, and scope in the plan document or chat before approval.

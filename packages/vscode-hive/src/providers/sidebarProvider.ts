@@ -1,10 +1,19 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import { getFeaturePath, listFeatureDirectories } from 'hive-core'
-import type { FeatureJson, TaskStatus } from 'hive-core'
+import { ContextService, getFeaturePath, listFeatureDirectories } from 'hive-core'
+import type { ContextReadSummary, FeatureJson, TaskStatus } from 'hive-core'
+import { contextDescription, contextTooltip } from './contextInspection.js'
 
-type SidebarItem = StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem | TaskFileItem
+class ContextUnavailableItem extends vscode.TreeItem {
+  constructor(error?: unknown) {
+    super(error === undefined ? 'Context temporarily unavailable' : 'Context unavailable', vscode.TreeItemCollapsibleState.None)
+    this.description = error === undefined ? 'Refresh after context changes finish' : `Context inspection failed: ${error instanceof Error ? error.message : String(error)}`
+    if (error !== undefined) this.iconPath = new vscode.ThemeIcon('error')
+  }
+}
+
+type SidebarItem = ContextUnavailableItem | StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem | TaskFileItem
 
 const STATUS_ICONS: Record<string, string> = {
   pending: 'circle-outline',
@@ -81,13 +90,15 @@ class ContextFolderItem extends vscode.TreeItem {
   constructor(
     public readonly featureName: string,
     public readonly contextPath: string,
-    public readonly fileCount: number
+    public readonly summary: ContextReadSummary
   ) {
-    super('Context', fileCount > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
-    
-    this.description = fileCount > 0 ? `${fileCount} file(s)` : ''
+    super('Context', summary.files.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
+
+    const budget = summary.durable
+    this.description = `${summary.files.length} documents · ${budget.fileCount}/${budget.fileCap} durable · ${budget.chars}/${budget.charCap} chars`
     this.contextValue = 'context-folder'
-    this.iconPath = new vscode.ThemeIcon('folder')
+    this.iconPath = new vscode.ThemeIcon(budget.overLimit ? 'warning' : 'folder')
+    this.tooltip = [`Revision: ${summary.revision}`, 'Durable budget uses UTF-16 code units. Reserved and evidence documents are uncapped.', ...budget.consolidationHints].join('\n')
   }
 }
 
@@ -95,11 +106,14 @@ class ContextFileItem extends vscode.TreeItem {
   constructor(
     public readonly filename: string,
     public readonly filePath: string,
+    public readonly featureName: string,
+    metadata: ContextReadSummary['files'][number],
     public readonly commentCount: number = 0
   ) {
     super(filename, vscode.TreeItemCollapsibleState.None)
-    
-    this.description = commentCount > 0 ? `${commentCount} comment(s)` : ''
+
+    this.description = contextDescription(metadata, filePath) + (commentCount > 0 ? ` · ${commentCount} comment(s)` : '')
+    this.tooltip = contextTooltip(metadata)
     this.contextValue = 'context-file'
     this.iconPath = new vscode.ThemeIcon(filename.endsWith('.md') ? 'markdown' : 'file')
     this.command = {
@@ -285,11 +299,12 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     }
 
     const contextPath = path.join(featurePath, 'context')
-    const contextFiles = fs.existsSync(contextPath)
-      ? fs.readdirSync(contextPath).filter(f => !f.startsWith('.'))
-      : []
-
-    items.push(new ContextFolderItem(featureName, contextPath, contextFiles.length))
+    try {
+      const snapshot = new ContextService(this.workspaceRoot).inspectSummary(featureName)
+      items.push(snapshot.status === 'ready' ? new ContextFolderItem(featureName, contextPath, snapshot.summary) : new ContextUnavailableItem())
+    } catch (error) {
+      items.push(new ContextUnavailableItem(error))
+    }
 
     const tasks = this.getTaskList(featureName)
     items.push(new TasksGroupItem(featureName, tasks))
@@ -297,15 +312,19 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     return items
   }
 
-  private getContextFiles(featureName: string, contextPath: string): ContextFileItem[] {
-    if (!fs.existsSync(contextPath)) return []
-
-    return fs.readdirSync(contextPath)
-      .filter(f => !f.startsWith('.'))
-      .map(f => {
-        const commentCount = f === 'overview.md' ? this.getReviewCommentCount(featureName, 'overview') : 0
-        return new ContextFileItem(f, path.join(contextPath, f), commentCount)
-      })
+  private getContextFiles(featureName: string, contextPath: string): SidebarItem[] {
+    let snapshot: ReturnType<ContextService['inspectSummary']>
+    try {
+      snapshot = new ContextService(this.workspaceRoot).inspectSummary(featureName)
+    } catch (error) {
+      return [new ContextUnavailableItem(error)]
+    }
+    if (snapshot.status === 'busy') return [new ContextUnavailableItem()]
+    return snapshot.summary.files.map(file => {
+      const filename = `${file.name}.md`
+      const commentCount = filename === 'overview.md' ? this.getReviewCommentCount(featureName, 'overview') : 0
+      return new ContextFileItem(filename, path.join(contextPath, filename), featureName, file, commentCount)
+    })
   }
 
   private getTasks(featureName: string, tasks: Array<{ folder: string; status: TaskStatus }>): TaskItem[] {

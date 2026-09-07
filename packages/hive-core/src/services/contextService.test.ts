@@ -34,6 +34,76 @@ describe('ContextService overview as regular context', () => {
     cleanup();
   });
 
+  it('inspects absent and read-only context without filesystem writes or lock acquisition', () => {
+    setupFeature('inspection');
+    const contextPath = path.join(TEST_DIR, '.hive/features/inspection/context');
+    const before = fs.readdirSync(path.dirname(contextPath));
+    expect(service.inspectSummary('inspection').status).toBe('ready');
+    expect(fs.readdirSync(path.dirname(contextPath))).toEqual(before);
+    expect(fs.existsSync(contextPath)).toBe(false);
+    service.create('inspection', 'notes', 'é😀');
+    service.create('inspection', 'proof', 'evidence', { kind: 'evidence' });
+    const open = spyOn(fs, 'openSync').mockImplementation(() => { throw new Error('inspection must not open a writer lock'); });
+    fs.chmodSync(contextPath, 0o555);
+    try {
+      const snapshot = service.inspectSummary('inspection');
+      expect(snapshot.status).toBe('ready');
+      if (snapshot.status !== 'ready') throw new Error('Expected snapshot');
+      expect(snapshot.summary.durable.chars).toBe(3);
+      expect(snapshot.summary.files.find(file => file.name === 'notes')?.bytes).toBe(6);
+      expect(snapshot.summary.files.find(file => file.name === 'proof')?.includeInExecution).toBe(false);
+      expect(open).not.toHaveBeenCalled();
+    } finally { open.mockRestore(); fs.chmodSync(contextPath, 0o755); }
+    fs.writeFileSync(path.join(contextPath, 'index.json.lock'), 'writer');
+    expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' });
+  });
+
+  it('rejects unstable inspection snapshots and transient missing files without partial results', () => {
+    setupFeature('inspection');
+    service.create('inspection', 'proof', 'evidence', { kind: 'evidence' });
+    const original = fs.readFileSync;
+    let reads = 0;
+    const read = spyOn(fs, 'readFileSync').mockImplementation(((file: any, ...args: any[]) => {
+      if (String(file).endsWith('proof.md')) {
+        reads++;
+        throw Object.assign(new Error('moved by archive'), { code: 'ENOENT' });
+      }
+      return (original as any)(file, ...args);
+    }) as any);
+    try {
+      expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' });
+      expect(reads).toBe(2);
+    } finally { read.mockRestore(); }
+    let indexReads = 0;
+    const changing = spyOn(fs, 'readFileSync').mockImplementation(((file: any, ...args: any[]) => {
+      const value = (original as any)(file, ...args);
+      if (String(file).endsWith('index.json')) return JSON.stringify({ ...JSON.parse(value), revision: ++indexReads });
+      return value;
+    }) as any);
+    try { expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' }); }
+    finally { changing.mockRestore(); }
+  });
+
+  it('rejects invalid inspection index shapes without writes or lock acquisition', () => {
+    setupFeature('inspection');
+    service.create('inspection', 'notes', 'preserved');
+    const contextPath = path.join(TEST_DIR, '.hive/features/inspection/context');
+    const indexPath = path.join(contextPath, 'index.json');
+    for (const value of [null, [], 1, 'index', { schemaVersion: 1, revision: 0, entries: [] }]) {
+      const text = JSON.stringify(value);
+      fs.writeFileSync(indexPath, text);
+      const open = spyOn(fs, 'openSync');
+      const write = spyOn(fs, 'writeFileSync');
+      try {
+        expect(() => service.inspectSummary('inspection')).toThrow('Context index has an invalid shape.');
+        expect(open).not.toHaveBeenCalled();
+        expect(write).not.toHaveBeenCalled();
+      } finally { open.mockRestore(); write.mockRestore(); }
+      expect(fs.readFileSync(indexPath, 'utf8')).toBe(text);
+      expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe('preserved');
+    }
+  });
+
   it('treats overview like any other durable context file', () => {
     const featureName = 'reserved-overview';
     setupFeature(featureName);

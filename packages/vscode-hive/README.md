@@ -19,6 +19,22 @@ Download `vscode-arkive.vsix` from [GitHub Releases](https://github.com/imarshal
 ### Feature Sidebar
 Feature tree with status indicators and grouping. Archived features appear in a collapsed **Archived** group. Right-clicking a planning/approved/executing feature shows **Archive Feature**, which hides it from normal agent status without deleting worktrees, branches, tasks, or commits.
 
+### Context inspection and archive
+
+Expand a feature's Context folder to see Markdown documents, their classifications and sizes. The folder shows the document count and durable usage against 8 files and 40,000 characters (UTF-16 code units); a warning appears only above either cap. Tooltips show update time, task association, automatic execution/network inclusion, and consolidation hints. Evidence is excluded from automatic injection, not protected from explicit reads or disclosure.
+
+Context expansion does not create directories, metadata, or writer locks, including in read-only workspaces. If a writer is active or the bounded consistency check sees changing files, the tree shows `Context temporarily unavailable`; the next content/metadata watcher refresh or manual Refresh reads again. This viewer snapshot is not execution authority. Internal lock-file events alone do not refresh the tree.
+
+Right-click the Context folder or a document and choose **Archive Context**. Select documents, enter a nonblank reason, and confirm the exact filenames. Cancellation changes nothing. If the revision changed while the picker was open, the operation fails without retrying; reopen it to review current documents. Archived files leave active context and remain available for audit.
+
+Opening a document still uses the normal editor, and `overview.md` keeps its review comments. Direct editor saves are unmanaged: they bypass context metadata revisions and mutation-time caps. Use managed context tools in OpenCode when those guarantees matter.
+
+### Session standing constraints
+
+Run **Hive: Inspect Session Standing Constraints** from the command palette and explicitly choose a session. The picker lists only sessions with constraints from the project's authoritative session registry, with agent, feature, kind, activity and ID for disambiguation. It does not infer an active session or use feature-local mirrors.
+
+The read-only text document shows the selected identity and scope, stable entry IDs, verbatim constraint text, revision, and usage against 8,000 characters. It omits directive prompts, paths, and recovery metadata. Existing documents refresh on `.hive` changes or **Hive: Refresh**. Manage constraints through OpenCode; the inspector has no editing controls.
+
 ### Inline Review
 Add comments on plan.md and overview.md.
 
@@ -75,9 +91,10 @@ For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc
 
 ## Scope: viewer + limited operator archive
 
-This extension is **viewer-first** with limited operator archive actions. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, background jobs, and repository manifests) and surfaces them in the sidebar and review flow. Safe viewing actions are limited to Refresh, Open File, Copy to Clipboard, Done Review, and inline comment actions.
+This extension is **viewer-first** with limited operator archive actions. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, background jobs, and repository manifests) and surfaces them in the sidebar and review flow. Viewing and review actions include Refresh, Open File, Copy to Clipboard, Inspect Session Standing Constraints, Done Review, and inline comments.
 
-Two additional **operator archive** actions allow cleaning up stale state without agentic escape:
+Three explicit **operator archive** actions allow cleaning up stale state:
+- **Archive Context** - selectively archives confirmed documents using a captured context revision and a required reason.
 - **Archive Feature** — marks a feature with `archived` status, excluding it from ordinary agent status and implicit sole-live resolution. Preserves all `.hive/` files for audit or manual recovery. Does not delete worktrees, branches, tasks, or commits.
 - **Archive Background Job** — moves a background job to the collapsed Ignored group using existing ignored/archive fields. Does not mutate runtime state and does not cancel or kill any running process.
 

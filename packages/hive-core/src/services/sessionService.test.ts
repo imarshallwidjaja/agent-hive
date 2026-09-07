@@ -51,6 +51,24 @@ describe('SessionService', () => {
     });
   });
 
+  describe('listGlobal', () => {
+    it('reads a missing registry without creating files', () => {
+      expect(service.listGlobal()).toEqual([]);
+      expect(service.readStandingConstraints('missing').entries).toEqual([]);
+      expect(fs.readdirSync(PROJECT_ROOT)).toEqual([]);
+    });
+
+    it('uses only the authoritative registry and returns detached records', () => {
+      setupFeature('mirror');
+      fs.writeFileSync(path.join(PROJECT_ROOT, '.hive/features/mirror/sessions.json'), JSON.stringify({ sessions: [{ sessionId: 'mirror-only' }] }));
+      service.trackGlobal('global', { standingConstraintEntries: [{ id: 'one', text: 'Keep scope' }] });
+      const sessions = service.listGlobal();
+      expect(sessions.map(session => session.sessionId)).toEqual(['global']);
+      sessions[0].standingConstraintEntries![0].text = 'Changed';
+      expect(service.listGlobal()[0].standingConstraintEntries![0].text).toBe('Keep scope');
+    });
+  });
+
   describe('trackGlobal', () => {
     it('tracks global session identity before feature binding', () => {
       const session = service.trackGlobal('sess-1', {

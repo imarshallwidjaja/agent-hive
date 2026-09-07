@@ -4,6 +4,9 @@ import * as path from 'path'
 import { HiveWatcher, Launcher } from './services'
 import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, TrackedRepositoriesProvider } from './providers'
 
+import { archiveContext } from './providers/contextInspection.js'
+import { SessionConstraintsProvider } from './providers/sessionConstraintsProvider.js'
+
 type ReviewDocument = 'plan' | 'overview'
 
 function getReviewTarget(workspaceRoot: string, filePath: string): { featureName: string; document: ReviewDocument } | null {
@@ -57,6 +60,7 @@ class HiveExtension {
   private sidebarProvider: HiveSidebarProvider | null = null
   private backgroundJobsProvider: BackgroundJobsProvider | null = null
   private trackedRepositoriesProvider: TrackedRepositoriesProvider | null = null
+  private sessionConstraintsProvider: SessionConstraintsProvider | null = null
   private launcher: Launcher | null = null
   private commentController: PlanCommentController | null = null
   private hiveWatcher: HiveWatcher | null = null
@@ -86,6 +90,12 @@ class HiveExtension {
     this.sidebarProvider = new HiveSidebarProvider(workspaceRoot)
     this.backgroundJobsProvider = new BackgroundJobsProvider(workspaceRoot)
     this.trackedRepositoriesProvider = new TrackedRepositoriesProvider(workspaceRoot)
+    this.sessionConstraintsProvider = new SessionConstraintsProvider(workspaceRoot)
+    this.context.subscriptions.push(
+      this.sessionConstraintsProvider,
+      vscode.workspace.registerTextDocumentContentProvider(SessionConstraintsProvider.scheme, this.sessionConstraintsProvider),
+      vscode.workspace.onDidCloseTextDocument(document => this.sessionConstraintsProvider?.close(document.uri)),
+    )
     this.launcher = new Launcher()
     this.commentController = new PlanCommentController(workspaceRoot)
 
@@ -99,6 +109,7 @@ class HiveExtension {
       this.sidebarProvider?.refresh()
       this.backgroundJobsProvider?.refresh()
       this.trackedRepositoriesProvider?.refresh()
+      this.sessionConstraintsProvider?.refresh()
     })
     this.context.subscriptions.push({ dispose: () => this.hiveWatcher?.dispose() })
 
@@ -145,6 +156,23 @@ class HiveExtension {
         this.sidebarProvider?.refresh()
         this.backgroundJobsProvider?.refresh()
         this.trackedRepositoriesProvider?.refresh()
+        this.sessionConstraintsProvider?.refresh()
+      }),
+
+      vscode.commands.registerCommand('hive.context.archive', async (item) => {
+        if (!this.workspaceRoot) {
+          vscode.window.showErrorMessage('Hive: No .hive directory found')
+          return
+        }
+        await archiveContext(this.workspaceRoot, item, () => this.sidebarProvider?.refresh())
+      }),
+
+      vscode.commands.registerCommand('hive.constraints.inspect', async () => {
+        if (!this.sessionConstraintsProvider) {
+          vscode.window.showInformationMessage('Hive: Open a workspace containing .hive to inspect session constraints.')
+          return
+        }
+        await this.sessionConstraintsProvider.inspect()
       }),
 
       vscode.commands.registerCommand('hive.openFile', (filePathOrItem: string | { command?: { command?: string; arguments?: string[] } }) => {

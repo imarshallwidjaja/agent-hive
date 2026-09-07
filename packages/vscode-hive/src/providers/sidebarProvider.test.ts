@@ -1,10 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 const hiveCore = await import('../../../hive-core/src/index.ts');
 const { FeatureService, PlanService } = hiveCore;
 
 mock.module('hive-core', () => hiveCore);
+
+const ui = {
+  fired: [] as any[], disposed: [] as any[], watchers: [] as any[],
+  picks: [] as any[], inputs: [] as any[], confirmations: [] as any[], messages: [] as string[], errors: [] as string[], shown: [] as any[], pickItems: [] as any[], warnings: [] as string[],
+};
 
 mock.module('vscode', () => {
   class TreeItem {
@@ -36,11 +41,30 @@ mock.module('vscode', () => {
   }
 
   class EventEmitter<T> {
-    readonly event = (_listener: (value: T | undefined) => void) => ({ dispose() {} });
-    fire(_value: T | undefined): void {}
+    private listeners = new Set<(value: T | undefined) => void>();
+    readonly event = (listener: (value: T | undefined) => void) => { this.listeners.add(listener); return { dispose: () => this.listeners.delete(listener) }; };
+    fire(value: T | undefined): void { ui.fired.push(value); for (const listener of this.listeners) listener(value); }
+    dispose(): void { ui.disposed.push(this); this.listeners.clear(); }
   }
 
   return {
+    window: {
+      async showQuickPick(items: any[]) { ui.pickItems = items; const pick = ui.picks.shift(); return typeof pick === 'function' ? pick(items) : pick; },
+      async showInputBox() { return ui.inputs.shift(); },
+      async showWarningMessage(message: string) { ui.warnings.push(message); const confirm = ui.confirmations.shift(); return typeof confirm === 'function' ? confirm() : confirm; },
+      showInformationMessage(message: string) { ui.messages.push(message); },
+      showErrorMessage(message: string) { ui.errors.push(message); },
+      async showTextDocument(document: any) { ui.shown.push(document); },
+    },
+    RelativePattern: class { constructor(public base: string, public pattern: string) {} },
+    workspace: {
+      async openTextDocument(uri: any) { return { uri }; },
+      createFileSystemWatcher() {
+        const watcher = { create: (_uri: any) => {}, change: (_uri: any) => {}, delete: (_uri: any) => {}, disposed: false,
+          onDidCreate(fn: any) { this.create = fn; }, onDidChange(fn: any) { this.change = fn; }, onDidDelete(fn: any) { this.delete = fn; }, dispose() { this.disposed = true; } };
+        ui.watchers.push(watcher); return watcher;
+      },
+    },
     TreeItem,
     ThemeIcon,
     MarkdownString,
@@ -55,7 +79,7 @@ mock.module('vscode', () => {
         return { fsPath: targetPath };
       },
       parse(value: string) {
-        return { value };
+        return { value, toString: () => value };
       },
     },
   };
@@ -69,6 +93,7 @@ describe('HiveSidebarProvider', () => {
   let testRoot: string;
 
   beforeEach(() => {
+    for (const key of Object.keys(ui) as Array<keyof typeof ui>) ui[key] = [];
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'workspace-'));
@@ -204,14 +229,223 @@ describe('HiveSidebarProvider', () => {
 
     expect(children.map(child => child.label)).toEqual(['Plan', 'Context', 'Tasks']);
     expect(children.find((child) => (child as any).contextValue === 'overview-file')).toBeUndefined();
-    expect((children[1] as any).description).toBe('2 file(s)');
+    expect((children[1] as any).description).toBe('2 documents · 1/8 durable · 8/40000 chars');
 
     const contextItem = children.find(child => child.label === 'Context');
     const contextChildren = await provider.getChildren(contextItem);
     const overviewItem = contextChildren.find((c: any) => c.label === 'overview.md');
-    expect((overviewItem as any)?.description).toBe('1 comment(s)');
+    expect((overviewItem as any)?.description).toBe('Reserved · 11 bytes · 1 comment(s)');
+    expect((overviewItem as any)?.command.command).toBe('vscode.open');
     const notesItem = contextChildren.find((c: any) => c.label === 'notes.md');
-    expect((notesItem as any)?.description).toBe('');
+    expect((notesItem as any)?.description).toBe('Durable · 8 bytes');
+  });
+
+  it('filters context metadata and warns only above either durable cap', async () => {
+    new FeatureService(testRoot).create('context');
+    const service = new hiveCore.ContextService(testRoot);
+    service.write('context', 'notes', 'x'.repeat(40000));
+    service.create('context', 'evidence', 'proof', { kind: 'evidence' });
+    service.write('context', 'draft', 'scratch');
+    const contextPath = hiveCore.getContextPath(testRoot, 'context');
+    fs.writeFileSync(path.join(contextPath, 'noise.json'), '{}');
+    const provider = new HiveSidebarProvider(testRoot);
+    const [group] = await provider.getChildren();
+    const [feature] = await provider.getChildren(group);
+    const folder = (await provider.getChildren(feature)).find(item => item.label === 'Context')!;
+    expect((folder.iconPath as any).id).toBe('folder');
+    const files = await provider.getChildren(folder);
+    expect(files.map(file => file.label).sort()).toEqual(['draft.md', 'evidence.md', 'notes.md']);
+    expect(files.find(file => file.label === 'evidence.md')?.description).toBe('Evidence · 5 bytes');
+    expect(files.find(file => file.label === 'draft.md')?.description).toBe('Scratchpad · 7 bytes');
+    expect(files.find(file => file.label === 'evidence.md')?.tooltip).toContain('Automatic execution inclusion: No');
+    fs.appendFileSync(path.join(contextPath, 'notes.md'), 'x');
+    expect(((await provider.getChildren(feature)).find(item => item.label === 'Context')!.iconPath as any).id).toBe('warning');
+    fs.writeFileSync(path.join(contextPath, 'notes.md'), '');
+    for (let i = 0; i < 8; i++) fs.writeFileSync(path.join(contextPath, `note-${i}.md`), '');
+    expect(((await provider.getChildren(feature)).find(item => item.label === 'Context')!.iconPath as any).id).toBe('warning');
+  });
+
+  it('archives only confirmed names at the captured revision and never retries stale writes', async () => {
+    const { archiveContext } = await import('./contextInspection.js');
+    new FeatureService(testRoot).create('context');
+    const service = new hiveCore.ContextService(testRoot);
+    service.write('context', 'notes', 'keep');
+    service.write('context', 'unselected', 'preserve me');
+    const initial = service.readSummary('context').revision;
+    let refreshes = 0;
+    const run = () => archiveContext(testRoot, { featureName: 'context', filename: 'notes.md' }, () => refreshes++);
+    await run(); // Picker cancellation.
+    ui.picks.push((items: any[]) => items);
+    await run(); // Reason cancellation.
+    ui.picks.push((items: any[]) => items); ui.inputs.push('obsolete');
+    await run(); // Confirmation cancellation.
+    ui.picks.push((items: any[]) => items); ui.inputs.push('   ');
+    await run(); // Blank reasons cannot mutate even if an input mock bypasses validation.
+    expect(service.readSummary('context').revision).toBe(initial);
+    ui.picks.push((items: any[]) => items); ui.inputs.push('obsolete');
+    ui.confirmations.push(() => { service.append('context', 'notes', 'changed'); return 'Archive Context'; });
+    await run();
+    expect(ui.errors.join('\n')).toContain('current revision');
+    expect(service.read('context', 'notes')).not.toBeNull();
+    expect(refreshes).toBe(0);
+    ui.picks.push((items: any[]) => items.filter(item => item.name === 'notes')); ui.inputs.push('obsolete'); ui.confirmations.push('Archive Context');
+    await run();
+    expect(ui.warnings.at(-1)).toContain('notes.md');
+    expect(service.read('context', 'notes')).toBeNull();
+    expect(service.read('context', 'unselected')).toBe('preserve me');
+    expect(ui.warnings.at(-1)).not.toContain('unselected.md');
+    expect(refreshes).toBe(1);
+  });
+
+  it('inspects explicit authoritative sessions without exposing recovery fields or mutating files', async () => {
+    const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
+    const provider = new SessionConstraintsProvider(testRoot);
+    await provider.inspect();
+    expect(fs.readdirSync(testRoot)).toEqual([]);
+    const service = new hiveCore.SessionService(testRoot);
+    new FeatureService(testRoot).create('mirror');
+    fs.writeFileSync(path.join(hiveCore.getFeaturePath(testRoot, 'mirror'), 'sessions.json'), JSON.stringify({ sessions: [{ sessionId: 'mirror-only', standingConstraints: 'hidden mirror' }] }));
+    service.trackGlobal('empty');
+    service.trackGlobal('chosen', { agent: 'hive', sessionKind: 'primary', directivePrompt: 'SECRET-DIRECTIVE', workerPromptPath: '/SECRET-PATH', directiveRecoveryState: 'available', standingConstraintEntries: [{ id: 'stable-id', text: 'Keep this scope' }], standingConstraintsRevision: 4 });
+    const registryPath = hiveCore.getGlobalSessionsPath(testRoot);
+    const before = fs.readFileSync(registryPath, 'utf8');
+    await provider.inspect();
+    expect(ui.shown).toHaveLength(0);
+    expect(fs.readFileSync(registryPath, 'utf8')).toBe(before);
+    ui.picks.push((items: any[]) => items[0]);
+    await provider.inspect();
+    expect(ui.pickItems).toHaveLength(1);
+    expect(ui.pickItems[0].detail).toContain('ID: chosen');
+    const uri = ui.shown[0].uri;
+    const content = provider.provideTextDocumentContent(uri);
+    expect(content).toContain('stable-id');
+    expect(content).toContain('Revision: 4');
+    expect(content).toContain('15/8000');
+    expect(content).not.toContain('SECRET');
+    expect(content).not.toContain('available');
+    expect(content).not.toContain('command:');
+    expect(fs.readFileSync(registryPath, 'utf8')).toBe(before);
+    fs.rmSync(registryPath);
+    expect(provider.provideTextDocumentContent(uri)).toBe('The selected session no longer exists.');
+    provider.close(uri);
+    expect(provider.provideTextDocumentContent(uri)).toContain('No session selected');
+    service.trackGlobal('deleted', { standingConstraints: 'present' });
+    ui.picks.push((items: any[]) => { fs.rmSync(registryPath); return items[0]; });
+    await provider.inspect();
+    expect(ui.messages.at(-1)).toContain('no longer exist');
+    expect(ui.shown).toHaveLength(1);
+    provider.dispose();
+  });
+
+  it('isolates session documents and refreshes only open selections as plain text', async () => {
+    const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
+    const provider = new SessionConstraintsProvider(testRoot);
+    const service = new hiveCore.SessionService(testRoot);
+    const raw = '**literal** [run](command:workbench.action.closeWindow) <script>text</script>';
+    service.trackGlobal('first', { standingConstraints: raw });
+    service.trackGlobal('second', { standingConstraints: 'second-only' });
+    for (const id of ['first', 'second']) {
+      ui.picks.push((items: any[]) => items.find(item => item.sessionId === id));
+      await provider.inspect();
+    }
+    const [first, second] = ui.shown.map(document => document.uri);
+    expect(first.toString()).not.toBe(second.toString());
+    expect(first.toString()).toEndWith('.txt');
+    expect(provider.provideTextDocumentContent(first)).toContain(raw);
+    expect(provider.provideTextDocumentContent(first)).not.toContain('second-only');
+    expect(provider.provideTextDocumentContent(second)).toContain('second-only');
+    expect(provider.provideTextDocumentContent(second)).not.toContain(raw);
+    expect(provider.provideTextDocumentContent({ toString: () => 'unknown' } as any)).toBe('No session selected. Use Inspect Session Standing Constraints.');
+    provider.refresh();
+    expect(ui.fired).toEqual([first, second]);
+    provider.close(first);
+    ui.fired = [];
+    provider.refresh();
+    expect(ui.fired).toEqual([second]);
+    expect(provider.provideTextDocumentContent(first)).not.toContain(raw);
+    const disposals = ui.disposed.length;
+    provider.dispose();
+    expect(ui.disposed.length).toBe(disposals + 1);
+    ui.fired = [];
+    provider.refresh();
+    expect(ui.fired).toEqual([]);
+    expect(provider.provideTextDocumentContent(second)).not.toContain('second-only');
+  });
+
+  it('expands context without writes and ignores lock events while refreshing committed changes', async () => {
+    const { HiveWatcher } = await import('../services/watcher.js');
+    new FeatureService(testRoot).create('absent');
+    const contextPath = hiveCore.getContextPath(testRoot, 'absent');
+    fs.rmSync(contextPath, { recursive: true, force: true });
+    const provider = new HiveSidebarProvider(testRoot);
+    const watcher = new HiveWatcher(testRoot, () => provider.refresh());
+    const [group] = await provider.getChildren();
+    const [feature] = await provider.getChildren(group);
+    const before = fs.readdirSync(path.dirname(contextPath));
+    const folder = (await provider.getChildren(feature)).find(item => item.label === 'Context')!;
+    expect(await provider.getChildren(folder)).toEqual([]);
+    expect(fs.existsSync(contextPath)).toBe(false);
+    expect(fs.readdirSync(path.dirname(contextPath))).toEqual(before);
+    expect(ui.fired).toEqual([]);
+    const events = ui.watchers[0];
+    for (const kind of ['create', 'change', 'delete']) events[kind]({ fsPath: `${contextPath}/index.json.lock` });
+    expect(ui.fired).toEqual([]);
+    for (const kind of ['create', 'change', 'delete']) events[kind]({ fsPath: `${contextPath}/index.json` });
+    events.change({ fsPath: `${contextPath}/notes.md` });
+    expect(ui.fired).toHaveLength(4);
+    const service = new hiveCore.ContextService(testRoot);
+    service.write('absent', 'notes', 'é😀');
+    const populated = (await provider.getChildren(feature)).find(item => item.label === 'Context')!;
+    expect(populated.description).toContain('3/40000 chars');
+    expect((await provider.getChildren(populated))[0].description).toBe('Durable · 6 bytes');
+    fs.writeFileSync(path.join(contextPath, 'index.json.lock'), 'writer');
+    expect((await provider.getChildren(feature)).map(item => item.label)).toContain('Context temporarily unavailable');
+    expect((await provider.getChildren(populated))[0].label).toBe('Context temporarily unavailable');
+    watcher.dispose();
+    expect(events.disposed).toBe(true);
+  });
+
+  it.each(['EACCES', 'null index'])('isolates %s context inspection failures without writes or hiding plan and tasks', async (failure) => {
+    new FeatureService(testRoot).create('context');
+    new PlanService(testRoot).write('context', '# Plan\n');
+    new hiveCore.ContextService(testRoot).create('context', 'notes', 'preserved');
+    const contextPath = hiveCore.getContextPath(testRoot, 'context');
+    const indexPath = path.join(contextPath, 'index.json');
+    const provider = new HiveSidebarProvider(testRoot);
+    const [group] = await provider.getChildren();
+    const [feature] = await provider.getChildren(group);
+    const folder = (await provider.getChildren(feature)).find(item => item.label === 'Context')!;
+    if (failure === 'null index') fs.writeFileSync(indexPath, 'null');
+    const before = fs.readFileSync(indexPath, 'utf8');
+    const original = fs.readFileSync;
+    const read = spyOn(fs, 'readFileSync').mockImplementation(((file: any, ...args: any[]) => {
+      if (failure === 'EACCES' && String(file) === indexPath) {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      return (original as any)(file, ...args);
+    }) as any);
+    const open = spyOn(fs, 'openSync');
+    const write = spyOn(fs, 'writeFileSync');
+    try {
+      const children = await provider.getChildren(feature);
+      expect(children.map(item => item.label)).toEqual(['Plan', 'Context unavailable', 'Tasks']);
+      expect(children[0].command).toBeDefined();
+      expect(await provider.getChildren(children[2])).toEqual([]);
+      const [unavailable] = await provider.getChildren(folder);
+      for (const item of [children[1], unavailable]) {
+        expect(item.label).toBe('Context unavailable');
+        expect(item.description).toContain(failure === 'EACCES' ? 'permission denied' : 'invalid shape');
+        expect(item.contextValue).toBeUndefined();
+        expect(item.command).toBeUndefined();
+        expect('featureName' in item).toBe(false);
+        expect(item.collapsibleState).toBe(0);
+      }
+      expect(open).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); open.mockRestore(); write.mockRestore(); }
+    expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);
+    expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe('preserved');
+    expect(fs.existsSync(`${indexPath}.lock`)).toBe(false);
   });
 
   it('ignores non-.hive workspace artifacts', async () => {

@@ -8,9 +8,13 @@ export class HiveWatcher {
       new vscode.RelativePattern(workspaceRoot, '.hive/**/*')
     )
 
-    this.hiveWatcher.onDidCreate(onChange)
-    this.hiveWatcher.onDidChange(onChange)
-    this.hiveWatcher.onDidDelete(onChange)
+    const onContentChange = (uri: vscode.Uri) => {
+      if (uri.fsPath.endsWith('.lock')) return
+      onChange()
+    }
+    this.hiveWatcher.onDidCreate(onContentChange)
+    this.hiveWatcher.onDidChange(onContentChange)
+    this.hiveWatcher.onDidDelete(onContentChange)
   }
 
   dispose(): void {

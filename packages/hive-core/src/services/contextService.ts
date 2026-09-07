@@ -126,7 +126,7 @@ export class ContextService {
     return this.readSnapshot(featureName, (_index, files) => files);
   }
 
-  private listWithIndex(contextPath: string, index: ContextIndex): ContextFile[] {
+  private listWithIndex(contextPath: string, index: ContextIndex, strict = false): ContextFile[] {
     const files = fs.readdirSync(contextPath, { withFileTypes: true })
       .filter(f => f.isFile() && f.name.endsWith('.md'))
       .map(f => f.name)
@@ -135,7 +135,7 @@ export class ContextService {
     return files.map(name => {
       const filePath = path.join(contextPath, name);
       const stat = fs.statSync(filePath);
-      const content = readText(filePath) || '';
+      const content = strict ? fs.readFileSync(filePath, 'utf8') : readText(filePath) || '';
       const normalizedName = name.replace(/\.md$/, '');
       const metadata = index.entries[normalizedName];
       const classification = this.classifyContextName(normalizedName, metadata?.kind);
@@ -280,8 +280,48 @@ export class ContextService {
     return `${normalized}.md`;
   }
 
+  /** Best-effort viewer snapshot, never execution authority or a filesystem writer. */
+  inspectSummary(featureName: string): { status: 'ready'; summary: Omit<ContextReadSummary, 'files'> & { files: Array<ContextReadSummary['files'][number] & { bytes: number }> } } | { status: 'busy' } {
+    const contextPath = getContextPath(this.projectRoot, featureName);
+    const indexPath = this.indexPath(contextPath);
+    const lockPath = `${indexPath}.lock`;
+    const readIndexText = (): string | null => {
+      try { return fs.readFileSync(indexPath, 'utf8'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (fs.existsSync(lockPath)) return { status: 'busy' };
+      try {
+        if (!fs.existsSync(contextPath)) {
+          if (!fs.existsSync(contextPath) && !fs.existsSync(lockPath)) {
+            return { status: 'ready', summary: { ...this.summarize({ schemaVersion: 1, revision: 0, entries: {} }, []), files: [] } };
+          }
+          continue;
+        }
+        const before = readIndexText();
+        const index: ContextIndex = before === null ? { schemaVersion: 1, revision: 0, entries: {} } : JSON.parse(before);
+        if (!index || typeof index !== 'object' || Array.isArray(index)
+          || index.schemaVersion !== CONTEXT_INDEX_SCHEMA_VERSION || !Number.isInteger(index.revision)
+          || !index.entries || typeof index.entries !== 'object' || Array.isArray(index.entries)) {
+          throw new ContextMutationError('invalid_argument', 'Context index has an invalid shape.');
+        }
+        const files = this.listWithIndex(contextPath, index, true);
+        const verifiedFiles = this.listWithIndex(contextPath, index, true);
+        if (before !== readIndexText() || JSON.stringify(files) !== JSON.stringify(verifiedFiles) || fs.existsSync(lockPath)) continue;
+        const summary = this.summarize(index, files);
+        return { status: 'ready', summary: { ...summary, files: summary.files.map((file, i) => ({ ...file, bytes: Buffer.byteLength(files[i].content, 'utf8') })) } };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+      }
+    }
+    return { status: 'busy' };
+  }
+
   readSummary(featureName: string): ContextReadSummary {
-    return this.readSnapshot(featureName, (index, files) => {
+    return this.readSnapshot(featureName, (index, files) => this.summarize(index, files));
+  }
+
+  private summarize(index: ContextIndex, files: ContextFile[]): ContextReadSummary {
       const durable = this.durableFootprint(files);
       return {
         schemaVersion: CONTEXT_INDEX_SCHEMA_VERSION,
@@ -297,7 +337,6 @@ export class ContextService {
           consolidationHints: this.consolidationHints(files),
         },
       };
-    });
   }
 
   readContent(featureName: string, fileName: string): ContextContentRead | null {
