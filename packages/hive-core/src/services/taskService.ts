@@ -42,6 +42,12 @@ export interface CompletionFields {
   completedAt?: string;
 }
 
+export interface WorkerAttemptAllocation {
+  status: TaskStatus;
+  attempt: number;
+  idempotencyKey: string;
+}
+
 interface ParsedTask {
   folder: string;
   order: number;
@@ -672,6 +678,86 @@ export class TaskService {
     
     // Use patchJsonLockedSync which does deep merge
     return patchJsonLockedSync<TaskStatus>(statusPath, safePatch, lockOptions);
+  }
+
+  /**
+   * Allocate the next worker attempt and clear any association from the prior attempt.
+   */
+  allocateWorkerAttempt(
+    featureName: string,
+    taskFolder: string,
+    lockOptions?: LockOptions
+  ): WorkerAttemptAllocation {
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
+    if (!fileExists(statusPath)) {
+      throw new Error(`Task '${taskFolder}' not found`);
+    }
+
+    const release = acquireLockSync(statusPath, lockOptions);
+    try {
+      const current = readJson<TaskStatus>(statusPath);
+      if (!current) {
+        throw new Error(`Task '${taskFolder}' not found`);
+      }
+
+      const attempt = (current.workerAttempt || current.workerSession?.attempt || 0) + 1;
+      const idempotencyKey = `hive-${featureName}-${taskFolder}-${attempt}`;
+      const status: TaskStatus = {
+        ...current,
+        schemaVersion: TASK_STATUS_SCHEMA_VERSION,
+        idempotencyKey,
+        workerAttempt: attempt,
+      };
+      delete status.workerSession;
+      writeJsonAtomic(statusPath, status);
+      return { status, attempt, idempotencyKey };
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Associate a child session only with its exact unclaimed worker attempt.
+   */
+  associateWorkerSession(
+    featureName: string,
+    taskFolder: string,
+    workerSession: WorkerSession,
+    idempotencyKey: string,
+    workerAttempt: number,
+    lockOptions?: LockOptions
+  ): TaskStatus {
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
+    if (!fileExists(statusPath)) {
+      throw new Error(`Task '${taskFolder}' not found`);
+    }
+
+    const release = acquireLockSync(statusPath, lockOptions);
+    try {
+      const current = readJson<TaskStatus>(statusPath);
+      if (!current) {
+        throw new Error(`Task '${taskFolder}' not found`);
+      }
+      if (
+        current.idempotencyKey !== idempotencyKey
+        || current.workerAttempt !== workerAttempt
+        || current.workerSession !== undefined
+      ) {
+        return current;
+      }
+
+      const updated: TaskStatus = {
+        ...current,
+        schemaVersion: TASK_STATUS_SCHEMA_VERSION,
+        idempotencyKey,
+        workerAttempt,
+        workerSession,
+      };
+      writeJsonAtomic(statusPath, updated);
+      return updated;
+    } finally {
+      release();
+    }
   }
 
   /**

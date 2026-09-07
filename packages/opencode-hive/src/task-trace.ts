@@ -1711,7 +1711,7 @@ function readLocatedValue(messages: unknown[], locator: ContentLocator): unknown
 export function createTaskTraceTools(options: TaskTraceOptions) {
   return {
     hive_task_trace: tool({
-      description: 'Return a compact complete situation report for one directly delegated child. Deterministic mode preserves the forensic v2 report; terminal recovery returns only an untrusted semantic projection with coverage-gated phases and runtime-safe next actions.',
+      description: 'Inspect a directly delegated child when its result failed, blocked, timed out, was cancelled, is empty, or is unclear. Returns a read-only forensic v2 report with lifecycle, structured errors, changed files, tool activity, timeline, and latest/final response; optional terminal recovery is an untrusted semantic projection with runtime-safe next actions.',
       args: {
         task_id: tool.schema.string().describe('Direct child OpenCode session ID returned by native task metadata.'),
         recovery: tool.schema.boolean().optional().describe('Request the terminal-only semantic map/reduce projection. Defaults to false forensic output.'),
@@ -1823,7 +1823,7 @@ export function appendTaskTraceHint(input: { tool?: string }, output: { output: 
   const metadata = record(output.metadata);
   const sessionID = typeof metadata?.sessionId === 'string' ? metadata.sessionId.trim() : '';
   if (!sessionID) return;
-  const hint = `[hive task trace] Native task child ${JSON.stringify(sessionID)} is available for read-only inspection with hive_task_trace({ task_id: ${JSON.stringify(sessionID)} }).`;
+  const hint = `[hive task trace] If this child failed, blocked, timed out, was cancelled, returned empty output, or its result is unclear, inspect it before relaunching with hive_task_trace({ task_id: ${JSON.stringify(sessionID)} }). Read errors, changed_files, tool activity, and the latest/final response first. Recovery context belongs in a NEW task without task_id.`;
   if ((output.output ?? '').includes(hint)) return;
   output.output = `${output.output ?? ''}${output.output ? '\n\n' : ''}${hint}`;
 }
@@ -1844,8 +1844,8 @@ export async function injectTaskTraceHint(
       const metadata = record(part?.metadata) ?? record(state?.metadata);
       const childID = typeof metadata?.sessionId === 'string' ? metadata.sessionId.trim() : '';
       const completedEmpty = state?.status === 'completed' && (state.output === '' || state.output === undefined);
-      const failed = state?.status === 'error';
-      if (part?.type !== 'tool' || part.tool !== 'task' || !childID || (!completedEmpty && !failed)) continue;
+      const terminalFailure = ['error', 'failed', 'blocked', 'cancelled', 'timed_out', 'timeout'].includes(String(state?.status));
+      if (part?.type !== 'tool' || part.tool !== 'task' || !childID || (!completedEmpty && !terminalFailure)) continue;
       const hintID = `${parentID}\u0000${String(info.id ?? '')}\u0000${String(part.id ?? '')}\u0000${childID}`;
       if (seen.has(hintID)) continue;
       seen.add(hintID);
@@ -1857,7 +1857,7 @@ export async function injectTaskTraceHint(
         type: 'text',
         synthetic: true,
         hiveTaskTraceHint: true,
-        text: `[hive task trace] Native task metadata identifies child ${JSON.stringify(childID)}. Use hive_task_trace with that task_id for read-only inspection; recovery context belongs in a NEW task without task_id.`,
+        text: `[hive task trace] This task result is empty or terminally unsuccessful. Inspect the direct child before relaunching with hive_task_trace({ task_id: ${JSON.stringify(childID)} }); read errors, changed_files, tool activity, and the latest/final response first. Recovery context belongs in a NEW task without task_id.`,
       });
       break;
     }

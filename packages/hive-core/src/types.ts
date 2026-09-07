@@ -86,6 +86,8 @@ export interface TaskStatus {
   subtasks?: Subtask[];
   /** Idempotency key for safe retries */
   idempotencyKey?: string;
+  /** Current worker launch attempt (1-based), including attempts not yet associated with a session */
+  workerAttempt?: number;
   /** Worker session info for background execution */
   workerSession?: WorkerSession;
   /**

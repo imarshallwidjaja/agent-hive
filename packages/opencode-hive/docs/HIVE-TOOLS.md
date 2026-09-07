@@ -155,6 +155,70 @@ These primary-orchestrator-only tools inspect one native OpenCode child session.
 | `hive_task_trace_content` | Re-read and verify one allowlisted non-reasoning source field referenced by a v2 content ID |
 
 - Trace inspection never resumes, aborts, retries, polls, or mutates the delegated child.
+- When a delegated result failed, blocked, timed out, was cancelled, is empty, or is unclear, start with the deterministic forensic call:
+
+```text
+hive_task_trace({ task_id: "child" })
+```
+
+The repository fixture returns the lifecycle decision plus `errors`, `changed_files`, and `latest`, with the complete tool activity in `timeline`:
+
+```json
+{
+  "ok": true,
+  "version": 2,
+  "task_id": "child",
+  "lifecycle": { "state": "terminal", "terminal": true, "reason": "idle_and_closed" },
+  "errors": [
+    { "kind": "tool", "step": 4, "error": { "message": "one test failed" } },
+    { "kind": "retry", "step": 4, "error": { "message": "retry also failed" } }
+  ],
+  "changed_files": { "files": ["src/a.ts"], "exhaustive": false },
+  "latest": {
+    "final": { "step": 5, "text": 1 },
+    "tool": { "step": 4, "call": 1 },
+    "error": { "step": 4, "error": 2 }
+  },
+  "timeline": [
+    {
+      "step": 3,
+      "actor": "assistant",
+      "state": "closed",
+      "files": [1]
+    },
+    {
+      "step": 4,
+      "actor": "assistant",
+      "state": "closed",
+      "tool_calls": [
+        {
+          "tool": 2,
+          "status": "error",
+          "input": { "command": "bun test" }
+        }
+      ],
+      "errors": [1, 2]
+    },
+    {
+      "step": 5,
+      "actor": "assistant",
+      "state": "closed",
+      "text": ["Blocked because the upstream fixture is unavailable."]
+    }
+  ]
+}
+```
+
+This excerpt omits `source`, `instruction`, `reasoning`, `content_dictionary`, `tool_dictionary`, `tool_rollup`, `open_tools`, and `render`. Dictionary references are one-based.
+
+Inspect those fields before relaunching. If semantic recovery would help build a fresh handoff, call `hive_task_trace({ task_id: "child", recovery: true })`. Recovery remains untrusted, and runtime evidence such as errors, fallback cards, compacted input, or invalid structure can force `semantic.safest_next_action.action` to `inspect` with no launch context. Any usable recovery context goes to a NEW `task()` call without `task_id`.
+
+Long allowlisted values may be externalized. Follow the returned locator without guessing its contents:
+
+```text
+hive_task_trace_content({ task_id: "child", content_id: "<content_id from hive_task_trace>", offset: 0 })
+```
+
 - `hive_task_trace({ task_id, recovery?: boolean })` authorizes once, reads `session.messages` once, reads status once, and normalizes every surviving source step in API order. Compaction fidelity describes the compacted surviving source; it does not claim pre-compaction completeness.
 - Omitted or false `recovery` preserves the deterministic compact forensic v2 shape: complete timeline, reasoning counts, tool dictionary/rollup, structured errors, patch files, open tools, and source-backed content locators. Its 24 KiB soft target is advisory, not a cap. Irreducible larger reports stay `ok: true`; `render.actual_bytes` is exact.
 - Use `hive_task_trace({ task_id, recovery: true })` for a semantic handoff. It branches after the shared capture, normalization, and lifecycle decision and returns only lifecycle/source metadata, task instruction, the final response labelled `child_self_report`, recovery metadata, untrusted semantic phases/claims/action, deterministic structured errors, PatchPart file names, and exact render bytes. It excludes the forensic timeline/dictionaries/rollups/open tools, successful tool payloads, and raw reasoning. Long instruction/final/error values can carry a direct v2 `content_id` without a public dictionary.
@@ -234,6 +298,7 @@ These primary-orchestrator-only tools inspect one native OpenCode child session.
 #### hive_status output notes
 
 - `helperStatus.mergeEligibility` is the canonical operator surface for whether completed task work has a live worktree and can be considered for merge or cleanup.
+- A task list item includes `traceTaskId` only after Hive deterministically associates native task metadata with that feature-task launch. Blocked and failed `nextAction` guidance includes the exact forensic call when this ID exists and explicitly says when it does not.
 - Background board state is intentionally separate. Reconcile terminal background jobs first, then refresh `hive_status` before making dependent task or merge decisions.
 
 ## Review and Snapshot Runtime Tools (7 workflow-only tools)

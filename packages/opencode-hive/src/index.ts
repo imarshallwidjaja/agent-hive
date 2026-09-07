@@ -423,6 +423,19 @@ function taskChildSessionID(metadata: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+type HiveTaskLaunchReservation = {
+  feature: string;
+  task: string;
+  attempt: number;
+  idempotencyKey: string;
+  expectedDescription: string;
+  expectedPrompt: string;
+  allowedAgents: string[];
+  selectedAgent: string;
+};
+
+type HiveTaskLaunchIntent = Omit<HiveTaskLaunchReservation, 'selectedAgent'>;
+
 function runtimeTaskChildBinding(event: unknown): {
   primarySessionID: string;
   callID: string;
@@ -1415,6 +1428,40 @@ const plugin: Plugin = async (ctx) => {
     sessionService.bindFeature(ctx.sessionID, feature, patch as any);
   };
 
+  const pendingHiveTaskLaunches = new Map<string, HiveTaskLaunchIntent[]>();
+  const hiveTaskLaunches = new Map<string, HiveTaskLaunchReservation>();
+  const hiveTaskLaunchKey = (sessionID: string, callID: string): string => `${sessionID}\u0000${callID}`;
+  const reserveHiveTaskLaunch = (
+    sessionID: string,
+    callID: string,
+    args: Record<string, unknown> | undefined,
+  ): void => {
+    const selectedAgent = typeof args?.subagent_type === 'string' ? args.subagent_type.trim() : '';
+    const expectedDescription = typeof args?.description === 'string' ? args.description : '';
+    const expectedPrompt = typeof args?.prompt === 'string' ? args.prompt : '';
+    if (!selectedAgent || !expectedDescription || !expectedPrompt) return;
+
+    const pending = pendingHiveTaskLaunches.get(sessionID) ?? [];
+    const matches = pending.filter(candidate => (
+      candidate.expectedDescription === expectedDescription
+      && candidate.expectedPrompt === expectedPrompt
+      && candidate.allowedAgents.includes(selectedAgent)
+    ));
+    if (matches.length !== 1) return;
+
+    const candidate = matches[0];
+    const remaining = pending.filter(pendingCandidate => pendingCandidate !== candidate);
+    if (remaining.length > 0) {
+      pendingHiveTaskLaunches.set(sessionID, remaining);
+    } else {
+      pendingHiveTaskLaunches.delete(sessionID);
+    }
+    hiveTaskLaunches.set(hiveTaskLaunchKey(sessionID, callID), {
+      ...candidate,
+      selectedAgent,
+    });
+  };
+
   const resolveStandingConstraints = (sessionID: string | undefined): string | undefined => {
     if (!sessionID) return undefined;
     return sessionService.getGlobal(sessionID)?.standingConstraints;
@@ -1767,11 +1814,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     const eligibleAgents = buildForagerEligibleAgents(configService);
     const agent = defaultAgent;
 
-    const rawStatus = taskService.getRawStatus(feature, task);
-    const attempt = (rawStatus?.workerSession?.attempt || 0) + 1;
-    const idempotencyKey = `hive-${feature}-${task}-${attempt}`;
-
-    taskService.patchBackgroundFields(feature, task, { idempotencyKey });
+    const { attempt, idempotencyKey } = taskService.allocateWorkerAttempt(feature, task);
 
     const contextContent = contextFiles.map(f => f.content).join('\n\n');
     const previousTasksContent = previousTasks.map(t => `- **${t.name}**: ${t.summary}`).join('\n');
@@ -1801,8 +1844,23 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     };
     const backgroundEnabled = isBackgroundSubagentsExperimentEnabled();
 
-    if (backgroundEnabled) {
-      bindFeatureSession(feature, toolContext, { taskFolder: task, workerPromptPath: relativePromptPath });
+    bindFeatureSession(feature, toolContext, { taskFolder: task, workerPromptPath: relativePromptPath });
+    const parentSessionID = (toolContext as ToolContext)?.sessionID;
+    const launchIntent: HiveTaskLaunchIntent = {
+      feature,
+      task,
+      attempt,
+      idempotencyKey,
+      expectedDescription: `Hive: ${task}`,
+      expectedPrompt: taskToolPrompt,
+      allowedAgents: eligibleAgents.map(candidate => candidate.name),
+    };
+    if (parentSessionID) {
+      const pending = pendingHiveTaskLaunches.get(parentSessionID) ?? [];
+      pendingHiveTaskLaunches.set(parentSessionID, [
+        ...pending.filter(candidate => candidate.feature !== feature || candidate.task !== task),
+        launchIntent,
+      ]);
     }
 
     const taskToolInstructions = `## Delegation Required
@@ -1963,6 +2021,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     }
 
     if (taskInfo.status === 'blocked') {
+      const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
       return respond({
         success: false,
         terminal: true,
@@ -1970,7 +2029,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         currentStatus: 'blocked',
         feature,
         task,
+        ...(traceTaskId ? { traceTaskId } : {}),
         hints: [
+          ...(traceTaskId
+            ? [`Before collecting the operator decision or launching a fresh worker, inspect the direct-child trace with hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }). Read errors, changed_files, tool activity, and the latest/final response first.`]
+            : ['No traceTaskId has been persisted for this task. Inspect the blocker details without inventing a child session ID.']),
           'Ask the user the blocker question, then request fresh-worker launch guidance with hive_worktree_create({ task, continueFrom: "blocked", decision }).',
           'Use hive_status to inspect blocker details before retrying.',
         ],
@@ -3041,7 +3104,16 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         return;
       }
 
-      if (input.tool !== "bash") return;
+      if (input.tool !== "bash") {
+        if (input.tool === 'task' && input.sessionID && input.callID) {
+          reserveHiveTaskLaunch(
+            input.sessionID,
+            input.callID,
+            output.args as Record<string, unknown> | undefined,
+          );
+        }
+        return;
+      }
       
       const sandboxConfig = configService.getSandboxConfig();
       if (sandboxConfig.mode === 'none') return;
@@ -3084,6 +3156,28 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
       if (input.tool === 'task') {
         const childSessionID = taskChildSessionID(output?.metadata);
+        const hiveTaskKey = input.callID
+          ? hiveTaskLaunchKey(input.sessionID, input.callID)
+          : undefined;
+        const hiveTaskReservation = hiveTaskKey ? hiveTaskLaunches.get(hiveTaskKey) : undefined;
+        if (hiveTaskKey) hiveTaskLaunches.delete(hiveTaskKey);
+        if (
+          childSessionID
+          && hiveTaskReservation
+        ) {
+          taskService.associateWorkerSession(
+            hiveTaskReservation.feature,
+            hiveTaskReservation.task,
+            {
+              sessionId: childSessionID,
+              agent: hiveTaskReservation.selectedAgent,
+              mode: 'delegate',
+              attempt: hiveTaskReservation.attempt,
+            },
+            hiveTaskReservation.idempotencyKey,
+            hiveTaskReservation.attempt,
+          );
+        }
         if (childSessionID) {
           dashReviewInvocations.bindTaskChild({
             primarySessionID: input.sessionID,
@@ -4833,6 +4927,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             } as any);
 
             const worktree = await worktreeService.get(feature, task);
+            const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
             return respond({
               ok: true,
               terminal: true,
@@ -4843,10 +4938,13 @@ NEXT: Ask your first clarifying question about this feature.`;
               taskState: 'blocked',
               summary,
               blocker,
+              ...(traceTaskId ? { traceTaskId } : {}),
               worktreePath: worktree?.path,
               branch: worktree?.branch,
               message: 'Task blocked. Hive Master will ask the user, then launch a new worker for blocked-task continuation in the existing worktree with hive_worktree_create(continueFrom: "blocked", decision: answer).',
-              nextAction: 'Wait for the orchestrator to collect the user decision and request fresh worker launch guidance for the existing worktree.',
+              nextAction: traceTaskId
+                ? `The orchestrator should inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before collecting the operator decision, then request fresh worker launch guidance for the existing worktree.`
+                : 'Wait for the orchestrator to inspect the blocker, collect the user decision, and request fresh worker launch guidance for the existing worktree. No traceTaskId is available.',
             });
           }
 
@@ -4950,6 +5048,7 @@ NEXT: Ask your first clarifying question about this feature.`;
           taskService.update(feature, task, { status: finalStatus as any, summary });
 
           const worktree = await worktreeService.get(feature, task);
+          const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
           return respond({
             ok: true,
             terminal: true,
@@ -4970,11 +5069,14 @@ NEXT: Ask your first clarifying question about this feature.`;
             worktreePath: worktree?.path,
             branch: worktree?.branch,
             reportPath,
+            ...(traceTaskId ? { traceTaskId } : {}),
             message: `Task "${task}" ${status}.`,
             nextAction:
               status === 'completed'
                 ? 'Use hive_merge to integrate changes. Worktree is preserved for review.'
-                : 'Use hive_worktree_start({ feature, task }) to launch a fresh self-contained worker. Worktree is preserved. Do not pass task_id to task().',
+                : traceTaskId
+                  ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before retrying, then use hive_worktree_start({ feature, task }) to launch a fresh self-contained worker. Worktree is preserved. Recovery context goes to the NEW task without task_id.`
+                  : 'No traceTaskId is available. Review the task report and worktree, then use hive_worktree_start({ feature, task }) to launch a fresh self-contained worker. Do not invent or pass task_id to task().',
           });
         },
       }),
@@ -5548,6 +5650,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
               status: t.status,
               origin: t.origin || 'plan',
               dependsOn: rawStatus?.dependsOn ?? null,
+              ...(rawStatus?.workerSession?.sessionId ? { traceTaskId: rawStatus.workerSession.sessionId } : {}),
               repoIds: t.repoIds ?? null,
               worktree: worktree ? {
                 branch: worktree.branch,
@@ -5624,7 +5727,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
 
           const getNextAction = (
             planStatus: string | null,
-            tasks: Array<{ status: string; folder: string }>,
+            tasks: Array<{ status: string; folder: string; traceTaskId?: string }>,
             runnableTasks: string[],
             hasPlan: boolean,
             hasOverview: boolean,
@@ -5641,6 +5744,18 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
             const inProgress = tasks.find(t => t.status === 'in_progress');
             if (inProgress) {
               return `Continue work on task: ${inProgress.folder}`;
+            }
+            const blocked = tasks.find(t => t.status === 'blocked');
+            if (blocked) {
+              return blocked.traceTaskId
+                ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(blocked.traceTaskId)} }) before collecting the operator decision. Then follow the blocked continuation workflow with hive_worktree_create({ task: ${JSON.stringify(blocked.folder)}, continueFrom: "blocked", decision: "<operator answer>" }).`
+                : `Task ${blocked.folder} is blocked, but no traceTaskId is available. Inspect its blocker details, collect the operator decision, then use hive_worktree_create({ task: ${JSON.stringify(blocked.folder)}, continueFrom: "blocked", decision: "<operator answer>" }).`;
+            }
+            const failed = tasks.find(t => t.status === 'failed' || t.status === 'partial');
+            if (failed) {
+              return failed.traceTaskId
+                ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(failed.traceTaskId)} }) before retrying, then launch a NEW worker with hive_worktree_start({ task: ${JSON.stringify(failed.folder)} }); do not pass task_id to task().`
+                : `Task ${failed.folder} needs retry, but no traceTaskId is available. Inspect its report and worktree, then launch a NEW worker with hive_worktree_start({ task: ${JSON.stringify(failed.folder)} }); do not invent task_id.`;
             }
             if (runnableTasks.length > 1) {
               return `${runnableTasks.length} tasks are ready to start in parallel: ${runnableTasks.join(', ')}`;

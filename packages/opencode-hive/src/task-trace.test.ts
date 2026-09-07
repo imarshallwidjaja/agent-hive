@@ -1646,11 +1646,29 @@ describe('compact task trace v2', () => {
 });
 
 describe('task trace lifecycle hints', () => {
+  it('describes concrete failure triggers and forensic fields', () => {
+    const description = toolsFor(clientFor([])).hive_task_trace.description;
+    expect(description).toContain('failed');
+    expect(description).toContain('blocked');
+    expect(description).toContain('timed out');
+    expect(description).toContain('cancelled');
+    expect(description).toContain('empty');
+    expect(description).toContain('unclear');
+    expect(description).toContain('structured errors');
+    expect(description).toContain('changed files');
+    expect(description).toContain('tool activity');
+    expect(description).toContain('latest/final response');
+    expect(description).toContain('read-only');
+  });
+
   it('adds bounded metadata hints without parsing rendered task output', () => {
     const output = { title: 'task', output: '', metadata: { sessionId: 'child' } };
     appendTaskTraceHint({ tool: 'task' }, output);
     appendTaskTraceHint({ tool: 'task' }, output);
     expect(output.output).toContain('hive_task_trace({ task_id: "child" })');
+    expect(output.output).toContain('failed, blocked, timed out');
+    expect(output.output).toContain('errors, changed_files, tool activity');
+    expect(output.output).toContain('NEW task without task_id');
     expect(output.output.match(/\[hive task trace\]/g)).toHaveLength(1);
 
     const longOutput = { title: 'task', output: 'x'.repeat(20_000), metadata: { sessionId: 'child' } };
@@ -1669,6 +1687,22 @@ describe('task trace lifecycle hints', () => {
     await injectTaskTraceHint(messages, authorize, seen);
     await injectTaskTraceHint(messages, authorize, seen);
     expect(messages[0].parts.filter((part: any) => part.type === 'text' && part.synthetic)).toHaveLength(1);
+    expect(messages[0].parts.at(-1).text).toContain('hive_task_trace({ task_id: "child" })');
+    expect(messages[0].parts.at(-1).text).toContain('errors, changed_files, tool activity');
+    expect(messages[0].parts.at(-1).text).toContain('NEW task without task_id');
+  });
+
+  it('injects replay hints for hard terminal failures but not running work', async () => {
+    const messages: any[] = [{
+      info: { id: 'parent-tool', sessionID: 'parent', role: 'assistant' },
+      parts: [
+        { id: 'failed-task', type: 'tool', tool: 'task', state: { status: 'cancelled' }, metadata: { sessionId: 'failed-child' } },
+        { id: 'running-task', type: 'tool', tool: 'task', state: { status: 'running' }, metadata: { sessionId: 'running-child' } },
+      ],
+    }];
+    await injectTaskTraceHint(messages, async (child) => child === 'failed-child');
+    expect(messages[0].parts.filter((part: any) => part.hiveTaskTraceHint)).toHaveLength(1);
+    expect(messages[0].parts.at(-1).text).toContain('"failed-child"');
   });
 
   it('keeps the recovery agent name reserved for hidden internal use', () => {

@@ -117,6 +117,7 @@ describe('createBackgroundJobAdapter', () => {
     expect(board.jobs).toHaveLength(1);
     expect(board.jobs[0]).toMatchObject({
       taskId: 'task-launch',
+      sessionId: 'parent-1:task-launch',
       runtimeState: 'running',
       agentName: 'scout-researcher',
       description: 'Explore implementation',
@@ -127,6 +128,7 @@ describe('createBackgroundJobAdapter', () => {
         primaryAgent: 'hive-master',
       },
     });
+    expect(JSON.stringify(board.jobs[0])).not.toContain('hive_task_trace');
   });
 
   it('marks foreign-runtime jobs stale before injecting the prompt board', async () => {

@@ -251,6 +251,75 @@ describe("TaskService", () => {
     });
   });
 
+  describe("worker attempt lifecycle", () => {
+    it("allocates sequential attempts under the status lock and preserves completion fields", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", {
+        status: "failed",
+        summary: "Previous attempt failed",
+        completedAt: "2025-01-22T00:00:00Z",
+        idempotencyKey: "old-key",
+        workerAttempt: 1,
+        workerSession: {
+          sessionId: "old-session",
+          taskId: "old-trace",
+          attempt: 1,
+        },
+      });
+
+      const first = service.allocateWorkerAttempt(featureName, "01-test-task");
+      const second = service.allocateWorkerAttempt(featureName, "01-test-task");
+
+      expect(first.attempt).toBe(2);
+      expect(first.idempotencyKey).toBe("hive-test-feature-01-test-task-2");
+      expect(first.status.workerSession).toBeUndefined();
+      expect(second.attempt).toBe(3);
+      expect(second.idempotencyKey).toBe("hive-test-feature-01-test-task-3");
+      expect(second.status.workerSession).toBeUndefined();
+      expect(second.status.status).toBe("failed");
+      expect(second.status.summary).toBe("Previous attempt failed");
+      expect(second.status.completedAt).toBe("2025-01-22T00:00:00Z");
+    });
+
+    it("associates only the exact unclaimed attempt", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", {
+        status: "in_progress",
+        idempotencyKey: "new-key",
+        workerAttempt: 2,
+      });
+
+      const delayed = service.associateWorkerSession(
+        featureName,
+        "01-test-task",
+        { sessionId: "old-session", attempt: 1 },
+        "old-key",
+        1,
+      );
+
+      const associated = service.associateWorkerSession(
+        featureName,
+        "01-test-task",
+        { sessionId: "new-session", attempt: 2 },
+        "new-key",
+        2,
+      );
+      const duplicate = service.associateWorkerSession(
+        featureName,
+        "01-test-task",
+        { sessionId: "duplicate-session", attempt: 2 },
+        "new-key",
+        2,
+      );
+
+      expect(delayed.workerSession).toBeUndefined();
+      expect(associated.workerSession?.sessionId).toBe("new-session");
+      expect(duplicate.workerSession?.sessionId).toBe("new-session");
+    });
+  });
+
   describe("getRawStatus", () => {
     it("returns full TaskStatus including new fields", () => {
       const featureName = "test-feature";

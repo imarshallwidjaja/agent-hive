@@ -20,6 +20,19 @@ import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
 import { CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
+const ROOT_SESSION_CLIENT = {
+  ...(OPENCODE_CLIENT as any),
+  session: {
+    ...(OPENCODE_CLIENT as any).session,
+    get: async ({ path: inputPath }: { path: { id: string } }) => ({
+      data: {
+        id: inputPath.id,
+        parentID: undefined,
+        time: { created: Date.now(), updated: Date.now() },
+      },
+    }),
+  },
+} as PluginInput['client'];
 type PluginHooks = Awaited<ReturnType<typeof plugin>>;
 
 type ToolContext = {
@@ -1433,14 +1446,14 @@ Do it
     }
   });
 
-  it("hive_worktree_start with gate closed returns blocking taskToolCall and does not register pending launches", async () => {
+  it("gate-closed blocking launch associates the exact child without writing a launch artifact", async () => {
     const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     const previousExperimental = process.env.OPENCODE_EXPERIMENTAL;
     delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     delete process.env.OPENCODE_EXPERIMENTAL;
 
     try {
-      const { hooks, toolContext } = await createHooksForTest(testRoot, "sess_gate_closed_worktree");
+      const { hooks, toolContext } = await createHooksForTest(testRoot, "sess_gate_closed_worktree", testRoot, ROOT_SESSION_CLIENT);
 
       await hooks.tool!.hive_feature_create.execute({ name: "gate-closed-feature" }, toolContext);
       await hooks.tool!.hive_plan_write.execute(
@@ -1461,9 +1474,14 @@ Do it
         toolContext,
       );
       const result = JSON.parse(raw as string) as {
-        taskToolCall?: { description?: string; prompt?: string; subagent_type?: string; background?: boolean };
+        taskToolCall?: { description: string; prompt: string; subagent_type: string; background?: boolean };
         backgroundTaskCall?: unknown;
         instructions?: string;
+      };
+      const taskArgs = {
+        subagent_type: result.taskToolCall!.subagent_type,
+        description: result.taskToolCall!.description,
+        prompt: result.taskToolCall!.prompt,
       };
 
       expect(result.taskToolCall).toMatchObject({
@@ -1479,6 +1497,37 @@ Do it
 
       const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
       expect(fs.existsSync(boardPath)).toBe(false);
+      const taskDirectory = path.join(testRoot, '.hive', 'features', '01_gate-closed-feature', 'tasks', FIRST_TASK);
+      expect(fs.readdirSync(taskDirectory).sort()).toEqual(['spec.md', 'status.json', 'worker-prompt.md']);
+
+      await hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'gate-closed-worker',
+        args: taskArgs,
+      }, {
+        args: { ...taskArgs },
+      });
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'gate-closed-worker',
+        args: taskArgs,
+      }, {
+        title: 'task',
+        output: 'done',
+        metadata: { sessionId: 'gate-closed-child' },
+      });
+      const statusPath = path.join(testRoot, '.hive', 'features', '01_gate-closed-feature', 'tasks', FIRST_TASK, 'status.json');
+      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toMatchObject({
+        sessionId: 'gate-closed-child',
+        attempt: 1,
+      });
+      const hiveStatus = JSON.parse(await hooks.tool!.hive_status.execute(
+        { feature: 'gate-closed-feature' },
+        toolContext,
+      ) as string) as { tasks: { list: Array<{ traceTaskId?: string }> } };
+      expect(hiveStatus.tasks.list[0].traceTaskId).toBe('gate-closed-child');
     } finally {
       if (previousBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
@@ -1491,14 +1540,91 @@ Do it
         process.env.OPENCODE_EXPERIMENTAL = previousExperimental;
       }
     }
-  });
+  }, 30_000);
 
-  it("does not treat task status workerSession as live before observed background launch", async () => {
+  it("keeps same-folder launches associated with their exact feature under one parent", async () => {
+    const { hooks, toolContext } = await createHooksForTest(
+      testRoot,
+      "sess_same_folder_parent",
+      testRoot,
+      ROOT_SESSION_CLIENT,
+    );
+    for (const feature of ["same-folder-a", "same-folder-b"]) {
+      await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+      await hooks.tool!.hive_plan_write.execute(
+        {
+          content: createSingleTaskPlan(
+            feature,
+            "This regression test proves exact feature ownership when two launches use the same task folder under one parent session.",
+          ),
+          feature,
+        },
+        toolContext,
+      );
+      await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+      await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+    }
+
+    const launchA = JSON.parse(await hooks.tool!.hive_worktree_start.execute(
+      { feature: "same-folder-a", task: FIRST_TASK },
+      toolContext,
+    ) as string);
+    const launchB = JSON.parse(await hooks.tool!.hive_worktree_start.execute(
+      { feature: "same-folder-b", task: FIRST_TASK },
+      toolContext,
+    ) as string);
+
+    for (const [callID, launch, sessionId] of [
+      ["same-folder-b-call", launchB, "same-folder-b-child"],
+      ["same-folder-a-call", launchA, "same-folder-a-child"],
+    ] as const) {
+      await hooks["tool.execute.before"]?.(
+        { tool: "task", sessionID: toolContext.sessionID, callID, args: { ...launch.taskToolCall } },
+        { args: { ...launch.taskToolCall } },
+      );
+      await hooks["tool.execute.after"]?.(
+        { tool: "task", sessionID: toolContext.sessionID, callID, args: { ...launch.taskToolCall } },
+        { title: "task", output: "done", metadata: { sessionId } },
+      );
+    }
+
+    const statusFor = (featureDir: string) => JSON.parse(fs.readFileSync(
+      path.join(testRoot, ".hive", "features", featureDir, "tasks", FIRST_TASK, "status.json"),
+      "utf-8",
+    ));
+    expect(statusFor("01_same-folder-a").workerSession.sessionId).toBe("same-folder-a-child");
+    expect(statusFor("02_same-folder-b").workerSession.sessionId).toBe("same-folder-b-child");
+  }, 30_000);
+
+  it("uses one-shot parent-scoped launch intents and rejects replay, wrong agents, and delayed attempts", async () => {
     const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    const previousExperimental = process.env.OPENCODE_EXPERIMENTAL;
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "1";
 
     try {
-      const { hooks, toolContext } = await createHooksForTest(testRoot, "sess_background_no_worker_session");
+      let failSessionLookup = false;
+      const retryableSessionClient = {
+        ...(ROOT_SESSION_CLIENT as any),
+        session: {
+          ...(ROOT_SESSION_CLIENT as any).session,
+          get: async ({ path: inputPath }: { path: { id: string } }) => {
+            if (failSessionLookup) throw new Error("transient session lookup failure");
+            return {
+              data: {
+                id: inputPath.id,
+                parentID: undefined,
+                time: { created: Date.now(), updated: Date.now() },
+              },
+            };
+          },
+        },
+      } as PluginInput['client'];
+      const { hooks, toolContext } = await createHooksForTest(
+        testRoot,
+        "sess_background_no_worker_session",
+        testRoot,
+        retryableSessionClient,
+      );
 
       await hooks.tool!.hive_feature_create.execute({ name: "no-worker-session" }, toolContext);
       await hooks.tool!.hive_plan_write.execute(
@@ -1508,10 +1634,16 @@ Do it
       await hooks.tool!.hive_plan_approve.execute({ feature: "no-worker-session" }, toolContext);
       await hooks.tool!.hive_tasks_sync.execute({ feature: "no-worker-session" }, toolContext);
 
-      await hooks.tool!.hive_worktree_start.execute(
+      const launchRaw = await hooks.tool!.hive_worktree_start.execute(
         { feature: "no-worker-session", task: FIRST_TASK },
         toolContext,
       );
+      const launch = JSON.parse(launchRaw as string) as {
+        taskToolCall: { description: string; prompt: string; subagent_type: string };
+        backgroundTaskCall: { background: true; description: string; prompt: string; subagent_type: string };
+      };
+      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      delete process.env.OPENCODE_EXPERIMENTAL;
 
       const statusPath = path.join(
         testRoot,
@@ -1525,18 +1657,226 @@ Do it
       const status = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as {
         workerSession?: unknown;
         idempotencyKey?: string;
+        workerAttempt?: number;
       };
 
       expect(status.idempotencyKey).toBe("hive-no-worker-session-01-first-task-1");
+      expect(status.workerAttempt).toBe(1);
       expect(status.workerSession).toBeUndefined();
+
+      await hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'generic-research',
+      }, {
+        args: {
+          subagent_type: 'scout-researcher',
+          description: 'Research something else',
+          prompt: 'Inspect unrelated code',
+        },
+      });
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'generic-research',
+        args: {
+          subagent_type: 'scout-researcher',
+          description: 'Research something else',
+          prompt: 'Inspect unrelated code',
+        },
+      }, {
+        title: 'task',
+        output: 'research complete',
+        metadata: { sessionId: 'generic-child' },
+      });
+      expect(JSON.parse(fs.readFileSync(statusPath, "utf-8")).workerSession).toBeUndefined();
+
+      await hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'mutated-worker',
+        args: { ...launch.backgroundTaskCall },
+      }, {
+        args: { ...launch.backgroundTaskCall, prompt: '' },
+      });
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'mutated-worker',
+        args: { ...launch.backgroundTaskCall },
+      }, {
+        title: 'task',
+        output: 'mutated',
+        metadata: { sessionId: 'mutated-child' },
+      });
+      expect(JSON.parse(fs.readFileSync(statusPath, "utf-8")).workerSession).toBeUndefined();
+
+      failSessionLookup = true;
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'failed-before-worker',
+        args: { ...launch.backgroundTaskCall },
+      }, {
+        args: { ...launch.backgroundTaskCall },
+      })).rejects.toThrow('task authorization failed because session lineage is unavailable');
+      failSessionLookup = false;
+      expect(JSON.parse(fs.readFileSync(statusPath, "utf-8")).workerSession).toBeUndefined();
+
+      const workerOutput = {
+        title: 'task',
+        output: '',
+        metadata: { sessionId: 'feature-task-child' },
+      };
+      await hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'hive-worker',
+      }, {
+        args: { ...launch.backgroundTaskCall },
+      });
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'hive-worker',
+        args: { ...launch.backgroundTaskCall },
+      }, workerOutput);
+
+      const associated = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as {
+        workerSession?: { sessionId?: string; mode?: string };
+      };
+      expect(associated.workerSession?.sessionId).toBe('feature-task-child');
+      expect(associated.workerSession?.mode).toBe('delegate');
+      expect(workerOutput.output).toContain('hive_task_trace({ task_id: "feature-task-child" })');
+
+      const hiveStatusRaw = await hooks.tool!.hive_status.execute(
+        { feature: "no-worker-session" },
+        toolContext,
+      );
+      const hiveStatus = JSON.parse(hiveStatusRaw as string) as {
+        tasks: { list: Array<{ traceTaskId?: string }> };
+      };
+      expect(hiveStatus.tasks.list[0].traceTaskId).toBe('feature-task-child');
+
+      await hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'replayed-worker',
+      }, {
+        args: { ...launch.backgroundTaskCall },
+      });
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'replayed-worker',
+        args: { ...launch.backgroundTaskCall },
+      }, {
+        title: 'task',
+        output: 'replayed',
+        metadata: { sessionId: 'replayed-child' },
+      });
+      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession.sessionId).toBe('feature-task-child');
+
+      const replacementRaw = await hooks.tool!.hive_worktree_start.execute(
+        { feature: 'no-worker-session', task: FIRST_TASK },
+        toolContext,
+      );
+      const delayed = JSON.parse(replacementRaw as string) as {
+        taskToolCall: { description: string; prompt: string; subagent_type: string };
+      };
+      const pendingReplacement = JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as {
+        idempotencyKey?: string;
+        workerAttempt?: number;
+        workerSession?: unknown;
+      };
+      expect(pendingReplacement.idempotencyKey).toBe('hive-no-worker-session-01-first-task-2');
+      expect(pendingReplacement.workerAttempt).toBe(2);
+      expect(pendingReplacement.workerSession).toBeUndefined();
+      const pendingStatus = JSON.parse(await hooks.tool!.hive_status.execute(
+        { feature: 'no-worker-session' },
+        toolContext,
+      ) as string) as { tasks: { list: Array<{ traceTaskId?: string }> } };
+      expect(pendingStatus.tasks.list[0].traceTaskId).toBeUndefined();
+
+      await hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'delayed-second-attempt',
+      }, {
+        args: { ...delayed.taskToolCall },
+      });
+
+      const replacementRaw2 = await hooks.tool!.hive_worktree_start.execute(
+        { feature: 'no-worker-session', task: FIRST_TASK },
+        toolContext,
+      );
+      const replacement = JSON.parse(replacementRaw2 as string) as {
+        taskToolCall: { description: string; prompt: string; subagent_type: string };
+      };
+      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8'))).toMatchObject({
+        workerAttempt: 3,
+        idempotencyKey: 'hive-no-worker-session-01-first-task-3',
+      });
+      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
+
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'delayed-second-attempt',
+        args: { ...delayed.taskToolCall },
+      }, {
+        title: 'task',
+        output: 'late second attempt',
+        metadata: { sessionId: 'late-second-child' },
+      });
+      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
+
+      await hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'wrong-agent-worker',
+      }, {
+        args: { ...replacement.taskToolCall, subagent_type: 'scout-researcher' },
+      });
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'wrong-agent-worker',
+        args: { ...replacement.taskToolCall, subagent_type: 'scout-researcher' },
+      }, {
+        title: 'task',
+        output: 'wrong agent',
+        metadata: { sessionId: 'wrong-agent-child' },
+      });
+      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
+
+      await hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'replacement-worker',
+      }, {
+        args: { ...replacement.taskToolCall },
+      });
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'replacement-worker',
+        args: { ...replacement.taskToolCall },
+      }, undefined);
+      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
     } finally {
       if (previousBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
       } else {
         process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackgroundEnv;
       }
+      if (previousExperimental === undefined) {
+        delete process.env.OPENCODE_EXPERIMENTAL;
+      } else {
+        process.env.OPENCODE_EXPERIMENTAL = previousExperimental;
+      }
     }
-  });
+  }, 30_000);
 
   it("excludes non-execution context from worker prompt payloads", async () => {
     const ctx: PluginInput = {

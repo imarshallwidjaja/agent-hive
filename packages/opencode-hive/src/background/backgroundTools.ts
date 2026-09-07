@@ -401,12 +401,13 @@ function buildRecommendedNextAction(
   }
 
   if (terminalJobs.length === 1) {
+    const job = terminalJobs[0];
     return {
       action: 'reconcile_terminal_job',
       reasonCode: 'terminal_unreconciled_job_visible',
-      taskId: terminalJobs[0].taskId,
+      taskId: job.taskId,
       message: 'A visible background job is terminal and unreconciled. Reconcile or ignore the board item, then inspect Hive status if it belongs to scoped feature/task work.',
-      requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(terminalJobs[0]) || reconciledJobs.some(hasHiveFeatureOrTaskScope),
+      requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(job) || reconciledJobs.some(hasHiveFeatureOrTaskScope),
     };
   }
 
@@ -470,7 +471,7 @@ function buildStaleRecoveryAction(staleJobs: BackgroundJobRecord[]): Recommended
     action: 'recover_stale_background_jobs',
     reasonCode: 'stale_background_jobs_visible',
     taskIds,
-    message: 'One or more background jobs from a previous runtime epoch are now stale. Inspect the associated worktree and task branch, retry if the work was lost, or ignore/archive the stale lane with hive_background_reconcile({ decision: "ignored" }). These stale lanes are not counted as native completion pending.',
+    message: 'One or more background jobs from a previous runtime epoch are stale. Inspect associated worktrees and Hive status before retrying, then ignore/archive stale board lanes with hive_background_reconcile({ decision: "ignored" }). These lanes are not counted as native completion pending.',
     requiresHiveStatusRefresh: true,
   };
 }
@@ -500,8 +501,8 @@ function staleRecoveryPendingAction(job: BackgroundJobRecord): Record<string, st
   return {
     reason: 'stale_recovery_pending',
     taskId: job.taskId,
-    command: `hive_background_reconcile({ identifier: "${job.taskId}", decision: "ignored", summary: "<why the stale lane was archived>" })`,
-    message: 'This stale background job is not terminal. Inspect the associated worktree and task branch, retry if needed, or archive it with decision "ignored".',
+    command: `hive_background_reconcile({ identifier: ${JSON.stringify(job.taskId)}, decision: "ignored", summary: "<why the stale lane was archived>" })`,
+    message: 'This stale background job is not running normally. Inspect its associated worktree and Hive status before retrying, or archive it with decision "ignored".',
   };
 }
 
@@ -510,7 +511,7 @@ function reconcileRequiredAction(job: BackgroundJobRecord): Record<string, strin
     reason: 'reconcile_required',
     taskId: job.taskId,
     precondition: 'Consume or intentionally ignore the terminal result before running this command.',
-    command: `hive_background_reconcile({ identifier: "${job.taskId}", decision: "reconciled", summary: "<what was done with the result>" })`,
+    command: `hive_background_reconcile({ identifier: ${JSON.stringify(job.taskId)}, decision: "reconciled", summary: "<what was done with the result>" })`,
     message: 'This background job is terminal but unreconciled. Consume or intentionally ignore the result, then reconcile or ignore it explicitly.',
   };
 }
