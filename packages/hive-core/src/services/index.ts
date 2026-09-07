@@ -75,7 +75,20 @@ export type {
   ReviewEvidenceBundleAuthorizationRecovery,
   ReviewEvidenceBundleCleanupResult,
 } from './reviewEvidenceBundleService.js';
-export { ContextService } from './contextService.js';
+export {
+  ContextService,
+  ContextMutationError,
+  CONTEXT_INDEX_SCHEMA_VERSION,
+  RECOMMENDED_DURABLE_CHAR_CAP,
+  RECOMMENDED_DURABLE_FILE_CAP,
+} from './contextService.js';
+export type {
+  ContextArchiveResult,
+  ContextContentRead,
+  ContextMutationErrorReason,
+  ContextMutationResult,
+  ContextReadSummary,
+} from './contextService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService } from './sessionService.js';
 export { BackgroundJobService } from './backgroundJobService.js';

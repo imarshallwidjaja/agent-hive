@@ -557,7 +557,12 @@ Do it
       toolContext,
     );
 
-    expect(output).toContain("Error: Feature 'future-feature' not found");
+    expect(JSON.parse(output as string)).toMatchObject({
+      success: false,
+      terminal: true,
+      reason: 'feature_not_found',
+      error: "Feature 'future-feature' not found. Create it first with hive_feature_create.",
+    });
     expect(fs.existsSync(path.join(testRoot, '.hive', 'features', 'future-feature'))).toBe(false);
   });
 
@@ -571,7 +576,9 @@ Do it
       createToolContext(unboundSessionID),
     );
 
-    expect(output).toContain(path.join('01_sole-live-feature', 'context', 'notes.md'));
+    const result = JSON.parse(output as string) as { success: boolean; operation: string; revision: number; path: string };
+    expect(result).toMatchObject({ success: true, operation: 'created', revision: 1 });
+    expect(result.path).toContain(path.join('01_sole-live-feature', 'context', 'notes.md'));
     expect(fs.readFileSync(path.join(
       testRoot,
       '.hive',
@@ -581,6 +588,98 @@ Do it
       'notes.md',
     ), 'utf-8')).toBe('# Sole feature notes');
     expect(readGlobalSessionFeatureName(testRoot, unboundSessionID)).toBe('sole-live-feature');
+  });
+
+  it('manages revisioned context and excludes evidence from status execution flags', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_managed_context');
+    await hooks.tool!.hive_feature_create.execute({ name: 'managed-context' }, toolContext);
+
+    const created = JSON.parse(await hooks.tool!.hive_context_write.execute({
+      feature: 'managed-context',
+      name: 'verification-log',
+      content: 'raw output',
+      kind: 'evidence',
+    }, toolContext) as string) as { revision: number };
+    const read = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      feature: 'managed-context',
+      name: 'verification-log',
+    }, toolContext) as string) as { revision: number; file: { content: string; kind: string } };
+    expect(read).toMatchObject({ revision: created.revision, file: { content: 'raw output', kind: 'evidence' } });
+
+    const appended = JSON.parse(await hooks.tool!.hive_context_append.execute({
+      feature: 'managed-context',
+      name: 'verification-log',
+      content: 'more output',
+      section: 'Retry',
+      expectedRevision: read.revision,
+    }, toolContext) as string) as { success: boolean; revision: number };
+    expect(appended).toMatchObject({ success: true, revision: 2 });
+
+    const stale = JSON.parse(await hooks.tool!.hive_context_archive.execute({
+      feature: 'managed-context',
+      names: ['verification-log'],
+      reason: 'superseded',
+      expectedRevision: read.revision,
+    }, toolContext) as string) as { success: boolean; reason: string };
+    expect(stale).toMatchObject({ success: false, reason: 'stale_revision' });
+    const blankReason = JSON.parse(await hooks.tool!.hive_context_archive.execute({
+      feature: 'managed-context',
+      names: ['verification-log'],
+      reason: ' ',
+      expectedRevision: appended.revision,
+    }, toolContext) as string) as { success: boolean; reason: string; nextAction: string };
+    expect(blankReason).toMatchObject({
+      success: false,
+      reason: 'invalid_archive_reason',
+      nextAction: 'Retry hive_context_archive with a specific non-blank reason.',
+    });
+    const reservedKind = JSON.parse(await hooks.tool!.hive_context_write.execute({
+      feature: 'managed-context',
+      name: 'draft',
+      content: 'scratchpad',
+      kind: 'durable',
+    }, toolContext) as string) as { success: boolean; reason: string; nextAction: string };
+    expect(reservedKind).toMatchObject({
+      success: false,
+      reason: 'invalid_context_kind',
+      nextAction: 'Omit kind for reserved names; otherwise use durable or evidence.',
+    });
+
+    const status = JSON.parse(await hooks.tool!.hive_status.execute({
+      feature: 'managed-context',
+    }, toolContext) as string) as {
+      context: { revision: number; durable: { fileCount: number }; files: Array<{ kind?: string; includeInExecution: boolean }> };
+    };
+    expect(status.context.revision).toBe(2);
+    expect(status.context.durable.fileCount).toBe(0);
+    expect(status.context.files[0]).toMatchObject({ kind: 'evidence', includeInExecution: false });
+  });
+
+  it('leaves draft cleanup explicit after successful plan approval', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_draft_archive');
+    await hooks.tool!.hive_feature_create.execute({ name: 'draft-archive' }, toolContext);
+    await hooks.tool!.hive_context_write.execute({
+      feature: 'draft-archive',
+      name: 'draft',
+      content: 'planning scratchpad',
+    }, toolContext);
+    const planOutput = await hooks.tool!.hive_plan_write.execute({
+      feature: 'draft-archive',
+      content: createSingleTaskPlan(
+        'Draft Archive',
+        'Approval persists independently from optional draft cleanup so an archival failure cannot misreport the completed approval.',
+      ),
+    }, toolContext);
+    expect(planOutput).toContain('Plan written');
+
+    const output = await hooks.tool!.hive_plan_approve.execute({ feature: 'draft-archive' }, toolContext);
+
+    expect(output).toContain('Draft cleanup is explicit');
+    expect(fs.readFileSync(
+      path.join(testRoot, '.hive', 'features', '01_draft-archive', 'context', 'draft.md'),
+      'utf-8',
+    )).toBe('planning scratchpad');
+    expect(new FeatureService(testRoot).get('draft-archive')?.status).toBe('approved');
   });
 
   it("keeps checked-in plugin.json aligned with the runtime contract", async () => {
@@ -4157,7 +4256,7 @@ Do it
       workerContext,
     );
 
-    expect(output).toContain("Context file written");
+    expect(JSON.parse(output as string)).toMatchObject({ success: true, operation: 'created' });
     expect(omittedOutput).toContain(path.join("01_ctx-bind-feature", "context", "follow-up.md"));
     expect(fs.readFileSync(path.join(
       testRoot,
@@ -4206,15 +4305,62 @@ Do it
       createToolContext(writerSessionID),
     );
 
-    expect(output).toContain("Context file written");
-    expect(fs.readFileSync(path.join(
+    const created = JSON.parse(output as string) as { success: boolean; operation: string; revision: number };
+    expect(created).toMatchObject({ success: true, operation: 'created' });
+    const status = JSON.parse(await hooks.tool!.hive_status.execute(
+      { feature: featureName },
+      createToolContext(writerSessionID),
+    ) as string) as {
+      feature: { name: string };
+      context: {
+        revision: number;
+        fileCount: number;
+        files: Array<{ name: string; chars: number }>;
+        durable: { fileCount: number; chars: number };
+      };
+    };
+    expect(status).toMatchObject({
+      feature: { name: featureName },
+      context: {
+        revision: created.revision,
+        fileCount: 1,
+        files: [{ name: 'notes', chars: 14 }],
+        durable: { fileCount: 1, chars: 14 },
+      },
+    });
+    const read = JSON.parse(await hooks.tool!.hive_context_read.execute(
+      { name: 'notes', feature: featureName },
+      createToolContext(writerSessionID),
+    ) as string) as { revision: number; file: { content: string } };
+    expect(read).toMatchObject({ revision: created.revision, file: { content: 'worktree notes' } });
+    const appended = JSON.parse(await hooks.tool!.hive_context_append.execute(
+      {
+        name: 'notes',
+        content: 'follow-up',
+        expectedRevision: read.revision,
+        feature: featureName,
+      },
+      createToolContext(writerSessionID),
+    ) as string) as { revision: number };
+    const archived = JSON.parse(await hooks.tool!.hive_context_archive.execute(
+      {
+        names: ['notes'],
+        reason: 'smoke complete',
+        expectedRevision: appended.revision,
+        feature: featureName,
+      },
+      createToolContext(writerSessionID),
+    ) as string) as { success: boolean; operation: string; archived: Array<{ archivePath: string }> };
+    expect(archived).toMatchObject({ success: true, operation: 'archived' });
+    expect(fs.readFileSync(archived.archived[0]!.archivePath, 'utf-8')).toContain('follow-up');
+    expect(fs.existsSync(path.join(
       worktreeRoot,
       ".hive",
       "features",
       "01_global-worktree-feature",
       "context",
       "notes.md",
-    ), "utf-8")).toBe("worktree notes");
+    ))).toBe(false);
     expect(readGlobalSessionFeatureName(worktreeRoot, writerSessionID)).toBe(featureName);
     expect(fs.existsSync(path.join(testRoot, ".hive"))).toBe(false);
   });
@@ -4243,7 +4389,12 @@ Do it
       createToolContext(writerSessionID)
     );
 
-    expect(output).toBe(`Error: Feature '${featureName}' not found. Create it first with hive_feature_create.`);
+    expect(JSON.parse(output as string)).toMatchObject({
+      success: false,
+      terminal: true,
+      reason: 'feature_not_found',
+      error: `Feature '${featureName}' not found. Create it first with hive_feature_create.`,
+    });
     expect(fs.existsSync(path.join(
       testRoot,
       ".hive",
@@ -4476,7 +4627,11 @@ Do it
       boundContext,
     );
 
-    expect(output).toContain("Error: Feature 'missing-detected-feature' not found");
+    expect(JSON.parse(output as string)).toMatchObject({
+      success: false,
+      reason: 'feature_not_found',
+      error: "Feature 'missing-detected-feature' not found. Create it first with hive_feature_create.",
+    });
     expect(fs.existsSync(path.join(
       testRoot,
       '.hive',

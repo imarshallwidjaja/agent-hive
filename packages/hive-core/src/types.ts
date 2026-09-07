@@ -202,12 +202,29 @@ export interface FeatureInfo {
   reviewCounts: ReviewCounts;
 }
 
-export type ContextRole = 'human' | 'scratchpad' | 'operational' | 'durable';
+export type ContextRole = 'human' | 'scratchpad' | 'operational' | 'durable' | 'evidence';
+export type ContextKind = 'durable' | 'evidence';
+
+export interface ContextIndexEntry {
+  kind: ContextKind;
+  createdAt: string;
+  updatedAt: string;
+  task?: string;
+}
+
+export interface ContextIndex {
+  schemaVersion: 1;
+  revision: number;
+  entries: Record<string, ContextIndexEntry>;
+}
 
 export interface ContextFile {
   name: string;
   content: string;
   updatedAt: string;
+  createdAt?: string;
+  kind?: ContextKind;
+  task?: string;
   role: ContextRole;
   includeInExecution: boolean;
   includeInNetwork: boolean;

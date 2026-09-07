@@ -1408,6 +1408,63 @@ const plugin: Plugin = async (ctx) => {
     targetFeatureService: FeatureService = featureService,
   ): string => `Error: ${getFeatureResolutionFailure(argumentName, explicit, targetFeatureService).error}`;
 
+  const formatContextMutationFailure = (error: unknown): string => {
+    const failure = error as { reason?: string; message?: string; details?: Record<string, unknown> };
+    if (!failure.reason) throw error;
+    const nextAction = {
+      durable_context_limit: 'Read the context summary, then consolidate or archive stale durable files before retrying.',
+      invalid_archive_reason: 'Retry hive_context_archive with a specific non-blank reason.',
+      invalid_argument: 'Correct the archive arguments, read current context state, and retry.',
+      invalid_context_kind: 'Omit kind for reserved names; otherwise use durable or evidence.',
+      invalid_context_name: 'Retry with a simple context name without paths.',
+      context_already_exists: 'Call hive_context_read for the file, then retry hive_context_write with the current expectedRevision.',
+      context_not_found: 'Call hive_context_read to inspect current context names before retrying.',
+      stale_revision: 'Call hive_context_read, then retry with the current revision.',
+    }[failure.reason] ?? 'Call hive_context_read, then retry with the current revision.';
+    return JSON.stringify({
+      success: false,
+      terminal: false,
+      reason: failure.reason,
+      error: failure.message,
+      ...failure.details,
+      nextAction,
+    }, null, 2);
+  };
+
+  const contextToolScope = {
+    context: runtimeContext,
+    features: new FeatureService(runtimeContext.projectRoot),
+    contexts: new ContextService(runtimeContext.projectRoot),
+    sessions: new SessionService(runtimeContext.projectRoot),
+  };
+  const statusToolServices = {
+    features: contextToolScope.features,
+    plans: new PlanService(runtimeContext.projectRoot),
+    tasks: new TaskService(runtimeContext.projectRoot),
+    contexts: contextToolScope.contexts,
+  };
+
+  const resolveContextFeature = (
+    explicitFeature: string | undefined,
+    toolContext: unknown,
+  ): { feature: string; sessionID?: string } | string => {
+    const feature = resolveFeature(explicitFeature, toolContext, contextToolScope);
+    if (!feature) return formatFeatureResolutionError('feature', explicitFeature, contextToolScope.features);
+    if (!contextToolScope.features.get(feature)) {
+      return JSON.stringify({
+        success: false,
+        terminal: true,
+        reason: 'feature_not_found',
+        error: `Feature '${feature}' not found. Create it first with hive_feature_create.`,
+      }, null, 2);
+    }
+    return { feature, sessionID: (toolContext as ToolContext)?.sessionID };
+  };
+
+  const bindContextFeature = (sessionID: string | undefined, feature: string): void => {
+    if (sessionID) contextToolScope.sessions.bindFeature(sessionID, feature);
+  };
+
   const captureSession = (feature: string, toolContext: unknown) => {
     const ctx = toolContext as ToolContext;
     if (ctx?.sessionID) {
@@ -4725,7 +4782,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             return `Error: Cannot approve - ${planComments} unresolved plan review comment(s) remain. Address them first.`;
           }
           planService.approve(feature);
-          return 'Plan approved. Run hive_tasks_sync to generate tasks. Refresh the plan summary if approval changed the narrative, workstreams, or milestones; plan.md remains execution truth.';
+          return 'Plan approved. Run hive_tasks_sync to generate tasks. Draft cleanup is explicit: after approval succeeds, archive context/draft with hive_context_archive when it is no longer needed. Refresh the plan summary if approval changed the narrative, workstreams, or milestones; plan.md remains execution truth.';
         },
       }),
 
@@ -5539,30 +5596,102 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       }),
 
       // Context Tools
-      hive_context_write: tool({
-        description: 'Write a context file for the feature. System-known names: overview = human-facing summary/history, draft = planner scratchpad, execution-decisions = orchestration log; all other names stay durable free-form context.',
+      hive_context_read: tool({
+        description: 'Read managed feature context. Omit name for the revisioned summary/index; provide name for content and the revision required by replace, append, or archive.',
         args: {
-          name: tool.schema.string().describe('Context file name (e.g., "overview", "draft", "execution-decisions", "learnings"). overview is the human-facing summary/history file, draft is planner scratchpad, execution-decisions is the orchestration log; other names remain durable free-form context.'),
-          content: tool.schema.string().describe('Markdown content to write'),
+          name: tool.schema.string().optional().describe('Context name. Omit to read the summary, kinds, footprint, and current revision.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
-        async execute({ name, content, feature: explicitFeature }, toolContext) {
-          const detected = runtimeContext;
-          const targetFeatureService = new FeatureService(detected.projectRoot);
-          const targetContextService = new ContextService(detected.projectRoot);
-          const targetSessionService = new SessionService(detected.projectRoot);
-          const sessionID = (toolContext as ToolContext)?.sessionID;
-          const feature = resolveFeature(explicitFeature, toolContext, {
-            context: detected,
-            features: targetFeatureService,
-            sessions: targetSessionService,
-          });
-          if (!feature) return formatFeatureResolutionError('feature', explicitFeature, targetFeatureService);
-          if (!targetFeatureService.get(feature)) return `Error: Feature '${feature}' not found. Create it first with hive_feature_create.`;
+        async execute({ name, feature: explicitFeature }, toolContext) {
+          const resolved = resolveContextFeature(explicitFeature, toolContext);
+          if (typeof resolved === 'string') return resolved;
+          const result = name
+            ? contextToolScope.contexts.readContent(resolved.feature, name)
+            : contextToolScope.contexts.readSummary(resolved.feature);
+          bindContextFeature(resolved.sessionID, resolved.feature);
+          return result
+            ? JSON.stringify({ success: true, ...result }, null, 2)
+            : JSON.stringify({ success: false, terminal: false, reason: 'context_not_found', error: `Context '${name}' not found.`, name }, null, 2);
+        },
+      }),
 
-          const filePath = targetContextService.write(feature, name, content);
-          if (sessionID) targetSessionService.bindFeature(sessionID, feature);
-          return `Context file written: ${filePath}. Known names: overview = human-facing summary/history, draft = planner scratchpad, execution-decisions = orchestration log; all other context names remain durable free-form notes.`;
+      hive_context_write: tool({
+        description: 'Create a context explicitly, or replace one only after hive_context_read using expectedRevision. Reuse and consolidate durable files before creating more. Evidence is excluded from worker/network prompts.',
+        args: {
+          name: tool.schema.string().describe('Context name. overview, draft, and execution-decisions are reserved system files.'),
+          content: tool.schema.string().describe('Markdown content to write'),
+          kind: tool.schema.enum(['durable', 'evidence']).optional().describe('Kind for non-reserved files. Defaults to durable.'),
+          task: tool.schema.string().optional().describe('Optional owning task identifier.'),
+          expectedRevision: tool.schema.number().optional().describe('Required for replacement; omit only for explicit creation.'),
+          feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
+        },
+        async execute({ name, content, kind, task, expectedRevision, feature: explicitFeature }, toolContext) {
+          const resolved = resolveContextFeature(explicitFeature, toolContext);
+          if (typeof resolved === 'string') return resolved;
+          try {
+            const result = expectedRevision === undefined
+              ? contextToolScope.contexts.create(resolved.feature, name, content, { kind, task })
+              : contextToolScope.contexts.replace(resolved.feature, name, content, expectedRevision, { kind, task });
+            bindContextFeature(resolved.sessionID, resolved.feature);
+            return JSON.stringify({ success: true, operation: expectedRevision === undefined ? 'created' : 'replaced', ...result }, null, 2);
+          } catch (error) {
+            return formatContextMutationFailure(error);
+          }
+        },
+      }),
+
+      hive_context_append: tool({
+        description: 'Append a dated block to existing context after hive_context_read. Preserves prior bytes and requires expectedRevision. Consolidate first when durable growth is rejected.',
+        args: {
+          name: tool.schema.string().describe('Existing context name.'),
+          content: tool.schema.string().describe('Markdown content to append.'),
+          section: tool.schema.string().optional().describe('Optional level-three heading for the appended block.'),
+          task: tool.schema.string().optional().describe('Optional owning task identifier.'),
+          expectedRevision: tool.schema.number().describe('Revision from hive_context_read.'),
+          feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
+        },
+        async execute({ name, content, section, task, expectedRevision, feature: explicitFeature }, toolContext) {
+          const resolved = resolveContextFeature(explicitFeature, toolContext);
+          if (typeof resolved === 'string') return resolved;
+          try {
+            const result = contextToolScope.contexts.append(
+              resolved.feature,
+              name,
+              content,
+              expectedRevision,
+              { section, task },
+            );
+            bindContextFeature(resolved.sessionID, resolved.feature);
+            return JSON.stringify({ success: true, operation: 'appended', ...result }, null, 2);
+          } catch (error) {
+            return formatContextMutationFailure(error);
+          }
+        },
+      }),
+
+      hive_context_archive: tool({
+        description: 'Archive only named context files after hive_context_read. Requires current revision and an explicit reason; unrelated files remain active.',
+        args: {
+          names: tool.schema.array(tool.schema.string()).describe('Context names to archive.'),
+          reason: tool.schema.string().describe('Specific reason for archiving these files.'),
+          expectedRevision: tool.schema.number().describe('Revision from hive_context_read.'),
+          feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
+        },
+        async execute({ names, reason, expectedRevision, feature: explicitFeature }, toolContext) {
+          const resolved = resolveContextFeature(explicitFeature, toolContext);
+          if (typeof resolved === 'string') return resolved;
+          try {
+            const result = contextToolScope.contexts.archiveSelected(
+              resolved.feature,
+              names,
+              reason,
+              expectedRevision,
+            );
+            bindContextFeature(resolved.sessionID, resolved.feature);
+            return JSON.stringify({ success: true, operation: 'archived', ...result }, null, 2);
+          } catch (error) {
+            return formatContextMutationFailure(error);
+          }
         },
       }),
 
@@ -5574,9 +5703,9 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         },
         async execute({ feature: explicitFeature }, toolContext) {
           const respond = (payload: Record<string, unknown>) => JSON.stringify(payload, null, 2);
-          const feature = resolveFeature(explicitFeature, toolContext);
+          const feature = resolveFeature(explicitFeature, toolContext, contextToolScope);
           if (!feature) {
-            const failure = getFeatureResolutionFailure('feature', explicitFeature);
+            const failure = getFeatureResolutionFailure('feature', explicitFeature, statusToolServices.features);
             return respond({
               success: false,
               terminal: true,
@@ -5587,35 +5716,45 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
             });
           }
 
-          const featureData = featureService.get(feature);
+          const featureData = statusToolServices.features.get(feature);
           if (!featureData) {
             return respond({
               success: false,
               terminal: true,
               reason: 'feature_not_found',
               error: `Feature '${feature}' not found`,
-              availableFeatures: featureService.list(),
+              availableFeatures: statusToolServices.features.list(),
             });
           }
 
-          const blocked = checkBlocked(feature);
-          if (blocked) {
+          const statusRoot = runtimeContext.projectRoot;
+          const statusFeatureDir = resolveFeatureDirectoryName(statusRoot, feature);
+          const blockedPath = path.join(statusRoot, '.hive', 'features', statusFeatureDir, 'BLOCKED');
+          const isBlocked = fs.existsSync(blockedPath);
+          const blockedReason = isBlocked ? fs.readFileSync(blockedPath, 'utf-8').trim() : '';
+          if (isBlocked) {
             return respond({
               success: false,
               terminal: true,
               blocked: true,
-              error: blocked,
+              error: `⛔ BLOCKED by Beekeeper
+
+${blockedReason || '(No reason provided)'}
+
+The human has blocked this feature. Wait for them to unblock it.
+To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               hints: [
                 'Read the blocker details and resolve them before retrying hive_status.',
-                `Remove .hive/features/${resolveFeatureDirectoryName(directory, feature)}/BLOCKED once the blocker is resolved.`,
+                `Remove .hive/features/${statusFeatureDir}/BLOCKED once the blocker is resolved.`,
               ],
             });
           }
 
-          const plan = planService.read(feature);
-          const tasks = taskService.list(feature);
-          const featureContextFiles = contextService.list(feature);
-          const overview = contextService.getOverview(feature);
+          const plan = statusToolServices.plans.read(feature);
+          const tasks = statusToolServices.tasks.list(feature);
+          const featureContextFiles = statusToolServices.contexts.list(feature);
+          const managedContext = statusToolServices.contexts.readSummary(feature);
+          const overview = statusToolServices.contexts.getOverview(feature);
           const readThreads = (filePath: string): Array<unknown> | null => {
             if (!fs.existsSync(filePath)) {
               return null;
@@ -5628,7 +5767,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
               return [];
             }
           };
-          const featurePath = path.join(directory, '.hive', 'features', resolveFeatureDirectoryName(directory, feature));
+          const featurePath = path.join(statusRoot, '.hive', 'features', statusFeatureDir);
           const reviewDir = path.join(featurePath, 'comments');
           const planThreads = readThreads(path.join(reviewDir, 'plan.json')) ?? readThreads(path.join(featurePath, 'comments.json'));
           const overviewThreads = readThreads(path.join(reviewDir, 'overview.json'));
@@ -5638,7 +5777,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           };
 
           const tasksSummary = await Promise.all(tasks.map(async t => {
-            const rawStatus = taskService.getRawStatus(feature, t.folder);
+            const rawStatus = statusToolServices.tasks.getRawStatus(feature, t.folder);
             const worktree = await worktreeService.get(feature, t.folder);
             const hasChanges = worktree
               ? await worktreeService.hasUncommittedChanges(worktree.feature, worktree.step)
@@ -5663,6 +5802,8 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
             name: c.name,
             chars: c.content.length,
             updatedAt: c.updatedAt,
+            kind: c.kind,
+            task: c.task,
             role: c.role,
             includeInExecution: c.includeInExecution,
             includeInNetwork: c.includeInNetwork,
@@ -5831,6 +5972,8 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
             context: {
               fileCount: featureContextFiles.length,
               files: contextSummary,
+              revision: managedContext.revision,
+              durable: managedContext.durable,
             },
             warning: configFallbackWarning ?? undefined,
             nextAction: getNextAction(planStatus, tasksSummary, runnable, !!plan, !!overview),
@@ -5989,7 +6132,8 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
-          'hive_context_write', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
+          'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',
+          'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
         ]),
         permission: {
           question: "allow",
@@ -6021,7 +6165,9 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         description: 'Architect (Planner) - Plans features, interviews, writes plans. NEVER executes.',
         prompt: ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + architectAutoLoadSkillsAppendix + architectBackgroundDelegationAppendix + (agentMode === 'dedicated' ? architectSubagentRoutingAppendix : ''),
         tools: agentTools([
-          'hive_feature_create', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_context_write', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
+          'hive_feature_create', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read',
+          'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',
+          'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
@@ -6064,7 +6210,8 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
           'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
-          'hive_context_write', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
+          'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',
+          'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
         ]),
@@ -6091,7 +6238,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         mode: 'subagent' as const,
         description: builtInRoutingDescriptions['scout-researcher'],
         prompt: SCOUT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + scoutAutoLoadSkillsAppendix,
-        tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status']),
+        tools: agentTools(['hive_plan_read', 'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_status']),
         permission: {
           edit: "deny",  // Researchers don't edit code
           task: "deny",
@@ -6117,7 +6264,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         temperature: foragerUserConfig.temperature ?? 0.3,
         mode: 'subagent' as const,
         description: builtInRoutingDescriptions['forager-worker'],
-        tools: agentTools(['hive_plan_read', 'hive_worktree_commit', 'hive_context_write']),
+        tools: agentTools(['hive_plan_read', 'hive_worktree_commit', 'hive_context_read', 'hive_context_write', 'hive_context_append']),
         permission: {
           task: "deny",
           delegate: "deny",
@@ -6133,7 +6280,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         mode: 'subagent' as const,
         description: 'Hive Helper - Runtime-only bounded hard-task operational assistant for merge recovery, state clarification, and safe manual follow-up assistance.',
         prompt: HIVE_HELPER_PROMPT + HIVE_SYSTEM_PROMPT,
-        tools: agentTools(['hive_merge', 'hive_status', 'hive_context_write', 'hive_task_create']),
+        tools: agentTools(['hive_merge', 'hive_status', 'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_task_create']),
         permission: {
           task: 'deny',
           delegate: 'deny',
@@ -6168,7 +6315,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           mode: 'subagent' as const,
           description,
           prompt: prompt + HIVE_SYSTEM_PROMPT + autoLoadSkillsAppendix,
-          tools: agentTools(['hive_plan_read', 'hive_context_write', 'hive_status']),
+          tools: agentTools(['hive_plan_read', 'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_status']),
           permission: reviewerPermissions,
         };
       }
@@ -6264,7 +6411,8 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           'hive_adhoc_worktree_create', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
-          'hive_context_write', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear',
+          'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',
+          'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear',
         ]),
         permission: {
           task: 'allow',

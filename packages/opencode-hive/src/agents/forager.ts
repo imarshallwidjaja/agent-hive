@@ -74,8 +74,7 @@ Do not modify the plan file.
 
 ## Persistent Notes
 
-When implementation is authorized and a feature/task worker prompt identifies a Hive feature, persist substantial discoveries (architecture patterns, key decisions, gotchas that affect multiple tasks) with:
-\`hive_context_write({ feature: "<feature-name>", name: "learnings", content: "..." })\`.
+When implementation is authorized and a feature/task worker prompt identifies a Hive feature, persist substantial discoveries (architecture patterns, key decisions, gotchas that affect multiple tasks) by reading the target first with \`hive_context_read\`, then using \`hive_context_append\`. Use \`hive_context_write\` without \`expectedRevision\` only to create a missing file; workers must not replace existing context. Keep raw logs and historical verification in evidence context when a new file is necessary.
 
 Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes metadata persistence. Required managed feature-task completion or blocker reporting is lifecycle metadata, not optional context-note persistence, and still uses the assigned lifecycle tool.
 

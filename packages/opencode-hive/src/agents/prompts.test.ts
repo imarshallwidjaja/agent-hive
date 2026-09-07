@@ -886,11 +886,9 @@ describe('Architect (Planner) prompt', () => {
 
   it('uses explicit feature targeting for root-oriented context guidance', () => {
     expect(QUEEN_BEE_PROMPT).toContain(
-      'hive_context_write({ feature: "feature-name", name: "execution-decisions"',
+      'hive_context_append({ feature: "feature-name", name: "execution-decisions"',
     );
-    expect(SWARM_BEE_PROMPT).toContain(
-      'hive_context_write({ feature: "feature-name", name: "execution-decisions"',
-    );
+    expect(SWARM_BEE_PROMPT).toContain('Append execution decisions with `hive_context_append`');
     expect(SCOUT_BEE_PROMPT).toContain('feature: "{feature-name}"');
     expect(QUEEN_BEE_PROMPT).toContain(
       'If multiple live features remain after path and session resolution',
@@ -1121,7 +1119,7 @@ describe('Swarm (Orchestrator) prompt', () => {
 
   it('teaches orchestrators to maintain overview at execution milestones', () => {
     expect(SWARM_BEE_PROMPT).toContain(
-      'hive_context_write({ feature: "feature-name", name: "overview", content: ... })',
+      'hive_context_write({ feature: "feature-name", name: "overview", content: ..., expectedRevision })',
     );
     expect(SWARM_BEE_PROMPT).toContain('execution start');
     expect(SWARM_BEE_PROMPT).toContain('scope shift');
@@ -1165,9 +1163,8 @@ describe('Swarm (Orchestrator) prompt', () => {
 
 describe('Forager (Worker/Coder) prompt', () => {
   it('targets feature learnings explicitly without implying ad-hoc context persistence', () => {
-    expect(FORAGER_BEE_PROMPT).toContain(
-      'hive_context_write({ feature: "<feature-name>", name: "learnings", content: "..." })',
-    );
+    expect(FORAGER_BEE_PROMPT).toContain('reading the target first with `hive_context_read`, then using `hive_context_append`');
+    expect(FORAGER_BEE_PROMPT).toContain('workers must not replace existing context');
     expect(FORAGER_BEE_PROMPT).not.toContain(
       'hive_context_write({ name: "learnings", content: "..." })',
     );

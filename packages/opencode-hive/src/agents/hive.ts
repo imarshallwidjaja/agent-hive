@@ -108,7 +108,7 @@ During Planning, use Scout via \`task()\` for exploration. Choose the scout rese
 **When NOT to delegate:** Only what fits **Direct Work Boundary** above (one bounded read, one bounded write/patch, one cheap final check, or coordination/setup). Sequential operations where step N+1 needs step N's result still use blocking delegation when implementation is non-trivial.
 
 ### Context Persistence
-Save discoveries with \`hive_context_write\`:
+Read context with \`hive_context_read\` before mutating it. Append incremental discoveries with \`hive_context_append\`; use \`hive_context_write\` without a revision only for creation and with \`expectedRevision\` for intentional replacement:
 - Requirements and decisions
 - User preferences
 - Research findings
@@ -119,10 +119,10 @@ Use the lightweight context model explicitly:
 - \`execution-decisions\` = orchestration log
 - all other names = durable free-form context
 
-Treat the reserved names above as special-purpose files, not general notes. Use context files for durable worker notes, decisions, and research.
+Treat the reserved names above as special-purpose files, not general notes. Use durable context for current worker contracts and synthesized findings. Use evidence context for raw logs and historical verification so it stays out of worker and network prompts. Consolidate durable files before creating more.
 From a repository-root planning session, use an explicit feature when needed: \`hive_context_write({ feature: "feature-name", name: "learnings", content: ... })\`. If multiple live features remain after path and session resolution, retry the feature-scoped tool with the explicit \`feature\` argument, or \`name\` for \`hive_feature_complete\`, using one of the candidates returned by the tool.
 
-When Scout returns substantial findings (3+ files discovered, architecture patterns, or key decisions), persist them to a feature context file via \`hive_context_write\`.
+When Scout returns substantial findings (3+ files discovered, architecture patterns, or key decisions), append them to a suitable existing durable context when possible.
 
 ### Checkpoints
 Before major transitions, verify:
@@ -237,7 +237,7 @@ Search Stop conditions: enough context, repeated info, 2 rounds with no new data
 Use \`hive_status()\` to see **runnable** tasks (dependencies satisfied) and **blockedBy** info.
 - Only start tasks from the runnable list
 - When 2+ tasks are runnable: ask operator via \`question()\` before parallelizing
-- Record execution decisions with \`hive_context_write({ feature: "feature-name", name: "execution-decisions", ... })\`
+- Read, then append execution decisions with \`hive_context_append({ feature: "feature-name", name: "execution-decisions", expectedRevision, ... })\`
 
 ### When to Load Skills
 - Multiple independent tasks → load the native skill "dispatching-parallel-agents"

@@ -46,10 +46,12 @@ Single-repo projects use the git root directly; multi-repo topology, when needed
 ## Reserved Overview Convention
 
 - `context/overview.md` is the primary human-facing summary and review surface.
-- Update it with the existing context tool: `hive_context_write({ feature: "feature-name", name: "overview", content })`. From a repository-root session, provide `feature` whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
+- Create it with `hive_context_write`. For later replacement, call `hive_context_read` and pass its revision as `expectedRevision`. From a repository-root session, provide `feature` whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
 - `plan.md` remains the graph source of truth for plan-backed task generation, dependency parsing, and execution, and may still include a readable design summary before `## Tasks`.
 - `context/overview.md` is intentionally excluded from worker execution context so the narrative summary does not blur implementation truth.
-- Other context filenames remain durable free-form notes by default; files like `decisions.md`, `architecture.md`, and `constraints.md` are examples, not required schema.
+- `context/index.json` has `schemaVersion: 1`, a feature-global monotonic `revision`, and metadata keyed by normalized context name. Each non-reserved entry records `kind` (`durable` or `evidence`), creation/update timestamps, and an optional task. Legacy unindexed Markdown files are read as durable without eager migration.
+- Durable files are execution inputs, newest first with a deterministic name tie-breaker. Evidence files preserve raw logs and historical verification without entering worker or network prompts. Recommended durable limits are 8 files and 40,000 characters; legacy over-limit features remain readable, while durable growth is rejected until context is consolidated or archived.
+- `overview`, `draft`, and `execution-decisions` are reserved, excluded from execution context, and uncapped. Plan approval leaves the active draft unchanged so approval cannot partially succeed and then report failure during cleanup. Archive an obsolete draft explicitly with `hive_context_archive` after approval.
 
 ## Task status.json
 

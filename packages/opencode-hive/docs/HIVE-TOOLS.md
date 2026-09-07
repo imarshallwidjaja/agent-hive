@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Standard Hive Tools (33 total)
+## Standard Hive Tools (36 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -264,12 +264,17 @@ hive_task_trace_content({ task_id: "child", content_id: "<content_id from hive_t
 - If the task branch has no net tracked changes to integrate, `hive_merge` returns `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, omits `sha`, and still performs requested cleanup when safe.
 - `conflictState: 'preserved'` means the caller requested `preserveConflicts: true` and must resolve the merge locally before cleanup can finish.
 
-### Context (1 tool)
+### Context (4 tools)
 | Tool | Purpose |
 |------|---------|
-| `hive_context_write` | Write context file, including reserved `context/overview.md` via `name: "overview"` |
+| `hive_context_read` | Read the context summary/index and revision, or one file's content |
+| `hive_context_write` | Explicitly create a file, or replace it with `expectedRevision` |
+| `hive_context_append` | Append a dated block while preserving prior bytes |
+| `hive_context_archive` | Selectively archive named files with a reason |
 
-`hive_context_write` replaces the named file. Read and preserve existing content before writing an update, especially for feature-scoped constraints.
+Call `hive_context_read` before replacement, append, or archive. Non-reserved files default to `durable` and are ordered by most recent update in worker and network context. Mark raw logs and historical verification material as `evidence`; evidence remains explicitly readable but never enters worker or network prompts. Reuse and consolidate durable files before creating more. Hive recommends no more than 8 durable files and 40,000 durable characters. Existing over-limit features remain readable and can shrink, but mutations that increase their durable footprint are rejected.
+
+`overview`, `draft`, and `execution-decisions` are reserved, excluded from execution context, and uncapped. They do not accept a caller-provided `kind`. Plan approval does not archive `draft`, because cleanup failure must not make a persisted approval appear unsuccessful. Archive an obsolete draft explicitly with `hive_context_archive` after approval.
 
 ### Operator Constraints (4 tools)
 | Tool | Purpose |
@@ -367,10 +372,10 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Background Orchestration | 4 | status, reconcile, batch reconcile, cancel |
 | Delegated Task Inspection | 2 | trace, source-backed content |
 | Merge | 1 | merge |
-| Context | 1 | write |
-| Operator Constraints | 1 | set |
+| Context | 4 | read, write, append, archive |
+| Operator Constraints | 4 | read, add, edit, clear |
 | Status | 1 | status |
-| **Total** | **30** | |
+| **Total** | **36** | |
 
 ## Feature Resolution
 
@@ -381,6 +386,6 @@ If multiple live features remain, the tool returns their logical names without m
 ## Reserved Overview Convention
 
 - There is no dedicated overview write tool.
-- Use `hive_context_write({ feature: "feature-name", name: "overview", content })` to maintain `.hive/features/<feature>/context/overview.md`. Provide `feature` from a repository-root session whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
+- Use `hive_context_read` first, then `hive_context_write({ feature: "feature-name", name: "overview", content, expectedRevision })` to replace `.hive/features/<feature>/context/overview.md`. Omit `expectedRevision` only when creating it. Provide `feature` from a repository-root session whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
 - Humans review `context/overview.md` first; `plan.md` stays authoritative for execution and task parsing, and can still include a readable design summary before `## Tasks`.
 - `hive_status` and the VS Code extension surface the overview as the primary human-facing document.

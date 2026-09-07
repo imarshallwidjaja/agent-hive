@@ -121,32 +121,30 @@ describe('ContextService', () => {
     });
   });
 
-  describe('write() with size warning', () => {
-    it('returns warning when context total exceeds 20,000 chars', () => {
+  describe('write() compatibility', () => {
+    it('allows durable context below the managed 40,000 character cap', () => {
       const featureName = 'large-context';
       setupFeature(featureName);
 
-      // Write contexts totaling > 20,000 chars
       service.write(featureName, 'large1', 'x'.repeat(15000));
       const result = service.write(featureName, 'large2', 'y'.repeat(6000));
 
-      // Should contain warning
-      expect(result).toContain('⚠️');
-      expect(result).toContain('21000');
-      expect(result).toContain('exceeds 20,000');
-      expect(result).toContain('archive');
+      expect(result).toContain(path.join('context', 'large2.md'));
+      expect(service.readSummary(featureName).durable).toMatchObject({
+        fileCount: 2,
+        chars: 21000,
+        overLimit: false,
+      });
     });
 
-    it('does not return warning when context total is under 20,000 chars', () => {
+    it('returns the created path when context is under the cap', () => {
       const featureName = 'small-context';
       setupFeature(featureName);
 
       service.write(featureName, 'small1', 'x'.repeat(5000));
       const result = service.write(featureName, 'small2', 'y'.repeat(5000));
 
-      // Should not contain warning
-      expect(result).not.toContain('⚠️');
-      expect(result).not.toContain('exceeds');
+      expect(result).toContain(path.join('context', 'small2.md'));
     });
   });
 });

@@ -168,9 +168,10 @@ Features stored in `.hive/features/<name>/`:
 ├── feature.json       # Feature metadata
 ├── plan.md            # Execution plan (can include a readable design summary before ## Tasks)
 ├── tasks.json         # Generated tasks
-└── context/           # Persistent context files (free-form by default)
-    ├── overview.md    # Primary human-facing branch summary/history
-    └── decisions.md   # Optional example context file
+└── context/           # Managed persistent context
+    ├── index.json     # Revisioned kind and timestamp metadata
+    ├── overview.md    # Reserved human-facing summary/history
+    └── decisions.md   # Durable execution context
 ```
 
 ## Development Workflow
@@ -255,7 +256,7 @@ This is a **bun workspaces** monorepo:
 
 Plan-first development: Write plan → User reviews → Approve → Execute tasks
 
-### Hive Plugin Tools (33 standard + 7 workflow-only)
+### Hive Plugin Tools (36 standard + 7 workflow-only)
 
 | Domain | Tools |
 |--------|-------|
@@ -268,7 +269,7 @@ Plan-first development: Write plan → User reviews → Approve → Execute task
 | Background Orchestration | hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel |
 | Delegated Task Inspection | hive_task_trace, hive_task_trace_content |
 | Merge | hive_merge |
-| Context | hive_context_write |
+| Context | hive_context_read, hive_context_write, hive_context_append, hive_context_archive |
 | Operator Constraints | hive_constraints_read, hive_constraints_add, hive_constraints_edit, hive_constraints_clear |
 | Status | hive_status |
 | Workflow-only Review | hive_git_snapshot, hive_review_evidence_resolve, hive_vulnerability_compare_report_read, hive_review_workspace_create, hive_review_workspace_claim, hive_review_workspace_inspect, hive_review_workspace_cleanup |
@@ -277,16 +278,15 @@ Task-backed worktree tools create feature/task records and appear in `hive_statu
 
 The four `hive_constraints_*` tools manage verbatim operator directives on the calling session and are granted to primary orchestrators only. Use `hive_constraints_add` only for durable session-wide directives, not every user message, example, or task-local request. Before a correction or removal, call `hive_constraints_read`, then pass its stable entry ID and revision to `hive_constraints_edit`; call `hive_constraints_clear` only for an explicit whole-register clear. Edit and clear reject stale revisions atomically, identical additions are idempotent, and the aggregate cap is 8000 UTF-16 code units. The runtime injects the register into every delegated `task()` prompt and generated worker prompt from that session, and from its task-created architect child, under `## Standing Constraints (operator, session-wide)`. Injection is skipped for the `/dash-review` and `/vuln-review` lanes. Feature-scoped constraints remain context files; read and preserve their existing content before replacing it through `hive_context_write`.
 
+Feature context is revisioned in `context/index.json`. Read with `hive_context_read` before replacement, append, or selective archive, then pass the returned revision. Non-reserved files are `durable` by default and enter worker/network context; `evidence` files remain available to explicit reads but are excluded from prompts. Reuse and consolidate durable files before creating more. Recommended caps are 8 durable files and 40,000 durable characters; legacy over-limit features remain readable, but mutations cannot increase either over-cap durable dimension. `overview`, `draft`, and `execution-decisions` remain reserved and uncapped, and do not accept a caller-provided kind. Plan approval leaves draft cleanup explicit so archival failure cannot make a persisted approval appear unsuccessful.
+
 The seven workflow-only tools are runtime-gated capabilities, not additional powers for standard roles. Review roles cannot call `hive_git_snapshot` directly; Stage A uses the one-shot `hive_review_evidence_resolve`. `/dash-review` accepts one Git, inline, or packet-fixed local-artifact kind. `/vuln-review` accepts Git only. Workspace create accepts only the invocation-bound resolution fingerprint plus the vulnerability source-resolution fingerprint when required.
 
 **Standard tool access is filtered per agent role:**
-- **Hive** — all 33 standard tools (hybrid agent)
-- **Swarm** — hive_feature_create, hive_feature_complete, hive_plan_read, hive_plan_approve, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_tasks_sync, hive_task_create, hive_task_update, hive_worktree_start, hive_worktree_create, hive_worktree_discard, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_task_trace, hive_task_trace_content, hive_merge, hive_constraints_read, hive_constraints_add, hive_constraints_edit, hive_constraints_clear, hive_context_write, hive_status (26 tools — excludes hive_worktree_commit, hive_plan_write, hive_plan_patch, and ad-hoc worktree tools)
-- **Architect** — hive_feature_create, hive_plan_write, hive_plan_patch, hive_plan_read, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_task_trace, hive_task_trace_content, hive_constraints_read, hive_constraints_add, hive_constraints_edit, hive_constraints_clear, hive_context_write, hive_status (19 tools)
-- **Hive Builder** — hive_adhoc_worktree_create, hive_adhoc_worktree_commit, hive_adhoc_merge, hive_adhoc_cleanup, hive_repositories_status, hive_repositories_discover, hive_repositories_update, hive_plan_read, hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel, hive_task_trace, hive_task_trace_content, hive_constraints_read, hive_constraints_add, hive_constraints_edit, hive_constraints_clear, hive_context_write, hive_status (20 tools — ad-hoc worktree + repo manifest + metadata inspection + background board + trace inspection + operator constraints + context; denied task-backed worktree, plan mutation, and feature tools)
-- **Forager** — hive_repositories_status, hive_plan_read, hive_status, hive_worktree_commit, hive_context_write (5 tools)
-- **Scout** — hive_repositories_status, hive_plan_read, hive_context_write, hive_status (4 tools)
-- **Hygienic** — hive_repositories_status, hive_plan_read, hive_context_write, hive_status (4 tools)
+- **Hive** — all 36 standard tools (hybrid agent)
+- **Swarm, Architect, and Hive Builder** — all four context tools: read, write, append, and archive
+- **Forager and Scout** — context read, append, and write. Their prompts permit write only for explicit creation because tool permissions cannot constrain arguments; replacement still requires a revision at runtime.
+- **Review roles** — context read, append, and write where their existing persistence contract allows it; selective archive remains primary-orchestrator-only.
 
 Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `skills.urls`, or `.opencode`/`.claude` discovery), not through a Hive plugin tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered ahead of user paths.
 
