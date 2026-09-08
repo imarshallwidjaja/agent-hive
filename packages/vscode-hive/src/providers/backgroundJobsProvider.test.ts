@@ -1,51 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { resetVscodeTestState, vscodeTestDouble } from '../test/vscodeTestDouble.js';
 
-mock.module('vscode', () => {
-  class TreeItem {
-    label: string;
-    collapsibleState: number;
-    description?: string;
-    contextValue?: string;
-    iconPath?: unknown;
-    command?: unknown;
-    tooltip?: unknown;
-
-    constructor(label: string, collapsibleState: number) {
-      this.label = label;
-      this.collapsibleState = collapsibleState;
-    }
-  }
-
-  class ThemeIcon {
-    constructor(public readonly id: string) {}
-  }
-
-  class EventEmitter<T> {
-    readonly event = (_listener: (value: T | undefined) => void) => ({ dispose() {} });
-    fire(_value: T | undefined): void {}
-  }
-
-  return {
-    TreeItem,
-    ThemeIcon,
-    EventEmitter,
-    Uri: {
-      file(targetPath: string) {
-        return { fsPath: targetPath };
-      },
-      parse(value: string) {
-        return { value };
-      },
-    },
-    TreeItemCollapsibleState: {
-      None: 0,
-      Collapsed: 1,
-      Expanded: 2,
-    },
-  };
-});
+mock.module('vscode', () => vscodeTestDouble);
 
 const { BackgroundJobsProvider } = await import('./backgroundJobsProvider');
 
@@ -55,6 +13,7 @@ describe('BackgroundJobsProvider', () => {
   let testRoot: string;
 
   beforeEach(() => {
+    resetVscodeTestState();
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'workspace-'));

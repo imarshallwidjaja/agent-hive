@@ -1,89 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { resetVscodeTestState, vscodeTestDouble, vscodeTestState as ui } from '../test/vscodeTestDouble.js';
 const hiveCore = await import('../../../hive-core/src/index.ts');
 const { FeatureService, PlanService } = hiveCore;
 
 mock.module('hive-core', () => hiveCore);
-
-const ui = {
-  fired: [] as any[], disposed: [] as any[], watchers: [] as any[],
-  picks: [] as any[], inputs: [] as any[], confirmations: [] as any[], messages: [] as string[], errors: [] as string[], shown: [] as any[], pickItems: [] as any[], warnings: [] as string[],
-};
-
-mock.module('vscode', () => {
-  class TreeItem {
-    label: string;
-    collapsibleState: number;
-    description?: string;
-    contextValue?: string;
-    iconPath?: unknown;
-    command?: unknown;
-    resourceUri?: unknown;
-    tooltip?: unknown;
-
-    constructor(label: string, collapsibleState: number) {
-      this.label = label;
-      this.collapsibleState = collapsibleState;
-    }
-  }
-
-  class ThemeIcon {
-    constructor(public readonly id: string) {}
-  }
-
-  class MarkdownString {
-    value = '';
-
-    appendMarkdown(text: string): void {
-      this.value += text;
-    }
-  }
-
-  class EventEmitter<T> {
-    private listeners = new Set<(value: T | undefined) => void>();
-    readonly event = (listener: (value: T | undefined) => void) => { this.listeners.add(listener); return { dispose: () => this.listeners.delete(listener) }; };
-    fire(value: T | undefined): void { ui.fired.push(value); for (const listener of this.listeners) listener(value); }
-    dispose(): void { ui.disposed.push(this); this.listeners.clear(); }
-  }
-
-  return {
-    window: {
-      async showQuickPick(items: any[]) { ui.pickItems = items; const pick = ui.picks.shift(); return typeof pick === 'function' ? pick(items) : pick; },
-      async showInputBox() { return ui.inputs.shift(); },
-      async showWarningMessage(message: string) { ui.warnings.push(message); const confirm = ui.confirmations.shift(); return typeof confirm === 'function' ? confirm() : confirm; },
-      showInformationMessage(message: string) { ui.messages.push(message); },
-      showErrorMessage(message: string) { ui.errors.push(message); },
-      async showTextDocument(document: any) { ui.shown.push(document); },
-    },
-    RelativePattern: class { constructor(public base: string, public pattern: string) {} },
-    workspace: {
-      async openTextDocument(uri: any) { return { uri }; },
-      createFileSystemWatcher() {
-        const watcher = { create: (_uri: any) => {}, change: (_uri: any) => {}, delete: (_uri: any) => {}, disposed: false,
-          onDidCreate(fn: any) { this.create = fn; }, onDidChange(fn: any) { this.change = fn; }, onDidDelete(fn: any) { this.delete = fn; }, dispose() { this.disposed = true; } };
-        ui.watchers.push(watcher); return watcher;
-      },
-    },
-    TreeItem,
-    ThemeIcon,
-    MarkdownString,
-    EventEmitter,
-    TreeItemCollapsibleState: {
-      None: 0,
-      Collapsed: 1,
-      Expanded: 2,
-    },
-    Uri: {
-      file(targetPath: string) {
-        return { fsPath: targetPath };
-      },
-      parse(value: string) {
-        return { value, toString: () => value };
-      },
-    },
-  };
-});
+mock.module('vscode', () => vscodeTestDouble);
 
 const { HiveSidebarProvider } = await import('./sidebarProvider');
 
@@ -93,7 +16,7 @@ describe('HiveSidebarProvider', () => {
   let testRoot: string;
 
   beforeEach(() => {
-    for (const key of Object.keys(ui) as Array<keyof typeof ui>) ui[key] = [];
+    resetVscodeTestState();
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
     testRoot = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'workspace-'));
