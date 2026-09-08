@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-08
+
+### Added
+
+- Managed feature context lifecycle: `context/index.json` revisions every mutation, `hive_context_read`, `hive_context_append`, and `hive_context_archive` join `hive_context_write`, and non-reserved documents classify as `durable` (injected into worker and network prompts) or `evidence` (explicit reads only). Recommended caps are 8 durable files and 40,000 durable characters; legacy over-cap features stay readable but cannot grow either over-cap dimension.
+- Session lineage tracking records `parentSessionId` and `duplicatedFromSessionId`, so standing constraints, session kind, and feature association migrate when a root session is duplicated.
+- Arkive shows context classifications, sizes, and durable budgets in the Features view, adds a revision-checked **Archive Context** action, and adds **Hive: Inspect Session Standing Constraints** for read-only inspection of an explicitly chosen session.
+
 ### Changed
 
 - Replaced whole-register `hive_constraints_set` writes with targeted read, add, edit/remove, and explicit clear tools using stable entry IDs and atomic revision checks.
+- Scouts retrieve bounded source-grounded evidence and no longer own diagnosis, tradeoff judgement, or solution selection. Diagnosis-only Forager missions report evidence, hypotheses, and options without editing or committing.
+
+### Fixed
+
+- Native child sessions associate with the exact Hive task attempt that spawned them, so `hive_task_trace` surfaces failed or unclear delegated work instead of leaving orchestrators to guess before relaunching.
+- `hive-master`, `swarm-orchestrator`, and `hive-builder` are registered as primary-only and reject native `task()` dispatch. Architect keeps its bounded read-only child delegation exception.
 
 ## [2.4.0] - 2026-09-04
 
