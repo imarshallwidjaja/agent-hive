@@ -23,7 +23,19 @@ import {
   fileExists,
   LockOptions,
 } from '../utils/paths.js';
-import { TaskStatus, TaskStatusType, TaskOrigin, TasksSyncResult, TaskInfo, Subtask, SubtaskType, SubtaskStatus, WorkerSession, ManualTaskMetadata } from '../types.js';
+import {
+  TaskStatus,
+  TaskStatusType,
+  TaskOrigin,
+  TasksSyncResult,
+  TaskInfo,
+  Subtask,
+  SubtaskType,
+  SubtaskStatus,
+  WorkerSession,
+  ManualTaskMetadata,
+  renderAggregateBranchDiff,
+} from '../types.js';
 import { RepositoryService } from './repositoryService.js';
 
 /** Current schema version for TaskStatus */
@@ -103,7 +115,10 @@ const EXECUTION_HISTORY_STATUSES: Set<TaskStatusType> = new Set([
 ]);
 
 export class TaskService {
-  constructor(private projectRoot: string) {}
+  constructor(
+    private projectRoot: string,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
 
   sync(featureName: string, options?: SyncOptions): TasksSyncResult {
     const planPath = getPlanPath(this.projectRoot, featureName);
@@ -300,7 +315,11 @@ export class TaskService {
     allTasks: Array<{ folder: string; name: string; order: number }>;
     planContent?: string | null;
     contextFiles?: Array<{ name: string; content: string }>;
-    completedTasks?: Array<{ name: string; summary: string }>;
+    completedTasks?: Array<{
+      name: string;
+      summary: string;
+      aggregateBranchDiff?: TaskStatus['aggregateBranchDiff'];
+    }>;
   }): string {
     const { featureName, task, dependsOn, repoIds, allTasks, planContent, contextFiles = [], completedTasks = [] } = params;
 
@@ -384,7 +403,12 @@ export class TaskService {
     }
 
     if (completedTasks.length > 0) {
-      const completedLines = completedTasks.map(t => `- ${t.name}: ${t.summary}`);
+      const completedLines = completedTasks.flatMap(task => [
+        `- ${task.name}: ${task.summary}`,
+        ...(task.aggregateBranchDiff
+          ? [`  ${renderAggregateBranchDiff(task.aggregateBranchDiff)}`]
+          : []),
+      ]);
       specLines.push('## Completed Tasks', '', ...completedLines, '');
     }
 
@@ -601,7 +625,7 @@ export class TaskService {
   update(
     featureName: string,
     taskFolder: string,
-    updates: Partial<Pick<TaskStatus, 'status' | 'summary' | 'baseCommit'>>,
+    updates: Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff' | 'baseCommit'>>,
     lockOptions?: LockOptions
   ): TaskStatus {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
@@ -627,10 +651,10 @@ export class TaskService {
       };
 
       if (updates.status === 'in_progress' && !current.startedAt) {
-        updated.startedAt = new Date().toISOString();
+        updated.startedAt = this.now().toISOString();
       }
-      if (updates.status === 'done' && !current.completedAt) {
-        updated.completedAt = new Date().toISOString();
+      if (updates.status === 'done' && current.status !== 'done') {
+        updated.completedAt = this.now().toISOString();
       }
 
       // Lock-first read-modify-write to avoid TOCTOU races.

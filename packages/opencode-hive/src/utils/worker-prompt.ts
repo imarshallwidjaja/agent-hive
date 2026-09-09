@@ -2,10 +2,14 @@
  * Worker prompt builder for Hive delegated execution.
  * Builds context-rich prompts for worker agents with all Hive context.
  */
-
 export interface ContextFile {
   name: string;
   content: string;
+}
+
+export interface CompletedTask {
+  name: string;
+  summary: string;
 }
 
 /**
@@ -21,11 +25,6 @@ const STANDING_CONSTRAINTS_FOOTER = 'These are operator constraints for this ses
 export function buildStandingConstraintsBlock(standingConstraints: string | undefined): string | null {
   if (!standingConstraints || !standingConstraints.trim()) return null;
   return `${STANDING_CONSTRAINTS_HEADING}\n\n${standingConstraints}\n\n${STANDING_CONSTRAINTS_FOOTER}`;
-}
-
-export interface CompletedTask {
-  name: string;
-  summary: string;
 }
 
 export interface ContinueFromBlocked {
@@ -352,7 +351,7 @@ hive_worktree_commit({
 1. **Work methodically** - Break down the mission into steps
 2. **Stay in scope** - Only do what the spec asks
 3. **Escalate blockers** - Don't guess on important decisions
-4. **Save implementation context** - For implementation-authorized work, use hive_context_write for substantial discoveries. Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes context persistence; required managed lifecycle completion or blocker reporting still uses hive_worktree_commit.
+4. **Save implementation context** - For implementation-authorized work, use hive_context_write for substantial discoveries. When a durable write is specific to this managed task, set \`task: "${task}"\` using the exact task folder from Assignment Details so downstream injection can prioritize it. Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes context persistence; required managed lifecycle completion or blocker reporting still uses hive_worktree_commit.
 5. **Complete cleanly** - For this managed feature task, call hive_worktree_commit when done
 
 ---

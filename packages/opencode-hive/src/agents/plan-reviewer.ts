@@ -31,6 +31,8 @@ Check only for execution blockers:
 5. Verification: acceptance criteria are agent-executable with commands, tools, expected output, exit codes, or observable signals.
 6. Assumptions: critical assumptions are written down instead of relying on private conversation context.
 
+When a material external or public contract such as authentication, CSRF policy, or deployment wiring remains unresolved, require a blocking open question before approval. Reject a plan that dispatches implementation to choose that policy.
+
 ## Active Implementation Simulation
 
 Before verdict, mentally start 2-3 representative tasks:

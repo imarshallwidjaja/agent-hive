@@ -12,12 +12,85 @@ import { describe, it, expect } from 'bun:test';
 import {
   applyTaskBudget,
   applyContextBudget,
+  prioritizeContextForTask,
   DEFAULT_BUDGET,
   type BudgetConfig,
   type BudgetedTask,
   type BudgetedContext,
   type TruncationEvent,
 } from './prompt-budgeting.js';
+
+describe('prioritizeContextForTask', () => {
+  it('orders current-task and nearer dependency context before recency', () => {
+    const dependencies = new Map([
+      ['04-current', ['03-near']],
+      ['03-near', ['01-far']],
+      ['01-far', []],
+    ]);
+    const files = [
+      { name: 'untagged-newest', content: 'u', updatedAt: '2026-09-09T05:00:00.000Z' },
+      { name: 'far-newer', content: 'f', updatedAt: '2026-09-09T04:00:00.000Z', task: '01-far' },
+      { name: 'near-older', content: 'n', updatedAt: '2026-09-09T01:00:00.000Z', task: '03-near' },
+      { name: 'current-oldest', content: 'c', updatedAt: '2026-09-08T01:00:00.000Z', task: '04-current' },
+    ];
+
+    expect(prioritizeContextForTask(files, '04-current', dependencies).map(file => file.name)).toEqual([
+      'current-oldest',
+      'near-older',
+      'far-newer',
+      'untagged-newest',
+    ]);
+  });
+
+  it('preserves deterministic recency and name ordering for untagged and unrelated context', () => {
+    const files = [
+      { name: 'zeta', content: 'z', updatedAt: '2026-09-09T01:00:00.000Z' },
+      { name: 'unrelated', content: 'x', updatedAt: '2026-09-09T02:00:00.000Z', task: '99-other' },
+      { name: 'alpha', content: 'a', updatedAt: '2026-09-09T01:00:00.000Z' },
+    ];
+
+    expect(prioritizeContextForTask(files, '04-current', new Map()).map(file => file.name)).toEqual([
+      'unrelated',
+      'alpha',
+      'zeta',
+    ]);
+  });
+
+  it('sorts valid timestamps by recency and keeps invalid timestamps behind them', () => {
+    const files = [
+      { name: 'invalid-zeta', content: 'z', updatedAt: 'not-a-timestamp' },
+      { name: 'valid-older', content: 'o', updatedAt: '2026-09-08T01:00:00.000Z' },
+      { name: 'invalid-alpha', content: 'a', updatedAt: '2026-99-99T99:99:99Z' },
+      { name: 'valid-newer', content: 'n', updatedAt: '2026-09-09T01:00:00.000Z' },
+    ];
+
+    expect(prioritizeContextForTask(files, '04-current', new Map()).map(file => file.name)).toEqual([
+      'valid-newer',
+      'valid-older',
+      'invalid-alpha',
+      'invalid-zeta',
+    ]);
+  });
+
+  it('terminates and ranks each task once when dependencies contain a cycle', () => {
+    const dependencies = new Map([
+      ['03-current', ['02-middle']],
+      ['02-middle', ['01-foundation']],
+      ['01-foundation', ['02-middle']],
+    ]);
+    const files = [
+      { name: 'foundation', content: 'f', updatedAt: '2026-09-09T03:00:00.000Z', task: '01-foundation' },
+      { name: 'middle', content: 'm', updatedAt: '2026-09-09T02:00:00.000Z', task: '02-middle' },
+      { name: 'current', content: 'c', updatedAt: '2026-09-09T01:00:00.000Z', task: '03-current' },
+    ];
+
+    expect(prioritizeContextForTask(files, '03-current', dependencies).map(file => file.name)).toEqual([
+      'current',
+      'middle',
+      'foundation',
+    ]);
+  });
+});
 
 // ============================================================================
 // Task Budgeting Tests
@@ -49,6 +122,24 @@ describe('applyTaskBudget', () => {
     expect(result.tasks[0].summary.length).toBeLessThanOrEqual(100 + 20); // Allow for truncation marker
     expect(result.tasks[0].summary).toContain('...[truncated]');
     expect(result.tasks[0].truncated).toBe(true);
+  });
+
+  it('retains structured aggregate diff metadata outside the summary budget', () => {
+    const aggregateBranchDiff = {
+      fileCount: 2,
+      insertions: 8,
+      deletions: 3,
+      areas: ['packages', 'docs'],
+      report: '.hive/features/example/tasks/01-task/report.md',
+    };
+    const result = applyTaskBudget(
+      [{ name: '01-task', summary: 'A'.repeat(2500), aggregateBranchDiff }],
+      { maxSummaryChars: 2000 },
+    );
+
+    expect(result.tasks[0].summary).toHaveLength(2000);
+    expect(result.tasks[0].summary).toEndWith('...[truncated]');
+    expect(result.tasks[0].aggregateBranchDiff).toEqual(aggregateBranchDiff);
   });
 
   it('preserves short summaries unchanged', () => {
@@ -144,6 +235,19 @@ describe('applyContextBudget', () => {
 
     // Should include some files in full/truncated form, then switch to name-only
     expect(result.truncationEvents.some(e => e.type === 'context_names_only')).toBe(true);
+  });
+
+  it('keeps freshness visible when a context file becomes name-only', () => {
+    const freshnessLine = '*Freshness: Updated: 2026-09-09T01:00:00.000Z*';
+    const files = [
+      { name: 'full', content: 'A'.repeat(10) },
+      { name: 'name-only', content: 'B'.repeat(10), freshnessLine },
+    ];
+
+    const result = applyContextBudget(files, { maxTotalContextChars: 10, feature: 'freshness' });
+
+    expect(result.files[1].content).toContain(freshnessLine);
+    expect(result.files[1].content).toContain('.hive/features/freshness/context/name-only.md');
   });
 
   it('preserves small context files unchanged', () => {

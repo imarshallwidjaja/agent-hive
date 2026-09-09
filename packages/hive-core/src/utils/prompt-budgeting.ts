@@ -11,6 +11,7 @@
  *
  * IMPORTANT: Never removes access to full info - always provides file paths the worker can read.
  */
+import type { TaskAggregateBranchDiff } from '../types.js';
 
 // ============================================================================
 // Types
@@ -19,11 +20,13 @@
 export interface TaskInput {
   name: string;
   summary: string;
+  aggregateBranchDiff?: TaskAggregateBranchDiff;
 }
 
 export interface BudgetedTask {
   name: string;
   summary: string;
+  aggregateBranchDiff?: TaskAggregateBranchDiff;
   truncated: boolean;
   originalLength?: number;
 }
@@ -156,6 +159,7 @@ export function applyTaskBudget(
     return {
       name: task.name,
       summary: result,
+      aggregateBranchDiff: task.aggregateBranchDiff,
       truncated,
       originalLength: truncated ? task.summary.length : undefined,
     };

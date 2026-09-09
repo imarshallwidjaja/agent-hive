@@ -291,6 +291,7 @@ import {
   PlanService,
   TaskService,
   ContextService,
+  ContextMutationError,
   ConfigService,
   RepositoryService,
   RepositoryManifestService,
@@ -306,6 +307,7 @@ import {
   getTaskReportPath,
   normalizePath,
   readText,
+  renderAggregateBranchDiff,
   resolveFeatureDirectoryName,
   type CustomAgentBase,
   type ResolvedCustomAgentConfig,
@@ -315,16 +317,24 @@ import {
   type AdhocMergeResult,
   type AdhocCleanupResult,
   type PlanPatchOperation,
+  type TaskAggregateBranchDiff,
 } from "hive-core";
 import {
   buildStandingConstraintsBlock,
   buildWorkerPrompt,
   STANDING_CONSTRAINTS_HEADING,
   type ContextFile as WorkerPromptContextFile,
-  type CompletedTask,
 } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
-import { applyTaskBudget, applyContextBudget, DEFAULT_BUDGET, type TruncationEvent } from "./utils/prompt-budgeting";
+import {
+  applyTaskBudget,
+  applyContextBudget,
+  prioritizeContextForTask,
+  parseIsoTimestamp,
+  DEFAULT_BUDGET,
+  type BudgetedTask,
+  type TruncationEvent,
+} from "./utils/prompt-budgeting";
 import { writeWorkerPromptFile } from "./utils/prompt-file";
 import { formatRelativeTime } from "./utils/format";
 import { createVariantHook } from "./hooks/variant-hook.js";
@@ -1414,7 +1424,7 @@ const plugin: Plugin = async (ctx) => {
     const nextAction = {
       durable_context_limit: 'Read the context summary, then consolidate or archive stale durable files before retrying.',
       invalid_archive_reason: 'Retry hive_context_archive with a specific non-blank reason.',
-      invalid_argument: 'Correct the archive arguments, read current context state, and retry.',
+      invalid_argument: 'Correct the supplied arguments, read current feature/task or context state, and retry.',
       invalid_context_kind: 'Omit kind for reserved names; otherwise use durable or evidence.',
       invalid_context_name: 'Retry with a simple context name without paths.',
       context_already_exists: 'Call hive_context_read for the file, then retry hive_context_write with the current expectedRevision.',
@@ -1442,6 +1452,17 @@ const plugin: Plugin = async (ctx) => {
     plans: new PlanService(runtimeContext.projectRoot),
     tasks: new TaskService(runtimeContext.projectRoot),
     contexts: contextToolScope.contexts,
+  };
+  const validateContextTask = (feature: string, task: string | undefined): void => {
+    if (task === undefined) return;
+    const availableTasks = statusToolServices.tasks.list(feature).map(candidate => candidate.folder);
+    if (!availableTasks.includes(task)) {
+      throw new ContextMutationError(
+        'invalid_argument',
+        `Context task metadata must use an exact existing task folder for feature "${feature}"; received "${task}".`,
+        { task, availableTasks },
+      );
+    }
   };
 
   const resolveContextFeature = (
@@ -1722,6 +1743,110 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
   const respond = (payload: Record<string, unknown>) => JSON.stringify(payload, null, 2);
 
+  const buildTaskDependencyMap = (feature: string): Map<string, string[]> => {
+    const tasks = taskService.list(feature).map(candidate => ({
+      folder: candidate.folder,
+      status: candidate.status,
+      dependsOn: taskService.getRawStatus(feature, candidate.folder)?.dependsOn,
+    }));
+    return buildEffectiveDependencies(tasks);
+  };
+
+  const buildContextFreshness = (
+    updatedAt: string,
+    completedTasks: Array<{ folder: string; completedAt?: string }>,
+  ): string => {
+    const updatedTimestamp = parseIsoTimestamp(updatedAt);
+    if (updatedTimestamp === undefined) {
+      return `Updated: ${updatedAt}; timestamp unknown/unreliable`;
+    }
+    const laterCompletedTasks = completedTasks
+      .flatMap(candidate => {
+        const completedTimestamp = parseIsoTimestamp(candidate.completedAt);
+        return completedTimestamp !== undefined && completedTimestamp > updatedTimestamp
+          ? [candidate.folder]
+          : [];
+      })
+      .sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+    return laterCompletedTasks.length > 0
+      ? `Updated: ${updatedAt}; predates completed tasks: ${laterCompletedTasks.join(', ')}`
+      : `Updated: ${updatedAt}`;
+  };
+
+  const deriveTopLevelAreas = (files: string[]): string[] => {
+    const compareText = (left: string, right: string): number =>
+      left < right ? -1 : left > right ? 1 : 0;
+    const areas = new Set<string>();
+    for (const qualifiedPath of [...files].sort(compareText)) {
+      const separator = qualifiedPath.indexOf(':');
+      const repo = separator >= 0 ? qualifiedPath.slice(0, separator) : undefined;
+      const filePath = separator >= 0 ? qualifiedPath.slice(separator + 1) : qualifiedPath;
+      const [topLevel] = filePath.split('/');
+      const area = repo
+        ? topLevel && topLevel !== filePath ? `${repo}:${topLevel}` : repo
+        : topLevel;
+      if (area) areas.add(area);
+    }
+    const sorted = [...areas].sort(compareText);
+    return sorted.length <= 8
+      ? sorted
+      : [...sorted.slice(0, 8), `+${sorted.length - 8} more`];
+  };
+
+  const buildAggregateBranchDiff = (
+    diff: { filesChanged: string[]; insertions: number; deletions: number },
+    reportPath: string,
+  ): TaskAggregateBranchDiff => ({
+    fileCount: diff.filesChanged.length,
+    insertions: diff.insertions,
+    deletions: diff.deletions,
+    areas: deriveTopLevelAreas(diff.filesChanged),
+    report: normalizePath(path.relative(directory, reportPath)),
+  });
+
+  const renderCompletedTask = (completed: BudgetedTask): string => [
+    `- ${completed.name}: ${completed.summary}`,
+    ...(completed.aggregateBranchDiff
+      ? [`  ${renderAggregateBranchDiff(completed.aggregateBranchDiff)}`]
+      : []),
+  ].join('\n');
+
+  const buildManualLaunchSpec = (
+    manualSpec: string,
+    contextFiles: WorkerPromptContextFile[],
+    completedTasks: BudgetedTask[],
+  ): string => {
+    const supplementSections: string[] = [];
+    if (contextFiles.length > 0) {
+      supplementSections.push(
+        [
+          '### Current Context',
+          '',
+          contextFiles.map(file => `#### ${file.name}\n\n${file.content}`).join('\n\n---\n\n'),
+        ].join('\n'),
+      );
+    }
+    if (completedTasks.length > 0) {
+      supplementSections.push(
+        [
+          '### Completed Task Context',
+          '',
+          ...completedTasks.map(renderCompletedTask),
+        ].join('\n'),
+      );
+    }
+    if (supplementSections.length === 0) return manualSpec;
+    return [
+      manualSpec,
+      '',
+      '## Runtime-Injected Launch Supplement',
+      '',
+      'The runtime generated this ephemeral context for the current launch. It is not part of the persisted manual mission.',
+      '',
+      supplementSections.join('\n\n'),
+    ].join('\n');
+  };
+
   const buildWorktreeLaunchResponse = async ({
     feature,
     task,
@@ -1749,7 +1874,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     const previousAttempt = previousStatus === 'failed' || previousStatus === 'partial'
       ? {
           status: previousStatus,
-          summary: blankToUndefined(taskInfo.summary),
+          summary: taskInfo.summary?.trim() ? taskInfo.summary : undefined,
           report: blankToUndefined(readText(getTaskReportPath(directory, feature, task)) ?? undefined),
           error: persistedError,
         }
@@ -1757,22 +1882,40 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
     taskService.update(feature, task, {
       status: 'in_progress',
-      baseCommit: worktree.commit,
+      aggregateBranchDiff: undefined,
+      baseCommit: previousRawStatus?.baseCommit ?? worktree.commit,
     });
 
     const planResult = planService.read(feature);
     const allTasks = taskService.list(feature);
+    const completedTaskTimes = allTasks
+      .filter(candidate => candidate.status === 'done')
+      .map(candidate => ({
+        folder: candidate.folder,
+        completedAt: taskService.getRawStatus(feature, candidate.folder)?.completedAt,
+      }));
+    const executionContextFiles = prioritizeContextForTask(
+      contextService.listExecutionContext(feature),
+      task,
+      buildTaskDependencyMap(feature),
+    );
 
-    const executionContextFiles = contextService.listExecutionContext(feature);
-
-    const rawContextFiles = executionContextFiles.map(f => ({
-      name: f.name,
-      content: f.content,
-    }));
+    const rawContextFiles = executionContextFiles.map(f => {
+      const freshnessLine = `*Freshness: ${buildContextFreshness(f.updatedAt, completedTaskTimes)}*`;
+      return {
+        name: f.name,
+        content: `${freshnessLine}\n\n${f.content}`,
+        freshnessLine,
+      };
+    });
 
     const rawPreviousTasks = allTasks
       .filter(t => t.status === 'done' && t.summary)
-      .map(t => ({ name: t.folder, summary: t.summary! }));
+      .map(t => ({
+        name: t.folder,
+        summary: t.summary!,
+        aggregateBranchDiff: taskService.getRawStatus(feature, t.folder)?.aggregateBranchDiff,
+      }));
 
     const taskBudgetResult = applyTaskBudget(rawPreviousTasks, { ...DEFAULT_BUDGET, feature });
     const contextBudgetResult = applyContextBudget(rawContextFiles, { ...DEFAULT_BUDGET, feature });
@@ -1781,10 +1924,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       name: f.name,
       content: f.content,
     }));
-    const previousTasks: CompletedTask[] = taskBudgetResult.tasks.map(t => ({
-      name: t.name,
-      summary: t.summary,
-    }));
+    const previousTasks = taskBudgetResult.tasks;
 
     const truncationEvents: TruncationEvent[] = [
       ...taskBudgetResult.truncationEvents,
@@ -1803,7 +1943,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       : null;
 
     if (existingManualSpec) {
-      specContent = existingManualSpec;
+      specContent = buildManualLaunchSpec(existingManualSpec, contextFiles, previousTasks);
     } else {
       specContent = taskService.buildSpecContent({
         featureName: feature,
@@ -1855,7 +1995,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       plan: planResult?.content || 'No plan available',
       contextFiles,
       spec: specContent,
-      previousTasks,
       continueFrom: continueFrom === 'blocked' ? {
         status: 'blocked',
         previousSummary: blankToUndefined(taskInfo.summary),
@@ -5100,9 +5239,14 @@ NEXT: Ask your first clarifying question about this feature.`;
           }
 
           const reportPath = taskService.writeReport(feature, task, reportLines.join('\n'));
+          const aggregateBranchDiff = buildAggregateBranchDiff(diff, reportPath);
 
           const finalStatus = status === 'completed' ? 'done' : status;
-          taskService.update(feature, task, { status: finalStatus as any, summary });
+          taskService.update(feature, task, {
+            status: finalStatus as any,
+            summary,
+            aggregateBranchDiff,
+          });
 
           const worktree = await worktreeService.get(feature, task);
           const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
@@ -5616,12 +5760,12 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       }),
 
       hive_context_write: tool({
-        description: 'Create a context explicitly, or replace one only after hive_context_read using expectedRevision. Reuse and consolidate durable files before creating more. Evidence is excluded from worker/network prompts.',
+        description: 'Create a context explicitly, or replace one only after hive_context_read using expectedRevision. Reuse and consolidate durable files before creating more. Evidence is excluded from worker/network prompts. When task metadata is supplied, it must be the exact existing task folder for the resolved feature.',
         args: {
           name: tool.schema.string().describe('Context name. overview, draft, and execution-decisions are reserved system files.'),
           content: tool.schema.string().describe('Markdown content to write'),
           kind: tool.schema.enum(['durable', 'evidence']).optional().describe('Kind for non-reserved files. Defaults to durable.'),
-          task: tool.schema.string().optional().describe('Optional owning task identifier.'),
+          task: tool.schema.string().optional().describe('Optional owning task folder. When supplied, use the exact existing folder for this feature, such as 02-add-api; display names and order numbers are invalid.'),
           expectedRevision: tool.schema.number().optional().describe('Required for replacement; omit only for explicit creation.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
@@ -5629,6 +5773,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           const resolved = resolveContextFeature(explicitFeature, toolContext);
           if (typeof resolved === 'string') return resolved;
           try {
+            validateContextTask(resolved.feature, task);
             const result = expectedRevision === undefined
               ? contextToolScope.contexts.create(resolved.feature, name, content, { kind, task })
               : contextToolScope.contexts.replace(resolved.feature, name, content, expectedRevision, { kind, task });
@@ -5641,12 +5786,12 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       }),
 
       hive_context_append: tool({
-        description: 'Append a dated block to existing context after hive_context_read. Preserves prior bytes and requires expectedRevision. Consolidate first when durable growth is rejected.',
+        description: 'Append a dated block to existing context after hive_context_read. Preserves prior bytes and requires expectedRevision. Consolidate first when durable growth is rejected. When task metadata is supplied, it must be the exact existing task folder for the resolved feature.',
         args: {
           name: tool.schema.string().describe('Existing context name.'),
           content: tool.schema.string().describe('Markdown content to append.'),
           section: tool.schema.string().optional().describe('Optional level-three heading for the appended block.'),
-          task: tool.schema.string().optional().describe('Optional owning task identifier.'),
+          task: tool.schema.string().optional().describe('Optional owning task folder. When supplied, use the exact existing folder for this feature, such as 02-add-api; display names and order numbers are invalid.'),
           expectedRevision: tool.schema.number().describe('Revision from hive_context_read.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
@@ -5654,6 +5799,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           const resolved = resolveContextFeature(explicitFeature, toolContext);
           if (typeof resolved === 'string') return resolved;
           try {
+            validateContextTask(resolved.feature, task);
             const result = contextToolScope.contexts.append(
               resolved.feature,
               name,

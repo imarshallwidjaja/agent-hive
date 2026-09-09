@@ -970,6 +970,24 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_worktree_start');
     });
 
+    it('conditions context consolidation and stale-state checks on observable pressure and task state', () => {
+      expect(SWARM_BEE_PROMPT).toContain('at or above 70%');
+      expect(SWARM_BEE_PROMPT).toContain('consolidation hints');
+      expect(SWARM_BEE_PROMPT).toContain('before dispatching the next dependent task');
+      expect(SWARM_BEE_PROMPT).toContain('evidence/archive inventories and raw logs as evidence');
+      expect(SWARM_BEE_PROMPT).toContain('paused or blocked');
+      expect(SWARM_BEE_PROMPT).toContain('verifier is still running');
+      expect(SWARM_BEE_PROMPT).toContain('verify the claim against `hive_status` and task integration records');
+      expect(SWARM_BEE_PROMPT).toContain('update or archive stale operational context');
+    });
+
+    it('uses returned launch coordinates verbatim and tags task-specific durable writes', () => {
+      expect(SWARM_BEE_PROMPT).toContain('launch payload path, branch, or commit values');
+      expect(SWARM_BEE_PROMPT).toContain('use those values verbatim');
+      expect(SWARM_BEE_PROMPT).toContain('never concatenate fields in prose');
+      expect(SWARM_BEE_PROMPT).toContain('set its `task` metadata');
+    });
+
     it('separates subagent concurrency from foreground wait mode', () => {
       expect(SWARM_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
       expect(SWARM_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
@@ -1332,6 +1350,21 @@ describe('Plan reviewer prompt', () => {
 
   it('keeps verification routed to the canonical skill', () => {
     expect(PLAN_REVIEWER_PROMPT).toContain('verification` skill');
+  });
+
+  it('blocks unresolved material public contracts before approval', () => {
+    for (const [name, prompt] of [
+      ['Architect', ARCHITECT_BEE_PROMPT],
+      ['Plan Reviewer', PLAN_REVIEWER_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('material external or public contract');
+      expect(prompt, name).toContain('authentication');
+      expect(prompt, name).toContain('CSRF');
+      expect(prompt, name).toContain('deployment wiring');
+      expect(prompt, name).toContain('blocking open question before approval');
+      expect(prompt, name).toContain('implementation');
+      expect(prompt, name).toContain('choose that policy');
+    }
   });
 });
 

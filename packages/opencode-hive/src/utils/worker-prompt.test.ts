@@ -198,6 +198,8 @@ UNIQUE_MARKER_12345
     expect(prompt).toContain('Make a minimal fix only when implementation is authorized');
     expect(prompt).toContain('otherwise report the evidence and conclusion without edits');
     expect(prompt).toContain('For implementation-authorized work, use hive_context_write for substantial discoveries');
+    expect(prompt).toContain('set `task: "01-test-task"` using the exact task folder from Assignment Details');
+    expect(prompt).toContain('downstream injection can prioritize it');
     expect(prompt).toContain('Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes context persistence');
     expect(prompt).toContain('required managed lifecycle completion or blocker reporting still uses hive_worktree_commit');
     expect(prompt).not.toContain('**Save context** - Use hive_context_write for discoveries');

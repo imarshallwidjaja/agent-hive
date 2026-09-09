@@ -85,19 +85,40 @@ describe("TaskService", () => {
       expect(fs.existsSync(getLockPath(statusPath))).toBe(false);
     });
 
-    it("sets completedAt when status is done", () => {
+    it("renews completedAt only when transitioning from a non-done status to done", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
-      setupTask(featureName, "01-test-task", { startedAt: new Date().toISOString() });
+      const completionTimes = [
+        new Date("2026-09-01T00:00:00.000Z"),
+        new Date("2026-09-03T00:00:00.000Z"),
+      ];
+      service = new TaskService(PROJECT_ROOT, () => completionTimes.shift()!);
+      setupTask(featureName, "01-test-task", { startedAt: "2026-08-31T00:00:00.000Z" });
 
-      const result = service.update(featureName, "01-test-task", {
+      const firstCompletion = service.update(featureName, "01-test-task", {
         status: "done",
         summary: "Task completed successfully",
       });
+      const idempotentCompletion = service.update(featureName, "01-test-task", {
+        status: "done",
+        summary: "Task remains complete",
+      });
+      const reopened = service.update(featureName, "01-test-task", {
+        status: "failed",
+        summary: "Verification failed after completion",
+      });
+      const finalCompletion = service.update(featureName, "01-test-task", {
+        status: "done",
+        summary: "Task completed successfully on retry",
+      });
 
-      expect(result.status).toBe("done");
-      expect(result.completedAt).toBeDefined();
-      expect(result.summary).toBe("Task completed successfully");
+      expect(firstCompletion.completedAt).toBe("2026-09-01T00:00:00.000Z");
+      expect(idempotentCompletion.completedAt).toBe(firstCompletion.completedAt);
+      expect(reopened.completedAt).toBe(firstCompletion.completedAt);
+      expect(finalCompletion.status).toBe("done");
+      expect(finalCompletion.completedAt).toBe("2026-09-03T00:00:00.000Z");
+      expect(finalCompletion.summary).toBe("Task completed successfully on retry");
+      expect(completionTimes).toHaveLength(0);
     });
 
     it("throws error for non-existent task without creating task folder", () => {
@@ -327,6 +348,13 @@ describe("TaskService", () => {
       setupTask(featureName, "01-test-task", {
         schemaVersion: 1,
         idempotencyKey: "key-789",
+        aggregateBranchDiff: {
+          fileCount: 2,
+          insertions: 8,
+          deletions: 3,
+          areas: ["packages", "docs"],
+          report: ".hive/features/test-feature/tasks/01-test-task/report.md",
+        },
         workerSession: {
           sessionId: "session-xyz",
           taskId: "bg-task-1",
@@ -346,6 +374,13 @@ describe("TaskService", () => {
       expect(result?.workerSession?.agent).toBe("forager");
       expect(result?.workerSession?.mode).toBe("delegate");
       expect(result?.workerSession?.attempt).toBe(2);
+      expect(result?.aggregateBranchDiff).toEqual({
+        fileCount: 2,
+        insertions: 8,
+        deletions: 3,
+        areas: ["packages", "docs"],
+        report: ".hive/features/test-feature/tasks/01-test-task/report.md",
+      });
     });
 
     it("returns null for non-existent task", () => {
@@ -1888,6 +1923,45 @@ Align documentation wording.
       });
 
       expect(specContent).not.toContain("## Task Type");
+    });
+  });
+
+  describe("buildSpecContent - completed task metadata", () => {
+    it("renders aggregate branch diff after worker prose and supports tasks without metadata", () => {
+      const specContent = service.buildSpecContent({
+        featureName: "test-feature",
+        task: { folder: "03-next-task", name: "Next Task", order: 3 },
+        dependsOn: ["01-first-task", "02-second-task"],
+        allTasks: [
+          { folder: "01-first-task", name: "First Task", order: 1 },
+          { folder: "02-second-task", name: "Second Task", order: 2 },
+          { folder: "03-next-task", name: "Next Task", order: 3 },
+        ],
+        completedTasks: [
+          {
+            name: "01-first-task",
+            summary: "Worker prose.",
+            aggregateBranchDiff: {
+              fileCount: 2,
+              insertions: 8,
+              deletions: 3,
+              areas: ["packages", "docs"],
+              report: ".hive/features/test-feature/tasks/01-first-task/report.md",
+            },
+          },
+          { name: "02-second-task", summary: "Legacy completion." },
+        ],
+      });
+
+      expect(specContent).toContain("- 01-first-task: Worker prose.");
+      expect(specContent).toContain(
+        "  Aggregate branch diff at commit time: 2 file(s), +8/-3; areas: packages, docs; "
+          + "report: .hive/features/test-feature/tasks/01-first-task/report.md",
+      );
+      expect(specContent.indexOf("Worker prose.")).toBeLessThan(
+        specContent.indexOf("Aggregate branch diff at commit time:"),
+      );
+      expect(specContent).toContain("- 02-second-task: Legacy completion.");
     });
   });
 

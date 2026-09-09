@@ -655,6 +655,85 @@ Do it
     expect(status.context.files[0]).toMatchObject({ kind: 'evidence', includeInExecution: false });
   });
 
+  it('validates supplied context task metadata against exact existing task folders', async () => {
+    const feature = 'context-task-validation';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_task_validation');
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+
+    const beforeTasks = JSON.parse(await hooks.tool!.hive_context_write.execute({
+      feature,
+      name: 'planning-notes',
+      content: 'Created before tasks exist.',
+    }, toolContext) as string) as { success: boolean; revision: number };
+    expect(beforeTasks.success).toBe(true);
+
+    await hooks.tool!.hive_plan_write.execute({
+      feature,
+      content: createSingleTaskPlan(
+        'Context Task Validation',
+        'This regression validates exact task-folder metadata without breaking context creation before task sync.',
+      ),
+    }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+
+    const accepted = JSON.parse(await hooks.tool!.hive_context_write.execute({
+      feature,
+      name: 'task-notes',
+      content: 'Owned by the exact task folder.',
+      task: FIRST_TASK,
+    }, toolContext) as string) as { success: boolean; revision: number; file: { task?: string } };
+    expect(accepted).toMatchObject({ success: true, file: { task: FIRST_TASK } });
+
+    for (const task of ['First Task', '1', '99-unknown-task']) {
+      const rejected = JSON.parse(await hooks.tool!.hive_context_write.execute({
+        feature,
+        name: `rejected-${task.replace(/\W+/g, '-').toLowerCase()}`,
+        content: 'must not persist',
+        task,
+      }, toolContext) as string) as {
+        success: boolean;
+        reason: string;
+        error: string;
+        task: string;
+        availableTasks: string[];
+      };
+      expect(rejected).toMatchObject({
+        success: false,
+        reason: 'invalid_argument',
+        task,
+        availableTasks: [FIRST_TASK],
+      });
+      expect(rejected.error).toContain('exact existing task folder');
+    }
+
+    const appended = JSON.parse(await hooks.tool!.hive_context_append.execute({
+      feature,
+      name: 'task-notes',
+      content: 'Exact-folder append.',
+      task: FIRST_TASK,
+      expectedRevision: accepted.revision,
+    }, toolContext) as string) as { success: boolean; revision: number };
+    expect(appended.success).toBe(true);
+
+    const rejectedAppend = JSON.parse(await hooks.tool!.hive_context_append.execute({
+      feature,
+      name: 'task-notes',
+      content: 'must not persist',
+      task: '1',
+      expectedRevision: appended.revision,
+    }, toolContext) as string) as { success: boolean; reason: string; error: string };
+    expect(rejectedAppend).toMatchObject({ success: false, reason: 'invalid_argument' });
+    expect(rejectedAppend.error).toContain('exact existing task folder');
+
+    const reserved = JSON.parse(await hooks.tool!.hive_context_write.execute({
+      feature,
+      name: 'overview',
+      content: 'Reserved context remains compatible.',
+    }, toolContext) as string) as { success: boolean };
+    expect(reserved.success).toBe(true);
+  });
+
   it('leaves draft cleanup explicit after successful plan approval', async () => {
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_draft_archive');
     await hooks.tool!.hive_feature_create.execute({ name: 'draft-archive' }, toolContext);
@@ -720,6 +799,14 @@ Do it
     expect(continuationDescription).toContain('Returns fresh-worker launch guidance');
     expect(startDescription).not.toMatch(/spawn.*automatically/i);
     expect(continuationDescription).not.toMatch(/spawn.*automatically|resume.*session/i);
+  });
+
+  it('documents exact task-folder metadata on context mutation tools', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'sess_context_tool_descriptions');
+    const tools = hooks.tool as unknown as Record<string, { description?: string }>;
+
+    expect(tools.hive_context_write.description).toContain('exact existing task folder');
+    expect(tools.hive_context_append.description).toContain('exact existing task folder');
   });
 
   it('registers task trace tools and a hidden tool-less recovery summarizer', async () => {
@@ -2111,6 +2198,236 @@ Do it
     expect(workerPromptContent).not.toContain("Operational decision that must stay out of worker execution context.");
   });
 
+  it('renders context freshness and prioritizes task dependency tags before budgeting', async () => {
+    const feature = 'context-priority-feature';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_priority');
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+    const plan = `# Context Priority Feature
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes, this regression test validates freshness rendering and task-aware durable context ordering.
+
+## Tasks
+
+### 1. Foundation
+**Depends on**: none
+Build it.
+
+### 2. Current
+**Depends on**: 1
+Use it.
+`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+
+    await hooks.tool!.hive_context_write.execute(
+      { feature, name: 'current-context', content: 'current task context', task: '02-current' },
+      toolContext,
+    );
+    await hooks.tool!.hive_context_write.execute(
+      { feature, name: 'dependency-context', content: 'dependency context', task: '01-foundation' },
+      toolContext,
+    );
+    await hooks.tool!.hive_context_write.execute(
+      { feature, name: 'untagged-context', content: 'untagged context' },
+      toolContext,
+    );
+
+    const contextPath = path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_context-priority-feature',
+      'context',
+    );
+    const contextIndexPath = path.join(contextPath, 'index.json');
+    const contextIndex = JSON.parse(fs.readFileSync(contextIndexPath, 'utf-8'));
+    contextIndex.entries['current-context'].updatedAt = '2026-09-01T00:00:00.000Z';
+    contextIndex.entries['dependency-context'].updatedAt = '2026-09-02T00:00:00.000Z';
+    contextIndex.entries['untagged-context'].updatedAt = '2026-09-03T00:00:00.000Z';
+    fs.writeFileSync(contextIndexPath, JSON.stringify(contextIndex, null, 2));
+
+    await hooks.tool!.hive_task_update.execute(
+      { feature, task: '01-foundation', status: 'done', summary: 'Foundation complete.' },
+      toolContext,
+    );
+    const foundationStatusPath = path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_context-priority-feature',
+      'tasks',
+      '01-foundation',
+      'status.json',
+    );
+    const foundationStatus = JSON.parse(fs.readFileSync(foundationStatusPath, 'utf-8'));
+    foundationStatus.completedAt = '2026-09-02T12:00:00.000Z';
+    fs.writeFileSync(foundationStatusPath, JSON.stringify(foundationStatus, null, 2));
+
+    await hooks.tool!.hive_worktree_start.execute(
+      { feature, task: '02-current' },
+      toolContext,
+    );
+    const specPath = path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_context-priority-feature',
+      'tasks',
+      '02-current',
+      'spec.md',
+    );
+    const spec = fs.readFileSync(specPath, 'utf-8');
+
+    expect(spec.indexOf('## current-context')).toBeLessThan(spec.indexOf('## dependency-context'));
+    expect(spec.indexOf('## dependency-context')).toBeLessThan(spec.indexOf('## untagged-context'));
+    expect(spec).toContain(
+      '*Freshness: Updated: 2026-09-01T00:00:00.000Z; predates completed tasks: 01-foundation*',
+    );
+    expect(spec).toContain('*Freshness: Updated: 2026-09-02T00:00:00.000Z; predates completed tasks: 01-foundation*');
+    expect(spec).toContain('*Freshness: Updated: 2026-09-03T00:00:00.000Z*');
+    expect(spec.match(/\*Freshness: Updated:/g)).toHaveLength(3);
+  });
+
+  it('uses the latest successful retry completion for context freshness', async () => {
+    const feature = 'context-retry-freshness';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_retry_freshness');
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+    const plan = `# Context Retry Freshness
+
+## Discovery
+
+**Q: Is this a test?**
+A: Yes, this regression validates freshness after a completed task is reopened and completed again.
+
+## Tasks
+
+### 1. Retried Task
+**Depends on**: none
+Complete, reopen, and complete again.
+
+### 2. Downstream
+**Depends on**: 1
+Use context written between completions.
+`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+
+    await hooks.tool!.hive_task_update.execute(
+      { feature, task: '01-retried-task', status: 'done', summary: 'First completion.' },
+      toolContext,
+    );
+    const featurePath = path.join(testRoot, '.hive', 'features', '01_context-retry-freshness');
+    const retriedStatusPath = path.join(featurePath, 'tasks', '01-retried-task', 'status.json');
+    const firstStatus = JSON.parse(fs.readFileSync(retriedStatusPath, 'utf-8'));
+    firstStatus.completedAt = '2000-01-01T00:00:00.000Z';
+    fs.writeFileSync(retriedStatusPath, JSON.stringify(firstStatus, null, 2));
+
+    await hooks.tool!.hive_task_update.execute(
+      { feature, task: '01-retried-task', status: 'failed', summary: 'Retry required.' },
+      toolContext,
+    );
+    await hooks.tool!.hive_context_write.execute(
+      { feature, name: 'between-attempts', content: 'Context written after the first completion.' },
+      toolContext,
+    );
+    const contextIndexPath = path.join(featurePath, 'context', 'index.json');
+    const contextIndex = JSON.parse(fs.readFileSync(contextIndexPath, 'utf-8'));
+    contextIndex.entries['between-attempts'].updatedAt = '2001-01-01T00:00:00.000Z';
+    fs.writeFileSync(contextIndexPath, JSON.stringify(contextIndex, null, 2));
+
+    await hooks.tool!.hive_task_update.execute(
+      { feature, task: '01-retried-task', status: 'done', summary: 'Final completion.' },
+      toolContext,
+    );
+    const finalStatus = JSON.parse(fs.readFileSync(retriedStatusPath, 'utf-8')) as {
+      completedAt: string;
+    };
+    expect(Date.parse(finalStatus.completedAt)).toBeGreaterThan(Date.parse('2001-01-01T00:00:00.000Z'));
+
+    await hooks.tool!.hive_worktree_start.execute({ feature, task: '02-downstream' }, toolContext);
+    const spec = fs.readFileSync(path.join(featurePath, 'tasks', '02-downstream', 'spec.md'), 'utf-8');
+    expect(spec).toContain(
+      '*Freshness: Updated: 2001-01-01T00:00:00.000Z; predates completed tasks: 01-retried-task*',
+    );
+  });
+
+  it('keeps invalid context and completion timestamps out of recency and freshness comparisons', async () => {
+    const feature = 'context-invalid-timestamps';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_invalid_timestamps');
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+    const plan = `# Context Invalid Timestamps
+
+## Discovery
+
+**Q: Is this a test?**
+A: This regression validates mixed valid and invalid timestamps in worker context rendering.
+
+## Tasks
+
+### 1. Valid Completion
+**Depends on**: none
+Complete first.
+
+### 2. Invalid Completion
+**Depends on**: none
+Complete second.
+
+### 3. Current
+**Depends on**: 1, 2
+Use context.
+`;
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+
+    for (const [name, content] of [
+      ['invalid-context', 'invalid timestamp context'],
+      ['valid-newer-context', 'valid newer context'],
+      ['valid-older-context', 'valid older context'],
+    ] as const) {
+      await hooks.tool!.hive_context_write.execute({ feature, name, content }, toolContext);
+    }
+
+    const featurePath = path.join(testRoot, '.hive', 'features', '01_context-invalid-timestamps');
+    const contextIndexPath = path.join(featurePath, 'context', 'index.json');
+    const contextIndex = JSON.parse(fs.readFileSync(contextIndexPath, 'utf-8'));
+    contextIndex.entries['invalid-context'].updatedAt = 'not-a-timestamp';
+    contextIndex.entries['valid-newer-context'].updatedAt = '2026-09-03T00:00:00.000Z';
+    contextIndex.entries['valid-older-context'].updatedAt = '2026-09-01T00:00:00.000Z';
+    fs.writeFileSync(contextIndexPath, JSON.stringify(contextIndex, null, 2));
+
+    for (const task of ['01-valid-completion', '02-invalid-completion']) {
+      await hooks.tool!.hive_task_update.execute(
+        { feature, task, status: 'done', summary: `${task} complete.` },
+        toolContext,
+      );
+    }
+    const validStatusPath = path.join(featurePath, 'tasks', '01-valid-completion', 'status.json');
+    const validStatus = JSON.parse(fs.readFileSync(validStatusPath, 'utf-8'));
+    validStatus.completedAt = '2026-09-02T00:00:00.000Z';
+    fs.writeFileSync(validStatusPath, JSON.stringify(validStatus, null, 2));
+    const invalidStatusPath = path.join(featurePath, 'tasks', '02-invalid-completion', 'status.json');
+    const invalidStatus = JSON.parse(fs.readFileSync(invalidStatusPath, 'utf-8'));
+    invalidStatus.completedAt = 'invalid-completion-time';
+    fs.writeFileSync(invalidStatusPath, JSON.stringify(invalidStatus, null, 2));
+
+    await hooks.tool!.hive_worktree_start.execute({ feature, task: '03-current' }, toolContext);
+    const spec = fs.readFileSync(path.join(featurePath, 'tasks', '03-current', 'spec.md'), 'utf-8');
+
+    expect(spec.indexOf('## valid-newer-context')).toBeLessThan(spec.indexOf('## valid-older-context'));
+    expect(spec.indexOf('## valid-older-context')).toBeLessThan(spec.indexOf('## invalid-context'));
+    expect(spec).toContain('*Freshness: Updated: not-a-timestamp; timestamp unknown/unreliable*');
+    expect(spec).toContain(
+      '*Freshness: Updated: 2026-09-01T00:00:00.000Z; predates completed tasks: 01-valid-completion*',
+    );
+    expect(spec).not.toContain('02-invalid-completion*');
+  });
+
   it("returns forager-derived eligible agents for worktree execution delegation", async () => {
     const configPath = path.join(process.env.HOME || "", ".config", "opencode", "agent_hive.json");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -3321,6 +3638,16 @@ Do it
     );
     const summary = 'Implemented request parsing; authorization policy needs an operator decision.';
     const decision = 'Keep the strict authorization policy and update the fixture.';
+    const statusPath = path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_blocked-continuation-feature',
+      'tasks',
+      FIRST_TASK,
+      'status.json',
+    );
+    const initialBaseCommit = (JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as { baseCommit: string }).baseCommit;
 
     const blockedRaw = await hooks.tool!.hive_worktree_commit.execute(
       {
@@ -3339,6 +3666,12 @@ Do it
     expect(blocked.message).toMatch(/launch a new worker.*existing worktree/i);
     expect(blocked.nextAction).toMatch(/fresh worker.*existing worktree/i);
     expect(blocked.message).not.toMatch(/resume/i);
+    const blockedStatus = JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as {
+      baseCommit: string;
+      aggregateBranchDiff?: unknown;
+    };
+    expect(blockedStatus.baseCommit).toBe(initialBaseCommit);
+    expect(blockedStatus.aggregateBranchDiff).toBeUndefined();
 
     const missingDecisionRaw = await hooks.tool!.hive_worktree_create.execute(
       { feature, task: FIRST_TASK, continueFrom: 'blocked' },
@@ -3382,6 +3715,12 @@ Do it
       tasks?: { list?: Array<{ folder: string; status: string }> };
     };
     expect(status.tasks?.list?.find((task) => task.folder === FIRST_TASK)?.status).toBe('in_progress');
+    const continuedStatus = JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as {
+      baseCommit: string;
+      aggregateBranchDiff?: unknown;
+    };
+    expect(continuedStatus.baseCommit).toBe(initialBaseCommit);
+    expect(continuedStatus.aggregateBranchDiff).toBeUndefined();
   });
 
   it.each(['failed', 'partial'] as const)(
@@ -3557,7 +3896,186 @@ Do it
     expect(commitResult.nextAction).toContain("hive_merge");
   });
 
-  it("keeps advisory fallback completion terminal and done without requiring commit retry", async () => {
+  it('keeps worker prose separate from structured aggregate diff metadata across retries', async () => {
+    const feature = 'commit-summary-diff-feature';
+    const workerSummary = 'Implemented the requested worker behavior. Tests pass.';
+    const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_commit_summary_diff',
+      feature,
+      'Commit Summary Diff Feature',
+      'Yes, this test validates deterministic aggregate branch diff metadata in downstream task summaries.',
+    );
+
+    fs.mkdirSync(path.join(worktreePath, 'packages', 'api'), { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, 'packages', 'api', 'note.txt'), 'one\ntwo\n');
+    fs.writeFileSync(path.join(worktreePath, 'root-note.txt'), 'root\n');
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'completed',
+        summary: workerSummary,
+        message: TEST_COMMIT_MESSAGE,
+      },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      summary: string;
+      reportPath: string;
+    };
+    const taskStatusPath = path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_commit-summary-diff-feature',
+      'tasks',
+      FIRST_TASK,
+      'status.json',
+    );
+    const firstStoredStatus = JSON.parse(fs.readFileSync(taskStatusPath, 'utf-8')) as {
+      summary: string;
+      baseCommit: string;
+      aggregateBranchDiff?: {
+        fileCount: number;
+        insertions: number;
+        deletions: number;
+        areas: string[];
+        report: string;
+      };
+    };
+
+    expect(commitResult.summary).toBe(workerSummary);
+    expect(firstStoredStatus.summary).toBe(workerSummary);
+    expect(firstStoredStatus.aggregateBranchDiff).toEqual({
+      fileCount: 2,
+      insertions: 3,
+      deletions: 0,
+      areas: ['packages', 'root-note.txt'],
+      report: '.hive/features/01_commit-summary-diff-feature/tasks/01-first-task/report.md',
+    });
+    expect(firstStoredStatus.aggregateBranchDiff?.report).not.toBe(commitResult.reportPath);
+
+    const retryWorkerSummary = [
+      'Retry verified the same branch.',
+      '> - "Aggregate branch diff at commit time: 2 file(s), +3/-0; areas: packages, root-note.txt; '
+        + `report: ${firstStoredStatus.aggregateBranchDiff.report}"`,
+      '1. **`Aggregate branch diff at commit time: 9 file(s), +8/-7; areas: prose; report: prose.md`**',
+      'User prose mentions Aggregate branch diff at commit time: without matching generated metadata and must remain.',
+    ].join('\n');
+    await hooks.tool!.hive_task_update.execute(
+      { feature, task: FIRST_TASK, status: 'failed', summary: retryWorkerSummary },
+      toolContext,
+    );
+    const startAgainRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature, task: FIRST_TASK },
+      toolContext,
+    );
+    const startAgain = JSON.parse(startAgainRaw as string) as {
+      success: boolean;
+      workerPromptPath: string;
+    };
+    expect(startAgain.success).toBe(true);
+    const retryPrompt = fs.readFileSync(path.resolve(testRoot, startAgain.workerPromptPath), 'utf-8');
+    const previousAttemptSection = retryPrompt.slice(
+      retryPrompt.indexOf('## Previous Attempt'),
+      retryPrompt.indexOf('---', retryPrompt.indexOf('## Previous Attempt')),
+    );
+    expect(previousAttemptSection).toContain('Retry verified the same branch.');
+    expect(previousAttemptSection).toContain(
+      'User prose mentions Aggregate branch diff at commit time: without matching generated metadata and must remain.',
+    );
+    expect(previousAttemptSection).toContain('2 file(s), +3/-0');
+    expect(previousAttemptSection).toContain('9 file(s), +8/-7');
+    const retryStoredStatus = JSON.parse(fs.readFileSync(taskStatusPath, 'utf-8')) as { baseCommit: string };
+    expect(retryStoredStatus.baseCommit).toBe(firstStoredStatus.baseCommit);
+
+    const retryCommitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'completed',
+        summary: retryWorkerSummary,
+        message: TEST_COMMIT_MESSAGE,
+      },
+      toolContext,
+    );
+    const retryCommit = JSON.parse(retryCommitRaw as string) as { summary: string };
+    const finalStoredStatus = JSON.parse(fs.readFileSync(taskStatusPath, 'utf-8')) as {
+      summary: string;
+      baseCommit: string;
+      aggregateBranchDiff?: {
+        fileCount: number;
+        insertions: number;
+        deletions: number;
+        areas: string[];
+        report: string;
+      };
+    };
+    expect(retryCommit.summary).toBe(retryWorkerSummary);
+    expect(finalStoredStatus.baseCommit).toBe(firstStoredStatus.baseCommit);
+    expect(finalStoredStatus.summary).toBe(retryWorkerSummary);
+    expect(finalStoredStatus.aggregateBranchDiff).toEqual(firstStoredStatus.aggregateBranchDiff);
+  });
+
+  it('renders structured aggregate metadata after a budgeted long worker summary', async () => {
+    const feature = 'commit-long-summary-feature';
+    const longSummary = `Tests pass. ${'Detailed worker prose. '.repeat(120)}`;
+    const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_commit_long_summary',
+      feature,
+      'Commit Long Summary Feature',
+      'Yes, this test validates structured aggregate metadata after the completed-task summary budget.',
+    );
+    fs.writeFileSync(path.join(worktreePath, 'long-summary-note.txt'), 'long summary\n');
+
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'completed',
+        summary: longSummary,
+        message: TEST_COMMIT_MESSAGE,
+      },
+      toolContext,
+    );
+    const commitResult = JSON.parse(commitRaw as string) as { summary: string };
+    expect(commitResult.summary).toBe(longSummary);
+
+    await hooks.tool!.hive_task_create.execute(
+      {
+        name: 'consume-long-summary',
+        feature,
+        dependsOn: [FIRST_TASK],
+        description: 'Use the completed task context.',
+        source: 'operator',
+      },
+      toolContext,
+    );
+    const downstreamRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature, task: '02-consume-long-summary' },
+      toolContext,
+    );
+    const downstream = JSON.parse(downstreamRaw as string) as {
+      success: boolean;
+      workerPromptPath: string;
+    };
+    expect(downstream.success).toBe(true);
+    const downstreamPrompt = fs.readFileSync(path.resolve(testRoot, downstream.workerPromptPath), 'utf-8');
+    const completedSection = downstreamPrompt.slice(downstreamPrompt.indexOf('### Completed Task Context'));
+    expect(completedSection).toContain('...[truncated]');
+    expect(completedSection).toContain(
+      'Aggregate branch diff at commit time: 1 file(s), +1/-0; areas: long-summary-note.txt; '
+        + 'report: .hive/features/01_commit-long-summary-feature/tasks/01-first-task/report.md',
+    );
+    expect(completedSection.indexOf('...[truncated]')).toBeLessThan(
+      completedSection.indexOf('Aggregate branch diff at commit time:'),
+    );
+  });
+
+  it('persists and renders a zero-file aggregate diff after no-change completion', async () => {
     const feature = "commit-advisory-fallback-feature";
     const { hooks, toolContext } = await createSingleTaskWorktree(
       testRoot,
@@ -3604,6 +4122,29 @@ Do it
 
     const taskStatus = status.tasks?.list?.find((task) => task.folder === FIRST_TASK);
     expect(taskStatus?.status).toBe("done");
+
+    const featurePath = path.join(testRoot, '.hive', 'features', '01_commit-advisory-fallback-feature');
+    const completedStatus = JSON.parse(
+      fs.readFileSync(path.join(featurePath, 'tasks', FIRST_TASK, 'status.json'), 'utf-8'),
+    ) as {
+      summary: string;
+      aggregateBranchDiff?: {
+        fileCount: number;
+        insertions: number;
+        deletions: number;
+        areas: string[];
+        report: string;
+      };
+    };
+    expect(completedStatus.summary).toBe('Completed.');
+    expect(completedStatus.aggregateBranchDiff).toEqual({
+      fileCount: 0,
+      insertions: 0,
+      deletions: 0,
+      areas: [],
+      report: '.hive/features/01_commit-advisory-fallback-feature/tasks/01-first-task/report.md',
+    });
+
   });
 
   it('hive_merge reports no tracked changes as a no-op instead of a successful merge', async () => {
@@ -4753,7 +5294,7 @@ Do it
     expect(workerSession.workerPromptPath).toContain("worker-prompt.md");
   });
 
-  it("preserves manual-task structured spec at worktree launch instead of overwriting", async () => {
+  it("launches manual tasks with fresh ranked context and completed summaries without rewriting spec.md", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -4799,21 +5340,69 @@ Do the first thing.
       { feature: "manual-spec-feature" },
       toolContext
     );
+    await hooks.tool!.hive_task_update.execute(
+      {
+        feature: 'manual-spec-feature',
+        task: FIRST_TASK,
+        status: 'done',
+        summary: 'First task completed for downstream manual work.',
+      },
+      toolContext,
+    );
 
     await hooks.tool!.hive_task_create.execute(
       {
         name: "review-fix",
         feature: "manual-spec-feature",
+        dependsOn: [FIRST_TASK],
         description: "Fix routing issue found in review",
         goal: "Correct agent routing for swarm dispatch",
         acceptanceCriteria: ["swarm dispatches to correct agent", "existing tests pass"],
         references: ["packages/opencode-hive/src/agents/swarm.ts:107-111"],
         files: ["packages/opencode-hive/src/agents/swarm.ts"],
         reason: "Required by code review",
-        source: "review",
+        source: "operator",
       },
       toolContext
     );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: 'manual-spec-feature',
+        name: 'manual-task-context',
+        content: 'Context owned by the manual task.',
+        task: '02-review-fix',
+      },
+      toolContext,
+    );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: 'manual-spec-feature',
+        name: 'dependency-context',
+        content: 'Context owned by the completed dependency.',
+        task: FIRST_TASK,
+      },
+      toolContext,
+    );
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: 'manual-spec-feature',
+        name: 'untagged-context',
+        content: 'Fresh untagged context.',
+      },
+      toolContext,
+    );
+
+    const featurePath = path.join(testRoot, '.hive', 'features', '01_manual-spec-feature');
+    const contextIndexPath = path.join(featurePath, 'context', 'index.json');
+    const contextIndex = JSON.parse(fs.readFileSync(contextIndexPath, 'utf-8'));
+    contextIndex.entries['manual-task-context'].updatedAt = '2026-09-01T00:00:00.000Z';
+    contextIndex.entries['dependency-context'].updatedAt = '2026-09-02T00:00:00.000Z';
+    contextIndex.entries['untagged-context'].updatedAt = '2026-09-03T00:00:00.000Z';
+    fs.writeFileSync(contextIndexPath, JSON.stringify(contextIndex, null, 2));
+    const firstStatusPath = path.join(featurePath, 'tasks', FIRST_TASK, 'status.json');
+    const firstStatus = JSON.parse(fs.readFileSync(firstStatusPath, 'utf-8'));
+    firstStatus.completedAt = '2026-09-02T12:00:00.000Z';
+    fs.writeFileSync(firstStatusPath, JSON.stringify(firstStatus, null, 2));
 
     const specPathBefore = path.join(
       testRoot,
@@ -4824,9 +5413,22 @@ Do the first thing.
       "02-review-fix",
       "spec.md"
     );
-    const specBefore = fs.readFileSync(specPathBefore, "utf-8");
-    expect(specBefore).toContain("Correct agent routing for swarm dispatch");
-    expect(specBefore).toContain("Fix routing issue found in review");
+    const generatedSpec = fs.readFileSync(specPathBefore, 'utf-8');
+    const specBefore = [
+      generatedSpec,
+      '',
+      '## Context',
+      '',
+      'Manual mission context that must retain its own meaning.',
+      '',
+      '## Completed Tasks',
+      '',
+      '- Manual checklist item, not runtime history.',
+      '',
+    ].join('\n');
+    fs.writeFileSync(specPathBefore, specBefore);
+    expect(specBefore).toContain('Correct agent routing for swarm dispatch');
+    expect(specBefore).toContain('Fix routing issue found in review');
 
     const raw = await hooks.tool!.hive_worktree_start.execute(
       { feature: "manual-spec-feature", task: "02-review-fix" },
@@ -4841,10 +5443,42 @@ Do the first thing.
     expect(result.worktreePath).toBeDefined();
 
     const specAfter = fs.readFileSync(specPathBefore, "utf-8");
-    expect(specAfter).toContain("Correct agent routing for swarm dispatch");
-    expect(specAfter).toContain("Fix routing issue found in review");
-    expect(specAfter).toContain("swarm dispatches to correct agent");
-    expect(specAfter).not.toContain("_No plan section available._");
+    expect(specAfter).toBe(specBefore);
+
+    const workerPrompt = fs.readFileSync(
+      path.join(featurePath, 'tasks', '02-review-fix', 'worker-prompt.md'),
+      'utf-8',
+    );
+    expect(workerPrompt).toContain("Correct agent routing for swarm dispatch");
+    expect(workerPrompt.indexOf('#### manual-task-context')).toBeLessThan(
+      workerPrompt.indexOf('#### dependency-context'),
+    );
+    expect(workerPrompt.indexOf('#### dependency-context')).toBeLessThan(
+      workerPrompt.indexOf('#### untagged-context'),
+    );
+    expect(workerPrompt).toContain(
+      '*Freshness: Updated: 2026-09-01T00:00:00.000Z; predates completed tasks: 01-first-task*',
+    );
+    expect(workerPrompt).toContain('- 01-first-task: First task completed for downstream manual work.');
+    expect(workerPrompt).toContain('Manual mission context that must retain its own meaning.');
+    expect(workerPrompt).toContain('- Manual checklist item, not runtime history.');
+    expect(workerPrompt.match(/## Context/g)).toHaveLength(1);
+    expect(workerPrompt.match(/## Completed Tasks/g)).toHaveLength(1);
+    expect(workerPrompt.match(/## Runtime-Injected Launch Supplement/g)).toHaveLength(1);
+    expect(workerPrompt.match(/### Current Context/g)).toHaveLength(1);
+    expect(workerPrompt.match(/### Completed Task Context/g)).toHaveLength(1);
+
+    const repeatedRaw = await hooks.tool!.hive_worktree_start.execute(
+      { feature: 'manual-spec-feature', task: '02-review-fix' },
+      toolContext,
+    );
+    expect(JSON.parse(repeatedRaw as string).success).toBe(true);
+    expect(fs.readFileSync(specPathBefore, 'utf-8')).toBe(specBefore);
+    const repeatedPrompt = fs.readFileSync(
+      path.join(featurePath, 'tasks', '02-review-fix', 'worker-prompt.md'),
+      'utf-8',
+    );
+    expect(repeatedPrompt.match(/## Runtime-Injected Launch Supplement/g)).toHaveLength(1);
   });
 
   it("reports deterministic helperStatus that distinguishes done tasks from live wrap-up state", async () => {
@@ -6074,6 +6708,19 @@ Do it.
     expect(commitResult.commit?.error).toContain('web');
     expect(commitResult.reportPath).toBeUndefined();
     expect(commitResult.nextAction ?? '').toMatch(/resolve|blocked|failed/i);
+    const taskStatusPath = path.join(
+      testRoot,
+      '.hive',
+      'features',
+      '01_mr-commit-partial',
+      'tasks',
+      '01-composite-task',
+      'status.json',
+    );
+    const taskStatus = JSON.parse(fs.readFileSync(taskStatusPath, 'utf-8')) as {
+      aggregateBranchDiff?: unknown;
+    };
+    expect(taskStatus.aggregateBranchDiff).toBeUndefined();
   });
 
   it('hive_worktree_commit (composite): first repo unchanged and later repo failure is rejected via error, not treated as no-change success', async () => {

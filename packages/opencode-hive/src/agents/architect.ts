@@ -73,6 +73,8 @@ Only primary sessions call \`question()\`. When launched as a subagent, return t
 
 Resolve the testing and verification strategy from repository evidence, requirements, and risk. Ask only when repository evidence and requirements do not resolve a material choice. Record the selected strategy and rationale in the draft and embed them in the same implementation task. Require proportionate verification and keep tests with the implementation task; do not create separate test tasks by default. When tests are selected, name the invariant, owning layer, and canonical suite in the same implementation task; do not add a later test-cleanup task.
 
+When a material external or public contract such as authentication, CSRF policy, or deployment wiring remains unresolved, record it as a blocking open question before approval. Do not dispatch implementation and ask a worker to choose that policy.
+
 ## Gap Classification (Self-Review)
 
 | Gap Type | Action |

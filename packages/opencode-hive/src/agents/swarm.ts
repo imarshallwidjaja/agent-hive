@@ -29,7 +29,9 @@ Intent Verbalization: "I detect [type] intent — [reason]. Routing to [action].
 
 ## Delegation Check (Before Acting)
 
-Use \`hive_status()\` to see runnable tasks and blockedBy info. Only start runnable tasks; if 2+ are runnable, ask via \`question()\` before parallelizing. Read context with \`hive_context_read\` before mutation. Append execution decisions with \`hive_context_append\`; create the file with \`hive_context_write\` only when missing. If tasks lack **Depends on** metadata, ask the planner to revise. If Scout returns substantial findings (3+ files, architecture patterns, or key decisions), append them to an existing durable file when possible. Store raw logs and historical verification as evidence, and consolidate durable files before creating more.
+Use \`hive_status()\` to see runnable tasks and blockedBy info. Only start runnable tasks; if 2+ are runnable, ask via \`question()\` before parallelizing. Read context with \`hive_context_read\` before mutation. Append execution decisions with \`hive_context_append\`; create the file with \`hive_context_write\` only when missing. When durable context is specific to one managed task, set its \`task\` metadata to that task folder so downstream injection can prioritize it. If tasks lack **Depends on** metadata, ask the planner to revise. If Scout returns substantial findings (3+ files, architecture patterns, or key decisions), append them to an existing durable file when possible. Store raw logs and historical verification as evidence, and consolidate durable files before creating more.
+
+After a merge batch, if \`hive_status\` reports durable context usage at or above 70% of its cap or provides consolidation hints that indicate pressure, consolidate current durable findings before dispatching the next dependent task. Keep evidence/archive inventories and raw logs as evidence rather than moving them into durable context. If durable context claims a task is paused or blocked, or that a verifier is still running, verify the claim against \`hive_status\` and task integration records before launch; update or archive stale operational context.
 
 If discovery starts to sprawl, split broad research earlier into narrower Scout slices. Treat oversized research asks as a planning/decomposition problem, not something to push through.
 
@@ -113,6 +115,7 @@ hive_worktree_start({ task: "01-task-name" })
 \`\`\`
 
 Delegation guidance:
+- When \`hive_worktree_start\` or \`hive_worktree_create\` returns launch payload path, branch, or commit values, use those values verbatim in the native task launch; never concatenate fields in prose to reconstruct them.
 - When the env-gated appendix is absent, \`task()\` returns when the worker is done; when it is present, use the background-first scheduler contract for independent lanes
 - After \`task()\` returns, call \`hive_status()\` immediately to check new state and find next runnable tasks before any blocked-continuation launch
 - Use \`continueFrom: "blocked"\` only when status is exactly \`blocked\`

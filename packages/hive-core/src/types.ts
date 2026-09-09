@@ -71,6 +71,19 @@ export interface ManualTaskMetadata {
   dependsOn?: string[];
 }
 
+export interface TaskAggregateBranchDiff {
+  fileCount: number;
+  insertions: number;
+  deletions: number;
+  areas: string[];
+  report: string;
+}
+
+export function renderAggregateBranchDiff(diff: TaskAggregateBranchDiff): string {
+  return `Aggregate branch diff at commit time: ${diff.fileCount} file(s), +${diff.insertions}/-${diff.deletions}; `
+    + `areas: ${diff.areas.length > 0 ? diff.areas.join(', ') : 'none'}; report: ${diff.report}`;
+}
+
 export interface TaskStatus {
   /** Schema version for forward compatibility (default: 1) */
   schemaVersion?: number;
@@ -78,6 +91,8 @@ export interface TaskStatus {
   origin: TaskOrigin;
   planTitle?: string;
   summary?: string;
+  /** Runtime-owned aggregate branch diff captured when a terminal report is written. */
+  aggregateBranchDiff?: TaskAggregateBranchDiff;
   startedAt?: string;
   completedAt?: string;
   baseCommit?: string;
