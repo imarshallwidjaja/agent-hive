@@ -1,7 +1,7 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import { ContextService, getFeaturePath, listFeatureDirectories } from 'hive-core'
+import { ContextService, getFeaturePath, getTaskPath, listFeatureDirectories } from 'hive-core'
 import type { ContextReadSummary, FeatureJson, TaskStatus } from 'hive-core'
 import { contextDescription, contextTooltip } from './contextInspection.js'
 
@@ -13,7 +13,7 @@ class ContextUnavailableItem extends vscode.TreeItem {
   }
 }
 
-type SidebarItem = ContextUnavailableItem | StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem | TaskFileItem
+type SidebarItem = ContextUnavailableItem | StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem | TaskFileItem | ReportHistoryItem
 
 const STATUS_ICONS: Record<string, string> = {
   pending: 'circle-outline',
@@ -144,10 +144,11 @@ class TaskItem extends vscode.TreeItem {
     public readonly folder: string,
     public readonly status: TaskStatus,
     public readonly specPath: string | null,
-    public readonly reportPath: string | null
+    public readonly reportPath: string | null,
+    public readonly reportsPath: string
   ) {
     const name = folder.replace(/^\d+-/, '')
-    const hasFiles = specPath !== null || reportPath !== null
+    const hasFiles = specPath !== null || reportPath !== null || fs.existsSync(reportsPath)
     super(name, hasFiles ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
     this.description = status.summary || ''
     this.contextValue = `task-${status.status}${status.origin === 'manual' ? '-manual' : ''}`
@@ -162,6 +163,14 @@ class TaskItem extends vscode.TreeItem {
     if (status.summary) {
       this.tooltip.appendMarkdown(`Summary: ${status.summary}`)
     }
+  }
+}
+
+class ReportHistoryItem extends vscode.TreeItem {
+  constructor(public readonly reportsPath: string) {
+    super('Report history', vscode.TreeItemCollapsibleState.Collapsed)
+    this.contextValue = 'report-history'
+    this.iconPath = new vscode.ThemeIcon('history')
   }
 }
 
@@ -222,6 +231,12 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
     if (element instanceof TaskItem) {
       return this.getTaskFiles(element)
+    }
+
+    if (element instanceof ReportHistoryItem) {
+      return this.getReportFilenames(element.reportsPath)
+        .sort((a, b) => b.length - a.length || b.localeCompare(a))
+        .map(filename => new TaskFileItem(`Revision ${filename.slice(0, -3)}`, path.join(element.reportsPath, filename)))
     }
 
     return []
@@ -328,27 +343,35 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
   }
 
   private getTasks(featureName: string, tasks: Array<{ folder: string; status: TaskStatus }>): TaskItem[] {
-    const featurePath = getFeaturePath(this.workspaceRoot, featureName)
-    
     return tasks.map(t => {
-      const taskDir = path.join(featurePath, 'tasks', t.folder)
+      const taskDir = getTaskPath(this.workspaceRoot, featureName, t.folder)
       const specPath = path.join(taskDir, 'spec.md')
       const reportPath = path.join(taskDir, 'report.md')
       const hasSpec = fs.existsSync(specPath)
       const hasReport = fs.existsSync(reportPath)
       
-      return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null)
+      return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null, path.join(taskDir, 'reports'))
     })
   }
 
-  private getTaskFiles(taskItem: TaskItem): TaskFileItem[] {
-    const items: TaskFileItem[] = []
+  private getReportFilenames(reportsPath: string): string[] {
+    if (!fs.existsSync(reportsPath)) return []
+    return fs.readdirSync(reportsPath, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /^[1-9]\d*\.md$/.test(entry.name))
+      .map(entry => entry.name)
+  }
+
+  private getTaskFiles(taskItem: TaskItem): SidebarItem[] {
+    const items: SidebarItem[] = []
     
     if (taskItem.specPath) {
       items.push(new TaskFileItem('spec.md', taskItem.specPath))
     }
     if (taskItem.reportPath) {
-      items.push(new TaskFileItem('report.md', taskItem.reportPath))
+      items.push(new TaskFileItem('Latest handoff report', taskItem.reportPath))
+    }
+    if (this.getReportFilenames(taskItem.reportsPath).length > 0) {
+      items.push(new ReportHistoryItem(taskItem.reportsPath))
     }
     
     return items

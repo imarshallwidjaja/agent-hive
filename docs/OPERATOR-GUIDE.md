@@ -161,6 +161,8 @@ Retries automatically include at most 3,000 characters of summary (or a separate
 
 ## Inspect context and constraints in VS Code
 
+In Features, expand a task to open **Latest handoff report** or expand **Report history** for immutable revisions, newest first; revisions count report writes, not attempts or commits. Legacy tasks without revision files show only the latest report.
+
 The Arkive extension keeps its three native views. In Features, expand Context to inspect Markdown documents, classifications, sizes, inclusion policy and durable budgets. Evidence exclusion applies to automatic prompt injection; it is not a privacy guarantee. `overview.md` still opens normally and supports review comments. Direct editor saves bypass managed context revisions and mutation-time caps.
 
 Use **Archive Context** on a Context folder or file to select documents, supply a reason and confirm their exact filenames. The operation uses the revision captured before selection. A stale revision fails without retrying; reopen the action to review current state. Cancelling any step leaves context unchanged.
