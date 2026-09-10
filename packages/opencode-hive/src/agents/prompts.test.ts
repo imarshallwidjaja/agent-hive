@@ -67,7 +67,7 @@ describe('Engineering judgment prompt reach', () => {
   });
 
   it('anchors role-specific application at existing decision points', () => {
-    expect(ARCHITECT_BEE_PROMPT).toContain('When drafting the plan');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries');
     expect(QUEEN_BEE_PROMPT).toContain('When drafting the plan');
     expect(FORAGER_BEE_PROMPT).toContain('Apply Engineering Judgment during PLAN and VERIFY');
     expect(PLAN_REVIEWER_PROMPT).toContain('Apply Engineering Judgment only as an execution-readiness lens');
@@ -1822,16 +1822,28 @@ describe('Primary orchestration direct-work boundaries', () => {
     expect(QUEEN_BEE_PROMPT).toContain('tightly coupled code, tests, docs, and multiple files');
   });
 
-  it('documents worker-branch task granularity for planning prompts', () => {
+  it('routes planning and material boundary revisions to canonical writing-plans guidance', () => {
     for (const [name, prompt] of [
       ['Hive', QUEEN_BEE_PROMPT],
       ['Architect', ARCHITECT_BEE_PROMPT],
     ] as const) {
       expect(prompt, name).toContain('numbered tasks are worker-branch units, not micro-steps');
-      expect(prompt, name).toContain('Split by dependency, path ownership, verification boundary, or independently deliverable behavior');
-      expect(prompt, name).toContain('Reads, runs, and commits are steps inside a task');
-      expect(prompt, name).toContain('Typical plan has roughly 3-12 tasks');
+      expect(prompt, name).toContain('materially revising task boundaries or dependencies');
+      expect(prompt, name).toContain('load the native skill "writing-plans"');
+      expect(prompt, name).toContain('Choose coherent outcome and ownership boundaries before assigning dependencies');
+      expect(prompt, name).toContain("writing-plans skill's Worker-Branch Task Granularity guidance");
+      expect(prompt, name).not.toContain('3-12 tasks');
     }
+  });
+
+  it('bounds coordination review to representative tasks and keeps observations nonblocking', () => {
+    expect(PLAN_REVIEWER_PROMPT).not.toContain('Check only for execution blockers');
+    expect(PLAN_REVIEWER_PROMPT).toContain('For those same representative tasks, check coordination');
+    expect(PLAN_REVIEWER_PROMPT).toContain('required predecessor outputs or decisions, path ownership, and a verifiable handoff');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Missing dependencies or unsafe shared-write overlap are blockers');
+    expect(PLAN_REVIEWER_PROMPT).toContain('do not redesign the architecture or reject a plan for a low parallel task count');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Optional coordination observations are nonblocking and do not change the verdict');
+    expect(PLAN_REVIEWER_PROMPT).toContain('[Optional, when a concrete nonblocking improvement is apparent]\n**Coordination Observations**:');
   });
 });
 

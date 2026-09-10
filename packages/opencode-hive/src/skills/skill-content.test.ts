@@ -208,6 +208,29 @@ describe('skill content', () => {
     expect(template).toContain('must not plan a later test-cleanup pass');
   });
 
+  it('chooses coherent task boundaries before dependencies without parallel quotas', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
+    const granularity = template.slice(template.indexOf('## Worker-Branch Task Granularity'), template.indexOf('## Plan Structure'));
+
+    expect(granularity).toContain('Choose task boundaries before assigning dependencies');
+    expect(granularity).toContain('each outcome, required predecessor outputs or capability decisions, owned paths, and verification');
+    expect(granularity).toContain('Keep tightly coupled implementation, tests, docs, and generated artifacts together');
+    expect(granularity).toContain('do not split by file or target a task count or parallel quota');
+    expect(granularity).toContain('Split only when the handoff is concrete and the parallel work justifies the coordination cost');
+    expect(granularity).toContain('do not invent speculative contracts');
+    expect(granularity).toContain('exact shared paths it owns, and integration tests');
+    expect(granularity).toContain('generic dumping ground');
+    expect(granularity).toContain('required outputs, capability decisions, or deliberate shared-write ordering, never from task numbering');
+    expect(granularity).toContain('When useful for review, briefly explain');
+    expect(granularity).toContain('No separate rationale template is required');
+    expect(granularity).toContain('final integrated correctness and applicable security review gates');
+    expect(granularity).toContain('Before:');
+    expect(granularity).toContain('After, if the repository already defines the exporter interface');
+    expect(granularity.match(/\*\*Depends on\*\*: none/g)).toHaveLength(2);
+    expect(granularity).toContain('`src/app/export-lifecycle.test.ts`; **Depends on**: 1, 2');
+    expect(granularity).toContain('If the interface still requires a capability decision');
+  });
+
   it('keeps planning implementation-read-only and hands task refresh to the orchestrator', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans');
     const template = skill!.template;

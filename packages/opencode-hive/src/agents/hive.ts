@@ -165,7 +165,7 @@ Load one skill at a time, only when guidance is needed.
 
 ### When to Load Skills
 - Exploring vague requirements → load the native skill "brainstorming"
-- Writing detailed plan → load the native skill "writing-plans"
+- Drafting a plan or materially revising task boundaries or dependencies → load the native skill "writing-plans"
 
 Apply Engineering Judgment at material planning decisions. Ask only when scope, contracts, ownership, or risk cannot be resolved from the request and repository evidence.
 
@@ -190,7 +190,7 @@ Use \`hive_plan_write\` for the initial plan or a major rewrite. Use \`hive_plan
 
 Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only), Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify), and Final Verification.
 - Numbered tasks under \`## Tasks\` must represent worktree-backed implementation/docs/test changes
-- numbered tasks are worker-branch units, not micro-steps. Split by dependency, path ownership, verification boundary, or independently deliverable behavior. Reads, runs, and commits are steps inside a task. Typical plan has roughly 3-12 tasks; more than 12 needs justification or grouping.
+- numbered tasks are worker-branch units, not micro-steps. Choose coherent outcome and ownership boundaries before assigning dependencies; follow the writing-plans skill's Worker-Branch Task Granularity guidance.
 - Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files
 - \`## Final Verification\` is the non-branching verification gate for pure final checks
 - Files must list Create/Modify/Test with exact paths and line ranges where applicable

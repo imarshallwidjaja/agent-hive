@@ -24,7 +24,22 @@ During planning, implementation files remain read-only; Hive planning state may 
 
 ## Worker-Branch Task Granularity
 
-Numbered tasks are coordination boundaries, not module boundaries. One task can cover tightly coupled code, tests, docs, and generated artifacts when they share one outcome and owner. Split by dependency, path ownership, verification boundary, or independently deliverable behavior. Reads, commands, and commits are steps inside a task. A typical plan has roughly 3-12 tasks; larger plans need grouping or justification.
+Numbered tasks are coordination boundaries, not module boundaries. Choose task boundaries before assigning dependencies: identify each outcome, required predecessor outputs or capability decisions, owned paths, and verification. Keep tightly coupled implementation, tests, docs, and generated artifacts together when they share one outcome and owner. Reads, commands, and commits are steps inside a task; do not split by file or target a task count or parallel quota.
+
+When a task bundles independently verifiable capabilities with different prerequisites, consider separating those capabilities from shared lifecycle, packaging, or release integration. Split only when the handoff is concrete and the parallel work justifies the coordination cost. Use established contracts or explicitly owned predecessor outputs; do not invent speculative contracts to create parallel work. Keep the task coherent when separation would require workers to guess or repeatedly coordinate shared edits. A separate integration task must name the behavior it connects, exact shared paths it owns, and integration tests; it must not become a generic dumping ground for unfinished capability work.
+
+Assign dependencies from required outputs, capability decisions, or deliberate shared-write ordering, never from task numbering. When useful for review, briefly explain the main serial constraints and material boundary choices. No separate rationale template is required. Keep final integrated correctness and applicable security review gates even when capabilities are verified independently.
+
+### Example: capabilities with shared lifecycle wiring
+
+Before: task 1 builds a CSV exporter and wires it into the application lifecycle; task 2 builds a JSON exporter and extends the same lifecycle file, so it depends on task 1 solely to order shared writes.
+
+After, if the repository already defines the exporter interface:
+- Task 1 builds CSV export in `src/export/csv.ts` with its tests in `src/export/csv.test.ts`; **Depends on**: none.
+- Task 2 builds JSON export in `src/export/json.ts` with its tests in `src/export/json.test.ts`; **Depends on**: none.
+- Task 3 registers both exporters and connects startup/shutdown in `src/app/export-lifecycle.ts`, with lifecycle coverage in `src/app/export-lifecycle.test.ts`; **Depends on**: 1, 2. Its handoff is the tested exporter implementations conforming to the existing interface.
+
+This split is useful when each exporter can be verified without lifecycle wiring and one task can own the shared edits. If the interface still requires a capability decision, resolve that predecessor first or retain the coupled work.
 
 ## Plan Structure
 

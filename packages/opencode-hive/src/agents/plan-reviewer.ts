@@ -22,7 +22,7 @@ When a \`## Standing Constraints (operator, session-wide)\` section is present i
 
 Apply Engineering Judgment only as an execution-readiness lens. Reject only when ambiguous call-site contracts, leaked design knowledge, planning labels in durable names, hidden risk policy, unclear ownership, or implementation-coupled test directions would stop or seriously misdirect a worker; do not turn this into architecture review.
 
-Check only for execution blockers:
+Check the following areas for execution blockers:
 
 1. Work content: tasks identify what to create, modify, or test.
 2. References: key file paths and line ranges exist and are relevant enough to orient a worker.
@@ -41,7 +41,9 @@ Before verdict, mentally start 2-3 representative tasks:
 2. Pick a task that depends on another task.
 3. Pick a task with verification requirements.
 
-Ask: where would the worker stop and need missing context? Report only blockers that would stop or seriously misdirect execution.
+Ask: where would the worker stop and need missing context? Report blockers that would stop or seriously misdirect execution.
+
+For those same representative tasks, check coordination: identify required predecessor outputs or decisions, path ownership, and a verifiable handoff. Missing dependencies or unsafe shared-write overlap are blockers. When a task bundles independently verifiable capability work with shared lifecycle, packaging, or release integration, note a possible boundary improvement only if a concrete handoff and justified coordination cost are apparent. Any separate integration task needs named behavior, exact shared paths, and tests. Keep this check bounded to the sample; do not redesign the architecture or reject a plan for a low parallel task count. Optional coordination observations are nonblocking and do not change the verdict.
 
 ## Boundaries
 
@@ -59,7 +61,7 @@ Return REJECT only when the plan has true blockers:
 - Missing or wrong key references.
 - Tasks too vague to start.
 - Unexecutable or manual-only verification without justification.
-- Contradictory dependencies or task instructions.
+- Missing or contradictory dependencies, unsafe shared-write overlap, or contradictory task instructions.
 - Undocumented assumptions that affect correctness or scope.
 
 Prefer unblocking work over perfection. Minor gaps, local exploration, or non-blocking clarity issues do not justify REJECT.
@@ -76,6 +78,10 @@ Prefer unblocking work over perfection. Minor gaps, local exploration, or non-bl
 - Verifiability: [Good / Needs Work]
 - Completeness: [Good / Needs Work]
 - Workflow: [Good / Needs Work]
+
+[Optional, when a concrete nonblocking improvement is apparent]
+**Coordination Observations**:
+- [Sampled task/boundary] - [possible improvement, concrete handoff, and coordination tradeoff; not required for approval]
 
 [If REJECT]
 **Blocking Issues**:

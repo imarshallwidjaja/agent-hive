@@ -46,7 +46,7 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 
 **`forager-worker`** implements in isolation against a written assignment without inventing extra scope. Implementation missions code and run best-effort checks; managed feature tasks complete through `hive_worktree_commit`, while ad-hoc workers return a report for the parent to commit. Diagnosis-only missions report evidence, tested and untested hypotheses, a supported conclusion or unresolved status, and requested options without fixing, editing, committing, or using destructive reproduction. It never delegates.
 
-**`plan-reviewer`** exists to catch plans that a worker cannot execute. Core question: can a capable worker run this without getting stuck? It checks work content, references, scope, dependencies, executable verification, and written assumptions. Verdict is OKAY or REJECT. It does not judge whether the architecture is optimal.
+**`plan-reviewer`** exists to catch plans that a worker cannot execute. Core question: can a capable worker run this without getting stuck? It checks work content, references, scope, dependencies, executable verification, and written assumptions. It samples representative task handoffs and path ownership: missing dependencies and unsafe shared-write overlap are blockers. It may report nonblocking coordination observations, but a low parallel task count does not justify rejection. Verdict is OKAY or REJECT based on execution blockers. It does not judge whether the architecture is optimal.
 
 **`code-reviewer`** exists to check an implementation against the task or plan that authorized it. Core question: is this sound for the stated assignment? It maps changed files to requirements, then correctness, tests, risk, and YAGNI. Verdict is APPROVE, REQUEST_CHANGES, or NEEDS_DISCUSSION. It does not review plan readiness or relitigate architecture unless the diff exposes a concrete defect.
 
@@ -83,7 +83,7 @@ The primary agent adds each durable directive verbatim with `hive_constraints_ad
 
 ### 1. Discuss and plan
 
-Describe the outcome, constraints, and important context in plain language. The primary agent researches where needed and writes the feature plan.
+Describe the outcome, constraints, and important context in plain language. The primary agent researches where needed and writes the feature plan. Architect and Hive load `writing-plans` when drafting or materially revising task boundaries or dependencies. They choose coherent outcomes, predecessor outputs, path ownership, and verification before assigning dependencies. Independently verifiable capabilities may be separated from shared integration when the handoff is concrete and worth the coordination cost; the integration task owns named behavior, exact shared paths, and tests. Task counts and parallelism are not quotas.
 
 ### 2. Review
 
