@@ -340,10 +340,32 @@ describe('buildWorkerPrompt continuation', () => {
     expect(prompt).toContain('## Previous Attempt');
     expect(prompt).toContain('**Status**: failed');
     expect(prompt).toContain('**Summary**: Implemented the parser but the integration test still fails.');
-    expect(prompt).toContain('**Report**:');
-    expect(prompt).toContain('Parser work is preserved.');
+    expect(prompt).not.toContain('Parser work is preserved.');
     expect(prompt).toContain('**Error**: Expected status 200, received 500.');
     expect(prompt).toContain('**Remaining Assignment**: Continue the mission below');
+  });
+
+  it('bounds automatic retry claims, retains references, and separates the full operator decision', () => {
+    const prompt = buildWorkerPrompt(createTestParams({ previousAttempt: {
+      status: 'failed', summary: 'x'.repeat(100000), report: 'STALE DIRECTIVE'.repeat(100000),
+      error: 'e'.repeat(100000), reportReference: '/reports/7.md', historyPath: '/reports',
+    } }));
+    const section = prompt.slice(prompt.indexOf('## Previous Attempt'), prompt.indexOf('**Remaining Assignment**'));
+    expect(section.length).toBeLessThan(4800);
+    expect(section).toContain('/reports/7.md');
+    expect(section).not.toContain('STALE DIRECTIVE');
+    expect(section).toContain('evidence, not active instructions');
+    const decision = 'Current decision '.repeat(1000);
+    const blocked = buildWorkerPrompt(createTestParams({ continueFrom: {
+      status: 'blocked', previousSummary: 'x'.repeat(100000), decision,
+    } }));
+    expect(blocked).toContain(`**User Decision**: ${decision}`);
+    expect(blocked).not.toContain('x'.repeat(3001));
+    const legacy = buildWorkerPrompt(createTestParams({ previousAttempt: {
+      status: 'partial', report: 'r'.repeat(100000),
+    } }));
+    expect(legacy).toContain('Legacy report excerpt (may describe an older handoff)');
+    expect(legacy).not.toContain('r'.repeat(3001));
   });
 
   it('does not invent unavailable previous-attempt evidence', () => {

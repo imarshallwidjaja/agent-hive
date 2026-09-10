@@ -1871,11 +1871,17 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       && typeof previousRawStatus.error === 'string'
       ? blankToUndefined(previousRawStatus.error)
       : undefined;
+    const reportPath = getTaskReportPath(directory, feature, task);
+    const reportReferences = {
+      reportReference: taskService.getLatestReportReference(feature, task) ?? reportPath,
+      historyPath: path.join(path.dirname(reportPath), 'reports'),
+    };
     const previousAttempt = previousStatus === 'failed' || previousStatus === 'partial'
       ? {
           status: previousStatus,
+          ...reportReferences,
           summary: taskInfo.summary?.trim() ? taskInfo.summary : undefined,
-          report: blankToUndefined(readText(getTaskReportPath(directory, feature, task)) ?? undefined),
+          report: taskInfo.summary?.trim() ? undefined : blankToUndefined(readText(reportPath) ?? undefined),
           error: persistedError,
         }
       : undefined;
@@ -1997,6 +2003,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       spec: specContent,
       continueFrom: continueFrom === 'blocked' ? {
         status: 'blocked',
+        ...reportReferences,
         previousSummary: blankToUndefined(taskInfo.summary),
         decision: decision!,
       } : undefined,
@@ -5038,7 +5045,7 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
       hive_worktree_commit: tool({
-        description: 'Complete task: commit changes to branch, write report. Supports blocked/failed/partial status for worker communication. Returns JSON with ok/terminal semantics for worker control flow.',
+        description: 'Record worker handoff: commit accepted changes and preserve immutable report history with latest report.md navigation. Blocked reports perform no Git operation. Worker claims are not verification or integration evidence. Consolidate current cross-attempt knowledge into existing task-tagged durable context with report references; historical claims are not active instructions. Returns JSON with ok/terminal semantics.',
         args: {
           task: tool.schema.string().describe('Task folder name'),
           summary: tool.schema.string().describe('Summary of what was done'),
@@ -5116,6 +5123,14 @@ NEXT: Ask your first clarifying question about this feature.`;
 
           // Handle blocked status - don't commit, just update status
           if (status === 'blocked') {
+            const { reportPath, reportReference } = taskService.writeReportWithReference(feature, task, [
+              `# Task Report: ${task}`, '', `**Feature:** ${feature}`,
+              `**Recorded:** ${new Date().toISOString()}`,
+              '**Worker-reported outcome:** blocked', '',
+              'No Git operation was requested for this blocked handoff.', '',
+              '## Summary', '', summary, '', '## Worker-reported blocker', '',
+              JSON.stringify(blocker ?? null, null, 2), '',
+            ].join('\n'));
             taskService.update(feature, task, {
               status: 'blocked',
               summary,
@@ -5129,6 +5144,8 @@ NEXT: Ask your first clarifying question about this feature.`;
               terminal: true,
               status: 'blocked',
               reason: 'user_decision_required',
+              reportPath,
+              reportReference,
               feature,
               task,
               taskState: 'blocked',
@@ -5198,14 +5215,13 @@ NEXT: Ask your first clarifying question about this feature.`;
 
           const diff = await worktreeService.getDiff(feature, task);
 
-          const statusLabel = status === 'completed' ? 'success' : status;
           const reportLines: string[] = [
             `# Task Report: ${task}`,
             '',
             `**Feature:** ${feature}`,
-            `**Completed:** ${new Date().toISOString()}`,
-            `**Status:** ${statusLabel}`,
-            `**Commit:** ${commitResult.sha || 'none'}`,
+            `**Recorded:** ${new Date().toISOString()}`,
+            `**Worker-reported outcome:** ${status}`,
+            `**${commitResult.committed ? 'Created commit' : 'Observed HEAD (no new commit)'}:** ${commitResult.sha || 'none'}`,
             '',
             '---',
             '',
@@ -5238,8 +5254,8 @@ NEXT: Ask your first clarifying question about this feature.`;
             reportLines.push('---', '', '## Changes', '', '_No file changes detected_', '');
           }
 
-          const reportPath = taskService.writeReport(feature, task, reportLines.join('\n'));
-          const aggregateBranchDiff = buildAggregateBranchDiff(diff, reportPath);
+          const { reportPath, reportReference } = taskService.writeReportWithReference(feature, task, reportLines.join('\n'));
+          const aggregateBranchDiff = buildAggregateBranchDiff(diff, reportReference);
 
           const finalStatus = status === 'completed' ? 'done' : status;
           taskService.update(feature, task, {
@@ -5270,6 +5286,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             worktreePath: worktree?.path,
             branch: worktree?.branch,
             reportPath,
+            reportReference,
             ...(traceTaskId ? { traceTaskId } : {}),
             message: `Task "${task}" ${status}.`,
             nextAction:

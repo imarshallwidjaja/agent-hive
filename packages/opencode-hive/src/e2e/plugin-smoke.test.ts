@@ -3662,7 +3662,15 @@ Do it
       },
       toolContext,
     );
-    const blocked = JSON.parse(blockedRaw as string) as { message?: string; nextAction?: string };
+    const blocked = JSON.parse(blockedRaw as string) as { message?: string; nextAction?: string; reportPath: string; reportReference: string };
+    const blockedReport = fs.readFileSync(blocked.reportReference, 'utf8');
+    expect(blockedReport).toContain(`\n## Summary\n\n${summary}\n`);
+    expect(blocked.reportReference).not.toBe(blocked.reportPath);
+    expect(blockedReport).toContain('Authorization policy is ambiguous.');
+    expect(blockedReport).toContain('**Worker-reported outcome:** blocked');
+    expect(blockedReport).toContain('No Git operation was requested');
+    expect(blockedReport).not.toContain('**Created commit:**');
+    expect(fs.existsSync(blocked.reportPath)).toBe(true);
     expect(blocked.message).toMatch(/launch a new worker.*existing worktree/i);
     expect(blocked.nextAction).toMatch(/fresh worker.*existing worktree/i);
     expect(blocked.message).not.toMatch(/resume/i);
@@ -3781,8 +3789,9 @@ Do it
       expect(prompt).toContain('## Previous Attempt');
       expect(prompt).toContain(`**Status**: ${attemptStatus}`);
       expect(prompt).toContain(`**Summary**: ${summary}`);
-      expect(prompt).toContain('**Report**:');
-      expect(prompt).toContain(`# Task Report: ${FIRST_TASK}`);
+      expect(prompt).toContain('Full historical report');
+      expect(prompt).toContain('/reports/1.md');
+      expect(prompt).not.toContain(`# Task Report: ${FIRST_TASK}`);
       expect(prompt).toContain('**Remaining Assignment**: Continue the mission below');
       expect(prompt).toContain('## Your Mission');
       expect(prompt).not.toContain('**Error**: Unknown error');
@@ -3924,7 +3933,10 @@ Do it
     const commitResult = JSON.parse(commitRaw as string) as {
       summary: string;
       reportPath: string;
+      reportReference: string;
     };
+    expect(fs.readFileSync(commitResult.reportReference, 'utf8')).toContain(`\n## Summary\n\n${workerSummary}\n`);
+    expect(commitResult.reportReference).not.toBe(commitResult.reportPath);
     const taskStatusPath = path.join(
       testRoot,
       '.hive',
@@ -3953,7 +3965,7 @@ Do it
       insertions: 3,
       deletions: 0,
       areas: ['packages', 'root-note.txt'],
-      report: '.hive/features/01_commit-summary-diff-feature/tasks/01-first-task/report.md',
+      report: '.hive/features/01_commit-summary-diff-feature/tasks/01-first-task/reports/1.md',
     });
     expect(firstStoredStatus.aggregateBranchDiff?.report).not.toBe(commitResult.reportPath);
 
@@ -4016,7 +4028,14 @@ Do it
     expect(retryCommit.summary).toBe(retryWorkerSummary);
     expect(finalStoredStatus.baseCommit).toBe(firstStoredStatus.baseCommit);
     expect(finalStoredStatus.summary).toBe(retryWorkerSummary);
-    expect(finalStoredStatus.aggregateBranchDiff).toEqual(firstStoredStatus.aggregateBranchDiff);
+    expect(finalStoredStatus.aggregateBranchDiff).toEqual({
+      ...firstStoredStatus.aggregateBranchDiff,
+      report: '.hive/features/01_commit-summary-diff-feature/tasks/01-first-task/reports/2.md',
+    });
+    const history = path.join(path.dirname(taskStatusPath), 'reports');
+    expect(fs.readFileSync(path.join(history, '1.md'), 'utf8')).toContain(workerSummary);
+    expect(fs.readFileSync(path.join(history, '2.md'), 'utf8')).toContain(retryWorkerSummary);
+    expect(fs.readFileSync(commitResult.reportPath, 'utf8')).toContain('Observed HEAD (no new commit)');
   });
 
   it('renders structured aggregate metadata after a budgeted long worker summary', async () => {
@@ -4068,7 +4087,7 @@ Do it
     expect(completedSection).toContain('...[truncated]');
     expect(completedSection).toContain(
       'Aggregate branch diff at commit time: 1 file(s), +1/-0; areas: long-summary-note.txt; '
-        + 'report: .hive/features/01_commit-long-summary-feature/tasks/01-first-task/report.md',
+        + 'report: .hive/features/01_commit-long-summary-feature/tasks/01-first-task/reports/1.md',
     );
     expect(completedSection.indexOf('...[truncated]')).toBeLessThan(
       completedSection.indexOf('Aggregate branch diff at commit time:'),
@@ -4142,7 +4161,7 @@ Do it
       insertions: 0,
       deletions: 0,
       areas: [],
-      report: '.hive/features/01_commit-advisory-fallback-feature/tasks/01-first-task/report.md',
+      report: '.hive/features/01_commit-advisory-fallback-feature/tasks/01-first-task/reports/1.md',
     });
 
   });

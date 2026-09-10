@@ -15,6 +15,7 @@ import {
   readJson,
   writeJson,
   writeJsonAtomic,
+  writeAtomic,
   acquireLockSync,
   patchJsonLockedSync,
   deepMerge,
@@ -817,9 +818,67 @@ export class TaskService {
   }
 
   writeReport(featureName: string, taskFolder: string, report: string): string {
+    return this.writeReportWithReference(featureName, taskFolder, report).reportPath;
+  }
+
+  writeReportWithReference(featureName: string, taskFolder: string, report: string): { reportPath: string; reportReference: string } {
     const reportPath = getTaskReportPath(this.projectRoot, featureName, taskFolder);
-    writeText(reportPath, report);
-    return reportPath;
+    const release = acquireLockSync(reportPath);
+    try {
+      const historyPath = `${getTaskPath(this.projectRoot, featureName, taskFolder)}/reports`;
+      ensureDir(historyPath);
+      const revisions = fs.readdirSync(historyPath).filter(name => /^\d+\.md$/.test(name));
+      let revision = Math.max(0, ...revisions.map(name => Number.parseInt(name, 10)));
+      // Preserve legacy bytes before the first replacement. A failed latest write
+      // may leave an extra historical copy; it must never destroy old evidence.
+      if (revision === 0 && fileExists(reportPath)) {
+        const legacyPath = `${historyPath}/1.md`;
+        const legacyDescriptor = fs.openSync(legacyPath, 'wx');
+        try {
+          fs.writeFileSync(legacyDescriptor, fs.readFileSync(reportPath));
+        } catch (error) {
+          fs.unlinkSync(legacyPath);
+          throw error;
+        } finally {
+          fs.closeSync(legacyDescriptor);
+        }
+        revision = 1;
+      }
+      const name = `${revision + 1}.md`;
+      const recent = [...revisions, ...(revision === 1 && revisions.length === 0 ? ['1.md'] : []), name]
+        .sort((a, b) => Number.parseInt(b, 10) - Number.parseInt(a, 10));
+      const navigation = [
+        '', '---', '', '## Report history', '',
+        'Historical worker handoff snapshot; not current task state, independent verification, or integration evidence.',
+        `Immutable report: [revision ${revision + 1}](reports/${name}).`,
+        `Recent revisions: ${recent.slice(0, 5).map(file => `[${file}](reports/${file})`).join(', ')}.`,
+        `History: [reports/](reports/) (${Math.max(0, recent.length - 5)} older revisions omitted).`,
+        '',
+      ].join('\n');
+      const content = report + navigation;
+      const immutablePath = `${historyPath}/${name}`;
+      // Exclusive creation prevents accidental replacement of historical evidence.
+      const descriptor = fs.openSync(immutablePath, 'wx');
+      try {
+        fs.writeFileSync(descriptor, report + navigation.replaceAll('](reports/)', '](./)').replaceAll('](reports/', ']('));
+      } catch (error) {
+        fs.unlinkSync(immutablePath);
+        throw error;
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      writeAtomic(reportPath, content);
+      return { reportPath, reportReference: immutablePath };
+    } finally {
+      release();
+    }
+  }
+
+  getLatestReportReference(featureName: string, taskFolder: string): string | null {
+    const reportPath = getTaskReportPath(this.projectRoot, featureName, taskFolder);
+    const report = readText(reportPath);
+    const reference = report ? [...report.matchAll(/^Immutable report: \[revision \d+\]\(reports\/(\d+\.md)\)\.$/gm)].at(-1)?.[1] : undefined;
+    return reference ? `${getTaskPath(this.projectRoot, featureName, taskFolder)}/reports/${reference}` : null;
   }
 
   private listFolders(featureName: string): string[] {

@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { TaskService, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
@@ -56,6 +56,75 @@ describe("TaskService", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('preserves legacy bytes and immutable narratives across report revisions', () => {
+    setupFeature('reports');
+    setupTask('reports', '01-task');
+    const taskPath = path.join(TEST_DIR, '.hive/features/reports/tasks/01-task');
+    const legacy = 'legacy\r\nexact bytes\n';
+    fs.writeFileSync(path.join(taskPath, 'report.md'), legacy);
+    const firstResult = service.writeReportWithReference('reports', '01-task', 'first exact narrative');
+    service.writeReport('reports', '01-task', 'second exact narrative');
+    const first = fs.readFileSync(firstResult.reportReference, 'utf8');
+    expect(firstResult.reportPath).toBe(path.join(taskPath, 'report.md'));
+    expect(firstResult.reportReference).toBe(path.join(taskPath, 'reports/2.md'));
+    expect(fs.readFileSync(path.join(taskPath, 'reports/1.md'), 'utf8')).toBe(legacy);
+    expect(first.split('\n---\n')[0]).toBe('first exact narrative');
+    expect(first).not.toContain('second exact narrative');
+    expect(service.getLatestReportReference('reports', '01-task')).toEndWith('/reports/3.md');
+    expect(fs.readFileSync(path.join(taskPath, 'report.md'), 'utf8')).toContain('second exact narrative');
+  });
+
+  it('serializes concurrent report writers without overwriting revisions', async () => {
+    setupFeature('reports');
+    setupTask('reports', '01-task');
+    const source = path.join(import.meta.dir, 'taskService.ts');
+    const writers = ['one', 'two'].map(narrative => Bun.spawn([process.execPath, '-e',
+      `import { TaskService } from ${JSON.stringify(source)}; new TaskService(${JSON.stringify(TEST_DIR)}).writeReport('reports', '01-task', ${JSON.stringify(narrative)});`,
+    ], { stdout: 'pipe', stderr: 'pipe' }));
+    expect(await Promise.all(writers.map(writer => writer.exited))).toEqual([0, 0]);
+    const history = path.join(TEST_DIR, '.hive/features/reports/tasks/01-task/reports');
+    expect(fs.readdirSync(history).sort()).toEqual(['1.md', '2.md']);
+    const narratives = ['1.md', '2.md'].map(file => fs.readFileSync(path.join(history, file), 'utf8').split('\n')[0]).sort();
+    expect(narratives).toEqual(['one', 'two']);
+  });
+
+  it('preserves latest content and releases its lock when atomic replacement fails', () => {
+    setupFeature('reports');
+    setupTask('reports', '01-task');
+    const latest = service.writeReport('reports', '01-task', 'accepted');
+    const before = fs.readFileSync(latest, 'utf8');
+    const rename = spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('rename denied'); });
+    try {
+      expect(() => service.writeReport('reports', '01-task', 'later')).toThrow('rename denied');
+    } finally {
+      rename.mockRestore();
+    }
+    expect(fs.readFileSync(latest, 'utf8')).toBe(before);
+    expect(service.getLatestReportReference('reports', '01-task')).toEndWith('/reports/1.md');
+    expect(fs.existsSync(getLockPath(latest))).toBe(false);
+    service.writeReport('reports', '01-task', 'retry');
+    expect(service.getLatestReportReference('reports', '01-task')).toEndWith('/reports/3.md');
+  });
+
+  it('preserves legacy latest when its historical copy fails', () => {
+    setupFeature('reports');
+    setupTask('reports', '01-task');
+    const latest = path.join(TEST_DIR, '.hive/features/reports/tasks/01-task/report.md');
+    fs.writeFileSync(latest, 'legacy');
+    const originalWrite = fs.writeFileSync;
+    const copy = spyOn(fs, 'writeFileSync').mockImplementation(((target: any, ...args: any[]) => {
+      if (typeof target === 'number') throw new Error('copy denied');
+      return (originalWrite as any)(target, ...args);
+    }) as typeof fs.writeFileSync);
+    try {
+      expect(() => service.writeReport('reports', '01-task', 'later')).toThrow('copy denied');
+    } finally {
+      copy.mockRestore();
+    }
+    expect(fs.readFileSync(latest, 'utf8')).toBe('legacy');
+    expect(fs.existsSync(getLockPath(latest))).toBe(false);
   });
 
   describe("update", () => {

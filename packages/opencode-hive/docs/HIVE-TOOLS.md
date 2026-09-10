@@ -65,7 +65,8 @@
 
 #### hive_worktree_commit input notes
 
-- `summary`: task/report summary.
+- `summary`: exact worker task/report claims, not independent verification. Accepted handoffs append immutable `reports/<revision>.md` and atomically replace the latest `report.md`; blocked handoffs also write reports without Git operations. Additive `reportReference` points to the immutable copy; `reportPath` retains latest navigation. Rejected Git operations do not write accepted reports. File writes are not a Git/status transaction. Legacy latest bytes are preserved on first replacement; earlier overwritten history is unavailable.
+- Retry context bounds summary or separately labelled legacy excerpt to 3,000 characters and error to 1,000, retaining explicit report/history references. Current operator decisions are separate and untruncated. Reports remain full historical snapshots after reopening. Consolidate current cross-attempt knowledge into existing task-tagged durable context with report references; do not promote historical claims into active instructions.
 - `message`: required whenever the worktree has changes to commit, including `completed`, `failed`, and `partial` handoffs.
 - Every created commit message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
 - `message` may be omitted only when the worktree has no changes to commit. There is no default or derived commit message.

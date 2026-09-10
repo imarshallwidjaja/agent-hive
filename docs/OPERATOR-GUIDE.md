@@ -153,6 +153,12 @@ After a worker fails or reports partial progress, start again through the normal
 
 When a worker is blocked, inspect the blocker and make the operator decision. The blocked path, [`hive_worktree_create`](../packages/opencode-hive/docs/HIVE-TOOLS.md#worktree-4-tools), launches a fresh worker in the existing worktree.
 
+Accepted worker handoffs, including blocked handoffs without a Git operation, retain their full narratives in task-local `reports/<revision>.md`. `report.md` remains the latest entry point and links five recent revisions plus the history directory. Revisions count report writes, not attempts or commits. Existing legacy `report.md` bytes are preserved on first replacement; overwritten reports from before this change cannot be recovered.
+
+Reports capture worker claims and branch changes at handoff, not independently verified results, current task state, or merged state. Reopening a task leaves the historical snapshot intact. A report write failure preserves the previous latest report; an immutable copy may remain if latest replacement fails. Git, report storage, and status updates are separate operations.
+
+Retries automatically include at most 3,000 characters of summary (or a separately labelled legacy report excerpt) and 1,000 characters of error, with report references for explicit reading. Blocked continuation bounds previous progress to 3,000 characters and preserves the current operator decision verbatim. Consolidate current cross-attempt knowledge into existing task-tagged durable context with report references; historical claims are evidence, not active instructions.
+
 ## Inspect context and constraints in VS Code
 
 The Arkive extension keeps its three native views. In Features, expand Context to inspect Markdown documents, classifications, sizes, inclusion policy and durable budgets. Evidence exclusion applies to automatic prompt injection; it is not a privacy guarantee. `overview.md` still opens normally and supports review comments. Direct editor saves bypass managed context revisions and mutation-time caps.
