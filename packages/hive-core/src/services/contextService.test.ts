@@ -228,18 +228,6 @@ describe('ContextService reserved overview context', () => {
     ]);
   });
 
-  it('excludes overview from execution context listings', () => {
-    const featureName = 'execution-context';
-    setupFeature(featureName);
-
-    seedLegacy(featureName, 'overview', 'Human-facing summary');
-    seedLegacy(featureName, 'decisions', 'Technical decisions');
-
-    const executionContext = service.listExecutionContext(featureName);
-
-    expect(executionContext?.map((file: { name: string }) => file.name)).toEqual(['decisions']);
-  });
-
   it('preserves reserved handling for overview, draft, and execution decisions', () => {
     const featureName = 'classified-context';
     setupFeature(featureName);
@@ -262,22 +250,6 @@ describe('ContextService reserved overview context', () => {
     ]);
   });
 
-  it('excludes overview from network context while preserving durable freshness metadata', () => {
-    const featureName = 'network-context';
-    setupFeature(featureName);
-
-    seedLegacy(featureName, 'overview', 'Human-facing summary');
-    seedLegacy(featureName, 'draft', 'Scratchpad notes');
-    seedLegacy(featureName, 'execution-decisions', 'Operational note');
-    seedLegacy(featureName, 'learnings', 'Durable learning');
-    seedLegacy(featureName, 'research', 'Durable research');
-
-    const networkContext = service.listNetworkContext(featureName);
-
-    expect(new Set(networkContext.map(file => file.name))).toEqual(new Set(['learnings', 'research']));
-    expect(networkContext.every(file => file.includeInNetwork)).toBe(true);
-    expect(networkContext.every(file => typeof file.updatedAt === 'string' && file.updatedAt.length > 0)).toBe(true);
-  });
 });
 
 describe('ContextService managed context', () => {
@@ -716,9 +688,6 @@ describe('ContextService managed context', () => {
     try {
       expect(service.list('locked-reads')).toHaveLength(1);
       expect(service.getOverview('locked-reads')).toBeNull();
-      expect(service.listExecutionContext('locked-reads')).toHaveLength(1);
-      expect(service.listNetworkContext('locked-reads')).toHaveLength(1);
-      expect(service.compile('locked-reads')).toContain('snapshot bytes');
       expect(service.stats('locked-reads').count).toBe(1);
       expect(service.readSummary('locked-reads').files).toHaveLength(1);
       expect(service.readContent('locked-reads', 'notes')?.file.content).toBe(durable('snapshot bytes'));
@@ -726,7 +695,7 @@ describe('ContextService managed context', () => {
       readdirSpy.mockRestore();
     }
 
-    expect(observations).toBeGreaterThanOrEqual(8);
+    expect(observations).toBeGreaterThanOrEqual(5);
   });
 
   it('creates evidence without exposing it to execution or network context', () => {
@@ -734,8 +703,7 @@ describe('ContextService managed context', () => {
     service.create('evidence', 'verification-log', 'raw output', { kind: 'evidence', task: '01-test' });
     service.create('evidence', 'contract', durable('current contract'));
 
-    expect(service.listExecutionContext('evidence').map(file => file.name)).toEqual(['contract']);
-    expect(service.listNetworkContext('evidence').map(file => file.name)).toEqual(['contract']);
+    expect(service.readCatalog('evidence').files.map(file => file.name)).toEqual(['contract']);
     expect(service.readContent('evidence', 'verification-log')?.file).toMatchObject({
       kind: 'evidence',
       task: '01-test',
@@ -913,26 +881,4 @@ describe('ContextService managed context', () => {
     expect(service.read('cross-cap-transition', 'raw-log')).toBe('y');
   });
 
-  it('orders durable execution context by recent update then name', () => {
-    setupFeature('ordering');
-    service = new ContextService(PROJECT_ROOT, (() => {
-      const timestamps = [
-        '2026-09-07T01:00:00.000Z',
-        '2026-09-07T02:00:00.000Z',
-        '2026-09-07T02:00:00.000Z',
-        '2026-09-07T03:00:00.000Z',
-      ];
-      return () => new Date(timestamps.shift()!);
-    })());
-    const older = service.create('ordering', 'older', durable('old'));
-    service.create('ordering', 'alpha', durable('alpha'));
-    service.create('ordering', 'beta', durable('beta'));
-    service.replace('ordering', 'older', durable('newest'), 3, older.file.contentHash);
-
-    expect(service.listExecutionContext('ordering').map(file => file.name)).toEqual([
-      'older',
-      'alpha',
-      'beta',
-    ]);
-  });
 });

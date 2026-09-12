@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -797,6 +797,181 @@ describe("WorktreeService composite workspaces", () => {
     expect(fetched!.branch).toBe(created.branch);
   });
 
+  it("rejects a copied same-repository pointer to a sibling administration entry", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const selectedPath = created.repos!.api.path;
+    const selectedPointer = await fs.readFile(path.join(selectedPath, '.git'), 'utf8');
+    const siblingPath = path.join(fx.projectRoot, 'api-sibling');
+    await fx.repos.api.git.raw(['worktree', 'add', '-b', 'sibling-registration', siblingPath, 'HEAD']);
+    const siblingPointer = await fs.readFile(path.join(siblingPath, '.git'), 'utf8');
+    const workspaceBytes = await fs.readFile(path.join(selectedPath, 'README.md'));
+
+    await fs.writeFile(path.join(selectedPath, '.git'), siblingPointer, 'utf8');
+    const adminPaths = [selectedPointer, siblingPointer].map(pointer => pointer.trim().slice('gitdir: '.length));
+    const preservedPaths = [path.join(selectedPath, '.git'), path.join(selectedPath, 'README.md'),
+      path.join(created.path, 'workspace.json'),
+      ...adminPaths.flatMap(admin => ['HEAD', 'index', 'commondir', 'gitdir'].map(name => path.join(admin, name)))];
+    const before = await Promise.all(preservedPaths.map(file => fs.readFile(file)));
+    const forbiddenAccess: string[] = [];
+    const spies = ['access', 'stat', 'lstat', 'readFile', 'realpath', 'readdir', 'open'].map(name => {
+      const original = (fs as any)[name];
+      return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+        if (String(file) === siblingPath || String(file).startsWith(`${siblingPath}${path.sep}`)) forbiddenAccess.push(`${name}:${file}`);
+        if (String(file).startsWith(`${selectedPath}${path.sep}`) && String(file) !== path.join(selectedPath, '.git')) forbiddenAccess.push(`${name}:${file}`);
+        return original(file, ...args);
+      });
+    });
+    const gitPaths: string[] = [];
+    const gitCommands: unknown[] = [];
+    const getGit = (fx.service as any).getGit.bind(fx.service);
+    const gitSpy = spyOn(fx.service as any, 'getGit').mockImplementation((cwd: string) => {
+      gitPaths.push(cwd);
+      const git = getGit(cwd);
+      return new Proxy(git, { get(target, key) {
+        if (key === 'raw') return (...args: unknown[]) => { gitCommands.push([cwd, ...args]); return target.raw(...args); };
+        return Reflect.get(target, key);
+      } });
+    });
+    try {
+      await expect(fx.service.get(fx.feature, fx.task)).rejects.toThrow(/backlink does not select this exact worktree/);
+      expect(forbiddenAccess).toEqual([]);
+      expect(gitPaths).toEqual([fx.repos.api.path]);
+      expect(gitCommands).toEqual([[fx.repos.api.path, ['rev-parse', '--git-common-dir']]]);
+    } finally {
+      spies.forEach(spy => spy.mockRestore());
+      gitSpy.mockRestore();
+    }
+    expect(await Promise.all(preservedPaths.map(file => fs.readFile(file)))).toEqual(before);
+
+    expect(await fs.readFile(path.join(selectedPath, 'README.md'))).toEqual(workspaceBytes);
+    expect(await fs.readFile(path.join(siblingPath, '.git'), 'utf8')).toBe(siblingPointer);
+    await fs.writeFile(path.join(selectedPath, '.git'), selectedPointer, 'utf8');
+  });
+
+  it.each(['legacy', 'workspace', 'repository', 'repos-namespace', 'feature-namespace'])('rejects a relocated %s symlink before target access or Git', async (kind) => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const service = kind === 'legacy'
+      ? new WorktreeService({ baseDir: fx.repos.api.path, hiveDir: path.join(fx.projectRoot, '.hive-legacy') })
+      : fx.service;
+    const created = await service.create(fx.feature, fx.task);
+    const selected = created.repos?.api.path ?? created.path;
+    const pointer = await fs.readFile(path.join(selected, '.git'), 'utf8');
+    const admin = pointer.trim().slice('gitdir: '.length);
+    const linkPath = kind === 'repository' ? selected
+      : kind === 'repos-namespace' ? path.dirname(selected)
+      : kind === 'feature-namespace' ? path.dirname(created.path) : created.path;
+    const relocated = path.join(fx.projectRoot, 'relocated-workspace');
+    const preserved = [path.join(selected, '.git'), path.join(selected, 'README.md'),
+      ...(created.repos ? [path.join(created.path, 'workspace.json')] : []),
+      ...['HEAD', 'index', 'commondir', 'gitdir'].map(name => path.join(admin, name))];
+    const bytes = await Promise.all(preserved.map(file => fs.readFile(file)));
+    await fs.rename(linkPath, relocated);
+    await fs.symlink(relocated, linkPath);
+    const forbidden: string[] = [];
+    const spies = ['access', 'stat', 'lstat', 'readFile', 'realpath', 'readdir', 'open'].map(name => {
+      const original = (fs as any)[name];
+      return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+        const candidate = String(file);
+        if (candidate.startsWith(relocated) || candidate.startsWith(`${linkPath}${path.sep}`)
+          || (candidate === linkPath && name !== 'lstat')) forbidden.push(`${name}:${candidate}`);
+        return original(file, ...args);
+      });
+    });
+    const gitSpy = spyOn(service as any, 'getGit');
+    try {
+      await expect(service.get(fx.feature, fx.task)).rejects.toThrow(/path contains a symlink/);
+      await expect(service.create(fx.feature, fx.task)).rejects.toThrow(/path contains a symlink/);
+      expect(forbidden).toEqual([]);
+      expect(gitSpy).not.toHaveBeenCalled();
+    } finally {
+      spies.forEach(spy => spy.mockRestore());
+      gitSpy.mockRestore();
+    }
+    expect(await Promise.all(preserved.map(file => fs.readFile(file)))).toEqual(bytes);
+    expect(await fs.readlink(linkPath)).toBe(relocated);
+  });
+
+  it("accepts a trusted linked manifest repository whose common directory is external to that repository path", async () => {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-linked-manifest-'));
+    tempDirs.push(projectRoot);
+    const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-external-common-'));
+    tempDirs.push(externalRoot);
+    const source = await makeRepo(externalRoot, 'source-api');
+    const linkedPath = path.join(projectRoot, 'linked-api');
+    await source.git.raw(['worktree', 'add', '-b', 'linked-source', linkedPath, 'HEAD']);
+    const feature = 'linked-feature';
+    const task = '01-linked-task';
+    const taskPath = path.join(projectRoot, '.hive', 'features', `01_${feature}`, 'tasks', task);
+    await fs.mkdir(taskPath, { recursive: true });
+    await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ status: 'pending', origin: 'plan', repoIds: ['api'] }));
+    const service = new WorktreeService({
+      baseDir: projectRoot,
+      hiveDir: path.join(projectRoot, '.hive'),
+      repositoryResolver: { resolveRepositories: () => [{ id: 'api', path: linkedPath, root: linkedPath }] },
+      taskRepoResolver: { resolveTaskRepoIds: () => ['api'] },
+    });
+
+    const created = await service.create(feature, task);
+    const commonDirectoryRaw = (await source.git.raw(['rev-parse', '--git-common-dir'])).trim();
+    const commonDirectory = await fs.realpath(path.resolve(source.path, commonDirectoryRaw));
+
+    expect(created.mode).toBe('composite');
+    expect(commonDirectory.startsWith(`${linkedPath}${path.sep}`)).toBe(false);
+    expect(commonDirectory.startsWith(`${projectRoot}${path.sep}`)).toBe(false);
+    expect((await service.get(feature, task))?.repos?.api.path).toBe(created.repos?.api.path);
+  });
+
+  it.each(['commondir', 'gitdir', 'entry-symlink', 'metadata-symlink', 'topology'])('rejects %s corruption before suspect Git or former-path access', async (fault) => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const selected = created.repos!.api.path;
+    const pointerPath = path.join(selected, '.git');
+    const pointer = await fs.readFile(pointerPath, 'utf8');
+    const admin = pointer.trim().slice('gitdir: '.length);
+    const former = path.join(fx.projectRoot, 'former');
+    await fs.mkdir(former);
+    await fs.writeFile(path.join(former, 'commondir'), '../..');
+    if (fault === 'commondir' || fault === 'gitdir') await fs.writeFile(path.join(admin, fault), former);
+    if (fault === 'entry-symlink') {
+      await fs.symlink(former, `${admin}-escape`);
+      await fs.writeFile(pointerPath, `gitdir: ${admin}-escape\n`);
+    }
+    if (fault === 'metadata-symlink') {
+      await fs.unlink(path.join(admin, 'commondir'));
+      await fs.symlink(path.join(former, 'commondir'), path.join(admin, 'commondir'));
+    }
+    if (fault === 'topology') {
+      const file = path.join(created.path, 'workspace.json');
+      const manifest = JSON.parse(await fs.readFile(file, 'utf8'));
+      manifest.repos.api.repoRoot = former;
+      await fs.writeFile(file, JSON.stringify(manifest));
+    }
+    const forbidden: string[] = [];
+    const spies = ['access', 'stat', 'lstat', 'readFile', 'realpath', 'readdir', 'open'].map(name => {
+      const original = (fs as any)[name];
+      return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+        if (String(file).startsWith(former)
+          || (fault === 'metadata-symlink' && name === 'readFile' && String(file) === path.join(admin, 'commondir'))) forbidden.push(`${name}:${file}`);
+        return original(file, ...args);
+      });
+    });
+    const gitPaths: string[] = [];
+    const getGit = (fx.service as any).getGit.bind(fx.service);
+    const gitSpy = spyOn(fx.service as any, 'getGit').mockImplementation((cwd: string) => {
+      gitPaths.push(cwd);
+      return getGit(cwd);
+    });
+    try {
+      await expect(fx.service.get(fx.feature, fx.task)).rejects.toThrow(/Worktree linkage preflight failed/);
+      expect(forbidden).toEqual([]);
+      expect(gitPaths).toEqual(fault === 'topology' ? [] : [fx.repos.api.path]);
+    } finally {
+      spies.forEach(spy => spy.mockRestore());
+      gitSpy.mockRestore();
+    }
+  });
+
   it("remove cleans up all per-repo worktrees and the composite root", async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const wt = await fx.service.create(fx.feature, fx.task);
@@ -1122,7 +1297,7 @@ describe("WorktreeService composite commit aggregation", () => {
     expect(result.message).toBe(testCommitMessage('feat: only second'));
   });
 
-  it("reports partial=true and error when a later repo commit fails after an earlier success", async () => {
+  it("rejects a missing later worktree before committing an earlier repository", async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const wt = await fx.service.create(fx.feature, fx.task);
     await fs.writeFile(path.join(wt.repos!['api'].path, 'a.txt'), 'a\n', 'utf-8');
@@ -1131,33 +1306,22 @@ describe("WorktreeService composite commit aggregation", () => {
     // Sabotage web-ui by removing its worktree directory after staging would otherwise succeed.
     await fs.rm(wt.repos!['web-ui'].path, { recursive: true, force: true });
 
-    const result = await fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: partial fail'));
-
-    expect(result.committed).toBe(false);
-    expect(result.partial).toBe(true);
-    expect(result.error).toBeDefined();
-    expect(result.repos!['api'].committed).toBe(true);
-    expect(result.repos!['web-ui'].committed).toBe(false);
+    const apiHead = (await simpleGit(wt.repos!.api.path).revparse(['HEAD'])).trim();
+    await expect(fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: partial fail')))
+      .rejects.toThrow(/linkage preflight failed/);
+    expect((await simpleGit(wt.repos!.api.path).revparse(['HEAD'])).trim()).toBe(apiHead);
+    expect((await simpleGit(wt.repos!.api.path).status()).not_added).toContain('a.txt');
   });
 
-  it('uses the first failed repo message/sha/error when an earlier repo is unchanged and a later repo fails', async () => {
+  it('propagates missing-worktree preflight failure instead of returning a commit fallback', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const wt = await fx.service.create(fx.feature, fx.task);
     // api stays clean; only web-ui would have changes, but its worktree is removed.
     await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
     await fs.rm(wt.repos!['web-ui'].path, { recursive: true, force: true });
 
-    const result = await fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: later fail'));
-
-    expect(result.committed).toBe(false);
-    expect(result.partial).toBeUndefined();
-    expect(result.repos!['api']).toMatchObject({ committed: false, message: 'No changes to commit' });
-    expect(result.repos!['web-ui'].committed).toBe(false);
-    expect(result.repos!['web-ui'].message).not.toBe('No changes to commit');
-    expect(result.error).toContain('web-ui');
-    expect(result.message).toBe(result.repos!['web-ui'].message);
-    expect(result.sha).toBe(result.repos!['web-ui'].sha);
-    expect(result.message).not.toBe('No changes to commit');
+    await expect(fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: later fail')))
+      .rejects.toThrow(/linkage preflight failed/);
   });
 
   it("preserves legacy single-repo commit shape when no manifest is configured", async () => {

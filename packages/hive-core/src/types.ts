@@ -59,6 +59,29 @@ export interface WorkerSession {
   messageCount?: number;
 }
 
+export const WORKER_ASSIGNMENT_FORMAT = 'hive-worker-assignment/v1' as const;
+
+export interface WorkerAssignmentDescriptor {
+  format: typeof WORKER_ASSIGNMENT_FORMAT;
+  projectRoot: string;
+  featureName: string;
+  taskFolder: string;
+  attempt: number;
+  /** Project-root-relative path to the immutable assignment bytes. */
+  locator: string;
+  /** SHA-256 of the raw assignment bytes. */
+  contentHash: string;
+}
+
+export interface WorkerAttemptRecord {
+  attempt: number;
+  idempotencyKey: string;
+  state: 'allocated' | 'published' | 'associated' | 'publication_failed';
+  assignment?: WorkerAssignmentDescriptor;
+  workerSessionId?: string;
+  failure?: string;
+}
+
 export interface ManualTaskMetadata {
   goal?: string;
   description?: string;
@@ -105,6 +128,10 @@ export interface TaskStatus {
   workerAttempt?: number;
   /** Worker session info for background execution */
   workerSession?: WorkerSession;
+  /** Immutable descriptor for the currently published assignment. */
+  workerAssignment?: WorkerAssignmentDescriptor;
+  /** Append-only launch-attempt state, including failed publications. */
+  workerAttempts?: WorkerAttemptRecord[];
   /**
    * Task dependencies expressed as task folder names (e.g., '01-setup', '02-core-api').
    * A task cannot start until all its dependencies have status 'done'.
@@ -280,6 +307,10 @@ export interface SessionInfo {
   duplicatedFromSessionId?: string;
   featureName?: string;
   taskFolder?: string;
+  projectRoot?: string;
+  workerAssignment?: WorkerAssignmentDescriptor;
+  assignmentSourceSessionId?: string;
+  adHocRunId?: string;
   agent?: string;
   baseAgent?: string;
   sessionKind?: SessionKind;

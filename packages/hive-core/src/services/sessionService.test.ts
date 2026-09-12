@@ -326,6 +326,81 @@ describe('SessionService', () => {
 
   });
 
+  describe('bindWorkerAssignment', () => {
+    it('keeps authenticated ad-hoc run identity immutable across ordinary patches and feature binding', () => {
+      const bound = service.trackGlobal('adhoc', { parentSessionId: 'parent', adHocRunId: 'run-1', projectRoot: PROJECT_ROOT, agent: 'forager-worker', sessionKind: 'task-worker' });
+      for (const patch of [{ adHocRunId: 'run-2' }, { projectRoot: '/relocated' }, { parentSessionId: 'other' }, { sessionKind: 'subagent' as const }]) {
+        expect(() => service.trackGlobal('adhoc', patch)).toThrow(/immutable/);
+      }
+      expect(() => service.bindFeature('adhoc', 'other-feature')).toThrow(/immutable/);
+      expect(service.getGlobal('adhoc')).toEqual(bound);
+    });
+    it('persists canonical immutable provenance and mirrors it as a projection', () => {
+      setupFeature('feature-assignment');
+      service.trackGlobal('sess-worker', {
+        parentSessionId: 'sess-parent',
+        agent: 'forager-worker',
+        baseAgent: 'forager-worker',
+        sessionKind: 'task-worker',
+      });
+      const assignment = {
+        format: 'hive-worker-assignment/v1' as const,
+        projectRoot: PROJECT_ROOT,
+        featureName: 'feature-assignment',
+        taskFolder: '01-task',
+        attempt: 1,
+        locator: '.hive/features/feature-assignment/tasks/01-task/assignments/attempt-1.md',
+        contentHash: 'a'.repeat(64),
+      };
+
+      const bound = service.bindWorkerAssignment('sess-worker', 'sess-parent', assignment);
+
+      expect(bound).toMatchObject({
+        featureName: 'feature-assignment',
+        taskFolder: '01-task',
+        projectRoot: PROJECT_ROOT,
+        workerAssignment: assignment,
+      });
+      expect(service.get('feature-assignment', 'sess-worker')?.workerAssignment).toEqual(assignment);
+      for (const patch of [
+        { sessionKind: 'subagent' as const },
+        { projectRoot: '/former-root' },
+        { taskFolder: '02-other' },
+        { parentSessionId: 'other-parent' },
+        { workerAssignment: { ...assignment, contentHash: 'b'.repeat(64) } },
+      ]) {
+        expect(() => service.trackGlobal('sess-worker', patch)).toThrow(/immutable/i);
+        expect(service.getGlobal('sess-worker')).toMatchObject(bound);
+      }
+      expect(() => service.bindWorkerAssignment('sess-worker', 'sess-parent', {
+        ...assignment,
+        attempt: 2,
+      })).toThrow(/immutable assignment/i);
+    });
+
+    it('copies assignment provenance to a duplicate without changing the source identity', () => {
+      setupFeature('feature-copy');
+      const assignment = {
+        format: 'hive-worker-assignment/v1' as const,
+        projectRoot: PROJECT_ROOT,
+        featureName: 'feature-copy',
+        taskFolder: '01-task',
+        attempt: 1,
+        locator: 'assignment.md',
+        contentHash: 'b'.repeat(64),
+      };
+      service.trackGlobal('source', { parentSessionId: 'parent', sessionKind: 'task-worker' });
+      service.bindWorkerAssignment('source', 'parent', assignment);
+
+      const duplicate = service.copyWorkerAssignment('duplicate', 'source');
+
+      expect(duplicate?.sessionId).toBe('duplicate');
+      expect(duplicate?.assignmentSourceSessionId).toBe('source');
+      expect(duplicate?.workerAssignment).toEqual(assignment);
+      expect(service.getGlobal('source')?.assignmentSourceSessionId).toBeUndefined();
+    });
+  });
+
   describe('findFeatureBySession', () => {
     it('finds feature from global sessions.json after binding', () => {
       service.trackGlobal('sess-find', { sessionKind: 'task-worker' });

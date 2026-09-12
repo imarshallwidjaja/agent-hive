@@ -1,3 +1,5 @@
+import type { WorkerAssignmentDescriptor } from 'hive-core';
+
 export interface CompactionSessionContext {
   agent?: string;
   baseAgent?: string;
@@ -5,6 +7,7 @@ export interface CompactionSessionContext {
   featureName?: string;
   taskFolder?: string;
   workerPromptPath?: string;
+  workerAssignment?: WorkerAssignmentDescriptor;
   directivePrompt?: string;
 }
 
@@ -47,22 +50,9 @@ function resolveRole(ctx: CompactionSessionContext): string | undefined {
   return undefined;
 }
 
-function resolveWorkerPromptPath(ctx: CompactionSessionContext): string | undefined {
-  if (ctx.workerPromptPath) {
-    return ctx.workerPromptPath;
-  }
-
-  if (ctx.featureName && ctx.taskFolder) {
-    return `.hive/features/${ctx.featureName}/tasks/${ctx.taskFolder}/worker-prompt.md`;
-  }
-
-  return undefined;
-}
-
 export function buildCompactionReanchor(ctx: CompactionSessionContext): CompactionReanchor {
   const role = resolveRole(ctx);
   const kind = ctx.sessionKind ?? 'unknown';
-  const workerPromptPath = resolveWorkerPromptPath(ctx);
   const lines: string[] = [];
   const context: string[] = [];
 
@@ -83,11 +73,12 @@ export function buildCompactionReanchor(ctx: CompactionSessionContext): Compacti
 
   if (kind === 'task-worker') {
     lines.push('Do not delegate.');
-    if (workerPromptPath) {
-      lines.push('Re-read worker-prompt.md now to recall your assignment.');
-      context.push(workerPromptPath);
+    if (ctx.workerAssignment?.format === 'hive-worker-assignment/v1') {
+      lines.push('The runtime will replay the hash-verified immutable assignment for this exact attempt.');
+    } else if (ctx.workerPromptPath) {
+      lines.push('Legacy mutable assignment recovery is unavailable; return to the parent for a fresh launch.');
     } else {
-      lines.push('Re-read worker-prompt.md from the Hive task metadata to recall your assignment.');
+      lines.push('Wait for runtime assignment recovery; return to the parent if exact provenance is unavailable.');
     }
   }
 

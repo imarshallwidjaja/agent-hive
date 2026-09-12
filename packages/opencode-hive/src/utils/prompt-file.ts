@@ -10,6 +10,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash, randomUUID } from 'node:crypto';
 import { normalizePath, resolveFeatureDirectoryName } from 'hive-core';
 
 /**
@@ -124,35 +125,61 @@ export async function resolvePromptFromFile(
   }
 }
 
-/**
- * Write worker prompt to a file and return the path.
- * 
- * Creates the directory structure if it doesn't exist.
- * 
- * @param feature - Feature name
- * @param task - Task folder name
- * @param prompt - The full worker prompt content
- * @param hiveDir - The .hive directory path
- * @returns The path to the written prompt file
- */
-export function writeWorkerPromptFile(
+export interface PublishedWorkerAssignment {
+  format: 'hive-worker-assignment/v1';
+  path: string;
+  locator: string;
+  contentHash: string;
+}
+
+export function publishWorkerAssignment(
   feature: string,
   task: string,
-  prompt: string,
-  hiveDir: string
-): string {
+  attempt: number,
+  assignment: string,
+  hiveDir: string,
+  hooks: { beforePublish?: () => void } = {},
+): PublishedWorkerAssignment {
+  if (!Number.isInteger(attempt) || attempt < 1) throw new Error('Worker assignment attempt must be a positive integer.');
   const projectRoot = path.dirname(hiveDir);
   const featureDir = resolveFeatureDirectoryName(projectRoot, feature);
-  const promptDir = path.join(hiveDir, 'features', featureDir, 'tasks', task);
-  const promptPath = path.join(promptDir, 'worker-prompt.md');
-
-  // Ensure directory exists
-  if (!fs.existsSync(promptDir)) {
-    fs.mkdirSync(promptDir, { recursive: true });
+  const taskDir = path.join(hiveDir, 'features', featureDir, 'tasks', task);
+  const assignmentsDir = path.join(taskDir, 'assignments');
+  const assignmentPath = path.join(assignmentsDir, `attempt-${attempt}.md`);
+  fs.mkdirSync(assignmentsDir, { recursive: true });
+  const temporaryPath = path.join(assignmentsDir, `.attempt-${attempt}.${randomUUID()}.tmp`);
+  let temporaryCreated = false;
+  try {
+    const descriptor = fs.openSync(temporaryPath, 'wx');
+    temporaryCreated = true;
+    try {
+      fs.writeFileSync(descriptor, assignment, 'utf8');
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    hooks.beforePublish?.();
+    try {
+      fs.linkSync(temporaryPath, assignmentPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new Error(`Worker assignment attempt ${attempt} already exists and cannot be overwritten.`);
+      }
+      throw error;
+    }
+  } finally {
+    if (temporaryCreated) fs.rmSync(temporaryPath, { force: true });
   }
 
-  // Write prompt to file
-  fs.writeFileSync(promptPath, prompt, 'utf-8');
-
-  return promptPath;
+  const locator = normalizePath(path.relative(projectRoot, assignmentPath));
+  const navigationPath = path.join(taskDir, 'worker-prompt.md');
+  const navigationTemporary = `${navigationPath}.${randomUUID()}.tmp`;
+  fs.writeFileSync(navigationTemporary, `Latest immutable assignment: @${locator}\n`, 'utf8');
+  fs.renameSync(navigationTemporary, navigationPath);
+  return {
+    format: 'hive-worker-assignment/v1',
+    path: assignmentPath,
+    locator,
+    contentHash: createHash('sha256').update(Buffer.from(assignment, 'utf8')).digest('hex'),
+  };
 }

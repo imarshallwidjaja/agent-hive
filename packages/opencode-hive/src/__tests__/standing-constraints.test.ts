@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
+import { SessionService } from 'hive-core';
 import plugin from '../index';
 import { STANDING_CONSTRAINTS_HEADING, buildStandingConstraintsBlock } from '../utils/worker-prompt.js';
 
@@ -577,7 +578,7 @@ Do it
 
       await hooks['tool.execute.after']?.(
         { tool: 'task', sessionID, callID: 'call_background_launch' } as never,
-        { title: 'task', output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2', metadata: {} } as never,
+        { title: 'task', output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2', metadata: { sessionId: 'adhoc-child' } } as never,
       );
 
       const board = JSON.parse(fs.readFileSync(boardPath, 'utf-8')) as {
@@ -588,6 +589,12 @@ Do it
       expect(job?.scopeSource).toBe('pending-launch');
       expect(job?.scope?.adHocRunId).toBe(created.runId);
       expect(board.pendingLaunches ?? []).toHaveLength(0);
+      expect(new SessionService(testRoot).getGlobal('adhoc-child')).toMatchObject({
+        parentSessionId: sessionID,
+        projectRoot: testRoot,
+        adHocRunId: created.runId,
+        sessionKind: 'task-worker',
+      });
     });
   });
 });

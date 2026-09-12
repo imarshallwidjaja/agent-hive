@@ -277,6 +277,8 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 
 In gate-open sessions, `hive_worktree_start` may return a `backgroundTaskCall` for independent work. That output is launch guidance only; Hive does not create pending background board state until the parent actually starts the native background task. Use the normal blocking call when the next meaningful step depends on the worker result.
 
+Reused task worktrees must have exact Git registration before launch. Hive discovers each Git common directory only from the currently trusted topology-resolved repository, then validates the local `.git` pointer, containment without symlink escape, selected `commondir`, and exact `gitdir` backlink before running Git in the worktree. Linked manifest repositories may use a common directory outside the project root. A sibling or old administration entry is rejected even when it belongs to the same repository; Hive does not follow the mismatched backlink or repair Git metadata automatically.
+
 ### Merge and Status
 
 | Tool | Description |
@@ -344,7 +346,9 @@ For normal usage, set the OpenCode plugin entry to `"oc-arkive@latest"`. Keep a 
 
 ### Task worker recovery
 
-After session compaction, task workers re-read `worker-prompt.md` and continue from the current worktree state. Compaction may re-anchor a currently running worker; it is not re-delegation. Primary and subagent sessions replay the stored user directive once, then escalate if needed.
+After session compaction, task workers receive their hash-verified immutable assignment again. Hive validates the canonical runtime root, exact task attempt, recipient provenance, locator, format, and SHA-256 before replay, then refreshes live project and feature catalogs separately. `worker-prompt.md` is a latest-pointer aid and is never recovery evidence. Primary and subagent sessions replay the stored user directive once, then escalate if needed.
+
+Moving a project root intentionally breaks old task and ad-hoc continuation. Hive never follows the stored former root, migrates it, aliases it, or edits historical bindings. At the new trusted root, an authenticated primary prepares a valid worktree and launches a fresh task attempt/assignment/child, or creates a fresh authenticated ad-hoc run. Old sessions and artifacts remain historical.
 
 Manual tasks created with `hive_task_create()` follow the same DAG model as plan-backed tasks. The `goal`, `description`, `acceptanceCriteria`, `files`, and `references` fields are turned into `spec.md` content visible to the worker. To change downstream sequencing or scope after review feedback, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })`.
 
@@ -354,7 +358,7 @@ Manual tasks created with `hive_task_create()` follow the same DAG model as plan
 
 ## Prompt Budgeting & Observability
 
-Hive automatically bounds worker prompt sizes to prevent context overflow and tool output truncation.
+Hive bounds fixed assignment history and delivers supporting knowledge through live catalogs instead of prompt bodies.
 
 ### Budgeting Defaults
 
@@ -362,10 +366,9 @@ Hive automatically bounds worker prompt sizes to prevent context overflow and to
 |-------|---------|-------------|
 | `maxTasks` | 10 | Number of previous tasks included |
 | `maxSummaryChars` | 2,000 | Max chars per task summary |
-| `maxContextChars` | 20,000 | Max chars per context file |
-| `maxTotalContextChars` | 60,000 | Total context budget |
+| Live catalogs | 8 KiB | Combined automatic project and feature catalog delivery |
 
-When limits are exceeded, content is truncated with `...[truncated]` markers and file path hints are provided so workers can read the full content.
+Long task summaries use explicit `...[truncated]` markers and report paths. Catalog pages expose explicit continuations; workers retrieve selected bodies with `hive_context_read`.
 
 ### Observability
 
@@ -373,14 +376,16 @@ When limits are exceeded, content is truncated with `...[truncated]` markers and
 
 - **`promptMeta`**: Character counts for plan, context, previousTasks, spec, workerPrompt
 - **`payloadMeta`**: JSON payload size, whether prompt is inlined or referenced by file
-- **`budgetApplied`**: Budget limits, tasks included/dropped, path hints for dropped content
+- **`budgetApplied`**: Task-summary limits and tasks included/dropped
 - **`warnings`**: Array of threshold exceedances with severity levels (info/warning/critical)
 
 ### Prompt Files
 
-Large prompts are written to `.hive/features/<feature>/tasks/<task>/worker-prompt.md` and passed by file reference (`workerPromptPath`) rather than inlined in tool output. This prevents truncation of large prompts.
+Each launch exclusively publishes `.hive/features/<feature>/tasks/<task>/assignments/attempt-<n>.md` and passes that exact locator as `workerPromptPath`. `status.json` stores the immutable descriptor and raw-byte SHA-256. Interrupted or colliding publication never overwrites an earlier attempt.
 
-That same `worker-prompt.md` path is also reused during compaction recovery so task workers can re-anchor to the exact task assignment after a compacted session resumes.
+Pass the generated launch prompt unchanged. At native dispatch, Hive resolves the attempt reference to hash-verified bytes and sends those bytes to the child. Later session events cannot change a bound assignment or run identity. Catalog refresh preserves real user and assistant messages, including quoted catalog markers.
+
+The shared `worker-prompt.md` file only points to the latest assignment for human navigation. Compaction and lifecycle binding use the attempt descriptor. A blocked continuation allocates a new attempt and artifact while preserving the prior artifact and operator decision.
 
 ## Plan Format
 

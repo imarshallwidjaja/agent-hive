@@ -25,11 +25,6 @@ function createTestParams(overrides: Partial<WorkerPromptParams> = {}): WorkerPr
     taskOrder: 1,
     worktreePath: '/tmp/worktree',
     branch: 'hive/test-feature/01-test-task',
-    plan: '# Test Plan\n\n## Discovery\n\nQ&A here\n\n## Tasks\n\n### 1. Test Task\n\nDo the thing.',
-    contextFiles: [
-      { name: 'decisions', content: 'We decided to use TypeScript.' },
-      { name: 'research', content: 'Found existing patterns in src/lib.' },
-    ],
     spec: `# Task: 01-test-task
 
 ## Feature: test-feature
@@ -40,25 +35,10 @@ function createTestParams(overrides: Partial<WorkerPromptParams> = {}): WorkerPr
 
 Do the thing.
 
-## Context
-
-## decisions
-
-We decided to use TypeScript.
-
----
-
-## research
-
-Found existing patterns in src/lib.
-
 ## Completed Tasks
 
 - **00-setup**: Initial setup done.
 `,
-    previousTasks: [
-      { name: '00-setup', summary: 'Initial setup done.' },
-    ],
     ...overrides,
   };
 }
@@ -95,7 +75,7 @@ describe('buildWorkerPrompt deduplication', () => {
     expect(previousTasksMatches).toBeNull();
   });
 
-  it('includes spec content exactly once under "Your Mission"', () => {
+  it('includes body-free spec content exactly once under "Your Mission"', () => {
     const params = createTestParams();
     const prompt = buildWorkerPrompt(params);
     
@@ -105,36 +85,12 @@ describe('buildWorkerPrompt deduplication', () => {
     
     // Spec content should appear once
     expect(prompt).toContain('## Plan Section');
-    expect(prompt).toContain('## Context');
     expect(prompt).toContain('## Completed Tasks');
-  });
-
-  it('does not duplicate context file content', () => {
-    const params = createTestParams({
-      contextFiles: [
-        { name: 'unique-context', content: 'UNIQUE_MARKER_12345' },
-      ],
-      spec: `# Task: test
-
-## Context
-
-## unique-context
-
-UNIQUE_MARKER_12345
-`,
-    });
-    const prompt = buildWorkerPrompt(params);
-    
-    // The unique marker should appear exactly once (in the spec)
-    const markerMatches = prompt.match(/UNIQUE_MARKER_12345/g);
-    expect(markerMatches?.length).toBe(1);
+    expect(prompt).not.toContain('We decided to use TypeScript.');
   });
 
   it('does not duplicate previous task summaries', () => {
     const params = createTestParams({
-      previousTasks: [
-        { name: '00-setup', summary: 'UNIQUE_SUMMARY_67890' },
-      ],
       spec: `# Task: test
 
 ## Completed Tasks
@@ -393,10 +349,9 @@ describe('buildWorkerPrompt continuation', () => {
 // ============================================================================
 
 describe('buildWorkerPrompt edge cases', () => {
-  it('handles empty context files gracefully', () => {
+  it('handles a body-free assignment gracefully', () => {
     const params = createTestParams({
-      contextFiles: [],
-      spec: '# Task: test\n\n## Context\n\n_No context available._',
+      spec: '# Task: test\n\nNo supporting context bodies.',
     });
     const prompt = buildWorkerPrompt(params);
     
@@ -406,7 +361,6 @@ describe('buildWorkerPrompt edge cases', () => {
 
   it('handles empty previous tasks gracefully', () => {
     const params = createTestParams({
-      previousTasks: [],
       spec: '# Task: test\n\n## Completed Tasks\n\n_This is the first task._',
     });
     const prompt = buildWorkerPrompt(params);
@@ -417,7 +371,6 @@ describe('buildWorkerPrompt edge cases', () => {
 
   it('handles missing plan section in spec', () => {
     const params = createTestParams({
-      plan: '',
       spec: '# Task: test\n\nNo plan section available.',
     });
     const prompt = buildWorkerPrompt(params);

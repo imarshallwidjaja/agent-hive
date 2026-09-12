@@ -1350,7 +1350,7 @@ describe('Agent permissions', () => {
       }, rootContext);
 
       for (const [sessionID, agent] of [
-        ['worker', 'forager-worker'],
+        ['worker', 'scout-researcher'],
         ['architect', 'architect-planner'],
       ] as const) {
         await hooks.event?.({ event: { type: 'session.updated', properties: { info: { id: sessionID, parentID: 'root' } } } } as any);
@@ -1358,7 +1358,7 @@ describe('Agent permissions', () => {
         new SessionService(repository).bindFeature(sessionID, 'authorized');
       }
 
-      const workerContext = { ...snapshotContext('forager-worker'), sessionID: 'worker' };
+      const workerContext = { ...snapshotContext('scout-researcher'), sessionID: 'worker' };
       const catalog = JSON.parse(await hooks.tool!.hive_context_read.execute({
         feature: 'authorized', view: 'catalog', limit: 1,
       }, workerContext) as string);

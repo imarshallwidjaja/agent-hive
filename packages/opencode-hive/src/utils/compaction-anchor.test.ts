@@ -76,8 +76,11 @@ describe('buildCompactionReanchor', () => {
       const anchor = buildCompactionReanchor({
         agent: 'hive-master',
         sessionKind: 'primary',
+        directivePrompt: 'Finish the current task and report findings only.',
       });
       expect(anchor.prompt).toContain('Role: Hive');
+      expect(anchor.prompt).toContain('Original directive survives via post-compaction replay.');
+      expect(anchor.context).toEqual([]);
     });
 
     it('anchors architect-planner with Role: Architect', () => {
@@ -168,15 +171,24 @@ describe('buildCompactionReanchor', () => {
       expect(anchor.prompt).toContain('Role: Forager');
     });
 
-    it('tells the worker to re-read worker-prompt.md', () => {
+    it('defers immutable assignment replay to the runtime', () => {
       const anchor = buildCompactionReanchor({
         agent: 'forager-worker',
         sessionKind: 'task-worker',
         featureName: 'feature-a',
         taskFolder: '01-first-task',
-        workerPromptPath: '.hive/features/feature-a/tasks/01-first-task/worker-prompt.md',
+        workerAssignment: {
+          format: 'hive-worker-assignment/v1',
+          projectRoot: '/project',
+          featureName: 'feature-a',
+          taskFolder: '01-first-task',
+          attempt: 1,
+          locator: '.hive/features/feature-a/tasks/01-first-task/assignments/attempt-1.md',
+          contentHash: 'a'.repeat(64),
+        },
       });
-      expect(anchor.prompt).toContain('Re-read worker-prompt.md now');
+      expect(anchor.prompt).toContain('hash-verified immutable assignment');
+      expect(anchor.context).toEqual([]);
     });
 
     it('tells the worker not to delegate', () => {
@@ -190,18 +202,19 @@ describe('buildCompactionReanchor', () => {
       expect(anchor.prompt).toContain('Do not delegate');
     });
 
-    it('without an exact path, points the worker to the Hive task path instead of the worktree root', () => {
+    it('does not infer an assignment path from partial task metadata', () => {
       const anchor = buildCompactionReanchor({
         agent: 'forager-worker',
         sessionKind: 'task-worker',
         featureName: 'feature-a',
         taskFolder: '01-first-task',
       });
-      expect(anchor.context.join('\n')).toContain('.hive/features/feature-a/tasks/01-first-task/worker-prompt.md');
+      expect(anchor.context).toEqual([]);
+      expect(anchor.prompt).toContain('exact provenance is unavailable');
       expect(anchor.prompt).not.toContain('task worktree root');
     });
 
-    it('includes the worker-prompt.md path in context', () => {
+    it('rejects legacy mutable prompt replay', () => {
       const anchor = buildCompactionReanchor({
         agent: 'forager-worker',
         sessionKind: 'task-worker',
@@ -209,7 +222,8 @@ describe('buildCompactionReanchor', () => {
         taskFolder: '01-first-task',
         workerPromptPath: '.hive/features/feature-a/tasks/01-first-task/worker-prompt.md',
       });
-      expect(anchor.context.join('\n')).toContain('.hive/features/feature-a/tasks/01-first-task/worker-prompt.md');
+      expect(anchor.context).toEqual([]);
+      expect(anchor.prompt).toContain('Legacy mutable assignment recovery is unavailable');
     });
 
     it('anchors custom forager-worker derivative with Role: Forager', () => {
@@ -222,7 +236,7 @@ describe('buildCompactionReanchor', () => {
         workerPromptPath: '.hive/features/feature-b/tasks/02-second-task/worker-prompt.md',
       });
       expect(anchor.prompt).toContain('Role: Forager');
-      expect(anchor.prompt).toContain('Re-read worker-prompt.md now');
+      expect(anchor.prompt).toContain('Legacy mutable assignment recovery is unavailable');
     });
   });
 

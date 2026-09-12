@@ -300,6 +300,7 @@ import {
   DockerSandboxService,
   BackgroundJobService,
   SessionService,
+  workerAssignmentsEqual,
   DEFAULT_COUNCIL_CONFIG,
   buildEffectiveDependencies,
   computeRunnableAndBlocked,
@@ -310,9 +311,6 @@ import {
   renderAggregateBranchDiff,
   resolveFeatureDirectoryName,
   applyTaskBudget,
-  applyContextBudget,
-  prioritizeContextForTask,
-  parseIsoTimestamp,
   DEFAULT_BUDGET,
   type CustomAgentBase,
   type ResolvedCustomAgentConfig,
@@ -325,15 +323,16 @@ import {
   type TaskAggregateBranchDiff,
   type BudgetedTask,
   type TruncationEvent,
+  type WorkerAssignmentDescriptor,
 } from "hive-core";
 import {
   buildStandingConstraintsBlock,
   buildWorkerPrompt,
   STANDING_CONSTRAINTS_HEADING,
-  type ContextFile as WorkerPromptContextFile,
 } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
-import { writeWorkerPromptFile } from "./utils/prompt-file";
+import { publishWorkerAssignment } from "./utils/prompt-file";
+import { assembleLiveContextCatalogs, LIVE_CONTEXT_CATALOG_MARKER } from './utils/context-catalog.js';
 import { formatRelativeTime } from "./utils/format";
 import { classifySession, createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, SUBAGENT_CLARIFICATION_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
@@ -440,9 +439,20 @@ type HiveTaskLaunchReservation = {
   expectedPrompt: string;
   allowedAgents: string[];
   selectedAgent: string;
+  assignment: WorkerAssignmentDescriptor;
 };
 
 type HiveTaskLaunchIntent = Omit<HiveTaskLaunchReservation, 'selectedAgent'>;
+
+type AdhocLaunchIntent = {
+  runId: string;
+  projectRoot: string;
+  expectedDescription: string;
+  expectedPrompt: string;
+  allowedAgents: string[];
+};
+
+type AdhocLaunchReservation = AdhocLaunchIntent & { selectedAgent: string };
 
 function runtimeTaskChildBinding(event: unknown): {
   primarySessionID: string;
@@ -1303,24 +1313,6 @@ const plugin: Plugin = async (ctx) => {
   const runtimeContext = detectContext(
     ctx.project?.id === 'global' && worktree === '/' ? directory : worktree || directory,
   );
-  const taskWorkerRecovery = runtimeContext.isWorktree
-    && runtimeContext.feature
-    && runtimeContext.task
-    && !NON_FEATURE_WORKTREE_NAMESPACES.has(runtimeContext.feature)
-    ? {
-        featureName: runtimeContext.feature,
-        taskFolder: runtimeContext.task,
-        workerPromptPath: path.posix.join(
-          '.hive',
-          'features',
-          resolveFeatureDirectoryName(directory, runtimeContext.feature),
-          'tasks',
-          runtimeContext.task,
-          'worker-prompt.md',
-        ),
-      }
-    : undefined;
-
   const backgroundJobAdapter = createBackgroundJobAdapter({
     projectRoot: directory,
     service: backgroundJobService,
@@ -1509,6 +1501,77 @@ const plugin: Plugin = async (ctx) => {
       return 'The runtime workspace or canonical project root could not be resolved.';
     }
   };
+  const readVerifiedAssignment = (assignment: WorkerAssignmentDescriptor): Buffer | string => {
+    const canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
+    if (
+      assignment.format !== 'hive-worker-assignment/v1'
+      || assignment.projectRoot !== canonicalRoot
+      || !Number.isInteger(assignment.attempt)
+      || !/^[a-f0-9]{64}$/.test(assignment.contentHash)
+    ) {
+      return contextFailure('assignment_recovery_error', 'The stored assignment format, root, feature, task, attempt, or hash does not match the authenticated runtime.');
+    }
+    const taskDir = path.join(
+      canonicalRoot,
+      '.hive',
+      'features',
+      resolveFeatureDirectoryName(canonicalRoot, assignment.featureName),
+      'tasks',
+      assignment.taskFolder,
+      'assignments',
+    );
+    const artifactPath = path.resolve(canonicalRoot, assignment.locator);
+    if (!pathIsContained(taskDir, artifactPath)) {
+      return contextFailure('assignment_recovery_error', 'The assignment locator is outside the exact task assignment directory.');
+    }
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFileSync(artifactPath);
+    } catch {
+      return contextFailure('assignment_recovery_error', 'The immutable assignment artifact is missing or unreadable.');
+    }
+    if (createHash('sha256').update(bytes).digest('hex') !== assignment.contentHash) {
+      return contextFailure('assignment_recovery_error', 'The immutable assignment artifact hash does not match its descriptor.');
+    }
+    const status = statusToolServices.tasks.getRawStatus(assignment.featureName, assignment.taskFolder);
+    if (!workerAssignmentsEqual(status?.workerAssignment, assignment)) {
+      return contextFailure('assignment_recovery_error', 'The task status does not contain this exact assignment descriptor.');
+    }
+    return bytes;
+  };
+  const validateWorkerAssignment = (sessionID: string, stored: ReturnType<SessionService['getGlobal']>): Buffer | string | null => {
+    if (!stored) return null;
+    const assignment = stored.workerAssignment;
+    if (stored.adHocRunId && stored.projectRoot !== fs.realpathSync(runtimeContext.projectRoot)) {
+      return contextFailure('assignment_recovery_error', 'The immutable ad-hoc run root does not match the runtime.');
+    }
+    const hasTaskProvenance = !!(assignment || stored.taskFolder || stored.assignmentSourceSessionId);
+    if (!hasTaskProvenance && stored.adHocRunId) return null;
+    if (!hasTaskProvenance && !stored.workerPromptPath && stored.sessionKind !== 'task-worker') return null;
+    if (!assignment) {
+      return stored.workerPromptPath
+        ? contextFailure('legacy_assignment_reanchor_required', 'This worker uses a legacy mutable prompt binding. A primary must create a fresh launch and authenticated child session.')
+        : contextFailure('assignment_recovery_error', 'The task worker has no immutable assignment descriptor.');
+    }
+    if (stored.projectRoot !== assignment.projectRoot || stored.featureName !== assignment.featureName
+      || stored.taskFolder !== assignment.taskFolder) {
+      return contextFailure('assignment_recovery_error', 'The session does not match its immutable assignment identity.');
+    }
+    const bytes = readVerifiedAssignment(assignment);
+    if (typeof bytes === 'string') return bytes;
+    const status = statusToolServices.tasks.getRawStatus(assignment.featureName, assignment.taskFolder);
+    const expectedSourceSession = stored.assignmentSourceSessionId ?? sessionID;
+    if (status?.workerSession?.sessionId !== expectedSourceSession) {
+      return contextFailure('assignment_recovery_error', 'The assignment session identity does not match the task association.');
+    }
+    if (stored.assignmentSourceSessionId) {
+      const source = contextToolScope.sessions.getGlobal(stored.assignmentSourceSessionId);
+      if (!workerAssignmentsEqual(source?.workerAssignment, assignment)) {
+        return contextFailure('assignment_recovery_error', 'The duplicated recipient has no valid immutable source assignment provenance.');
+      }
+    }
+    return bytes;
+  };
   const isPrivateContextRecipient = (toolContext: unknown): boolean => {
     const caller = toolContext as ToolContext | undefined;
     const lanes = reviewRuntimeLanes();
@@ -1520,7 +1583,7 @@ const plugin: Plugin = async (ctx) => {
       visited.add(sessionID);
       const session = contextToolScope.sessions.getGlobal(sessionID);
       if (resolveReviewCallerPolicy(session?.agent, lanes)) return true;
-      sessionID = session?.parentSessionId;
+      sessionID = session?.parentSessionId ?? session?.duplicatedFromSessionId;
     }
     return sessionID !== undefined;
   };
@@ -1601,6 +1664,21 @@ const plugin: Plugin = async (ctx) => {
         return contextFailure('context_authorization_denied', 'Primary orchestration agents cannot acquire primary authority from a child session.');
       }
     }
+    if (!runtimeSession.parentID && classification.sessionKind !== 'primary') {
+      const authenticatedDuplicate = classification.sessionKind === 'task-worker'
+        && stored?.duplicatedFromSessionId
+        && stored.assignmentSourceSessionId === stored.duplicatedFromSessionId;
+      if (!authenticatedDuplicate) {
+        return contextFailure('context_authorization_denied', 'A non-primary context recipient requires authenticated child or duplicate provenance.');
+      }
+    }
+    const assignmentFailure = validateWorkerAssignment(caller.sessionID, stored);
+    if (typeof assignmentFailure === 'string') return assignmentFailure;
+    if (classification.sessionKind === 'task-worker' && !stored?.workerAssignment) {
+      if (!stored?.adHocRunId || stored.projectRoot !== fs.realpathSync(runtimeContext.projectRoot)) {
+        return contextFailure('context_authorization_denied', 'The worker has no authenticated task assignment or ad-hoc run binding.');
+      }
+    }
     const management = !runtimeSession.parentID && classification.sessionKind === 'primary';
     if (operation === 'archive' && !management) {
       return contextFailure('context_authorization_denied', 'Archiving context requires an authenticated primary management session.');
@@ -1668,6 +1746,80 @@ const plugin: Plugin = async (ctx) => {
     }
   };
 
+  const refreshLiveContextCatalog = async (
+    sessionID: string,
+    messages: ReplayMessageEntry[],
+  ): Promise<void> => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (message.info.role === 'user' && message.info.sessionID === sessionID
+        && message.info.id === `msg_context_catalog_${sessionID}`
+        && message.parts.length === 1 && message.parts.every(part => part.synthetic === true
+          && part.id === `prt_context_catalog_${sessionID}` && part.sessionID === sessionID
+          && part.messageID === message.info.id && part.type === 'text'
+          && part.text?.startsWith(LIVE_CONTEXT_CATALOG_MARKER))) {
+        messages.splice(index, 1);
+      }
+    }
+    const stored = sessionService.getGlobal(sessionID);
+    if (!stored?.agent) return;
+    let authorizationFailure: string | null = null;
+    if (isPrivateContextRecipient({ sessionID, agent: stored.agent })) {
+      return;
+    }
+    const rootFailure = validateContextRuntimeRoot();
+    if (rootFailure) {
+      authorizationFailure = contextFailure('context_root_mismatch', rootFailure);
+    }
+    const classification = classifySession(stored.agent, customAgentConfigsForClassification);
+    if (classification.sessionKind === 'unknown' || classification.baseAgent === 'hive-helper') return;
+    if (classification.sessionKind !== 'primary' && !stored.parentSessionId) {
+      const authenticatedDuplicate = classification.sessionKind === 'task-worker'
+        && stored.duplicatedFromSessionId
+        && stored.assignmentSourceSessionId === stored.duplicatedFromSessionId;
+      if (!authenticatedDuplicate) return;
+    }
+    const assignmentValidation = authorizationFailure ?? validateWorkerAssignment(sessionID, stored);
+    if (typeof assignmentValidation === 'string') authorizationFailure = assignmentValidation;
+    if (classification.sessionKind === 'task-worker' && !stored.workerAssignment
+      && (!stored.adHocRunId || stored.projectRoot !== fs.realpathSync(runtimeContext.projectRoot))) {
+      authorizationFailure ??= contextFailure('context_authorization_denied', 'The worker has no authenticated task assignment or ad-hoc run binding.');
+    }
+    if (authorizationFailure) {
+      const failure = JSON.parse(authorizationFailure) as { reason?: string };
+      if (!['assignment_recovery_error', 'legacy_assignment_reanchor_required', 'context_root_mismatch'].includes(failure.reason ?? '')) return;
+      const text = `${LIVE_CONTEXT_CATALOG_MARKER}\n${authorizationFailure}`;
+      messages.push({
+        info: { id: `msg_context_catalog_${sessionID}`, sessionID, role: 'user', time: { created: Date.now() } },
+        parts: [{
+          id: `prt_context_catalog_${sessionID}`,
+          sessionID,
+          messageID: `msg_context_catalog_${sessionID}`,
+          type: 'text',
+          text,
+          synthetic: true,
+        }],
+      });
+      return;
+    }
+    const scopes: Array<{ type: 'project' } | { type: 'feature'; featureName: string }> = [{ type: 'project' }];
+    if (stored.featureName && contextToolScope.features.get(stored.featureName)) {
+      scopes.push({ type: 'feature', featureName: stored.featureName });
+    }
+    const catalog = assembleLiveContextCatalogs(contextToolScope.contexts, scopes);
+    messages.push({
+      info: { id: `msg_context_catalog_${sessionID}`, sessionID, role: 'user', time: { created: Date.now() } },
+      parts: [{
+        id: `prt_context_catalog_${sessionID}`,
+        sessionID,
+        messageID: `msg_context_catalog_${sessionID}`,
+        type: 'text',
+        text: catalog.text,
+        synthetic: true,
+      }],
+    });
+  };
+
   const bindContextFeature = (sessionID: string | undefined, feature: string): void => {
     if (sessionID) contextToolScope.sessions.bindFeature(sessionID, feature);
   };
@@ -1685,15 +1837,16 @@ const plugin: Plugin = async (ctx) => {
   const bindFeatureSession = (
     feature: string,
     toolContext: unknown,
-    patch?: Partial<{ taskFolder: string; workerPromptPath: string }>,
   ) => {
     const ctx = toolContext as ToolContext;
     if (!ctx?.sessionID) return;
-    sessionService.bindFeature(ctx.sessionID, feature, patch as any);
+    sessionService.bindFeature(ctx.sessionID, feature);
   };
 
   const pendingHiveTaskLaunches = new Map<string, HiveTaskLaunchIntent[]>();
   const hiveTaskLaunches = new Map<string, HiveTaskLaunchReservation>();
+  const pendingAdhocLaunches = new Map<string, AdhocLaunchIntent[]>();
+  const adhocLaunches = new Map<string, AdhocLaunchReservation>();
   const hiveTaskLaunchKey = (sessionID: string, callID: string): string => `${sessionID}\u0000${callID}`;
   const reserveHiveTaskLaunch = (
     sessionID: string,
@@ -1714,6 +1867,9 @@ const plugin: Plugin = async (ctx) => {
     if (matches.length !== 1) return;
 
     const candidate = matches[0];
+    const verifiedBytes = readVerifiedAssignment(candidate.assignment);
+    if (typeof verifiedBytes === 'string') throw new Error(verifiedBytes);
+    args!.prompt = verifiedBytes.toString('utf8');
     const remaining = pending.filter(pendingCandidate => pendingCandidate !== candidate);
     if (remaining.length > 0) {
       pendingHiveTaskLaunches.set(sessionID, remaining);
@@ -1724,6 +1880,97 @@ const plugin: Plugin = async (ctx) => {
       ...candidate,
       selectedAgent,
     });
+    return;
+  };
+
+  const reserveAdhocLaunch = (
+    sessionID: string,
+    callID: string,
+    args: Record<string, unknown> | undefined,
+  ): void => {
+    const selectedAgent = typeof args?.subagent_type === 'string' ? args.subagent_type.trim() : '';
+    const expectedDescription = typeof args?.description === 'string' ? args.description : '';
+    const expectedPrompt = typeof args?.prompt === 'string' ? args.prompt : '';
+    if (!selectedAgent || !expectedDescription || !expectedPrompt) return;
+    const pending = pendingAdhocLaunches.get(sessionID) ?? [];
+    const matches = pending.filter(candidate => candidate.expectedDescription === expectedDescription
+      && candidate.expectedPrompt === expectedPrompt
+      && candidate.allowedAgents.includes(selectedAgent));
+    if (matches.length !== 1) return;
+    const candidate = matches[0]!;
+    const remaining = pending.filter(item => item !== candidate);
+    if (remaining.length) pendingAdhocLaunches.set(sessionID, remaining);
+    else pendingAdhocLaunches.delete(sessionID);
+    adhocLaunches.set(hiveTaskLaunchKey(sessionID, callID), { ...candidate, selectedAgent });
+  };
+
+  const bindTaskChildSession = (
+    parentSessionID: string,
+    childSessionID: string,
+    reservation: HiveTaskLaunchReservation,
+  ): void => {
+    const verifiedBytes = readVerifiedAssignment(reservation.assignment);
+    if (typeof verifiedBytes === 'string') throw new Error(verifiedBytes);
+    const status = taskService.associateWorkerSession(
+      reservation.feature,
+      reservation.task,
+      {
+        sessionId: childSessionID,
+        agent: reservation.selectedAgent,
+        mode: 'delegate',
+        attempt: reservation.assignment.attempt,
+      },
+      reservation.assignment,
+    );
+    if (status.workerSession?.sessionId !== childSessionID) {
+      throw new Error('assignment_recovery_error: worker attempt is already associated with another session');
+    }
+    const classification = classifySession(reservation.selectedAgent, customAgentConfigsForClassification);
+    const parentConstraints = sessionService.getGlobal(parentSessionID);
+    sessionService.bindWorkerAssignment(childSessionID, parentSessionID, reservation.assignment, {
+      agent: reservation.selectedAgent,
+      baseAgent: classification.baseAgent,
+      sessionKind: classification.sessionKind,
+      standingConstraints: parentConstraints?.standingConstraints,
+      standingConstraintEntries: parentConstraints?.standingConstraintEntries,
+      standingConstraintsRevision: parentConstraints?.standingConstraintsRevision,
+    });
+  };
+
+  const bindAdhocChildSession = (
+    parentSessionID: string,
+    childSessionID: string,
+    reservation: AdhocLaunchReservation,
+  ): void => {
+    const classification = classifySession(reservation.selectedAgent, customAgentConfigsForClassification);
+    const existing = sessionService.getGlobal(childSessionID);
+    if (existing?.projectRoot && (
+      existing.projectRoot !== reservation.projectRoot
+      || existing.adHocRunId !== reservation.runId
+      || existing.parentSessionId !== parentSessionID
+    )) {
+      throw new Error('assignment_recovery_error: ad-hoc session provenance mismatch');
+    }
+    sessionService.trackGlobal(childSessionID, {
+      parentSessionId: parentSessionID,
+      projectRoot: reservation.projectRoot,
+      adHocRunId: reservation.runId,
+      agent: reservation.selectedAgent,
+      baseAgent: classification.baseAgent,
+      sessionKind: classification.sessionKind,
+    });
+  };
+
+  const bindCorrelatedChild = (binding: {
+    primarySessionID: string;
+    callID: string;
+    childSessionID: string;
+  }): void => {
+    const key = hiveTaskLaunchKey(binding.primarySessionID, binding.callID);
+    const taskReservation = hiveTaskLaunches.get(key);
+    if (taskReservation) bindTaskChildSession(binding.primarySessionID, binding.childSessionID, taskReservation);
+    const adhocReservation = adhocLaunches.get(key);
+    if (adhocReservation) bindAdhocChildSession(binding.primarySessionID, binding.childSessionID, adhocReservation);
   };
 
   const resolveStandingConstraints = (sessionID: string | undefined): string | undefined => {
@@ -1825,21 +2072,21 @@ const plugin: Plugin = async (ctx) => {
     };
   };
 
-  const shouldUseWorkerReplay = (session: { sessionKind?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string } | undefined): boolean => {
-    return session?.sessionKind === 'task-worker'
-      && !!session.featureName
-      && !!session.taskFolder
-      && !!session.workerPromptPath;
+  const shouldUseWorkerReplay = (session: { sessionKind?: string; workerAssignment?: WorkerAssignmentDescriptor; workerPromptPath?: string } | undefined): boolean => {
+    return !!session?.workerAssignment || (session?.sessionKind === 'task-worker' && !!session.workerPromptPath);
   };
 
-  const buildWorkerReplayText = (session: { agent?: string; baseAgent?: string; featureName?: string; taskFolder?: string; workerPromptPath?: string }): string | null => {
-    if (!session.featureName || !session.taskFolder || !session.workerPromptPath) return null;
-    const role = 'Forager';
+  const buildWorkerReplayText = (session: NonNullable<ReturnType<SessionService['getGlobal']>>): string | null => {
+    if (!session.workerAssignment) {
+      return 'legacy_assignment_reanchor_required: This mutable worker prompt cannot be replayed. Return to an authenticated primary and create a fresh worker launch.';
+    }
+    const failure = validateWorkerAssignment(session.sessionId, session);
+    if (typeof failure === 'string') return `Post-compaction assignment recovery failed.\n${failure}`;
+    const assignment = failure!.toString('utf8');
     return [
-      `Post-compaction recovery: You are still the ${role} worker for task ${session.taskFolder}.`,
-      `Resume only this task. Do not merge, do not start the next task, and do not replace this assignment with a new goal.`,
-      `Do not call orchestration tools unless the worker prompt explicitly says so.`,
-      `Re-read @${session.workerPromptPath} and continue from the existing worktree state.`,
+      `Post-compaction recovery: replaying hash-verified immutable assignment attempt ${session.workerAssignment.attempt}.`,
+      '',
+      assignment,
     ].join('\n');
   };
 
@@ -1929,36 +2176,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
   const respond = (payload: Record<string, unknown>) => JSON.stringify(payload, null, 2);
 
-  const buildTaskDependencyMap = (feature: string): Map<string, string[]> => {
-    const tasks = taskService.list(feature).map(candidate => ({
-      folder: candidate.folder,
-      status: candidate.status,
-      dependsOn: taskService.getRawStatus(feature, candidate.folder)?.dependsOn,
-    }));
-    return buildEffectiveDependencies(tasks);
-  };
-
-  const buildContextFreshness = (
-    updatedAt: string,
-    completedTasks: Array<{ folder: string; completedAt?: string }>,
-  ): string => {
-    const updatedTimestamp = parseIsoTimestamp(updatedAt);
-    if (updatedTimestamp === undefined) {
-      return `Updated: ${updatedAt}; timestamp unknown/unreliable`;
-    }
-    const laterCompletedTasks = completedTasks
-      .flatMap(candidate => {
-        const completedTimestamp = parseIsoTimestamp(candidate.completedAt);
-        return completedTimestamp !== undefined && completedTimestamp > updatedTimestamp
-          ? [candidate.folder]
-          : [];
-      })
-      .sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
-    return laterCompletedTasks.length > 0
-      ? `Updated: ${updatedAt}; predates completed tasks: ${laterCompletedTasks.join(', ')}`
-      : `Updated: ${updatedAt}`;
-  };
-
   const deriveTopLevelAreas = (files: string[]): string[] => {
     const compareText = (left: string, right: string): number =>
       left < right ? -1 : left > right ? 1 : 0;
@@ -1999,19 +2216,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
   const buildManualLaunchSpec = (
     manualSpec: string,
-    contextFiles: WorkerPromptContextFile[],
     completedTasks: BudgetedTask[],
   ): string => {
     const supplementSections: string[] = [];
-    if (contextFiles.length > 0) {
-      supplementSections.push(
-        [
-          '### Current Context',
-          '',
-          contextFiles.map(file => `#### ${file.name}\n\n${file.content}`).join('\n\n---\n\n'),
-        ].join('\n'),
-      );
-    }
     if (completedTasks.length > 0) {
       supplementSections.push(
         [
@@ -2050,6 +2257,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     decision?: string;
     toolContext?: unknown;
   }) => {
+    const { attempt, idempotencyKey } = taskService.allocateWorkerAttempt(feature, task);
     const previousStatus = taskInfo.status;
     const previousRawStatus = taskService.getRawStatus(feature, task);
     const persistedError = previousRawStatus
@@ -2080,27 +2288,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
     const planResult = planService.read(feature);
     const allTasks = taskService.list(feature);
-    const completedTaskTimes = allTasks
-      .filter(candidate => candidate.status === 'done')
-      .map(candidate => ({
-        folder: candidate.folder,
-        completedAt: taskService.getRawStatus(feature, candidate.folder)?.completedAt,
-      }));
-    const executionContextFiles = prioritizeContextForTask(
-      contextService.listExecutionContext(feature),
-      task,
-      buildTaskDependencyMap(feature),
-    );
-
-    const rawContextFiles = executionContextFiles.map(f => {
-      const freshnessLine = `*Freshness: ${buildContextFreshness(f.updatedAt, completedTaskTimes)}*`;
-      return {
-        name: f.name,
-        content: `${freshnessLine}\n\n${f.content}`,
-        freshnessLine,
-      };
-    });
-
     const rawPreviousTasks = allTasks
       .filter(t => t.status === 'done' && t.summary)
       .map(t => ({
@@ -2110,17 +2297,10 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       }));
 
     const taskBudgetResult = applyTaskBudget(rawPreviousTasks, { ...DEFAULT_BUDGET, feature });
-    const contextBudgetResult = applyContextBudget(rawContextFiles, { ...DEFAULT_BUDGET, feature });
-
-    const contextFiles: WorkerPromptContextFile[] = contextBudgetResult.files.map(f => ({
-      name: f.name,
-      content: f.content,
-    }));
     const previousTasks = taskBudgetResult.tasks;
 
     const truncationEvents: TruncationEvent[] = [
       ...taskBudgetResult.truncationEvents,
-      ...contextBudgetResult.truncationEvents,
     ];
 
     const droppedTasksHint = taskBudgetResult.droppedTasksHint;
@@ -2135,7 +2315,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       : null;
 
     if (existingManualSpec) {
-      specContent = buildManualLaunchSpec(existingManualSpec, contextFiles, previousTasks);
+      specContent = buildManualLaunchSpec(existingManualSpec, previousTasks);
     } else {
       specContent = taskService.buildSpecContent({
         featureName: feature,
@@ -2152,7 +2332,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           order: parseInt(t.folder.match(/^(\d+)/)?.[1] || '0', 10),
         })),
         planContent: planResult?.content ?? null,
-        contextFiles,
         completedTasks: previousTasks,
       });
 
@@ -2184,8 +2363,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       taskOrder,
       worktreePath: workspacePath,
       branch: worktree.branch,
-      plan: planResult?.content || 'No plan available',
-      contextFiles,
       spec: specContent,
       continueFrom: continueFrom === 'blocked' ? {
         status: 'blocked',
@@ -2203,21 +2380,40 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     const eligibleAgents = buildForagerEligibleAgents(configService);
     const agent = defaultAgent;
 
-    const { attempt, idempotencyKey } = taskService.allocateWorkerAttempt(feature, task);
-
-    const contextContent = contextFiles.map(f => f.content).join('\n\n');
     const previousTasksContent = previousTasks.map(t => `- **${t.name}**: ${t.summary}`).join('\n');
     const promptMeta = calculatePromptMeta({
       plan: planResult?.content || '',
-      context: contextContent,
+      context: '',
       previousTasks: previousTasksContent,
       spec: specContent,
       workerPrompt,
     });
 
     const hiveDir = path.join(directory, '.hive');
-    const workerPromptPath = writeWorkerPromptFile(feature, task, workerPrompt, hiveDir);
-    const relativePromptPath = normalizePath(path.relative(directory, workerPromptPath));
+    let assignment: WorkerAssignmentDescriptor;
+    try {
+      const published = publishWorkerAssignment(feature, task, attempt, workerPrompt, hiveDir);
+      assignment = {
+        format: published.format,
+        projectRoot: fs.realpathSync(directory),
+        featureName: feature,
+        taskFolder: task,
+        attempt,
+        locator: published.locator,
+        contentHash: published.contentHash,
+      };
+      taskService.publishWorkerAssignment(feature, task, idempotencyKey, assignment);
+    } catch (error) {
+      taskService.failWorkerAssignmentPublication(
+        feature,
+        task,
+        idempotencyKey,
+        attempt,
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+    const relativePromptPath = assignment.locator;
 
     const PREVIEW_MAX_LENGTH = 200;
     const workerPromptPreview = workerPrompt.length > PREVIEW_MAX_LENGTH
@@ -2233,13 +2429,14 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     };
     const backgroundEnabled = isBackgroundSubagentsExperimentEnabled();
 
-    bindFeatureSession(feature, toolContext, { taskFolder: task, workerPromptPath: relativePromptPath });
+    bindFeatureSession(feature, toolContext);
     const parentSessionID = (toolContext as ToolContext)?.sessionID;
     const launchIntent: HiveTaskLaunchIntent = {
       feature,
       task,
       attempt,
       idempotencyKey,
+      assignment,
       expectedDescription: `Hive: ${task}`,
       expectedPrompt: taskToolPrompt,
       allowedAgents: eligibleAgents.map(candidate => candidate.name),
@@ -2329,8 +2526,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       budgetApplied: {
         maxTasks: DEFAULT_BUDGET.maxTasks,
         maxSummaryChars: DEFAULT_BUDGET.maxSummaryChars,
-        maxContextChars: DEFAULT_BUDGET.maxContextChars,
-        maxTotalContextChars: DEFAULT_BUDGET.maxTotalContextChars,
         tasksIncluded: previousTasks.length,
         tasksDropped: rawPreviousTasks.length - previousTasks.length,
         droppedTasksHint,
@@ -2616,6 +2811,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
       const dashTaskBinding = runtimeTaskChildBinding(input.event);
       if (dashTaskBinding) {
+        bindCorrelatedChild(dashTaskBinding);
         dashReviewInvocations.bindTaskChild({
           ...dashTaskBinding,
           runtimeVersion: runtimeDashReviewVersion,
@@ -2662,6 +2858,9 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
                 ...(originSession?.sessionKind ? { sessionKind: originSession.sessionKind } : {}),
                 ...(originSession?.featureName ? { featureName: originSession.featureName } : {}),
               });
+              if (originSession?.workerAssignment) {
+                sessionService.copyWorkerAssignment(eventSessionID, originSessionId);
+              }
               await stampSessionOrigin(eventSessionID);
             }
           }
@@ -2849,7 +3048,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         configService,
         dashPrimaryIdentity?.allowed ? undefined : sessionService,
         customAgentConfigsForClassification,
-        taskWorkerRecovery,
       );
       await variantHook(input, output);
     }) as any,
@@ -2924,6 +3122,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
       const refreshed = sessionService.getGlobal(sessionID);
       await backgroundJobAdapter['experimental.chat.messages.transform'](_input, output);
+      await refreshLiveContextCatalog(sessionID, output.messages);
       if (!refreshed?.replayDirectivePending) {
         return;
       }
@@ -3054,6 +3253,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     },
 
     "tool.execute.before": async (input, output) => {
+      const executingSession = sessionService.getGlobal(input.sessionID);
+      if (executingSession?.taskFolder || executingSession?.workerAssignment || executingSession?.assignmentSourceSessionId
+        || (executingSession?.workerPromptPath && !executingSession.adHocRunId)) {
+        const assignmentValidation = validateWorkerAssignment(input.sessionID, executingSession);
+        if (typeof assignmentValidation === 'string') throw new Error(assignmentValidation);
+      }
       if (input.tool === 'task' && output.args?.subagent_type === TASK_TRACE_SUMMARIZER_AGENT) {
         throw new Error('The task trace summarizer cannot be dispatched through the native task tool.');
       }
@@ -3394,6 +3599,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       await backgroundJobAdapter['tool.execute.before'](input, output);
+      if (input.tool === 'task' && input.sessionID && input.callID) {
+        const launchArgs = output.args as Record<string, unknown> | undefined;
+        reserveHiveTaskLaunch(input.sessionID, input.callID, launchArgs);
+        reserveAdhocLaunch(input.sessionID, input.callID, launchArgs);
+      }
 
       // Standing constraints are appended AFTER the background adapter snapshots
       // output.args, so pending-launch prompt correlation keeps matching the
@@ -3403,7 +3613,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       // A task-created architect child has its own session and an empty
       // register, so its planning-helper launches fall back one level to the
       // parent's register. Depth is capped at 2 above, so one level is enough.
-      if (input.tool === 'task') {
+      if (input.tool === 'task' && !hiveTaskLaunches.has(hiveTaskLaunchKey(input.sessionID, input.callID))) {
         const constraintsBlock = buildStandingConstraintsBlock(
           resolveStandingConstraints(input.sessionID) ?? resolveStandingConstraints(parentID),
         );
@@ -3412,7 +3622,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         const isReviewLaneTarget = runtimeDashReviewLanes.some((lane) => lane.taskTarget === target)
           || runtimeVulnerabilityReviewLanes.some((lane) => lane.taskTarget === target);
         const isWorkerPromptReference = prompt.includes('Follow instructions in @')
-          && prompt.trimEnd().endsWith('worker-prompt.md');
+          && (prompt.trimEnd().endsWith('worker-prompt.md')
+            || /\/assignments\/attempt-\d+\.md$/.test(prompt.trimEnd()));
 
         if (
           constraintsBlock
@@ -3494,13 +3705,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       if (input.tool !== "bash") {
-        if (input.tool === 'task' && input.sessionID && input.callID) {
-          reserveHiveTaskLaunch(
-            input.sessionID,
-            input.callID,
-            output.args as Record<string, unknown> | undefined,
-          );
-        }
         return;
       }
       
@@ -3549,23 +3753,17 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           ? hiveTaskLaunchKey(input.sessionID, input.callID)
           : undefined;
         const hiveTaskReservation = hiveTaskKey ? hiveTaskLaunches.get(hiveTaskKey) : undefined;
+        const adhocReservation = hiveTaskKey ? adhocLaunches.get(hiveTaskKey) : undefined;
         if (hiveTaskKey) hiveTaskLaunches.delete(hiveTaskKey);
+        if (hiveTaskKey) adhocLaunches.delete(hiveTaskKey);
         if (
           childSessionID
           && hiveTaskReservation
         ) {
-          taskService.associateWorkerSession(
-            hiveTaskReservation.feature,
-            hiveTaskReservation.task,
-            {
-              sessionId: childSessionID,
-              agent: hiveTaskReservation.selectedAgent,
-              mode: 'delegate',
-              attempt: hiveTaskReservation.attempt,
-            },
-            hiveTaskReservation.idempotencyKey,
-            hiveTaskReservation.attempt,
-          );
+          bindTaskChildSession(input.sessionID, childSessionID, hiveTaskReservation);
+        }
+        if (childSessionID && adhocReservation) {
+          bindAdhocChildSession(input.sessionID, childSessionID, adhocReservation);
         }
         if (childSessionID) {
           dashReviewInvocations.bindTaskChild({
@@ -5291,9 +5489,26 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
           }
 
-          const featureDir = resolveFeatureDirectoryName(directory, feature);
-          const workerPromptPath = path.posix.join('.hive', 'features', featureDir, 'tasks', task, 'worker-prompt.md');
-          bindFeatureSession(feature, toolContext, { taskFolder: task, workerPromptPath });
+          const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
+          const committingSession = committingSessionID ? sessionService.getGlobal(committingSessionID) : undefined;
+          if (committingSession?.sessionKind === 'task-worker' || committingSession?.workerAssignment) {
+            const bindingFailure = validateWorkerAssignment(committingSessionID!, committingSession);
+            if (typeof bindingFailure === 'string'
+              || committingSession.featureName !== feature
+              || committingSession.taskFolder !== task) {
+              return respond({
+                ok: false,
+                terminal: false,
+                status: 'error',
+                reason: 'assignment_recovery_error',
+                feature,
+                task,
+                taskState: taskInfo.status,
+                message: typeof bindingFailure === 'string' ? bindingFailure : 'The immutable assignment does not match this feature and task.',
+                nextAction: 'Return to the authenticated parent and create a fresh worker launch for this exact task.',
+              });
+            }
+          }
 
           // ADVISORY: Track verification status (workers do best-effort)
           let verificationNote: string | undefined;
@@ -5619,6 +5834,19 @@ NEXT: Ask your first clarifying question about this feature.`;
               backgroundEnabled: Boolean(backgroundScope),
               shouldAutoSpawnWorker,
             });
+            if (taskToolCall && parentSessionId) {
+              const pending = pendingAdhocLaunches.get(parentSessionId) ?? [];
+              pendingAdhocLaunches.set(parentSessionId, [
+                ...pending.filter(candidate => candidate.runId !== info.runId),
+                {
+                  runId: info.runId,
+                  projectRoot: fs.realpathSync(directory),
+                  expectedDescription: taskToolCall.description,
+                  expectedPrompt: taskToolCall.prompt,
+                  allowedAgents: eligibleAgents.map(candidate => candidate.name),
+                },
+              ]);
+            }
             if (backgroundTaskCall && backgroundScope && backgroundOwnership) {
               backgroundJobService.registerPendingLaunch({
                 parentSessionId: backgroundScope.parentSessionId,

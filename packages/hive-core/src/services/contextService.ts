@@ -294,14 +294,6 @@ export class ContextService {
     return this.list(scope).find(file => file.name === OVERVIEW_CONTEXT_NAME) ?? null;
   }
 
-  listExecutionContext(scope: string | ContextScope): ContextFile[] {
-    return this.list(scope).filter(file => file.includeInExecution).sort(this.compareRecentContext);
-  }
-
-  listNetworkContext(scope: string | ContextScope): ContextFile[] {
-    return this.list(scope).filter(file => file.includeInNetwork).sort(this.compareRecentContext);
-  }
-
   delete(featureName: string, fileName: string, expectedRevision: number, expectedContentHash: string): boolean {
     return this.mutate(featureName, expectedRevision, (control, resolved) => {
       const name = this.normalizeName(fileName);
@@ -320,11 +312,6 @@ export class ContextService {
       });
       return true;
     });
-  }
-
-  compile(scope: string | ContextScope): string {
-    const files = this.list(scope);
-    return files.length === 0 ? '' : files.map(file => `## ${file.name}\n\n${file.content}`).join('\n\n---\n\n');
   }
 
   archive(featureName: string, expectedRevision: number, expectedContentHashes: Record<string, string>): { archived: string[]; archivePath: string } {
@@ -1215,11 +1202,6 @@ export class ContextService {
       const matches = names.filter(name => asciiFold(name).includes(token));
       return matches.length > 1 ? [`Consolidate ${matches.join(', ')} into one current ${token} context.`] : [];
     });
-  }
-
-  private compareRecentContext(left: ContextFile, right: ContextFile): number {
-    const difference = new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
-    return difference || compareCodePoints(left.name, right.name);
   }
 
   private assertBoundedText(value: string | undefined, maxBytes: number, field: string): void {

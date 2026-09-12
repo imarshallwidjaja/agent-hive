@@ -17,7 +17,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService } from 'hive-core';
+import { ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService, SessionService, WorktreeService } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 const ROOT_SESSION_CLIENT = {
@@ -447,7 +447,7 @@ Do it
     };
     expect(execStart.taskToolCall).toMatchObject({
       description: "Hive: 01-first-task",
-      prompt: expect.stringContaining("@.hive/features/01_smoke-feature/tasks/01-first-task/worker-prompt.md"),
+      prompt: expect.stringMatching(/@\.hive\/features\/01_smoke-feature\/tasks\/01-first-task\/assignments\/attempt-1\.md$/),
       subagent_type: "forager-worker",
     });
     expect(execStart.taskToolCall?.background).toBeUndefined();
@@ -1781,7 +1781,8 @@ Do it
       "01_task-mode-feature",
       "tasks",
       "01-first-task",
-      "worker-prompt.md"
+      "assignments",
+      "attempt-1.md"
     );
 
     expect(execStart.taskToolCall).toBeDefined();
@@ -1811,7 +1812,7 @@ Do it
     expect(execStart.instructions).toContain('Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.');
     expect(execStart.instructions).not.toContain('or when the operator explicitly names it');
     expect(execStart.instructions).toContain(
-      "prompt: \"Follow instructions in @.hive/features/01_task-mode-feature/tasks/01-first-task/worker-prompt.md\""
+      "prompt: \"Follow instructions in @.hive/features/01_task-mode-feature/tasks/01-first-task/assignments/attempt-1.md\""
     );
     expect(execStart.instructions).toContain(
       "Use the `@path` attachment syntax in the prompt to reference the file. Do not inline the file contents."
@@ -1943,7 +1944,7 @@ Do it
       expect(result.taskToolCall).toMatchObject({
         subagent_type: "forager-worker",
         description: "Hive: 01-first-task",
-        prompt: expect.stringContaining("@.hive/features/01_gate-closed-feature/tasks/01-first-task/worker-prompt.md"),
+        prompt: expect.stringContaining("@.hive/features/01_gate-closed-feature/tasks/01-first-task/assignments/attempt-1.md"),
       });
       expect(result.taskToolCall?.background).toBeUndefined();
       expect(result.backgroundTaskCall).toBeUndefined();
@@ -1954,7 +1955,7 @@ Do it
       const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
       expect(fs.existsSync(boardPath)).toBe(false);
       const taskDirectory = path.join(testRoot, '.hive', 'features', '01_gate-closed-feature', 'tasks', FIRST_TASK);
-      expect(fs.readdirSync(taskDirectory).sort()).toEqual(['spec.md', 'status.json', 'worker-prompt.md']);
+      expect(fs.readdirSync(taskDirectory).sort()).toEqual(['assignments', 'spec.md', 'status.json', 'worker-prompt.md']);
 
       await hooks['tool.execute.before']?.({
         tool: 'task',
@@ -2052,6 +2053,257 @@ Do it
     expect(statusFor("02_same-folder-b").workerSession.sessionId).toBe("same-folder-b-child");
   }, 30_000);
 
+  it('retrieves later-page live knowledge without revising the verified assignment or weakening child authority', async () => {
+    const parent = 'catalog-parent';
+    const child = 'catalog-child';
+    const feature = 'catalog-lifecycle';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+    await hooks.tool!.hive_plan_write.execute({ feature, content: createSingleTaskPlan('Catalog lifecycle', 'Preserve REQUIRED-CATALOG-CONTRACT while retrieving current supporting facts.').replace('Do it', 'Preserve REQUIRED-CATALOG-CONTRACT while retrieving current supporting facts.') }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+    const fact = 'src/payments/settle.ts invoice_87 ERR_SETTLEMENT_CONFLICT';
+    for (const scope of ['project', 'feature'] as const) {
+      for (let i = 0; i < 13; i++) {
+        const name = i === 12 ? 'zz-required' : `distractor-${String(i).padStart(2, '0')}`;
+        const body = i === 12 ? `${'supporting background\n'.repeat(1200)}${fact}` : `irrelevant supporting body ${i}`;
+        await hooks.tool!.hive_context_write.execute({
+          ...(scope === 'project' ? { scope } : { feature }), name,
+          content: `---\ndescription: ${name}\nread_when: Read for settlement details\nowner: platform\nreview_after: 2027-01-01\n---\n${body}`,
+        }, toolContext);
+      }
+    }
+    const launch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, toolContext) as string);
+    const artifact = path.join(testRoot, launch.taskToolCall.prompt.replace('Follow instructions in @', ''));
+    const original = fs.readFileSync(artifact);
+    const dispatch = { args: { ...launch.taskToolCall } };
+    fs.writeFileSync(artifact, 'UNVERIFIED DISPATCH');
+    await expect(hooks['tool.execute.before']!({ tool: 'task', sessionID: parent, callID: 'bad-catalog-launch' }, { args: { ...launch.taskToolCall } })).rejects.toThrow(/assignment_recovery_error/);
+    fs.writeFileSync(artifact, original);
+    const readFile = fs.readFileSync;
+    const race = spyOn(fs, 'readFileSync').mockImplementation(((file: any, ...args: any[]) => {
+      const bytes = (readFile as any)(file, ...args);
+      if (file === artifact) fs.writeFileSync(artifact, 'UNVERIFIED DISPATCH');
+      return bytes;
+    }) as any);
+    try {
+      await hooks.tool!.hive_constraints_add.execute({ constraints: 'CONSTRAINT-ADDED-AFTER-PUBLICATION' }, toolContext);
+      await hooks['tool.execute.before']!({ tool: 'task', sessionID: parent, callID: 'catalog-launch' }, dispatch);
+    } finally {
+      race.mockRestore();
+    }
+    expect(dispatch.args.prompt).toBe(original.toString('utf8'));
+    expect(dispatch.args.prompt).not.toContain('CONSTRAINT-ADDED-AFTER-PUBLICATION');
+    expect(dispatch.args.prompt).toContain('REQUIRED-CATALOG-CONTRACT');
+    expect(dispatch.args.prompt).not.toContain(fact);
+    await expect(hooks.event!({ event: { type: 'message.part.updated', properties: { part: {
+      type: 'tool', tool: 'task', sessionID: parent, callID: 'catalog-launch',
+      state: { input: dispatch.args, metadata: { sessionId: child } },
+    } } } } as any)).rejects.toThrow(/assignment_recovery_error/);
+    expect(new SessionService(testRoot).getGlobal(child)?.workerAssignment).toBeUndefined();
+    fs.writeFileSync(artifact, original);
+    await hooks['tool.execute.after']!({ tool: 'task', sessionID: parent, callID: 'catalog-launch', args: dispatch.args }, {
+      title: 'task', output: '', metadata: { sessionId: child },
+    });
+    const sessions = new SessionService(testRoot);
+    const bound = sessions.getGlobal(child)!;
+    const childContext = { ...toolContext, sessionID: child, agent: 'forager-worker' };
+    const catalogSpy = spyOn(ContextService.prototype, 'readCatalog');
+    const readSpy = spyOn(ContextService.prototype, 'readContent');
+    const inventorySpy = spyOn(ContextService.prototype as any, 'buildInventory');
+    const headerSpy = spyOn(ContextService.prototype as any, 'readHeader');
+    const output = { messages: [{ info: { id: 'catalog-turn', sessionID: child, role: 'assistant', time: { created: Date.now() } }, parts: [] }] };
+    try {
+      await hooks['experimental.chat.messages.transform']!({}, output as any);
+      const text = (output.messages.at(-1)!.parts[0] as any).text;
+      const automaticBytes = Buffer.byteLength(text);
+      expect(automaticBytes).toBeLessThanOrEqual(8192);
+      expect(text).not.toContain(fact);
+      expect(readSpy).not.toHaveBeenCalled();
+      const payload = JSON.parse(text.slice(text.indexOf('\n') + 1));
+      expect(payload.catalogs.map((entry: any) => entry.scope.type)).toEqual(['project', 'feature']);
+      for (const entry of payload.catalogs) {
+        expect(entry.catalog.complete).toBe(false);
+        expect(entry.catalog.files.some((file: any) => file.name === 'zz-required')).toBe(false);
+        let page = entry.catalog;
+        const scope = entry.scope.type === 'project' ? { scope: 'project' } : { feature };
+        const names = page.files.map((file: any) => file.name);
+        while (!page.complete) {
+          page = JSON.parse(await hooks.tool!.hive_context_read.execute({ ...scope, view: 'catalog', cursor: page.nextCursor }, childContext) as string);
+          expect(page.success).toBe(true);
+          names.push(...page.files.map((file: any) => file.name));
+        }
+        expect(names).toHaveLength(13);
+        expect(names.at(-1)).toBe('zz-required');
+        let chunk: any;
+        let recalled = '';
+        do {
+          chunk = JSON.parse(await hooks.tool!.hive_context_read.execute({ ...scope, name: 'zz-required', maxBytes: 8192, ...(chunk ? { cursor: chunk.nextCursor } : {}) }, childContext) as string);
+          expect(chunk.success).toBe(true);
+          recalled += chunk.file.content;
+        } while (!chunk.complete);
+        expect(recalled.indexOf(fact)).toBeGreaterThan(20_000);
+      }
+      console.log('catalog lifecycle metrics', JSON.stringify({ automaticBytes, listCalls: catalogSpy.mock.calls.length, readCalls: readSpy.mock.calls.length, inventoryScans: inventorySpy.mock.calls.length, headerReads: headerSpy.mock.calls.length, headerBytes: headerSpy.mock.results.reduce((sum: number, result: any) => sum + (result.value?.length ?? 0), 0) }));
+      expect(catalogSpy.mock.calls).toHaveLength(4);
+      expect(readSpy.mock.calls).toHaveLength(8);
+      const note = path.join(testRoot, '.hive', 'context', 'zz-required.md');
+      fs.appendFileSync(note, '\nUPDATED-SUPPORTING-FACT');
+      const changed = JSON.parse(await hooks.tool!.hive_context_read.execute({ scope: 'project', name: 'zz-required', maxBytes: 65536 }, childContext) as string);
+      expect(changed.file.content).toContain('UPDATED-SUPPORTING-FACT');
+      expect(fs.readFileSync(artifact)).toEqual(original);
+      expect(sessions.getGlobal(child)!.workerAssignment).toEqual(bound.workerAssignment);
+
+      const indexPath = path.join(testRoot, '.hive', 'context', 'index.json');
+      const indexBytes = fs.readFileSync(indexPath);
+      const index = JSON.parse(indexBytes.toString());
+      index.entries['distractor-00'].kind = 'evidence';
+      fs.writeFileSync(indexPath, JSON.stringify(index));
+      await hooks['experimental.chat.messages.transform']!({}, output as any);
+      const refreshed = JSON.parse((output.messages.at(-1)!.parts[0] as any).text.split('\n').slice(1).join('\n'));
+      expect(refreshed.catalogs[0].catalog.files.some((file: any) => file.name === 'distractor-00')).toBe(false);
+      expect(JSON.parse(await hooks.tool!.hive_context_read.execute({ scope: 'project', view: 'catalog', cursor: payload.catalogs[0].catalog.nextCursor }, childContext) as string).reason).toBe('stale_context_cursor');
+      const pending = path.join(testRoot, '.hive', 'context', '.managed-mutation-pending.json');
+      fs.writeFileSync(pending, '{}');
+      await hooks['experimental.chat.messages.transform']!({}, output as any);
+      expect((output.messages.at(-1)!.parts[0] as any).text).toContain('context_reconciliation_required');
+      fs.unlinkSync(pending);
+      fs.writeFileSync(indexPath, '{broken');
+      await hooks['experimental.chat.messages.transform']!({}, output as any);
+      expect((output.messages.at(-1)!.parts[0] as any).text).toContain('context_index_invalid');
+      fs.writeFileSync(indexPath, indexBytes);
+
+      await expect(hooks['chat.message']!({ sessionID: child, agent: 'scout-researcher' }, { message: {}, parts: [] } as any)).rejects.toThrow(/immutable/);
+      expect(sessions.getGlobal(child)!.sessionKind).toBe('task-worker');
+      // A persisted misclassification must not bypass assignment validation either.
+      const registryPath = path.join(testRoot, '.hive', 'sessions.json');
+      const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+      Object.assign(registry.sessions.find((session: any) => session.sessionId === child), { agent: 'scout-researcher', baseAgent: 'scout-researcher', sessionKind: 'subagent' });
+      fs.writeFileSync(registryPath, JSON.stringify(registry));
+      fs.writeFileSync(artifact, 'INVALID ASSIGNMENT');
+      catalogSpy.mockClear(); readSpy.mockClear();
+      await hooks['experimental.chat.messages.transform']!({}, output as any);
+      expect((output.messages.at(-1)!.parts[0] as any).text).toContain('assignment_recovery_error');
+      const denied = JSON.parse(await hooks.tool!.hive_context_read.execute({ scope: 'project', name: 'zz-required' }, { ...childContext, agent: 'scout-researcher' }) as string);
+      expect(denied.reason).toBe('assignment_recovery_error');
+      expect(catalogSpy).not.toHaveBeenCalled();
+      expect(readSpy).not.toHaveBeenCalled();
+      const mutated = registry.sessions.find((session: any) => session.sessionId === child);
+      delete mutated.workerAssignment;
+      delete mutated.workerPromptPath;
+      delete mutated.assignmentSourceSessionId;
+      fs.writeFileSync(registryPath, JSON.stringify(registry));
+      fs.writeFileSync(artifact, original);
+      inventorySpy.mockClear(); headerSpy.mockClear();
+      await hooks['experimental.chat.messages.transform']!({}, output as any);
+      expect((output.messages.at(-1)!.parts[0] as any).text).toContain('assignment_recovery_error');
+      const missing = JSON.parse(await hooks.tool!.hive_context_read.execute({ scope: 'project', name: 'zz-required' }, { ...childContext, agent: 'scout-researcher' }) as string);
+      expect(missing.reason).toBe('assignment_recovery_error');
+      await expect(hooks['tool.execute.before']!({ tool: 'bash', sessionID: child, callID: 'invalid-worker-execution' }, { args: { command: 'true' } })).rejects.toThrow(/assignment_recovery_error/);
+      expect(catalogSpy).not.toHaveBeenCalled();
+      expect(readSpy).not.toHaveBeenCalled();
+      expect(inventorySpy).not.toHaveBeenCalled();
+      expect(headerSpy).not.toHaveBeenCalled();
+    } finally {
+      catalogSpy.mockRestore(); readSpy.mockRestore(); inventorySpy.mockRestore(); headerSpy.mockRestore();
+    }
+  }, 30_000);
+
+  it('denies relocated historical workers and permits only a fresh launch in an independently valid workspace', async () => {
+    const feature = 'relocated-assignment';
+    const oldParent = 'relocation-parent';
+    const oldChild = 'relocation-old-child';
+    const freshParent = 'relocation-fresh-parent';
+    const freshChild = 'relocation-fresh-child';
+    const oldAdhocChild = 'relocation-old-adhoc';
+    const freshAdhocChild = 'relocation-fresh-adhoc';
+    const runtimeClient = { ...(ROOT_SESSION_CLIENT as any), session: { ...(ROOT_SESSION_CLIENT as any).session,
+      get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: [oldChild, oldAdhocChild].includes(input.id) ? oldParent : [freshChild, freshAdhocChild].includes(input.id) ? freshParent : undefined } }),
+    } } as PluginInput['client'];
+    const initial = await createHooksForTest(testRoot, oldParent, testRoot, runtimeClient);
+    await initial.hooks.tool!.hive_feature_create.execute({ name: feature }, initial.toolContext);
+    await initial.hooks.tool!.hive_plan_write.execute({ feature, content: createSingleTaskPlan('Relocated assignment', 'Require a fresh authenticated launch after independently preparing the relocated workspace.') }, initial.toolContext);
+    await initial.hooks.tool!.hive_plan_approve.execute({ feature }, initial.toolContext);
+    await initial.hooks.tool!.hive_tasks_sync.execute({ feature }, initial.toolContext);
+    const launch = JSON.parse(await initial.hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, initial.toolContext) as string);
+    await initial.hooks['tool.execute.before']!({ tool: 'task', sessionID: oldParent, callID: 'old-launch' }, { args: { ...launch.taskToolCall } });
+    await initial.hooks['tool.execute.after']!({ tool: 'task', sessionID: oldParent, callID: 'old-launch', args: launch.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: oldChild } });
+    const historical = new SessionService(testRoot).getGlobal(oldChild)!;
+    const oldRun = JSON.parse(await initial.hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'historical-run', workerInstructions: 'Inspect project supporting knowledge.' }, initial.toolContext) as string);
+    await initial.hooks['tool.execute.before']!({ tool: 'task', sessionID: oldParent, callID: 'old-run-launch' }, { args: { ...oldRun.taskToolCall } });
+    await initial.hooks['tool.execute.after']!({ tool: 'task', sessionID: oldParent, callID: 'old-run-launch', args: oldRun.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: oldAdhocChild } });
+    const historicalRun = new SessionService(testRoot).getGlobal(oldAdhocChild)!;
+    expect(historicalRun.adHocRunId).toBe('historical-run');
+    const oldArtifact = fs.readFileSync(path.join(testRoot, historical.workerAssignment!.locator));
+    const relocated = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'relocated-'));
+    try {
+      initBareRepo(relocated);
+      fs.cpSync(path.join(testRoot, '.hive'), path.join(relocated, '.hive'), { recursive: true });
+      const fresh = await createHooksForTest(relocated, freshParent, relocated, runtimeClient);
+      const forbiddenAccess: string[] = [];
+      const spies = ['accessSync', 'statSync', 'lstatSync', 'readFileSync', 'realpathSync', 'readdirSync', 'openSync'].map(name => {
+        const original = (fs as any)[name];
+        return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+          if (String(file) === testRoot || String(file).startsWith(`${testRoot}${path.sep}`)) forbiddenAccess.push(`${name}:${file}`);
+          return original(file, ...args);
+        });
+      });
+      const asyncFs = await import('fs/promises');
+      for (const name of ['access', 'stat', 'lstat', 'readFile', 'realpath', 'readdir', 'open']) {
+        const original = (asyncFs as any)[name];
+        spies.push(spyOn(asyncFs as any, name).mockImplementation((file: any, ...args: any[]) => {
+          if (String(file) === testRoot || String(file).startsWith(`${testRoot}${path.sep}`)) forbiddenAccess.push(`${name}:${file}`);
+          return original(file, ...args);
+        }));
+      }
+      const gitPaths: string[] = [];
+      const originalGetGit = (WorktreeService.prototype as any).getGit;
+      const gitSpy = spyOn(WorktreeService.prototype as any, 'getGit').mockImplementation(function(this: any, cwd: string) {
+        gitPaths.push(cwd ?? this.config.baseDir);
+        return originalGetGit.call(this, cwd);
+      });
+      try {
+        const denied = JSON.parse(await fresh.hooks.tool!.hive_context_read.execute({ scope: 'project' }, { ...fresh.toolContext, sessionID: oldChild, agent: 'forager-worker' }) as string);
+        expect(denied.success).toBe(false);
+        const deniedRun = JSON.parse(await fresh.hooks.tool!.hive_context_read.execute({ scope: 'project' }, { ...fresh.toolContext, sessionID: oldAdhocChild, agent: 'forager-worker' }) as string);
+        expect(deniedRun.success).toBe(false);
+        await expect(fresh.hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, fresh.toolContext)).rejects.toThrow('Worktree linkage preflight failed');
+        expect(forbiddenAccess).toEqual([]);
+        expect(gitPaths.every(cwd => cwd === relocated)).toBe(true);
+      } finally {
+        spies.forEach(spy => spy.mockRestore()); gitSpy.mockRestore();
+      }
+      // The operator prepares a separate workspace; the runtime never repairs copied Git pointers.
+      fs.rmSync(path.join(relocated, '.hive', '.worktrees'), { recursive: true });
+      const recovered = JSON.parse(await fresh.hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, fresh.toolContext) as string);
+      expect(recovered.taskToolCall).toBeDefined();
+      await fresh.hooks['tool.execute.before']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-launch' }, { args: { ...recovered.taskToolCall } });
+      await fresh.hooks['tool.execute.after']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-launch', args: recovered.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: freshChild } });
+      const freshRun = JSON.parse(await fresh.hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'fresh-run', workerInstructions: 'Inspect project supporting knowledge.' }, fresh.toolContext) as string);
+      await fresh.hooks['tool.execute.before']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-run-launch' }, { args: { ...freshRun.taskToolCall } });
+      await fresh.hooks['tool.execute.after']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-run-launch', args: freshRun.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: freshAdhocChild } });
+      const sessions = new SessionService(relocated);
+      expect(sessions.getGlobal(oldChild)).toEqual(historical);
+      expect(sessions.getGlobal(oldAdhocChild)).toEqual(historicalRun);
+      expect(sessions.getGlobal(freshAdhocChild)).toMatchObject({ projectRoot: relocated, adHocRunId: 'fresh-run' });
+      expect(sessions.getGlobal(freshChild)!.workerAssignment!.projectRoot).toBe(relocated);
+      expect(sessions.getGlobal(freshChild)!.workerAssignment!.attempt).toBeGreaterThan(historical.workerAssignment!.attempt);
+      expect(fs.readFileSync(path.join(relocated, historical.workerAssignment!.locator))).toEqual(oldArtifact);
+      for (const [recipient, success] of [[oldChild, false], [freshChild, true], [oldAdhocChild, false], [freshAdhocChild, true]] as const) {
+        const result = JSON.parse(await fresh.hooks.tool!.hive_context_read.execute({ scope: 'project', view: 'catalog' }, { ...fresh.toolContext, sessionID: recipient, agent: 'forager-worker' }) as string);
+        expect(result.success).toBe(success);
+      }
+      expect(new SessionService(testRoot).getGlobal(oldChild)).toEqual(historical);
+      expect(fs.readFileSync(path.join(testRoot, historical.workerAssignment!.locator))).toEqual(oldArtifact);
+    } finally { fs.rmSync(relocated, { recursive: true, force: true }); }
+  }, 30_000);
+
   it("uses one-shot parent-scoped launch intents and rejects replay, wrong agents, and delayed attempts", async () => {
     const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     const previousExperimental = process.env.OPENCODE_EXPERIMENTAL;
@@ -2089,6 +2341,16 @@ Do it
       );
       await hooks.tool!.hive_plan_approve.execute({ feature: "no-worker-session" }, toolContext);
       await hooks.tool!.hive_tasks_sync.execute({ feature: "no-worker-session" }, toolContext);
+      await hooks.tool!.hive_context_write.execute({
+        feature: 'no-worker-session',
+        name: 'feature-catalog-entry',
+        content: durableContext('supporting feature body'),
+      }, toolContext);
+      await hooks.tool!.hive_context_write.execute({
+        scope: 'project',
+        name: 'project-catalog-entry',
+        content: `---\ndescription: Project catalog entry\nread_when: Read in the catalog test.\nowner: platform\nreview_after: 2027-01-01\n---\n\nsupporting project body`,
+      }, toolContext);
 
       const launchRaw = await hooks.tool!.hive_worktree_start.execute(
         { feature: "no-worker-session", task: FIRST_TASK },
@@ -2200,9 +2462,32 @@ Do it
 
       const associated = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as {
         workerSession?: { sessionId?: string; mode?: string };
+        workerAssignment: { locator: string; contentHash: string };
       };
       expect(associated.workerSession?.sessionId).toBe('feature-task-child');
       expect(associated.workerSession?.mode).toBe('delegate');
+      expect(associated.workerAssignment?.locator).toBe(launch.taskToolCall.prompt.replace('Follow instructions in @', ''));
+      const assignmentBytes = fs.readFileSync(path.join(testRoot, associated.workerAssignment.locator));
+      expect(createHash('sha256').update(assignmentBytes).digest('hex')).toBe(associated.workerAssignment.contentHash);
+      const boundChild = new SessionService(testRoot).getGlobal('feature-task-child');
+      expect(boundChild?.workerAssignment).toEqual(associated.workerAssignment);
+
+      const catalogOutput = {
+        messages: [{
+          info: { id: 'catalog-base', sessionID: 'feature-task-child', role: 'assistant', time: { created: Date.now() } },
+          parts: [{ id: 'catalog-part', sessionID: 'feature-task-child', messageID: 'catalog-base', type: 'text', text: 'existing' }],
+        }],
+      };
+      await hooks['experimental.chat.messages.transform']?.({}, catalogOutput as any);
+      await hooks['experimental.chat.messages.transform']?.({}, catalogOutput as any);
+      const catalogMessages = catalogOutput.messages.filter(message => message.parts.some(part => part.text?.startsWith('[hive-live-context-catalog/v1]')));
+      expect(catalogMessages).toHaveLength(1);
+      const catalogText = catalogMessages[0]!.parts[0]!.text!;
+      expect(Buffer.byteLength(catalogText, 'utf8')).toBeLessThanOrEqual(8 * 1024);
+      expect(catalogText).toContain('project-catalog-entry');
+      expect(catalogText).toContain('feature-catalog-entry');
+      expect(catalogText).not.toContain('supporting project body');
+      expect(catalogText).not.toContain('supporting feature body');
       expect(workerOutput.output).toContain('hive_task_trace({ task_id: "feature-task-child" })');
 
       const hiveStatusRaw = await hooks.tool!.hive_status.execute(
@@ -2275,7 +2560,7 @@ Do it
       });
       expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
 
-      await hooks['tool.execute.after']?.({
+      await expect(hooks['tool.execute.after']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
         callID: 'delayed-second-attempt',
@@ -2284,7 +2569,7 @@ Do it
         title: 'task',
         output: 'late second attempt',
         metadata: { sessionId: 'late-second-child' },
-      });
+      })).rejects.toThrow('assignment_recovery_error');
       expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
 
       await hooks['tool.execute.before']?.({
@@ -2425,6 +2710,7 @@ Do it
 
     const result = JSON.parse(raw as string) as {
       worktreePath?: string;
+      workerPromptPath?: string;
     };
 
     expect(result.worktreePath).toBeDefined();
@@ -2438,37 +2724,27 @@ Do it
       "01-first-task",
       "spec.md"
     );
-    const workerPromptPath = path.join(
-      testRoot,
-      ".hive",
-      "features",
-      "01_reserved-overview-feature",
-      "tasks",
-      "01-first-task",
-      "worker-prompt.md"
-    );
+    const workerPromptPath = path.join(testRoot, result.workerPromptPath!);
 
     const specContent = fs.readFileSync(specPath, "utf-8");
     const workerPromptContent = fs.readFileSync(workerPromptPath, "utf-8");
 
-    expect(specContent).toContain("## decisions");
-    expect(specContent).toContain("Technical decision that workers should receive.");
-    expect(specContent).toContain("## learnings");
-    expect(specContent).toContain("Durable learning that workers should receive.");
+    expect(specContent).not.toContain("Technical decision that workers should receive.");
+    expect(specContent).not.toContain("Durable learning that workers should receive.");
     expect(specContent).not.toContain("## overview");
     expect(specContent).not.toContain("Human-facing overview that must stay out of worker execution context.");
     expect(specContent).not.toContain("## draft");
     expect(specContent).not.toContain("Scratchpad draft that must stay out of worker execution context.");
     expect(specContent).not.toContain("## execution-decisions");
     expect(specContent).not.toContain("Operational decision that must stay out of worker execution context.");
-    expect(workerPromptContent).toContain("Technical decision that workers should receive.");
-    expect(workerPromptContent).toContain("Durable learning that workers should receive.");
+    expect(workerPromptContent).not.toContain("Technical decision that workers should receive.");
+    expect(workerPromptContent).not.toContain("Durable learning that workers should receive.");
     expect(workerPromptContent).not.toContain("Human-facing overview that must stay out of worker execution context.");
     expect(workerPromptContent).not.toContain("Scratchpad draft that must stay out of worker execution context.");
     expect(workerPromptContent).not.toContain("Operational decision that must stay out of worker execution context.");
   });
 
-  it('renders context freshness and prioritizes task dependency tags before budgeting', async () => {
+  it('keeps task-tagged context bodies out of immutable assignments', async () => {
     const feature = 'context-priority-feature';
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_priority');
     await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
@@ -2552,17 +2828,12 @@ Use it.
     );
     const spec = fs.readFileSync(specPath, 'utf-8');
 
-    expect(spec.indexOf('## current-context')).toBeLessThan(spec.indexOf('## dependency-context'));
-    expect(spec.indexOf('## dependency-context')).toBeLessThan(spec.indexOf('## untagged-context'));
-    expect(spec).toContain(
-      '*Freshness: Updated: 2026-09-01T00:00:00.000Z; predates completed tasks: 01-foundation*',
-    );
-    expect(spec).toContain('*Freshness: Updated: 2026-09-02T00:00:00.000Z; predates completed tasks: 01-foundation*');
-    expect(spec).toContain('*Freshness: Updated: 2026-09-03T00:00:00.000Z*');
-    expect(spec.match(/\*Freshness: Updated:/g)).toHaveLength(3);
+    expect(spec).not.toContain('current task context');
+    expect(spec).not.toContain('dependency context');
+    expect(spec).not.toContain('untagged context');
   });
 
-  it('uses the latest successful retry completion for context freshness', async () => {
+  it('does not revise assignments from context written between task attempts', async () => {
     const feature = 'context-retry-freshness';
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_retry_freshness');
     await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
@@ -2621,12 +2892,11 @@ Use context written between completions.
 
     await hooks.tool!.hive_worktree_start.execute({ feature, task: '02-downstream' }, toolContext);
     const spec = fs.readFileSync(path.join(featurePath, 'tasks', '02-downstream', 'spec.md'), 'utf-8');
-    expect(spec).toContain(
-      '*Freshness: Updated: 2001-01-01T00:00:00.000Z; predates completed tasks: 01-retried-task*',
-    );
+    expect(spec).not.toContain('Context written after the first completion.');
+    expect(spec).toContain('Final completion.');
   });
 
-  it('keeps invalid context and completion timestamps out of recency and freshness comparisons', async () => {
+  it('does not parse context timestamps while rendering fixed assignments', async () => {
     const feature = 'context-invalid-timestamps';
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_invalid_timestamps');
     await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
@@ -2689,13 +2959,9 @@ Use context.
     await hooks.tool!.hive_worktree_start.execute({ feature, task: '03-current' }, toolContext);
     const spec = fs.readFileSync(path.join(featurePath, 'tasks', '03-current', 'spec.md'), 'utf-8');
 
-    expect(spec.indexOf('## valid-newer-context')).toBeLessThan(spec.indexOf('## valid-older-context'));
-    expect(spec.indexOf('## valid-older-context')).toBeLessThan(spec.indexOf('## invalid-context'));
-    expect(spec).toContain('*Freshness: Updated: not-a-timestamp; timestamp unknown/unreliable*');
-    expect(spec).toContain(
-      '*Freshness: Updated: 2026-09-01T00:00:00.000Z; predates completed tasks: 01-valid-completion*',
-    );
-    expect(spec).not.toContain('02-invalid-completion*');
+    expect(spec).not.toContain('invalid timestamp context');
+    expect(spec).not.toContain('valid newer context');
+    expect(spec).not.toContain('valid older context');
   });
 
   it("returns forager-derived eligible agents for worktree execution delegation", async () => {
@@ -3524,7 +3790,7 @@ Do it
     expect(result.success).toBe(true);
     expect(result.terminal).toBe(false);
     expect(result.worktreePath).toBeDefined();
-    expect(result.taskToolCall?.prompt).toContain("worker-prompt.md");
+    expect(result.taskToolCall?.prompt).toMatch(/\/assignments\/attempt-1\.md$/);
   });
 
   it("system prompt hook injects Hive instructions", async () => {
@@ -3917,7 +4183,12 @@ Do it
       FIRST_TASK,
       'status.json',
     );
-    const initialBaseCommit = (JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as { baseCommit: string }).baseCommit;
+    const initialStatus = JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as {
+      baseCommit: string;
+      workerAssignment: { attempt: number; locator: string; contentHash: string };
+    };
+    const initialBaseCommit = initialStatus.baseCommit;
+    const initialAssignmentBytes = fs.readFileSync(path.join(testRoot, initialStatus.workerAssignment.locator));
 
     const blockedRaw = await hooks.tool!.hive_worktree_commit.execute(
       {
@@ -3975,7 +4246,7 @@ Do it
       terminal?: boolean;
       worktreePath?: string;
       workerPromptPath?: string;
-      taskToolCall?: { task_id?: string };
+      taskToolCall?: { task_id?: string; subagent_type: string; description: string; prompt: string };
     };
 
     expect(continuation.success).toBe(true);
@@ -3986,7 +4257,31 @@ Do it
     expect(prompt).toContain('## Continuation from Blocked State');
     expect(prompt).toContain(summary);
     expect(prompt).toContain(decision);
+    expect(prompt.match(new RegExp(decision, 'g'))).toHaveLength(1);
     expect(prompt).toContain('The worktree already contains the previous worker\'s progress.');
+    const continuationStatus = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as {
+      workerAssignment: { attempt: number; locator: string; contentHash: string };
+      workerAttempts: Array<{ attempt: number; state: string }>;
+    };
+    expect(continuationStatus.workerAssignment.attempt).toBe(initialStatus.workerAssignment.attempt + 1);
+    expect(continuationStatus.workerAssignment.locator).toBe(continuation.workerPromptPath);
+    expect(continuationStatus.workerAttempts.map(attempt => attempt.state)).toEqual(['published', 'published']);
+    expect(fs.readFileSync(path.join(testRoot, initialStatus.workerAssignment.locator))).toEqual(initialAssignmentBytes);
+    await hooks['tool.execute.before']?.({
+      tool: 'task', sessionID: toolContext.sessionID, callID: 'blocked-continuation-child',
+    }, { args: { ...continuation.taskToolCall } });
+    await hooks['tool.execute.after']?.({
+      tool: 'task', sessionID: toolContext.sessionID, callID: 'blocked-continuation-child', args: { ...continuation.taskToolCall },
+    }, { title: 'task', output: 'done', metadata: { sessionId: 'blocked-continuation-worker' } });
+    const associatedContinuation = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as {
+      workerSession: { sessionId: string; attempt: number };
+      workerAttempts: Array<{ state: string }>;
+    };
+    expect(associatedContinuation.workerSession).toMatchObject({
+      sessionId: 'blocked-continuation-worker',
+      attempt: continuationStatus.workerAssignment.attempt,
+    });
+    expect(associatedContinuation.workerAttempts.map(attempt => attempt.state)).toEqual(['published', 'associated']);
 
     const statusRaw = await hooks.tool!.hive_status.execute({ feature }, toolContext);
     const status = JSON.parse(statusRaw as string) as {
@@ -5519,7 +5814,7 @@ Do it
     expect(featureJson.sessionId).not.toBe(sessionID);
   });
 
-  it("hive_worktree_commit binds featureName, taskFolder, and workerPromptPath to global session", async () => {
+  it("hive_worktree_commit does not fabricate worker provenance", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -5579,10 +5874,7 @@ Do it
     const workerSession = sessions.sessions.find(
       (s: { sessionId: string }) => s.sessionId === "sess_worker_commit_bind"
     );
-    expect(workerSession).toBeDefined();
-    expect(workerSession.featureName).toBe("commit-bind-feature");
-    expect(workerSession.taskFolder).toBe(FIRST_TASK);
-    expect(workerSession.workerPromptPath).toContain("worker-prompt.md");
+    expect(workerSession).toBeUndefined();
   });
 
   it("launches manual tasks with fresh ranked context and completed summaries without rewriting spec.md", async () => {
@@ -5729,6 +6021,7 @@ Do the first thing.
     const result = JSON.parse(raw as string) as {
       success?: boolean;
       worktreePath?: string;
+      workerPromptPath?: string;
     };
     expect(result.success).toBe(true);
     expect(result.worktreePath).toBeDefined();
@@ -5737,38 +6030,35 @@ Do the first thing.
     expect(specAfter).toBe(specBefore);
 
     const workerPrompt = fs.readFileSync(
-      path.join(featurePath, 'tasks', '02-review-fix', 'worker-prompt.md'),
+      path.join(testRoot, result.workerPromptPath!),
       'utf-8',
     );
     expect(workerPrompt).toContain("Correct agent routing for swarm dispatch");
-    expect(workerPrompt.indexOf('#### manual-task-context')).toBeLessThan(
-      workerPrompt.indexOf('#### dependency-context'),
-    );
-    expect(workerPrompt.indexOf('#### dependency-context')).toBeLessThan(
-      workerPrompt.indexOf('#### untagged-context'),
-    );
-    expect(workerPrompt).toContain(
-      '*Freshness: Updated: 2026-09-01T00:00:00.000Z; predates completed tasks: 01-first-task*',
-    );
+    expect(workerPrompt).not.toContain('Context owned by the manual task.');
+    expect(workerPrompt).not.toContain('Context owned by the completed dependency.');
+    expect(workerPrompt).not.toContain('Fresh untagged context.');
     expect(workerPrompt).toContain('- 01-first-task: First task completed for downstream manual work.');
     expect(workerPrompt).toContain('Manual mission context that must retain its own meaning.');
     expect(workerPrompt).toContain('- Manual checklist item, not runtime history.');
     expect(workerPrompt.match(/## Context/g)).toHaveLength(1);
     expect(workerPrompt.match(/## Completed Tasks/g)).toHaveLength(1);
     expect(workerPrompt.match(/## Runtime-Injected Launch Supplement/g)).toHaveLength(1);
-    expect(workerPrompt.match(/### Current Context/g)).toHaveLength(1);
+    expect(workerPrompt).not.toContain('### Current Context');
     expect(workerPrompt.match(/### Completed Task Context/g)).toHaveLength(1);
 
     const repeatedRaw = await hooks.tool!.hive_worktree_start.execute(
       { feature: 'manual-spec-feature', task: '02-review-fix' },
       toolContext,
     );
-    expect(JSON.parse(repeatedRaw as string).success).toBe(true);
+    const repeated = JSON.parse(repeatedRaw as string) as { success: boolean; workerPromptPath: string };
+    expect(repeated.success).toBe(true);
     expect(fs.readFileSync(specPathBefore, 'utf-8')).toBe(specBefore);
     const repeatedPrompt = fs.readFileSync(
-      path.join(featurePath, 'tasks', '02-review-fix', 'worker-prompt.md'),
+      path.join(testRoot, repeated.workerPromptPath),
       'utf-8',
     );
+    expect(repeated.workerPromptPath).not.toBe(result.workerPromptPath);
+    expect(fs.readFileSync(path.join(testRoot, result.workerPromptPath!), 'utf8')).toBe(workerPrompt);
     expect(repeatedPrompt.match(/## Runtime-Injected Launch Supplement/g)).toHaveLength(1);
   });
 
@@ -6321,7 +6611,7 @@ Original plan task four content must stay isolated from any append-only manual f
     ).rejects.toThrow(/dependencies on unfinished work require plan amendment|plan amendment/i);
   });
 
-  it("worker chat.message in task worktree binds featureName, taskFolder, and workerPromptPath before commit", async () => {
+  it("worker chat.message cannot infer assignment provenance from worktree and agent", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -6385,9 +6675,9 @@ Original plan task four content must stay isolated from any append-only manual f
       (s: { sessionId: string }) => s.sessionId === "sess_worker_start_bind"
     );
     expect(workerSession).toBeDefined();
-    expect(workerSession.featureName).toBe("start-bind-feature");
-    expect(workerSession.taskFolder).toBe(FIRST_TASK);
-    expect(workerSession.workerPromptPath).toContain("worker-prompt.md");
+    expect(workerSession.featureName).toBeUndefined();
+    expect(workerSession.taskFolder).toBeUndefined();
+    expect(workerSession.workerAssignment).toBeUndefined();
   });
 
   it('declares only the runtime hooks needed by the plugin', () => {
@@ -6965,7 +7255,7 @@ Do it.
     expect(report).toContain('No file changes detected');
   });
 
-  it('hive_worktree_commit (composite): partial failure after earlier repo committed keeps task in_progress and surfaces commit.partial/repos/error', async () => {
+  it('hive_worktree_commit rejects invalid registration before committing an earlier repo', async () => {
     const feature = 'mr-commit-partial';
     const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_commit_partial');
 
@@ -6973,32 +7263,12 @@ Do it.
     fs.writeFileSync(path.join(repos.api.path, 'api-note.txt'), 'api change\n');
     fs.rmSync(repos.web.path, { recursive: true, force: true });
 
-    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
-      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite partial failure attempt. Tests pass.', message: TEST_COMMIT_MESSAGE },
+    const apiHead = execSync('git rev-parse HEAD', { cwd: repos.api.path, encoding: 'utf8' }).trim();
+    await expect(hooks.tool!.hive_worktree_commit.execute(
+      { feature, task: '01-composite-task', status: 'completed', summary: 'Composite preflight failure attempt. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
-    );
-    const commitResult = JSON.parse(commitRaw as string) as {
-      ok: boolean;
-      terminal: boolean;
-      status?: string;
-      taskState?: string;
-      reportPath?: string;
-      commit?: { committed?: boolean; partial?: boolean; error?: string; repos?: Record<string, { committed: boolean }> };
-      nextAction?: string;
-      message?: string;
-    };
-
-    expect(commitResult.ok).toBe(false);
-    expect(commitResult.terminal).toBe(false);
-    expect(commitResult.taskState).toBe('in_progress');
-    expect(commitResult.commit?.committed).toBe(false);
-    expect(commitResult.commit?.partial).toBe(true);
-    expect(commitResult.commit?.repos).toBeDefined();
-    expect(commitResult.commit?.repos!.api.committed).toBe(true);
-    expect(commitResult.commit?.repos!.web.committed).toBe(false);
-    expect(commitResult.commit?.error).toContain('web');
-    expect(commitResult.reportPath).toBeUndefined();
-    expect(commitResult.nextAction ?? '').toMatch(/resolve|blocked|failed/i);
+    )).rejects.toThrow(/linkage preflight failed/);
+    expect(execSync('git rev-parse HEAD', { cwd: repos.api.path, encoding: 'utf8' }).trim()).toBe(apiHead);
     const taskStatusPath = path.join(
       testRoot,
       '.hive',
@@ -7014,43 +7284,17 @@ Do it.
     expect(taskStatus.aggregateBranchDiff).toBeUndefined();
   });
 
-  it('hive_worktree_commit (composite): first repo unchanged and later repo failure is rejected via error, not treated as no-change success', async () => {
+  it('hive_worktree_commit propagates later missing-worktree preflight failure', async () => {
     const feature = 'mr-commit-later-fail';
     const { hooks, toolContext, repos } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_commit_later_fail');
 
     fs.writeFileSync(path.join(repos.web.path, 'web-note.txt'), 'web only\n');
     fs.rmSync(repos.web.path, { recursive: true, force: true });
 
-    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+    await expect(hooks.tool!.hive_worktree_commit.execute(
       { feature, task: '01-composite-task', status: 'completed', summary: 'Later-repo failure after earlier no-change. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
-    );
-    const commitResult = JSON.parse(commitRaw as string) as {
-      ok: boolean;
-      terminal: boolean;
-      taskState?: string;
-      reportPath?: string;
-      commit?: {
-        committed?: boolean;
-        partial?: boolean;
-        error?: string;
-        message?: string;
-        repos?: Record<string, { committed: boolean; message?: string }>;
-      };
-      message?: string;
-    };
-
-    expect(commitResult.ok).toBe(false);
-    expect(commitResult.terminal).toBe(false);
-    expect(commitResult.taskState).toBe('in_progress');
-    expect(commitResult.commit?.committed).toBe(false);
-    expect(commitResult.commit?.partial).toBeFalsy();
-    expect(commitResult.commit?.error).toContain('web');
-    expect(commitResult.commit?.repos!.api.committed).toBe(false);
-    expect(commitResult.commit?.repos!.web.committed).toBe(false);
-    expect(commitResult.commit?.message).not.toBe('No changes to commit');
-    expect(commitResult.reportPath).toBeUndefined();
-    expect(commitResult.message ?? '').toMatch(/fail|error|worktree/i);
+    )).rejects.toThrow(/linkage preflight failed/);
   });
 
   it('hive_merge (composite single-repo): returns aggregate repos and success', async () => {

@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import { getFeaturePath, getGlobalSessionsPath, ensureDir, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
-import type { SessionInfo, SessionsJson, StandingConstraintEntry } from '../types.js';
+import type { SessionInfo, SessionsJson, StandingConstraintEntry, WorkerAssignmentDescriptor } from '../types.js';
 
 export const STANDING_CONSTRAINTS_MAX_CHARS = 8000;
 export const LEGACY_STANDING_CONSTRAINT_ID = 'legacy';
@@ -11,6 +11,17 @@ export interface StandingConstraintRegister {
   revision: number;
   constraints: string;
   constraintsChars: number;
+}
+
+export function workerAssignmentsEqual(left: WorkerAssignmentDescriptor | undefined, right: WorkerAssignmentDescriptor): boolean {
+  return !!left
+    && left.format === right.format
+    && left.projectRoot === right.projectRoot
+    && left.featureName === right.featureName
+    && left.taskFolder === right.taskFolder
+    && left.attempt === right.attempt
+    && left.locator === right.locator
+    && left.contentHash === right.contentHash;
 }
 
 export class StandingConstraintError extends Error {
@@ -42,6 +53,19 @@ export class SessionService {
     }
 
     const { sessionId: _sessionId, ...rest } = patch;
+    if (target.workerAssignment || target.adHocRunId) {
+      const identityFields: Array<keyof SessionInfo> = [
+        'workerAssignment', 'assignmentSourceSessionId', 'adHocRunId', 'projectRoot',
+        'featureName', 'taskFolder', 'parentSessionId', 'sessionKind', 'agent', 'baseAgent',
+      ];
+      for (const key of identityFields) {
+        if (!Object.prototype.hasOwnProperty.call(rest, key) || rest[key] === undefined) continue;
+        const unchanged = key === 'workerAssignment'
+          ? workerAssignmentsEqual(target.workerAssignment, rest.workerAssignment!)
+          : target[key] === rest[key];
+        if (!unchanged) throw new Error(`assignment_recovery_error: immutable session identity field ${key} cannot change`);
+      }
+    }
     for (const [key, value] of Object.entries(rest) as Array<[keyof Omit<SessionInfo, 'sessionId'>, SessionInfo[keyof Omit<SessionInfo, 'sessionId'>]]>) {
       if (value !== undefined || CLEARABLE_SESSION_FIELDS.has(key)) {
         target[key] = value as never;
@@ -126,6 +150,13 @@ export class SessionService {
         data.sessions.push(current);
       }
 
+      if (current.workerAssignment && current.workerAssignment.featureName !== featureName) {
+        throw new Error('assignment_recovery_error: an immutable assignment cannot be rebound to another feature');
+      }
+      if (current.adHocRunId && current.featureName !== featureName) {
+        throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot acquire another feature binding');
+      }
+
       current.featureName = featureName;
       current.lastActiveAt = now;
       this.applySessionPatch(current, patch);
@@ -143,6 +174,64 @@ export class SessionService {
     this.saveSessions(featureName, featureData);
 
     return session;
+  }
+
+  bindWorkerAssignment(
+    sessionId: string,
+    parentSessionId: string,
+    assignment: WorkerAssignmentDescriptor,
+    patch?: Partial<SessionInfo>,
+  ): SessionInfo {
+    const session = this.updateGlobalSessions((data) => {
+      const current = this.getOrCreateGlobalSession(data, sessionId);
+      if (current.adHocRunId) throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot become a task assignment');
+      if (current.parentSessionId && current.parentSessionId !== parentSessionId) {
+        throw new Error('assignment_recovery_error: parent session mismatch');
+      }
+      if (current.workerAssignment && !workerAssignmentsEqual(current.workerAssignment, assignment)) {
+        throw new Error('assignment_recovery_error: immutable assignment mismatch');
+      }
+      this.applySessionPatch(current, patch);
+      current.parentSessionId = parentSessionId;
+      current.projectRoot = assignment.projectRoot;
+      current.featureName = assignment.featureName;
+      current.taskFolder = assignment.taskFolder;
+      current.workerAssignment = { ...assignment };
+      current.lastActiveAt = new Date().toISOString();
+      return { ...current, workerAssignment: { ...assignment } };
+    });
+    this.mirrorSessionProjection(assignment.featureName, session);
+    return session;
+  }
+
+  copyWorkerAssignment(sessionId: string, sourceSessionId: string): SessionInfo | undefined {
+    const source = this.getGlobal(sourceSessionId);
+    if (!source?.workerAssignment) return undefined;
+    const copied = this.updateGlobalSessions((data) => {
+      const current = this.getOrCreateGlobalSession(data, sessionId);
+      if (current.adHocRunId) throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot become a task assignment');
+      if (current.workerAssignment && (!workerAssignmentsEqual(current.workerAssignment, source.workerAssignment)
+        || current.assignmentSourceSessionId !== sourceSessionId)) {
+        throw new Error('assignment_recovery_error: immutable assignment mismatch');
+      }
+      current.projectRoot = source.projectRoot;
+      current.featureName = source.featureName;
+      current.taskFolder = source.taskFolder;
+      current.workerAssignment = { ...source.workerAssignment! };
+      current.assignmentSourceSessionId = sourceSessionId;
+      current.lastActiveAt = new Date().toISOString();
+      return { ...current, workerAssignment: { ...source.workerAssignment! } };
+    });
+    this.mirrorSessionProjection(source.workerAssignment.featureName, copied);
+    return copied;
+  }
+
+  private mirrorSessionProjection(featureName: string, session: SessionInfo): void {
+    const featureData = this.getSessions(featureName);
+    const existing = featureData.sessions.find(candidate => candidate.sessionId === session.sessionId);
+    if (existing) Object.assign(existing, session);
+    else featureData.sessions.push({ ...session });
+    this.saveSessions(featureName, featureData);
   }
 
   listGlobal(): SessionInfo[] {

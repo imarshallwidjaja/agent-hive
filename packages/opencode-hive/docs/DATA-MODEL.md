@@ -281,6 +281,7 @@ _None_
 ```
 
 Plan-backed specs also include the matching `## Plan Section` excerpt from `plan.md`.
+Supporting context bodies are not assignment data and do not appear in generated specs. Live catalogs provide current project and feature metadata after the child session is authenticated.
 
 Manual-task specs derive their sections from structured metadata and may include:
 - `## Goal`
@@ -290,9 +291,9 @@ Manual-task specs derive their sections from structured metadata and may include
 - `## References`
 - `## Origin`
 
-## Session Metadata
+## Assignment And Session Metadata
 
-Sessions are tracked per feature in `sessions.json`:
+Canonical session bindings live in project `.hive/sessions.json`. Feature-local `sessions.json` files are projections for navigation and cannot replace missing canonical provenance.
 
 ```json
 {
@@ -300,7 +301,19 @@ Sessions are tracked per feature in `sessions.json`:
   "sessions": [
     {
       "sessionId": "ses_abc123",
+      "parentSessionId": "ses_parent",
+      "featureName": "feature-a",
       "taskFolder": "01-first-task",
+      "projectRoot": "/trusted/project",
+      "workerAssignment": {
+        "format": "hive-worker-assignment/v1",
+        "projectRoot": "/trusted/project",
+        "featureName": "feature-a",
+        "taskFolder": "01-first-task",
+        "attempt": 2,
+        "locator": ".hive/features/feature-a/tasks/01-first-task/assignments/attempt-2.md",
+        "contentHash": "<sha256>"
+      },
       "startedAt": "2025-01-05T09:00:00Z",
       "lastActiveAt": "2025-01-05T10:30:00Z",
       "messageCount": 42,
@@ -316,6 +329,12 @@ Sessions are tracked per feature in `sessions.json`:
 ```
 
 `standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
+
+Task `status.json` keeps append-only `workerAttempts` records for allocated, published, associated, and publication-failed attempts. `workerAssignment` selects the current published descriptor; `worker-prompt.md` is not evidence. A duplicate gets its own session ID plus `assignmentSourceSessionId`, while the source descriptor and task association stay unchanged.
+
+Every catalog delivery and compaction replay revalidates the current runtime root and descriptor. Root relocation, legacy prompt shape, or any exact identity/hash mismatch fails explicitly. Recovery creates a fresh attempt and child at the newly trusted root; it never edits old session or assignment records in place.
+
+Once an assignment or ad-hoc run is bound, ordinary session patches cannot change its descriptor, root, task, feature, parent, or agent classification. Assignment identity requires validation even if persisted classification disagrees. Dispatch and compaction consume the exact bytes returned by hash validation; replay never reopens the artifact after validating it.
 
 ## Migration from Legacy
 

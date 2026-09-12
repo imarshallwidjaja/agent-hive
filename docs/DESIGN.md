@@ -51,9 +51,13 @@ packages/
 
 ## Prompt Management
 
-- `spec.md` is the single source for plan/context/prior task summaries in worker prompts to avoid duplication.
-- `hive_worktree_start` writes the full prompt to `.hive/features/<feature>/tasks/<task>/worker-prompt.md` and returns `workerPromptPath` plus a short preview.
-- Prompt budgets default to last 10 tasks, 2000 chars per summary, 20KB per context file, 60KB total; `promptMeta`, `payloadMeta`, and `warnings` report sizes.
+- `spec.md` contains the fixed task contract: the matching plan section, manual task requirements, dependencies, and bounded completed-task summaries. Supporting context bodies are not copied into it.
+- A launch allocates an attempt before rendering, then exclusively publishes `.hive/features/<feature>/tasks/<task>/assignments/attempt-<n>.md`. `status.json` stores its format, canonical root, feature, task, attempt, relative locator, and raw-byte SHA-256.
+- `worker-prompt.md` is only a latest-pointer navigation aid. Launch, association, recovery, and commit checks use the exact attempt descriptor, never that mutable pointer.
+- Before native dispatch, Hive reads and hashes the attempt artifact, then replaces the locator reference with those verified bytes. Association validates the artifact again. Compaction replays the bytes returned by validation without a second file read.
+- Live project and feature catalogs are delivered separately as untrusted metadata under one 8 KiB automatic budget. Catalog continuations and current storage errors remain explicit; supporting document bodies require `hive_context_read`.
+- Catalog refresh removes only the plugin-owned synthetic user message with matching session, message, and part identities. Marker-prefixed user or assistant text is preserved.
+- Completed-task history retains the 10-task and 2000-character summary budgets. Supporting-context prompt budgets were removed with eager body injection.
 
 ## Feature Resolution
 
@@ -84,7 +88,7 @@ Hive uses a two-level session model so compaction recovery can find the right ro
 
 - Global session identity lives in global `.hive/sessions.json`.
 - Once a session is bound to a feature, it is mirrored into feature-local `sessions.json` files at `.hive/features/<feature>/sessions.json`.
-- The global file is the recovery source of truth; feature-local mirrors keep history discoverable from the feature folder.
+- The global file is authoritative. Feature-local files are projections and cannot recover or rebind a child when they disagree.
 
 Tracked metadata can include:
 
@@ -93,7 +97,10 @@ Tracked metadata can include:
 - `sessionKind`
 - `featureName`
 - `taskFolder`
-- `workerPromptPath`
+- `projectRoot`
+- `workerAssignment` (format/root/feature/task/attempt/locator/hash)
+- `assignmentSourceSessionId` for authenticated duplicates
+- `adHocRunId` for project-only ad-hoc workers
 - `directivePrompt`
 - replay flags and activity metadata
 
@@ -116,10 +123,10 @@ When OpenCode emits a compaction event, Hive rebuilds a minimal re-anchor prompt
 - Primary and subagent sessions can restore the last real user directive through post-compaction replay, with `directiveRecoveryState` tracking whether recovery is still available for the current directive.
 - For primary/subagent sessions the state machine is `available -> consumed -> escalated`, so one normal replay attempt is allowed before later compactions switch the session into escalation-only behavior.
 - A new real directive resets the state so the next real assignment can use one fresh recovery cycle instead of inheriting the old session's terminal state.
-- Task-worker sessions do not restore the full user directive. They recover from durable task-scoped metadata, re-read `worker-prompt.md`, and receive one bounded worker-specific synthetic replay that restates the active task identity and worker boundaries.
-- If `workerPromptPath` was stored explicitly, Hive uses it. Otherwise it reconstructs the expected `.hive/features/<feature>/tasks/<task>/worker-prompt.md` path from `featureName` and `taskFolder`.
+- Task-worker sessions do not restore the full user directive. Hive revalidates the current runtime root, exact session/attempt descriptor, format, and artifact hash, then replays the immutable assignment bytes. Live catalogs are fetched separately.
+- A missing or mismatched root, session, attempt, format, locator, or hash returns `assignment_recovery_error`. A legacy mixed prompt returns `legacy_assignment_reanchor_required`; Hive does not strip or replay it.
 - Recovery prompts tell sessions not to switch roles, not to rediscover state through status tools, and not to re-read the full codebase.
-- Worker recovery stays intentionally narrow: keep the same role, finish only the current assignment, re-read `worker-prompt.md`, do not merge, and do not start the next task.
+- Relocation intentionally loses seamless continuation. Stored roots are compared as provenance and are never followed as lookup redirects. An authenticated primary at the newly trusted canonical root must create a fresh task attempt, immutable assignment, and child binding. Ad-hoc work requires a fresh authenticated run. Historical sessions, descriptors, and artifacts remain unchanged.
 
 This keeps recovery narrow and deterministic: orchestrators recover their role and directive, while workers recover their exact task contract without drifting into orchestration. In operator terms, the durable recovery surface is task-level semantic `.hive` state, not transcript replay.
 
@@ -268,6 +275,8 @@ Hive uses file-based state with clear ownership boundaries:
 | `plan.md` | Primary agent | VS Code (read + comment, execution source of truth) |
 | `comments/plan.json` | VS Code | Primary agent (read-only) |
 | `spec.md` | `hive_worktree_start` / `hive_worktree_create` | Worker (read-only) |
+| `assignments/attempt-<n>.md` | Launch publication | Worker (read-only, immutable) |
+| `worker-prompt.md` | Launch publication | All (latest-pointer navigation only) |
 | `report.md` | Worker | All (read-only) |
 | `BLOCKED` | Operator | All (read-only, blocks operations) |
 
@@ -296,6 +305,14 @@ Task `status.json` fields and who writes them:
 | `blocker` | Worker via `hive_worktree_commit` | When blocked |
 | `dependsOn` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
 | `metadata` | `hive_task_create` | On structured manual task creation |
+| `workerAttempt` / `workerAttempts` | `hive_worktree_start` / `hive_worktree_create` | Allocation, publication, association, or publication failure |
+| `workerAssignment` | Launch publication | Exact immutable assignment descriptor |
+
+### Reused worktree integrity
+
+Containment inside a Git common directory does not prove that a selected HEAD and index belong to the requested worktree. Before any Git command runs in a reused task worktree, Hive resolves the common directory with Git only from each currently trusted topology-resolved repository. A trusted linked manifest repository may have a common directory outside the canonical project root.
+
+Hive reads the suspect worktree's local `.git` pointer as bytes, resolves its syntax without dereferencing the target, and requires identity-bound containment with no symlink components before reading the selected administration metadata. The selected entry's `commondir` must resolve to the trusted common directory, and its normalized `gitdir` backlink must equal the current worktree's own `.git` path. Repository and persisted workspace topology must also match. A sibling or old entry is rejected before suspect-worktree Git or access through its mismatched backlink. Rejection does not rewrite `.git`, repair or delete the worktree, migrate roots, or modify historical assignment state; the operator prepares a valid workspace before a fresh launch.
 
 ## Idempotency Expectations
 

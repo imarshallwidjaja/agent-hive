@@ -34,10 +34,12 @@ import {
   SubtaskType,
   SubtaskStatus,
   WorkerSession,
+  WorkerAssignmentDescriptor,
   ManualTaskMetadata,
   renderAggregateBranchDiff,
 } from '../types.js';
 import { RepositoryService } from './repositoryService.js';
+import { workerAssignmentsEqual } from './sessionService.js';
 
 /** Current schema version for TaskStatus */
 export const TASK_STATUS_SCHEMA_VERSION = 1;
@@ -315,14 +317,13 @@ export class TaskService {
     repoIds?: string[];
     allTasks: Array<{ folder: string; name: string; order: number }>;
     planContent?: string | null;
-    contextFiles?: Array<{ name: string; content: string }>;
     completedTasks?: Array<{
       name: string;
       summary: string;
       aggregateBranchDiff?: TaskStatus['aggregateBranchDiff'];
     }>;
   }): string {
-    const { featureName, task, dependsOn, repoIds, allTasks, planContent, contextFiles = [], completedTasks = [] } = params;
+    const { featureName, task, dependsOn, repoIds, allTasks, planContent, completedTasks = [] } = params;
 
     const getTaskType = (planSection: string | null, taskName: string): string | null => {
       if (!planSection) {
@@ -394,13 +395,6 @@ export class TaskService {
     const taskType = getTaskType(planSection, task.name);
     if (taskType) {
       specLines.push('## Task Type', '', taskType, '');
-    }
-
-    if (contextFiles.length > 0) {
-      const contextCompiled = contextFiles
-        .map(f => `## ${f.name}\n\n${f.content}`)
-        .join('\n\n---\n\n');
-      specLines.push('## Context', '', contextCompiled, '');
     }
 
     if (completedTasks.length > 0) {
@@ -732,10 +726,97 @@ export class TaskService {
         schemaVersion: TASK_STATUS_SCHEMA_VERSION,
         idempotencyKey,
         workerAttempt: attempt,
+        workerAttempts: [
+          ...(current.workerAttempts ?? []),
+          { attempt, idempotencyKey, state: 'allocated' },
+        ],
       };
       delete status.workerSession;
+      delete status.workerAssignment;
       writeJsonAtomic(statusPath, status);
       return { status, attempt, idempotencyKey };
+    } finally {
+      release();
+    }
+  }
+
+  publishWorkerAssignment(
+    featureName: string,
+    taskFolder: string,
+    idempotencyKey: string,
+    assignment: WorkerAssignmentDescriptor,
+    lockOptions?: LockOptions,
+  ): TaskStatus {
+    return this.updateWorkerAttempt(featureName, taskFolder, lockOptions, (current, attempts) => {
+      const record = attempts.at(-1);
+      if (!record
+        || record.attempt !== assignment.attempt
+        || record.idempotencyKey !== idempotencyKey
+        || current.workerAttempt !== assignment.attempt
+        || current.idempotencyKey !== idempotencyKey) {
+        throw new Error('assignment_recovery_error: assignment does not match the active allocated attempt');
+      }
+      if (record.state !== 'allocated') {
+        throw new Error(`assignment_recovery_error: attempt ${assignment.attempt} is already ${record.state}`);
+      }
+      if (
+        assignment.featureName !== featureName
+        || assignment.taskFolder !== taskFolder
+        || assignment.format !== 'hive-worker-assignment/v1'
+        || !Number.isInteger(assignment.attempt)
+        || !/^[a-f0-9]{64}$/.test(assignment.contentHash)
+        || !assignment.projectRoot
+        || !assignment.locator
+      ) {
+        throw new Error('assignment_recovery_error: assignment descriptor identity is invalid');
+      }
+      record.state = 'published';
+      record.assignment = { ...assignment };
+      current.workerAssignment = { ...assignment };
+      return current;
+    });
+  }
+
+  failWorkerAssignmentPublication(
+    featureName: string,
+    taskFolder: string,
+    idempotencyKey: string,
+    attempt: number,
+    failure: string,
+    lockOptions?: LockOptions,
+  ): TaskStatus {
+    return this.updateWorkerAttempt(featureName, taskFolder, lockOptions, (current, attempts) => {
+      const record = attempts.at(-1);
+      if (!record || record.attempt !== attempt || record.idempotencyKey !== idempotencyKey || record.state !== 'allocated') {
+        throw new Error('assignment_recovery_error: failed publication does not match the active allocated attempt');
+      }
+      record.state = 'publication_failed';
+      record.failure = failure;
+      delete current.workerAssignment;
+      return current;
+    });
+  }
+
+  private updateWorkerAttempt(
+    featureName: string,
+    taskFolder: string,
+    lockOptions: LockOptions | undefined,
+    mutate: (status: TaskStatus, attempts: NonNullable<TaskStatus['workerAttempts']>) => TaskStatus,
+  ): TaskStatus {
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
+    if (!fileExists(statusPath)) throw new Error(`Task '${taskFolder}' not found`);
+    const release = acquireLockSync(statusPath, lockOptions);
+    try {
+      const current = readJson<TaskStatus>(statusPath);
+      if (!current) throw new Error(`Task '${taskFolder}' not found`);
+      const attempts = (current.workerAttempts ?? []).map(record => ({
+        ...record,
+        ...(record.assignment ? { assignment: { ...record.assignment } } : {}),
+      }));
+      const updated = mutate({ ...current, workerAttempts: attempts }, attempts);
+      updated.schemaVersion = TASK_STATUS_SCHEMA_VERSION;
+      writeJsonAtomic(statusPath, updated);
+      return updated;
     } finally {
       release();
     }
@@ -748,8 +829,7 @@ export class TaskService {
     featureName: string,
     taskFolder: string,
     workerSession: WorkerSession,
-    idempotencyKey: string,
-    workerAttempt: number,
+    assignment: WorkerAssignmentDescriptor,
     lockOptions?: LockOptions
   ): TaskStatus {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
@@ -763,20 +843,24 @@ export class TaskService {
       if (!current) {
         throw new Error(`Task '${taskFolder}' not found`);
       }
-      if (
-        current.idempotencyKey !== idempotencyKey
-        || current.workerAttempt !== workerAttempt
-        || current.workerSession !== undefined
-      ) {
-        return current;
+      const record = current.workerAttempts?.at(-1);
+      const matchesDescriptor = workerAssignmentsEqual(current.workerAssignment, assignment)
+        && record?.attempt === assignment.attempt
+        && workerAssignmentsEqual(record.assignment, assignment);
+      if (!matchesDescriptor || (record?.state !== 'published' && record?.state !== 'associated')) {
+        throw new Error(`assignment_recovery_error: attempt ${assignment.attempt} is ${record?.state ?? 'not the exact published assignment'}`);
       }
+      if (current.workerSession !== undefined) return current;
 
       const updated: TaskStatus = {
         ...current,
         schemaVersion: TASK_STATUS_SCHEMA_VERSION,
-        idempotencyKey,
-        workerAttempt,
+        idempotencyKey: record.idempotencyKey,
+        workerAttempt: assignment.attempt,
         workerSession,
+        workerAttempts: current.workerAttempts!.map((candidate, index, attempts) => index === attempts.length - 1
+          ? { ...candidate, state: 'associated', workerSessionId: workerSession.sessionId }
+          : candidate),
       };
       writeJsonAtomic(statusPath, updated);
       return updated;

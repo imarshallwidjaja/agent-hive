@@ -53,11 +53,6 @@ export function createVariantHook(
   configService: ConfigService,
   sessionService?: SessionService,
   customAgents?: Record<string, { baseAgent: string }>,
-  taskWorkerRecovery?: {
-    featureName: string;
-    taskFolder: string;
-    workerPromptPath: string;
-  },
 ) {
   return async (
     input: {
@@ -80,11 +75,6 @@ export function createVariantHook(
       const patch: Record<string, unknown> = { agent: effectiveAgent, sessionKind };
       if (baseAgent) {
         patch.baseAgent = baseAgent;
-      }
-      if (sessionKind === 'task-worker' && taskWorkerRecovery) {
-        patch.featureName = taskWorkerRecovery.featureName;
-        patch.taskFolder = taskWorkerRecovery.taskFolder;
-        patch.workerPromptPath = taskWorkerRecovery.workerPromptPath;
       }
       sessionService.trackGlobal(input.sessionID, patch as any);
     }

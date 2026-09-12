@@ -107,7 +107,7 @@ export type {
   ContextRecoverySummary,
 } from './contextService.js';
 export { ReviewService } from './reviewService.js';
-export { SessionService, STANDING_CONSTRAINTS_MAX_CHARS } from './sessionService.js';
+export { SessionService, STANDING_CONSTRAINTS_MAX_CHARS, workerAssignmentsEqual } from './sessionService.js';
 export { BackgroundJobService } from './backgroundJobService.js';
 export type {
   BackgroundJobScopeFilter,

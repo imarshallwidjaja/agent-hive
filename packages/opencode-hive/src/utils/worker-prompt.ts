@@ -2,16 +2,6 @@
  * Worker prompt builder for Hive delegated execution.
  * Builds context-rich prompts for worker agents with all Hive context.
  */
-export interface ContextFile {
-  name: string;
-  content: string;
-}
-
-export interface CompletedTask {
-  name: string;
-  summary: string;
-}
-
 /**
  * Heading that marks the operator standing-constraints block. Shared by the
  * worker prompt builder and the `task` dispatch hook so the two emitters cannot
@@ -55,10 +45,7 @@ export interface WorkerPromptParams {
   taskOrder: number;
   worktreePath: string;
   branch: string;
-  plan: string;
-  contextFiles: ContextFile[];
   spec: string;
-  previousTasks?: CompletedTask[];
   continueFrom?: ContinueFromBlocked;
   previousAttempt?: PreviousAttempt;
   /**
@@ -98,7 +85,6 @@ export function buildWorkerPrompt(params: WorkerPromptParams): string {
     taskOrder,
     worktreePath,
     branch,
-    // plan, contextFiles, previousTasks - NOT used separately (embedded in spec)
     spec,
     continueFrom,
     previousAttempt,

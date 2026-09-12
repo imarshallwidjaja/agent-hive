@@ -158,6 +158,73 @@ export class WorktreeService {
     return simpleGit(cwd || this.config.baseDir);
   }
 
+  private isContained(root: string, candidate: string): boolean {
+    const relative = path.relative(root, candidate);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  }
+
+  private async trustedGitCommonDirectory(repositoryPath: string): Promise<string> {
+    const raw = (await this.getGit(repositoryPath).raw(['rev-parse', '--git-common-dir'])).trim();
+    if (!raw) throw new Error(`Worktree linkage preflight failed: trusted repository has no Git common directory (${repositoryPath})`);
+    return fs.realpath(path.isAbsolute(raw) ? raw : path.resolve(repositoryPath, raw));
+  }
+
+  private async assertNoSymlinkComponents(root: string, candidate: string, allowMissing = false): Promise<void> {
+    const relative = path.relative(root, candidate);
+    let current = root;
+    for (const segment of relative.split(path.sep).filter(Boolean)) {
+      current = path.join(current, segment);
+      const stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+        if (allowMissing && error.code === 'ENOENT') return null;
+        throw new Error(`Worktree linkage preflight failed: cannot inspect path component ${current}: ${error.message}`);
+      });
+      if (!stat) return;
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Worktree linkage preflight failed: path contains a symlink (${current})`);
+      }
+    }
+  }
+
+  private async validateExactWorktreeRegistration(
+    worktreePath: string,
+    trustedRepositoryPath: string,
+    repositoryId: string,
+  ): Promise<void> {
+    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath);
+    const commonDirectory = await this.trustedGitCommonDirectory(trustedRepositoryPath);
+    const localGitPath = path.join(worktreePath, '.git');
+    const localGitStat = await fs.lstat(localGitPath).catch(() => null);
+    if (!localGitStat?.isFile() || localGitStat.isSymbolicLink()) {
+      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: local .git must be a regular pointer file`);
+    }
+    const pointer = await fs.readFile(localGitPath, 'utf8');
+    const match = pointer.match(/^gitdir:\s*(.+?)\s*$/);
+    if (!match) throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: invalid local .git pointer`);
+    const administrationPath = path.normalize(path.isAbsolute(match[1]!)
+      ? match[1]!
+      : path.resolve(worktreePath, match[1]!));
+    const worktreesDirectory = path.join(commonDirectory, 'worktrees');
+    if (!this.isContained(worktreesDirectory, administrationPath) || administrationPath === worktreesDirectory) {
+      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: administration entry is outside the trusted Git common directory`);
+    }
+    await this.assertNoSymlinkComponents(commonDirectory, administrationPath);
+    await this.assertNoSymlinkComponents(administrationPath, path.join(administrationPath, 'commondir'));
+    await this.assertNoSymlinkComponents(administrationPath, path.join(administrationPath, 'gitdir'));
+
+    const commondirBytes = await fs.readFile(path.join(administrationPath, 'commondir'), 'utf8');
+    const selectedCommonDirectory = path.normalize(path.resolve(administrationPath, commondirBytes.trim()));
+    if (selectedCommonDirectory !== path.normalize(commonDirectory)) {
+      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: commondir does not match the trusted repository`);
+    }
+    const backlinkBytes = await fs.readFile(path.join(administrationPath, 'gitdir'), 'utf8');
+    const backlink = path.normalize(path.isAbsolute(backlinkBytes.trim())
+      ? backlinkBytes.trim()
+      : path.resolve(administrationPath, backlinkBytes.trim()));
+    if (backlink !== path.normalize(localGitPath)) {
+      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: administration backlink does not select this exact worktree`);
+    }
+  }
+
   private getWorktreesDir(): string {
     return path.join(this.config.hiveDir, ".worktrees");
   }
@@ -266,6 +333,7 @@ export class WorktreeService {
 
   private async createLegacy(feature: string, step: string, baseBranch?: string): Promise<WorktreeInfo> {
     const worktreePath = this.getWorktreePath(feature, step);
+    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
     const branchName = this.getLegacyBranchName(feature, step);
     const git = this.getGit();
 
@@ -289,6 +357,7 @@ export class WorktreeService {
     }
 
     const worktreeGit = this.getGit(worktreePath);
+    await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
     const commit = (await worktreeGit.revparse(["HEAD"])).trim();
 
     return {
@@ -309,7 +378,9 @@ export class WorktreeService {
     baseBranch?: string,
   ): Promise<WorktreeInfo> {
     // Existing composite workspace -> return aggregate info
-    const existing = await this.get(feature, step);
+    const existing = await this.readWorkspaceManifest(feature, step)
+      ? await this.get(feature, step)
+      : null;
     if (existing) {
       return existing;
     }
@@ -381,6 +452,7 @@ export class WorktreeService {
         }
         createdRepos.push({ repoId, repoPath: repo.path, branchName, git: repoGit });
 
+        await this.validateExactWorktreeRegistration(repoWtPath, repo.path, repoId);
         const wtGit = this.getGit(repoWtPath);
         const commit = (await wtGit.revparse(["HEAD"])).trim();
         repoInfos[repoId] = { path: repoWtPath, branch: branchName, commit };
@@ -477,6 +549,8 @@ export class WorktreeService {
   }
 
   private async readWorkspaceManifest(feature: string, step: string): Promise<WorkspaceManifest | null> {
+    const manifestPath = this.getWorkspaceManifestPath(feature, step);
+    await this.assertNoSymlinkComponents(path.parse(manifestPath).root, manifestPath, true);
     const manifest = await readCompositeWorkspaceManifest(this.getCompositeRoot(feature, step));
     return manifest?.mode === 'composite' ? manifest : null;
   }
@@ -488,12 +562,24 @@ export class WorktreeService {
       const repos: Record<string, WorktreeRepoInfo> = {};
       const baseCommits: Record<string, string> = { ...manifest.baseCommits };
       const repoIds = Object.keys(manifest.repos);
+      const trustedRepositories = this.resolveRepositories();
+      if (!trustedRepositories?.length) {
+        throw new Error('Worktree linkage preflight failed: trusted repository topology is unavailable');
+      }
+      const trustedById = new Map(trustedRepositories.map(repository => [repository.id, repository]));
       for (const id of repoIds) {
-        const repoWtPath = path.join(compositeRoot, manifest.repos[id].path);
+        const entry = manifest.repos[id]!;
+        const trusted = trustedById.get(id);
+        if (!trusted
+          || entry.repoRoot !== trusted.root
+          || path.resolve(entry.repoPath) !== path.resolve(trusted.path)
+          || entry.path !== path.posix.join('repos', id)) {
+          throw new Error(`Worktree linkage preflight failed for repository ${id}: workspace topology does not match the trusted repository manifest`);
+        }
+        const repoWtPath = path.join(compositeRoot, entry.path);
+        await this.validateExactWorktreeRegistration(repoWtPath, trusted.path, id);
         let commit = manifest.repos[id].commit;
-        try {
-          commit = (await this.getGit(repoWtPath).revparse(["HEAD"])).trim();
-        } catch {}
+        commit = (await this.getGit(repoWtPath).revparse(["HEAD"])).trim();
         repos[id] = { path: repoWtPath, branch: manifest.repos[id].branch, commit };
       }
       const firstId = repoIds[0];
@@ -515,22 +601,25 @@ export class WorktreeService {
     const branchName = this.getLegacyBranchName(feature, step);
     try {
       await fs.access(worktreePath);
-      const worktreeGit = this.getGit(worktreePath);
-      const commit = (await worktreeGit.revparse(["HEAD"])).trim();
-      return {
-        path: worktreePath,
-        branch: branchName,
-        commit,
-        feature,
-        step,
-        mode: 'legacy',
-      };
-    } catch {
-      return null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
     }
+    await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
+    const worktreeGit = this.getGit(worktreePath);
+    const commit = (await worktreeGit.revparse(["HEAD"])).trim();
+    return {
+      path: worktreePath,
+      branch: branchName,
+      commit,
+      feature,
+      step,
+      mode: 'legacy',
+    };
   }
 
   async getDiff(feature: string, step: string, baseCommit?: string): Promise<DiffResult> {
+    await this.get(feature, step);
     const manifest = await this.readWorkspaceManifest(feature, step);
     if (manifest) {
       return this.getCompositeDiff(feature, step, manifest);
@@ -1025,6 +1114,7 @@ export class WorktreeService {
   }
 
   async commitChanges(feature: string, step: string, message?: string): Promise<CommitResult> {
+    await this.get(feature, step);
     const manifest = await this.readWorkspaceManifest(feature, step);
     if (manifest) {
       return this.commitComposite(feature, step, manifest, message);
@@ -1733,6 +1823,7 @@ export class WorktreeService {
   }
 
   async hasUncommittedChanges(feature: string, step: string): Promise<boolean> {
+    await this.get(feature, step);
     const manifest = await this.readWorkspaceManifest(feature, step);
     if (manifest) {
       const compositeRoot = this.getCompositeRoot(feature, step);

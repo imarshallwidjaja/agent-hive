@@ -370,41 +370,135 @@ describe("TaskService", () => {
       expect(second.status.status).toBe("failed");
       expect(second.status.summary).toBe("Previous attempt failed");
       expect(second.status.completedAt).toBe("2025-01-22T00:00:00Z");
+      expect(second.status.workerAttempts).toEqual([
+        expect.objectContaining({ attempt: 2, state: "allocated" }),
+        expect.objectContaining({ attempt: 3, state: "allocated" }),
+      ]);
+    });
+
+    it("publishes and associates only the exact immutable assignment descriptor", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", { status: "in_progress" });
+      const allocation = service.allocateWorkerAttempt(featureName, "01-test-task");
+      const descriptor = {
+        format: "hive-worker-assignment/v1" as const,
+        projectRoot: TEST_DIR,
+        featureName,
+        taskFolder: "01-test-task",
+        attempt: allocation.attempt,
+        locator: ".hive/features/test-feature/tasks/01-test-task/assignments/attempt-1.md",
+        contentHash: "a".repeat(64),
+      };
+
+      const published = service.publishWorkerAssignment(
+        featureName,
+        "01-test-task",
+        allocation.idempotencyKey,
+        descriptor,
+      );
+      const associated = service.associateWorkerSession(
+        featureName,
+        "01-test-task",
+        { sessionId: "worker-session", attempt: allocation.attempt },
+        descriptor,
+      );
+
+      expect(published.workerAssignment).toEqual(descriptor);
+      expect(associated.workerSession?.sessionId).toBe("worker-session");
+      expect(associated.workerAttempts?.at(-1)).toMatchObject({
+        attempt: allocation.attempt,
+        state: "associated",
+        assignment: descriptor,
+        workerSessionId: "worker-session",
+      });
+      expect(() => service.publishWorkerAssignment(
+        featureName,
+        "01-test-task",
+        allocation.idempotencyKey,
+        { ...descriptor, contentHash: "b".repeat(64) },
+      )).toThrow(/already associated/i);
+    });
+
+    it("records failed publication and refuses later association", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", { status: "in_progress" });
+      const allocation = service.allocateWorkerAttempt(featureName, "01-test-task");
+
+      service.failWorkerAssignmentPublication(
+        featureName,
+        "01-test-task",
+        allocation.idempotencyKey,
+        allocation.attempt,
+        "disk full",
+      );
+
+      expect(service.getRawStatus(featureName, "01-test-task")?.workerAttempts?.at(-1)).toMatchObject({
+        attempt: allocation.attempt,
+        state: "publication_failed",
+        failure: "disk full",
+      });
+      expect(() => service.associateWorkerSession(
+        featureName,
+        "01-test-task",
+        { sessionId: "worker-session", attempt: allocation.attempt },
+        {
+          format: "hive-worker-assignment/v1",
+          projectRoot: TEST_DIR,
+          featureName,
+          taskFolder: "01-test-task",
+          attempt: allocation.attempt,
+          locator: "assignment.md",
+          contentHash: "a".repeat(64),
+        },
+      )).toThrow(/publication_failed/i);
     });
 
     it("associates only the exact unclaimed attempt", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
-      setupTask(featureName, "01-test-task", {
-        status: "in_progress",
-        idempotencyKey: "new-key",
-        workerAttempt: 2,
-      });
+      setupTask(featureName, "01-test-task", { status: "in_progress", workerAttempt: 1 });
+      const allocation = service.allocateWorkerAttempt(featureName, "01-test-task");
+      const descriptor = {
+        format: "hive-worker-assignment/v1" as const,
+        projectRoot: TEST_DIR,
+        featureName,
+        taskFolder: "01-test-task",
+        attempt: allocation.attempt,
+        locator: "new.md",
+        contentHash: "b".repeat(64),
+      };
+      service.publishWorkerAssignment(featureName, "01-test-task", allocation.idempotencyKey, descriptor);
 
-      const delayed = service.associateWorkerSession(
+      expect(() => service.associateWorkerSession(
         featureName,
         "01-test-task",
         { sessionId: "old-session", attempt: 1 },
-        "old-key",
-        1,
-      );
+        {
+          format: "hive-worker-assignment/v1",
+          projectRoot: TEST_DIR,
+          featureName,
+          taskFolder: "01-test-task",
+          attempt: 1,
+          locator: "old.md",
+          contentHash: "a".repeat(64),
+        },
+      )).toThrow(/assignment_recovery_error/);
 
       const associated = service.associateWorkerSession(
         featureName,
         "01-test-task",
         { sessionId: "new-session", attempt: 2 },
-        "new-key",
-        2,
+        descriptor,
       );
       const duplicate = service.associateWorkerSession(
         featureName,
         "01-test-task",
         { sessionId: "duplicate-session", attempt: 2 },
-        "new-key",
-        2,
+        descriptor,
       );
 
-      expect(delayed.workerSession).toBeUndefined();
       expect(associated.workerSession?.sessionId).toBe("new-session");
       expect(duplicate.workerSession?.sessionId).toBe("new-session");
     });

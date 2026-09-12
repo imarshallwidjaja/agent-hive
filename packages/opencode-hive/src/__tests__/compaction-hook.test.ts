@@ -1,13 +1,13 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { buildCompactionPrompt } from '../utils/compaction-prompt.js';
-import { buildCompactionReanchor } from '../utils/compaction-anchor.js';
 import { STANDING_CONSTRAINTS_HEADING } from '../utils/worker-prompt.js';
 import type { PluginInput } from '@opencode-ai/plugin';
-import { SessionService } from 'hive-core';
+import { ContextService, SessionService } from 'hive-core';
 import type { Message, Part } from '@opencode-ai/sdk';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { createHash } from 'node:crypto';
 
 describe('buildCompactionPrompt', () => {
   test('includes resume instruction to continue current task', () => {
@@ -16,9 +16,10 @@ describe('buildCompactionPrompt', () => {
     expect(prompt).toMatch(/worker|assignment|resume/i);
   });
 
-  test('instructs reading task spec file, not full repo', () => {
+  test('requires runtime assignment recovery, not an inferred prompt path', () => {
     const prompt = buildCompactionPrompt();
-    expect(prompt).toMatch(/worker-prompt\.md|task spec|spec file/i);
+    expect(prompt).toMatch(/runtime assignment recovery/i);
+    expect(prompt).not.toContain('worker-prompt.md');
   });
 
   test('does not instruct calling hive_status on resume', () => {
@@ -46,47 +47,6 @@ describe('buildCompactionPrompt', () => {
   test('is concise (under 600 characters)', () => {
     const prompt = buildCompactionPrompt();
     expect(prompt.length).toBeLessThan(600);
-  });
-});
-
-describe('buildCompactionReanchor', () => {
-  test('builds a primary-session reanchor without worker prompt context', () => {
-    const anchor = buildCompactionReanchor({
-      agent: 'hive-master',
-      sessionKind: 'primary',
-      directivePrompt: 'Finish the current task and report findings only.',
-    });
-
-    expect(anchor.prompt).toContain('Compaction recovery');
-    expect(anchor.prompt).toContain('Role: Hive');
-    expect(anchor.prompt).toContain('Original directive survives via post-compaction replay.');
-    expect(anchor.prompt).not.toContain('worker-prompt.md');
-    expect(anchor.context).toEqual([]);
-  });
-
-  test('builds a task-worker reanchor with exact worker prompt path', () => {
-    const anchor = buildCompactionReanchor({
-      agent: 'forager-worker',
-      sessionKind: 'task-worker',
-      featureName: 'my-feature',
-      taskFolder: '01-task',
-      workerPromptPath: '.hive/features/my-feature/tasks/01-task/worker-prompt.md',
-    });
-
-    expect(anchor.prompt).toContain('Compaction recovery');
-    expect(anchor.prompt).toContain('Role: Forager');
-    expect(anchor.prompt).toContain('Re-read worker-prompt.md now to recall your assignment.');
-    expect(anchor.context).toEqual(['.hive/features/my-feature/tasks/01-task/worker-prompt.md']);
-  });
-
-  test('falls back to generic worker prompt guidance when task metadata is partial', () => {
-    const anchor = buildCompactionReanchor({
-      agent: 'forager-worker',
-      sessionKind: 'task-worker',
-    });
-
-    expect(anchor.prompt).toContain('worker-prompt.md');
-    expect(anchor.context).toEqual([]);
   });
 });
 
@@ -135,6 +95,35 @@ function buildCompactionTransformOutput(sessionID: string, cwd: string) {
       },
     ],
   };
+}
+
+function bindImmutableAssignment(root: string, sessionService: SessionService, sessionID: string, content: string) {
+  const featureName = 'my-feature';
+  const taskFolder = '01-task';
+  const taskDir = path.join(root, '.hive', 'features', featureName, 'tasks', taskFolder);
+  const locator = `.hive/features/${featureName}/tasks/${taskFolder}/assignments/attempt-1.md`;
+  fs.mkdirSync(path.join(taskDir, 'assignments'), { recursive: true });
+  fs.writeFileSync(path.join(root, locator), content);
+  const assignment = {
+    format: 'hive-worker-assignment/v1' as const,
+    projectRoot: root,
+    featureName,
+    taskFolder,
+    attempt: 1,
+    locator,
+    contentHash: createHash('sha256').update(content).digest('hex'),
+  };
+  fs.writeFileSync(path.join(taskDir, 'status.json'), JSON.stringify({
+    status: 'in_progress',
+    origin: 'plan',
+    workerAttempt: 1,
+    workerAssignment: assignment,
+    workerAttempts: [{ attempt: 1, idempotencyKey: 'attempt-1', state: 'associated', assignment, workerSessionId: sessionID }],
+    workerSession: { sessionId: sessionID, attempt: 1 },
+  }));
+  sessionService.trackGlobal(sessionID, { parentSessionId: 'parent', agent: 'forager-worker', sessionKind: 'task-worker' });
+  sessionService.bindWorkerAssignment(sessionID, 'parent', assignment);
+  return assignment;
 }
 
 describe('compaction replay on supported hooks', () => {
@@ -249,7 +238,9 @@ describe('compaction replay on supported hooks', () => {
     const output = buildCompactionTransformOutput('sess-replay-constraints', testRoot);
     await hooks['experimental.chat.messages.transform']?.({}, output as any);
 
-    const replayText = (output.messages[2].parts[0] as any).text as string;
+    const replayText = output.messages.flatMap(message => message.parts)
+      .map(part => (part as any).text as string)
+      .find(text => text?.includes('You are still Hive.'))!;
     expect(replayText).toContain('You are still Hive.');
     expect(replayText).toContain('Finish the parser task and report verification evidence.');
     expect(replayText).toContain(STANDING_CONSTRAINTS_HEADING);
@@ -272,7 +263,9 @@ describe('compaction replay on supported hooks', () => {
     const output = buildCompactionTransformOutput('sess-replay-no-constraints', testRoot);
     await hooks['experimental.chat.messages.transform']?.({}, output as any);
 
-    const replayText = (output.messages[2].parts[0] as any).text as string;
+    const replayText = output.messages.flatMap(message => message.parts)
+      .map(part => (part as any).text as string)
+      .find(text => text?.includes('You are still Hive.'))!;
     expect(replayText).toContain('You are still Hive.');
     expect(replayText).not.toContain(STANDING_CONSTRAINTS_HEADING);
   });
@@ -301,29 +294,111 @@ describe('compaction replay on supported hooks', () => {
 
   test('messages.transform appends worker replay after compaction for task-worker sessions', async () => {
     const sessionService = new SessionService(testRoot);
-    sessionService.trackGlobal('sess-tw-bounded', {
-      agent: 'forager-worker',
-      sessionKind: 'task-worker',
-      featureName: 'my-feature',
-      taskFolder: '01-task',
-      workerPromptPath: '.hive/features/my-feature/tasks/01-task/worker-prompt.md',
-      replayDirectivePending: true,
-    } as any);
+    const assignment = bindImmutableAssignment(testRoot, sessionService, 'sess-tw-bounded', '# Immutable assignment\n\nContinue exact task.');
+    sessionService.trackGlobal('sess-tw-bounded', { replayDirectivePending: true });
 
     const output = buildCompactionTransformOutput('sess-tw-bounded', testRoot);
     await hooks['experimental.chat.messages.transform']?.({}, output as any);
 
-    expect(output.messages).toHaveLength(3);
-    const replayText = (output.messages[2].parts[0] as any).text;
+    const replayText = output.messages.flatMap(message => message.parts)
+      .map(part => (part as any).text as string)
+      .find(text => text?.includes('Post-compaction recovery'))!;
     expect(replayText).toContain('Post-compaction recovery');
-    expect(replayText).toContain('01-task');
-    expect(replayText).toContain('@.hive/features/my-feature/tasks/01-task/worker-prompt.md');
+    expect(replayText).toContain('# Immutable assignment');
+    expect(replayText).toContain(`attempt ${assignment.attempt}`);
+    expect(replayText).not.toContain('@.hive/features');
     expect(replayText).not.toContain(['checkpoint', '.json'].join(''));
     expect(replayText).not.toContain('status.json');
     expect(replayText).not.toContain('spec.md');
 
     const cleared = sessionService.getGlobal('sess-tw-bounded');
     expect(cleared?.replayDirectivePending).toBe(false);
+  });
+
+  test('worker replay fails explicitly when immutable assignment bytes change', async () => {
+    const sessionService = new SessionService(testRoot);
+    const assignment = bindImmutableAssignment(testRoot, sessionService, 'sess-tw-tampered', '# Original assignment');
+    fs.writeFileSync(path.join(testRoot, assignment.locator), '# Tampered assignment');
+    sessionService.trackGlobal('sess-tw-tampered', { replayDirectivePending: true });
+
+    const output = buildCompactionTransformOutput('sess-tw-tampered', testRoot);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+
+    const replayText = output.messages.flatMap(message => message.parts)
+      .map(part => (part as any).text as string)
+      .find(text => text?.includes('assignment recovery failed'))!;
+    expect(replayText).toContain('assignment_recovery_error');
+    expect(replayText).toContain('hash does not match');
+  });
+
+  test('legacy mixed prompts fail reanchor without reading or replaying their bodies', async () => {
+    const sessions = new SessionService(testRoot);
+    const legacy = path.join(testRoot, 'worker-prompt.md');
+    fs.writeFileSync(legacy, 'MANDATORY OLD TASK\nSTALE SUPPORTING BODY');
+    sessions.trackGlobal('legacy-worker', { agent: 'forager-worker', sessionKind: 'task-worker', parentSessionId: 'parent', workerPromptPath: legacy, replayDirectivePending: true });
+    const read = spyOn(fs, 'readFileSync');
+    try {
+      const output = buildCompactionTransformOutput('legacy-worker', testRoot);
+      await hooks['experimental.chat.messages.transform']({}, output);
+      const text = output.messages.flatMap(message => message.parts).map(part => (part as any).text).join('\n');
+      expect(text).toContain('legacy_assignment_reanchor_required');
+      expect(text).not.toContain('STALE SUPPORTING BODY');
+      expect(read.mock.calls.some(call => call[0] === legacy)).toBe(false);
+    } finally { read.mockRestore(); }
+  });
+
+  test('private review recipients and descendants refresh with zero live storage reads', async () => {
+    const sessions = new SessionService(testRoot);
+    sessions.trackGlobal('private-review', { agent: '__hive_dash_review_primary', sessionKind: 'primary' });
+    sessions.trackGlobal('private-descendant', { agent: 'scout-researcher', sessionKind: 'subagent', parentSessionId: 'private-review' });
+    const catalog = spyOn(ContextService.prototype, 'readCatalog');
+    const content = spyOn(ContextService.prototype, 'readContent');
+    try {
+      for (const sessionID of ['private-review', 'private-descendant']) {
+        const output = buildCompactionTransformOutput(sessionID, testRoot);
+        await hooks['experimental.chat.messages.transform']({}, output);
+        expect(output.messages.flatMap(message => message.parts).some(part => (part as any).text?.includes('[hive-live-context-catalog/v1]'))).toBe(false);
+      }
+      expect(catalog).not.toHaveBeenCalled();
+      expect(content).not.toHaveBeenCalled();
+    } finally { catalog.mockRestore(); content.mockRestore(); }
+  });
+
+  test('worker replay consumes the same bytes that passed hash validation', async () => {
+    const sessions = new SessionService(testRoot);
+    const assignment = bindImmutableAssignment(testRoot, sessions, 'race-worker', '# Verified original');
+    sessions.trackGlobal('race-worker', { replayDirectivePending: true });
+    const artifact = path.join(testRoot, assignment.locator);
+    const read = fs.readFileSync;
+    let artifactReads = 0;
+    const spy = spyOn(fs, 'readFileSync').mockImplementation(((file: any, ...args: any[]) => {
+      const bytes = (read as any)(file, ...args);
+      if (file === artifact && ++artifactReads === 2) fs.writeFileSync(artifact, '# UNVERIFIED REPLAY');
+      return bytes;
+    }) as any);
+    try {
+      const output = buildCompactionTransformOutput('race-worker', testRoot);
+      await hooks['experimental.chat.messages.transform']({}, output);
+      const text = output.messages.flatMap(message => message.parts).map(part => (part as any).text).join('\n');
+      expect(text).not.toContain('UNVERIFIED REPLAY');
+      expect(text).toContain('Post-compaction recovery: replaying hash-verified immutable assignment');
+      expect(text).toContain('# Verified original');
+      expect(artifactReads).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test.each(['user', 'assistant'])('catalog refresh preserves a real %s marker-prefixed message', async (role) => {
+    const sessions = new SessionService(testRoot);
+    sessions.trackGlobal('marker-user', { agent: 'hive-master', sessionKind: 'primary' });
+    const original = {
+      info: { id: 'real-message', sessionID: 'marker-user', role, time: { created: Date.now() } },
+      parts: [{ id: 'real-part', sessionID: 'marker-user', messageID: 'real-message', type: 'text', text: '[hive-live-context-catalog/v1]\nQuoted by a person.' }],
+    };
+    const output = { messages: [original] };
+    await hooks['experimental.chat.messages.transform']({}, output);
+    expect(output.messages).toContainEqual(original);
   });
 
 
