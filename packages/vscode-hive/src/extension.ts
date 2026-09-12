@@ -4,7 +4,7 @@ import * as path from 'path'
 import { HiveWatcher, Launcher } from './services'
 import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, TrackedRepositoriesProvider } from './providers'
 
-import { archiveContext } from './providers/contextInspection.js'
+import { archiveContext, isContextScope } from './providers/contextInspection.js'
 import { SessionConstraintsProvider } from './providers/sessionConstraintsProvider.js'
 
 type ReviewDocument = 'plan' | 'overview'
@@ -165,6 +165,27 @@ class HiveExtension {
           return
         }
         await archiveContext(this.workspaceRoot, item, () => this.sidebarProvider?.refresh())
+      }),
+
+      vscode.commands.registerCommand('hive.context.loadMore', (scope: unknown) => {
+        if (!isContextScope(scope)) {
+          vscode.window.showErrorMessage('Hive: Context scope binding unavailable for load more.')
+          return
+        }
+        this.sidebarProvider?.loadMore(scope)
+      }),
+
+      vscode.commands.registerCommand('hive.context.scanChars', (item) => {
+        if (!this.workspaceRoot) {
+          vscode.window.showErrorMessage('Hive: No .hive directory found')
+          return
+        }
+        const scope = (item as { scope?: unknown } | undefined)?.scope
+        if (!isContextScope(scope)) {
+          vscode.window.showErrorMessage('Hive: Select a Project Context or feature Context folder to scan character totals.')
+          return
+        }
+        this.sidebarProvider?.scanChars(scope)
       }),
 
       vscode.commands.registerCommand('hive.constraints.inspect', async () => {

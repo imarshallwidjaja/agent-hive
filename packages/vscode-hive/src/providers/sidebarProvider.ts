@@ -1,19 +1,37 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import { ContextService, getFeaturePath, getTaskPath, listFeatureDirectories } from 'hive-core'
-import type { ContextReadSummary, FeatureJson, TaskStatus } from 'hive-core'
+import {
+  ContextService,
+  ContextMutationError,
+  getContextPath,
+  getProjectContextPath,
+  getFeaturePath,
+  getTaskPath,
+  listFeatureDirectories,
+} from 'hive-core'
+import type {
+  ContextManagementCatalog,
+  ContextRecoverySummary,
+  ContextScope,
+  FeatureJson,
+  TaskStatus,
+} from 'hive-core'
 import { contextDescription, contextTooltip } from './contextInspection.js'
 
-class ContextUnavailableItem extends vscode.TreeItem {
-  constructor(error?: unknown) {
-    super(error === undefined ? 'Context temporarily unavailable' : 'Context unavailable', vscode.TreeItemCollapsibleState.None)
-    this.description = error === undefined ? 'Refresh after context changes finish' : `Context inspection failed: ${error instanceof Error ? error.message : String(error)}`
-    if (error !== undefined) this.iconPath = new vscode.ThemeIcon('error')
-  }
-}
+const CONTEXT_INDEX_LOCK_NAME = 'index.json.lock'
+const CONTEXT_PENDING_MARKER_NAME = '.managed-mutation-pending.json'
+const CONTEXT_PAGE_SIZE = 10
 
-type SidebarItem = ContextUnavailableItem | StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | TasksGroupItem | TaskItem | TaskFileItem | ReportHistoryItem
+type ContextSnapshot =
+  | { state: 'ready'; catalog: ContextManagementCatalog }
+  | { state: 'busy' }
+  | { state: 'reconciliation'; recovery: ContextRecoverySummary | null }
+  | { state: 'invalidIndex'; recovery: ContextRecoverySummary | null }
+  | { state: 'tooLarge'; message: string }
+  | { state: 'failed'; message: string }
+
+type SidebarItem = ContextUnavailableItem | StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | ContextEmptyItem | ContextLoadMoreItem | ContextRecoveryItem | ContextRawFileItem | ContextTooLargeItem | TasksGroupItem | TaskItem | TaskFileItem | ReportHistoryItem
 
 const STATUS_ICONS: Record<string, string> = {
   pending: 'circle-outline',
@@ -27,6 +45,14 @@ const STATUS_ICONS: Record<string, string> = {
   archived: 'archive',
 }
 
+function scopeKey(scope: ContextScope): string {
+  return scope.type === 'project' ? 'project' : `feature:${scope.featureName}`
+}
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
 // Status group for organizing features
 class StatusGroupItem extends vscode.TreeItem {
   constructor(
@@ -36,10 +62,10 @@ class StatusGroupItem extends vscode.TreeItem {
     collapsed: boolean = false
   ) {
     super(groupName, collapsed ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.Expanded)
-    
+
     this.description = `${features.length}`
     this.contextValue = `status-group-${groupStatus}`
-    
+
     const icons: Record<string, string> = {
       in_progress: 'sync~spin',
       pending: 'circle-outline',
@@ -57,10 +83,10 @@ class FeatureItem extends vscode.TreeItem {
     public readonly taskStats: { total: number; done: number }
   ) {
     super(name, vscode.TreeItemCollapsibleState.Collapsed)
-    
+
     const statusLabel = feature.status.charAt(0).toUpperCase() + feature.status.slice(1)
     this.description = `${statusLabel} · ${taskStats.done}/${taskStats.total}`
-    
+
     this.contextValue = `feature-${feature.status}`
     this.iconPath = new vscode.ThemeIcon(STATUS_ICONS[feature.status] || 'package')
   }
@@ -74,7 +100,7 @@ class PlanItem extends vscode.TreeItem {
     public readonly commentCount: number
   ) {
     super('Plan', vscode.TreeItemCollapsibleState.None)
-    
+
     this.description = commentCount > 0 ? `${commentCount} comment(s)` : ''
     this.contextValue = featureStatus === 'planning' ? 'plan-draft' : 'plan-approved'
     this.iconPath = new vscode.ThemeIcon('file-text')
@@ -86,34 +112,117 @@ class PlanItem extends vscode.TreeItem {
   }
 }
 
+class ContextUnavailableItem extends vscode.TreeItem {
+  constructor(error?: unknown) {
+    super(error === undefined ? 'Context temporarily unavailable' : 'Context unavailable', vscode.TreeItemCollapsibleState.None)
+    this.description = error === undefined ? 'Refresh after context changes finish' : `Context inspection failed: ${error instanceof Error ? error.message : String(error)}`
+    if (error !== undefined) this.iconPath = new vscode.ThemeIcon('error')
+  }
+}
+
 class ContextFolderItem extends vscode.TreeItem {
   constructor(
-    public readonly featureName: string,
-    public readonly contextPath: string,
-    public readonly summary: ContextReadSummary
+    public readonly scope: ContextScope,
+    label: string,
+    public readonly snapshot: ContextSnapshot,
+    measuredChars: { chars: number; snapshotId: string } | undefined,
   ) {
-    super('Context', summary.files.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
+    super(label, ContextFolderItem.collapsibleState(snapshot))
+    this.contextValue = scope.type === 'project' ? 'project-context-folder' : 'context-folder'
+    this.applyReadyState(snapshot, measuredChars)
+  }
 
-    const budget = summary.durable
-    this.description = `${summary.files.length} documents · ${budget.fileCount}/${budget.fileCap} durable · ${budget.chars}/${budget.charCap} chars`
-    this.contextValue = 'context-folder'
-    this.iconPath = new vscode.ThemeIcon(budget.overLimit ? 'warning' : 'folder')
-    this.tooltip = [`Revision: ${summary.revision}`, 'Durable budget uses UTF-16 code units. Reserved and evidence documents are uncapped.', ...budget.consolidationHints].join('\n')
+  private static collapsibleState(snapshot: ContextSnapshot): vscode.TreeItemCollapsibleState {
+    if (snapshot.state === 'ready') {
+      return snapshot.catalog.totalFiles > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None
+    }
+    if (snapshot.state === 'reconciliation' || snapshot.state === 'invalidIndex') {
+      return vscode.TreeItemCollapsibleState.Collapsed
+    }
+    return vscode.TreeItemCollapsibleState.None
+  }
+
+  private applyReadyState(snapshot: ContextSnapshot, measuredChars: { chars: number; snapshotId: string } | undefined): void {
+    if (snapshot.state !== 'ready') {
+      switch (snapshot.state) {
+        case 'busy':
+          this.description = 'Waiting for context changes to finish'
+          this.iconPath = new vscode.ThemeIcon('clock')
+          this.tooltip = 'A context writer is active. Refresh after context changes finish.'
+          break
+        case 'reconciliation':
+          this.description = 'Reconciliation required'
+          this.iconPath = new vscode.ThemeIcon('error')
+          this.tooltip = 'A managed context mutation was interrupted. Expand for the observational recovery inspection; repair happens out of band.'
+          break
+        case 'invalidIndex':
+          this.description = 'Invalid context index'
+          this.iconPath = new vscode.ThemeIcon('error')
+          this.tooltip = 'The context index failed validation. Discovery and managed mutations are blocked until it is repaired out of band. Expand for the observational recovery inspection.'
+          break
+        case 'tooLarge':
+          this.description = 'Inventory too large'
+          this.iconPath = new vscode.ThemeIcon('warning')
+          this.tooltip = snapshot.message
+          break
+        case 'failed':
+          this.description = 'Inspection failed'
+          this.iconPath = new vscode.ThemeIcon('error')
+          this.tooltip = snapshot.message
+          break
+      }
+      return
+    }
+
+    const catalog = snapshot.catalog
+    const budget = catalog.durable
+    const charsText = this.renderChars(catalog, measuredChars)
+    this.description = `${catalog.totalFiles} documents · ${budget.fileCount}/${budget.fileCap} durable · ${budget.bytes} B · ${charsText}`
+    this.iconPath = new vscode.ThemeIcon(this.readyIcon(catalog, measuredChars) ? 'warning' : 'folder')
+    const tooltip = [
+      `Revision: ${catalog.revision}`,
+      'Durable budget uses UTF-16 code units. Reserved and evidence documents are uncapped.',
+      ...budget.consolidationHints,
+      ...budget.warnings,
+    ]
+    if (budget.chars === null && !measuredChars) {
+      tooltip.push('Exact character totals are unavailable until an explicit character scan runs.')
+    } else if (measuredChars && measuredChars.snapshotId !== catalog.snapshot) {
+      tooltip.push(`Character totals are stale: ${measuredChars.chars} UTF-16 units were measured before the latest change.`)
+    }
+    this.tooltip = tooltip.join('\n')
+  }
+
+  private renderChars(catalog: ContextManagementCatalog, measuredChars: { chars: number; snapshotId: string } | undefined): string {
+    const budget = catalog.durable
+    if (budget.chars !== null) return `${budget.chars}/${budget.charCap} chars`
+    if (!measuredChars) return 'chars unavailable'
+    if (measuredChars.snapshotId === catalog.snapshot) return `${measuredChars.chars}/${budget.charCap} chars`
+    return `${measuredChars.chars}/${budget.charCap} chars (stale)`
+  }
+
+  private readyIcon(catalog: ContextManagementCatalog, measuredChars: { chars: number; snapshotId: string } | undefined): boolean {
+    const budget = catalog.durable
+    if (budget.overLimit) return true
+    if (budget.governanceIssues > 0) return true
+    if (measuredChars && measuredChars.snapshotId === catalog.snapshot && measuredChars.chars > budget.charCap) return true
+    return false
   }
 }
 
 class ContextFileItem extends vscode.TreeItem {
   constructor(
+    public readonly scope: ContextScope,
     public readonly filename: string,
-    public readonly filePath: string,
-    public readonly featureName: string,
-    metadata: ContextReadSummary['files'][number],
-    public readonly commentCount: number = 0
+    filePath: string,
+    metadata: ContextManagementCatalog['files'][number],
+    overdue: boolean,
+    commentCount: number = 0
   ) {
     super(filename, vscode.TreeItemCollapsibleState.None)
 
-    this.description = contextDescription(metadata, filePath) + (commentCount > 0 ? ` · ${commentCount} comment(s)` : '')
-    this.tooltip = contextTooltip(metadata)
+    this.description = contextDescription(metadata, overdue) + (commentCount > 0 ? ` · ${commentCount} comment(s)` : '')
+    this.tooltip = contextTooltip(metadata, scope.type === 'project')
     this.contextValue = 'context-file'
     this.iconPath = new vscode.ThemeIcon(filename.endsWith('.md') ? 'markdown' : 'file')
     this.command = {
@@ -124,13 +233,107 @@ class ContextFileItem extends vscode.TreeItem {
   }
 }
 
+class ContextEmptyItem extends vscode.TreeItem {
+  constructor() {
+    super('No context documents', vscode.TreeItemCollapsibleState.None)
+    this.contextValue = 'context-empty'
+    this.iconPath = new vscode.ThemeIcon('info')
+    this.tooltip = 'This scope has no context documents yet. Create context with OpenCode context management tools; the sidebar never creates files.'
+  }
+}
+
+class ContextLoadMoreItem extends vscode.TreeItem {
+  constructor(
+    public readonly scope: ContextScope,
+    shown: number,
+    total: number,
+  ) {
+    super('Load more context documents', vscode.TreeItemCollapsibleState.None)
+    this.description = `${shown} of ${total}`
+    this.contextValue = 'context-load-more'
+    this.iconPath = new vscode.ThemeIcon('chevron-down')
+    this.command = {
+      command: 'hive.context.loadMore',
+      title: 'Load More Context Documents',
+      arguments: [scope],
+    }
+  }
+}
+
+class ContextRecoveryItem extends vscode.TreeItem {
+  constructor(
+    state: 'reconciliation' | 'invalidIndex',
+    recovery: ContextRecoverySummary | null,
+  ) {
+    super('Context recovery inspection', vscode.TreeItemCollapsibleState.None)
+    this.description = recovery ? `Observational · revision ${recovery.revision ?? 'unknown'}` : 'Observational · recovery envelope unavailable'
+    this.contextValue = 'context-recovery'
+    this.iconPath = new vscode.ThemeIcon('search')
+    this.tooltip = ContextRecoveryItem.tooltipText(state, recovery)
+  }
+
+  private static tooltipText(state: 'reconciliation' | 'invalidIndex', recovery: ContextRecoverySummary | null): string {
+    const lines = [state === 'reconciliation'
+      ? 'State: pending reconciliation. A managed context mutation was interrupted.'
+      : 'State: invalid context index.']
+    if (!recovery) {
+      lines.push('The bounded recovery envelope is unavailable. Inspect the raw control files out of band.')
+      return lines.join('\n')
+    }
+    lines.push(`Revision: ${recovery.revision ?? 'unknown'}`)
+    lines.push(`Context index: ${recovery.control.indexPresent ? 'present' : 'missing'}${recovery.control.indexHash ? ` (${recovery.control.indexHash.slice(0, 16)}…)` : ''}`)
+    lines.push(`Pending mutation marker: ${recovery.control.markerPresent ? 'present' : 'missing'}`)
+    lines.push(`Archive manifest: ${recovery.control.archiveManifestPresent ? 'present' : 'missing'}`)
+    for (const error of recovery.control.indexErrors) lines.push(`Index error: ${error}`)
+    for (const error of recovery.control.markerErrors) lines.push(`Marker error: ${error}`)
+    if (recovery.pendingMutation) {
+      lines.push(`Pending operation: ${recovery.pendingMutation.operation ?? 'unknown'} started ${recovery.pendingMutation.startedAt ?? 'unknown'}`)
+      lines.push(`Starting index digest: ${recovery.pendingMutation.startingIndexDigest ?? 'unknown'}`)
+      if (recovery.pendingMutation.names.length) lines.push(`Affected names: ${recovery.pendingMutation.names.join(', ')}`)
+      if (recovery.pendingMutation.archiveDestinations.length) lines.push(`Archive destinations: ${recovery.pendingMutation.archiveDestinations.join(', ')}`)
+    }
+    if (recovery.unclassified.length) {
+      lines.push(`Unclassified documents (sample): ${recovery.unclassified.map(file => file.name).join(', ')}`)
+    }
+    lines.push('', ...recovery.recoveryInstructions)
+    return lines.join('\n')
+  }
+}
+
+class ContextRawFileItem extends vscode.TreeItem {
+  constructor(label: string, filePath: string) {
+    super(label, vscode.TreeItemCollapsibleState.None)
+    this.contextValue = 'context-raw-file'
+    this.iconPath = new vscode.ThemeIcon('file-code')
+    this.tooltip = 'Opens the raw control file in the normal editor. This inspection changes nothing; repair happens out of band.'
+    this.command = {
+      command: 'vscode.open',
+      title: 'Open Raw File',
+      arguments: [vscode.Uri.file(filePath)]
+    }
+  }
+}
+
+class ContextTooLargeItem extends vscode.TreeItem {
+  constructor(message: string) {
+    super('Context inventory too large', vscode.TreeItemCollapsibleState.None)
+    this.description = 'Bounded summary exceeded its response limit'
+    this.contextValue = 'context-too-large'
+    this.iconPath = new vscode.ThemeIcon('warning')
+    this.tooltip = [
+      message,
+      'Automatic discovery is unavailable for this scope. Use OpenCode context management (catalog view) for bounded listing; Archive Context in this sidebar still lists the paginated catalog.',
+    ].join('\n')
+  }
+}
+
 class TasksGroupItem extends vscode.TreeItem {
   constructor(
     public readonly featureName: string,
     public readonly tasks: Array<{ folder: string; status: TaskStatus }>
   ) {
     super('Tasks', tasks.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
-    
+
     const done = tasks.filter(t => t.status.status === 'done').length
     this.description = `${done}/${tasks.length}`
     this.contextValue = 'tasks-group'
@@ -152,10 +355,10 @@ class TaskItem extends vscode.TreeItem {
     super(name, hasFiles ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
     this.description = status.summary || ''
     this.contextValue = `task-${status.status}${status.origin === 'manual' ? '-manual' : ''}`
-    
+
     const iconName = STATUS_ICONS[status.status] || 'circle-outline'
     this.iconPath = new vscode.ThemeIcon(iconName)
-    
+
     this.tooltip = new vscode.MarkdownString()
     this.tooltip.appendMarkdown(`**${folder}**\n\n`)
     this.tooltip.appendMarkdown(`Status: ${status.status}\n\n`)
@@ -180,7 +383,7 @@ class TaskFileItem extends vscode.TreeItem {
     public readonly filePath: string
   ) {
     super(filename, vscode.TreeItemCollapsibleState.None)
-    
+
     this.contextValue = 'task-file'
     this.iconPath = new vscode.ThemeIcon('markdown')
     this.command = {
@@ -196,11 +399,31 @@ class TaskFileItem extends vscode.TreeItem {
 export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<SidebarItem | undefined>()
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event
+  private revealedPages = new Map<string, number>()
+  private charMeasurements = new Map<string, { chars: number; snapshotId: string }>()
 
   constructor(private workspaceRoot: string) {}
 
   refresh(): void {
     this._onDidChangeTreeData.fire(undefined)
+  }
+
+  loadMore(scope: ContextScope): void {
+    const key = scopeKey(scope)
+    this.revealedPages.set(key, (this.revealedPages.get(key) ?? 1) + 1)
+    this.refresh()
+  }
+
+  scanChars(scope: ContextScope): void {
+    try {
+      const catalog = new ContextService(this.workspaceRoot).readManagementCatalog(scope, { scanChars: true })
+      this.charMeasurements.set(scopeKey(scope), { chars: catalog.durable.chars ?? 0, snapshotId: catalog.snapshot })
+      this.refresh()
+      const scopeLabel = scope.type === 'project' ? 'project' : `"${scope.featureName}"`
+      vscode.window.showInformationMessage(`Hive: Scanned ${scopeLabel} context character totals: ${catalog.durable.chars}/${catalog.durable.charCap}.`)
+    } catch (error) {
+      vscode.window.showErrorMessage(`Hive: Context character scan failed. ${error instanceof Error ? error.message : String(error)} Refresh or reconcile the context, then scan again.`)
+    }
   }
 
   getTreeItem(element: SidebarItem): vscode.TreeItem {
@@ -209,8 +432,8 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
   async getChildren(element?: SidebarItem): Promise<SidebarItem[]> {
     if (!element) {
-      const statusGroups = await this.getStatusGroups()
-      return statusGroups
+      const projectContext = this.getProjectContextItem()
+      return projectContext ? [projectContext, ...this.getStatusGroups()] : this.getStatusGroups()
     }
 
     if (element instanceof StatusGroupItem) {
@@ -222,7 +445,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     }
 
     if (element instanceof ContextFolderItem) {
-      return this.getContextFiles(element.featureName, element.contextPath)
+      return this.getContextChildren(element)
     }
 
     if (element instanceof TasksGroupItem) {
@@ -244,12 +467,12 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
   private getStatusGroups(): StatusGroupItem[] {
     const features = this.getAllFeatures()
-    
+
     const inProgress: FeatureItem[] = []
     const pending: FeatureItem[] = []
     const completed: FeatureItem[] = []
     const archived: FeatureItem[] = []
-    
+
     for (const feature of features) {
       if (feature.feature.status === 'archived') {
         archived.push(feature)
@@ -261,9 +484,9 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
         completed.push(feature)
       }
     }
-    
+
     const groups: StatusGroupItem[] = []
-    
+
     if (inProgress.length > 0) {
       groups.push(new StatusGroupItem('In Progress', 'in_progress', inProgress, false))
     }
@@ -276,7 +499,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     if (archived.length > 0) {
       groups.push(new StatusGroupItem('Archived', 'archived', archived, true))
     }
-    
+
     return groups
   }
 
@@ -313,13 +536,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       items.push(new PlanItem(featureName, planPath, feature.status, commentCount))
     }
 
-    const contextPath = path.join(featurePath, 'context')
-    try {
-      const snapshot = new ContextService(this.workspaceRoot).inspectSummary(featureName)
-      items.push(snapshot.status === 'ready' ? new ContextFolderItem(featureName, contextPath, snapshot.summary) : new ContextUnavailableItem())
-    } catch (error) {
-      items.push(new ContextUnavailableItem(error))
-    }
+    items.push(this.buildContextFolder({ type: 'feature', featureName }, 'Context'))
 
     const tasks = this.getTaskList(featureName)
     items.push(new TasksGroupItem(featureName, tasks))
@@ -327,19 +544,140 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     return items
   }
 
-  private getContextFiles(featureName: string, contextPath: string): SidebarItem[] {
-    let snapshot: ReturnType<ContextService['inspectSummary']>
+  private getProjectContextItem(): ContextFolderItem | null {
+    if (!fs.existsSync(path.join(this.workspaceRoot, '.hive'))) return null
+    return this.buildContextFolder({ type: 'project' }, 'Project Context')
+  }
+
+  private buildContextFolder(scope: ContextScope, label: string): ContextFolderItem {
+    const snapshot = this.loadSnapshot(scope)
+    return new ContextFolderItem(scope, label, snapshot, this.charMeasurements.get(scopeKey(scope)))
+  }
+
+  private loadSnapshot(scope: ContextScope): ContextSnapshot {
+    const service = new ContextService(this.workspaceRoot)
+    const contextPath = this.contextPathFor(scope)
+    if (fs.existsSync(path.join(contextPath, CONTEXT_PENDING_MARKER_NAME))) {
+      return { state: 'reconciliation', recovery: this.loadRecovery(service, scope) }
+    }
+    if (fs.existsSync(path.join(contextPath, CONTEXT_INDEX_LOCK_NAME))) return { state: 'busy' }
     try {
-      snapshot = new ContextService(this.workspaceRoot).inspectSummary(featureName)
+      return { state: 'ready', catalog: service.readManagementCatalog(scope, { limit: CONTEXT_PAGE_SIZE }) }
+    } catch (error) {
+      if (error instanceof ContextMutationError) {
+        if (error.reason === 'context_reconciliation_required') {
+          return { state: 'reconciliation', recovery: this.loadRecovery(service, scope) }
+        }
+        if (error.reason === 'context_index_invalid') {
+          return { state: 'invalidIndex', recovery: this.loadRecovery(service, scope) }
+        }
+        if (error.reason === 'context_inventory_too_large') {
+          return { state: 'tooLarge', message: error.message }
+        }
+        if (error.reason === 'context_changed_during_read') return { state: 'busy' }
+      }
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { state: 'busy' }
+      return { state: 'failed', message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  private loadRecovery(service: ContextService, scope: ContextScope): ContextRecoverySummary | null {
+    try {
+      return service.readRecoverySummary(scope, { diagnosticMode: 'primary-management' })
+    } catch {
+      return null
+    }
+  }
+
+  private contextPathFor(scope: ContextScope): string {
+    return scope.type === 'project'
+      ? getProjectContextPath(this.workspaceRoot)
+      : getContextPath(this.workspaceRoot, scope.featureName)
+  }
+
+  private getContextChildren(folder: ContextFolderItem): SidebarItem[] {
+    const snapshot = folder.snapshot
+    if (snapshot.state === 'busy') return [new ContextUnavailableItem()]
+    if (snapshot.state === 'failed') return [new ContextUnavailableItem(new Error(snapshot.message))]
+    if (snapshot.state === 'tooLarge') return [new ContextTooLargeItem(snapshot.message)]
+    if (snapshot.state === 'reconciliation' || snapshot.state === 'invalidIndex') {
+      return this.getRecoveryChildren(folder, snapshot.state, snapshot.recovery)
+    }
+
+    const catalog = snapshot.catalog
+    if (catalog.totalFiles === 0) return [new ContextEmptyItem()]
+
+    const contextPath = this.contextPathFor(folder.scope)
+    const revealed = Math.max(1, this.revealedPages.get(scopeKey(folder.scope)) ?? 1)
+    const children: SidebarItem[] = []
+    try {
+      let cursor: string | undefined
+      let shown = 0
+      for (let page = 0; page < revealed; page++) {
+        const pageResult = this.readManagementPage(folder.scope, cursor)
+        for (const file of pageResult.files) {
+          children.push(new ContextFileItem(
+            folder.scope,
+            `${file.name}.md`,
+            path.join(contextPath, `${file.name}.md`),
+            file,
+            this.isOverdue(folder.scope, file),
+            this.reviewCommentCountFor(folder.scope, file.name),
+          ))
+          shown += 1
+        }
+        cursor = pageResult.nextCursor
+        if (!cursor) break
+      }
+      if (cursor) {
+        children.push(new ContextLoadMoreItem(folder.scope, shown, catalog.totalFiles))
+      }
     } catch (error) {
       return [new ContextUnavailableItem(error)]
     }
-    if (snapshot.status === 'busy') return [new ContextUnavailableItem()]
-    return snapshot.summary.files.map(file => {
-      const filename = `${file.name}.md`
-      const commentCount = filename === 'overview.md' ? this.getReviewCommentCount(featureName, 'overview') : 0
-      return new ContextFileItem(filename, path.join(contextPath, filename), featureName, file, commentCount)
-    })
+    return children
+  }
+
+  private readManagementPage(scope: ContextScope, cursor?: string): ContextManagementCatalog {
+    return new ContextService(this.workspaceRoot).readManagementCatalog(scope, { cursor, limit: CONTEXT_PAGE_SIZE })
+  }
+
+  private isOverdue(scope: ContextScope, file: { reviewAfter?: string }): boolean {
+    if (scope.type !== 'project' || !file.reviewAfter) return false
+    return file.reviewAfter < todayIsoDate()
+  }
+
+  private reviewCommentCountFor(scope: ContextScope, name: string): number {
+    if (scope.type !== 'feature' || name !== 'overview') return 0
+    return this.getReviewCommentCount(scope.featureName, 'overview')
+  }
+
+  private getRecoveryChildren(
+    folder: ContextFolderItem,
+    state: 'reconciliation' | 'invalidIndex',
+    recovery: ContextRecoverySummary | null,
+  ): SidebarItem[] {
+    const contextPath = this.contextPathFor(folder.scope)
+    const children: SidebarItem[] = [new ContextRecoveryItem(state, recovery)]
+
+    const indexPath = path.join(contextPath, 'index.json')
+    if (fs.existsSync(indexPath)) children.push(new ContextRawFileItem('Open context index (raw)', indexPath))
+    if (state === 'reconciliation') {
+      const markerPath = path.join(contextPath, CONTEXT_PENDING_MARKER_NAME)
+      if (fs.existsSync(markerPath)) children.push(new ContextRawFileItem('Open pending mutation marker (raw)', markerPath))
+    }
+    if (recovery?.control.archiveManifestPresent) {
+      const manifestPath = this.archiveManifestPath(folder.scope)
+      if (fs.existsSync(manifestPath)) children.push(new ContextRawFileItem('Open archive manifest (raw)', manifestPath))
+    }
+    return children
+  }
+
+  private archiveManifestPath(scope: ContextScope): string {
+    if (scope.type === 'project') {
+      return path.join(this.workspaceRoot, '.hive', 'archive', 'context-index.json')
+    }
+    return path.join(getContextPath(this.workspaceRoot, scope.featureName), '..', 'archive', 'context-index.json')
   }
 
   private getTasks(featureName: string, tasks: Array<{ folder: string; status: TaskStatus }>): TaskItem[] {
@@ -349,7 +687,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       const reportPath = path.join(taskDir, 'report.md')
       const hasSpec = fs.existsSync(specPath)
       const hasReport = fs.existsSync(reportPath)
-      
+
       return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null, path.join(taskDir, 'reports'))
     })
   }
@@ -363,7 +701,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
   private getTaskFiles(taskItem: TaskItem): SidebarItem[] {
     const items: SidebarItem[] = []
-    
+
     if (taskItem.specPath) {
       items.push(new TaskFileItem('spec.md', taskItem.specPath))
     }
@@ -373,7 +711,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     if (this.getReportFilenames(taskItem.reportsPath).length > 0) {
       items.push(new ReportHistoryItem(taskItem.reportsPath))
     }
-    
+
     return items
   }
 

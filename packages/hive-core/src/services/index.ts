@@ -100,6 +100,8 @@ export type {
   ContextContentOptions,
   ContextContentRead,
   ContextDurableMetrics,
+  ContextManagementCatalog,
+  ContextManagementOptions,
   ContextMutationErrorReason,
   ContextMutationResult,
   ContextReadOptions,

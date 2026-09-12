@@ -45,6 +45,8 @@
     "onCommand:hive.feature.archive",
     "onCommand:hive.job.archive",
     "onCommand:hive.context.archive",
+    "onCommand:hive.context.loadMore",
+    "onCommand:hive.context.scanChars",
     "onCommand:hive.constraints.inspect"
   ],
   "main": "./dist/extension.js",
@@ -95,6 +97,14 @@
       {
         "command": "hive.context.archive",
         "title": "Archive Context"
+      },
+      {
+        "command": "hive.context.loadMore",
+        "title": "Load More Context Documents"
+      },
+      {
+        "command": "hive.context.scanChars",
+        "title": "Scan Context Character Totals"
       },
       {
         "command": "hive.constraints.inspect",
@@ -166,7 +176,11 @@
       "view/item/context": [
         {
           "command": "hive.context.archive",
-          "when": "view == hive.features && (viewItem == context-folder || viewItem == context-file)"
+          "when": "view == hive.features && (viewItem == context-folder || viewItem == project-context-folder || viewItem == context-file)"
+        },
+        {
+          "command": "hive.context.scanChars",
+          "when": "view == hive.features && (viewItem == context-folder || viewItem == project-context-folder)"
         },
         {
           "command": "hive.openFile",
@@ -194,6 +208,14 @@
       "commandPalette": [
         {
           "command": "hive.context.archive",
+          "when": "false"
+        },
+        {
+          "command": "hive.context.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "hive.context.scanChars",
           "when": "false"
         },
         {

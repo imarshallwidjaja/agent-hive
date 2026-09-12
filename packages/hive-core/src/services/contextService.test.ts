@@ -33,6 +33,12 @@ function seedLegacy(featureName: string, name: string, content: string): void {
   fs.writeFileSync(path.join(directory, `${name}.md`), content);
 }
 
+function seedLegacyProject(name: string, fileName: string, content: string): void {
+  const directory = path.join(TEST_DIR, '.hive', 'context');
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, `${fileName}.md`), content);
+}
+
 function projectDurable(body: string, reviewAfter = '2026-09-30'): string {
   return `---\ndescription: Project context\nread_when: Read for project-wide decisions.\nowner: platform\nreview_after: ${reviewAfter}\n---\n\n${body}`;
 }
@@ -474,6 +480,74 @@ describe('ContextService managed context', () => {
     expect(() => service.readCatalog('catalog', { cursor: first.nextCursor, limit: 1 })).toThrow('cursor');
     const unsupported = Buffer.from(JSON.stringify({ version: 2 })).toString('base64url');
     expect(() => service.readCatalog('catalog', { cursor: unsupported })).toThrow('unsupported version');
+  });
+
+  it('pages all-classification management listings with aggregate metrics and kind-bound cursors', () => {
+    setupFeature('management-pages');
+    for (let index = 0; index < 12; index++) service.create('management-pages', `note-${String(index).padStart(2, '0')}`, durable(`body-${index}`));
+    service.create('management-pages', 'proof', 'proof', { kind: 'evidence' });
+    service.create('management-pages', 'overview', '# Overview');
+    const first = service.readManagementCatalog('management-pages', { limit: 5 });
+    expect(first.totalFiles).toBe(14);
+    expect(first.files.map(file => file.name)).toEqual(['note-00', 'note-01', 'note-02', 'note-03', 'note-04']);
+    expect(first.complete).toBe(false);
+    expect(first.durable.fileCount).toBe(12);
+    expect(first.durable.governanceIssues).toBe(0);
+    expect(first.durable.chars).toBeNull();
+    expect(first.durable.charsMeasurement).toBe('unavailable');
+
+    const names: string[] = [];
+    let cursor: string | undefined = first.nextCursor;
+    while (cursor) {
+      const page = service.readManagementCatalog('management-pages', { cursor, limit: 5 });
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(16 * 1024);
+      names.push(...page.files.map(file => file.name));
+      cursor = page.nextCursor;
+      if (!cursor) expect(page.complete).toBe(true);
+    }
+    expect(names).toEqual([
+      'note-05', 'note-06', 'note-07', 'note-08', 'note-09', 'note-10', 'note-11', 'overview', 'proof',
+    ]);
+
+    expect(() => service.readCatalog('management-pages', { cursor: first.nextCursor })).toThrow('cursor');
+    const catalogCursor = service.readCatalog('management-pages', { limit: 1 }).nextCursor!;
+    expect(() => service.readManagementCatalog('management-pages', { cursor: catalogCursor })).toThrow('cursor');
+
+    const scanned = service.readManagementCatalog('management-pages', { scanChars: true });
+    expect(scanned.durable.charsMeasurement).toBe('current');
+    expect(scanned.durable.chars).toBeGreaterThan(0);
+
+    const indexPath = path.join(TEST_DIR, '.hive/features/management-pages/context/index.json');
+    const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    index.entries['note-06'].kind = 'evidence';
+    fs.writeFileSync(indexPath, JSON.stringify(index));
+    expect(() => service.readManagementCatalog('management-pages', { cursor: first.nextCursor, limit: 5 })).toThrow('cursor');
+  });
+
+  it('reports project governance gaps in management metrics regardless of page position', () => {
+    setupFeature('management-governance');
+    for (let index = 0; index < 12; index++) {
+      service.create({ type: 'project' }, `governed-${String(index).padStart(2, '0')}`, projectDurable('body'));
+    }
+    seedLegacyProject('management-governance', 'z-ungoverned', durable('body'));
+    const page = service.readManagementCatalog({ type: 'project' }, { limit: 10 });
+    expect(page.totalFiles).toBe(13);
+    expect(page.files.some(file => file.name === 'z-ungoverned')).toBe(false);
+    expect(page.durable.governanceIssues).toBe(1);
+    expect(page.durable.warnings.join('\n')).toContain('z-ungoverned');
+  });
+
+  it('fails management listings explicitly when aggregate metrics exceed the response bound', () => {
+    setupFeature('management-oversized');
+    for (let index = 0; index < 300; index++) {
+      seedLegacyProject('management-oversized', `note-${String(index).padStart(3, '0')}`, durable('body'));
+    }
+    try {
+      service.readManagementCatalog({ type: 'project' }, { limit: 10 });
+      throw new Error('expected the oversized management listing to fail');
+    } catch (error) {
+      expect((error as { reason?: string }).reason).toBe('context_inventory_too_large');
+    }
   });
 
   it('uses Unicode code-point ordering with locale-independent ASCII query folding', () => {

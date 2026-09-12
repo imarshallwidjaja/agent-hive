@@ -94,6 +94,7 @@ export interface ContextDurableMetrics {
   fileCap: number;
   charCap: number;
   overLimit: boolean;
+  governanceIssues: number;
   warnings: string[];
   consolidationHints: string[];
 }
@@ -127,6 +128,19 @@ export interface ContextCatalogRead {
   files: Array<Omit<ContextFile, 'content' | 'contentHash'>>;
   complete: boolean;
   nextCursor?: string;
+  diagnostics: string[];
+}
+
+export interface ContextManagementCatalog {
+  schemaVersion: 1;
+  scope: ContextScope;
+  revision: number;
+  snapshot: string;
+  totalFiles: number;
+  files: Array<Omit<ContextFile, 'content' | 'contentHash'>>;
+  complete: boolean;
+  nextCursor?: string;
+  durable: ContextDurableMetrics;
   diagnostics: string[];
 }
 
@@ -180,6 +194,12 @@ export interface ContextCatalogOptions {
   query?: string;
   cursor?: string;
   limit?: number;
+}
+
+export interface ContextManagementOptions {
+  cursor?: string;
+  limit?: number;
+  scanChars?: boolean;
 }
 
 export interface ContextContentOptions {
@@ -426,6 +446,60 @@ export class ContextService {
     const after = this.observe(resolved);
     if (after.inventory.snapshot !== observation.inventory.snapshot) {
       throw new ContextMutationError('context_changed_during_read', 'Context changed while its catalog was being listed. Retry the read.');
+    }
+    return result;
+  }
+
+  readManagementCatalog(scope: string | ContextScope, options: ContextManagementOptions = {}): ContextManagementCatalog {
+    this.assertBoundedText(options.cursor, CONTEXT_CURSOR_MAX_BYTES, 'cursor');
+    const resolved = this.resolveScope(scope);
+    const observation = this.observe(resolved);
+    let position = 0;
+    if (options.cursor) {
+      const cursor = this.decodeManagementCursor(options.cursor);
+      if (cursor.scope !== resolved.identity) {
+        throw new ContextMutationError('invalid_context_cursor', 'Context cursor does not match this scope.');
+      }
+      if (cursor.snapshot !== observation.inventory.snapshot) {
+        throw new ContextMutationError('stale_context_cursor', 'Context changed after this cursor was issued. Restart the management listing.');
+      }
+      position = cursor.position;
+    }
+    const chars = options.scanChars ? this.scanDurableChars(resolved, observation.inventory.files) : null;
+    const durable = this.durableMetrics(resolved, observation.inventory, chars);
+    const limit = Math.max(1, Math.min(options.limit ?? 10, 50));
+    const files: ContextManagementCatalog['files'] = [];
+    let nextPosition = position;
+    while (nextPosition < observation.inventory.files.length && files.length < limit) {
+      const candidate = this.publicInventoryFile(observation.inventory.files[nextPosition]!);
+      const prospectivePosition = nextPosition + 1;
+      const prospectiveComplete = prospectivePosition >= observation.inventory.files.length;
+      const trial = this.managementEnvelope(resolved, observation, durable, [...files, candidate], prospectiveComplete,
+        prospectiveComplete ? undefined : this.encodeManagementCursor({
+          version: 1, kind: 'management', scope: resolved.identity,
+          snapshot: observation.inventory.snapshot, position: prospectivePosition,
+        }));
+      if (Buffer.byteLength(JSON.stringify(trial), 'utf8') > CONTEXT_CATALOG_MAX_BYTES) {
+        if (files.length === 0) {
+          throw new ContextMutationError('context_inventory_too_large', 'One context management entry exceeds the response construction limit.', { name: candidate.name });
+        }
+        break;
+      }
+      files.push(candidate);
+      nextPosition += 1;
+    }
+    const complete = nextPosition >= observation.inventory.files.length;
+    const result = this.managementEnvelope(resolved, observation, durable, files, complete, complete ? undefined : this.encodeManagementCursor({
+      version: 1,
+      kind: 'management',
+      scope: resolved.identity,
+      snapshot: observation.inventory.snapshot,
+      position: nextPosition,
+    }));
+    this.assertResponseSize(result, CONTEXT_CATALOG_MAX_BYTES);
+    const after = this.observe(resolved);
+    if (after.inventory.snapshot !== observation.inventory.snapshot) {
+      throw new ContextMutationError('context_changed_during_read', 'Context changed while its management listing was being read. Retry the read.');
     }
     return result;
   }
@@ -831,20 +905,6 @@ export class ContextService {
   }
 
   private summarize(resolved: ResolvedScope, control: ControlState, inventory: Inventory, chars: number | null): ContextReadSummary {
-    const durableFiles = inventory.files.filter(file => file.kind === 'durable');
-    const fileCap = resolved.scope.type === 'project' ? PROJECT_DURABLE_FILE_WARNING_CAP : FEATURE_DURABLE_FILE_WARNING_CAP;
-    const charCap = resolved.scope.type === 'project' ? PROJECT_DURABLE_CHAR_WARNING_CAP : FEATURE_DURABLE_CHAR_WARNING_CAP;
-    const bytes = durableFiles.reduce((sum, file) => sum + (file.bytes ?? 0), 0);
-    const warnings = [...inventory.diagnostics];
-    if (durableFiles.length > fileCap) warnings.push(`Review durable context: ${durableFiles.length} files exceeds the ${fileCap}-file ${resolved.scope.type} guideline. Archive or consolidate with an explicit management call.`);
-    if (chars !== null && chars > charCap) warnings.push(`Review durable context: ${chars} UTF-16 characters exceeds the ${charCap}-character ${resolved.scope.type} guideline. Archive or consolidate with an explicit management call.`);
-    const today = this.now().toISOString().slice(0, 10);
-    if (resolved.scope.type === 'project') {
-      for (const file of durableFiles) {
-        if (!file.owner || !file.reviewAfter) warnings.push(`Project context "${file.name}" is missing owner or review_after metadata.`);
-        else if (file.reviewAfter < today) warnings.push(`Project context "${file.name}" review was due ${file.reviewAfter}; re-review and replace it deliberately.`);
-      }
-    }
     return {
       schemaVersion: 1,
       scope: resolved.scope,
@@ -852,19 +912,48 @@ export class ContextService {
       snapshot: inventory.snapshot,
       complete: true,
       files: inventory.files.map(file => this.publicInventoryFile(file)),
-      durable: {
-        fileCount: durableFiles.length,
-        bytes,
-        chars,
-        charsMeasurement: chars === null ? 'unavailable' : 'current',
-        fileCap,
-        charCap,
-        overLimit: durableFiles.length > fileCap || (chars !== null && chars > charCap),
-        warnings,
-        consolidationHints: this.consolidationHints(inventory.files),
-      },
+      durable: this.durableMetrics(resolved, inventory, chars),
       diagnostics: inventory.diagnostics,
     };
+  }
+
+  private durableMetrics(resolved: ResolvedScope, inventory: Inventory, chars: number | null): ContextDurableMetrics {
+    const durableFiles = inventory.files.filter(file => file.kind === 'durable');
+    const fileCap = resolved.scope.type === 'project' ? PROJECT_DURABLE_FILE_WARNING_CAP : FEATURE_DURABLE_FILE_WARNING_CAP;
+    const charCap = resolved.scope.type === 'project' ? PROJECT_DURABLE_CHAR_WARNING_CAP : FEATURE_DURABLE_CHAR_WARNING_CAP;
+    const bytes = durableFiles.reduce((sum, file) => sum + (file.bytes ?? 0), 0);
+    const warnings = [...inventory.diagnostics];
+    if (durableFiles.length > fileCap) warnings.push(`Review durable context: ${durableFiles.length} files exceeds the ${fileCap}-file ${resolved.scope.type} guideline. Archive or consolidate with an explicit management call.`);
+    if (chars !== null && chars > charCap) warnings.push(`Review durable context: ${chars} UTF-16 characters exceeds the ${charCap}-character ${resolved.scope.type} guideline. Archive or consolidate with an explicit management call.`);
+    let governanceIssues = 0;
+    const today = this.now().toISOString().slice(0, 10);
+    if (resolved.scope.type === 'project') {
+      for (const file of durableFiles) {
+        if (!file.owner || !file.reviewAfter) {
+          warnings.push(`Project context "${file.name}" is missing owner or review_after metadata.`);
+          governanceIssues += 1;
+        } else if (file.reviewAfter < today) {
+          warnings.push(`Project context "${file.name}" review was due ${file.reviewAfter}; re-review and replace it deliberately.`);
+          governanceIssues += 1;
+        }
+      }
+    }
+    return {
+      fileCount: durableFiles.length,
+      bytes,
+      chars,
+      charsMeasurement: chars === null ? 'unavailable' : 'current',
+      fileCap,
+      charCap,
+      overLimit: durableFiles.length > fileCap || (chars !== null && chars > charCap),
+      governanceIssues,
+      warnings,
+      consolidationHints: this.consolidationHints(inventory.files),
+    };
+  }
+
+  private managementEnvelope(resolved: ResolvedScope, observation: { control: ControlState; inventory: Inventory }, durable: ContextDurableMetrics, files: ContextManagementCatalog['files'], complete: boolean, nextCursor?: string): ContextManagementCatalog {
+    return { schemaVersion: 1, scope: resolved.scope, revision: observation.control.index.revision, snapshot: observation.inventory.snapshot, totalFiles: observation.inventory.files.length, files, complete, ...(nextCursor ? { nextCursor } : {}), durable, diagnostics: observation.inventory.diagnostics };
   }
 
   private catalogEnvelope(resolved: ResolvedScope, observation: { control: ControlState; inventory: Inventory }, files: ContextCatalogRead['files'], complete: boolean, nextCursor?: string): ContextCatalogRead {
@@ -1222,6 +1311,20 @@ export class ContextService {
       const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
       if (parsed.version !== 1 || typeof parsed.scope !== 'string' || typeof parsed.query !== 'string' || typeof parsed.snapshot !== 'string' || !Number.isInteger(parsed.position) || (parsed.position as number) < 0) throw new Error('shape');
       return parsed as unknown as { version: 1; scope: string; query: string; snapshot: string; position: number };
+    } catch {
+      throw new ContextMutationError('invalid_context_cursor', 'Context cursor is malformed or uses an unsupported version.');
+    }
+  }
+
+  private encodeManagementCursor(payload: { version: 1; kind: 'management'; scope: string; snapshot: string; position: number }): string {
+    return Buffer.from(JSON.stringify(payload)).toString('base64url');
+  }
+
+  private decodeManagementCursor(cursor: string): { version: 1; kind: 'management'; scope: string; snapshot: string; position: number } {
+    try {
+      const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+      if (parsed.version !== 1 || parsed.kind !== 'management' || typeof parsed.scope !== 'string' || typeof parsed.snapshot !== 'string' || !Number.isInteger(parsed.position) || (parsed.position as number) < 0) throw new Error('shape');
+      return parsed as unknown as { version: 1; kind: 'management'; scope: string; snapshot: string; position: number };
     } catch {
       throw new ContextMutationError('invalid_context_cursor', 'Context cursor is malformed or uses an unsupported version.');
     }

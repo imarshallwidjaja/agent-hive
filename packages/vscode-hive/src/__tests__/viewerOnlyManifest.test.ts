@@ -24,6 +24,8 @@ describe('viewer-only VS Code manifest', () => {
     expect(commands).toEqual([
       'hive.copyToClipboard',
       'hive.context.archive',
+      'hive.context.loadMore',
+      'hive.context.scanChars',
       'hive.constraints.inspect',
       'hive.comment.create',
       'hive.comment.delete',
@@ -43,7 +45,10 @@ describe('viewer-only VS Code manifest', () => {
   it('keeps selective context archive in the tree and constraints in a read-only text provider', () => {
     const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
     expect(pkg.contributes.menus.commandPalette).toContainEqual({ command: 'hive.context.archive', when: 'false' });
-    expect(pkg.contributes.menus['view/item/context']).toContainEqual({ command: 'hive.context.archive', when: 'view == hive.features && (viewItem == context-folder || viewItem == context-file)' });
+    expect(pkg.contributes.menus.commandPalette).toContainEqual({ command: 'hive.context.loadMore', when: 'false' });
+    expect(pkg.contributes.menus.commandPalette).toContainEqual({ command: 'hive.context.scanChars', when: 'false' });
+    expect(pkg.contributes.menus['view/item/context']).toContainEqual({ command: 'hive.context.archive', when: 'view == hive.features && (viewItem == context-folder || viewItem == project-context-folder || viewItem == context-file)' });
+    expect(pkg.contributes.menus['view/item/context']).toContainEqual({ command: 'hive.context.scanChars', when: 'view == hive.features && (viewItem == context-folder || viewItem == project-context-folder)' });
     const source = fs.readFileSync(new URL('../extension.ts', import.meta.url), 'utf8');
     expect(source).toContain('registerTextDocumentContentProvider(SessionConstraintsProvider.scheme');
     expect(source).toContain('onDidCloseTextDocument(document => this.sessionConstraintsProvider?.close(document.uri))');
