@@ -1,16 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "node:crypto";
 import { spawnSync } from 'node:child_process';
 import { createServer } from "net";
 import * as http from 'http';
+import { SessionService, type WorkerAssignmentDescriptor } from "hive-core";
 import {
   createOpencodeClient,
   createOpencodeServer,
   type Config as OpencodeConfig,
 } from "@opencode-ai/sdk";
 import plugin from "../index";
-import { buildCompactionPrompt } from "../utils/compaction-prompt.js";
 import type { PluginInput } from "@opencode-ai/plugin";
 
 const EXPECTED_TOOLS = [
@@ -802,12 +803,102 @@ describe("e2e: Forager compaction loop mitigation (in-process)", () => {
     }
   });
 
-  it("forager resumes after compaction without rediscovery prompt", async () => {
-    const compactionPrompt = buildCompactionPrompt();
-    expect(compactionPrompt).not.toMatch(/hive_status/);
-    expect(compactionPrompt).toMatch(/worker-prompt\.md|task spec|spec file/i);
-    expect(compactionPrompt).toContain("Next action: resume from where you left off.");
-    expect(compactionPrompt).not.toMatch(/use hive_status to check feature state/i);
+  it("replays the exact current immutable attempt and rejects a mismatched artifact hash", async () => {
+    const { createOpencodeClient: mkClient } = await import("@opencode-ai/sdk");
+    const client = mkClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: { id: "test", worktree: testRoot, time: { created: Date.now() } },
+      client,
+      $: createStubShellForLoop(),
+    };
+    const hooks = await plugin(ctx);
+    const sessionID = "sess_runtime_immutable_recovery";
+    const parentSessionID = "sess_runtime_immutable_parent";
+    const featureName = "compaction-loop";
+    const taskFolder = "01-resume";
+    const assignmentDir = path.join(
+      testRoot,
+      ".hive",
+      "features",
+      featureName,
+      "tasks",
+      taskFolder,
+      "assignments",
+    );
+    const attemptContents = [
+      Buffer.from("# Attempt one assignment\n\nFIRST_ATTEMPT_ONLY\n"),
+      Buffer.from("# Attempt two assignment\n\nSECOND_ATTEMPT_EXACT_BYTES\n"),
+    ];
+    fs.mkdirSync(assignmentDir, { recursive: true });
+    const assignments = attemptContents.map((content, index): WorkerAssignmentDescriptor => {
+      const attempt = index + 1;
+      const locator = `.hive/features/${featureName}/tasks/${taskFolder}/assignments/attempt-${attempt}.md`;
+      fs.writeFileSync(path.join(testRoot, locator), content);
+      return {
+        format: "hive-worker-assignment/v1",
+        projectRoot: testRoot,
+        featureName,
+        taskFolder,
+        attempt,
+        locator,
+        contentHash: createHash("sha256").update(content).digest("hex"),
+      };
+    });
+    const intendedAssignment = assignments[1]!;
+    expect(assignments[0]!.locator).not.toBe(intendedAssignment.locator);
+    expect(attemptContents[0]).not.toEqual(attemptContents[1]);
+    fs.writeFileSync(path.join(assignmentDir, "..", "status.json"), JSON.stringify({
+      status: "in_progress",
+      origin: "plan",
+      workerAttempt: intendedAssignment.attempt,
+      workerAssignment: intendedAssignment,
+      workerAttempts: assignments.map((assignment) => ({
+        attempt: assignment.attempt,
+        idempotencyKey: `attempt-${assignment.attempt}`,
+        state: assignment === intendedAssignment ? "associated" : "published",
+        assignment,
+        ...(assignment === intendedAssignment ? { workerSessionId: sessionID } : {}),
+      })),
+      workerSession: { sessionId: sessionID, attempt: intendedAssignment.attempt },
+    }));
+    const sessions = new SessionService(testRoot);
+    sessions.trackGlobal(sessionID, {
+      parentSessionId: parentSessionID,
+      agent: "forager-worker",
+      sessionKind: "task-worker",
+    });
+    sessions.bindWorkerAssignment(sessionID, parentSessionID, intendedAssignment);
+
+    const buildTransformOutput = () => ({
+      messages: [{
+        info: { id: `msg-summary-${sessionID}`, sessionID, role: "assistant", time: { created: Date.now() } },
+        parts: [],
+      }],
+    });
+    await hooks.event?.({
+      event: { type: "session.compacted", properties: { sessionID } } as any,
+    });
+    const replayOutput = buildTransformOutput();
+    await hooks["experimental.chat.messages.transform"]?.({}, replayOutput as any);
+    const replayText = (replayOutput.messages.at(-1)!.parts[0] as { text: string }).text;
+    expect(replayText).toBe(
+      `Post-compaction recovery: replaying hash-verified immutable assignment attempt 2.\n\n${attemptContents[1]!.toString("utf8")}`,
+    );
+    expect(replayText).not.toContain(attemptContents[0]!.toString("utf8"));
+
+    fs.writeFileSync(path.join(testRoot, intendedAssignment.locator), "# Tampered attempt two assignment\n");
+    await hooks.event?.({
+      event: { type: "session.compacted", properties: { sessionID } } as any,
+    });
+    const rejectedOutput = buildTransformOutput();
+    await hooks["experimental.chat.messages.transform"]?.({}, rejectedOutput as any);
+    const rejectedText = (rejectedOutput.messages.at(-1)!.parts[0] as { text: string }).text;
+    expect(rejectedText).toContain("assignment_recovery_error");
+    expect(rejectedText).toContain("artifact hash does not match");
+    expect(rejectedText).not.toContain("SECOND_ATTEMPT_EXACT_BYTES");
   });
 
   it("runtime contract excludes unsupported compaction hooks", async () => {

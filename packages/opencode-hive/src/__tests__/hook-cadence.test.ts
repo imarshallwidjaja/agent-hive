@@ -406,11 +406,12 @@ describe('Compaction hook — no hive_status reinjection after compaction', () =
     expect(HIVE_SYSTEM_PROMPT).not.toMatch(/use hive_status to check feature state before starting work/i);
   });
 
-  it('compaction prompt instructs worker to resume without status-tool calls', () => {
+  it('compaction prompt uses runtime recovery without status-tool calls', () => {
     const prompt = buildCompactionPrompt();
     expect(prompt).toMatch(/do not|avoid|skip/i);
     expect(prompt).not.toMatch(/hive_status/);
-    expect(prompt).toMatch(/worker-prompt\.md|task spec|spec file/i);
+    expect(prompt).toMatch(/runtime assignment recovery/i);
+    expect(prompt).not.toMatch(/worker-prompt\.md|task spec|spec file/i);
   });
 });
 

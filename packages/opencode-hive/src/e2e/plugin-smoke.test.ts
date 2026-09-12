@@ -2068,6 +2068,8 @@ Do it
     await hooks.tool!.hive_plan_write.execute({ feature, content: createSingleTaskPlan('Catalog lifecycle', 'Preserve REQUIRED-CATALOG-CONTRACT while retrieving current supporting facts.').replace('Do it', 'Preserve REQUIRED-CATALOG-CONTRACT while retrieving current supporting facts.') }, toolContext);
     await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
     await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+    const publishedConstraint = 'CONSTRAINT-PRESENT-BEFORE-PUBLICATION';
+    await hooks.tool!.hive_constraints_add.execute({ constraints: publishedConstraint }, toolContext);
     const fact = 'src/payments/settle.ts invoice_87 ERR_SETTLEMENT_CONFLICT';
     for (const scope of ['project', 'feature'] as const) {
       for (let i = 0; i < 13; i++) {
@@ -2082,6 +2084,7 @@ Do it
     const launch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, toolContext) as string);
     const artifact = path.join(testRoot, launch.taskToolCall.prompt.replace('Follow instructions in @', ''));
     const original = fs.readFileSync(artifact);
+    expect(original.toString('utf8').split(publishedConstraint)).toHaveLength(2);
     const dispatch = { args: { ...launch.taskToolCall } };
     fs.writeFileSync(artifact, 'UNVERIFIED DISPATCH');
     await expect(hooks['tool.execute.before']!({ tool: 'task', sessionID: parent, callID: 'bad-catalog-launch' }, { args: { ...launch.taskToolCall } })).rejects.toThrow(/assignment_recovery_error/);
