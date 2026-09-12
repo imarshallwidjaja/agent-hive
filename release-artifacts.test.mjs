@@ -4,9 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
+import ts from 'typescript';
 
 const workspaceRoot = path.resolve(import.meta.dirname);
 const releaseVersion = readJson('package.json').version;
+const hiveCoreRoot = path.join(workspaceRoot, 'packages', 'hive-core');
 const opencodeHiveRoot = path.join(workspaceRoot, 'packages', 'opencode-hive');
 const bunBinary = resolveBunBinary();
 
@@ -65,14 +67,22 @@ function ensurePackageBuilt(packageRoot) {
   runPackageCommand(packageRoot, 'npm', ['run', 'build']);
 }
 
-function listPackedFiles(packageRoot) {
+function withPackedPackage(packageRoot, inspect) {
+  ensurePackageBuilt(hiveCoreRoot);
   ensurePackageBuilt(packageRoot);
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-arkive-pack-'));
+  const extractedRoot = path.join(temporaryRoot, 'extracted');
+  fs.mkdirSync(extractedRoot);
 
-  const stdout = runPackageCommand(packageRoot, 'npm', ['pack', '--dry-run', '--json']);
-
-  const [packResult] = JSON.parse(stdout);
-
-  return new Set(packResult.files.map((file) => file.path));
+  try {
+    const stdout = runPackageCommand(packageRoot, 'npm', ['pack', '--json', '--pack-destination', temporaryRoot]);
+    const [packResult] = JSON.parse(stdout);
+    const tarballPath = path.join(temporaryRoot, packResult.filename);
+    execFileSync('tar', ['-xzf', tarballPath, '-C', extractedRoot]);
+    return inspect(path.join(extractedRoot, 'package'), new Set(packResult.files.map((file) => file.path)));
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 }
 
 function assertPackedFile(fileSet, relativePath, packageName) {
@@ -81,6 +91,100 @@ function assertPackedFile(fileSet, relativePath, packageName) {
     true,
     `${packageName} asset missing from npm pack dry run: ${relativePath}`
   );
+}
+
+function isHiveCoreSpecifier(specifier) {
+  return specifier === 'hive-core' || specifier.startsWith('hive-core/');
+}
+
+function staticModuleSpecifiers(source, fileName) {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    fileName.endsWith('.js') ? ts.ScriptKind.JS : ts.ScriptKind.TS
+  );
+  const specifiers = new Set(sourceFile.typeReferenceDirectives.map((reference) => reference.fileName));
+  const addStringLiteral = (node) => {
+    if (ts.isStringLiteralLike(node)) specifiers.add(node.text);
+  };
+
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+      addStringLiteral(node.moduleSpecifier);
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      if (node.moduleReference.expression) addStringLiteral(node.moduleReference.expression);
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      addStringLiteral(node.argument.literal);
+    } else if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+      if ((isDynamicImport || isRequire) && node.arguments[0]) addStringLiteral(node.arguments[0]);
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return specifiers;
+}
+
+function assertNoHiveCoreModuleReference(source, fileName) {
+  const references = [...staticModuleSpecifiers(source, fileName)].filter(isHiveCoreSpecifier);
+  assert.deepEqual(references, [], `${fileName} should not reference unpacked hive-core modules`);
+}
+
+function declarationEntrypoints(packageJson) {
+  const entrypoints = new Set();
+  if (typeof packageJson.types === 'string') entrypoints.add(packageJson.types);
+  if (typeof packageJson.typings === 'string') entrypoints.add(packageJson.typings);
+
+  const visitExports = (value) => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'types' && typeof child === 'string') entrypoints.add(child);
+      else visitExports(child);
+    }
+  };
+  visitExports(packageJson.exports);
+  return [...entrypoints];
+}
+
+function resolveDeclarationReference(filePath, specifier) {
+  const unresolved = path.resolve(path.dirname(filePath), specifier);
+  const candidates = [
+    unresolved,
+    `${unresolved}.d.ts`,
+    path.join(unresolved, 'index.d.ts'),
+  ];
+  if (/\.(?:mjs|cjs|js)$/.test(unresolved)) {
+    candidates.push(unresolved.replace(/\.(?:mjs|cjs|js)$/, '.d.ts'));
+  }
+  return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+}
+
+function assertPackedDeclarationGraph(packageRoot, packageJson) {
+  const entrypoints = declarationEntrypoints(packageJson);
+  assert.ok(entrypoints.length > 0, 'packed oc-arkive manifest should declare a public type entrypoint');
+
+  const pending = entrypoints.map((entrypoint) => path.resolve(packageRoot, entrypoint));
+  const visited = new Set();
+  while (pending.length > 0) {
+    const filePath = pending.pop();
+    assert.ok(filePath.startsWith(`${packageRoot}${path.sep}`), `declaration path escapes package: ${filePath}`);
+    assert.ok(fs.existsSync(filePath), `packed declaration entrypoint or dependency is missing: ${path.relative(packageRoot, filePath)}`);
+    if (visited.has(filePath)) continue;
+    visited.add(filePath);
+
+    const source = fs.readFileSync(filePath, 'utf8');
+    assertNoHiveCoreModuleReference(source, path.relative(packageRoot, filePath));
+    for (const specifier of staticModuleSpecifiers(source, filePath)) {
+      if (!specifier.startsWith('.')) continue;
+      const resolved = resolveDeclarationReference(filePath, specifier);
+      assert.ok(resolved, `packed declaration dependency is missing: ${specifier} from ${path.relative(packageRoot, filePath)}`);
+      pending.push(resolved);
+    }
+  }
 }
 
 describe(`release ${releaseVersion} artifact contract on main`, () => {
@@ -98,7 +202,16 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
   it(`refreshes tracked OpenCode lockfile markers to ${releaseVersion}`, () => {
     const packageLock = readJson('package-lock.json');
     const bunLock = readText('bun.lock');
+    const coreVersion = readJson('packages/hive-core/package.json').version;
+    const opencodeManifest = readJson('packages/opencode-hive/package.json');
+    const vscodeManifest = readJson('packages/vscode-hive/package.json');
     const escapedReleaseVersion = releaseVersion.replaceAll('.', '\\.');
+
+    assert.equal(opencodeManifest.devDependencies['hive-core'], coreVersion, 'oc-arkive should pin its hive-core devDependency to the exact workspace version');
+    assert.equal(vscodeManifest.dependencies['hive-core'], coreVersion, 'vscode-arkive should pin its hive-core dependency to the exact workspace version');
+    assert.equal(opencodeManifest.dependencies?.['hive-core'], undefined, 'oc-arkive should not ship hive-core as a runtime dependency');
+    assert.equal(opencodeManifest.optionalDependencies?.['hive-core'], undefined, 'oc-arkive should not ship hive-core as an optional dependency');
+    assert.equal(opencodeManifest.peerDependencies?.['hive-core'], undefined, 'oc-arkive should not expose hive-core as a peer dependency');
 
     assert.equal(packageLock.version, releaseVersion, `package-lock.json root version should be ${releaseVersion}`);
     assert.equal(packageLock.packages[''].version, releaseVersion, `package-lock.json workspace root should be ${releaseVersion}`);
@@ -109,6 +222,11 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     assert.equal(packageLock.packages['packages/vscode-hive'].version, releaseVersion, `package-lock.json vscode-arkive version should be ${releaseVersion}`);
     assert.equal(packageLock.packages['node_modules/vscode-arkive']?.resolved, 'packages/vscode-hive', 'package-lock.json should link vscode-arkive to packages/vscode-hive');
     assert.equal(packageLock.packages['node_modules/vscode-hive'], undefined, 'package-lock.json should not keep the old vscode-hive workspace link');
+    assert.deepEqual(
+      packageLock.packages['node_modules/hive-core'],
+      { resolved: 'packages/hive-core', link: true },
+      'package-lock.json should link hive-core to the local workspace'
+    );
 
     assert.match(bunLock, new RegExp(`"name": "hive-core",\\s+"version": "${escapedReleaseVersion}"`, 's'));
     assert.match(bunLock, new RegExp(`"name": "oc-arkive",\\s+"version": "${escapedReleaseVersion}"`, 's'));
@@ -117,6 +235,24 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     assert.match(bunLock, /"vscode-arkive": \["vscode-arkive@workspace:packages\/vscode-hive"\]/);
     assert.doesNotMatch(bunLock, /"opencode-hive": \["opencode-hive@workspace:packages\/opencode-hive"\]/);
     assert.doesNotMatch(bunLock, /"vscode-hive": \["vscode-hive@workspace:packages\/vscode-hive"\]/);
+  });
+
+  it('distinguishes real hive-core module references from comments and ordinary strings', () => {
+    assert.doesNotThrow(() => assertNoHiveCoreModuleReference(
+      "// import 'hive-core'\nconst packageName = 'hive-core';",
+      'allowed.js'
+    ));
+
+    for (const source of [
+      "import value from 'hive-core';",
+      "export { value } from 'hive-core/subpath';",
+      "const value = import('hive-core');",
+      "const value = require('hive-core/subpath');",
+      "type Value = import('hive-core').Value;",
+      "/// <reference types=\"hive-core\" />",
+    ]) {
+      assert.throws(() => assertNoHiveCoreModuleReference(source, 'rejected.ts'), /unpacked hive-core modules/);
+    }
   });
 
   it(`refreshes the OpenCode plugin manifest to ${releaseVersion}`, () => {
@@ -183,16 +319,31 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     );
   });
 
-  it('packs every oc-arkive asset promised by the README install contract', () => {
-    const packedFiles = listPackedFiles(opencodeHiveRoot);
+  it('packs every oc-arkive asset without unresolved hive-core module references', () => {
+    withPackedPackage(opencodeHiveRoot, (packageRoot, packedFiles) => {
+      assertPackedFile(packedFiles, 'dist/index.js', 'oc-arkive');
+      assert.ok(
+        [...packedFiles].some((filePath) => filePath.startsWith('skills/')),
+        'README-promised oc-arkive asset missing from npm pack: skills/'
+      );
+      assertPackedFile(packedFiles, 'templates/mcp-servers.json', 'oc-arkive');
+      assertPackedFile(packedFiles, 'templates/context/tools.md', 'oc-arkive');
 
-    assertPackedFile(packedFiles, 'dist/index.js', 'oc-arkive');
-    assert.ok(
-      [...packedFiles].some((filePath) => filePath.startsWith('skills/')),
-      'README-promised oc-arkive asset missing from npm pack dry run: skills/'
-    );
-    assertPackedFile(packedFiles, 'templates/mcp-servers.json', 'oc-arkive');
-    assertPackedFile(packedFiles, 'templates/context/tools.md', 'oc-arkive');
+      const packedManifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+      for (const dependencyType of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+        assert.equal(
+          packedManifest[dependencyType]?.['hive-core'],
+          undefined,
+          `packed oc-arkive manifest should not include hive-core in ${dependencyType}`
+        );
+      }
+
+      const executablePath = path.resolve(packageRoot, packedManifest.main);
+      assert.ok(executablePath.startsWith(`${packageRoot}${path.sep}`), 'packed executable path should stay inside the package');
+      assert.ok(fs.existsSync(executablePath), `packed executable is missing: ${packedManifest.main}`);
+      assertNoHiveCoreModuleReference(fs.readFileSync(executablePath, 'utf8'), packedManifest.main);
+      assertPackedDeclarationGraph(packageRoot, packedManifest);
+    });
   });
 
 });

@@ -53,7 +53,7 @@
     "@opencode-ai/sdk": "^0.13.0",
     "@types/bun": "^1.2.0",
     "@types/node": "^20.0.0",
-    "hive-core": "workspace:*",
+    "hive-core": "2.5.0",
     "typescript": "^5.0.0"
   },
   "files": [

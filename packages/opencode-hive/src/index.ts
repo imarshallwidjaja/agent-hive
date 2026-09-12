@@ -1429,6 +1429,8 @@ const plugin: Plugin = async (ctx) => {
       invalid_context_name: 'Retry with a simple context name without paths.',
       context_already_exists: 'Call hive_context_read for the file, then retry hive_context_write with the current expectedRevision.',
       context_not_found: 'Call hive_context_read to inspect current context names before retrying.',
+      context_precondition_required: 'Call hive_context_read for every existing file, then retry with its current revision and content hash.',
+      stale_content: 'Call hive_context_read for the changed file, reconstruct any full replacement from all chunks, then retry with its current hash.',
       stale_revision: 'Call hive_context_read, then retry with the current revision.',
     }[failure.reason] ?? 'Call hive_context_read, then retry with the current revision.';
     return JSON.stringify({
@@ -5758,7 +5760,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
 
       // Context Tools
       hive_context_read: tool({
-        description: 'Read managed feature context. Omit name for the revisioned summary/index; provide name for content and the revision required by replace, append, or archive.',
+        description: 'Read managed feature context. Omit name for the revisioned summary/index; provide name for content plus its hash and the revision required by replace, append, or archive.',
         args: {
           name: tool.schema.string().optional().describe('Context name. Omit to read the summary, kinds, footprint, and current revision.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
@@ -5777,23 +5779,24 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       }),
 
       hive_context_write: tool({
-        description: 'Create a context explicitly, or replace one only after hive_context_read using expectedRevision. Reuse and consolidate durable files before creating more. Evidence is excluded from worker/network prompts. When task metadata is supplied, it must be the exact existing task folder for the resolved feature.',
+        description: 'Create a context explicitly, or replace one only after hive_context_read using expectedRevision and expectedContentHash. Reuse and consolidate durable files before creating more. Evidence is excluded from worker/network prompts. When task metadata is supplied, it must be the exact existing task folder for the resolved feature.',
         args: {
           name: tool.schema.string().describe('Context name. overview, draft, and execution-decisions are reserved system files.'),
           content: tool.schema.string().describe('Markdown content to write'),
           kind: tool.schema.enum(['durable', 'evidence']).optional().describe('Kind for non-reserved files. Defaults to durable.'),
           task: tool.schema.string().optional().describe('Optional owning task folder. When supplied, use the exact existing folder for this feature, such as 02-add-api; display names and order numbers are invalid.'),
           expectedRevision: tool.schema.number().optional().describe('Required for replacement; omit only for explicit creation.'),
+          expectedContentHash: tool.schema.string().optional().describe('Actual contentHash from a named hive_context_read. Required with expectedRevision and omitted for creation.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
-        async execute({ name, content, kind, task, expectedRevision, feature: explicitFeature }, toolContext) {
+        async execute({ name, content, kind, task, expectedRevision, expectedContentHash, feature: explicitFeature }, toolContext) {
           const resolved = resolveContextFeature(explicitFeature, toolContext);
           if (typeof resolved === 'string') return resolved;
           try {
             validateContextTask(resolved.feature, task);
             const result = expectedRevision === undefined
               ? contextToolScope.contexts.create(resolved.feature, name, content, { kind, task })
-              : contextToolScope.contexts.replace(resolved.feature, name, content, expectedRevision, { kind, task });
+              : contextToolScope.contexts.replace(resolved.feature, name, content, expectedRevision, expectedContentHash!, { kind, task });
             bindContextFeature(resolved.sessionID, resolved.feature);
             return JSON.stringify({ success: true, operation: expectedRevision === undefined ? 'created' : 'replaced', ...result }, null, 2);
           } catch (error) {
@@ -5803,16 +5806,17 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       }),
 
       hive_context_append: tool({
-        description: 'Append a dated block to existing context after hive_context_read. Preserves prior bytes and requires expectedRevision. Consolidate first when durable growth is rejected. When task metadata is supplied, it must be the exact existing task folder for the resolved feature.',
+        description: 'Append a dated block to existing context after hive_context_read. Preserves prior bytes and requires expectedRevision plus expectedContentHash. When task metadata is supplied, it must be the exact existing task folder for the resolved feature.',
         args: {
           name: tool.schema.string().describe('Existing context name.'),
           content: tool.schema.string().describe('Markdown content to append.'),
           section: tool.schema.string().optional().describe('Optional level-three heading for the appended block.'),
           task: tool.schema.string().optional().describe('Optional owning task folder. When supplied, use the exact existing folder for this feature, such as 02-add-api; display names and order numbers are invalid.'),
           expectedRevision: tool.schema.number().describe('Revision from hive_context_read.'),
+          expectedContentHash: tool.schema.string().describe('Actual contentHash from the named hive_context_read.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
-        async execute({ name, content, section, task, expectedRevision, feature: explicitFeature }, toolContext) {
+        async execute({ name, content, section, task, expectedRevision, expectedContentHash, feature: explicitFeature }, toolContext) {
           const resolved = resolveContextFeature(explicitFeature, toolContext);
           if (typeof resolved === 'string') return resolved;
           try {
@@ -5822,6 +5826,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
               name,
               content,
               expectedRevision,
+              expectedContentHash,
               { section, task },
             );
             bindContextFeature(resolved.sessionID, resolved.feature);
@@ -5833,14 +5838,15 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       }),
 
       hive_context_archive: tool({
-        description: 'Archive only named context files after hive_context_read. Requires current revision and an explicit reason; unrelated files remain active.',
+        description: 'Archive only named context files after hive_context_read. Requires current revision, each selected name\'s actual content hash, and an explicit reason; unrelated files remain active.',
         args: {
           names: tool.schema.array(tool.schema.string()).describe('Context names to archive.'),
           reason: tool.schema.string().describe('Specific reason for archiving these files.'),
           expectedRevision: tool.schema.number().describe('Revision from hive_context_read.'),
+          expectedContentHashes: tool.schema.record(tool.schema.string(), tool.schema.string()).describe('Map of every selected context name to its actual contentHash from named hive_context_read calls.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
-        async execute({ names, reason, expectedRevision, feature: explicitFeature }, toolContext) {
+        async execute({ names, reason, expectedRevision, expectedContentHashes, feature: explicitFeature }, toolContext) {
           const resolved = resolveContextFeature(explicitFeature, toolContext);
           if (typeof resolved === 'string') return resolved;
           try {
@@ -5849,6 +5855,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
               names,
               reason,
               expectedRevision,
+              expectedContentHashes,
             );
             bindContextFeature(resolved.sessionID, resolved.feature);
             return JSON.stringify({ success: true, operation: 'archived', ...result }, null, 2);

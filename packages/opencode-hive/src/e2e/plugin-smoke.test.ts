@@ -60,6 +60,10 @@ const FIRST_TASK = "01-first-task";
 const TEST_COMMIT_MESSAGE = 'test: record task implementation\n\nRecord verified task work for the integration test.';
 const TEST_MERGE_MESSAGE = 'test: integrate task implementation\n\nIntegrate verified task work as project history.';
 
+function durableContext(body: string): string {
+  return `---\ndescription: Managed context test fixture\nread_when: Read when exercising managed context behavior.\n---\n\n${body}`;
+}
+
 function createStubShell(): PluginInput["$"] {
   let shell: PluginInput["$"];
 
@@ -572,7 +576,7 @@ Do it
 
     const unboundSessionID = 'sess_sole_feature_context_write';
     const output = await hooks.tool!.hive_context_write.execute(
-      { name: 'notes', content: '# Sole feature notes' },
+      { name: 'notes', content: durableContext('# Sole feature notes') },
       createToolContext(unboundSessionID),
     );
 
@@ -586,7 +590,7 @@ Do it
       '01_sole-live-feature',
       'context',
       'notes.md',
-    ), 'utf-8')).toBe('# Sole feature notes');
+    ), 'utf-8')).toBe(durableContext('# Sole feature notes'));
     expect(readGlobalSessionFeatureName(testRoot, unboundSessionID)).toBe('sole-live-feature');
   });
 
@@ -603,8 +607,23 @@ Do it
     const read = JSON.parse(await hooks.tool!.hive_context_read.execute({
       feature: 'managed-context',
       name: 'verification-log',
-    }, toolContext) as string) as { revision: number; file: { content: string; kind: string } };
+    }, toolContext) as string) as { revision: number; file: { content: string; kind: string; contentHash: string } };
     expect(read).toMatchObject({ revision: created.revision, file: { content: 'raw output', kind: 'evidence' } });
+
+    for (const output of [
+      await hooks.tool!.hive_context_write.execute({
+        feature: 'managed-context', name: 'verification-log', content: 'replacement', expectedRevision: read.revision,
+      }, toolContext),
+      await hooks.tool!.hive_context_append.execute({
+        feature: 'managed-context', name: 'verification-log', content: 'missing hash', expectedRevision: read.revision,
+      }, toolContext),
+      await hooks.tool!.hive_context_archive.execute({
+        feature: 'managed-context', names: ['verification-log'], reason: 'missing hash', expectedRevision: read.revision,
+      }, toolContext),
+    ]) {
+      expect(JSON.parse(output as string)).toMatchObject({ success: false, reason: 'context_precondition_required' });
+    }
+    expect(fs.readFileSync(path.join(testRoot, '.hive/features/01_managed-context/context/verification-log.md'), 'utf8')).toBe('raw output');
 
     const appended = JSON.parse(await hooks.tool!.hive_context_append.execute({
       feature: 'managed-context',
@@ -612,6 +631,7 @@ Do it
       content: 'more output',
       section: 'Retry',
       expectedRevision: read.revision,
+      expectedContentHash: read.file.contentHash,
     }, toolContext) as string) as { success: boolean; revision: number };
     expect(appended).toMatchObject({ success: true, revision: 2 });
 
@@ -620,6 +640,7 @@ Do it
       names: ['verification-log'],
       reason: 'superseded',
       expectedRevision: read.revision,
+      expectedContentHashes: { 'verification-log': read.file.contentHash },
     }, toolContext) as string) as { success: boolean; reason: string };
     expect(stale).toMatchObject({ success: false, reason: 'stale_revision' });
     const blankReason = JSON.parse(await hooks.tool!.hive_context_archive.execute({
@@ -627,6 +648,7 @@ Do it
       names: ['verification-log'],
       reason: ' ',
       expectedRevision: appended.revision,
+      expectedContentHashes: { 'verification-log': read.file.contentHash },
     }, toolContext) as string) as { success: boolean; reason: string; nextAction: string };
     expect(blankReason).toMatchObject({
       success: false,
@@ -663,7 +685,7 @@ Do it
     const beforeTasks = JSON.parse(await hooks.tool!.hive_context_write.execute({
       feature,
       name: 'planning-notes',
-      content: 'Created before tasks exist.',
+      content: durableContext('Created before tasks exist.'),
     }, toolContext) as string) as { success: boolean; revision: number };
     expect(beforeTasks.success).toBe(true);
 
@@ -680,9 +702,9 @@ Do it
     const accepted = JSON.parse(await hooks.tool!.hive_context_write.execute({
       feature,
       name: 'task-notes',
-      content: 'Owned by the exact task folder.',
+      content: durableContext('Owned by the exact task folder.'),
       task: FIRST_TASK,
-    }, toolContext) as string) as { success: boolean; revision: number; file: { task?: string } };
+    }, toolContext) as string) as { success: boolean; revision: number; file: { task?: string; contentHash: string } };
     expect(accepted).toMatchObject({ success: true, file: { task: FIRST_TASK } });
 
     for (const task of ['First Task', '1', '99-unknown-task']) {
@@ -713,7 +735,8 @@ Do it
       content: 'Exact-folder append.',
       task: FIRST_TASK,
       expectedRevision: accepted.revision,
-    }, toolContext) as string) as { success: boolean; revision: number };
+      expectedContentHash: accepted.file.contentHash,
+    }, toolContext) as string) as { success: boolean; revision: number; file: { contentHash: string } };
     expect(appended.success).toBe(true);
 
     const rejectedAppend = JSON.parse(await hooks.tool!.hive_context_append.execute({
@@ -722,6 +745,7 @@ Do it
       content: 'must not persist',
       task: '1',
       expectedRevision: appended.revision,
+      expectedContentHash: appended.file.contentHash,
     }, toolContext) as string) as { success: boolean; reason: string; error: string };
     expect(rejectedAppend).toMatchObject({ success: false, reason: 'invalid_argument' });
     expect(rejectedAppend.error).toContain('exact existing task folder');
@@ -2135,7 +2159,7 @@ Do it
       {
         feature: "reserved-overview-feature",
         name: "decisions",
-        content: "Technical decision that workers should receive.",
+        content: durableContext("Technical decision that workers should receive."),
       },
       toolContext
     );
@@ -2143,7 +2167,7 @@ Do it
       {
         feature: "reserved-overview-feature",
         name: "learnings",
-        content: "Durable learning that workers should receive.",
+        content: durableContext("Durable learning that workers should receive."),
       },
       toolContext
     );
@@ -2224,15 +2248,15 @@ Use it.
     await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
 
     await hooks.tool!.hive_context_write.execute(
-      { feature, name: 'current-context', content: 'current task context', task: '02-current' },
+      { feature, name: 'current-context', content: durableContext('current task context'), task: '02-current' },
       toolContext,
     );
     await hooks.tool!.hive_context_write.execute(
-      { feature, name: 'dependency-context', content: 'dependency context', task: '01-foundation' },
+      { feature, name: 'dependency-context', content: durableContext('dependency context'), task: '01-foundation' },
       toolContext,
     );
     await hooks.tool!.hive_context_write.execute(
-      { feature, name: 'untagged-context', content: 'untagged context' },
+      { feature, name: 'untagged-context', content: durableContext('untagged context') },
       toolContext,
     );
 
@@ -2332,7 +2356,7 @@ Use context written between completions.
       toolContext,
     );
     await hooks.tool!.hive_context_write.execute(
-      { feature, name: 'between-attempts', content: 'Context written after the first completion.' },
+      { feature, name: 'between-attempts', content: durableContext('Context written after the first completion.') },
       toolContext,
     );
     const contextIndexPath = path.join(featurePath, 'context', 'index.json');
@@ -2390,7 +2414,7 @@ Use context.
       ['valid-newer-context', 'valid newer context'],
       ['valid-older-context', 'valid older context'],
     ] as const) {
-      await hooks.tool!.hive_context_write.execute({ feature, name, content }, toolContext);
+    await hooks.tool!.hive_context_write.execute({ feature, name, content: durableContext(content) }, toolContext);
     }
 
     const featurePath = path.join(testRoot, '.hive', 'features', '01_context-invalid-timestamps');
@@ -2705,7 +2729,7 @@ Do it
       {
         feature: "blocked-status-feature",
         name: "BLOCKED",
-        content: "Need approval from Beekeeper.",
+        content: durableContext("Need approval from Beekeeper."),
       },
       toolContext
     );
@@ -2874,7 +2898,7 @@ Do it
       {
         feature: "overview-status-feature",
         name: "learnings",
-        content: "# Learnings\nDurable summary",
+        content: durableContext("# Learnings\nDurable summary"),
       },
       toolContext
     );
@@ -4808,11 +4832,11 @@ Do it
 
     const workerContext = createToolContext("sess_worker_ctx_bind");
     const output = await hooks.tool!.hive_context_write.execute(
-      { name: "notes", content: "test notes", feature: "ctx-bind-feature" },
+      { name: "notes", content: durableContext("test notes"), feature: "ctx-bind-feature" },
       workerContext
     );
     const omittedOutput = await hooks.tool!.hive_context_write.execute(
-      { name: "follow-up", content: "bound notes" },
+      { name: "follow-up", content: durableContext("bound notes") },
       workerContext,
     );
 
@@ -4825,7 +4849,7 @@ Do it
       "01_ctx-bind-feature",
       "context",
       "notes.md",
-    ), "utf-8")).toBe("test notes");
+    ), "utf-8")).toBe(durableContext("test notes"));
     expect(fs.readFileSync(path.join(
       testRoot,
       ".hive",
@@ -4833,7 +4857,7 @@ Do it
       "01_ctx-bind-feature",
       "context",
       "follow-up.md",
-    ), "utf-8")).toBe("bound notes");
+    ), "utf-8")).toBe(durableContext("bound notes"));
 
     const sessionsPath = path.join(testRoot, ".hive", "sessions.json");
     expect(fs.existsSync(sessionsPath)).toBe(true);
@@ -4861,11 +4885,11 @@ Do it
     const hooks = await plugin(ctx);
     const writerSessionID = "sess_global_worktree_writer";
     const output = await hooks.tool!.hive_context_write.execute(
-      { name: "notes", content: "worktree notes", feature: featureName },
+      { name: "notes", content: durableContext("worktree notes"), feature: featureName },
       createToolContext(writerSessionID),
     );
 
-    const created = JSON.parse(output as string) as { success: boolean; operation: string; revision: number };
+    const created = JSON.parse(output as string) as { success: boolean; operation: string; revision: number; file: { contentHash: string } };
     expect(created).toMatchObject({ success: true, operation: 'created' });
     const status = JSON.parse(await hooks.tool!.hive_status.execute(
       { feature: featureName },
@@ -4876,7 +4900,7 @@ Do it
         revision: number;
         fileCount: number;
         files: Array<{ name: string; chars: number }>;
-        durable: { fileCount: number; chars: number };
+        durable: { fileCount: number; chars: number | null };
       };
     };
     expect(status).toMatchObject({
@@ -4884,29 +4908,31 @@ Do it
       context: {
         revision: created.revision,
         fileCount: 1,
-        files: [{ name: 'notes', chars: 14 }],
-        durable: { fileCount: 1, chars: 14 },
+        files: [{ name: 'notes', chars: durableContext('worktree notes').length }],
+        durable: { fileCount: 1, chars: null },
       },
     });
     const read = JSON.parse(await hooks.tool!.hive_context_read.execute(
       { name: 'notes', feature: featureName },
       createToolContext(writerSessionID),
-    ) as string) as { revision: number; file: { content: string } };
-    expect(read).toMatchObject({ revision: created.revision, file: { content: 'worktree notes' } });
+    ) as string) as { revision: number; file: { content: string; contentHash: string } };
+    expect(read).toMatchObject({ revision: created.revision, file: { content: durableContext('worktree notes') } });
     const appended = JSON.parse(await hooks.tool!.hive_context_append.execute(
       {
         name: 'notes',
         content: 'follow-up',
         expectedRevision: read.revision,
+        expectedContentHash: read.file.contentHash,
         feature: featureName,
       },
       createToolContext(writerSessionID),
-    ) as string) as { revision: number };
+    ) as string) as { revision: number; file: { contentHash: string } };
     const archived = JSON.parse(await hooks.tool!.hive_context_archive.execute(
       {
         names: ['notes'],
         reason: 'smoke complete',
         expectedRevision: appended.revision,
+        expectedContentHashes: { notes: appended.file.contentHash },
         feature: featureName,
       },
       createToolContext(writerSessionID),
@@ -4975,7 +5001,7 @@ Do it
       createToolContext('sess_bound_feature_owner'),
     );
     await hooks.tool!.hive_context_write.execute(
-      { feature: 'bound-context-feature', name: 'initial-notes', content: 'initial' },
+      { feature: 'bound-context-feature', name: 'initial-notes', content: durableContext('initial') },
       boundContext,
     );
     await hooks.tool!.hive_feature_create.execute(
@@ -4984,7 +5010,7 @@ Do it
     );
 
     const output = await hooks.tool!.hive_context_write.execute(
-      { name: 'bound-notes', content: 'bound content' },
+      { name: 'bound-notes', content: durableContext('bound content') },
       boundContext,
     );
 
@@ -4996,7 +5022,7 @@ Do it
       '01_bound-context-feature',
       'context',
       'bound-notes.md',
-    ), 'utf-8')).toBe('bound content');
+    ), 'utf-8')).toBe(durableContext('bound content'));
     expect(fs.existsSync(path.join(
       testRoot,
       '.hive',
@@ -5034,11 +5060,11 @@ Do it
     const boundContext = createToolContext('sess_adhoc_bound_write');
 
     const explicitOutput = await adhocHooks.tool!.hive_context_write.execute(
-      { feature: 'adhoc-bound-feature', name: 'initial-notes', content: 'initial' },
+      { feature: 'adhoc-bound-feature', name: 'initial-notes', content: durableContext('initial') },
       boundContext,
     );
     const omittedOutput = await adhocHooks.tool!.hive_context_write.execute(
-      { name: 'follow-up-notes', content: 'follow-up' },
+      { name: 'follow-up-notes', content: durableContext('follow-up') },
       boundContext,
     );
     const unboundOutput = await adhocHooks.tool!.hive_context_write.execute(
@@ -5056,7 +5082,7 @@ Do it
       '01_adhoc-bound-feature',
       'context',
       'follow-up-notes.md',
-    ), 'utf-8')).toBe('follow-up');
+    ), 'utf-8')).toBe(durableContext('follow-up'));
 
     expect(unboundOutput).toContain('Multiple live features found: adhoc-bound-feature, unrelated-live-feature');
     expect(unboundOutput).toContain('explicit `feature` argument');
@@ -5087,7 +5113,7 @@ Do it
     );
 
     const output = await worktreeHooks.tool!.hive_context_write.execute(
-      { name: 'worktree-notes', content: 'detected content' },
+      { name: 'worktree-notes', content: durableContext('detected content') },
       detectedContext,
     );
 
@@ -5099,7 +5125,7 @@ Do it
       '01_detected-context-feature',
       'context',
       'worktree-notes.md',
-    ), 'utf-8')).toBe('detected content');
+    ), 'utf-8')).toBe(durableContext('detected content'));
     expect(readGlobalSessionFeatureName(testRoot, sessionID)).toBe('detected-context-feature');
   });
 
@@ -5128,7 +5154,7 @@ Do it
       {
         feature: 'explicit-target-feature',
         name: 'override-notes',
-        content: 'explicit wins',
+        content: durableContext('explicit wins'),
       },
       overrideContext,
     );
@@ -5141,7 +5167,7 @@ Do it
       '02_explicit-target-feature',
       'context',
       'override-notes.md',
-    ), 'utf-8')).toBe('explicit wins');
+    ), 'utf-8')).toBe(durableContext('explicit wins'));
     expect(fs.existsSync(path.join(
       testRoot,
       '.hive',
@@ -5163,7 +5189,7 @@ Do it
       createToolContext('sess_session_bound_owner'),
     );
     await hooks.tool!.hive_context_write.execute(
-      { feature: 'session-bound-feature', name: 'bound-seed', content: 'seed' },
+      { feature: 'session-bound-feature', name: 'bound-seed', content: durableContext('seed') },
       boundContext,
     );
 
@@ -5388,7 +5414,7 @@ Do the first thing.
       {
         feature: 'manual-spec-feature',
         name: 'manual-task-context',
-        content: 'Context owned by the manual task.',
+        content: durableContext('Context owned by the manual task.'),
         task: '02-review-fix',
       },
       toolContext,
@@ -5397,7 +5423,7 @@ Do the first thing.
       {
         feature: 'manual-spec-feature',
         name: 'dependency-context',
-        content: 'Context owned by the completed dependency.',
+        content: durableContext('Context owned by the completed dependency.'),
         task: FIRST_TASK,
       },
       toolContext,
@@ -5406,7 +5432,7 @@ Do the first thing.
       {
         feature: 'manual-spec-feature',
         name: 'untagged-context',
-        content: 'Fresh untagged context.',
+        content: durableContext('Fresh untagged context.'),
       },
       toolContext,
     );

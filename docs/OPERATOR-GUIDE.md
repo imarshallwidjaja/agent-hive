@@ -121,9 +121,11 @@ After a `/dash-review` or `/vuln-review` on ad-hoc work, give any fix instructio
 
 If the request grows task dependencies, a reviewed plan, or a durable audit trail, `hive-builder` should ask before opening a feature. Tool contracts: [Ad-hoc Worktree](../packages/opencode-hive/README.md#ad-hoc-worktree).
 
-## `/dash-review`
+## Review options
 
-Use this when you want a read-only second opinion without starting a fix.
+### `/dash-review`
+
+Use this when you want a read-only second opinion without changing source.
 
 1. Git review: run `/dash-review`, provide an exact GitHub PR URL, or describe the current Git target. A PR fixes Git evidence. Empty arguments can resolve only Git evidence.
 2. Process or concept review: provide nonempty natural-language intent. Stage A can select inline evidence with subject kind `process`, `concept`, or `general`; this uses advisory lanes rather than implementation severity semantics.
@@ -135,9 +137,9 @@ Use this when you want a read-only second opinion without starting a fix.
 
 `/vuln-review` remains Git-only. It rejects inline and artifact evidence before `BOUNDED`. Tool details and lane contracts: [Operator Commands](../packages/opencode-hive/README.md#operator-commands).
 
-## `/vuln-review`
+### `/vuln-review`
 
-Use this for authorized static review of source you are allowed to assess. It is a findings-first pass over one frozen snapshot, not a pentest and not a substitute for SAST, DAST, or an audit.
+Use this for authorized static review of source you are allowed to assess. `/vuln-review` does not edit source or apply automatic fixes. It is a findings-first pass over one frozen snapshot, not a pentest and not a substitute for SAST, DAST, or an audit.
 
 1. Run `/vuln-review` with free text, flags, both, or nothing. Flags are fixed overrides. Whole-repository scope needs `--whole-repo` or an explicit yes to that inferred expansion.
 2. Resolve returns `BOUNDED`, `NEEDS_CLARIFICATION`, or `STOP`. Clarification asks one Yes/No question. Only the stored accepted candidate can be materialized.

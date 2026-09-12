@@ -31,6 +31,10 @@ export function getGlobalSessionsPath(projectRoot: string): string {
   return path.join(getHivePath(projectRoot), 'sessions.json');
 }
 
+export function getProjectContextPath(projectRoot: string): string {
+  return path.join(getHivePath(projectRoot), CONTEXT_DIR);
+}
+
 function parseIndexedFeatureDirectoryName(directoryName: string): { index: number; logicalName: string } | null {
   const match = directoryName.match(/^(\d+)[_-](.+)$/);
   if (!match) {
@@ -380,7 +384,7 @@ export function acquireLockSync(
  * @param filePath - Destination file path
  * @param content - Content to write
  */
-export function writeAtomic(filePath: string, content: string): void {
+export function writeAtomic(filePath: string, content: string | NodeJS.ArrayBufferView): void {
   ensureDir(path.dirname(filePath));
   
   // Generate unique temp file in same directory (for same-filesystem rename)

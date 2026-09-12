@@ -21,6 +21,12 @@ function setupFeature(featureName: string): void {
   );
 }
 
+function seedLegacy(featureName: string, name: string, content: string): void {
+  const directory = path.join(TEST_DIR, '.hive/features', featureName, 'context');
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, `${name}.md`), content);
+}
+
 describe('ContextService', () => {
   let service: ContextService;
 
@@ -40,11 +46,13 @@ describe('ContextService', () => {
       setupFeature(featureName);
 
       // Create some context files
-      service.write(featureName, 'research', 'Research findings here');
-      service.write(featureName, 'decisions', 'Decision log here');
+      seedLegacy(featureName, 'research', 'Research findings here');
+      seedLegacy(featureName, 'decisions', 'Decision log here');
 
       // Archive them
-      const result = service.archive(featureName);
+      const snapshot = service.readSummary(featureName);
+      const hashes = Object.fromEntries(snapshot.files.map(file => [file.name, service.readContent(featureName, file.name)!.file.contentHash!]));
+      const result = service.archive(featureName, snapshot.revision, hashes);
 
       // Check returned data
       expect(result.archived).toContain('research');
@@ -75,7 +83,7 @@ describe('ContextService', () => {
       const featureName = 'empty-feature';
       setupFeature(featureName);
 
-      const result = service.archive(featureName);
+      const result = service.archive(featureName, service.readSummary(featureName).revision, {});
 
       expect(result.archived).toEqual([]);
       expect(result.archivePath).toBe('');
@@ -88,9 +96,9 @@ describe('ContextService', () => {
       setupFeature(featureName);
 
       // Create contexts
-      service.write(featureName, 'first', 'a'.repeat(100));
-      service.write(featureName, 'second', 'b'.repeat(200));
-      service.write(featureName, 'third', 'c'.repeat(300));
+      seedLegacy(featureName, 'first', 'a'.repeat(100));
+      seedLegacy(featureName, 'second', 'b'.repeat(200));
+      seedLegacy(featureName, 'third', 'c'.repeat(300));
       
       // Manually adjust timestamps to ensure ordering
       const contextPath = path.join(TEST_DIR, '.hive', 'features', featureName, 'context');
@@ -126,23 +134,27 @@ describe('ContextService', () => {
       const featureName = 'large-context';
       setupFeature(featureName);
 
-      service.write(featureName, 'large1', 'x'.repeat(15000));
-      const result = service.write(featureName, 'large2', 'y'.repeat(6000));
+      seedLegacy(featureName, 'large1', 'x'.repeat(15000));
+      seedLegacy(featureName, 'large2', 'before');
+      const current = service.readContent(featureName, 'large2')!;
+      const result = service.write(featureName, 'large2', 'y'.repeat(6000), current.revision, current.file.contentHash!);
 
       expect(result).toContain(path.join('context', 'large2.md'));
-      expect(service.readSummary(featureName).durable).toMatchObject({
+      expect(service.readSummary(featureName, { scanChars: true }).durable).toMatchObject({
         fileCount: 2,
         chars: 21000,
         overLimit: false,
       });
     });
 
-    it('returns the created path when context is under the cap', () => {
+    it('returns the replaced path when context is under the cap', () => {
       const featureName = 'small-context';
       setupFeature(featureName);
 
-      service.write(featureName, 'small1', 'x'.repeat(5000));
-      const result = service.write(featureName, 'small2', 'y'.repeat(5000));
+      seedLegacy(featureName, 'small1', 'x'.repeat(5000));
+      seedLegacy(featureName, 'small2', 'before');
+      const current = service.readContent(featureName, 'small2')!;
+      const result = service.write(featureName, 'small2', 'y'.repeat(5000), current.revision, current.file.contentHash!);
 
       expect(result).toContain(path.join('context', 'small2.md'));
     });

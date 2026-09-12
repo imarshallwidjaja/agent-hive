@@ -10,6 +10,7 @@
       "version": "2.5.0",
       "dependencies": {
         "simple-git": "^3.27.0",
+        "yaml": "^2.9.0",
       },
       "devDependencies": {
         "@types/bun": "^1.2.0",
@@ -31,7 +32,7 @@
         "@opencode-ai/sdk": "^0.13.0",
         "@types/bun": "^1.2.0",
         "@types/node": "^20.0.0",
-        "hive-core": "workspace:*",
+        "hive-core": "2.5.0",
         "typescript": "^5.0.0",
       },
       "optionalDependencies": {
@@ -47,7 +48,7 @@
       "name": "vscode-arkive",
       "version": "2.5.0",
       "dependencies": {
-        "hive-core": "workspace:*",
+        "hive-core": "2.5.0",
       },
       "devDependencies": {
         "@types/vscode": "1.64.0",

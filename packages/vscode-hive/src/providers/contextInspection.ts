@@ -42,6 +42,14 @@ export async function archiveContext(workspaceRoot: string, item: { featureName?
       name: file.name,
     })), { canPickMany: true, title: 'Archive Context', placeHolder: 'Select the exact documents to archive', matchOnDescription: true, matchOnDetail: true });
     if (!selected?.length) return;
+    const expectedContentHashes: Record<string, string> = {};
+    for (const file of selected) {
+      const read = service.readContent(item.featureName, file.name);
+      if (!read?.file.contentHash || read.revision !== snapshot.revision) {
+        throw new Error(`Context '${file.name}' changed while preparing the archive.`);
+      }
+      expectedContentHashes[file.name] = read.file.contentHash;
+    }
     const reason = await vscode.window.showInputBox({
       title: 'Archive Context', prompt: 'Why are these documents being archived?',
       validateInput: value => value.trim() ? undefined : 'Enter a nonblank archive reason.',
@@ -52,7 +60,7 @@ export async function archiveContext(workspaceRoot: string, item: { featureName?
       { modal: true }, 'Archive Context',
     );
     if (confirmation !== 'Archive Context') return;
-    service.archiveSelected(item.featureName, selected.map(file => file.name), reason.trim(), snapshot.revision);
+    service.archiveSelected(item.featureName, selected.map(file => file.name), reason.trim(), snapshot.revision, expectedContentHashes);
     refresh();
     vscode.window.showInformationMessage(`Hive: Archived ${selected.length} context document(s).`);
   } catch (error) {

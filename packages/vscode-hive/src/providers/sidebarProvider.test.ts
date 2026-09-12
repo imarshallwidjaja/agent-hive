@@ -235,10 +235,10 @@ describe('HiveSidebarProvider', () => {
   it('filters context metadata and warns only above either durable cap', async () => {
     new FeatureService(testRoot).create('context');
     const service = new hiveCore.ContextService(testRoot);
-    service.write('context', 'notes', 'x'.repeat(40000));
     service.create('context', 'evidence', 'proof', { kind: 'evidence' });
-    service.write('context', 'draft', 'scratch');
+    service.create('context', 'draft', 'scratch');
     const contextPath = hiveCore.getContextPath(testRoot, 'context');
+    fs.writeFileSync(path.join(contextPath, 'notes.md'), 'x'.repeat(40000));
     fs.writeFileSync(path.join(contextPath, 'noise.json'), '{}');
     const provider = new HiveSidebarProvider(testRoot);
     const [group] = await provider.getChildren();
@@ -261,8 +261,10 @@ describe('HiveSidebarProvider', () => {
     const { archiveContext } = await import('./contextInspection.js');
     new FeatureService(testRoot).create('context');
     const service = new hiveCore.ContextService(testRoot);
-    service.write('context', 'notes', 'keep');
-    service.write('context', 'unselected', 'preserve me');
+    const contextPath = hiveCore.getContextPath(testRoot, 'context');
+    fs.mkdirSync(contextPath, { recursive: true });
+    fs.writeFileSync(path.join(contextPath, 'notes.md'), 'keep');
+    fs.writeFileSync(path.join(contextPath, 'unselected.md'), 'preserve me');
     const initial = service.readSummary('context').revision;
     let refreshes = 0;
     const run = () => archiveContext(testRoot, { featureName: 'context', filename: 'notes.md' }, () => refreshes++);
@@ -275,7 +277,11 @@ describe('HiveSidebarProvider', () => {
     await run(); // Blank reasons cannot mutate even if an input mock bypasses validation.
     expect(service.readSummary('context').revision).toBe(initial);
     ui.picks.push((items: any[]) => items); ui.inputs.push('obsolete');
-    ui.confirmations.push(() => { service.append('context', 'notes', 'changed'); return 'Archive Context'; });
+    ui.confirmations.push(() => {
+      const current = service.readContent('context', 'notes')!;
+      service.append('context', 'notes', 'changed', current.revision, current.file.contentHash!);
+      return 'Archive Context';
+    });
     await run();
     expect(ui.errors.join('\n')).toContain('current revision');
     expect(service.read('context', 'notes')).not.toBeNull();
@@ -386,7 +392,9 @@ describe('HiveSidebarProvider', () => {
     events.change({ fsPath: `${contextPath}/notes.md` });
     expect(ui.fired).toHaveLength(4);
     const service = new hiveCore.ContextService(testRoot);
-    service.write('absent', 'notes', 'é😀');
+    const legacyPath = hiveCore.getContextPath(testRoot, 'absent');
+    fs.mkdirSync(legacyPath, { recursive: true });
+    fs.writeFileSync(path.join(legacyPath, 'notes.md'), 'é😀');
     const populated = (await provider.getChildren(feature)).find(item => item.label === 'Context')!;
     expect(populated.description).toContain('3/40000 chars');
     expect((await provider.getChildren(populated))[0].description).toBe('Durable · 6 bytes');
@@ -400,7 +408,11 @@ describe('HiveSidebarProvider', () => {
   it.each(['EACCES', 'null index'])('isolates %s context inspection failures without writes or hiding plan and tasks', async (failure) => {
     new FeatureService(testRoot).create('context');
     new PlanService(testRoot).write('context', '# Plan\n');
-    new hiveCore.ContextService(testRoot).create('context', 'notes', 'preserved');
+    new hiveCore.ContextService(testRoot).create(
+      'context',
+      'notes',
+      '---\ndescription: Sidebar fixture\nread_when: Read when testing sidebar context.\n---\n\npreserved',
+    );
     const contextPath = hiveCore.getContextPath(testRoot, 'context');
     const indexPath = path.join(contextPath, 'index.json');
     const provider = new HiveSidebarProvider(testRoot);
@@ -436,7 +448,9 @@ describe('HiveSidebarProvider', () => {
       expect(write).not.toHaveBeenCalled();
     } finally { read.mockRestore(); open.mockRestore(); write.mockRestore(); }
     expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);
-    expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe('preserved');
+    expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe(
+      '---\ndescription: Sidebar fixture\nread_when: Read when testing sidebar context.\n---\n\npreserved',
+    );
     expect(fs.existsSync(`${indexPath}.lock`)).toBe(false);
   });
 

@@ -79,15 +79,32 @@ export {
   ContextService,
   ContextMutationError,
   CONTEXT_INDEX_SCHEMA_VERSION,
+  CONTEXT_CANDIDATE_MAX,
+  CONTEXT_CATALOG_MAX_BYTES,
+  CONTEXT_CHUNK_DEFAULT_BYTES,
+  CONTEXT_CHUNK_MAX_BYTES,
+  CONTEXT_DOCUMENT_MAX_BYTES,
+  CONTEXT_NAMESPACE_ENTRY_MAX,
+  CONTEXT_SCANNED_HEADER_MAX_BYTES,
+  FEATURE_DURABLE_CHAR_WARNING_CAP,
+  FEATURE_DURABLE_FILE_WARNING_CAP,
+  PROJECT_DURABLE_CHAR_WARNING_CAP,
+  PROJECT_DURABLE_FILE_WARNING_CAP,
   RECOMMENDED_DURABLE_CHAR_CAP,
   RECOMMENDED_DURABLE_FILE_CAP,
 } from './contextService.js';
 export type {
   ContextArchiveResult,
+  ContextCatalogOptions,
+  ContextCatalogRead,
+  ContextContentOptions,
   ContextContentRead,
+  ContextDurableMetrics,
   ContextMutationErrorReason,
   ContextMutationResult,
+  ContextReadOptions,
   ContextReadSummary,
+  ContextRecoverySummary,
 } from './contextService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService, STANDING_CONSTRAINTS_MAX_CHARS } from './sessionService.js';

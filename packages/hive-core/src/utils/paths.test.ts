@@ -16,6 +16,7 @@ import {
   normalizePath,
   getGlobalSessionsPath,
   getHivePath,
+  getProjectContextPath,
 } from "./paths";
 
 const TEST_DIR = "/tmp/hive-core-test-" + process.pid;
@@ -446,6 +447,12 @@ describe("Atomic + Locked JSON Utilities", () => {
       const hivePath = getHivePath("/my/project");
       const sessionsPath = getGlobalSessionsPath("/my/project");
       expect(sessionsPath).toBe(path.join(hivePath, "sessions.json"));
+    });
+  });
+
+  describe("getProjectContextPath", () => {
+    it("returns the project-level context namespace", () => {
+      expect(getProjectContextPath("/my/project")).toBe(path.join("/my/project", ".hive", "context"));
     });
   });
 });

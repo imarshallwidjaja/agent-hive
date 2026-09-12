@@ -7,6 +7,9 @@
 ├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
 ├── sessions.json              # Optional top-level session index (when used)
 ├── background-jobs.json       # Background board state (tool-owned, env-gated)
+├── context/                    # Project-wide managed knowledge
+│   ├── index.json              # Schema-v1 operational index
+│   └── {name}.md               # Raw Markdown with discovery frontmatter
 └── features/
     └── {feature-name}/
         ├── feature.json         # Feature metadata + lifecycle timestamps
@@ -16,6 +19,8 @@
         │   └── plan.json        # Comments on plan.md
         ├── sessions.json        # Session tracking
         ├── context/             # Persistent knowledge files
+        │   ├── index.json       # Schema-v1 operational index
+        │   ├── .managed-mutation-pending.json # Present only during publication/recovery
         │   ├── overview.md      # Reserved human-facing summary/history/review file
         │   ├── decisions.md     # Optional example context file
         │   ├── architecture.md  # Optional example context file
@@ -46,12 +51,40 @@ Single-repo projects use the git root directly; multi-repo topology, when needed
 ## Reserved Overview Convention
 
 - `context/overview.md` is the primary human-facing summary and review surface.
-- Create it with `hive_context_write`. For later replacement, call `hive_context_read` and pass its revision as `expectedRevision`. From a repository-root session, provide `feature` whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
+- Create it with `hive_context_write`. For later replacement, call a named `hive_context_read` and pass its revision and `contentHash` as `expectedRevision` and `expectedContentHash`. From a repository-root session, provide `feature` whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
 - `plan.md` remains the graph source of truth for plan-backed task generation, dependency parsing, and execution, and may still include a readable design summary before `## Tasks`.
 - `context/overview.md` is intentionally excluded from worker execution context so the narrative summary does not blur implementation truth.
-- `context/index.json` has `schemaVersion: 1`, a feature-global monotonic `revision`, and metadata keyed by normalized context name. Each non-reserved entry records `kind` (`durable` or `evidence`), creation/update timestamps, and an optional task. Legacy unindexed Markdown files are read as durable without eager migration.
-- Durable files are execution inputs, newest first with a deterministic name tie-breaker. Evidence files preserve raw logs and historical verification without entering worker or network prompts. Recommended durable limits are 8 files and 40,000 characters; legacy over-limit features remain readable, while durable growth is rejected until context is consolidated or archived.
+- `context/index.json` has `schemaVersion: 1`, a scope-local monotonic `revision`, and metadata keyed by normalized context name. Each non-reserved entry records `kind` (`durable` or `evidence`), creation/update timestamps, an optional task, and the optional hash from its last managed write. Legacy unindexed Markdown files remain byte-for-byte unchanged and are read as durable only when the index is missing or valid and no interrupted publication marker exists.
+- Durable files are execution inputs, newest first with a deterministic name tie-breaker. Evidence files preserve raw logs and historical verification without entering worker or network prompts. Feature hygiene warnings start above 8 durable files or 40,000 UTF-16 characters. Project warnings start above 32 files or 160,000 UTF-16 characters. These thresholds request explicit review; they do not reject otherwise bounded growth.
 - `overview`, `draft`, and `execution-decisions` are reserved, excluded from execution context, and uncapped. Plan approval leaves the active draft unchanged so approval cannot partially succeed and then report failure during cleanup. Archive an obsolete draft explicitly with `hive_context_archive` after approval.
+
+## Managed Context Storage
+
+Managed context stores raw Markdown bytes. Durable creates require YAML frontmatter with nonblank `description` and `read_when` strings. Project durable documents also require an accountability `owner` and a strict `review_after` date in `YYYY-MM-DD` form. Metadata is parsed as bounded data: aliases, duplicate keys, custom tags, malformed YAML, and non-string recognized fields are rejected on managed creation. Existing malformed or incomplete metadata produces warnings without rewriting or hiding a file whose durable classification is already known.
+
+The operational index stays at schema version 1. Managed writes add `lastManagedContentHash`; old readers can ignore that field without changing stored Markdown. Invalid JSON, an unknown schema version, or an invalid operational entry fails closed as `context_index_invalid`. A missing index is different: absent control data retains the documented legacy durable default when no interrupted mutation is present. Recovery must not delete an invalid index to force that default.
+
+Ordinary summaries and catalogs read directory entries, stat bytes, index bytes, and at most 8 KiB of frontmatter per candidate. They do not read every body to calculate characters. `durable.bytes` is the stat-byte total. `durable.chars` is available only from an explicit `scanChars` management scan and remains an exact UTF-16 count; callers must not treat bytes and characters as interchangeable. Catalog construction is bounded by 20,000 namespace entries, 10,000 Markdown candidates, 64 MiB of scanned headers, and a 16 KiB serialized response. Exceeding a construction limit returns `context_inventory_too_large`, never a partial response labeled complete.
+
+Catalog cursors are versioned and bind scope, literal ASCII-folded query, traversal position, and a snapshot digest. The digest covers the observed index bytes and revision plus sorted inventory and header fingerprints. An index-only kind change therefore invalidates a cursor even if no body or revision changed. Cursor, snapshot, revision, and per-document `contentHash` serve different purposes and are not authorization grants.
+
+Catalog pages default to 10 entries and accept at most 50. The byte budget includes the prospective continuation cursor, so large metadata can produce smaller pages. Follow `nextCursor` until `complete` is true.
+
+Named reads bypass full inventory construction. They stream and hash the complete raw file while returning a UTF-8-safe byte range. The default serialized response budget is 16 KiB and the maximum is 64 KiB. Continue until `complete` is true to reconstruct a whole document. Existing-content replace and append operations require the current scope revision and the actual hash from that named read. Archive requires one hash for every selected name. A client must not compute a new hash at mutation time as a substitute for the read precondition.
+
+The compatibility `write` and `delete` methods require the same revision and per-file hash; `write` replaces existing content, while explicit creation uses `create`. Compatibility `archive` requires the current revision and hashes for every file in the namespace, including reserved and evidence files. Missing preconditions reject without publication.
+
+## Interrupted Publication
+
+Every managed multi-file mutation writes `.managed-mutation-pending.json` under the context namespace after taking the existing index lock and before publishing content, removing an archive source, or publishing control data. The marker identifies the operation, affected names, contained archive destinations, and starting control identity. It contains no body copies and is not a replay journal. The writer removes it only after successful publication or a caught error whose complete rollback succeeded.
+
+A surviving marker returns `context_reconciliation_required` for catalogs and mutations. Stale-lock reclamation leaves the marker in place and never resumes the operation. Authorized primary-management diagnostics may inspect bounded control digests, unclassified names and stats, or exact named raw chunks without classifying unknown evidence as legacy durable. Reads do not create directories, locks, indexes, markers, or repairs.
+
+`readRecoverySummary` returns a typed envelope within 16 KiB: the blocking control code, safely extractable revision (otherwise null), index parse/schema errors, pending operation details, and presence/digests for the index, marker, and archive manifest. Its unclassified inventory reports `totalFiles` and `complete`; pending details have their own counts and completeness flag. Inspect omitted or truncated details locally. Recovery instructions are included in every envelope. These observations neither infer classification nor supply mutation preconditions.
+
+Recovery is intentionally out of band in this version. Quiesce writers, inspect the marker and named bytes, restore or correct the index and archive manifest, then reconcile the marker explicitly. The marker narrows the unsafe state but does not provide crash-atomic transactions. Editors that ignore Hive locks can still race between a read and mutation; revision plus actual content hashes detect ordinary drift but do not prove that a caller read every chunk.
+
+All bundled source consumers must use the hash-aware signatures together. Mixed old and new managed writers are unsupported. Storage remains compatible with existing schema-v1 Markdown and index bytes, while chunked reads and mandatory mutation hashes are intentional client contract upgrades.
 
 ## Task status.json
 

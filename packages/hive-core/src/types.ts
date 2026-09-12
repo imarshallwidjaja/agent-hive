@@ -220,11 +220,24 @@ export interface FeatureInfo {
 export type ContextRole = 'human' | 'scratchpad' | 'operational' | 'durable' | 'evidence';
 export type ContextKind = 'durable' | 'evidence';
 
+export type ContextScope =
+  | { type: 'feature'; featureName: string }
+  | { type: 'project' };
+
+export interface ContextMetadata {
+  description?: string;
+  readWhen?: string;
+  owner?: string;
+  reviewAfter?: string;
+  warnings: string[];
+}
+
 export interface ContextIndexEntry {
   kind: ContextKind;
   createdAt: string;
   updatedAt: string;
   task?: string;
+  lastManagedContentHash?: string;
 }
 
 export interface ContextIndex {
@@ -243,6 +256,13 @@ export interface ContextFile {
   role: ContextRole;
   includeInExecution: boolean;
   includeInNetwork: boolean;
+  bytes?: number;
+  contentHash?: string;
+  description?: string;
+  readWhen?: string;
+  owner?: string;
+  reviewAfter?: string;
+  warnings?: string[];
 }
 
 export type SessionKind = 'primary' | 'subagent' | 'task-worker' | 'unknown';

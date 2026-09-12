@@ -19,7 +19,8 @@ Trusted Publishing is configured on the existing `oc-arkive` package. The CI ski
 Release preparation is manual. Update the release branch explicitly for `vX.Y.Z`:
 
 - bump the root version, `packages/hive-core/package.json`, `packages/opencode-hive/package.json`, and `packages/vscode-hive/package.json` to `X.Y.Z`
-- refresh `bun.lock` and `package-lock.json`
+- set `packages/opencode-hive/package.json`'s `devDependencies.hive-core` and `packages/vscode-hive/package.json`'s `dependencies.hive-core` to that exact `X.Y.Z` version
+- regenerate `bun.lock` and `package-lock.json`; a stale exact pin can resolve `hive-core` from the registry instead of linking the local workspace
 - regenerate `packages/opencode-hive/plugin.json` by running the package build
 - regenerate `packages/vscode-hive/dist/extension.js` and `packages/vscode-hive/vscode-arkive.vsix` by running the package build
 - add `docs/releases/vX.Y.Z.md`
@@ -28,7 +29,7 @@ Release preparation is manual. Update the release branch explicitly for `vX.Y.Z`
 
 The release workflow publishes `docs/releases/${github.ref_name}.md` as the GitHub Release body, so the matching release note file must exist before tagging.
 
-The pushed tag must also match the root package version. A `v1.2.3` tag on a commit whose `package.json` version is still `1.2.2` is invalid and fails before publish jobs run.
+The pushed tag must also match the root package version. A `v1.2.3` tag on a commit whose `package.json` version is still `1.2.2` is invalid and fails before publish jobs run. The release artifact check verifies both exact `hive-core` pins, the npm local-workspace link, and the packed `oc-arkive` dependency and module-reference boundaries.
 
 ## 3. Run local release preflight
 

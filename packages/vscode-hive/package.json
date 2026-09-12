@@ -252,6 +252,6 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "hive-core": "workspace:*"
+    "hive-core": "2.5.0"
   }
 }
