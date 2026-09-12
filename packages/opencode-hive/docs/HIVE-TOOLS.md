@@ -268,14 +268,22 @@ hive_task_trace_content({ task_id: "child", content_id: "<content_id from hive_t
 ### Context (4 tools)
 | Tool | Purpose |
 |------|---------|
-| `hive_context_read` | Read the context summary/index and revision, or one file's content |
-| `hive_context_write` | Explicitly create a file, or replace it with `expectedRevision` |
-| `hive_context_append` | Append a dated block while preserving prior bytes |
-| `hive_context_archive` | Selectively archive named files with a reason |
+| `hive_context_read` | Read a scoped summary, bounded durable catalog, or chunked exact document |
+| `hive_context_write` | Explicitly create a scoped file, or replace one whole document with revision and hash preconditions |
+| `hive_context_append` | Append a dated block while preserving prior bytes and checking revision plus content hash |
+| `hive_context_archive` | Selectively archive named files with a reason, revision, and per-name hashes |
 
-Call `hive_context_read` before replacement, append, or archive. Non-reserved files default to `durable` and are ordered by most recent update in worker and network context. Mark raw logs and historical verification material as `evidence`; evidence remains explicitly readable but never enters worker or network prompts. Reuse and consolidate durable files before creating more. Hive recommends no more than 8 durable files and 40,000 durable characters. Existing over-limit features remain readable and can shrink, but mutations that increase their durable footprint are rejected.
+Omitted `scope` retains feature-default behavior. Use `scope: "project"` explicitly for `.hive/context/`; project calls reject `feature` and `task`. An authenticated primary management session can read and mutate either scope. Authenticated bound workers and research/review helpers can read project context and their bound feature, but cannot switch features. Project mutations and all archive calls require primary management authorization. Private dash/vulnerability review lanes receive no live context inventory or bodies. Each call, including a cursor continuation, revalidates runtime session lineage and canonical workspace containment before context storage is inspected.
 
-`overview`, `draft`, and `execution-decisions` are reserved, excluded from execution context, and uncapped. They do not accept a caller-provided `kind`. Plan approval does not archive `draft`, because cleanup failure must not make a persisted approval appear unsuccessful. Archive an obsolete draft explicitly with `hive_context_archive` after approval.
+With no `name`, `hive_context_read` defaults to `view: "summary"`. Summary reads return revision, snapshot, stat/header inventory, durable byte totals, and character measurement state. They do not scan all bodies unless an authorized management caller explicitly sets `scanChars: true`; `durable.chars` is otherwise `null` with `charsMeasurement: "unavailable"`. Use `view: "catalog"` with optional literal `query`, `limit`, and returned `cursor` for durable metadata discovery. Catalog responses are capped at 16 KiB and never include document bodies. Named reads accept `cursor` and `maxBytes`, return `range`, `complete`, and `nextCursor`, and place the raw UTF-8 chunk in `file.content`. Pass `nextCursor` unchanged as `cursor` with the same scope and name until `complete: true`; arbitrary byte offsets are rejected. Named cursors bind version, authenticated session, canonical project, scope/feature, document name, namespace revision/control snapshot, actual content hash, and next byte boundary. Replay against another identity or document, malformed cursors, and unsupported versions return `context_cursor_stale`; changed control state or body returns `context_changed_during_read` (or `context_cursor_stale` if the byte boundary no longer exists). Start a new read explicitly after either error. `maxBytes` is the total serialized UTF-8 JSON response budget, including the cursor, not the content allowance; it defaults to 16 KiB and cannot exceed 64 KiB.
+
+Named-read cursors carry an HMAC-SHA-256 over the entire serialized versioned payload, checked in constant time before any cursor-driven context read. Each plugin instance generates a private in-memory secret that is never exposed or persisted. Cursors expire when that instance is replaced or its process restarts; another instance rejects them with `context_cursor_stale`. Restart the named read without a cursor after that error. Authorization still runs on every continuation before cursor-driven storage access.
+
+Call `hive_context_read` before replacement, append, or archive. Existing-content mutations require the current revision and actual SHA-256 `contentHash`; archive requires a hash for every selected name. A replacement always replaces the whole document. Finish all named-read chunks before constructing replacement content. Non-reserved files default to `durable`. Mark raw logs and historical verification material as `evidence`; evidence remains explicitly readable but never enters worker or network prompts. Feature hygiene warnings begin above 8 durable files or 40,000 UTF-16 code units; project warnings begin above 32 files or 160,000 units. These are review signals, not aggregate admission limits.
+
+Invalid indexes return `context_index_invalid`; surviving managed-mutation markers return `context_reconciliation_required`. Only an authenticated primary management session receives the bounded recovery envelope or can read an exact named raw document in diagnostic mode. Repair is out of band: quiesce writers, preserve and inspect the bytes, repair the index/manifest or reconcile the pending marker, then retry a normal read. Hive does not infer classification, delete files, or retry repairs automatically. Other actionable failures distinguish oversized inventory/input/response, invalid or stale cursors, root or binding mismatch, missing hashes, stale revisions, and content-hash mismatch without exposing denied scope names.
+
+`overview`, `draft`, and `execution-decisions` are reserved and excluded from execution context. They do not accept a caller-provided `kind`. Plan approval does not archive `draft`, because cleanup failure must not make a persisted approval appear unsuccessful. Archive an obsolete draft explicitly after approval.
 
 ### Operator Constraints (4 tools)
 | Tool | Purpose |
@@ -302,6 +310,8 @@ Call `hive_context_read` before replacement, append, or archive. Non-reserved fi
 | `hive_status` | Get comprehensive feature status as JSON, including overview metadata, per-document review counts, context inclusion flags, and task/worktree-aware merge eligibility |
 
 #### hive_status output notes
+
+- Frozen dash-review and vulnerability-review recipients, including their recorded descendants, receive only `context: { available: false, reason: "context_authorization_denied" }`. The recipient policy runs before status storage reads, so no context names, revision, or metrics are exposed.
 
 - `helperStatus.mergeEligibility` is the canonical operator surface for whether completed task work has a live worktree and can be considered for merge or cleanup.
 - A task list item includes `traceTaskId` only after Hive deterministically associates native task metadata with that feature-task launch. Blocked and failed `nextAction` guidance includes the exact forensic call when this ID exists and explicitly says when it does not.
@@ -354,7 +364,6 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | `hive_subtask_*` (5 tools) | Subtask complexity not needed, use todowrite instead |
 | `hive_session_*` (2 tools) | Replaced by `hive_status` |
 | Custom Hive skill-loading tool | Replaced by OpenCode's native `skill` tool |
-| `hive_context_read` | Agents can read files directly |
 | `hive_agents_md` | Replaced by direct agent review of the full feature record plus normal documentation edits |
 | `hive_context_list` | Agents can use glob/Read |
 
@@ -380,13 +389,13 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 
 ## Feature Resolution
 
-Feature-scoped tools resolve an omitted feature in this order: current task worktree/path, current session binding, then the sole live feature. An explicit `feature` argument always wins; `hive_feature_complete` uses the equivalent `name` argument.
+Feature-scoped tools resolve an omitted feature in this order: current task worktree/path, current session binding, then the sole live feature. Primary sessions may select an explicit feature. Bound child sessions cannot override their authenticated feature binding; `hive_feature_complete` uses the equivalent `name` argument.
 
 If multiple live features remain, the tool returns their logical names without mutating any feature. Retry with the explicit `feature` or `name` argument using one of those candidates. If no live feature exists, create one with `hive_feature_create`.
 
 ## Reserved Overview Convention
 
 - There is no dedicated overview write tool.
-- Use `hive_context_read` first, then `hive_context_write({ feature: "feature-name", name: "overview", content, expectedRevision })` to replace `.hive/features/<feature>/context/overview.md`. Omit `expectedRevision` only when creating it. Provide `feature` from a repository-root session whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
+- Use `hive_context_read({ feature: "feature-name", name: "overview" })` through all returned chunks first, then pass the current revision and `file.contentHash` to `hive_context_write({ feature: "feature-name", name: "overview", content, expectedRevision, expectedContentHash })`. Replacement writes the whole document. Omit both preconditions only when creating it.
 - Humans review `context/overview.md` first; `plan.md` stays authoritative for execution and task parsing, and can still include a readable design summary before `## Tasks`.
 - `hive_status` and the VS Code extension surface the overview as the primary human-facing document.

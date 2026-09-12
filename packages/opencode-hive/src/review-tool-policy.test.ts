@@ -49,6 +49,11 @@ describe('shared fail-closed review tool policy', () => {
       expect(REVIEW_SOURCE_RESOLUTION_ADAPTERS[workflow]).toBeFunction();
       expect(REVIEW_ROLE_POLICIES[`${workflow}:primary`]).toMatchObject({ workflow, role: 'primary' });
     }
+    for (const policy of Object.values(REVIEW_ROLE_POLICIES)) {
+      for (const tool of ['hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive']) {
+        expect(policy.tools).not.toContain(tool);
+      }
+    }
   });
 
   it('defines exact caller resolvers and allowed task-target roles in policy', () => {

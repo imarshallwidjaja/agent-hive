@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
-import { ConfigService, ReviewEvidenceBundleService, ReviewWorkspaceService } from 'hive-core';
+import { ConfigService, ContextService, ReviewEvidenceBundleService, ReviewWorkspaceService, SessionService } from 'hive-core';
 import * as path from 'path';
 import plugin from '../index';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
@@ -1308,6 +1308,196 @@ describe('Agent permissions', () => {
       { tool: 'question', sessionID: 'cycle-child', callID: 'cycle-question' },
       { args: { questions: [] } } as any,
     )).rejects.toThrow('unavailable in task-created child sessions');
+  });
+
+  it('reauthorizes scoped context access from runtime lineage before continuations or recovery reads', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-context-authorization-'));
+    createGitRepository(repository);
+    try {
+      const client = createLineageClient({
+        root: undefined,
+        worker: 'root',
+        architect: 'root',
+        unknown: 'root',
+        'review-child': 'root',
+        'review-descendant': 'review-child',
+      });
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client,
+        $: createStubShell(),
+      } as any);
+      const config: { agent?: Record<string, AgentConfig> } = {};
+      await hooks.config?.(config);
+      const rootContext = { ...snapshotContext('hive-master'), sessionID: 'root' };
+      await hooks['chat.message']?.({ sessionID: 'root', agent: 'hive-master' }, {
+        message: { agent: 'hive-master' }, parts: [],
+      } as any);
+      await hooks.tool!.hive_feature_create.execute({ name: 'authorized' }, rootContext);
+      await hooks.tool!.hive_feature_create.execute({ name: 'other' }, rootContext);
+      const durable = (description: string) => `---\ndescription: ${description}\nread_when: Read for authorization tests.\n---\n\nbody`;
+      const projectDurable = `---\ndescription: Project authorization fixture\nread_when: Read for authorization tests.\nowner: platform\nreview_after: 2027-01-01\n---\n\nbody`;
+      for (const name of ['alpha', 'beta']) {
+        await hooks.tool!.hive_context_write.execute({
+          feature: 'authorized', name, content: durable(name) + 'x'.repeat(4_000),
+        }, rootContext);
+      }
+      await hooks.tool!.hive_context_write.execute({
+        scope: 'project', name: 'project-secret', content: projectDurable,
+      }, rootContext);
+
+      for (const [sessionID, agent] of [
+        ['worker', 'forager-worker'],
+        ['architect', 'architect-planner'],
+      ] as const) {
+        await hooks.event?.({ event: { type: 'session.updated', properties: { info: { id: sessionID, parentID: 'root' } } } } as any);
+        await hooks['chat.message']?.({ sessionID, agent }, { message: { agent }, parts: [] } as any);
+        new SessionService(repository).bindFeature(sessionID, 'authorized');
+      }
+
+      const workerContext = { ...snapshotContext('forager-worker'), sessionID: 'worker' };
+      const catalog = JSON.parse(await hooks.tool!.hive_context_read.execute({
+        feature: 'authorized', view: 'catalog', limit: 1,
+      }, workerContext) as string);
+      expect(catalog).toMatchObject({ success: true, complete: false });
+      expect(catalog.nextCursor).toBeString();
+      const named = JSON.parse(await hooks.tool!.hive_context_read.execute({
+        feature: 'authorized', name: 'alpha', maxBytes: 2_048,
+      }, workerContext) as string);
+      expect(named).toMatchObject({ success: true, complete: false });
+      const contentReads = spyOn(ContextService.prototype, 'readContent').mockImplementation(() => {
+        throw new Error('Denied continuation reached storage');
+      });
+      try {
+        expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+          feature: 'authorized', name: 'alpha', cursor: named.nextCursor,
+        }, { ...snapshotContext('architect-planner'), sessionID: 'architect' }) as string))
+          .toMatchObject({ success: false, reason: 'context_cursor_stale' });
+        expect(contentReads).not.toHaveBeenCalled();
+      } finally {
+        contentReads.mockRestore();
+      }
+      expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+        scope: 'project', view: 'catalog',
+      }, workerContext) as string)).toMatchObject({ success: true, files: [{ name: 'project-secret' }] });
+      expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+        scope: 'project', scanChars: true,
+      }, workerContext) as string)).toMatchObject({ success: false, reason: 'context_authorization_denied' });
+
+      new SessionService(repository).bindFeature('worker', 'other');
+      rmSync(path.join(repository, '.hive', 'features', '01_authorized', 'context'), { recursive: true, force: true });
+      const revoked = JSON.parse(await hooks.tool!.hive_context_read.execute({
+        feature: 'authorized', view: 'catalog', cursor: catalog.nextCursor,
+      }, workerContext) as string);
+      expect(revoked).toMatchObject({ success: false, reason: 'context_binding_mismatch' });
+      expect(revoked).not.toHaveProperty('files');
+      const deniedContentReads = spyOn(ContextService.prototype, 'readContent').mockImplementation(() => {
+        throw new Error('Revoked named continuation reached storage');
+      });
+      try {
+        expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+          feature: 'authorized', name: 'alpha', cursor: named.nextCursor,
+        }, workerContext) as string)).toMatchObject({ success: false, reason: 'context_binding_mismatch' });
+        expect(deniedContentReads).not.toHaveBeenCalled();
+      } finally {
+        deniedContentReads.mockRestore();
+      }
+
+      for (const [sessionID, agent] of [
+        ['worker', 'forager-worker'],
+        ['architect', 'architect-planner'],
+      ] as const) {
+        const denied = JSON.parse(await hooks.tool!.hive_context_write.execute({
+          scope: 'project', name: `denied-${sessionID}`, content: projectDurable,
+        }, { ...snapshotContext(agent), sessionID }) as string);
+        expect(denied).toMatchObject({ success: false, reason: 'context_authorization_denied' });
+        expect(existsSync(path.join(repository, '.hive', 'context', `denied-${sessionID}.md`))).toBe(false);
+      }
+
+      await hooks.event?.({ event: { type: 'session.updated', properties: { info: { id: 'unknown', parentID: 'root' } } } } as any);
+      await hooks['chat.message']?.({ sessionID: 'unknown', agent: 'external-agent' }, {
+        message: { agent: 'external-agent' }, parts: [],
+      } as any);
+      const unknown = JSON.parse(await hooks.tool!.hive_context_read.execute({
+        scope: 'project', view: 'catalog',
+      }, { ...snapshotContext('external-agent'), sessionID: 'unknown' }) as string);
+      expect(unknown).toMatchObject({ success: false, reason: 'context_authorization_denied' });
+      expect(unknown).not.toHaveProperty('files');
+
+      writeFileSync(path.join(repository, '.hive', 'context', 'index.json'), '{ invalid');
+      const deniedRecovery = JSON.parse(await hooks.tool!.hive_context_read.execute({
+        scope: 'project',
+      }, workerContext) as string);
+      expect(deniedRecovery).toMatchObject({ success: false, reason: 'context_index_invalid' });
+      expect(deniedRecovery).not.toHaveProperty('recovery');
+      expect(deniedRecovery).not.toHaveProperty('files');
+
+      const reviewAgent = findDashScopeAlias(config.agent)!;
+      await hooks.event?.({ event: { type: 'session.updated', properties: { info: { id: 'review-child', parentID: 'root' } } } } as any);
+      await hooks['chat.message']?.({ sessionID: 'review-child', agent: reviewAgent }, {
+        message: { agent: reviewAgent }, parts: [],
+      } as any);
+      await hooks.event?.({ event: { type: 'session.updated', properties: { info: { id: 'review-descendant', parentID: 'review-child' } } } } as any);
+      const contextReads = spyOn(ContextService.prototype, 'readSummary').mockImplementation(() => {
+        throw new Error('Private status reached context storage');
+      });
+      try {
+        const privateAgents = Object.keys(config.agent ?? {}).filter(agent =>
+          agent.startsWith('__hive_dash_review_') || agent.startsWith('__hive_vulnerability_review_'));
+        expect(privateAgents.length).toBeGreaterThan(4);
+        for (const agent of privateAgents) {
+          const status = JSON.parse(await hooks.tool!.hive_status.execute({ feature: 'authorized' }, {
+            ...snapshotContext(agent), sessionID: `private-status-${agent}`,
+          }) as string);
+          expect(status.context).toEqual({ available: false, reason: 'context_authorization_denied' });
+        }
+        expect(contextReads).not.toHaveBeenCalled();
+        const descendant = JSON.parse(await hooks.tool!.hive_status.execute({ feature: 'authorized' }, {
+          ...snapshotContext('forager-worker'), sessionID: 'review-descendant',
+        }) as string);
+        expect(descendant.context).toEqual({ available: false, reason: 'context_authorization_denied' });
+        expect(contextReads).not.toHaveBeenCalled();
+      } finally {
+        contextReads.mockRestore();
+      }
+      const privateDenied = JSON.parse(await hooks.tool!.hive_context_read.execute({
+        scope: 'project', view: 'catalog',
+      }, { ...snapshotContext(reviewAgent), sessionID: 'review-child' }) as string);
+      expect(privateDenied).toMatchObject({ success: false, reason: 'context_authorization_denied' });
+      expect(privateDenied).not.toHaveProperty('files');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects context access when the runtime workspace resolves to another canonical root', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-context-root-'));
+    const otherRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-context-other-root-'));
+    createGitRepository(repository);
+    createGitRepository(otherRoot);
+    const mismatchedWorktree = path.join(otherRoot, '.hive', '.worktrees', 'feature', 'task');
+    mkdirSync(mismatchedWorktree, { recursive: true });
+    try {
+      const hooks = await plugin({
+        directory: repository,
+        worktree: mismatchedWorktree,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: mismatchedWorktree, time: { created: Date.now() } },
+        client: createLineageClient({ root: undefined }),
+        $: createStubShell(),
+      } as any);
+      const result = JSON.parse(await hooks.tool!.hive_context_read.execute({
+        scope: 'project',
+      }, { ...snapshotContext('hive-master'), sessionID: 'root' }) as string);
+      expect(result).toMatchObject({ success: false, reason: 'context_root_mismatch' });
+      expect(result).not.toHaveProperty('files');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+      rmSync(otherRoot, { recursive: true, force: true });
+    }
   });
 
   it('denies question in fresh or resumed task children and injects clarification handoff guidance', async () => {

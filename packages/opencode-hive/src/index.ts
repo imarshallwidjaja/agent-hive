@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { tool, type Plugin } from "@opencode-ai/plugin";
 import { prepareNativeHiveSkills } from './skills/native-materializer.js';
@@ -337,7 +337,7 @@ import {
 } from "./utils/prompt-budgeting";
 import { writeWorkerPromptFile } from "./utils/prompt-file";
 import { formatRelativeTime } from "./utils/format";
-import { createVariantHook } from "./hooks/variant-hook.js";
+import { classifySession, createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, SUBAGENT_CLARIFICATION_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
@@ -1432,6 +1432,14 @@ const plugin: Plugin = async (ctx) => {
       context_precondition_required: 'Call hive_context_read for every existing file, then retry with its current revision and content hash.',
       stale_content: 'Call hive_context_read for the changed file, reconstruct any full replacement from all chunks, then retry with its current hash.',
       stale_revision: 'Call hive_context_read, then retry with the current revision.',
+      context_index_invalid: 'A primary management session must inspect the bounded recovery summary and raw named documents, repair the control files out of band, then retry.',
+      context_reconciliation_required: 'A primary management session must inspect the bounded recovery summary, reconcile the pending mutation out of band, then retry.',
+      context_inventory_too_large: 'Reduce the context inventory out of band before retrying this managed operation.',
+      context_input_too_large: 'Reduce the requested input or budget parameters and retry.',
+      context_response_too_large: 'For a named read, increase maxBytes within the documented limit. For inventory, use catalog query and limit to reduce the result.',
+      invalid_context_cursor: 'Restart hive_context_read without a cursor for the intended scope and query.',
+      stale_context_cursor: 'Context changed after the cursor was issued. Restart hive_context_read without a cursor.',
+      context_changed_during_read: 'Context changed during the read. Retry from the beginning.',
     }[failure.reason] ?? 'Call hive_context_read, then retry with the current revision.';
     return JSON.stringify({
       success: false,
@@ -1443,6 +1451,7 @@ const plugin: Plugin = async (ctx) => {
     }, null, 2);
   };
 
+  const namedCursorSecret = randomBytes(32);
   const contextToolScope = {
     context: runtimeContext,
     features: new FeatureService(runtimeContext.projectRoot),
@@ -1455,6 +1464,200 @@ const plugin: Plugin = async (ctx) => {
     tasks: new TaskService(runtimeContext.projectRoot),
     contexts: contextToolScope.contexts,
   };
+  type ContextToolOperation = 'read' | 'write' | 'append' | 'archive';
+  type ResolvedContextAuthorization = {
+    scope: { type: 'feature'; featureName: string } | { type: 'project' };
+    feature?: string;
+    sessionID: string;
+    management: boolean;
+  };
+  const contextFailure = (
+    reason: string,
+    error: string,
+    terminal = true,
+    nextAction?: string,
+  ): string => JSON.stringify({
+    success: false,
+    terminal,
+    reason,
+    error,
+    ...(nextAction ? { nextAction } : {}),
+  }, null, 2);
+  const pathIsContained = (root: string, candidate: string): boolean => {
+    const relative = path.relative(root, candidate);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  };
+  const validateContextRuntimeRoot = (): string | null => {
+    try {
+      const canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
+      const runtimeWorkspaceInput = ctx.project?.id === 'global' && worktree === '/' ? directory : worktree || directory;
+      const runtimeWorkspace = fs.realpathSync(runtimeWorkspaceInput);
+      const declaredWorkspaceInput = ctx.project?.id === 'global' && ctx.project?.worktree === '/'
+        ? directory
+        : ctx.project?.worktree || runtimeWorkspaceInput;
+      const declaredWorkspace = fs.realpathSync(declaredWorkspaceInput);
+      if (runtimeWorkspace !== declaredWorkspace) return 'Runtime and declared workspaces resolve to different paths.';
+      if (runtimeContext.isWorktree) {
+        const worktreeRoot = path.join(canonicalRoot, '.hive', '.worktrees');
+        if (!pathIsContained(worktreeRoot, runtimeWorkspace)) return 'The runtime worktree is outside the canonical project worktree namespace.';
+      } else if (runtimeWorkspace !== canonicalRoot) {
+        return 'The runtime workspace does not resolve to the canonical project root.';
+      }
+      if (ctx.project?.id !== 'global' && fs.realpathSync(directory) !== canonicalRoot) {
+        return 'The plugin directory and runtime context resolve to different canonical project roots.';
+      }
+      return null;
+    } catch {
+      return 'The runtime workspace or canonical project root could not be resolved.';
+    }
+  };
+  const isPrivateContextRecipient = (toolContext: unknown): boolean => {
+    const caller = toolContext as ToolContext | undefined;
+    const lanes = reviewRuntimeLanes();
+    if (resolveReviewCallerPolicy(caller?.agent, lanes)) return true;
+    const visited = new Set<string>();
+    let sessionID = caller?.sessionID;
+    while (sessionID && visited.size < 32) {
+      if (visited.has(sessionID)) return true;
+      visited.add(sessionID);
+      const session = contextToolScope.sessions.getGlobal(sessionID);
+      if (resolveReviewCallerPolicy(session?.agent, lanes)) return true;
+      sessionID = session?.parentSessionId;
+    }
+    return sessionID !== undefined;
+  };
+  const authenticateContextCaller = async (
+    operation: ContextToolOperation,
+    toolContext: unknown,
+  ): Promise<{
+    sessionID: string;
+    management: boolean;
+    boundFeature?: string;
+  } | string> => {
+    if (isPrivateContextRecipient(toolContext)) {
+      return contextFailure('context_authorization_denied', 'Live context is unavailable in private review lanes.');
+    }
+    const rootFailure = validateContextRuntimeRoot();
+    if (rootFailure) {
+      return contextFailure(
+        'context_root_mismatch',
+        rootFailure,
+        true,
+        'Open the canonical project workspace and retry from a freshly authenticated session.',
+      );
+    }
+    const caller = toolContext as ToolContext | undefined;
+    if (!caller?.sessionID || !caller.agent) {
+      return contextFailure('context_authorization_denied', 'Context access requires an authenticated runtime session.');
+    }
+    const classification = classifySession(caller.agent, customAgentConfigsForClassification);
+    if (classification.sessionKind === 'unknown' || classification.baseAgent === 'hive-helper') {
+      return contextFailure('context_authorization_denied', 'The runtime caller is not authorized for managed context.');
+    }
+    let runtimeSession: { id?: string; parentID?: string } | undefined;
+    try {
+      runtimeSession = (await client.session.get({
+        path: { id: caller.sessionID },
+        query: { directory },
+      })).data;
+    } catch {
+      return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
+    }
+    if (!runtimeSession || runtimeSession.id !== caller.sessionID) {
+      return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
+    }
+    const stored = contextToolScope.sessions.getGlobal(caller.sessionID);
+    if (runtimeSession.parentID) {
+      if (
+        !stored
+        || stored.parentSessionId !== runtimeSession.parentID
+        || stored.agent !== caller.agent
+        || stored.sessionKind !== classification.sessionKind
+        || stored.baseAgent !== classification.baseAgent
+      ) {
+        return contextFailure('context_authorization_denied', 'The child session is not bound to its authenticated runtime identity.');
+      }
+      const visited = new Set([caller.sessionID]);
+      let parentID: string | undefined = runtimeSession.parentID;
+      for (let depth = 0; parentID && depth < 32; depth += 1) {
+        if (visited.has(parentID)) {
+          return contextFailure('context_authorization_denied', 'Runtime session lineage is cyclic.');
+        }
+        visited.add(parentID);
+        try {
+          const parent = (await client.session.get({ path: { id: parentID }, query: { directory } })).data;
+          if (!parent || parent.id !== parentID) {
+            return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
+          }
+          parentID = parent.parentID;
+        } catch {
+          return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
+        }
+      }
+      if (parentID) return contextFailure('context_authorization_denied', 'Runtime session lineage exceeds the supported depth.');
+      if (
+        classification.baseAgent !== 'architect-planner'
+        && !['forager-worker', 'scout-researcher', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor']
+          .includes(classification.baseAgent ?? '')
+      ) {
+        return contextFailure('context_authorization_denied', 'Primary orchestration agents cannot acquire primary authority from a child session.');
+      }
+    }
+    const management = !runtimeSession.parentID && classification.sessionKind === 'primary';
+    if (operation === 'archive' && !management) {
+      return contextFailure('context_authorization_denied', 'Archiving context requires an authenticated primary management session.');
+    }
+    return { sessionID: caller.sessionID, management, boundFeature: stored?.featureName };
+  };
+  const authorizeContextScope = async (
+    operation: ContextToolOperation,
+    input: { scope?: 'feature' | 'project'; feature?: string; task?: string },
+    toolContext: unknown,
+  ): Promise<ResolvedContextAuthorization | string> => {
+    if (input.scope !== undefined && input.scope !== 'feature' && input.scope !== 'project') {
+      return contextFailure('invalid_argument', 'Context scope must be feature or project.', false);
+    }
+    if (input.scope === 'project' && (input.feature !== undefined || input.task !== undefined)) {
+      return contextFailure('invalid_argument', 'Project context does not accept feature or task selectors.', false);
+    }
+    const caller = await authenticateContextCaller(operation, toolContext);
+    if (typeof caller === 'string') return caller;
+    if (input.scope === 'project') {
+      if (operation !== 'read' && !caller.management) {
+        return contextFailure('context_authorization_denied', 'Project context mutations require an authenticated primary management session.');
+      }
+      return { scope: { type: 'project' }, sessionID: caller.sessionID, management: caller.management };
+    }
+    let feature: string | null;
+    if (!caller.management) {
+      if (!caller.boundFeature) {
+        return contextFailure('context_binding_mismatch', 'The caller has no authenticated feature binding.');
+      }
+      if (input.feature !== undefined && input.feature !== caller.boundFeature) {
+        return contextFailure('context_binding_mismatch', 'The requested feature does not match the caller binding.');
+      }
+      if (runtimeContext.feature && !NON_FEATURE_WORKTREE_NAMESPACES.has(runtimeContext.feature)
+        && runtimeContext.feature !== caller.boundFeature) {
+        return contextFailure('context_binding_mismatch', 'The runtime worktree feature does not match the caller binding.');
+      }
+      feature = caller.boundFeature;
+    } else {
+      feature = resolveFeature(input.feature, toolContext, contextToolScope);
+      if (!feature) {
+        const failure = getFeatureResolutionFailure('feature', input.feature, contextToolScope.features);
+        return contextFailure(failure.reason, failure.error, true);
+      }
+    }
+    if (!contextToolScope.features.get(feature)) {
+      return contextFailure('feature_not_found', `Feature '${feature}' not found. Create it first with hive_feature_create.`);
+    }
+    return {
+      scope: { type: 'feature', featureName: feature },
+      feature,
+      sessionID: caller.sessionID,
+      management: caller.management,
+    };
+  };
   const validateContextTask = (feature: string, task: string | undefined): void => {
     if (task === undefined) return;
     const availableTasks = statusToolServices.tasks.list(feature).map(candidate => candidate.folder);
@@ -1465,23 +1668,6 @@ const plugin: Plugin = async (ctx) => {
         { task, availableTasks },
       );
     }
-  };
-
-  const resolveContextFeature = (
-    explicitFeature: string | undefined,
-    toolContext: unknown,
-  ): { feature: string; sessionID?: string } | string => {
-    const feature = resolveFeature(explicitFeature, toolContext, contextToolScope);
-    if (!feature) return formatFeatureResolutionError('feature', explicitFeature, contextToolScope.features);
-    if (!contextToolScope.features.get(feature)) {
-      return JSON.stringify({
-        success: false,
-        terminal: true,
-        reason: 'feature_not_found',
-        error: `Feature '${feature}' not found. Create it first with hive_feature_create.`,
-      }, null, 2);
-    }
-    return { feature, sessionID: (toolContext as ToolContext)?.sessionID };
   };
 
   const bindContextFeature = (sessionID: string | undefined, feature: string): void => {
@@ -5760,26 +5946,153 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
 
       // Context Tools
       hive_context_read: tool({
-        description: 'Read managed feature context. Omit name for the revisioned summary/index; provide name for content plus its hash and the revision required by replace, append, or archive.',
+        description: 'Read managed project or feature context. Omit scope for the authorized feature default. Omit name for summary or catalog metadata; provide name for chunked raw content.',
         args: {
           name: tool.schema.string().optional().describe('Context name. Omit to read the summary, kinds, footprint, and current revision.'),
+          scope: tool.schema.enum(['feature', 'project']).optional().describe('Context scope. Defaults to feature; project must be explicit and does not accept feature.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
+          view: tool.schema.enum(['summary', 'catalog']).optional().describe('List response shape when name is omitted. Defaults to summary.'),
+          query: tool.schema.string().optional().describe('Deterministic literal metadata query for catalog view only.'),
+          limit: tool.schema.number().optional().describe('Maximum catalog entries to return. Catalog responses remain byte-bounded.'),
+          cursor: tool.schema.string().optional().describe('Opaque continuation cursor. Reauthorized and snapshot-validated on every call.'),
+          maxBytes: tool.schema.number().optional().describe('Total serialized UTF-8 response budget for a named content chunk; 16 KiB default and 64 KiB maximum.'),
+          scanChars: tool.schema.boolean().optional().describe('For summary view only, explicitly scan durable documents to report exact UTF-16 character totals.'),
         },
-        async execute({ name, feature: explicitFeature }, toolContext) {
-          const resolved = resolveContextFeature(explicitFeature, toolContext);
+        async execute(args, toolContext) {
+          const { name, scope, feature: explicitFeature, view, query, limit, cursor, maxBytes, scanChars } = args;
+          if ('offset' in args) return contextFailure('invalid_argument', 'Use the returned opaque cursor to continue a named read.', false);
+          if (view !== undefined && view !== 'summary' && view !== 'catalog') {
+            return contextFailure('invalid_argument', 'Context read view must be summary or catalog.', false);
+          }
+          if (name !== undefined && [view, query, limit, scanChars].some(value => value !== undefined)) {
+            return contextFailure('invalid_argument', 'Named context reads cannot be combined with list view, query, limit, or scanChars fields.', false);
+          }
+          const selectedView = view ?? 'summary';
+          if (name === undefined && maxBytes !== undefined) {
+            return contextFailure('invalid_argument', 'maxBytes is valid only for exact named context reads.', false);
+          }
+          if (name === undefined && selectedView === 'summary' && [query, limit, cursor].some(value => value !== undefined)) {
+            return contextFailure('invalid_argument', 'Summary view cannot be combined with catalog query, limit, or cursor fields.', false);
+          }
+          if (selectedView === 'catalog' && scanChars !== undefined) {
+            return contextFailure('invalid_argument', 'scanChars is valid only for summary view.', false);
+          }
+          if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
+            return contextFailure('invalid_argument', 'Catalog limit must be an integer from 1 through 50.', false);
+          }
+          const resolved = await authorizeContextScope('read', { scope, feature: explicitFeature }, toolContext);
           if (typeof resolved === 'string') return resolved;
-          const result = name
-            ? contextToolScope.contexts.readContent(resolved.feature, name)
-            : contextToolScope.contexts.readSummary(resolved.feature);
-          bindContextFeature(resolved.sessionID, resolved.feature);
-          return result
-            ? JSON.stringify({ success: true, ...result }, null, 2)
-            : JSON.stringify({ success: false, terminal: false, reason: 'context_not_found', error: `Context '${name}' not found.`, name }, null, 2);
+          if (scanChars && !resolved.management) {
+            return contextFailure('context_authorization_denied', 'Exact character scans require an authenticated primary management session.');
+          }
+          const readNamed = (diagnostic = false): string => {
+            const binding = createHash('sha256').update(JSON.stringify([resolved.sessionID, runtimeContext.projectRoot, resolved.scope, name])).digest('hex');
+            let continuation: { v: number; b: string; r: number; s: string; h: string; o: number } | undefined;
+            if (cursor !== undefined) {
+              try {
+                if (Buffer.byteLength(cursor) > 4096 || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw new Error('encoding');
+                const envelope = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+                if (typeof envelope?.payload !== 'string' || typeof envelope.mac !== 'string'
+                  || !/^[a-f0-9]{64}$/.test(envelope.mac) || Object.keys(envelope).length !== 2) throw new Error('envelope');
+                const expectedMac = createHmac('sha256', namedCursorSecret).update(envelope.payload).digest();
+                if (!timingSafeEqual(expectedMac, Buffer.from(envelope.mac, 'hex'))) throw new Error('integrity');
+                continuation = JSON.parse(envelope.payload);
+                if (!continuation || continuation.v !== 1 || continuation.b !== binding
+                  || !Number.isInteger(continuation.r) || !Number.isSafeInteger(continuation.o) || continuation.o <= 0
+                  || !/^[a-f0-9]{64}$/.test(continuation.s) || !/^[a-f0-9]{64}$/.test(continuation.h)) throw new Error('shape');
+              } catch {
+                return contextFailure('context_cursor_stale', 'The named-read cursor is invalid, expired after a plugin restart, or belongs to another recipient or document.', false,
+                  'Start a new named read without a cursor for the authorized scope and document.');
+              }
+            }
+            const responseBudget = maxBytes ?? 16 * 1024;
+            if (!Number.isInteger(responseBudget) || responseBudget < 256 || responseBudget > 64 * 1024) {
+              throw new ContextMutationError('context_input_too_large', 'maxBytes must be between 256 and 65536.');
+            }
+            let chunkBudget = responseBudget - 64;
+            for (;;) {
+              let result;
+              try {
+                result = contextToolScope.contexts.readContent(resolved.scope, name!, {
+                  offset: continuation?.o,
+                  maxBytes: Math.max(256, chunkBudget),
+                  ...(diagnostic ? { diagnosticMode: 'primary-management' as const } : {}),
+                });
+              } catch (error) {
+                if (continuation && (error as { reason?: string }).reason === 'invalid_argument') {
+                  return contextFailure('context_cursor_stale', 'The cursor byte boundary is no longer valid.', false,
+                    'Start a new named read without a cursor for the authorized scope and document.');
+                }
+                throw error;
+              }
+              if (continuation && (!result || result.revision !== continuation.r || result.snapshot !== continuation.s || result.file.contentHash !== continuation.h)) {
+                throw new ContextMutationError('context_changed_during_read', 'Context changed between chunks. Read the document again explicitly.');
+              }
+              if (!result) return contextFailure('context_not_found', `Context '${name}' not found.`, false);
+              const { nextOffset, ...chunk } = result;
+              const payload = JSON.stringify({ v: 1, b: binding, r: result.revision, s: result.snapshot, h: result.file.contentHash, o: nextOffset });
+              const nextCursor = nextOffset === undefined ? undefined : Buffer.from(JSON.stringify({
+                payload,
+                mac: createHmac('sha256', namedCursorSecret).update(payload).digest('hex'),
+              })).toString('base64url');
+              const output = JSON.stringify({ success: true, ...(diagnostic ? { diagnostic: true } : {}), ...chunk, ...(nextCursor ? { nextCursor } : {}) });
+              const excess = Buffer.byteLength(output, 'utf8') - responseBudget;
+              if (excess <= 0) return output;
+              chunkBudget -= excess;
+              if (chunkBudget < 256) {
+                throw new ContextMutationError('context_response_too_large', 'The named-read response envelope exceeds maxBytes.');
+              }
+            }
+          };
+          try {
+            if (name !== undefined) {
+              return readNamed();
+            }
+            const result = selectedView === 'catalog'
+              ? contextToolScope.contexts.readCatalog(resolved.scope, { query, limit, cursor })
+              : contextToolScope.contexts.readSummary(resolved.scope, { scanChars });
+            return JSON.stringify({ success: true, ...result }, null, 2);
+          } catch (error) {
+            const failure = error as { reason?: string; message?: string };
+            if (failure.reason !== 'context_index_invalid' && failure.reason !== 'context_reconciliation_required') {
+              return formatContextMutationFailure(error);
+            }
+            if (!resolved.management) {
+              return contextFailure(
+                failure.reason,
+                'Managed context is unavailable until a primary management session repairs its control state.',
+                false,
+                'Ask the authenticated primary manager to inspect and repair context out of band.',
+              );
+            }
+            if (name !== undefined) {
+              try {
+                return readNamed(true);
+              } catch (diagnosticError) {
+                return formatContextMutationFailure(diagnosticError);
+              }
+            }
+            try {
+              const recovery = contextToolScope.contexts.readRecoverySummary(resolved.scope, {
+                diagnosticMode: 'primary-management',
+              });
+              return JSON.stringify({
+                success: false,
+                terminal: false,
+                reason: failure.reason,
+                error: failure.message,
+                recovery,
+                nextAction: 'Quiesce writers, inspect and repair the preserved control state out of band, then retry the normal read.',
+              }, null, 2);
+            } catch (diagnosticError) {
+              return formatContextMutationFailure(diagnosticError);
+            }
+          }
         },
       }),
 
       hive_context_write: tool({
-        description: 'Create a context explicitly, or replace one only after hive_context_read using expectedRevision and expectedContentHash. Reuse and consolidate durable files before creating more. Evidence is excluded from worker/network prompts. When task metadata is supplied, it must be the exact existing task folder for the resolved feature.',
+        description: 'Create scoped context explicitly, or replace one whole document only after hive_context_read using expectedRevision and expectedContentHash. Feature task metadata requires an exact existing task folder. Project mutations require primary management authorization.',
         args: {
           name: tool.schema.string().describe('Context name. overview, draft, and execution-decisions are reserved system files.'),
           content: tool.schema.string().describe('Markdown content to write'),
@@ -5787,18 +6100,22 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           task: tool.schema.string().optional().describe('Optional owning task folder. When supplied, use the exact existing folder for this feature, such as 02-add-api; display names and order numbers are invalid.'),
           expectedRevision: tool.schema.number().optional().describe('Required for replacement; omit only for explicit creation.'),
           expectedContentHash: tool.schema.string().optional().describe('Actual contentHash from a named hive_context_read. Required with expectedRevision and omitted for creation.'),
+          scope: tool.schema.enum(['feature', 'project']).optional().describe('Context scope. Defaults to feature; project must be explicit and rejects feature/task selectors.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
-        async execute({ name, content, kind, task, expectedRevision, expectedContentHash, feature: explicitFeature }, toolContext) {
-          const resolved = resolveContextFeature(explicitFeature, toolContext);
+        async execute({ name, content, kind, task, expectedRevision, expectedContentHash, scope, feature: explicitFeature }, toolContext) {
+          if (expectedRevision === undefined && expectedContentHash !== undefined) {
+            return contextFailure('context_precondition_required', 'expectedContentHash is valid only with expectedRevision for whole-document replacement.', false);
+          }
+          const resolved = await authorizeContextScope('write', { scope, feature: explicitFeature, task }, toolContext);
           if (typeof resolved === 'string') return resolved;
           try {
-            validateContextTask(resolved.feature, task);
+            if (resolved.feature) validateContextTask(resolved.feature, task);
             const result = expectedRevision === undefined
-              ? contextToolScope.contexts.create(resolved.feature, name, content, { kind, task })
-              : contextToolScope.contexts.replace(resolved.feature, name, content, expectedRevision, expectedContentHash!, { kind, task });
-            bindContextFeature(resolved.sessionID, resolved.feature);
-            return JSON.stringify({ success: true, operation: expectedRevision === undefined ? 'created' : 'replaced', ...result }, null, 2);
+              ? contextToolScope.contexts.create(resolved.scope, name, content, { kind, task })
+              : contextToolScope.contexts.replace(resolved.scope, name, content, expectedRevision, expectedContentHash!, { kind, task });
+            if (resolved.feature) bindContextFeature(resolved.sessionID, resolved.feature);
+            return JSON.stringify({ success: true, operation: expectedRevision === undefined ? 'created' : 'replaced', scope: resolved.scope, ...result }, null, 2);
           } catch (error) {
             return formatContextMutationFailure(error);
           }
@@ -5806,7 +6123,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       }),
 
       hive_context_append: tool({
-        description: 'Append a dated block to existing context after hive_context_read. Preserves prior bytes and requires expectedRevision plus expectedContentHash. When task metadata is supplied, it must be the exact existing task folder for the resolved feature.',
+        description: 'Append a dated block to existing scoped context after hive_context_read. Preserves prior bytes and requires expectedRevision plus expectedContentHash. Feature task metadata requires an exact existing task folder. Project mutations require primary management authorization.',
         args: {
           name: tool.schema.string().describe('Existing context name.'),
           content: tool.schema.string().describe('Markdown content to append.'),
@@ -5814,23 +6131,24 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           task: tool.schema.string().optional().describe('Optional owning task folder. When supplied, use the exact existing folder for this feature, such as 02-add-api; display names and order numbers are invalid.'),
           expectedRevision: tool.schema.number().describe('Revision from hive_context_read.'),
           expectedContentHash: tool.schema.string().describe('Actual contentHash from the named hive_context_read.'),
+          scope: tool.schema.enum(['feature', 'project']).optional().describe('Context scope. Defaults to feature; project must be explicit and rejects feature/task selectors.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
-        async execute({ name, content, section, task, expectedRevision, expectedContentHash, feature: explicitFeature }, toolContext) {
-          const resolved = resolveContextFeature(explicitFeature, toolContext);
+        async execute({ name, content, section, task, expectedRevision, expectedContentHash, scope, feature: explicitFeature }, toolContext) {
+          const resolved = await authorizeContextScope('append', { scope, feature: explicitFeature, task }, toolContext);
           if (typeof resolved === 'string') return resolved;
           try {
-            validateContextTask(resolved.feature, task);
+            if (resolved.feature) validateContextTask(resolved.feature, task);
             const result = contextToolScope.contexts.append(
-              resolved.feature,
+              resolved.scope,
               name,
               content,
               expectedRevision,
               expectedContentHash,
               { section, task },
             );
-            bindContextFeature(resolved.sessionID, resolved.feature);
-            return JSON.stringify({ success: true, operation: 'appended', ...result }, null, 2);
+            if (resolved.feature) bindContextFeature(resolved.sessionID, resolved.feature);
+            return JSON.stringify({ success: true, operation: 'appended', scope: resolved.scope, ...result }, null, 2);
           } catch (error) {
             return formatContextMutationFailure(error);
           }
@@ -5838,27 +6156,28 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       }),
 
       hive_context_archive: tool({
-        description: 'Archive only named context files after hive_context_read. Requires current revision, each selected name\'s actual content hash, and an explicit reason; unrelated files remain active.',
+        description: 'Archive only named scoped context files after hive_context_read. Requires primary management authorization, current revision, each selected name\'s actual content hash, and an explicit reason.',
         args: {
           names: tool.schema.array(tool.schema.string()).describe('Context names to archive.'),
           reason: tool.schema.string().describe('Specific reason for archiving these files.'),
           expectedRevision: tool.schema.number().describe('Revision from hive_context_read.'),
           expectedContentHashes: tool.schema.record(tool.schema.string(), tool.schema.string()).describe('Map of every selected context name to its actual contentHash from named hive_context_read calls.'),
+          scope: tool.schema.enum(['feature', 'project']).optional().describe('Context scope. Defaults to feature; project must be explicit and rejects feature selectors.'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
-        async execute({ names, reason, expectedRevision, expectedContentHashes, feature: explicitFeature }, toolContext) {
-          const resolved = resolveContextFeature(explicitFeature, toolContext);
+        async execute({ names, reason, expectedRevision, expectedContentHashes, scope, feature: explicitFeature }, toolContext) {
+          const resolved = await authorizeContextScope('archive', { scope, feature: explicitFeature }, toolContext);
           if (typeof resolved === 'string') return resolved;
           try {
             const result = contextToolScope.contexts.archiveSelected(
-              resolved.feature,
+              resolved.scope,
               names,
               reason,
               expectedRevision,
               expectedContentHashes,
             );
-            bindContextFeature(resolved.sessionID, resolved.feature);
-            return JSON.stringify({ success: true, operation: 'archived', ...result }, null, 2);
+            if (resolved.feature) bindContextFeature(resolved.sessionID, resolved.feature);
+            return JSON.stringify({ success: true, operation: 'archived', scope: resolved.scope, ...result }, null, 2);
           } catch (error) {
             return formatContextMutationFailure(error);
           }
@@ -5873,6 +6192,9 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         },
         async execute({ feature: explicitFeature }, toolContext) {
           const respond = (payload: Record<string, unknown>) => JSON.stringify(payload, null, 2);
+          if (isPrivateContextRecipient(toolContext)) {
+            return respond({ context: { available: false, reason: 'context_authorization_denied' } });
+          }
           const feature = resolveFeature(explicitFeature, toolContext, contextToolScope);
           if (!feature) {
             const failure = getFeatureResolutionFailure('feature', explicitFeature, statusToolServices.features);
@@ -5922,9 +6244,8 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
 
           const plan = statusToolServices.plans.read(feature);
           const tasks = statusToolServices.tasks.list(feature);
-          const featureContextFiles = statusToolServices.contexts.list(feature);
           const managedContext = statusToolServices.contexts.readSummary(feature);
-          const overview = statusToolServices.contexts.getOverview(feature);
+          const overview = managedContext.files.find((file) => file.name === 'overview');
           const readThreads = (filePath: string): Array<unknown> | null => {
             if (!fs.existsSync(filePath)) {
               return null;
@@ -5968,9 +6289,9 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             };
           }));
 
-          const contextSummary = featureContextFiles.map(c => ({
+          const contextSummary = managedContext.files.map(c => ({
             name: c.name,
-            chars: c.content.length,
+            bytes: c.bytes,
             updatedAt: c.updatedAt,
             kind: c.kind,
             task: c.task,
@@ -6140,7 +6461,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               ambiguityFlags,
             },
             context: {
-              fileCount: featureContextFiles.length,
+              fileCount: managedContext.files.length,
               files: contextSummary,
               revision: managedContext.revision,
               durable: managedContext.durable,

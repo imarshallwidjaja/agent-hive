@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { execSync } from "child_process";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -17,7 +17,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService } from 'hive-core';
+import { ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 const ROOT_SESSION_CLIENT = {
@@ -64,6 +64,10 @@ function durableContext(body: string): string {
   return `---\ndescription: Managed context test fixture\nread_when: Read when exercising managed context behavior.\n---\n\n${body}`;
 }
 
+function projectContext(body: string): string {
+  return `---\ndescription: Managed project context test fixture\nread_when: Read when exercising project context behavior.\nowner: platform\nreview_after: 2027-01-01\n---\n\n${body}`;
+}
+
 function createStubShell(): PluginInput["$"] {
   let shell: PluginInput["$"];
 
@@ -99,7 +103,7 @@ function createToolContext(sessionID: string): ToolContext {
   return {
     sessionID,
     messageID: "msg_test",
-    agent: "test",
+    agent: "hive-master",
     abort: new AbortController().signal,
   };
 }
@@ -148,7 +152,7 @@ async function createHooksForTest(
   testRoot: string,
   sessionID: string,
   worktree = testRoot,
-  client: PluginInput['client'] = OPENCODE_CLIENT,
+  client: PluginInput['client'] = ROOT_SESSION_CLIENT,
 ): Promise<{
   hooks: PluginHooks;
   toolContext: ToolContext;
@@ -675,6 +679,248 @@ Do it
     expect(status.context.revision).toBe(2);
     expect(status.context.durable.fileCount).toBe(0);
     expect(status.context.files[0]).toMatchObject({ kind: 'evidence', includeInExecution: false });
+  });
+
+  it('reads feature and project context through bounded scoped views', async () => {
+    const { hooks } = await createHooksForTest(
+      testRoot,
+      'sess_scoped_context',
+      testRoot,
+      ROOT_SESSION_CLIENT,
+    );
+    const toolContext = { ...createToolContext('sess_scoped_context'), agent: 'hive-master' };
+    await hooks.tool!.hive_feature_create.execute({ name: 'scoped-context' }, toolContext);
+
+    const featureCreated = JSON.parse(await hooks.tool!.hive_context_write.execute({
+      feature: 'scoped-context',
+      name: 'feature-notes',
+      content: durableContext('feature fact'),
+    }, toolContext) as string);
+    const projectCreated = JSON.parse(await hooks.tool!.hive_context_write.execute({
+      scope: 'project',
+      name: 'project-notes',
+      content: projectContext('é😀\n"\\'.repeat(1_000)),
+    }, toolContext) as string);
+    await hooks.tool!.hive_context_write.execute({
+      scope: 'project',
+      name: 'project-extra',
+      content: projectContext('extra fact'),
+    }, toolContext);
+    const sessionsPath = path.join(testRoot, '.hive', 'sessions.json');
+    const sessionsBeforeReads = fs.readFileSync(sessionsPath, 'utf8');
+    expect(featureCreated).toMatchObject({ success: true, scope: { type: 'feature', featureName: 'scoped-context' } });
+    expect(projectCreated).toMatchObject({ success: true, scope: { type: 'project' } });
+
+    const summary = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      feature: 'scoped-context',
+      scanChars: true,
+    }, toolContext) as string);
+    expect(summary).toMatchObject({
+      success: true,
+      scope: { type: 'feature', featureName: 'scoped-context' },
+      durable: { fileCount: 1, charsMeasurement: 'current' },
+    });
+
+    const catalog = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project',
+      view: 'catalog',
+      query: 'project-notes',
+      limit: 1,
+    }, toolContext) as string);
+    expect(catalog).toMatchObject({
+      success: true,
+      scope: { type: 'project' },
+      files: [{ name: 'project-notes', owner: 'platform' }],
+      complete: true,
+    });
+    expect(catalog.files[0].content).toBeUndefined();
+
+    const firstPage = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project', view: 'catalog', limit: 1,
+    }, toolContext) as string);
+    expect(firstPage).toMatchObject({ success: true, complete: false });
+    expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project', view: 'catalog', query: 'different', cursor: firstPage.nextCursor,
+    }, toolContext) as string)).toMatchObject({ success: false, reason: 'invalid_context_cursor' });
+    await hooks.tool!.hive_context_write.execute({
+      scope: 'project', name: 'project-later', content: projectContext('later fact'),
+    }, toolContext);
+    expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project', view: 'catalog', cursor: firstPage.nextCursor,
+    }, toolContext) as string)).toMatchObject({ success: false, reason: 'stale_context_cursor' });
+
+    const firstChunkRaw = await hooks.tool!.hive_context_read.execute({
+      scope: 'project',
+      name: 'project-notes',
+      maxBytes: 2_048,
+    }, toolContext) as string;
+    const firstChunk = JSON.parse(firstChunkRaw);
+    expect(Buffer.byteLength(firstChunkRaw, 'utf8')).toBeLessThanOrEqual(2_048);
+    expect(firstChunk).toMatchObject({ success: true, complete: false, range: { start: 0 } });
+    expect(firstChunk.file.content.length).toBeGreaterThan(0);
+
+    const secondChunk = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project',
+      name: 'project-notes',
+      cursor: firstChunk.nextCursor,
+      maxBytes: 2_048,
+    }, toolContext) as string);
+    expect(secondChunk.range.start).toBe(firstChunk.range.end);
+    expect(firstChunk.nextOffset).toBeUndefined();
+    let chunk = secondChunk;
+    let reconstructed = firstChunk.file.content + chunk.file.content;
+    while (!chunk.complete) {
+      const raw = await hooks.tool!.hive_context_read.execute({
+        scope: 'project', name: 'project-notes', cursor: chunk.nextCursor, maxBytes: 2_048,
+      }, toolContext) as string;
+      expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(2_048);
+      const next = JSON.parse(raw);
+      expect(next.success).toBe(true);
+      expect(next.range.start).toBe(chunk.range.end);
+      reconstructed += next.file.content;
+      chunk = next;
+    }
+    const documentPath = path.join(testRoot, '.hive', 'context', 'project-notes.md');
+    expect(reconstructed).toBe(fs.readFileSync(documentPath, 'utf8'));
+
+    const restarted = await createHooksForTest(testRoot, 'sess_scoped_context', testRoot, ROOT_SESSION_CLIENT);
+    const readSpy = spyOn(ContextService.prototype, 'readContent');
+    try {
+      const envelope = JSON.parse(Buffer.from(firstChunk.nextCursor, 'base64url').toString());
+      const payload = JSON.parse(envelope.payload);
+      const forgedBinding = createHash('sha256').update(JSON.stringify([
+        'sess_scoped_context', fs.realpathSync(testRoot), { type: 'project' }, 'project-extra',
+      ])).digest('hex');
+      for (const change of [
+        { o: payload.o + 1 }, { v: 2 }, { r: payload.r + 1 },
+        { s: 'a'.repeat(64) }, { h: 'b'.repeat(64) }, { b: forgedBinding },
+      ]) {
+        const changedPayload = { ...payload, ...change };
+        const forged = Buffer.from(JSON.stringify({ ...envelope, payload: JSON.stringify(changedPayload) })).toString('base64url');
+        const result = JSON.parse(await hooks.tool!.hive_context_read.execute({
+          scope: 'project', name: 'b' in change ? 'project-extra' : 'project-notes', cursor: forged,
+        }, toolContext) as string);
+        expect(result).toMatchObject({ success: false, reason: 'context_cursor_stale' });
+        expect(readSpy).not.toHaveBeenCalled();
+      }
+      expect(JSON.parse(await restarted.hooks.tool!.hive_context_read.execute({
+        scope: 'project', name: 'project-notes', cursor: firstChunk.nextCursor,
+      }, toolContext) as string)).toMatchObject({ success: false, reason: 'context_cursor_stale' });
+      expect(readSpy).not.toHaveBeenCalled();
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    for (const input of [
+      { scope: 'project', name: 'project-extra', cursor: firstChunk.nextCursor },
+      { feature: 'scoped-context', name: 'project-notes', cursor: firstChunk.nextCursor },
+      { scope: 'project', name: 'project-notes', cursor: 'malformed!' },
+      { scope: 'project', name: 'project-notes', cursor: Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(firstChunk.nextCursor, 'base64url').toString()), v: 2 })).toString('base64url') },
+    ]) {
+      expect(JSON.parse(await hooks.tool!.hive_context_read.execute(input, toolContext) as string))
+        .toMatchObject({ success: false, reason: 'context_cursor_stale' });
+    }
+    fs.appendFileSync(documentPath, '\nexternal edit');
+    expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project', name: 'project-notes', cursor: firstChunk.nextCursor,
+    }, toolContext) as string)).toMatchObject({ success: false, reason: 'context_changed_during_read' });
+    const fresh = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project', name: 'project-notes', maxBytes: 2_048,
+    }, toolContext) as string);
+    expect(fresh).toMatchObject({ success: true, complete: false });
+    expect(fresh.nextCursor).toBeString();
+    const indexPath = path.join(testRoot, '.hive', 'context', 'index.json');
+    const indexBytes = fs.readFileSync(indexPath, 'utf8');
+    for (const changedIndex of [indexBytes + '\n', JSON.stringify({ ...JSON.parse(indexBytes), revision: JSON.parse(indexBytes).revision + 1 })]) {
+      fs.writeFileSync(indexPath, changedIndex);
+      expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+        scope: 'project', name: 'project-notes', cursor: fresh.nextCursor,
+      }, toolContext) as string)).toMatchObject({ success: false, reason: 'context_changed_during_read' });
+    }
+    fs.writeFileSync(indexPath, indexBytes);
+
+    for (const input of [
+      { scope: 'project', feature: 'scoped-context' },
+      { scope: 'project', name: 'project-notes', query: 'project' },
+      { scope: 'project', view: 'catalog', scanChars: true },
+      { scope: 'project', view: 'catalog', limit: 1.5 },
+      { scope: 'project', name: 'project-notes', offset: 4 },
+    ]) {
+      expect(JSON.parse(await hooks.tool!.hive_context_read.execute(input, toolContext) as string)).toMatchObject({
+        success: false,
+        reason: 'invalid_argument',
+      });
+    }
+    expect(JSON.parse(await hooks.tool!.hive_context_write.execute({
+      scope: 'project',
+      feature: 'scoped-context',
+      task: FIRST_TASK,
+      name: 'rejected',
+      content: projectContext('must not persist'),
+    }, toolContext) as string)).toMatchObject({ success: false, reason: 'invalid_argument' });
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'context', 'rejected.md'))).toBe(false);
+    expect(fs.readFileSync(sessionsPath, 'utf8')).toBe(sessionsBeforeReads);
+  });
+
+  it('returns management-only recovery diagnostics for invalid context control state', async () => {
+    const { hooks } = await createHooksForTest(
+      testRoot,
+      'sess_context_recovery',
+      testRoot,
+      ROOT_SESSION_CLIENT,
+    );
+    const toolContext = { ...createToolContext('sess_context_recovery'), agent: 'hive-master' };
+    await hooks.tool!.hive_context_write.execute({
+      scope: 'project',
+      name: 'recovery-notes',
+      content: projectContext('preserve this body'),
+    }, toolContext);
+    const markerPath = path.join(testRoot, '.hive', 'context', '.managed-mutation-pending.json');
+    fs.writeFileSync(markerPath, JSON.stringify({
+      schemaVersion: 1,
+      operation: 'replace',
+      names: ['recovery-notes'],
+      archiveDestinations: [],
+      startedAt: new Date().toISOString(),
+      startingRevision: 1,
+      startingIndexDigest: 'test-digest',
+    }));
+    const pending = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project',
+    }, toolContext) as string);
+    expect(pending).toMatchObject({
+      success: false,
+      reason: 'context_reconciliation_required',
+      recovery: { code: 'context_reconciliation_required', pendingMutation: { operation: 'replace' } },
+    });
+    fs.rmSync(markerPath);
+    fs.writeFileSync(path.join(testRoot, '.hive', 'context', 'index.json'), '{ invalid');
+
+    const summary = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project',
+    }, toolContext) as string);
+    expect(summary).toMatchObject({
+      success: false,
+      terminal: false,
+      reason: 'context_index_invalid',
+      recovery: {
+        code: 'context_index_invalid',
+        control: { indexPresent: true },
+        totalFiles: 1,
+      },
+    });
+    expect(summary.nextAction).toContain('out of band');
+
+    const named = JSON.parse(await hooks.tool!.hive_context_read.execute({
+      scope: 'project',
+      name: 'recovery-notes',
+      maxBytes: 2_048,
+    }, toolContext) as string);
+    expect(named).toMatchObject({
+      success: true,
+      diagnostic: true,
+      file: { name: 'recovery-notes', content: projectContext('preserve this body') },
+    });
   });
 
   it('validates supplied context task metadata against exact existing task folders', async () => {
@@ -2094,7 +2340,7 @@ Do it
       worktree: testRoot,
       serverUrl: new URL("http://localhost:1"),
       project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -2695,7 +2941,7 @@ Candidate-specific conditions in an individual description still apply, includin
       worktree: testRoot,
       serverUrl: new URL("http://localhost:1"),
       project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -2841,7 +3087,7 @@ Do it
       worktree: testRoot,
       serverUrl: new URL("http://localhost:1"),
       project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -3096,7 +3342,7 @@ Do it
       worktree: testRoot,
       serverUrl: new URL("http://localhost:1"),
       project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -3161,7 +3407,7 @@ Do it
       worktree: testRoot,
       serverUrl: new URL("http://localhost:1"),
       project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -4818,7 +5064,7 @@ Do it
       worktree: "/",
       serverUrl: new URL("http://localhost:1"),
       project: { ...createProject("/"), id: "global" },
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -4878,7 +5124,7 @@ Do it
       worktree: worktreeRoot,
       serverUrl: new URL("http://localhost:1"),
       project: { ...createProject(worktreeRoot), id: "global" },
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -4899,7 +5145,7 @@ Do it
       context: {
         revision: number;
         fileCount: number;
-        files: Array<{ name: string; chars: number }>;
+        files: Array<{ name: string; bytes: number }>;
         durable: { fileCount: number; chars: number | null };
       };
     };
@@ -4908,7 +5154,7 @@ Do it
       context: {
         revision: created.revision,
         fileCount: 1,
-        files: [{ name: 'notes', chars: durableContext('worktree notes').length }],
+        files: [{ name: 'notes', bytes: Buffer.byteLength(durableContext('worktree notes'), 'utf8') }],
         durable: { fileCount: 1, chars: null },
       },
     });
@@ -4958,7 +5204,7 @@ Do it
       worktree: "/",
       serverUrl: new URL("http://localhost:1"),
       project: createProject("/"),
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -4978,8 +5224,8 @@ Do it
     expect(JSON.parse(output as string)).toMatchObject({
       success: false,
       terminal: true,
-      reason: 'feature_not_found',
-      error: `Feature '${featureName}' not found. Create it first with hive_feature_create.`,
+      reason: 'context_root_mismatch',
+      error: 'The plugin directory and runtime context resolve to different canonical project roots.',
     });
     expect(fs.existsSync(path.join(
       testRoot,
@@ -5345,7 +5591,7 @@ Do it
       worktree: testRoot,
       serverUrl: new URL("http://localhost:1"),
       project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
