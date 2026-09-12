@@ -309,6 +309,11 @@ import {
   readText,
   renderAggregateBranchDiff,
   resolveFeatureDirectoryName,
+  applyTaskBudget,
+  applyContextBudget,
+  prioritizeContextForTask,
+  parseIsoTimestamp,
+  DEFAULT_BUDGET,
   type CustomAgentBase,
   type ResolvedCustomAgentConfig,
   type WorktreeInfo,
@@ -318,6 +323,8 @@ import {
   type AdhocCleanupResult,
   type PlanPatchOperation,
   type TaskAggregateBranchDiff,
+  type BudgetedTask,
+  type TruncationEvent,
 } from "hive-core";
 import {
   buildStandingConstraintsBlock,
@@ -326,15 +333,6 @@ import {
   type ContextFile as WorkerPromptContextFile,
 } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
-import {
-  applyTaskBudget,
-  applyContextBudget,
-  prioritizeContextForTask,
-  parseIsoTimestamp,
-  DEFAULT_BUDGET,
-  type BudgetedTask,
-  type TruncationEvent,
-} from "./utils/prompt-budgeting";
 import { writeWorkerPromptFile } from "./utils/prompt-file";
 import { formatRelativeTime } from "./utils/format";
 import { classifySession, createVariantHook } from "./hooks/variant-hook.js";

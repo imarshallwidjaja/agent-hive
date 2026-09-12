@@ -34,6 +34,12 @@ export interface BudgetedTask {
 export interface ContextInput {
   name: string;
   content: string;
+  freshnessLine?: string;
+}
+
+export interface PrioritizedContextInput extends ContextInput {
+  updatedAt: string;
+  task?: string;
 }
 
 export interface BudgetedContext {
@@ -69,6 +75,92 @@ export interface ContextBudgetResult {
   files: BudgetedContext[];
   truncationEvents: TruncationEvent[];
   namesOnlyFiles?: string[];
+}
+
+// ============================================================================
+// Task-Aware Context Prioritization
+// ============================================================================
+
+function compareDeterministicText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function parseIsoTimestamp(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/,
+  );
+  if (!match) return undefined;
+  const [, year, month, day, hour, minute, second, , zone] = match;
+  const parts = [year, month, day, hour, minute, second].map(Number);
+  const [yearNumber, monthNumber, dayNumber, hourNumber, minuteNumber, secondNumber] = parts;
+  if (
+    monthNumber < 1
+    || monthNumber > 12
+    || dayNumber < 1
+    || dayNumber > new Date(Date.UTC(yearNumber, monthNumber, 0)).getUTCDate()
+    || hourNumber > 23
+    || minuteNumber > 59
+    || secondNumber > 59
+  ) {
+    return undefined;
+  }
+  if (zone !== 'Z') {
+    const zoneHour = Number(zone.slice(1, 3));
+    const zoneMinute = Number(zone.slice(4, 6));
+    if (zoneHour > 23 || zoneMinute > 59) return undefined;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? undefined : timestamp;
+}
+
+/**
+ * Put context owned by the receiving task and its dependency closure first.
+ * Relevant task distance wins, followed by the existing newest-first order.
+ * Untagged and unrelated context retain the same recency/name ordering.
+ */
+export function prioritizeContextForTask<T extends PrioritizedContextInput>(
+  files: T[],
+  task: string,
+  dependencies: Map<string, string[]>,
+): T[] {
+  const distanceByTask = new Map<string, number>([[task, 0]]);
+  const queue = [task];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const nextDistance = distanceByTask.get(current)! + 1;
+    for (const dependency of dependencies.get(current) ?? []) {
+      const knownDistance = distanceByTask.get(dependency);
+      if (knownDistance !== undefined && knownDistance <= nextDistance) continue;
+      distanceByTask.set(dependency, nextDistance);
+      queue.push(dependency);
+    }
+  }
+
+  const relevance = (file: T): number =>
+    file.task === undefined
+      ? Number.POSITIVE_INFINITY
+      : distanceByTask.get(file.task) ?? Number.POSITIVE_INFINITY;
+  return [...files].sort((left, right) => {
+    const relevanceDifference = relevance(left) - relevance(right);
+    if (relevanceDifference !== 0 && !Number.isNaN(relevanceDifference)) {
+      return relevanceDifference;
+    }
+
+    const leftTimestamp = parseIsoTimestamp(left.updatedAt);
+    const rightTimestamp = parseIsoTimestamp(right.updatedAt);
+    if (leftTimestamp !== undefined && rightTimestamp !== undefined) {
+      const timeDifference = rightTimestamp - leftTimestamp;
+      if (timeDifference !== 0) return timeDifference;
+    } else if (leftTimestamp !== undefined) {
+      return -1;
+    } else if (rightTimestamp !== undefined) {
+      return 1;
+    }
+
+    return compareDeterministicText(left.name, right.name);
+  });
 }
 
 // ============================================================================
@@ -213,7 +305,10 @@ export function applyContextBudget(
       namesOnlyFiles.push(file.name);
       budgetedFiles.push({
         name: file.name,
-        content: `[Content available at: ${pathHint}]`,
+        content: [
+          file.freshnessLine,
+          `[Content available at: ${pathHint}]`,
+        ].filter((line): line is string => !!line).join('\n\n'),
         truncated: true,
         originalLength: file.content.length,
         pathHint,
