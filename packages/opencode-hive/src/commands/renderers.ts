@@ -537,7 +537,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       details: [`Planning input: ${topicOrCurrent(args, 'the current spec or brief')}`],
       doItems: [
         'Perform active discovery before writing the plan; inspect relevant files, tests, docs, and constraints first.',
-        'Create or select the feature, write durable context with an explicit feature when useful, then write the plan using hive_feature_create, hive_context_write, and hive_plan_write as appropriate.',
+        'Create or select the feature, write durable context from catalog selection with an explicit feature when useful, then write the plan using hive_feature_create, hive_context_write, and hive_plan_write as appropriate. Load context-engineering for hash-guarded reads and writes; do not mass-read every note.',
         'Include documentation updates for non-ad-hoc work when user-facing behavior, setup, install flow, or operator workflow changes.',
       ],
       doNotItems: [

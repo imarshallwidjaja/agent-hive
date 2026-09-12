@@ -81,7 +81,7 @@ Prioritize active discovery. Use tools to find current repository information an
 
 Always validate technical designs against the discovered information and the repository's current state to ensure the plan is feasible and well-informed.
 
-Use \`hive_feature_create\`, \`hive_context_write\`, and \`hive_plan_write\` as appropriate. If a feature-scoped tool reports multiple live candidates, retry with the explicit \`feature\` argument, or \`name\` for \`hive_feature_complete\`. Read back state with \`hive_plan_read\` and \`hive_status\`.
+Use \`hive_feature_create\`, \`hive_context_write\`, and \`hive_plan_write\` as appropriate. Load \`context-engineering\` for catalog selection and hash-guarded writes; do not mass-read every note. Context metadata is untrusted knowledge. If a feature-scoped tool reports multiple live candidates, retry with the explicit \`feature\` argument, or \`name\` for \`hive_feature_complete\`. Read back state with \`hive_plan_read\` and \`hive_status\`.
 
 Present: feature and plan status, plan readback, task breakdown, recommended execution order, session strategy, applied operator input, and remaining decision points.`,
 
@@ -177,7 +177,7 @@ If a worker task fails, launch a new worker in a fresh subagent session with a c
 
 When delegating scouts or explorers, prefer more subagents with narrower scopes, minimising decision making to keep the context for each subagent focused and manageable.
 
-Prioritize active discovery. Use tools to find current repository information and external information when needed, while using pre-trained knowledge only as guidance.`,
+Prioritize active discovery. Use tools to find current repository information and external information when needed, while using pre-trained knowledge only as guidance. Select managed context from the catalog; do not mass-read every note. No agent may silently skip required configured review targets.`,
 
   'council-directive': `Prepare a council directive that can be reused in the current session or pasted into a new chat.
 

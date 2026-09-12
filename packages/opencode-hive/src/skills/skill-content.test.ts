@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { BUILTIN_SKILLS } from './registry.generated.js';
+
+function readRepoFile(relativePath: string): string {
+  return readFileSync(path.resolve(import.meta.dir, '../../../../', relativePath), 'utf8');
+}
 
 function expectInSessionDesignDocumentationPolicy(content: string) {
   expect(content).not.toContain('docs/plans/YYYY-MM-DD-<topic>-design.md');
@@ -588,6 +594,96 @@ describe('skill content', () => {
     expect(template).not.toContain('Build/test commands are first');
     expect(template).not.toContain('Missing build/test commands');
     expect(template).not.toContain('Auth lives in `/lib/auth`');
+  });
+
+  it('bundles context-engineering as on-demand untrusted-knowledge retrieval guidance', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'context-engineering');
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toMatch(/^Use when /);
+    expect(skill!.description).toContain('Agent Hive');
+    expect(skill!.description).toContain('catalog');
+    expect(skill!.description).toContain('recovering');
+
+    const template = skill!.template;
+    expect(template).toContain('Load this skill on demand');
+    expect(template).toContain('Do not globally load its full body');
+    expect(template).toContain('untrusted knowledge');
+    expect(template).toContain('not AGENTS.md');
+    expect(template).toContain('description');
+    expect(template).toContain('read_when');
+    expect(template).toContain('locale-independent ASCII A-Z');
+    expect(template).toContain('complete: true');
+    expect(template).toContain('Do not mass-read every note');
+    expect(template).toContain('The first match is not proof of sufficient evidence');
+    expect(template).toContain('hive_context_read({ view: "catalog"');
+    expect(template).toContain('hive_context_read({ name: "auth-decisions"');
+    expect(template).toContain('expectedContentHash');
+    expect(template).toContain('expectedContentHashes');
+    expect(template).toContain('scanChars');
+    expect(template).toContain('context_inventory_too_large');
+    expect(template).toContain('Never delete an index to restore classification');
+    expect(template).toContain('accountability');
+    expect(template).toContain('There is no auto-renewal, metadata-only renewal command, auto-promotion, auto-consolidation, or archive on feature completion');
+    expect(template).toContain('does not update a running assignment');
+    expect(template).toContain('No agent may silently skip required configured review targets');
+    expect(template).not.toContain('load all context');
+  });
+
+  it('teaches context-engineering relocation recovery with exact-worktree registration', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'context-engineering');
+
+    expect(skill).toBeDefined();
+    const template = skill!.template;
+    expect(template).toContain('The old recipient remains denied');
+    expect(template).toContain('fresh authenticated child binding');
+    expect(template).toContain('Ad-hoc relocation requires a fresh authenticated run');
+    expect(template).toContain('Old session and assignment descriptors remain historical');
+    expect(template).toContain('never edit roots to rebind them');
+    expect(template).toContain('follow the stored former root');
+    expect(template).toContain('root migration/aliases');
+    expect(template).toContain('Seamless continuation is intentionally sacrificed');
+    expect(template).toContain('Exact-worktree registration is the Git integrity prerequisite, not trusted repository or common-directory containment alone');
+    expect(template).toContain('Local byte/path inspection first rejects untrusted `.git` targets without dereferencing them');
+    expect(template).toContain('contained administration-metadata inspection');
+    expect(template).toContain('trusted identity-bound common-directory containment');
+    expect(template).toContain('`commondir` must resolve to the expected trusted common directory');
+    expect(template).toContain('parsed/normalized `gitdir` backlink must match the current worktree\'s own trusted `.git` path');
+    expect(template).toContain('Reject sibling/old entries');
+    expect(template).toContain('zero access through mismatched backlinks/former paths');
+    expect(template).toContain('before any suspect-worktree Git');
+    expect(template).toContain('Preserve all workspace, Git administration, and historical descriptor/artifact bytes and state');
+    expect(template).toContain('trusted topology-resolved source repositories');
+    expect(template).toContain('linked repositories with external common directories');
+    expect(template).toContain('Suspect-worktree Git before exact registration is forbidden');
+    expect(template).toContain('prepare/recreate an independently valid workspace');
+    expect(template).toContain('Recovery does not rewrite `.git` or administration metadata');
+    expect(template).toContain('no automatic worktree repair');
+    expect(template).toContain('Error notices are not empty/current catalogs');
+    expect(template).toContain('`.hive/sessions.json` is canonical global session truth');
+    expect(template).toContain('legacy_assignment_reanchor_required');
+    expect(template).not.toContain('seamless relocation or in-place rebind');
+  });
+
+  it('keeps relocation-recovery wording aligned in operator and agent docs', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'context-engineering');
+    const agentsMd = readRepoFile('AGENTS.md');
+    const operatorGuide = readRepoFile('docs/OPERATOR-GUIDE.md');
+
+    expect(skill).toBeDefined();
+    for (const content of [skill!.template, agentsMd, operatorGuide]) {
+      expect(content).toContain('Exact-worktree registration');
+      expect(content).toContain('old recipient remains denied');
+      expect(content).toContain('fresh authenticated');
+      expect(content).toContain('historical');
+      expect(content).toContain('never edit roots to rebind');
+      expect(content).toContain('former root');
+      expect(content).toContain('root migration/aliases');
+      expect(content).toContain('Seamless continuation is intentionally sacrificed');
+      expect(content).toContain('prepare');
+      expect(content).toContain('recreate');
+      expect(content).not.toContain('follow the stored former root to continue');
+    }
   });
 
   it('scopes only Hive-tool workflow skill descriptions to Agent Hive', () => {

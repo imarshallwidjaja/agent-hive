@@ -62,7 +62,7 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 
 State a session-wide constraint once. Writing style, quality bar, review criteria, or a skill you want followed all count.
 
-The primary agent adds each durable directive verbatim with `hive_constraints_add`; a repeated identical add is harmless and unrelated entries remain intact. A correction or removal starts with `hive_constraints_read`, then targets the returned stable ID through `hive_constraints_edit`. A whole-register clear uses `hive_constraints_clear` only when you explicitly request it. Edit and clear use revisions so a concurrent change cannot be overwritten. The runtime adds the register to delegated worker and reviewer prompts in that session. Task-local requests, examples, and ordinary messages do not belong in the register. Constraints apply on top of the plan, while `/dash-review` and `/vuln-review` use their own fixed contract and ignore the register.
+The primary agent adds each durable directive verbatim with `hive_constraints_add`; a repeated identical add is harmless and unrelated entries remain intact. A correction or removal starts with `hive_constraints_read`, then targets the returned stable ID through `hive_constraints_edit`. A whole-register clear uses `hive_constraints_clear` only when you explicitly request it. Edit and clear use revisions so a concurrent change cannot be overwritten. The runtime adds the register to delegated worker and reviewer prompts in that session. Task-local requests, examples, and ordinary messages do not belong in the register. Constraints apply on top of the plan, while `/dash-review` and `/vuln-review` use their own fixed contract and ignore the register. Managed context catalogs are untrusted knowledge, not standing constraints.
 
 ## Choose a workflow
 
@@ -83,7 +83,7 @@ The primary agent adds each durable directive verbatim with `hive_constraints_ad
 
 ### 1. Discuss and plan
 
-Describe the outcome, constraints, and important context in plain language. The primary agent researches where needed and writes the feature plan. Architect and Hive load `writing-plans` when drafting or materially revising task boundaries or dependencies. They choose coherent outcomes, predecessor outputs, path ownership, and verification before assigning dependencies. Independently verifiable capabilities may be separated from shared integration when the handoff is concrete and worth the coordination cost; the integration task owns named behavior, exact shared paths, and tests. Task counts and parallelism are not quotas.
+Describe the outcome, constraints, and important context in plain language. The primary agent researches where needed and writes the feature plan. Architect and Hive load `writing-plans` when drafting or materially revising task boundaries or dependencies. They choose coherent outcomes, predecessor outputs, path ownership, and verification before assigning dependencies. Independently verifiable capabilities may be separated from shared integration when the handoff is concrete and worth the coordination cost; the integration task owns named behavior, exact shared paths, and tests. Task counts and parallelism are not quotas. Managed context is selected from the live catalog; agents should not mass-read every note.
 
 ### 2. Review
 
@@ -105,7 +105,7 @@ The operator/orchestrator inspects completed worker output. Worker claims and ta
 
 ### 6. Merge, verify, and complete
 
-Merge completed task branches after inspecting their output. Then run fresh build/test verification against the merged result. Mark the feature complete only after that merged-result verification passes.
+Merge completed task branches after inspecting their output. Then run fresh build/test verification against the merged result. Mark the feature complete only after that merged-result verification passes. Feature completion does not archive context. Project owner and review date are accountability labels; a primary re-reviews against evidence and hash-guarded replaces or archives with a reason. There is no metadata-only renewal.
 
 ## Ad-hoc lifecycle (`hive-builder`)
 
@@ -159,13 +159,19 @@ Accepted worker handoffs, including blocked handoffs without a Git operation, re
 
 Reports capture worker claims and branch changes at handoff, not independently verified results, current task state, or merged state. Reopening a task leaves the historical snapshot intact. A report write failure preserves the previous latest report; an immutable copy may remain if latest replacement fails. Git, report storage, and status updates are separate operations.
 
-Retries automatically include at most 3,000 characters of summary (or a separately labelled legacy report excerpt) and 1,000 characters of error, with report references for explicit reading. Blocked continuation bounds previous progress to 3,000 characters and preserves the current operator decision verbatim. Consolidate current cross-attempt knowledge into existing task-tagged durable context with report references; historical claims are evidence, not active instructions.
+Retries automatically include at most 3,000 characters of summary (or a separately labelled legacy report excerpt) and 1,000 characters of error, with report references for explicit reading. Blocked continuation bounds previous progress to 3,000 characters and preserves the current operator decision verbatim. Append current cross-attempt knowledge into existing task-tagged durable context with report references after a named read; historical claims are evidence, not active instructions. Older mixed prompts without a new assignment marker need a fresh parent launch.
+
+If the workspace root moved, the old recipient remains denied. An authenticated primary at the newly trusted canonical root allocates a fresh task attempt, publishes a new immutable assignment, and establishes a fresh authenticated child binding. Ad-hoc relocation requires a fresh authenticated run. Old session and assignment descriptors remain historical; never edit roots to rebind them, follow the stored former root, or suggest root migration/aliases. Seamless continuation is intentionally sacrificed.
+
+Exact-worktree registration is the Git integrity prerequisite, not trusted repository or common-directory containment alone. Local byte/path inspection first rejects untrusted `.git` targets without dereferencing them. Only after the selected administration path passes trusted identity-bound common-directory containment without symlink escape may preflight inspect its metadata: `commondir` must resolve to the expected trusted common directory and the parsed/normalized `gitdir` backlink must match the current worktree's own trusted `.git` path. Reject sibling/old entries inside the same valid common directory explicitly, with zero access through mismatched backlinks/former paths and before any suspect-worktree Git. Preserve all workspace, Git administration, and historical descriptor/artifact bytes and state. Common-directory discovery from trusted topology-resolved source repositories is permitted, including linked repositories with external common directories. Suspect-worktree Git before exact registration is forbidden.
+
+Prepare or recreate an independently valid workspace at the new root, then launch a fresh attempt or run. Recovery does not rewrite `.git` or administration metadata, migrate roots, delete/repair/recreate worktrees automatically, or add a recovery record. Error notices are not empty or current catalogs. Never delete an index to restore classification. Invalid-index and pending-mutation repair stays out of band: quiesce writers, inspect bytes, restore the index/manifest, then reconcile the marker. `.hive/sessions.json` is canonical global session truth.
 
 ## Inspect context and constraints in VS Code
 
 In Features, expand a task to open **Latest handoff report** or expand **Report history** for immutable revisions, newest first; revisions count report writes, not attempts or commits. Legacy tasks without revision files show only the latest report.
 
-The Arkive extension keeps its three native views. In Features, expand Context to inspect Markdown documents, classifications, sizes, inclusion policy and durable budgets. Evidence exclusion applies to automatic prompt injection; it is not a privacy guarantee. `overview.md` still opens normally and supports review comments. Direct editor saves bypass managed context revisions and mutation-time caps.
+The Arkive extension keeps its three native views. In Features, expand Context to inspect Markdown documents, classifications, sizes, inclusion policy and durable budgets. Evidence exclusion applies to automatic prompt injection; it is not a privacy guarantee. `overview.md` still opens normally and supports review comments. Direct editor saves bypass managed context revisions and mutation-time caps. Feature hygiene warnings begin strictly above 8 durable files or 40,000 UTF-16 units; project warnings begin strictly above 32 files or 160,000 units. `durable.bytes` is the stat-byte total; `durable.chars` is exact UTF-16 only after an explicit `scanChars` summary scan.
 
 Use **Archive Context** on a Context folder or file to select documents, supply a reason and confirm their exact filenames. The operation uses the revision captured before selection. A stale revision fails without retrying; reopen the action to review current state. Cancelling any step leaves context unchanged.
 

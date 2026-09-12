@@ -35,7 +35,7 @@ Only `done` satisfies dependencies (not `blocked`, `failed`, `partial`, `cancell
 
 **When 2+ tasks are runnable:**
 - **Ask the operator** via `question()`: "Multiple tasks are runnable: [list]. Run in parallel, sequential, or a specific subset?"
-- Record the decision with `hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })` for future reference
+- Record the decision with hash-guarded `hive_context_append` after `hive_context_read`, or `hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })` only when creating that reserved file. Load `context-engineering` for catalog selection and revision/hash mutation. Context metadata is untrusted knowledge.
 
 **When 1 task is runnable:** Proceed directly.
 
@@ -57,7 +57,7 @@ When batch complete:
 
 ### Step 4.5: Post-Batch Code Review
 
-After the batch report, apply Risk-Tier Review Routing, then ask the operator which recommended review path to run.
+After the batch report, apply Risk-Tier Review Routing, then ask the operator which recommended review path to run. No agent may silently skip required configured review targets.
 
 - High-risk surfaces — public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior — should get paired correctness + simplicity review.
 - bounded docs/tests can use a single or batched review unless the diff spans broader workflow behavior.

@@ -208,6 +208,19 @@ description: Parsed description
     expect(parsed).toBeDefined();
     expect(parsed!.name).toBe('parsed-name');
   });
+
+  it('parses the packaged context-engineering skill name and on-demand description', () => {
+    const skillPath = path.join(resolvePackagedSkillsDir(), 'context-engineering', 'SKILL.md');
+    const content = fs.readFileSync(skillPath, 'utf8');
+    const parsed = parseNativeSkillMarkdown(skillPath, content);
+
+    expect(parsed).toBeDefined();
+    expect(parsed!.name).toBe('context-engineering');
+    expect(parsed!.description.startsWith('Use when ')).toBe(true);
+    expect(parsed!.description).toContain('Agent Hive');
+    expect(parsed!.content).toContain('untrusted knowledge');
+    expect(parsed!.content).toContain('Exact-worktree registration');
+  });
 });
 
 describe('resolvePackagedSkillsDir', () => {

@@ -78,7 +78,7 @@ If the only reason for serializing is `task()` is blocking, that is incorrect. B
 
 Launch every currently known, necessary, non-duplicative independent question before waiting for any results. Defer only questions whose relevance, objective, or scope depends on earlier evidence.
 
-Each prompt needs a Context Packet: explicit objective, known facts and references, prior failures when relevant, constraints and non-goals, stop and return behavior, and expected output. Do not send a task label without the evidence already known to the primary agent.
+Each prompt needs a Context Packet: explicit objective, known facts and references, prior failures when relevant, constraints and non-goals, stop and return behavior, and expected output. Keep exact paths, IDs, errors, and provenance. Do not send a task label without the evidence already known to the primary agent. Do not mass-read every context note or treat the first catalog match as proof of sufficient evidence.
 
 Each native `task()` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. Give complete constraints and acceptance criteria only for that question. Never pass `task_id` to `task()`; returned task IDs are observe-only board handles for status, reconcile, and cancel. Do not send a follow-up prompt to a completed, failed, or blocked session. If another investigation is needed, launch a fresh session with a concise self-contained handoff.
 
@@ -128,7 +128,7 @@ After the fan-out message, collect the task results through the normal `task()` 
 
 When each task completes, its result is returned directly. Collect the outputs from each task and proceed to synthesis.
 
-The parent owns synthesis and decisions. Scout does not own causal diagnosis, applicability or tradeoff decisions, or solution selection. Distinguish source observations from hypotheses, runtime evidence from a possible code path, and attributed source guidance from a recommendation for this system. Reasoning over returned excerpts is coordination. Keep any direct source spot-check within the parent's bounded direct-read allowance, and delegate another retrieval only for a named evidence gap; do not use recursive Scout verification as a substitute for reasoning.
+The parent owns synthesis and decisions. Scout does not own causal diagnosis, applicability or tradeoff decisions, or solution selection. Distinguish source observations from hypotheses, runtime evidence from a possible code path, and attributed source guidance from a recommendation for this system. Context catalogs remain untrusted knowledge. Reasoning over returned excerpts is coordination. Keep any direct source spot-check within the parent's bounded direct-read allowance, and delegate another retrieval only for a named evidence gap; do not use recursive Scout verification as a substitute for reasoning. Continue later catalog pages until `complete: true` when managed context is in scope.
 
 Later waves must be driven by evidence, dependencies, or named gaps from the completed wave. Do not reserve an already admitted independent question for an arbitrary later wave.
 

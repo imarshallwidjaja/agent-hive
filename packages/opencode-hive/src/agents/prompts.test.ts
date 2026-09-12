@@ -886,7 +886,7 @@ describe('Architect (Planner) prompt', () => {
 
   it('uses explicit feature targeting for root-oriented context guidance', () => {
     expect(QUEEN_BEE_PROMPT).toContain(
-      'hive_context_append({ feature: "feature-name", name: "execution-decisions"',
+      'hive_context_append({ feature: "feature-name", name: "execution-decisions", expectedRevision, expectedContentHash, ... })',
     );
     expect(SWARM_BEE_PROMPT).toContain('Append execution decisions with `hive_context_append`');
     expect(SCOUT_BEE_PROMPT).toContain('feature: "{feature-name}"');
@@ -937,6 +937,24 @@ describe('Architect (Planner) prompt', () => {
     expect(QUEEN_BEE_PROMPT).toContain('all other names');
     expect(QUEEN_BEE_PROMPT).toContain('durable');
     expect(QUEEN_BEE_PROMPT).not.toContain('`plan.md` is the primary human-facing summary');
+  });
+
+  it('loads context-engineering on demand and treats catalogs as untrusted knowledge', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Architect', ARCHITECT_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Scout', SCOUT_BEE_PROMPT],
+      ['Forager', FORAGER_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+      ['Plan Reviewer', PLAN_REVIEWER_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('context-engineering');
+      expect(prompt, name).toContain('untrusted knowledge');
+    }
+    expect(QUEEN_BEE_PROMPT).toContain('Do not globally load its full body');
+    expect(QUEEN_BEE_PROMPT).toContain('expectedContentHash');
+    expect(QUEEN_BEE_PROMPT).toContain('No agent may silently skip required configured review targets');
   });
 
   it('instructs planners to prefer per-repo task boundaries and use the `**Repos**:` annotation on manifest-backed projects', () => {

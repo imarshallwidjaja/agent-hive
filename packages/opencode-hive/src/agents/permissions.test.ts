@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
-import { ConfigService, ContextService, ReviewEvidenceBundleService, ReviewWorkspaceService, SessionService } from 'hive-core';
+import { ConfigService, ContextService, DEFAULT_HIVE_CONFIG, ReviewEvidenceBundleService, ReviewWorkspaceService, SessionService } from 'hive-core';
 import * as path from 'path';
 import plugin from '../index';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
@@ -1884,6 +1884,12 @@ describe('Per-agent tool filtering', () => {
       expect(agents['forager-worker']!.tools![toolName]).toBe(false);
       expect(agents['hive-helper']!.tools![toolName]).toBe(false);
       expect(agents['code-reviewer']!.tools![toolName]).toBe(false);
+    }
+  });
+
+  it('does not auto-load context-engineering for any configured agent', () => {
+    for (const agent of Object.values(DEFAULT_HIVE_CONFIG.agents ?? {})) {
+      expect(agent?.autoLoadSkills ?? []).not.toContain('context-engineering');
     }
   });
 

@@ -76,7 +76,7 @@ Each agent gets:
 - **Constraints:** Don't change other code
 - **Expected output:** Summary of what you found and fixed
 
-Each native `task()` launch has one primary goal and one terminal handoff. Give complete constraints and acceptance criteria only for that goal. Never pass `task_id` to `task()` or send a follow-up prompt to a completed, failed, or blocked session. Returned task IDs are observe-only board handles for status, reconcile, and cancel.
+Each native `task()` launch has one primary goal and one terminal handoff. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body. Never pass `task_id` to `task()` or send a follow-up prompt to a completed, failed, or blocked session. Returned task IDs are observe-only board handles for status, reconcile, and cancel.
 
 One implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
@@ -112,7 +112,7 @@ When agents return:
 
 Good agent prompts are:
 1. **Focused** - One clear problem domain
-2. **Self-contained** - All context needed to understand the problem
+2. **Self-contained** - All context needed to understand the problem, as pointers and known facts, not a dump of every note
 3. **Specific about output** - What should the agent return?
 
 ```markdown

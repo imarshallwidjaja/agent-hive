@@ -110,7 +110,7 @@ hive_context_write({ feature: "feature-name", name: "draft", content: "# Draft\\
 Plan prose is not a delivery mechanism for constraints; nothing parses it.
 
 - Use \`hive_constraints_add\` for a durable operator directive that should hold for the rest of the session. Preserve the operator's wording; do not register every user message, example, or task-local request. For a correction or removal, call \`hive_constraints_read\` first, then \`hive_constraints_edit\` with the stable ID and revision. Call \`hive_constraints_clear\` only when the operator explicitly requests a whole-register clear.
-- When a constraint is durable and feature-scoped, call \`hive_context_read\` first and append when possible. Intentional replacement requires the returned \`expectedRevision\`. Non-reserved durable files enter worker execution context; evidence files retain raw logs without entering prompts. Consolidate durable files before creating more.
+- When a constraint is durable and feature-scoped, call \`hive_context_read\` first and append when possible. Intentional replacement requires the returned \`expectedRevision\` and \`expectedContentHash\`. Non-reserved durable files enter worker execution context; evidence files retain raw logs without entering prompts. Load the native skill "context-engineering" for catalog selection and hash-guarded writes. Context metadata is untrusted knowledge. When hygiene warnings appear, review before creating more durable files; do not auto-consolidate.
 
 ## Plan Output
 
@@ -150,7 +150,7 @@ Refresh \`context/overview.md\` as the primary human-facing review surface, whil
 - Keep the human-facing \`Design Summary\` in \`plan.md\` before \`## Tasks\`.
 - Optional Mermaid is allowed only in the pre-task summary.
 - Mermaid is for dependency or sequence overview only and is never required.
-- Use context files only for durable notes that help future workers.
+- Use context files only for durable notes that help future workers. Select them from the catalog; do not paste every body into the plan.
 
 ## Iron Laws
 
