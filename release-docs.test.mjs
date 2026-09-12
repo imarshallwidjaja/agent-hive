@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -31,16 +32,70 @@ function assertInOrder(text, contracts, label) {
   }
 }
 
-function currentTrackedMarkdownPaths() {
+function hasGitMetadata(rootDir) {
+  return fs.existsSync(path.join(rootDir, '.git'));
+}
+
+function gitTrackedMarkdownPaths(rootDir) {
   return execFileSync('git', ['ls-files', '-z', '--', '*.md', '*.mdx'], {
-    cwd: workspaceRoot,
+    cwd: rootDir,
   })
     .toString('utf8')
     .split('\0')
-    .filter(Boolean)
+    .filter(Boolean);
+}
+
+const discoverySkippedDirectories = new Set([
+  '.claude',
+  '.git',
+  '.hive',
+  '.hive2',
+  '.idea',
+  '.opencode',
+  '.sisyphus',
+  '.tmp',
+  '.vscode',
+  'coverage',
+  'dist',
+  'gistpad',
+  'node_modules',
+  'opencode-antigravity-auth',
+  'out',
+  'tmp',
+]);
+
+function walkedMarkdownPaths(rootDir) {
+  const relativePaths = [];
+  const pending = [''];
+
+  while (pending.length > 0) {
+    const relativeDirectory = pending.pop();
+    const entries = fs.readdirSync(path.join(rootDir, relativeDirectory), { withFileTypes: true });
+
+    for (const entry of entries) {
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!discoverySkippedDirectories.has(entry.name)) pending.push(relativePath);
+      } else if (entry.isFile() && /\.mdx?$/.test(entry.name)) {
+        relativePaths.push(relativePath);
+      }
+    }
+  }
+
+  return relativePaths.sort();
+}
+
+function documentationMarkdownPaths(rootDir) {
+  // Canonical checkouts use Git's tracked set; isolated release staging trees
+  // copy repository artifacts without .git metadata and need the file walk.
+  const discovered = hasGitMetadata(rootDir)
+    ? gitTrackedMarkdownPaths(rootDir)
+    : walkedMarkdownPaths(rootDir);
+
+  return discovered
     .filter((relativePath) => path.basename(relativePath) !== 'CHANGELOG.md')
     .filter((relativePath) => !relativePath.startsWith('docs/releases/'))
-    .filter((relativePath) => fs.existsSync(path.join(workspaceRoot, relativePath)));
+    .filter((relativePath) => fs.existsSync(path.join(rootDir, relativePath)));
 }
 
 const canonicalDocs = [
@@ -54,6 +109,52 @@ const canonicalDocs = [
   'packages/opencode-hive/docs/HIVE-TOOLS.md',
   'packages/vscode-hive/README.md',
 ];
+
+describe('documentation artifact discovery', () => {
+  it('discovers the documentation set from artifacts when Git metadata is absent', () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'release-docs-discovery-'));
+
+    try {
+      fs.mkdirSync(path.join(fixtureRoot, 'docs', 'releases'), { recursive: true });
+      fs.mkdirSync(path.join(fixtureRoot, 'node_modules', 'dependency'), { recursive: true });
+      fs.mkdirSync(path.join(fixtureRoot, 'dist'), { recursive: true });
+      fs.mkdirSync(path.join(fixtureRoot, '.hive', 'features'), { recursive: true });
+      fs.writeFileSync(path.join(fixtureRoot, 'README.md'), '# README\n');
+      fs.writeFileSync(path.join(fixtureRoot, 'guide.mdx'), '# Guide\n');
+      fs.writeFileSync(path.join(fixtureRoot, 'CHANGELOG.md'), '# Changelog\n');
+      fs.writeFileSync(path.join(fixtureRoot, 'docs', 'DESIGN.md'), '# Design\n');
+      fs.writeFileSync(path.join(fixtureRoot, 'docs', 'releases', 'v1.0.0.md'), '# Release\n');
+      fs.writeFileSync(path.join(fixtureRoot, 'node_modules', 'dependency', 'README.md'), '# Dependency\n');
+      fs.writeFileSync(path.join(fixtureRoot, 'dist', 'bundle.md'), '# Bundle\n');
+      fs.writeFileSync(path.join(fixtureRoot, '.hive', 'features', 'plan.md'), '# Plan\n');
+
+      for (const ignoredLocation of ['.tmp', 'gistpad', 'opencode-antigravity-auth']) {
+        fs.mkdirSync(path.join(fixtureRoot, ignoredLocation), { recursive: true });
+        fs.writeFileSync(
+          path.join(fixtureRoot, ignoredLocation, 'obsolete-references.md'),
+          '# Obsolete\n\nSee GETTING-STARTED.md, HOOK_CADENCE.md, and .github/agents/.\n',
+        );
+      }
+
+      assert.equal(hasGitMetadata(fixtureRoot), false);
+      assert.deepEqual(documentationMarkdownPaths(fixtureRoot), [
+        'README.md',
+        'docs/DESIGN.md',
+        'guide.mdx',
+      ]);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('discovers every canonical document from repository artifacts', () => {
+    const discovered = new Set(documentationMarkdownPaths(workspaceRoot));
+
+    for (const relativePath of canonicalDocs) {
+      assert.equal(discovered.has(relativePath), true, relativePath);
+    }
+  });
+});
 
 describe('current documentation contract', () => {
   it('keeps the canonical documents and removes obsolete documents', () => {
@@ -73,7 +174,7 @@ describe('current documentation contract', () => {
   });
 
   it('rejects deleted-doc references in current tracked Markdown', () => {
-    for (const relativePath of currentTrackedMarkdownPaths()) {
+    for (const relativePath of documentationMarkdownPaths(workspaceRoot)) {
       assert.doesNotMatch(readText(relativePath), /GETTING-STARTED\.md|HOOK_CADENCE\.md/, relativePath);
       assert.doesNotMatch(readText(relativePath), /\.github\/agents\/|\.github\/skills\/|copilot-instructions\.md/, relativePath);
     }

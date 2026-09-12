@@ -52,6 +52,14 @@ These checks are not preparation shortcuts:
 - `node .github/scripts/verify-npm-publish-access.mjs opencode-hive` (optional, local-only) reads `packages/opencode-hive/package.json`, so it checks `oc-arkive` even though the package directory is still named `opencode-hive`. It validates your local npm login (or read-write collaborator access once the package exists).
 - `bun run release:check` installs dependencies, verifies the release artifacts and workflow contract, builds `hive-core`, `oc-arkive`, and `vscode-arkive`, and runs their test suites.
 
+The documentation contract verifies the canonical documents, active links, and removed-document references. `release-docs.test.mjs` discovers the repository Markdown set from repository artifacts when `.git` is absent, so it runs unchanged from a source checkout or an isolated release staging tree:
+
+```bash
+node --test release-docs.test.mjs
+```
+
+An isolated staging copy does not need a staging-only Git index.
+
 The npm checks are optional local validation only and are not CI gates: CI authenticates with the GitHub OIDC token exchanged by npm Trusted Publishing and never uses a static npm token.
 
 Fix any `bun run release:check` failure before creating a tag. A failed optional npm check only affects local npm operations; CI publishing authenticates independently through OIDC.

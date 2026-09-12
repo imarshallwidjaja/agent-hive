@@ -93,6 +93,60 @@ function assertPackedFile(fileSet, relativePath, packageName) {
   );
 }
 
+const artifactTreeSkippedDirectories = new Set([
+  '.claude',
+  '.git',
+  '.hive',
+  '.hive2',
+  '.idea',
+  '.opencode',
+  '.sisyphus',
+  '.tmp',
+  '.vscode',
+  'coverage',
+  'dist',
+  'gistpad',
+  'node_modules',
+  'opencode-antigravity-auth',
+  'out',
+  'tmp',
+]);
+
+function copyReleaseArtifactTree(sourceRoot, targetRoot) {
+  fs.cpSync(sourceRoot, targetRoot, {
+    recursive: true,
+    filter: (sourcePath) => !artifactTreeSkippedDirectories.has(path.basename(sourcePath)),
+  });
+}
+
+const localityIgnoredRoots = ['.tmp', 'gistpad', 'opencode-antigravity-auth'];
+
+const obsoleteReferenceMarkdown =
+  '# Obsolete references\n\nGETTING-STARTED.md, HOOK_CADENCE.md, and .github/agents/.\n';
+
+function plantLocalityFixtures(sourceRoot) {
+  const fixtures = [];
+
+  for (const location of localityIgnoredRoots) {
+    const ownedRoot = path.join(sourceRoot, location);
+    fs.mkdirSync(ownedRoot, { recursive: true });
+    const ownedDirectory = fs.mkdtempSync(path.join(ownedRoot, 'oc-arkive-fixture-'));
+    const markdownPath = path.join(ownedDirectory, 'obsolete-references.md');
+    fs.writeFileSync(markdownPath, obsoleteReferenceMarkdown);
+    fixtures.push({ location, markdownPath });
+  }
+
+  return fixtures;
+}
+
+function childTestEnv() {
+  // A nested Node test runner must not inherit the parent runner's child-test
+  // context: NODE_TEST_CONTEXT makes it suppress its own report.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  return env;
+}
+
 function isHiveCoreSpecifier(specifier) {
   return specifier === 'hive-core' || specifier.startsWith('hive-core/');
 }
@@ -346,4 +400,101 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     });
   });
 
+});
+
+describe('release documentation artifact locality', () => {
+  it('runs the documentation contract in an isolated staging tree without Git metadata', () => {
+    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-arkive-docs-staging-'));
+    const fixtureSource = path.join(scratchRoot, 'source');
+    const stagingRoot = path.join(scratchRoot, 'staging');
+
+    try {
+      copyReleaseArtifactTree(workspaceRoot, fixtureSource);
+      const plantedFixtures = plantLocalityFixtures(fixtureSource);
+
+      copyReleaseArtifactTree(fixtureSource, stagingRoot);
+      assert.equal(
+        fs.existsSync(path.join(stagingRoot, '.git')),
+        false,
+        'isolated staging tree should not contain Git metadata'
+      );
+      for (const fixture of plantedFixtures) {
+        assert.equal(
+          fs.readFileSync(fixture.markdownPath, 'utf8'),
+          obsoleteReferenceMarkdown,
+          `source fixture should hold the planted obsolete references: ${fixture.location}`
+        );
+        assert.equal(
+          fs.existsSync(path.join(stagingRoot, fixture.location)),
+          false,
+          `isolated staging tree should exclude ${fixture.location}`
+        );
+      }
+
+      const output = execFileSync(process.execPath, ['--test', 'release-docs.test.mjs'], {
+        cwd: stagingRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: childTestEnv(),
+      });
+
+      assert.match(output, /# tests \d+/);
+      assert.match(output, /# fail 0/);
+      assert.match(output, /ok \d+ - discovers every canonical document from repository artifacts/);
+
+      for (const fixture of plantedFixtures) {
+        assert.equal(
+          fs.readFileSync(fixture.markdownPath, 'utf8'),
+          obsoleteReferenceMarkdown,
+          `staging should neither modify nor delete its source fixture: ${fixture.location}`
+        );
+      }
+    } finally {
+      fs.rmSync(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps pre-existing obsolete-reference Markdown untouched while staging', () => {
+    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-arkive-docs-preserve-'));
+    const fixtureSource = path.join(scratchRoot, 'source');
+    const stagingRoot = path.join(scratchRoot, 'staging');
+    const preexistingMarkdown = '# Operator-authored obsolete references\n\nGETTING-STARTED.md\n';
+    const preexistingPaths = [];
+
+    try {
+      fs.mkdirSync(fixtureSource);
+      for (const location of localityIgnoredRoots) {
+        const directory = path.join(fixtureSource, location);
+        fs.mkdirSync(directory, { recursive: true });
+        const markdownPath = path.join(directory, 'obsolete-references.md');
+        fs.writeFileSync(markdownPath, preexistingMarkdown);
+        preexistingPaths.push(markdownPath);
+      }
+
+      const plantedFixtures = plantLocalityFixtures(fixtureSource);
+      copyReleaseArtifactTree(fixtureSource, stagingRoot);
+
+      for (const [index, location] of localityIgnoredRoots.entries()) {
+        assert.equal(
+          fs.readFileSync(preexistingPaths[index], 'utf8'),
+          preexistingMarkdown,
+          `pre-existing ${location}/obsolete-references.md should survive staging byte-for-byte`
+        );
+        assert.equal(
+          fs.existsSync(path.join(stagingRoot, location)),
+          false,
+          `isolated staging tree should exclude ${location}`
+        );
+      }
+      for (const fixture of plantedFixtures) {
+        assert.equal(
+          fs.readFileSync(fixture.markdownPath, 'utf8'),
+          obsoleteReferenceMarkdown,
+          `owned fixture should survive staging: ${fixture.location}`
+        );
+      }
+    } finally {
+      fs.rmSync(scratchRoot, { recursive: true, force: true });
+    }
+  });
 });
