@@ -6638,6 +6638,13 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               error: error instanceof Error ? error.message : String(error),
             };
           }
+          const contextReadHints: Record<string, string> = {
+            context_inventory_too_large: 'The managed context summary is too large to return inline. Use hive_context_read with the catalog view; it paginates and keeps full metadata.',
+            context_reconciliation_required: 'Managed context control state needs repair by an authenticated primary management session before context reads succeed.',
+            context_index_invalid: 'Managed context control state needs repair by an authenticated primary management session before context reads succeed.',
+            context_symlink_refused: 'A managed context path is a symlink and must be removed before context reads succeed.',
+            context_changed_during_read: 'The context changed during the read. Retry hive_status.',
+          };
           const overview = managedContext?.files.find((file) => file.name === 'overview');
           const readThreads = (filePath: string): Array<unknown> | null => {
             if (!fs.existsSync(filePath)) {
@@ -6755,7 +6762,6 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             tasks: Array<{ status: string; folder: string; traceTaskId?: string }>,
             runnableTasks: string[],
             hasPlan: boolean,
-            hasOverview: boolean,
           ): string => {
             if (planStatus === 'review') {
               return 'Wait for plan approval or revise based on comments';
@@ -6812,7 +6818,9 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               approved: planStatus === 'approved' || planStatus === 'locked',
             },
             overview: {
-              exists: !!overview,
+              exists: managedContext
+                ? !!overview
+                : fs.existsSync(path.join(statusRoot, '.hive', 'features', statusFeatureDir, 'context', 'overview.md')),
               path: `.hive/features/${feature}/context/overview.md`,
               updatedAt: overview?.updatedAt ?? null,
             },
@@ -6858,6 +6866,8 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               files: contextSummary,
               revision: managedContext.revision,
               durable: managedContext.durable,
+              metadataClipped: managedContext.metadataClipped ?? false,
+              diagnostics: managedContext.diagnostics,
             } : {
               fileCount: null,
               files: [],
@@ -6866,10 +6876,10 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               available: false,
               reason: contextReadFailure!.reason,
               error: contextReadFailure!.error,
-              hint: 'The managed context summary could not be read. Feature, plan, and task state above remains valid; use hive_context_read with the catalog view to inspect context metadata.',
+              hint: contextReadHints[contextReadFailure!.reason] ?? 'The managed context summary could not be read. Inspect the error and retry; use the catalog view only if failures persist.',
             },
             warning: configFallbackWarning ?? undefined,
-            nextAction: getNextAction(planStatus, tasksSummary, runnable, !!plan, !!overview),
+            nextAction: getNextAction(planStatus, tasksSummary, runnable, !!plan),
           });
         },
       }),

@@ -106,6 +106,7 @@ export interface ContextReadSummary {
   files: Array<Omit<ContextFile, 'content' | 'contentHash'>>;
   durable: ContextDurableMetrics;
   diagnostics: string[];
+  metadataClipped?: true;
 }
 
 export interface ContextContentRead {
@@ -904,6 +905,7 @@ export class ContextService {
     if (Buffer.byteLength(JSON.stringify(summary), 'utf8') <= CONTEXT_CATALOG_MAX_BYTES) return summary;
     const clipped: ContextReadSummary = {
       ...summary,
+      metadataClipped: true,
       files: summary.files.map(file => this.identityOnlyFile(file)),
       diagnostics: [...summary.diagnostics, 'Summary exceeded the response construction limit; per-file descriptive metadata (description, read_when, owner, review_after, task, warnings, created_at) was omitted. Use a catalog read for full metadata.'],
     };

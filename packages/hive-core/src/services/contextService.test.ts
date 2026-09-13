@@ -88,7 +88,26 @@ describe('ContextService reserved overview context', () => {
     expect(summary.files[0]!.description).toBeUndefined();
     expect(summary.files[0]!.readWhen).toBeUndefined();
     expect(summary.diagnostics.join('\n')).toContain('descriptive metadata');
+    expect(summary.metadataClipped).toBe(true);
     expect(service.readCatalog('summary-clipping').files[0]!.description).toContain('DDDD');
+
+    setupFeature('summary-unclipped');
+    service.create('summary-unclipped', 'note', durable('body'));
+    const smallSummary = service.readSummary('summary-unclipped');
+    expect('metadataClipped' in smallSummary).toBe(false);
+  });
+
+  it('fails explicitly when the identity-only clip still exceeds the response bound', () => {
+    setupFeature('summary-clipped-oversized');
+    for (let index = 0; index < 130; index++) {
+      service.create('summary-clipped-oversized', `note-${String(index).padStart(3, '0')}`, durable('body'));
+    }
+    try {
+      service.readSummary('summary-clipped-oversized');
+      throw new Error('expected the clipped summary to fail the response bound');
+    } catch (error) {
+      expect((error as { reason?: string }).reason).toBe('context_inventory_too_large');
+    }
   });
 
   it('defaults catalog pages to ten and caps requested pages at fifty', () => {

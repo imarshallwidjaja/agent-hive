@@ -208,7 +208,7 @@ Feature statuses (FeatureStatusType):
 - `overview.exists`, `overview.path`, `overview.updatedAt`
 - `review.unresolvedTotal`, `review.byDocument.overview`, `review.byDocument.plan`
 - `tasks.total`, `tasks.pending`, `tasks.inProgress`, `tasks.done`, `tasks.list`, `tasks.runnable`, `tasks.blockedBy`
-- `context.fileCount`, `context.files[]` — when the context summary read fails, `context` becomes `{ available: false, reason, error, hint }` with null context metrics while all other objects remain valid
+- `context.fileCount`, `context.files[]`, `context.metadataClipped`, `context.diagnostics` — `metadataClipped` is `true` when the summary exceeded the response bound and per-file descriptive metadata was omitted. When the context summary read fails, `context` becomes `{ available: false, reason, error, hint }` with null context metrics while all other objects remain valid, `overview.exists` is derived from disk, and `hint` is reason-aware (control-state failures point to primary-management repair rather than the catalog)
 - `nextAction`
 
 ### Task List Fields

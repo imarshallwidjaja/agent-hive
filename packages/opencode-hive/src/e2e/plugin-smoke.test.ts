@@ -3414,6 +3414,15 @@ Do it
       toolContext
     );
 
+    await hooks.tool!.hive_context_write.execute(
+      {
+        feature: "status-context-degraded-feature",
+        name: "overview",
+        content: "# Overview\nHuman-facing summary",
+      },
+      toolContext
+    );
+
     const summarySpy = spyOn(ContextService.prototype, 'readSummary').mockImplementation(() => {
       throw new ContextMutationError('context_inventory_too_large', 'Context response construction exceeds 16384 bytes.');
     });
@@ -3425,13 +3434,14 @@ Do it
       );
       const result = JSON.parse(raw as string) as {
         feature?: { name: string };
-        overview?: { exists: boolean };
+        overview?: { exists: boolean; updatedAt: string | null };
         tasks?: { total: number };
         context?: { available?: boolean; fileCount: number | null; reason?: string; error?: string };
       };
 
       expect(result.feature?.name).toBe("status-context-degraded-feature");
-      expect(result.overview?.exists).toBe(false);
+      expect(result.overview?.exists).toBe(true);
+      expect(result.overview?.updatedAt).toBeNull();
       expect(result.tasks?.total).toBe(0);
       expect(result.context?.available).toBe(false);
       expect(result.context?.fileCount).toBeNull();
@@ -3440,6 +3450,109 @@ Do it
     } finally {
       summarySpy.mockRestore();
     }
+  });
+
+  it("reports a generic reason when the managed context summary read fails unexpectedly", async () => {
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: ROOT_SESSION_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_status_context_generic_failure");
+    await hooks['chat.message']?.({ sessionID: toolContext.sessionID, agent: toolContext.agent }, {
+      message: { agent: toolContext.agent }, parts: [],
+    } as any);
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "status-context-generic-failure" },
+      toolContext
+    );
+
+    const summarySpy = spyOn(ContextService.prototype, 'readSummary').mockImplementation(() => {
+      throw new Error('boom');
+    });
+
+    try {
+      const raw = await hooks.tool!.hive_status.execute(
+        { feature: "status-context-generic-failure" },
+        toolContext
+      );
+      const result = JSON.parse(raw as string) as {
+        context?: { available?: boolean; fileCount: number | null; reason?: string; error?: string };
+      };
+
+      expect(result.context?.available).toBe(false);
+      expect(result.context?.fileCount).toBeNull();
+      expect(result.context?.reason).toBe("context_summary_read_failed");
+      expect(result.context?.error).toContain("boom");
+    } finally {
+      summarySpy.mockRestore();
+    }
+  });
+
+  it("flags clipped context metadata in hive_status", async () => {
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: ROOT_SESSION_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_status_context_clipped");
+    await hooks['chat.message']?.({ sessionID: toolContext.sessionID, agent: toolContext.agent }, {
+      message: { agent: toolContext.agent }, parts: [],
+    } as any);
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "status-context-clipped-feature" },
+      toolContext
+    );
+
+    for (let index = 0; index < 12; index++) {
+      const name = `notes-${String(index).padStart(2, "0")}`;
+      await hooks.tool!.hive_context_write.execute(
+        {
+          feature: "status-context-clipped-feature",
+          name,
+          content: `---\ndescription: ${"D".repeat(1600)}\nread_when: Read when exercising summary clipping.\n---\n\nbody`,
+        },
+        toolContext
+      );
+    }
+
+    const raw = await hooks.tool!.hive_status.execute(
+      { feature: "status-context-clipped-feature" },
+      toolContext
+    );
+    const result = JSON.parse(raw as string) as {
+      feature?: { name: string };
+      context?: {
+        fileCount: number | null;
+        metadataClipped?: boolean;
+        diagnostics?: string[];
+        files: Array<{ name: string; bytes?: number }>;
+      };
+    };
+
+    expect(result.feature?.name).toBe("status-context-clipped-feature");
+    expect(result.context?.metadataClipped).toBe(true);
+    expect(result.context?.diagnostics?.join("\n")).toContain("descriptive metadata");
+    expect(result.context?.fileCount).toBe(12);
+    expect(result.context?.files).toHaveLength(12);
+    expect(result.context?.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "notes-00", bytes: expect.any(Number) }),
+        expect.objectContaining({ name: "notes-11", bytes: expect.any(Number) }),
+      ])
+    );
   });
 
   it("omits the removed projected-todo field and stale todo-sync hints from the trimmed runtime contract", async () => {
