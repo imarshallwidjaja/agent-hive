@@ -2775,7 +2775,7 @@ Do it
     expect(workerPromptContent).not.toContain("Operational decision that must stay out of worker execution context.");
   });
 
-  it('keeps task-tagged context bodies out of immutable assignments', async () => {
+  it('keeps context bodies out of immutable assignments while retaining completed-task history', async () => {
     const feature = 'context-priority-feature';
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_priority');
     await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
@@ -2784,7 +2784,7 @@ Do it
 ## Discovery
 
 **Q: Is this a test?**
-A: Yes, this regression test validates freshness rendering and task-aware durable context ordering.
+A: Yes, this regression validates that durable context bodies stay out of fixed assignments across task attempts.
 
 ## Tasks
 
@@ -2813,186 +2813,42 @@ Use it.
       toolContext,
     );
 
-    const contextPath = path.join(
-      testRoot,
-      '.hive',
-      'features',
-      '01_context-priority-feature',
-      'context',
-    );
-    const contextIndexPath = path.join(contextPath, 'index.json');
-    const contextIndex = JSON.parse(fs.readFileSync(contextIndexPath, 'utf-8'));
-    contextIndex.entries['current-context'].updatedAt = '2026-09-01T00:00:00.000Z';
-    contextIndex.entries['dependency-context'].updatedAt = '2026-09-02T00:00:00.000Z';
-    contextIndex.entries['untagged-context'].updatedAt = '2026-09-03T00:00:00.000Z';
-    fs.writeFileSync(contextIndexPath, JSON.stringify(contextIndex, null, 2));
-
     await hooks.tool!.hive_task_update.execute(
       { feature, task: '01-foundation', status: 'done', summary: 'Foundation complete.' },
       toolContext,
     );
-    const foundationStatusPath = path.join(
-      testRoot,
-      '.hive',
-      'features',
-      '01_context-priority-feature',
-      'tasks',
-      '01-foundation',
-      'status.json',
-    );
-    const foundationStatus = JSON.parse(fs.readFileSync(foundationStatusPath, 'utf-8'));
-    foundationStatus.completedAt = '2026-09-02T12:00:00.000Z';
-    fs.writeFileSync(foundationStatusPath, JSON.stringify(foundationStatus, null, 2));
-
-    await hooks.tool!.hive_worktree_start.execute(
-      { feature, task: '02-current' },
-      toolContext,
-    );
-    const specPath = path.join(
-      testRoot,
-      '.hive',
-      'features',
-      '01_context-priority-feature',
-      'tasks',
-      '02-current',
-      'spec.md',
-    );
-    const spec = fs.readFileSync(specPath, 'utf-8');
-
-    expect(spec).not.toContain('current task context');
-    expect(spec).not.toContain('dependency context');
-    expect(spec).not.toContain('untagged context');
-  });
-
-  it('does not revise assignments from context written between task attempts', async () => {
-    const feature = 'context-retry-freshness';
-    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_retry_freshness');
-    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
-    const plan = `# Context Retry Freshness
-
-## Discovery
-
-**Q: Is this a test?**
-A: Yes, this regression validates freshness after a completed task is reopened and completed again.
-
-## Tasks
-
-### 1. Retried Task
-**Depends on**: none
-Complete, reopen, and complete again.
-
-### 2. Downstream
-**Depends on**: 1
-Use context written between completions.
-`;
-    await hooks.tool!.hive_plan_write.execute({ content: plan, feature }, toolContext);
-    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
-    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
-
     await hooks.tool!.hive_task_update.execute(
-      { feature, task: '01-retried-task', status: 'done', summary: 'First completion.' },
-      toolContext,
-    );
-    const featurePath = path.join(testRoot, '.hive', 'features', '01_context-retry-freshness');
-    const retriedStatusPath = path.join(featurePath, 'tasks', '01-retried-task', 'status.json');
-    const firstStatus = JSON.parse(fs.readFileSync(retriedStatusPath, 'utf-8'));
-    firstStatus.completedAt = '2000-01-01T00:00:00.000Z';
-    fs.writeFileSync(retriedStatusPath, JSON.stringify(firstStatus, null, 2));
-
-    await hooks.tool!.hive_task_update.execute(
-      { feature, task: '01-retried-task', status: 'failed', summary: 'Retry required.' },
+      { feature, task: '01-foundation', status: 'failed', summary: 'Retry required.' },
       toolContext,
     );
     await hooks.tool!.hive_context_write.execute(
       { feature, name: 'between-attempts', content: durableContext('Context written after the first completion.') },
       toolContext,
     );
-    const contextIndexPath = path.join(featurePath, 'context', 'index.json');
-    const contextIndex = JSON.parse(fs.readFileSync(contextIndexPath, 'utf-8'));
-    contextIndex.entries['between-attempts'].updatedAt = '2001-01-01T00:00:00.000Z';
-    fs.writeFileSync(contextIndexPath, JSON.stringify(contextIndex, null, 2));
-
     await hooks.tool!.hive_task_update.execute(
-      { feature, task: '01-retried-task', status: 'done', summary: 'Final completion.' },
+      { feature, task: '01-foundation', status: 'done', summary: 'Final completion.' },
       toolContext,
     );
-    const finalStatus = JSON.parse(fs.readFileSync(retriedStatusPath, 'utf-8')) as {
-      completedAt: string;
-    };
-    expect(Date.parse(finalStatus.completedAt)).toBeGreaterThan(Date.parse('2001-01-01T00:00:00.000Z'));
 
-    await hooks.tool!.hive_worktree_start.execute({ feature, task: '02-downstream' }, toolContext);
-    const spec = fs.readFileSync(path.join(featurePath, 'tasks', '02-downstream', 'spec.md'), 'utf-8');
+    await hooks.tool!.hive_worktree_start.execute({ feature, task: '02-current' }, toolContext);
+    const spec = fs.readFileSync(
+      path.join(
+        testRoot,
+        '.hive',
+        'features',
+        '01_context-priority-feature',
+        'tasks',
+        '02-current',
+        'spec.md',
+      ),
+      'utf-8',
+    );
+
+    expect(spec).not.toContain('current task context');
+    expect(spec).not.toContain('dependency context');
+    expect(spec).not.toContain('untagged context');
     expect(spec).not.toContain('Context written after the first completion.');
     expect(spec).toContain('Final completion.');
-  });
-
-  it('does not parse context timestamps while rendering fixed assignments', async () => {
-    const feature = 'context-invalid-timestamps';
-    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_context_invalid_timestamps');
-    await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
-    const plan = `# Context Invalid Timestamps
-
-## Discovery
-
-**Q: Is this a test?**
-A: This regression validates mixed valid and invalid timestamps in worker context rendering.
-
-## Tasks
-
-### 1. Valid Completion
-**Depends on**: none
-Complete first.
-
-### 2. Invalid Completion
-**Depends on**: none
-Complete second.
-
-### 3. Current
-**Depends on**: 1, 2
-Use context.
-`;
-    await hooks.tool!.hive_plan_write.execute({ content: plan, feature }, toolContext);
-    await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
-    await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
-
-    for (const [name, content] of [
-      ['invalid-context', 'invalid timestamp context'],
-      ['valid-newer-context', 'valid newer context'],
-      ['valid-older-context', 'valid older context'],
-    ] as const) {
-    await hooks.tool!.hive_context_write.execute({ feature, name, content: durableContext(content) }, toolContext);
-    }
-
-    const featurePath = path.join(testRoot, '.hive', 'features', '01_context-invalid-timestamps');
-    const contextIndexPath = path.join(featurePath, 'context', 'index.json');
-    const contextIndex = JSON.parse(fs.readFileSync(contextIndexPath, 'utf-8'));
-    contextIndex.entries['invalid-context'].updatedAt = 'not-a-timestamp';
-    contextIndex.entries['valid-newer-context'].updatedAt = '2026-09-03T00:00:00.000Z';
-    contextIndex.entries['valid-older-context'].updatedAt = '2026-09-01T00:00:00.000Z';
-    fs.writeFileSync(contextIndexPath, JSON.stringify(contextIndex, null, 2));
-
-    for (const task of ['01-valid-completion', '02-invalid-completion']) {
-      await hooks.tool!.hive_task_update.execute(
-        { feature, task, status: 'done', summary: `${task} complete.` },
-        toolContext,
-      );
-    }
-    const validStatusPath = path.join(featurePath, 'tasks', '01-valid-completion', 'status.json');
-    const validStatus = JSON.parse(fs.readFileSync(validStatusPath, 'utf-8'));
-    validStatus.completedAt = '2026-09-02T00:00:00.000Z';
-    fs.writeFileSync(validStatusPath, JSON.stringify(validStatus, null, 2));
-    const invalidStatusPath = path.join(featurePath, 'tasks', '02-invalid-completion', 'status.json');
-    const invalidStatus = JSON.parse(fs.readFileSync(invalidStatusPath, 'utf-8'));
-    invalidStatus.completedAt = 'invalid-completion-time';
-    fs.writeFileSync(invalidStatusPath, JSON.stringify(invalidStatus, null, 2));
-
-    await hooks.tool!.hive_worktree_start.execute({ feature, task: '03-current' }, toolContext);
-    const spec = fs.readFileSync(path.join(featurePath, 'tasks', '03-current', 'spec.md'), 'utf-8');
-
-    expect(spec).not.toContain('invalid timestamp context');
-    expect(spec).not.toContain('valid newer context');
-    expect(spec).not.toContain('valid older context');
   });
 
   it("returns forager-derived eligible agents for worktree execution delegation", async () => {

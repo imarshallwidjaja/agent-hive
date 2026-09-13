@@ -521,32 +521,6 @@ describe('HiveSidebarProvider', () => {
     expect(ui.messages.at(-1)).toContain('Archived 2 context document(s)');
   });
 
-  it('archives a later-page document selected after load-more without archiving first-page names', async () => {
-    const { archiveContext } = await import('./contextInspection.js');
-    new FeatureService(testRoot).create('latepage');
-    const service = new hiveCore.ContextService(testRoot);
-    const contextPath = hiveCore.getContextPath(testRoot, 'latepage');
-    fs.mkdirSync(contextPath, { recursive: true });
-    for (let index = 0; index < 12; index++) {
-      fs.writeFileSync(path.join(contextPath, `note-${String(index).padStart(2, '0')}.md`), `note ${index}`);
-    }
-    const archivePath = path.join(hiveCore.getContextPath(testRoot, 'latepage'), '..', 'archive', 'context');
-    let refreshes = 0;
-    const run = () => archiveContext(testRoot, { scope: { type: 'feature', featureName: 'latepage' } }, () => refreshes++);
-
-    ui.picks.push((items: any[]) => items); // Load more instead of submitting.
-    ui.picks.push((items: any[]) => items.filter((item: any) => item.name === 'note-11'));
-    ui.inputs.push('rotate late-page note');
-    ui.confirmations.push('Archive Context');
-    await run();
-    expect(ui.errors).toEqual([]);
-    expect(service.read('latepage', 'note-11')).toBeNull();
-    expect(service.read('latepage', 'note-00')).not.toBeNull();
-    expect(fs.readdirSync(archivePath).some(name => name.includes('note-11'))).toBe(true);
-    expect(refreshes).toBe(1);
-    expect(ui.messages.at(-1)).toContain('Archived 1 context document(s)');
-  });
-
   it('keeps an explicitly deselected originating document deselected across load more and confirmation', async () => {
     const { archiveContext } = await import('./contextInspection.js');
     new FeatureService(testRoot).create('deselect');

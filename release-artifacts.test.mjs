@@ -124,6 +124,9 @@ const localityIgnoredRoots = ['.tmp', 'gistpad', 'opencode-antigravity-auth'];
 const obsoleteReferenceMarkdown =
   '# Obsolete references\n\nGETTING-STARTED.md, HOOK_CADENCE.md, and .github/agents/.\n';
 
+const preexistingReferenceMarkdown =
+  '# Operator-authored obsolete references\n\nGETTING-STARTED.md\n';
+
 function plantLocalityFixtures(sourceRoot) {
   const fixtures = [];
 
@@ -410,6 +413,13 @@ describe('release documentation artifact locality', () => {
 
     try {
       copyReleaseArtifactTree(workspaceRoot, fixtureSource);
+      const preexistingPaths = localityIgnoredRoots.map((location) => {
+        const directory = path.join(fixtureSource, location);
+        fs.mkdirSync(directory, { recursive: true });
+        const markdownPath = path.join(directory, 'obsolete-references.md');
+        fs.writeFileSync(markdownPath, preexistingReferenceMarkdown);
+        return markdownPath;
+      });
       const plantedFixtures = plantLocalityFixtures(fixtureSource);
 
       copyReleaseArtifactTree(fixtureSource, stagingRoot);
@@ -418,16 +428,23 @@ describe('release documentation artifact locality', () => {
         false,
         'isolated staging tree should not contain Git metadata'
       );
+      for (const [index, location] of localityIgnoredRoots.entries()) {
+        assert.equal(
+          fs.readFileSync(preexistingPaths[index], 'utf8'),
+          preexistingReferenceMarkdown,
+          `pre-existing ${location}/obsolete-references.md should survive staging byte-for-byte`
+        );
+        assert.equal(
+          fs.existsSync(path.join(stagingRoot, location)),
+          false,
+          `isolated staging tree should exclude ${location}`
+        );
+      }
       for (const fixture of plantedFixtures) {
         assert.equal(
           fs.readFileSync(fixture.markdownPath, 'utf8'),
           obsoleteReferenceMarkdown,
           `source fixture should hold the planted obsolete references: ${fixture.location}`
-        );
-        assert.equal(
-          fs.existsSync(path.join(stagingRoot, fixture.location)),
-          false,
-          `isolated staging tree should exclude ${fixture.location}`
         );
       }
 
@@ -442,55 +459,18 @@ describe('release documentation artifact locality', () => {
       assert.match(output, /# fail 0/);
       assert.match(output, /ok \d+ - discovers every canonical document from repository artifacts/);
 
+      for (const [index, location] of localityIgnoredRoots.entries()) {
+        assert.equal(
+          fs.readFileSync(preexistingPaths[index], 'utf8'),
+          preexistingReferenceMarkdown,
+          `staging should neither modify nor delete pre-existing ${location}/obsolete-references.md`
+        );
+      }
       for (const fixture of plantedFixtures) {
         assert.equal(
           fs.readFileSync(fixture.markdownPath, 'utf8'),
           obsoleteReferenceMarkdown,
           `staging should neither modify nor delete its source fixture: ${fixture.location}`
-        );
-      }
-    } finally {
-      fs.rmSync(scratchRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps pre-existing obsolete-reference Markdown untouched while staging', () => {
-    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-arkive-docs-preserve-'));
-    const fixtureSource = path.join(scratchRoot, 'source');
-    const stagingRoot = path.join(scratchRoot, 'staging');
-    const preexistingMarkdown = '# Operator-authored obsolete references\n\nGETTING-STARTED.md\n';
-    const preexistingPaths = [];
-
-    try {
-      fs.mkdirSync(fixtureSource);
-      for (const location of localityIgnoredRoots) {
-        const directory = path.join(fixtureSource, location);
-        fs.mkdirSync(directory, { recursive: true });
-        const markdownPath = path.join(directory, 'obsolete-references.md');
-        fs.writeFileSync(markdownPath, preexistingMarkdown);
-        preexistingPaths.push(markdownPath);
-      }
-
-      const plantedFixtures = plantLocalityFixtures(fixtureSource);
-      copyReleaseArtifactTree(fixtureSource, stagingRoot);
-
-      for (const [index, location] of localityIgnoredRoots.entries()) {
-        assert.equal(
-          fs.readFileSync(preexistingPaths[index], 'utf8'),
-          preexistingMarkdown,
-          `pre-existing ${location}/obsolete-references.md should survive staging byte-for-byte`
-        );
-        assert.equal(
-          fs.existsSync(path.join(stagingRoot, location)),
-          false,
-          `isolated staging tree should exclude ${location}`
-        );
-      }
-      for (const fixture of plantedFixtures) {
-        assert.equal(
-          fs.readFileSync(fixture.markdownPath, 'utf8'),
-          obsoleteReferenceMarkdown,
-          `owned fixture should survive staging: ${fixture.location}`
         );
       }
     } finally {

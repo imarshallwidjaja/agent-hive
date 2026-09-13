@@ -97,29 +97,45 @@ function buildCompactionTransformOutput(sessionID: string, cwd: string) {
   };
 }
 
-function bindImmutableAssignment(root: string, sessionService: SessionService, sessionID: string, content: string) {
+function bindImmutableAssignment(
+  root: string,
+  sessionService: SessionService,
+  sessionID: string,
+  content: string,
+  priorAttempts: string[] = [],
+) {
   const featureName = 'my-feature';
   const taskFolder = '01-task';
   const taskDir = path.join(root, '.hive', 'features', featureName, 'tasks', taskFolder);
-  const locator = `.hive/features/${featureName}/tasks/${taskFolder}/assignments/attempt-1.md`;
-  fs.mkdirSync(path.join(taskDir, 'assignments'), { recursive: true });
-  fs.writeFileSync(path.join(root, locator), content);
-  const assignment = {
-    format: 'hive-worker-assignment/v1' as const,
-    projectRoot: root,
-    featureName,
-    taskFolder,
-    attempt: 1,
-    locator,
-    contentHash: createHash('sha256').update(content).digest('hex'),
-  };
+  const assignments = [...priorAttempts, content].map((attemptContent, index) => {
+    const attempt = index + 1;
+    const locator = `.hive/features/${featureName}/tasks/${taskFolder}/assignments/attempt-${attempt}.md`;
+    fs.mkdirSync(path.join(taskDir, 'assignments'), { recursive: true });
+    fs.writeFileSync(path.join(root, locator), attemptContent);
+    return {
+      format: 'hive-worker-assignment/v1' as const,
+      projectRoot: root,
+      featureName,
+      taskFolder,
+      attempt,
+      locator,
+      contentHash: createHash('sha256').update(attemptContent).digest('hex'),
+    };
+  });
+  const assignment = assignments.at(-1)!;
   fs.writeFileSync(path.join(taskDir, 'status.json'), JSON.stringify({
     status: 'in_progress',
     origin: 'plan',
-    workerAttempt: 1,
+    workerAttempt: assignment.attempt,
     workerAssignment: assignment,
-    workerAttempts: [{ attempt: 1, idempotencyKey: 'attempt-1', state: 'associated', assignment, workerSessionId: sessionID }],
-    workerSession: { sessionId: sessionID, attempt: 1 },
+    workerAttempts: assignments.map(entry => ({
+      attempt: entry.attempt,
+      idempotencyKey: `attempt-${entry.attempt}`,
+      state: entry === assignment ? 'associated' : 'published',
+      assignment: entry,
+      ...(entry === assignment ? { workerSessionId: sessionID } : {}),
+    })),
+    workerSession: { sessionId: sessionID, attempt: assignment.attempt },
   }));
   sessionService.trackGlobal(sessionID, { parentSessionId: 'parent', agent: 'forager-worker', sessionKind: 'task-worker' });
   sessionService.bindWorkerAssignment(sessionID, 'parent', assignment);
@@ -360,6 +376,46 @@ describe('compaction replay on supported hooks', () => {
       .find(text => text?.includes('assignment_recovery_error'))!;
     expect(replayText).toContain('assignment_recovery_error');
     expect(replayText).toContain('hash does not match');
+  });
+
+  test('replays the exact current immutable attempt and rejects a mismatched artifact hash', async () => {
+    const sessionService = new SessionService(testRoot);
+    await hooks['chat.message']({ sessionID: 'sess-tw-attempt-2', agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    });
+    const assignment = bindImmutableAssignment(
+      testRoot,
+      sessionService,
+      'sess-tw-attempt-2',
+      '# Attempt two assignment\n\nSECOND_ATTEMPT_EXACT_BYTES\n',
+      ['# Attempt one assignment\n\nFIRST_ATTEMPT_ONLY\n'],
+    );
+
+    await hooks.event?.({
+      event: { type: 'session.compacted', properties: { sessionID: 'sess-tw-attempt-2' } } as any,
+    });
+    const output = buildCompactionTransformOutput('sess-tw-attempt-2', testRoot);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+
+    const replayText = output.messages.flatMap(message => message.parts)
+      .map(part => (part as any).text as string)
+      .find(text => text?.includes('Post-compaction recovery'))!;
+    expect(replayText).toContain(`attempt ${assignment.attempt}`);
+    expect(replayText).toContain('SECOND_ATTEMPT_EXACT_BYTES');
+    expect(replayText).not.toContain('FIRST_ATTEMPT_ONLY');
+
+    fs.writeFileSync(path.join(testRoot, assignment.locator), '# Tampered attempt two assignment\n');
+    await hooks.event?.({
+      event: { type: 'session.compacted', properties: { sessionID: 'sess-tw-attempt-2' } } as any,
+    });
+    const rejected = buildCompactionTransformOutput('sess-tw-attempt-2', testRoot);
+    await hooks['experimental.chat.messages.transform']?.({}, rejected as any);
+
+    const rejectedText = rejected.messages.flatMap(message => message.parts)
+      .map(part => (part as any).text as string)
+      .find(text => text?.includes('assignment_recovery_error'))!;
+    expect(rejectedText).toContain('assignment_recovery_error');
+    expect(rejectedText).not.toContain('SECOND_ATTEMPT_EXACT_BYTES');
   });
 
   test('legacy mixed prompts fail reanchor without reading or replaying their bodies', async () => {

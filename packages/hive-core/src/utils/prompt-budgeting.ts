@@ -1,15 +1,13 @@
 /**
  * Deterministic prompt budgeting utilities for Hive.
  *
- * Limits history/context included in prompts to bound growth:
- * - Include only last N completed tasks
+ * Limits the completed-task history included in prompts to bound growth:
+ * - Include only the last N completed tasks
  * - Truncate each task summary to max M chars (with clear truncation marker)
- * - Apply max budget for inlined context (or switch to file references / name-only listing past a cap)
- * - Emit warnings when any budget causes truncation so it's never silent
+ * - Emit truncation events when a budget drops or truncates a task
  *
+ * Dropped tasks stay discoverable through the bounded report-path hint.
  * Shared by OpenCode task execution.
- *
- * IMPORTANT: Never removes access to full info - always provides file paths the worker can read.
  */
 import type { TaskAggregateBranchDiff } from '../types.js';
 

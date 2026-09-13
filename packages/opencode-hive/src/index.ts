@@ -617,7 +617,6 @@ const plugin: Plugin = async (ctx) => {
   const featureService = new FeatureService(directory);
   const planService = new PlanService(directory);
   const taskService = new TaskService(directory);
-  const contextService = new ContextService(directory);
   const configService = new ConfigService(directory);
   const sessionService = new SessionService(directory);
   const reviewWorkspaceService = new ReviewWorkspaceService({

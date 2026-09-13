@@ -34,8 +34,6 @@ export const FEATURE_DURABLE_FILE_WARNING_CAP = 8;
 export const FEATURE_DURABLE_CHAR_WARNING_CAP = 40_000;
 export const PROJECT_DURABLE_FILE_WARNING_CAP = 32;
 export const PROJECT_DURABLE_CHAR_WARNING_CAP = 160_000;
-export const RECOMMENDED_DURABLE_FILE_CAP = FEATURE_DURABLE_FILE_WARNING_CAP;
-export const RECOMMENDED_DURABLE_CHAR_CAP = FEATURE_DURABLE_CHAR_WARNING_CAP;
 export const CONTEXT_DOCUMENT_MAX_BYTES = 1024 * 1024;
 export const CONTEXT_CATALOG_MAX_BYTES = 16 * 1024;
 export const CONTEXT_CHUNK_DEFAULT_BYTES = 16 * 1024;
@@ -414,34 +412,17 @@ export class ContextService {
       !foldedQuery || asciiFold([file.name, file.description, file.readWhen, file.owner].filter(Boolean).join('\n')).includes(foldedQuery)
     ));
     const limit = Math.max(1, Math.min(options.limit ?? 10, 50));
-    const files: ContextCatalogRead['files'] = [];
-    let nextPosition = position;
-    while (nextPosition < candidates.length && files.length < limit) {
-      const candidate = this.publicInventoryFile(candidates[nextPosition]!);
-      const prospectivePosition = nextPosition + 1;
-      const prospectiveComplete = prospectivePosition >= candidates.length;
-      const trial = this.catalogEnvelope(resolved, observation, [...files, candidate], prospectiveComplete,
-        prospectiveComplete ? undefined : this.encodeCursor({
-          version: 1, scope: resolved.identity, query,
-          snapshot: observation.inventory.snapshot, position: prospectivePosition,
-        }));
-      if (Buffer.byteLength(JSON.stringify(trial), 'utf8') > CONTEXT_CATALOG_MAX_BYTES) {
-        if (files.length === 0) {
-          throw new ContextMutationError('context_inventory_too_large', 'One context catalog entry exceeds the response construction limit.', { name: candidate.name });
-        }
-        break;
-      }
-      files.push(candidate);
-      nextPosition += 1;
-    }
-    const complete = nextPosition >= candidates.length;
-    const result = this.catalogEnvelope(resolved, observation, files, complete, complete ? undefined : this.encodeCursor({
-      version: 1,
-      scope: resolved.identity,
-      query,
-      snapshot: observation.inventory.snapshot,
-      position: nextPosition,
-    }));
+    const result = this.admitCatalogPage(
+      candidates,
+      position,
+      limit,
+      (files, complete, nextCursor) => this.catalogEnvelope(resolved, observation, files, complete, nextCursor),
+      (nextPosition) => this.encodeCursor({
+        version: 1, scope: resolved.identity, query,
+        snapshot: observation.inventory.snapshot, position: nextPosition,
+      }),
+      'One context catalog entry exceeds the response construction limit.',
+    );
     this.assertResponseSize(result, CONTEXT_CATALOG_MAX_BYTES);
     const after = this.observe(resolved);
     if (after.inventory.snapshot !== observation.inventory.snapshot) {
@@ -468,34 +449,17 @@ export class ContextService {
     const chars = options.scanChars ? this.scanDurableChars(resolved, observation.inventory.files) : null;
     const durable = this.durableMetrics(resolved, observation.inventory, chars);
     const limit = Math.max(1, Math.min(options.limit ?? 10, 50));
-    const files: ContextManagementCatalog['files'] = [];
-    let nextPosition = position;
-    while (nextPosition < observation.inventory.files.length && files.length < limit) {
-      const candidate = this.publicInventoryFile(observation.inventory.files[nextPosition]!);
-      const prospectivePosition = nextPosition + 1;
-      const prospectiveComplete = prospectivePosition >= observation.inventory.files.length;
-      const trial = this.managementEnvelope(resolved, observation, durable, [...files, candidate], prospectiveComplete,
-        prospectiveComplete ? undefined : this.encodeManagementCursor({
-          version: 1, kind: 'management', scope: resolved.identity,
-          snapshot: observation.inventory.snapshot, position: prospectivePosition,
-        }));
-      if (Buffer.byteLength(JSON.stringify(trial), 'utf8') > CONTEXT_CATALOG_MAX_BYTES) {
-        if (files.length === 0) {
-          throw new ContextMutationError('context_inventory_too_large', 'One context management entry exceeds the response construction limit.', { name: candidate.name });
-        }
-        break;
-      }
-      files.push(candidate);
-      nextPosition += 1;
-    }
-    const complete = nextPosition >= observation.inventory.files.length;
-    const result = this.managementEnvelope(resolved, observation, durable, files, complete, complete ? undefined : this.encodeManagementCursor({
-      version: 1,
-      kind: 'management',
-      scope: resolved.identity,
-      snapshot: observation.inventory.snapshot,
-      position: nextPosition,
-    }));
+    const result = this.admitCatalogPage(
+      observation.inventory.files,
+      position,
+      limit,
+      (files, complete, nextCursor) => this.managementEnvelope(resolved, observation, durable, files, complete, nextCursor),
+      (nextPosition) => this.encodeManagementCursor({
+        version: 1, kind: 'management', scope: resolved.identity,
+        snapshot: observation.inventory.snapshot, position: nextPosition,
+      }),
+      'One context management entry exceeds the response construction limit.',
+    );
     this.assertResponseSize(result, CONTEXT_CATALOG_MAX_BYTES);
     const after = this.observe(resolved);
     if (after.inventory.snapshot !== observation.inventory.snapshot) {
@@ -1000,6 +964,35 @@ export class ContextService {
 
   private catalogEnvelope(resolved: ResolvedScope, observation: { control: ControlState; inventory: Inventory }, files: ContextCatalogRead['files'], complete: boolean, nextCursor?: string): ContextCatalogRead {
     return { schemaVersion: 1, scope: resolved.scope, revision: observation.control.index.revision, snapshot: observation.inventory.snapshot, files, complete, ...(nextCursor ? { nextCursor } : {}), diagnostics: observation.inventory.diagnostics };
+  }
+
+  private admitCatalogPage<T>(
+    candidates: InventoryFile[],
+    startPosition: number,
+    limit: number,
+    buildEnvelope: (files: Array<Omit<ContextFile, 'content' | 'contentHash'>>, complete: boolean, nextCursor?: string) => T,
+    encodeCursor: (position: number) => string,
+    overflowMessage: string,
+  ): T {
+    const files: Array<Omit<ContextFile, 'content' | 'contentHash'>> = [];
+    let nextPosition = startPosition;
+    while (nextPosition < candidates.length && files.length < limit) {
+      const candidate = this.publicInventoryFile(candidates[nextPosition]!);
+      const prospectivePosition = nextPosition + 1;
+      const prospectiveComplete = prospectivePosition >= candidates.length;
+      const trial = buildEnvelope([...files, candidate], prospectiveComplete,
+        prospectiveComplete ? undefined : encodeCursor(prospectivePosition));
+      if (Buffer.byteLength(JSON.stringify(trial), 'utf8') > CONTEXT_CATALOG_MAX_BYTES) {
+        if (files.length === 0) {
+          throw new ContextMutationError('context_inventory_too_large', overflowMessage, { name: candidate.name });
+        }
+        break;
+      }
+      files.push(candidate);
+      nextPosition += 1;
+    }
+    const complete = nextPosition >= candidates.length;
+    return buildEnvelope(files, complete, complete ? undefined : encodeCursor(nextPosition));
   }
 
   private contentEnvelope(resolved: ResolvedScope, control: ControlState, file: ContextFile, start: number, end: number, totalBytes: number): ContextContentRead {
