@@ -359,25 +359,6 @@ describe('compaction replay on supported hooks', () => {
     expect(cleared?.replayDirectivePending).toBe(false);
   });
 
-  test('worker replay fails explicitly when immutable assignment bytes change', async () => {
-    const sessionService = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'sess-tw-tampered', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    const assignment = bindImmutableAssignment(testRoot, sessionService, 'sess-tw-tampered', '# Original assignment');
-    fs.writeFileSync(path.join(testRoot, assignment.locator), '# Tampered assignment');
-    sessionService.trackGlobal('sess-tw-tampered', { replayDirectivePending: true });
-
-    const output = buildCompactionTransformOutput('sess-tw-tampered', testRoot);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-
-    const replayText = output.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.includes('assignment_recovery_error'))!;
-    expect(replayText).toContain('assignment_recovery_error');
-    expect(replayText).toContain('hash does not match');
-  });
-
   test('replays the exact current immutable attempt and rejects a mismatched artifact hash', async () => {
     const sessionService = new SessionService(testRoot);
     await hooks['chat.message']({ sessionID: 'sess-tw-attempt-2', agent: 'forager-worker' }, {
@@ -415,6 +396,7 @@ describe('compaction replay on supported hooks', () => {
       .map(part => (part as any).text as string)
       .find(text => text?.includes('assignment_recovery_error'))!;
     expect(rejectedText).toContain('assignment_recovery_error');
+    expect(rejectedText).toContain('hash does not match');
     expect(rejectedText).not.toContain('SECOND_ATTEMPT_EXACT_BYTES');
   });
 
