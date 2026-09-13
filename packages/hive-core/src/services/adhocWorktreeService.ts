@@ -186,28 +186,167 @@ export class AdhocWorktreeService {
     return typeof resolver === 'function' ? resolver() : resolver.resolveRepositories();
   }
 
-  private async readCompositeManifest(runId: string): Promise<AdhocCompositeManifest | null> {
-    const manifest = await readCompositeWorkspaceManifest(this.getCompositeRoot(runId));
-    return manifest?.mode === 'adhoc-composite' ? manifest : null;
+  private isContained(root: string, candidate: string): boolean {
+    const relative = path.relative(root, candidate);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   }
 
-  private async isRegisteredCompositeRepo(
-    runId: string,
-    entry: AdhocCompositeManifestEntry,
+  private async trustedGitCommonDirectory(repositoryPath: string): Promise<string> {
+    const raw = (await this.getGit(repositoryPath).raw(['rev-parse', '--git-common-dir'])).trim();
+    if (!raw) throw new Error(`Worktree linkage preflight failed: trusted repository has no Git common directory (${repositoryPath})`);
+    return fs.realpath(path.isAbsolute(raw) ? raw : path.resolve(repositoryPath, raw));
+  }
+
+  private async assertNoSymlinkComponents(root: string, candidate: string, allowMissing = false): Promise<void> {
+    const relative = path.relative(root, candidate);
+    let current = root;
+    for (const segment of relative.split(path.sep).filter(Boolean)) {
+      current = path.join(current, segment);
+      const stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+        if (allowMissing && error.code === 'ENOENT') return null;
+        throw new Error(`Worktree linkage preflight failed: cannot inspect path component ${current}: ${error.message}`);
+      });
+      if (!stat) return;
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Worktree linkage preflight failed: path contains a symlink (${current})`);
+      }
+    }
+  }
+
+  private async lstatOrNull(candidate: string) {
+    return fs.lstat(candidate).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw new Error(`Worktree linkage preflight failed: cannot inspect path ${candidate}: ${error.message}`);
+    });
+  }
+
+  private async validateExactWorktreeRegistration(
+    worktreePath: string,
+    trustedRepositoryPath: string,
+    repositoryId: string,
+  ): Promise<void> {
+    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath);
+    const commonDirectory = await this.trustedGitCommonDirectory(trustedRepositoryPath);
+    const localGitPath = path.join(worktreePath, '.git');
+    const localGitStat = await fs.lstat(localGitPath).catch(() => null);
+    if (!localGitStat?.isFile() || localGitStat.isSymbolicLink()) {
+      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: local .git must be a regular pointer file`);
+    }
+    const pointer = await fs.readFile(localGitPath, 'utf8');
+    const match = pointer.match(/^gitdir:\s*(.+?)\s*$/);
+    if (!match) throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: invalid local .git pointer`);
+    const administrationPath = path.normalize(path.isAbsolute(match[1]!)
+      ? match[1]!
+      : path.resolve(worktreePath, match[1]!));
+    const worktreesDirectory = path.join(commonDirectory, 'worktrees');
+    if (!this.isContained(worktreesDirectory, administrationPath) || administrationPath === worktreesDirectory) {
+      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: administration entry is outside the trusted Git common directory`);
+    }
+    await this.assertNoSymlinkComponents(commonDirectory, administrationPath);
+    await this.assertNoSymlinkComponents(administrationPath, path.join(administrationPath, 'commondir'));
+    await this.assertNoSymlinkComponents(administrationPath, path.join(administrationPath, 'gitdir'));
+
+    const commondirBytes = await fs.readFile(path.join(administrationPath, 'commondir'), 'utf8');
+    const selectedCommonDirectory = path.normalize(path.resolve(administrationPath, commondirBytes.trim()));
+    if (selectedCommonDirectory !== path.normalize(commonDirectory)) {
+      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: commondir does not match the trusted repository`);
+    }
+    const backlinkBytes = await fs.readFile(path.join(administrationPath, 'gitdir'), 'utf8');
+    const backlink = path.normalize(path.isAbsolute(backlinkBytes.trim())
+      ? backlinkBytes.trim()
+      : path.resolve(administrationPath, backlinkBytes.trim()));
+    if (backlink !== path.normalize(localGitPath)) {
+      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: administration backlink does not select this exact worktree`);
+    }
+  }
+
+  private trustedRepositoriesForManifest(manifest: AdhocCompositeManifest): Map<string, ResolvedRepository> {
+    const trustedRepositories = this.resolveRepositories();
+    if (!trustedRepositories?.length) {
+      throw new Error('Worktree linkage preflight failed: trusted repository topology is unavailable');
+    }
+    const trustedById = new Map(trustedRepositories.map((repository) => [repository.id, repository]));
+    for (const [id, entry] of Object.entries(manifest.repos)) {
+      const trusted = trustedById.get(id);
+      if (!trusted
+        || entry.repoRoot !== trusted.root
+        || path.resolve(entry.repoPath) !== path.resolve(trusted.path)
+        || entry.path !== path.posix.join('repos', id)) {
+        throw new Error(`Worktree linkage preflight failed for repository ${id}: workspace topology does not match the trusted repository manifest`);
+      }
+    }
+    return trustedById;
+  }
+
+  private async readCompositeManifest(runId: string): Promise<AdhocCompositeManifest | null> {
+    const compositeRoot = this.getCompositeRoot(runId);
+    await this.assertNoSymlinkComponents(path.parse(compositeRoot).root, path.join(compositeRoot, 'workspace.json'), true);
+    const manifest = await readCompositeWorkspaceManifest(compositeRoot);
+    if (manifest === null) return null;
+    if (!('runId' in manifest) || manifest.runId !== runId) {
+      throw new Error(
+        `Worktree linkage preflight failed: workspace manifest run identity does not match the requested ad-hoc run (${runId})`,
+      );
+    }
+    return manifest.mode === 'adhoc-composite' ? manifest : null;
+  }
+
+  private async inspectSingleWorktree(runId: string): Promise<{ path: string; exists: boolean }> {
+    const worktreePath = this.getWorktreePath(runId);
+    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
+    const stat = await this.lstatOrNull(worktreePath);
+    if (!stat) return { path: worktreePath, exists: false };
+    await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'adhoc');
+    return { path: worktreePath, exists: true };
+  }
+
+  private async validateCompositeRepoRegistration(
+    manifest: AdhocCompositeManifest,
+    repoId: string,
+    trustedRepositoryPath: string,
   ): Promise<boolean> {
-    const repoRoot = entry.repoRoot || entry.repoPath;
-    if (!repoRoot) return false;
-    const repoWtPath = path.join(this.getCompositeRoot(runId), entry.path);
-    return this.isRegisteredWorktree(repoWtPath, entry.branch, repoRoot);
+    const entry = manifest.repos[repoId];
+    const repoWtPath = path.join(this.getCompositeRoot(manifest.runId), entry.path);
+    const stat = await this.lstatOrNull(repoWtPath);
+    if (!stat) return false;
+    await this.validateExactWorktreeRegistration(repoWtPath, trustedRepositoryPath, repoId);
+    return this.isRegisteredWorktree(repoWtPath, entry.branch, trustedRepositoryPath);
+  }
+
+  private async preflightComposite(manifest: AdhocCompositeManifest): Promise<{
+    trustedById: Map<string, ResolvedRepository>;
+    registered: Record<string, boolean>;
+  }> {
+    const trustedById = this.trustedRepositoriesForManifest(manifest);
+    const registered: Record<string, boolean> = {};
+    for (const repoId of Object.keys(manifest.repos).sort()) {
+      registered[repoId] = await this.validateCompositeRepoRegistration(
+        manifest,
+        repoId,
+        trustedById.get(repoId)!.path,
+      );
+    }
+    return { trustedById, registered };
+  }
+
+  private async inspectOneRepo(repoWtPath: string): Promise<{ sha: string; hasChanges: boolean }> {
+    const git = this.getGit(repoWtPath);
+    const status = await git.status();
+    const sha = (await git.revparse(['HEAD'])).trim();
+    return {
+      sha,
+      hasChanges:
+        status.staged.length > 0 ||
+        status.modified.length > 0 ||
+        status.not_added.length > 0 ||
+        status.deleted.length > 0 ||
+        status.created.length > 0,
+    };
   }
 
   private async validateCompositeManifest(manifest: AdhocCompositeManifest): Promise<boolean> {
-    for (const entry of Object.values(manifest.repos)) {
-      if (!(await this.isRegisteredCompositeRepo(manifest.runId, entry))) {
-        return false;
-      }
-    }
-    return true;
+    const { registered } = await this.preflightComposite(manifest);
+    return Object.values(registered).every(Boolean);
   }
 
   private compositeInfoFromManifest(manifest: AdhocCompositeManifest): AdhocWorktreeInfo {
@@ -344,6 +483,7 @@ export class AdhocWorktreeService {
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
     const git = this.getGit();
+    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
 
     const pathExists = await fs
       .access(worktreePath)
@@ -353,7 +493,12 @@ export class AdhocWorktreeService {
     const branchPresent = branches?.all.includes(branchName) ?? false;
 
     if (pathExists && branchPresent) {
-      const existing = await this.get(runId);
+      let existing: AdhocWorktreeInfo | null = null;
+      try {
+        existing = await this.get(runId);
+      } catch {
+        existing = null;
+      }
       if (explicit && existing) return existing;
       throw new Error(
         `Ad-hoc run collision: ${worktreePath} and ${branchName} already exist but do not match the requested ad-hoc worktree`,
@@ -382,6 +527,7 @@ export class AdhocWorktreeService {
     }
 
     const wtGit = this.getGit(worktreePath);
+    await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'adhoc');
     const commit = (await wtGit.revparse(['HEAD'])).trim();
 
     return { runId, path: worktreePath, branch: branchName, commit, mode: 'adhoc-single' };
@@ -412,6 +558,7 @@ export class AdhocWorktreeService {
     }
 
     const compositeRoot = this.getCompositeRoot(runId);
+    await this.assertNoSymlinkComponents(path.parse(compositeRoot).root, compositeRoot, true);
 
     // Preflight: workspace root must not already exist
     let rootExists = false;
@@ -467,6 +614,7 @@ export class AdhocWorktreeService {
         const repoGit = this.getGit(repo.path);
         const base = baseBranch || (await repoGit.revparse(['HEAD'])).trim();
 
+        await this.assertNoSymlinkComponents(path.parse(repoWtPath).root, repoWtPath, true);
         await fs.mkdir(path.dirname(repoWtPath), { recursive: true });
 
         try {
@@ -477,6 +625,7 @@ export class AdhocWorktreeService {
         createdRepos.push({ repoId, branchName, git: repoGit });
 
         const wtGit = this.getGit(repoWtPath);
+        await this.validateExactWorktreeRegistration(repoWtPath, repo.path, repoId);
         const commit = (await wtGit.revparse(['HEAD'])).trim();
         repoInfos[repoId] = { path: repoWtPath, branch: branchName, commit };
         baseCommits[repoId] = commit;
@@ -552,24 +701,21 @@ export class AdhocWorktreeService {
     const manifest = await this.readCompositeManifest(runId);
     if (manifest) return this.refreshCompositeInfo(manifest);
 
-    const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
-    try {
-      if (!(await this.isRegisteredWorktree(worktreePath, branchName))) return null;
-      const git = this.getGit(worktreePath);
-      const currentBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
-      if (currentBranch !== branchName) return null;
-      const commit = (await git.revparse(['HEAD'])).trim();
-      return {
-        runId,
-        path: worktreePath,
-        branch: branchName,
-        commit,
-        mode: 'adhoc-single',
-      };
-    } catch {
-      return null;
-    }
+    const { path: worktreePath, exists } = await this.inspectSingleWorktree(runId);
+    if (!exists) return null;
+    if (!(await this.isRegisteredWorktree(worktreePath, branchName, this.config.baseDir))) return null;
+    const git = this.getGit(worktreePath);
+    const currentBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    if (currentBranch !== branchName) return null;
+    const commit = (await git.revparse(['HEAD'])).trim();
+    return {
+      runId,
+      path: worktreePath,
+      branch: branchName,
+      commit,
+      mode: 'adhoc-single',
+    };
   }
 
   async commit(runId: string, message: string): Promise<AdhocCommitResult> {
@@ -583,14 +729,8 @@ export class AdhocWorktreeService {
   }
 
   private async commitSingle(runId: string, message: string): Promise<AdhocCommitResult> {
-    const worktreePath = this.getWorktreePath(runId);
-
-    try {
-      await fs.access(worktreePath);
-    } catch {
-      return { committed: false, sha: '', message: 'Worktree not found' };
-    }
-
+    const { path: worktreePath, exists } = await this.inspectSingleWorktree(runId);
+    if (!exists) return { committed: false, sha: '', message: 'Worktree not found' };
     return this.commitOneRepo(worktreePath, message);
   }
 
@@ -606,16 +746,35 @@ export class AdhocWorktreeService {
     let anyFailed = false;
     let firstError: string | undefined;
 
+    // Every selected repository is validated before any commit mutation so a
+    // stale or copied workspace cannot partially commit an earlier repo.
+    const { registered } = await this.preflightComposite(manifest);
+    const preflightFailed = repoIds.some((repoId) => !registered[repoId]);
+    if (preflightFailed) {
+      const firstMissing = repoIds.find((repoId) => !registered[repoId]);
+      if (firstMissing) firstError = `${firstMissing}: Worktree not found`;
+    }
+
     for (const repoId of repoIds) {
       const entry = manifest.repos[repoId];
-      if (!(await this.isRegisteredCompositeRepo(runId, entry))) {
-        repos[repoId] = { committed: false, sha: '', message: 'Worktree not found' };
-        anyFailed = true;
-        if (!firstError) firstError = `${repoId}: Worktree not found`;
-        continue;
-      }
       const repoWtPath = path.join(compositeRoot, entry.path);
-      const repoResult = await this.commitOneRepo(repoWtPath, message);
+      let repoResult: AdhocRepoCommitResult;
+      if (preflightFailed) {
+        if (!registered[repoId]) {
+          repoResult = { committed: false, sha: '', message: 'Worktree not found' };
+        } else {
+          const inspected = await this.inspectOneRepo(repoWtPath);
+          repoResult = {
+            committed: false,
+            sha: inspected.sha,
+            message: inspected.hasChanges
+              ? 'Commit skipped: workspace preflight failed'
+              : 'No changes to commit',
+          };
+        }
+      } else {
+        repoResult = await this.commitOneRepo(repoWtPath, message);
+      }
       repos[repoId] = repoResult;
 
       if (repoResult.committed) {
@@ -754,6 +913,35 @@ export class AdhocWorktreeService {
     };
 
     const branchName = this.getBranchName(runId);
+
+    let registered: AdhocWorktreeInfo | null;
+    try {
+      registered = await this.get(runId);
+    } catch (error) {
+      return {
+        success: false,
+        merged: false,
+        strategy,
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none',
+        cleanup: emptyCleanup,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (!registered) {
+      return {
+        success: false,
+        merged: false,
+        strategy,
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none',
+        cleanup: emptyCleanup,
+        error: 'Worktree linkage preflight failed: ad-hoc worktree is not registered',
+      };
+    }
+
     const git = this.getGit();
     const repoResult = await this.mergeOneRepo({
       git,
@@ -790,6 +978,7 @@ export class AdhocWorktreeService {
     options: { cleanup: 'none' | 'worktree' | 'worktree+branch'; preserveConflicts: boolean },
   ): Promise<AdhocMergeResult> {
     const repoIds = Object.keys(manifest.repos).sort();
+    const trustedById = this.trustedRepositoriesForManifest(manifest);
     const emptyCleanup = {
       worktreeRemoved: false,
       branchDeleted: false,
@@ -808,16 +997,15 @@ export class AdhocWorktreeService {
       partial: false,
     });
 
-    // Preflight: every source repo must have the branch, be clean, and have no active merge state
+    // Preflight: every selected repository validates against the trusted current
+    // topology before any source repo is mutated.
     for (const repoId of repoIds) {
       const entry = manifest.repos[repoId];
-      if (!(await this.isRegisteredCompositeRepo(runId, entry))) {
+      const trusted = trustedById.get(repoId)!;
+      if (!(await this.validateCompositeRepoRegistration(manifest, repoId, trusted.path))) {
         return preflightFailure(repoId, 'registered worktree not found');
       }
-      const repoRoot = entry.repoRoot || entry.repoPath;
-      if (!repoRoot) {
-        return preflightFailure(repoId, 'missing source repo root in workspace manifest');
-      }
+      const repoRoot = trusted.path;
       const repoGit = this.getGit(repoRoot);
 
       try {
@@ -888,8 +1076,7 @@ export class AdhocWorktreeService {
 
     for (const repoId of repoIds) {
       const entry = manifest.repos[repoId];
-      const repoRoot = entry.repoRoot || entry.repoPath;
-      const repoGit = this.getGit(repoRoot);
+      const repoGit = this.getGit(trustedById.get(repoId)!.path);
       const repoResult = await this.mergeOneRepo({
         git: repoGit,
         branchName: entry.branch,
@@ -943,19 +1130,19 @@ export class AdhocWorktreeService {
       };
     }
 
-    // All repos merged -> apply cleanup
+    // All repos merged -> apply cleanup (all repos passed preflight above)
     let cleanup = { worktreeRemoved: false, branchDeleted: false, pruned: false };
     if (options.cleanup !== 'none') {
       const deleteBranch = options.cleanup === 'worktree+branch';
       const perRepoCleanups: Array<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> = [];
       for (const repoId of repoIds) {
         const entry = manifest.repos[repoId];
-        if (!(await this.isRegisteredCompositeRepo(runId, entry))) {
-          perRepoCleanups.push({ worktreeRemoved: false, branchDeleted: false, pruned: false });
-          continue;
-        }
-        const repoRoot = entry.repoRoot || entry.repoPath;
-        const repoCleanup = await this.removeCompositeRepo(runId, entry, repoRoot, deleteBranch);
+        const repoCleanup = await this.removeCompositeRepo(
+          runId,
+          entry,
+          trustedById.get(repoId)!.path,
+          deleteBranch,
+        );
         repos[repoId].cleanup = repoCleanup;
         perRepoCleanups.push(repoCleanup);
       }
@@ -1041,30 +1228,28 @@ export class AdhocWorktreeService {
   private async removeCompositeRepo(
     runId: string,
     entry: AdhocCompositeManifestEntry,
-    repoRoot: string | undefined,
+    trustedRepositoryPath: string,
     deleteBranch: boolean,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
     const compositeRoot = this.getCompositeRoot(runId);
     const repoWtPath = path.join(compositeRoot, entry.path);
-    const repoGit = repoRoot ? this.getGit(repoRoot) : null;
+    const repoGit = this.getGit(trustedRepositoryPath);
 
     let worktreeRemoved = false;
     let pruned = false;
     let branchDeleted = false;
 
-    if (repoGit) {
-      try {
-        await repoGit.raw(['worktree', 'remove', repoWtPath, '--force']);
-        worktreeRemoved = true;
-      } catch {
-        /* fall through */
-      }
-      try {
-        await repoGit.raw(['worktree', 'prune']);
-        pruned = true;
-      } catch {
-        /* intentional */
-      }
+    try {
+      await repoGit.raw(['worktree', 'remove', repoWtPath, '--force']);
+      worktreeRemoved = true;
+    } catch {
+      /* fall through */
+    }
+    try {
+      await repoGit.raw(['worktree', 'prune']);
+      pruned = true;
+    } catch {
+      /* intentional */
     }
     if (!worktreeRemoved) {
       try {
@@ -1075,7 +1260,7 @@ export class AdhocWorktreeService {
       }
     }
 
-    if (deleteBranch && repoGit) {
+    if (deleteBranch) {
       try {
         await repoGit.deleteLocalBranch(entry.branch, true);
         branchDeleted = true;
@@ -1309,40 +1494,56 @@ export class AdhocWorktreeService {
     }
   }
 
+  private async cleanupComposite(
+    manifest: AdhocCompositeManifest,
+    deleteBranch: boolean,
+  ): Promise<AdhocCleanupResult> {
+    const { trustedById, registered } = await this.preflightComposite(manifest);
+    const repoIds = Object.keys(manifest.repos).sort();
+    if (repoIds.some((repoId) => !registered[repoId])) {
+      return { worktreeRemoved: false, branchDeleted: false, pruned: false };
+    }
+
+    const perRepoCleanups: AdhocCleanupResult[] = [];
+    for (const repoId of repoIds) {
+      const perRepo = await this.removeCompositeRepo(
+        manifest.runId,
+        manifest.repos[repoId],
+        trustedById.get(repoId)!.path,
+        deleteBranch,
+      );
+      perRepoCleanups.push(perRepo);
+    }
+    const compositeRoot = this.getCompositeRoot(manifest.runId);
+    let rootRemoved = true;
+    try {
+      await fs.rm(compositeRoot, { recursive: true, force: true });
+    } catch {
+      rootRemoved = false;
+    }
+    return {
+      worktreeRemoved: rootRemoved && perRepoCleanups.every((c) => c.worktreeRemoved),
+      branchDeleted:
+        deleteBranch && perRepoCleanups.length > 0 && perRepoCleanups.every((c) => c.branchDeleted),
+      pruned: perRepoCleanups.some((c) => c.pruned),
+    };
+  }
+
   async cleanup(runId: string, deleteBranch = false): Promise<AdhocCleanupResult> {
     this.assertSafeRunId(runId);
 
     const manifest = await this.readCompositeManifest(runId);
     if (manifest) {
-      const repoIds = Object.keys(manifest.repos).sort();
-      const perRepoCleanups: Array<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> = [];
-      for (const repoId of repoIds) {
-        const entry = manifest.repos[repoId];
-        if (!(await this.isRegisteredCompositeRepo(runId, entry))) {
-          perRepoCleanups.push({ worktreeRemoved: false, branchDeleted: false, pruned: false });
-          continue;
-        }
-        const repoRoot = entry.repoRoot || entry.repoPath;
-        const perRepo = await this.removeCompositeRepo(runId, entry, repoRoot, deleteBranch);
-        perRepoCleanups.push(perRepo);
-      }
-      const compositeRoot = this.getCompositeRoot(runId);
-      let rootRemoved = true;
-      try {
-        await fs.rm(compositeRoot, { recursive: true, force: true });
-      } catch {
-        rootRemoved = false;
-      }
-      return {
-        worktreeRemoved: rootRemoved && perRepoCleanups.every((c) => c.worktreeRemoved),
-        branchDeleted:
-          deleteBranch && perRepoCleanups.length > 0 && perRepoCleanups.every((c) => c.branchDeleted),
-        pruned: perRepoCleanups.some((c) => c.pruned),
-      };
+      return this.cleanupComposite(manifest, deleteBranch);
     }
 
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
+    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
+    const stat = await this.lstatOrNull(worktreePath);
+    if (stat) {
+      await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'adhoc');
+    }
     const git = this.getGit();
     let worktreeRemoved = false;
     let branchDeleted = false;

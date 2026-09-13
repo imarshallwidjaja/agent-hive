@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -978,5 +978,322 @@ describe("AdhocWorktreeService composite merge", () => {
     expect((await fixture.apiGit.revparse(['HEAD'])).trim()).not.toBe(before.api);
     expect((await fixture.webGit.revparse(['HEAD'])).trim()).toBe(before.web);
     expect((await fixture.webGit.status()).isClean()).toBe(true);
+  });
+});
+
+describe("AdhocWorktreeService linkage preflight", () => {
+  it("rejects a copied former-root pointer before use or mutation", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "former-root-run" });
+    const former = await createTempRepo();
+    const formerWorktree = path.join(former.repoPath, "former-worktree");
+    await former.repoGit.raw(["worktree", "add", "-b", "former-branch", formerWorktree, "HEAD"]);
+    const formerPointer = await fs.readFile(path.join(formerWorktree, ".git"), "utf8");
+    const localPointerPath = path.join(created.path, ".git");
+    await fs.writeFile(localPointerPath, formerPointer, "utf8");
+
+    const preserved = [
+      localPointerPath,
+      path.join(created.path, "tracked.txt"),
+      path.join(formerWorktree, ".git"),
+      path.join(formerWorktree, "tracked.txt"),
+    ];
+    const before = await Promise.all(preserved.map((file) => fs.readFile(file)));
+
+    const forbiddenAccess: string[] = [];
+    const fsSpies = ["access", "stat", "lstat", "readFile", "realpath", "readdir", "open"].map((name) => {
+      const original = (fs as any)[name];
+      return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+        const candidate = String(file);
+        if (candidate === former.repoPath || candidate.startsWith(`${former.repoPath}${path.sep}`)) {
+          forbiddenAccess.push(`${name}:${candidate}`);
+        }
+        return original(file, ...args);
+      });
+    });
+    const gitCalls: Array<{ cwd: string | undefined; method: PropertyKey; args: unknown[] }> = [];
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, "getGit").mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          const value = Reflect.get(target, key);
+          if (typeof value !== "function") return value;
+          return (...args: unknown[]) => {
+            gitCalls.push({ cwd, method: key, args });
+            return value.apply(target, args);
+          };
+        },
+      });
+    });
+    try {
+      await expect(fixture.service.get(created.runId)).rejects.toThrow(
+        /administration entry is outside the trusted Git common directory/,
+      );
+      await expect(
+        fixture.service.commit(created.runId, testCommitMessage("feat: should not commit")),
+      ).rejects.toThrow(/administration entry is outside the trusted Git common directory/);
+      const mergeResult = await fixture.service.merge(created.runId, "squash", mergeMessage);
+      expect(mergeResult.success).toBe(false);
+      expect(mergeResult.merged).toBe(false);
+      expect(mergeResult.error).toMatch(
+        /administration entry is outside the trusted Git common directory/,
+      );
+      await expect(fixture.service.cleanup(created.runId, true)).rejects.toThrow(
+        /administration entry is outside the trusted Git common directory/,
+      );
+
+      expect(forbiddenAccess).toEqual([]);
+      expect(gitCalls.length).toBeGreaterThan(0);
+      expect(gitCalls.every((call) => call.cwd === fixture.repoPath)).toBe(true);
+    } finally {
+      fsSpies.forEach((spy) => spy.mockRestore());
+      gitSpy.mockRestore();
+    }
+    expect(await Promise.all(preserved.map((file) => fs.readFile(file)))).toEqual(before);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+  });
+
+  it("rejects composite topology drift before Git or mutation in any selected repo", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: "topology-drift", repoIds: ["api", "web"] });
+    const manifestPath = path.join(created.workspacePath!, "workspace.json");
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf-8"));
+    const former = path.join(fixture.baseDir, "former");
+    manifest.repos.api.repoRoot = former;
+    manifest.repos.api.repoPath = former;
+    await fs.writeFile(manifestPath, JSON.stringify(manifest));
+    const manifestBytes = await fs.readFile(manifestPath);
+    const apiBranchHead = (await fixture.apiGit.revparse(["hive/adhoc/api/topology-drift"])).trim();
+
+    const forbidden: string[] = [];
+    const spies = ["access", "stat", "lstat", "readFile", "realpath", "readdir", "open"].map((name) => {
+      const original = (fs as any)[name];
+      return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+        if (String(file).startsWith(former)) forbidden.push(`${name}:${file}`);
+        return original(file, ...args);
+      });
+    });
+    const gitPaths: string[] = [];
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, "getGit").mockImplementation((cwd: string) => {
+      gitPaths.push(cwd);
+      return getGit(cwd);
+    });
+    try {
+      await expect(fixture.service.get(created.runId)).rejects.toThrow(
+        /workspace topology does not match the trusted repository manifest/,
+      );
+      await expect(
+        fixture.service.commit(created.runId, testCommitMessage("feat: should not commit")),
+      ).rejects.toThrow(/workspace topology does not match the trusted repository manifest/);
+      await expect(fixture.service.merge(created.runId, "squash", mergeMessage)).rejects.toThrow(
+        /workspace topology does not match the trusted repository manifest/,
+      );
+      await expect(fixture.service.cleanup(created.runId, true)).rejects.toThrow(
+        /workspace topology does not match the trusted repository manifest/,
+      );
+
+      expect(forbidden).toEqual([]);
+      expect(gitPaths).toEqual([]);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+      gitSpy.mockRestore();
+    }
+
+    expect(await fs.readFile(manifestPath)).toEqual(manifestBytes);
+    expect(await pathExists(created.workspacePath!)).toBe(true);
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect(await pathExists(created.repos!.web.path)).toBe(true);
+    expect((await fixture.apiGit.revparse(["hive/adhoc/api/topology-drift"])).trim()).toBe(apiBranchHead);
+    expect(await branchExists(fixture.apiGit, "hive/adhoc/api/topology-drift")).toBe(true);
+    expect(await branchExists(fixture.webGit, "hive/adhoc/web/topology-drift")).toBe(true);
+  });
+
+  it("does not commit an earlier repo when a later selected repo fails preflight", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: "commit-preflight", repoIds: ["api", "web"] });
+    await fs.writeFile(path.join(created.repos!.api.path, "api.txt"), "api\n", "utf-8");
+    await fixture.webGit.raw(["worktree", "remove", created.repos!.web.path, "--force"]);
+    const apiBranchHead = (await fixture.apiGit.revparse(["hive/adhoc/api/commit-preflight"])).trim();
+
+    const result = await fixture.service.commit(created.runId, testCommitMessage("feat: should not commit"));
+
+    expect(result.committed).toBe(false);
+    expect(result.repos!.api).toMatchObject({
+      committed: false,
+      message: "Commit skipped: workspace preflight failed",
+    });
+    expect(result.repos!.web).toMatchObject({ committed: false, message: "Worktree not found" });
+    expect(result.error).toContain("web: Worktree not found");
+    expect((await fixture.apiGit.revparse(["hive/adhoc/api/commit-preflight"])).trim()).toBe(apiBranchHead);
+    expect(await pathExists(created.workspacePath!)).toBe(true);
+  });
+
+  it("retains the composite workspace root when cleanup preflight fails", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: "cleanup-preflight", repoIds: ["api", "web"] });
+    await fixture.webGit.raw(["worktree", "remove", created.repos!.web.path, "--force"]);
+    const apiBranchHead = (await fixture.apiGit.revparse(["hive/adhoc/api/cleanup-preflight"])).trim();
+
+    const result = await fixture.service.cleanup(created.runId, true);
+
+    expect(result).toEqual({ worktreeRemoved: false, branchDeleted: false, pruned: false });
+    expect(await pathExists(created.workspacePath!)).toBe(true);
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect((await fixture.apiGit.revparse(["hive/adhoc/api/cleanup-preflight"])).trim()).toBe(apiBranchHead);
+    expect(await branchExists(fixture.apiGit, "hive/adhoc/api/cleanup-preflight")).toBe(true);
+  });
+
+  it("rejects a copied composite manifest before redirecting to the source run", async () => {
+    const fixture = await createCompositeFixture();
+    const source = await fixture.service.create({ runId: "copy-source", repoIds: ["api", "web"] });
+    const target = await fixture.service.create({ runId: "copy-target", repoIds: ["api", "web"] });
+    await fs.writeFile(path.join(source.repos!.api.path, "source-only.txt"), "source-only\n", "utf-8");
+    await fixture.service.commit(source.runId, testCommitMessage("feat: source-only composite change"));
+
+    const sourceManifestPath = path.join(source.workspacePath!, "workspace.json");
+    const targetManifestPath = path.join(target.workspacePath!, "workspace.json");
+    await fs.writeFile(targetManifestPath, await fs.readFile(sourceManifestPath));
+
+    const sourceRoot = source.workspacePath!;
+    const sourceApiHead = (await fixture.apiGit.revparse(["hive/adhoc/api/copy-source"])).trim();
+    const sourceWebHead = (await fixture.webGit.revparse(["hive/adhoc/web/copy-source"])).trim();
+    const targetApiHead = (await fixture.apiGit.revparse(["hive/adhoc/api/copy-target"])).trim();
+    const targetWebHead = (await fixture.webGit.revparse(["hive/adhoc/web/copy-target"])).trim();
+    const preserved = [
+      sourceManifestPath,
+      targetManifestPath,
+      path.join(source.repos!.api.path, "source-only.txt"),
+      path.join(source.repos!.api.path, "tracked.txt"),
+      path.join(target.repos!.api.path, "tracked.txt"),
+    ];
+    const realReadFile = fs.readFile.bind(fs);
+    const readPreserved = () => Promise.all(preserved.map((file) => realReadFile(file)));
+    let before = await readPreserved();
+
+    const forbiddenAccess: string[] = [];
+    const fsSpies = ["access", "stat", "lstat", "readFile", "realpath", "readdir", "open"].map((name) => {
+      const original = (fs as any)[name];
+      return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+        const candidate = String(file);
+        if (candidate === sourceRoot || candidate.startsWith(`${sourceRoot}${path.sep}`)) {
+          forbiddenAccess.push(`${name}:${candidate}`);
+        }
+        return original(file, ...args);
+      });
+    });
+    const gitCalls: string[] = [];
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, "getGit").mockImplementation((cwd?: string) => {
+      gitCalls.push(cwd ?? fixture.baseDir);
+      return getGit(cwd);
+    });
+    const runIdentityError = /workspace manifest run identity does not match the requested ad-hoc run/;
+    try {
+      await expect(fixture.service.get(target.runId)).rejects.toThrow(runIdentityError);
+      await expect(
+        fixture.service.create({ runId: target.runId, repoIds: ["api", "web"] }),
+      ).rejects.toThrow(runIdentityError);
+      await expect(
+        fixture.service.commit(target.runId, testCommitMessage("feat: copied manifest must not commit")),
+      ).rejects.toThrow(runIdentityError);
+      await expect(fixture.service.merge(target.runId, "squash", mergeMessage)).rejects.toThrow(
+        runIdentityError,
+      );
+      await expect(fixture.service.cleanup(target.runId, true)).rejects.toThrow(runIdentityError);
+      expect(await readPreserved()).toEqual(before);
+
+      // A copied manifest claiming a different workspace kind must still fail run
+      // identity before mode classification can fall back to single-worktree handling.
+      const foreignModeManifest = JSON.parse(String(await realReadFile(targetManifestPath)));
+      foreignModeManifest.mode = "review-composite";
+      await fs.writeFile(targetManifestPath, JSON.stringify(foreignModeManifest));
+      before = await readPreserved();
+      await expect(fixture.service.get(target.runId)).rejects.toThrow(runIdentityError);
+      await expect(fixture.service.cleanup(target.runId, true)).rejects.toThrow(runIdentityError);
+
+      expect(forbiddenAccess).toEqual([]);
+      expect(gitCalls).toEqual([]);
+    } finally {
+      fsSpies.forEach((spy) => spy.mockRestore());
+      gitSpy.mockRestore();
+    }
+
+    expect(await Promise.all(preserved.map((file) => fs.readFile(file)))).toEqual(before);
+    expect(await pathExists(source.workspacePath!)).toBe(true);
+    expect(await pathExists(target.workspacePath!)).toBe(true);
+    expect((await fixture.apiGit.revparse(["hive/adhoc/api/copy-source"])).trim()).toBe(sourceApiHead);
+    expect((await fixture.webGit.revparse(["hive/adhoc/web/copy-source"])).trim()).toBe(sourceWebHead);
+    expect((await fixture.apiGit.revparse(["hive/adhoc/api/copy-target"])).trim()).toBe(targetApiHead);
+    expect((await fixture.webGit.revparse(["hive/adhoc/web/copy-target"])).trim()).toBe(targetWebHead);
+    expect(await branchExists(fixture.apiGit, "hive/adhoc/api/copy-source")).toBe(true);
+    expect(await branchExists(fixture.webGit, "hive/adhoc/web/copy-source")).toBe(true);
+    expect(await branchExists(fixture.apiGit, "hive/adhoc/api/copy-target")).toBe(true);
+    expect(await branchExists(fixture.webGit, "hive/adhoc/web/copy-target")).toBe(true);
+  });
+
+  it.each(["workspace", "run-namespace"])(
+    "rejects an ad-hoc %s symlink before target access or Git",
+    async (kind) => {
+      const fixture = await createFixture();
+      const created = await fixture.service.create({ runId: "symlink-run" });
+      const pointer = await fs.readFile(path.join(created.path, ".git"), "utf8");
+      const admin = pointer.trim().slice("gitdir: ".length);
+      const linkPath = kind === "workspace" ? created.path : path.dirname(created.path);
+      const relocated = path.join(fixture.repoPath, "relocated-workspace");
+      const preserved = [
+        path.join(created.path, ".git"),
+        path.join(created.path, "tracked.txt"),
+        ...["HEAD", "index", "commondir", "gitdir"].map((name) => path.join(admin, name)),
+      ];
+      const bytes = await Promise.all(preserved.map((file) => fs.readFile(file)));
+      await fs.rename(linkPath, relocated);
+      await fs.symlink(relocated, linkPath);
+      const forbidden: string[] = [];
+      const spies = ["access", "stat", "lstat", "readFile", "realpath", "readdir", "open"].map((name) => {
+        const original = (fs as any)[name];
+        return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+          const candidate = String(file);
+          if (candidate.startsWith(relocated) || candidate.startsWith(`${linkPath}${path.sep}`)
+            || (candidate === linkPath && name !== "lstat")) forbidden.push(`${name}:${candidate}`);
+          return original(file, ...args);
+        });
+      });
+      const gitSpy = spyOn(fixture.service as any, "getGit");
+      try {
+        await expect(fixture.service.get(created.runId)).rejects.toThrow(/path contains a symlink/);
+        await expect(fixture.service.cleanup(created.runId)).rejects.toThrow(/path contains a symlink/);
+        expect(forbidden).toEqual([]);
+        expect(gitSpy).not.toHaveBeenCalled();
+      } finally {
+        spies.forEach((spy) => spy.mockRestore());
+        gitSpy.mockRestore();
+      }
+      expect(await Promise.all(preserved.map((file) => fs.readFile(file)))).toEqual(bytes);
+      expect(await fs.readlink(linkPath)).toBe(relocated);
+    },
+  );
+
+  it("accepts a trusted linked manifest repository with an external common directory", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "hive-core-adhoc-linked-base-"));
+    tempDirs.push(baseDir);
+    const source = await createTempRepo();
+    const linkedPath = path.join(baseDir, "linked-api");
+    await source.repoGit.raw(["worktree", "add", "-b", "linked-main", linkedPath, "HEAD"]);
+    const repos: ResolvedRepository[] = [{ id: "api", path: linkedPath, root: linkedPath }];
+    const service = new AdhocWorktreeService({
+      baseDir,
+      hiveDir: path.join(baseDir, ".hive"),
+      repositoryResolver: () => repos,
+    });
+
+    const created = await service.create({ runId: "linked-run", repoIds: ["api"] });
+    const reloaded = await service.get(created.runId);
+
+    expect(created.mode).toBe("adhoc-composite");
+    expect(reloaded?.mode).toBe("adhoc-composite");
+    expect(reloaded?.repos?.api.path).toBe(created.repos!.api.path);
+    expect((await source.repoGit.raw(["rev-parse", "--git-common-dir"])).trim()).not.toBe("");
   });
 });

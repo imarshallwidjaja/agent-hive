@@ -17,7 +17,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService, SessionService, WorktreeService } from 'hive-core';
+import { ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService, SessionService, WorktreeService, AdhocWorktreeService } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 const ROOT_SESSION_CLIENT = {
@@ -3308,16 +3308,60 @@ Do it
         gitPaths.push(cwd ?? this.config.baseDir);
         return originalGetGit.call(this, cwd);
       });
+      const adhocGitPaths: string[] = [];
+      const originalAdhocGetGit = (AdhocWorktreeService.prototype as any).getGit;
+      const adhocGitSpy = spyOn(AdhocWorktreeService.prototype as any, 'getGit').mockImplementation(function(this: any, cwd: string) {
+        adhocGitPaths.push(cwd ?? this.config.baseDir);
+        return originalAdhocGetGit.call(this, cwd);
+      });
+      const adhocWorktreePath = path.join(relocated, '.hive', '.worktrees', 'adhoc', 'historical-run');
+      const adhocPointerPath = path.join(adhocWorktreePath, '.git');
+      const adhocPointerBefore = fs.readFileSync(adhocPointerPath);
+      const taskWorktreePointerPath = path.join(relocated, '.hive', '.worktrees', feature, FIRST_TASK, '.git');
+      const taskPointerBefore = fs.readFileSync(taskWorktreePointerPath);
+      const copiedStatusPath = path.join(relocated, '.hive', 'features', '01_relocated-assignment', 'tasks', FIRST_TASK, 'status.json');
+      const copiedStatusBefore = fs.readFileSync(copiedStatusPath, 'utf-8');
       try {
         const denied = JSON.parse(await fresh.hooks.tool!.hive_context_read.execute({ scope: 'project' }, { ...fresh.toolContext, sessionID: oldChild, agent: 'forager-worker' }) as string);
         expect(denied.success).toBe(false);
         const deniedRun = JSON.parse(await fresh.hooks.tool!.hive_context_read.execute({ scope: 'project' }, { ...fresh.toolContext, sessionID: oldAdhocChild, agent: 'forager-worker' }) as string);
         expect(deniedRun.success).toBe(false);
         await expect(fresh.hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, fresh.toolContext)).rejects.toThrow('Worktree linkage preflight failed');
+        fs.writeFileSync(copiedStatusPath, JSON.stringify({ ...JSON.parse(copiedStatusBefore), status: 'done' }));
+        const deniedTaskMerge = JSON.parse(await fresh.hooks.tool!.hive_merge.execute(
+          { feature, task: FIRST_TASK, strategy: 'squash', message: TEST_MERGE_MESSAGE },
+          fresh.toolContext,
+        ) as string);
+        expect(deniedTaskMerge.success).toBe(false);
+        expect(String(deniedTaskMerge.error)).toContain('linkage preflight failed');
+        fs.writeFileSync(copiedStatusPath, copiedStatusBefore);
+        await expect(fresh.hooks.tool!.hive_worktree_discard.execute(
+          { feature, task: FIRST_TASK },
+          fresh.toolContext,
+        )).rejects.toThrow('Worktree linkage preflight failed');
+        const deniedAdhocMerge = JSON.parse(await fresh.hooks.tool!.hive_adhoc_merge.execute(
+          { runId: 'historical-run', strategy: 'squash', message: TEST_MERGE_MESSAGE },
+          fresh.toolContext,
+        ) as string);
+        expect(deniedAdhocMerge.success).toBe(false);
+        expect(String(deniedAdhocMerge.error)).toContain('linkage preflight failed');
+        const deniedAdhocCleanup = JSON.parse(await fresh.hooks.tool!.hive_adhoc_cleanup.execute(
+          { runId: 'historical-run', deleteBranch: true },
+          fresh.toolContext,
+        ) as string);
+        expect(deniedAdhocCleanup.success).toBe(false);
+        expect(String(deniedAdhocCleanup.error)).toContain('linkage preflight failed');
         expect(forbiddenAccess).toEqual([]);
         expect(gitPaths.every(cwd => cwd === relocated)).toBe(true);
+        expect(adhocGitPaths.length).toBeGreaterThan(0);
+        expect(adhocGitPaths.every(cwd => cwd === relocated)).toBe(true);
+        expect(fs.readFileSync(adhocPointerPath)).toEqual(adhocPointerBefore);
+        expect(fs.readFileSync(taskWorktreePointerPath)).toEqual(taskPointerBefore);
+        expect(fs.existsSync(adhocWorktreePath)).toBe(true);
+        expect(execSync('git branch --list', { cwd: relocated, encoding: 'utf8' })).not.toContain('hive/adhoc/historical-run');
+        expect(execSync('git status --porcelain', { cwd: relocated, encoding: 'utf8' }).trim()).toBe('');
       } finally {
-        spies.forEach(spy => spy.mockRestore()); gitSpy.mockRestore();
+        spies.forEach(spy => spy.mockRestore()); gitSpy.mockRestore(); adhocGitSpy.mockRestore();
       }
       // The operator prepares a separate workspace; the runtime never repairs copied Git pointers.
       fs.rmSync(path.join(relocated, '.hive', '.worktrees'), { recursive: true });

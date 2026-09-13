@@ -1199,6 +1199,50 @@ describe("WorktreeService composite workspaces", () => {
     expect(listed[0].repos!['api'].branch).toBe(`hive/api/${fx.feature}/${fx.task}`);
   });
 
+  it("list propagates composite linkage failure instead of hiding it", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const selectedPath = created.repos!.api.path;
+    const siblingPath = path.join(fx.projectRoot, 'api-list-sibling');
+    await fx.repos.api.git.raw(['worktree', 'add', '-b', 'list-sibling', siblingPath, 'HEAD']);
+    const siblingPointer = await fs.readFile(path.join(siblingPath, '.git'), 'utf8');
+    await fs.writeFile(path.join(selectedPath, '.git'), siblingPointer, 'utf8');
+
+    await expect(fx.service.list(fx.feature)).rejects.toThrow(/backlink does not select this exact worktree/);
+  });
+
+  it("list propagates a namespace symlink integrity failure", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    await fx.service.create(fx.feature, fx.task);
+    const featurePath = path.join(fx.projectRoot, '.hive', '.worktrees', fx.feature);
+    const relocated = path.join(fx.projectRoot, 'relocated-feature');
+    await fs.rename(featurePath, relocated);
+    await fs.symlink(relocated, featurePath);
+
+    await expect(fx.service.list(fx.feature)).rejects.toThrow(/path contains a symlink/);
+
+    await fs.unlink(featurePath);
+    await fs.rename(relocated, featurePath);
+  });
+
+  it("list returns an empty result when the worktrees directory is missing", async () => {
+    const { repoPath } = await createTempRepo();
+    const service = new WorktreeService({
+      baseDir: repoPath,
+      hiveDir: path.join(repoPath, '.hive'),
+    });
+
+    await expect(service.list()).resolves.toEqual([]);
+  });
+
+  it("list skips a step whose worktree directory is missing", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    await fs.rm(created.path, { recursive: true, force: true });
+
+    await expect(fx.service.list(fx.feature)).resolves.toEqual([]);
+  });
+
   it("cleanup removes a stale composite workspace whose per-repo worktree was destroyed", async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const wt = await fx.service.create(fx.feature, fx.task);

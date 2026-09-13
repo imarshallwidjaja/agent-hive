@@ -974,27 +974,35 @@ export class WorktreeService {
     const worktreesDir = this.getWorktreesDir();
     const results: WorktreeInfo[] = [];
 
+    let features: string[];
     try {
-      const features = feature ? [feature] : await fs.readdir(worktreesDir);
+      features = feature ? [feature] : await fs.readdir(worktreesDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return results;
+      throw error;
+    }
 
-      for (const feat of features) {
-        const featurePath = path.join(worktreesDir, feat);
-        const stat = await fs.lstat(featurePath).catch(() => null);
+    for (const feat of features) {
+      const featurePath = path.join(worktreesDir, feat);
+      const stat = await fs.lstat(featurePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
 
-        if (stat?.isSymbolicLink()) throw new Error(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
-        if (!stat?.isDirectory()) continue;
+      if (stat?.isSymbolicLink()) throw new Error(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
+      if (!stat?.isDirectory()) continue;
 
-        const steps = await fs.readdir(featurePath).catch(() => []);
+      const steps = await fs.readdir(featurePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      });
 
-        for (const step of steps) {
-          const info = await this.get(feat, step);
-          if (info) {
-            results.push(info);
-          }
+      for (const step of steps) {
+        const info = await this.get(feat, step);
+        if (info) {
+          results.push(info);
         }
       }
-    } catch {
-      /* intentional */
     }
 
     return results;
