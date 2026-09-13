@@ -96,27 +96,40 @@ function semanticMap(request: any, cardOverrides: Record<number, Record<string, 
 }
 
 function clientFor(messages: unknown[], options: {
-  parentID?: string;
+  parentID?: string | null;
   childID?: string;
+  getResponse?: { data?: unknown; error?: unknown };
+  getError?: unknown;
   status?: Record<string, unknown>;
   statusResponse?: { data?: unknown; error?: unknown };
   statusError?: unknown;
+  mutateStatus?: (reads: number) => { data?: unknown; error?: unknown };
   mutateMessages?: (reads: number) => unknown[];
   prompt?: (request: any, call: number) => unknown | Promise<unknown>;
   promptError?: (request: any, call: number) => unknown;
   providers?: (input: any) => unknown | Promise<unknown>;
+  create?: (call: number, input: any) => unknown | Promise<unknown>;
   abort?: (call: number, input: any) => unknown | Promise<unknown>;
   delete?: (call: number, input: any) => unknown | Promise<unknown>;
 } = {}) {
   const calls: Call[] = [];
   let messageReads = 0;
+  let statusReads = 0;
+  let createCalls = 0;
   let promptCalls = 0;
   let abortCalls = 0;
   let deleteCalls = 0;
   const session = {
     get: async (input: unknown) => {
       calls.push({ method: 'get', input });
-      return { data: { id: options.childID ?? 'child', parentID: options.parentID ?? 'parent' } };
+      if (options.getError) throw options.getError;
+      if (options.getResponse) return options.getResponse;
+      return {
+        data: {
+          id: options.childID ?? 'child',
+          ...(options.parentID === null ? {} : { parentID: options.parentID ?? 'parent' }),
+        },
+      };
     },
     messages: async (input: unknown) => {
       calls.push({ method: 'messages', input });
@@ -125,11 +138,16 @@ function clientFor(messages: unknown[], options: {
     },
     status: async (input: unknown) => {
       calls.push({ method: 'status', input });
+      statusReads += 1;
       if (options.statusError) throw options.statusError;
-      return options.statusResponse ?? { data: options.status ?? {} };
+      return options.mutateStatus?.(statusReads)
+        ?? options.statusResponse
+        ?? { data: options.status ?? {} };
     },
-    create: async (input: unknown) => {
+    create: async (input: any) => {
       calls.push({ method: 'create', input });
+      createCalls += 1;
+      if (options.create) return { data: await options.create(createCalls, input) };
       return { data: { id: `summary-${calls.filter((call) => call.method === 'create').length}` } };
     },
     prompt: async (input: any) => {
@@ -202,9 +220,10 @@ function executeRaw(
   name: 'hive_task_trace' | 'hive_task_trace_content',
   args: Record<string, unknown>,
   abort = new AbortController().signal,
+  sessionID = 'parent',
 ) {
   return tools[name].execute(args as never, {
-    sessionID: 'parent',
+    sessionID,
     messageID: 'parent-message',
     agent: 'hive-master',
     abort,
@@ -257,8 +276,9 @@ async function execute(
   tools: ReturnType<typeof createTaskTraceTools>,
   name: 'hive_task_trace' | 'hive_task_trace_content',
   args: Record<string, unknown>,
+  sessionID = 'parent',
 ) {
-  return JSON.parse(await executeRaw(tools, name, args));
+  return JSON.parse(await executeRaw(tools, name, args, new AbortController().signal, sessionID));
 }
 
 function allKeys(value: unknown): string[] {
@@ -380,12 +400,17 @@ describe('compact task trace v2', () => {
     expect(setup.calls.filter((call) => call.method === 'create')).toHaveLength(0);
   });
 
-  it('returns semantic recovery unavailable for active and uncertain traces without model sessions', async () => {
+  it('returns semantic recovery unavailable for active and invalid or unavailable status maps without model sessions', async () => {
     const source = realisticTrace();
     const active = clientFor(source, { status: { child: { type: 'busy' } } });
+    const malformed = clientFor(source, { statusResponse: { data: { child: { type: 'idle', unexpected: true } } } });
     const uncertain = clientFor(source, { statusError: new Error('unavailable') });
 
-    for (const [setup, reason] of [[active, 'runtime_active'], [uncertain, 'status_unavailable']] as const) {
+    for (const [setup, reason] of [
+      [active, 'runtime_active'],
+      [malformed, 'status_unavailable'],
+      [uncertain, 'status_unavailable'],
+    ] as const) {
       const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
       expect(result).toMatchObject({ ok: true, version: 2, task_id: 'child' });
       expect(result.source).toMatchObject({ steps: 59, fidelity: 'surviving_source', compactions: 0 });
@@ -403,6 +428,23 @@ describe('compact task trace v2', () => {
       expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(1);
       expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(1);
     }
+  });
+
+  it('treats a missing target entry in a valid status map as idle for finished direct-child recovery', async () => {
+    const source = [message('finished', 'assistant', [{ type: 'text', text: 'Finished direct-child work.' }])];
+    const setup = clientFor(source, { status: {} });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(result.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed' });
+    expect(result.recovery.status).toBe('complete');
+    expect(result.semantic).not.toBeNull();
+    expect(result.final_response).toEqual({
+      step: 1,
+      text: 'Finished direct-child work.',
+      provenance: 'child_self_report',
+      untrusted: true,
+    });
+    expect(setup.calls.filter((call) => call.method === 'create').length).toBeGreaterThan(0);
   });
 
   it('externalizes realistic large values toward the soft target without losing steps', async () => {
@@ -438,20 +480,19 @@ describe('compact task trace v2', () => {
 
   it('keeps render bytes exact at the soft target and actual-byte digit transitions', async () => {
     const renderNear = async (target: number) => {
-      const probeID = 'x';
+      const probeTool = 'x';
       const probe = await executeRaw(
-        toolsFor(clientFor([], { childID: probeID })),
+        toolsFor(clientFor([message('m1', 'assistant', [{ type: 'tool', tool: probeTool, state: { status: 'completed' } }])])),
         'hive_task_trace',
-        { task_id: probeID },
+        { task_id: 'child' },
       );
-      const estimatedLength = Math.max(1, target - Buffer.byteLength(probe) + probeID.length);
+      const estimatedLength = Math.max(1, target - Buffer.byteLength(probe) + probeTool.length);
       const samples: Array<{ bytes: number; result: any }> = [];
       for (let length = Math.max(1, estimatedLength - 24); length <= estimatedLength + 24; length += 1) {
-        const taskID = 'x'.repeat(length);
         const serialized = await executeRaw(
-          toolsFor(clientFor([], { childID: taskID })),
+          toolsFor(clientFor([message('m1', 'assistant', [{ type: 'tool', tool: 'x'.repeat(length), state: { status: 'completed' } }])])),
           'hive_task_trace',
-          { task_id: taskID },
+          { task_id: 'child' },
         );
         samples.push({ bytes: Buffer.byteLength(serialized), result: JSON.parse(serialized) });
       }
@@ -967,7 +1008,7 @@ describe('compact task trace v2', () => {
     expect(result).not.toHaveProperty('content_dictionary');
   });
 
-  it('starts every map batch concurrently and folds reverse completion by batch index', async () => {
+  it('runs at most four map batches concurrently and folds reverse completion by batch index', async () => {
     const source = Array.from({ length: 12 }, (_, index) => message(`m${index}`, 'assistant', [
       { type: 'text', text: `${index}:${'x'.repeat(12_000)}` },
     ]));
@@ -990,15 +1031,25 @@ describe('compact task trace v2', () => {
     });
     const execution = execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
-    await settleUntil(() => gates.length === 12);
-    expect(active).toBe(12);
+    await settleUntil(() => gates.length === 4);
+    expect(active).toBe(4);
+    const resolved = new Set<number>();
+    while (gates.length < 12) {
+      const index = gates.length - 1;
+      const expected = gates.length + 1;
+      resolved.add(index);
+      gates[index].resolve({ kind: 'map', range: requests[index].range, cards: [] });
+      await settleUntil(() => gates.length === expected);
+      expect(active).toBeLessThanOrEqual(4);
+    }
     for (const index of sourceSteps(0, gates.length - 1).reverse()) {
+      if (resolved.has(index)) continue;
       gates[index].resolve({ kind: 'map', range: requests[index].range, cards: [] });
       await Promise.resolve();
     }
     const result = await execution;
 
-    expect(peak).toBe(12);
+    expect(peak).toBe(4);
     expect(result.recovery.failures.filter((entry: any) => entry.stage === 'map')).toEqual(
       requests.map((request) => ({ stage: 'map', range: request.range, reasons: ['invalid_map_output'] })),
     );
@@ -1041,14 +1092,14 @@ describe('compact task trace v2', () => {
     });
     const controller = new AbortController();
     const execution = executeRaw(toolsFor(during), 'hive_task_trace', { task_id: 'child', recovery: true }, controller.signal);
-    await settleUntil(() => activeSignals.length === 12);
+    await settleUntil(() => activeSignals.length === 4);
     controller.abort(new Error('cancel active recovery'));
 
     await expect(execution).rejects.toThrow('cancel active recovery');
     expect(activeSignals.every((signal) => signal.aborted)).toBe(true);
-    expect(during.calls.filter((call) => call.method === 'create')).toHaveLength(12);
-    expect(during.calls.filter((call) => call.method === 'abort')).toHaveLength(12);
-    expect(during.calls.filter((call) => call.method === 'delete')).toHaveLength(12);
+    expect(during.calls.filter((call) => call.method === 'create')).toHaveLength(4);
+    expect(during.calls.filter((call) => call.method === 'abort')).toHaveLength(4);
+    expect(during.calls.filter((call) => call.method === 'delete')).toHaveLength(4);
     for (const call of during.calls.filter((entry) => entry.method === 'abort' || entry.method === 'delete')) {
       expect(call.input.signal).not.toBe(controller.signal);
     }
@@ -1606,6 +1657,115 @@ describe('compact task trace v2', () => {
     expect(result).not.toHaveProperty('content_dictionary');
   });
 
+  it('guards self recovery before model work while allowing self forensic inspection', async () => {
+    const setup = clientFor(
+      [message('m1', 'assistant', [{ type: 'text', text: 'done' }])],
+      { status: { child: { type: 'busy' } } },
+    );
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true }, 'child');
+
+    expect(result.target).toEqual({ id: 'child', relationship: 'self' });
+    expect(result.recovery).toMatchObject({
+      status: 'unavailable',
+      failures: [{ stage: 'eligibility', reasons: ['self_recovery_not_allowed'] }],
+    });
+    expect(setup.calls.filter((call) => call.method === 'create')).toHaveLength(0);
+    expect(setup.calls.filter((call) => call.method === 'prompt')).toHaveLength(0);
+  });
+
+  it('preserves direct-child fresh-task guidance and forces other sessions to inspect-only', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'unfinished work' }])];
+    for (const [parentID, relationship, action] of [
+      ['parent', 'direct_child', 'launch_fresh_task'],
+      ['another-parent', 'other_session', 'inspect'],
+      [null, 'other_session', 'inspect'],
+    ] as const) {
+      const setup = clientFor(source, {
+        parentID,
+        prompt: (request) => request.kind === 'reduce'
+          ? {
+              kind: 'reduce',
+              semantic: semanticReduction(1, {
+                completed: [],
+                unfinished: [{ claim: 'Finish the implementation.', source_steps: [1] }],
+                safest_next_action: {
+                  action: 'launch_fresh_task',
+                  context: 'Continue from the recovered state.',
+                  source_steps: [1],
+                },
+              }),
+            }
+          : undefined,
+      });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(result.target).toEqual({ id: 'child', relationship });
+      expect(result.semantic.safest_next_action.action).toBe(action);
+      expect(result.semantic.safest_next_action.source_steps).toEqual([1]);
+      if (action === 'inspect') expect(result.semantic.safest_next_action.context).toBeNull();
+      for (const call of setup.calls.filter((entry) => ['prompt', 'abort', 'delete'].includes(entry.method))) {
+        expect(call.input.path?.id).not.toBe('child');
+      }
+    }
+  });
+
+  it('rejects a summarizer session ID collision before prompting or cleanup touches the inspected session', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'done' }])];
+    const setup = clientFor(source, { create: () => ({ id: 'child' }) });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(result.recovery).toMatchObject({
+      status: 'unavailable',
+      failures: [{ stage: 'map', range: [1, 1], reasons: ['summarizer_id_collision'] }],
+    });
+    expect(result.semantic).toBeNull();
+    expect(setup.calls.filter((call) => ['prompt', 'abort', 'delete'].includes(call.method))).toHaveLength(0);
+  });
+
+  it('keeps successful recovery when the post-recovery status map omits the idle target', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'done' }])];
+    const setup = clientFor(source, {
+      mutateStatus: (reads) => ({ data: reads === 1 ? { child: { type: 'idle' } } : {} }),
+    });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(result.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed' });
+    expect(result.recovery.status).toBe('complete');
+    expect(result.semantic).not.toBeNull();
+    expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(2);
+  });
+
+  it('discards recovery when source or target status changes during model work', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'done' }])];
+    const changedSource = clientFor(source, {
+      mutateMessages: (reads) => reads === 1
+        ? source
+        : [message('m1', 'assistant', [{ type: 'text', text: 'done later' }])],
+    });
+    const becameActive = clientFor(source, {
+      mutateStatus: (reads) => ({ data: { child: { type: reads === 1 ? 'idle' : 'busy' } } }),
+    });
+    const lostStatus = clientFor(source, {
+      mutateStatus: (reads) => reads === 1 ? { data: { child: { type: 'idle' } } } : { error: 'unavailable' },
+    });
+
+    for (const [setup, reason] of [
+      [changedSource, 'source_changed_after_recovery'],
+      [becameActive, 'runtime_active_after_recovery'],
+      [lostStatus, 'status_unavailable_after_recovery'],
+    ] as const) {
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      expect(result.recovery).toMatchObject({
+        status: 'unavailable',
+        failures: [{ stage: 'freshness', reasons: [reason] }],
+      });
+      expect(result.semantic).toBeNull();
+      expect(setup.calls.filter((call) => call.method === 'create').length).toBeGreaterThan(0);
+      expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(2);
+      expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(2);
+    }
+  });
+
   it('reauthorizes v2 content, detects staleness, and returns UTF-8-safe 8 KiB chunks', async () => {
     const large = `start-${'🙂'.repeat(5000)}-end`;
     const source = [message('m1', 'assistant', [{ type: 'text', text: large }, { type: 'reasoning', text: 'private' }])];
@@ -1634,14 +1794,42 @@ describe('compact task trace v2', () => {
     expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: reasoningLocator })).toEqual({ ok: false, reason: 'invalid_content_id' });
   });
 
-  it('authorizes only direct children and performs no mutation, polling, retry, or resume', async () => {
-    const denied = clientFor([], { parentID: 'other' });
-    expect(await execute(toolsFor(denied), 'hive_task_trace', { task_id: 'child' })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
-    expect(denied.calls.map((call) => call.method)).toEqual(['get']);
+  it('uses the same runtime-visible target policy for trace and content reads', async () => {
+    const large = 'x'.repeat(600);
+    for (const [parentID, relationship] of [
+      ['parent', 'direct_child'],
+      ['other-parent', 'other_session'],
+      [null, 'other_session'],
+    ] as const) {
+      const setup = clientFor([message('m1', 'assistant', [{ type: 'text', text: large }])], { parentID });
+      const tools = toolsFor(setup);
+      const trace = await execute(tools, 'hive_task_trace', { task_id: 'child' });
+      const contentID = trace.content_dictionary[trace.timeline[0].text[0].r - 1];
+      const content = await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: contentID });
 
-    const allowed = clientFor([message('m1', 'assistant', [{ type: 'text', text: 'done' }])]);
-    await execute(toolsFor(allowed), 'hive_task_trace', { task_id: 'child' });
-    expect(allowed.calls.map((call) => call.method)).toEqual(['get', 'messages', 'status']);
+      expect(trace.target).toEqual({ id: 'child', relationship });
+      expect(content).toMatchObject({ ok: true, task_id: 'child', content: large });
+    }
+  });
+
+  it('returns opaque unavailability for unresolved targets before messages or status reads', async () => {
+    const locator = Buffer.from(JSON.stringify([2, 0, 0, 1, 1, 'a'.repeat(43)])).toString('base64url');
+    const cases = [
+      { getResponse: { data: undefined } },
+      { getResponse: { error: 'not found' } },
+      { getResponse: { data: [] } },
+      { getResponse: { data: { id: 'different', parentID: 'parent' } } },
+      { getResponse: { data: { id: 'child', parentID: 42 } } },
+      { getError: new Error('api unavailable') },
+    ];
+    for (const options of cases) {
+      const setup = clientFor([], options);
+      const tools = toolsFor(setup);
+      expect(await execute(tools, 'hive_task_trace', { task_id: 'child' })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
+      expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: locator })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
+      expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(0);
+      expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(0);
+    }
   });
 });
 
@@ -1659,6 +1847,8 @@ describe('task trace lifecycle hints', () => {
     expect(description).toContain('tool activity');
     expect(description).toContain('latest/final response');
     expect(description).toContain('read-only');
+    expect(description).toContain('visible to the connected runtime');
+    expect(description).toContain('finished turn');
   });
 
   it('adds bounded metadata hints without parsing rendered task output', () => {

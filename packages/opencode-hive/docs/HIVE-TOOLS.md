@@ -89,7 +89,7 @@
 - In gate-open sessions, `hive_worktree_start` can also return a `backgroundTaskCall` for independent work that can run while useful foreground work continues. The pending background board entry is created only after the parent actually launches the native background `task({ background: true, ... })`; blocking `hive_worktree_start` remains the correct path when the next meaningful step depends on the worker result.
 - Every Forager lane, including diagnosis-only work, needs a prepared launch. Non-feature diagnosis needs a spawning-enabled ad-hoc preparation. Launch preparation and any unbound claim each expire after five minutes. OpenCode's exact child correlation is internal and is not visible to the primary. Background dispatch may return before correlation. If the next Forager dispatch returns a binding-in-progress error, keep that next launch prepared, do not repeat the running child's launch, and do not poll hidden state. Use the first child's native completion notification as the conservative observable retry point, then retry the prepared next payload; reprepare only if its five-minute reservation expires. An exact correlated parent/agent denial retires only the rejected claim, so prepare a fresh launch for a new child. When correlation is absent, Hive retains the unbound claim until correlation or expiry and never guesses ownership. If exact correlation remains missing and no native completion notification arrives, prepare a fresh launch once the five-minute reservation expires. Plugin restart also expires preparation. In gate-closed sessions, parse each returned blocking `taskToolCall`, await it, and then prepare the next Forager. Gate-open `backgroundTaskCall` dispatch is available for independent foreground work. Ordinary Scout, advisor, and reviewer launches do not use this reservation protocol.
 - Every native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches.
-- Do not pass `task_id` to `task()`. Returned task IDs are observe-only handles for background management and read-only direct-child inspection with `hive_task_trace`; they are not inputs for session continuation. Recovery context belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
+- Do not pass `task_id` to `task()`. Returned task IDs are observe-only handles for background management and read-only runtime-visible session inspection with `hive_task_trace`; they are not inputs for session continuation. Recovery context belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
 - The `question` tool is reserved for primary sessions. Subagents return required operator clarification as an exact terminal-response question for their parent orchestrator.
 - A blocked feature continuation starts a new worker session in the same worktree with the operator decision. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
 - One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
@@ -148,16 +148,16 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 - Cancellation is not rollback. `hive_background_cancel` does not revert files, branches, worktrees, commits, or task reports; it only records a cancellation request and any confirmed runtime cancellation.
 - If a background lane cannot be resumed safely, use no-resume retry/escalation: start a fresh scoped attempt when safe, ignore the stale terminal entry with a reason, or escalate the concrete blocker to the operator.
 
-### Delegated Task Inspection (2 tools)
+### Runtime Session Inspection (2 tools)
 
-These primary-orchestrator-only tools inspect one native OpenCode child session. Authorization requires a fresh `session.get` proving that the supplied child session ID has the current tool session as its direct parent. Missing, sibling, grandchild, and mismatched sessions return the same unavailable response.
+These primary-orchestrator-only tools inspect any explicitly identified OpenCode session visible through the connected runtime, including the caller, direct children, foreign-parent sessions, and parentless primary sessions. Authorization uses a fresh `session.get` and requires a well-formed record whose ID exactly matches `task_id`; missing, malformed, mismatched, and API-error responses return the same opaque unavailable response. The connected runtime and caller directory remain the access boundary.
 
 | Tool | Purpose |
 |------|---------|
-| `hive_task_trace` | Read one direct child once as a compact complete v2 situation report; optionally request terminal recovery |
+| `hive_task_trace` | Read one runtime-visible session as a compact complete v2 situation report; optionally request turn-scoped recovery |
 | `hive_task_trace_content` | Re-read and verify one allowlisted non-reasoning source field referenced by a v2 content ID |
 
-- Trace inspection never resumes, aborts, retries, polls, or mutates the delegated child.
+- Trace inspection never resumes, aborts, retries, polls, or mutates the inspected session. Recovery mutations address only newly created hidden summarizer sessions.
 - When a delegated result failed, blocked, timed out, was cancelled, is empty, or is unclear, start with the deterministic forensic call:
 
 ```text
@@ -171,6 +171,7 @@ The repository fixture returns the lifecycle decision plus `errors`, `changed_fi
   "ok": true,
   "version": 2,
   "task_id": "child",
+  "target": { "id": "child", "relationship": "direct_child" },
   "lifecycle": { "state": "terminal", "terminal": true, "reason": "idle_and_closed" },
   "errors": [
     { "kind": "tool", "step": 4, "error": { "message": "one test failed" } },
@@ -214,7 +215,7 @@ The repository fixture returns the lifecycle decision plus `errors`, `changed_fi
 
 This excerpt omits `source`, `instruction`, `reasoning`, `content_dictionary`, `tool_dictionary`, `tool_rollup`, `open_tools`, and `render`. Dictionary references are one-based.
 
-Inspect those fields before relaunching. If semantic recovery would help build a fresh handoff, call `hive_task_trace({ task_id: "child", recovery: true })`. Recovery remains untrusted, and runtime evidence such as errors, fallback cards, compacted input, or invalid structure can force `semantic.safest_next_action.action` to `inspect` with no launch context. Any usable recovery context goes to a NEW `task()` call without `task_id`.
+Inspect those fields before relaunching. If semantic recovery would help build a fresh handoff, call `hive_task_trace({ task_id: "child", recovery: true })`. Recovery remains untrusted, and runtime evidence such as errors, fallback cards, compacted input, invalid structure, or a non-direct-child target forces `semantic.safest_next_action.action` to `inspect` with no launch context. Any usable recovery context goes to a NEW `task()` call without `task_id`.
 
 Long allowlisted values may be externalized. Follow the returned locator without guessing its contents:
 
@@ -222,15 +223,16 @@ Long allowlisted values may be externalized. Follow the returned locator without
 hive_task_trace_content({ task_id: "child", content_id: "<content_id from hive_task_trace>", offset: 0 })
 ```
 
-- `hive_task_trace({ task_id, recovery?: boolean })` authorizes once, reads `session.messages` once, reads status once, and normalizes every surviving source step in API order. Compaction fidelity describes the compacted surviving source; it does not claim pre-compaction completeness.
+- `hive_task_trace({ task_id, recovery?: boolean })` resolves the target once, captures messages and status, and normalizes every surviving source step in API order. A successful recovery attempt re-reads messages and status before publication; forensic reads do not perform that freshness pass. Compaction fidelity describes the compacted surviving source; it does not claim pre-compaction completeness.
 - Omitted or false `recovery` preserves the deterministic compact forensic v2 shape: complete timeline, reasoning counts, tool dictionary/rollup, structured errors, patch files, open tools, and source-backed content locators. Its 24 KiB soft target is advisory, not a cap. Irreducible larger reports stay `ok: true`; `render.actual_bytes` is exact.
 - Use `hive_task_trace({ task_id, recovery: true })` for a semantic handoff. It branches after the shared capture, normalization, and lifecycle decision and returns only lifecycle/source metadata, task instruction, the final response labelled `child_self_report`, recovery metadata, untrusted semantic phases/claims/action, deterministic structured errors, PatchPart file names, and exact render bytes. It excludes the forensic timeline/dictionaries/rollups/open tools, successful tool payloads, and raw reasoning. Long instruction/final/error values can carry a direct v2 `content_id` without a public dictionary.
-- Semantic recovery requires usable status and a closed, idle, non-summary assistant tail with no pending/running tools. Empty, active, or uncertain traces return `status: 'unavailable'`, ordered eligibility failures, `semantic: null`, and make zero model calls.
-- The mapper sends every captured step through UTF-8-safe requests of at most 20 KiB and requires exactly one semantic card per unique step. Split-step cards merge in fragment order. Any provider, schema, or cleanup failure falls back the whole affected step to an extractive card made only from assistant text, tool names/statuses, and structured errors; other batches continue once without retry. If no generated card survives, the reducer is skipped. Undeleted ephemeral sessions remain quarantined.
+- Semantic recovery requires a valid status map and a closed, idle, non-summary assistant tail with no pending/running tools. A missing target entry in a valid map means idle because OpenCode removes idle entries; an unavailable or invalid map is uncertain. Self, empty, active, or uncertain traces return `status: 'unavailable'`, ordered eligibility failures, `semantic: null`, and make zero model calls. `idle_and_closed` means only that the observed turn finished; it does not establish permanent session completion.
+- The mapper sends every captured step through UTF-8-safe requests sized from model metadata or the fixed fallback envelope, runs at most four hidden summarizer sessions concurrently, preserves batch order, and requires exactly one semantic card per unique step. Split-step cards merge in fragment order. Any provider, schema, or cleanup failure falls back the whole affected step to an extractive card made only from assistant text, tool names/statuses, and structured errors; other batches continue once without retry. If no generated card survives, the reducer is skipped. Undeleted ephemeral sessions remain quarantined.
 - The reducer consumes every ordered card plus deterministic error/file anchors. Generated phases must be 1-12 ordered, contiguous, non-overlapping ranges covering step 1 through N exactly; invalid output uses balanced deterministic fallback phases. Phase `basis` and `error_steps` are attached by the runtime. `source_steps` arrays are sorted context source coverage, not evidence or proof.
 - Recovery `status` is `complete`, `partial`, or `unavailable`; ordered `failures` retain concurrent provider/schema/coverage and cleanup causes. `cards_source` and `phases_source` identify generated, mixed, or fallback material. Semantic output is always `untrusted: true`; generated output uses `provenance: 'summarizer_interpretation'` and may restate plaintext reasoning sent transiently to the hidden, parentless, tool-less model.
-- The runtime, not the model, gates `safest_next_action`. Any partial/fallback result, deterministic error, compacted source, or invalid structure forces `inspect` with null context. Complete generated unfinished work permits only `launch_fresh_task` with nonempty self-contained context; complete work with no unfinished claims returns `review_completed_work`. Recovery never accepts, merges, retries, resumes, or auto-runs work.
-- `hive_task_trace_content({ task_id, content_id, offset? })` reauthorizes the direct parent, re-reads messages once, permits only the v2 non-reasoning field allowlist, and verifies byte length plus digest before returning a UTF-8-safe chunk of at most 8 KiB with `next_offset`. Changed or deleted fields return `stale_or_not_found`. No copied trace/blob store is created.
+- The runtime, not the model, gates `safest_next_action`. Any partial/fallback result, deterministic error, compacted source, invalid structure, or non-direct-child relationship forces `inspect` with null context. Complete generated unfinished work from a direct child permits only `launch_fresh_task` with nonempty self-contained context; complete work with no unfinished claims returns `review_completed_work`. Recovery never accepts, merges, retries, resumes, or auto-runs work.
+- After model processing, recovery re-fetches the target messages and status. A changed source digest, active target, or unavailable or invalid status map discards the generated projection without retry and returns an explicit freshness failure. A missing target entry in a valid map still means idle.
+- `hive_task_trace_content({ task_id, content_id, offset? })` re-resolves the runtime-visible target, re-reads messages once, permits only the v2 non-reasoning field allowlist, and verifies byte length plus digest before returning a UTF-8-safe chunk of at most 8 KiB with `next_offset`. Changed or deleted fields return `stale_or_not_found`. No copied trace/blob store is created.
 - Configure optional recovery interpretation under global `taskTraceSummarizer` (`model`, `variant`, `temperature` 0–2). Omitted model/variant use OpenCode defaults; temperature defaults to 0. This setting affects only `recovery: true` interpretation; forensic traces stay model-free. An unavailable configured model/variant produces deterministic partial fallback without provider retry. Operator reference: [Task trace summarizer](../README.md#task-trace-summarizer).
 - Recovery context is input for a NEW task without `task_id`; fresh-session-only delegation remains mandatory.
 
@@ -386,7 +388,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Worktree (task-backed) | 4 | start, create, commit, discard |
 | Ad-hoc Worktree | 4 | create, commit, merge, cleanup |
 | Background Orchestration | 4 | status, reconcile, batch reconcile, cancel |
-| Delegated Task Inspection | 2 | trace, source-backed content |
+| Runtime Session Inspection | 2 | trace, source-backed content |
 | Merge | 1 | merge |
 | Context | 4 | read, write, append, archive |
 | Operator Constraints | 4 | read, add, edit, clear |

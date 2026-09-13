@@ -17,6 +17,7 @@ const SUMMARIZER_ATTEMPT_MS = 120_000;
 const SEMANTIC_RECOVERY_MS = 300_000;
 const REDUCTION_RESERVE_MS = 120_000;
 const CLEANUP_ATTEMPT_MS = 10_000;
+const MAX_MAP_CONCURRENCY = 4;
 const MAX_SUMMARIZER_RESPONSE_PARTS = 8;
 const MAX_SUMMARIZER_RESPONSE_BYTES = 128 * 1024;
 const RECOVERY_PREVIEW_BYTES = 256;
@@ -36,6 +37,7 @@ type StepState = 'closed' | 'open' | 'malformed';
 type ContentField = typeof CONTENT_FIELDS[number];
 type ContentLocator = [2, number, number, number, number, string];
 type RecoveryBasis = 'observed' | 'reasoning' | 'mixed';
+type TargetRelationship = 'self' | 'direct_child' | 'other_session';
 type RecoveryFailureReason =
   | 'empty_trace'
   | 'ephemeral_cleanup_failed'
@@ -49,6 +51,7 @@ type RecoveryFailureReason =
   | 'recovery_deadline_exceeded'
   | 'runtime_active'
   | 'status_unavailable'
+  | 'summarizer_id_collision'
   | 'summarizer_unavailable'
   | 'summarizer_timeout'
   | 'tool_pending_or_running';
@@ -92,6 +95,10 @@ interface TaskTraceClient {
     abort(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
     delete(input: unknown): Promise<{ data?: unknown; error?: unknown }>;
   };
+}
+
+interface ResolvedTargetSession {
+  relationship: TargetRelationship;
 }
 
 export interface TaskTraceOptions {
@@ -324,20 +331,25 @@ function normalizeTrace(messages: unknown[]): TraceIR {
   };
 }
 
-async function authorizeDirectChild(
+async function resolveTargetSession(
   client: TaskTraceClient,
   directory: string,
   taskID: string,
-  parentID: string,
+  callerID: string,
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<ResolvedTargetSession | undefined> {
   try {
     const response = await client.session.get({ path: { id: taskID }, query: { directory }, ...(signal ? { signal } : {}) });
-    const child = record(response.data);
-    return child?.id === taskID && child.parentID === parentID;
+    const target = response.error === undefined ? record(response.data) : undefined;
+    if (target?.id !== taskID || (target.parentID !== undefined && typeof target.parentID !== 'string')) return undefined;
+    return {
+      relationship: taskID === callerID
+        ? 'self'
+        : target.parentID === callerID ? 'direct_child' : 'other_session',
+    };
   } catch {
     if (signal?.aborted) throw cancellationReason(signal);
-    return false;
+    return undefined;
   }
 }
 
@@ -469,7 +481,7 @@ function recoveryTerminalText(ir: TraceIR, lifecycle: RecordValue) {
   return terminalStep && text?.messageClosed ? { step: terminalStep, text } : undefined;
 }
 
-function projectReport(taskID: string, ir: TraceIR, lifecycle: RecordValue): {
+function projectReport(taskID: string, relationship: TargetRelationship, ir: TraceIR, lifecycle: RecordValue): {
   report: RecordValue;
   candidates: ExternalizationCandidate[];
 } {
@@ -559,6 +571,7 @@ function projectReport(taskID: string, ir: TraceIR, lifecycle: RecordValue): {
     ok: true,
     version: 2,
     task_id: taskID,
+    target: { id: taskID, relationship },
     lifecycle,
     source: {
       messages: ir.messageCount,
@@ -919,6 +932,7 @@ async function boundedCleanup<T>(
 
 async function promptEphemeral(
   options: TaskTraceOptions,
+  forbiddenSessionID: string,
   title: string,
   request: RecordValue,
   callerSignal: AbortSignal,
@@ -953,6 +967,7 @@ async function promptEphemeral(
     );
     const session = record(created.data);
     if (!session || typeof session.id !== 'string') throw new Error('create failed');
+    if (session.id === forbiddenSessionID) return { reasons: ['summarizer_id_collision'] };
     sessionID = session.id;
     options.ephemeralSessionIDs.add(sessionID);
     const body: RecordValue = {
@@ -1448,9 +1463,11 @@ function requestedRecoveryModel(options: TaskTraceOptions): RecordValue {
 
 async function recover(
   options: TaskTraceOptions,
+  taskID: string,
   ir: TraceIR,
+  relationship: TargetRelationship,
   callerSignal: AbortSignal,
-): Promise<{ recovery: RecordValue; semantic: RecordValue }> {
+): Promise<{ recovery: RecordValue; semantic: RecordValue | null }> {
   if (callerSignal.aborted) throw cancellationReason(callerSignal);
   const recoveryDeadline = Date.now() + SEMANTIC_RECOVERY_MS;
   const mapDeadline = recoveryDeadline - REDUCTION_RESERVE_MS;
@@ -1467,14 +1484,34 @@ async function recover(
     steps: number[];
     prompted: Awaited<ReturnType<typeof promptEphemeral>>;
   } | undefined> = new Array(batches.length);
-  await Promise.allSettled(batches.map(async (fragments, index) => {
-    if (callerSignal.aborted) throw cancellationReason(callerSignal);
-    if (Date.now() >= mapDeadline) return;
-    const { request, range, steps } = buildMapRequest(fragments, targetChars);
-    const prompted = await promptEphemeral(options, `Hive task trace map ${index + 1}`, request, callerSignal, mapDeadline);
-    outcomes[index] = { range, steps, prompted };
-  }));
+  let nextBatch = 0;
+  const workers = Array.from({ length: Math.min(MAX_MAP_CONCURRENCY, batches.length) }, async () => {
+    while (nextBatch < batches.length) {
+      const index = nextBatch;
+      nextBatch += 1;
+      if (callerSignal.aborted) throw cancellationReason(callerSignal);
+      if (Date.now() >= mapDeadline) return;
+      const { request, range, steps } = buildMapRequest(batches[index], targetChars);
+      const prompted = await promptEphemeral(options, taskID, `Hive task trace map ${index + 1}`, request, callerSignal, mapDeadline);
+      outcomes[index] = { range, steps, prompted };
+    }
+  });
+  await Promise.allSettled(workers);
   if (callerSignal.aborted) throw cancellationReason(callerSignal);
+
+  const collision = outcomes.find((outcome) => outcome?.prompted.reasons.includes('summarizer_id_collision'));
+  if (collision) {
+    return {
+      recovery: {
+        status: 'unavailable',
+        failures: [{ stage: 'map', range: collision.range, reasons: ['summarizer_id_collision'] }],
+        model: { requested: requestedRecoveryModel(options) },
+        cards_source: null,
+        phases_source: null,
+      },
+      semantic: null,
+    };
+  }
 
   for (const [index, fragments] of batches.entries()) {
     const outcome = outcomes[index];
@@ -1532,7 +1569,22 @@ async function recover(
     failures.push({ stage: 'reduce', reasons: ['no_successful_map_ranges'] });
   } else {
     const request = { kind: 'reduce', step_count: ir.steps.length, cards, anchors: recoveryAnchors(ir) };
-    const prompted = await promptEphemeral(options, 'Hive task trace semantic reduction', request, callerSignal, recoveryDeadline);
+    const prompted = await promptEphemeral(options, taskID, 'Hive task trace semantic reduction', request, callerSignal, recoveryDeadline);
+    if (prompted.reasons.includes('summarizer_id_collision')) {
+      return {
+        recovery: {
+          status: 'unavailable',
+          failures: [{ stage: 'reduce', reasons: ['summarizer_id_collision'] }],
+          model: {
+            requested: requestedRecoveryModel(options),
+            ...(observed ? { observed } : {}),
+          },
+          cards_source: null,
+          phases_source: null,
+        },
+        semantic: null,
+      };
+    }
     observed = observedModel(prompted.response) ?? observed;
     const providerFailed = prompted.reasons.some((reason) => (
       reason === 'summarizer_unavailable'
@@ -1561,7 +1613,8 @@ async function recover(
     || cardsSource !== 'generated'
     || phasesSource !== 'generated'
     || ir.compactionCount > 0
-    || ir.steps.some((step) => step.errors.length > 0);
+    || ir.steps.some((step) => step.errors.length > 0)
+    || relationship !== 'direct_child';
   return {
     recovery: {
       status,
@@ -1590,6 +1643,7 @@ function recoverySourceValue(source: SourceValue, inlineBytes: number): unknown 
 
 function recoveryProjection(
   taskID: string,
+  relationship: TargetRelationship,
   ir: TraceIR,
   lifecycle: RecordValue,
   recovery: RecordValue,
@@ -1610,6 +1664,7 @@ function recoveryProjection(
     ok: true,
     version: 2,
     task_id: taskID,
+    target: { id: taskID, relationship },
     lifecycle,
     source: {
       steps: ir.steps.length,
@@ -1709,23 +1764,46 @@ function readLocatedValue(messages: unknown[], locator: ContentLocator): unknown
 }
 
 export function createTaskTraceTools(options: TaskTraceOptions) {
+  const unavailableRecovery = (reason: string, stage = 'eligibility'): RecordValue => ({
+    status: 'unavailable',
+    failures: [{ stage, reasons: [reason] }],
+    model: { requested: requestedRecoveryModel(options) },
+    cards_source: null,
+    phases_source: null,
+  });
+
+  const readStatus = async (signal?: AbortSignal): Promise<RecordValue | undefined> => {
+    if (typeof options.client.session.status !== 'function') return undefined;
+    try {
+      const response = await options.client.session.status({
+        query: { directory: options.directory },
+        ...(signal ? { signal } : {}),
+      });
+      return response.error === undefined ? parseSessionStatusMap(response.data) : undefined;
+    } catch {
+      if (signal?.aborted) throw cancellationReason(signal);
+      return undefined;
+    }
+  };
+
   return {
     hive_task_trace: tool({
-      description: 'Inspect a directly delegated child when its result failed, blocked, timed out, was cancelled, is empty, or is unclear. Returns a read-only forensic v2 report with lifecycle, structured errors, changed files, tool activity, timeline, and latest/final response; optional terminal recovery is an untrusted semantic projection with runtime-safe next actions.',
+      description: 'Inspect any explicitly identified OpenCode session visible to the connected runtime when its result failed, blocked, timed out, was cancelled, is empty, or is unclear. Returns a read-only forensic v2 report with lifecycle, relationship, structured errors, changed files, tool activity, timeline, and latest/final response; optional recovery observes a finished turn and returns an untrusted semantic projection with runtime-safe next actions.',
       args: {
-        task_id: tool.schema.string().describe('Direct child OpenCode session ID returned by native task metadata.'),
-        recovery: tool.schema.boolean().optional().describe('Request the terminal-only semantic map/reduce projection. Defaults to false forensic output.'),
+        task_id: tool.schema.string().describe('OpenCode session ID visible through the connected runtime.'),
+        recovery: tool.schema.boolean().optional().describe('Request semantic map/reduce recovery for an observed idle-and-closed turn. Defaults to false forensic output; non-direct-child targets are inspect-only.'),
       },
       async execute({ task_id, recovery = false }, context) {
         if (recovery && context.abort.aborted) throw cancellationReason(context.abort);
         const unavailable = JSON.stringify({ ok: false, reason: 'unavailable_or_unauthorized' });
-        if (!(await authorizeDirectChild(
+        const target = await resolveTargetSession(
           options.client,
           options.directory,
           task_id,
           context.sessionID,
           recovery ? context.abort : undefined,
-        ))) return unavailable;
+        );
+        if (!target) return unavailable;
         let messages: unknown[];
         try {
           const response = await options.client.session.messages({
@@ -1739,51 +1817,81 @@ export function createTaskTraceTools(options: TaskTraceOptions) {
           if (recovery && context.abort.aborted) throw cancellationReason(context.abort);
           return unavailable;
         }
-        let status: RecordValue | undefined;
-        if (typeof options.client.session.status === 'function') {
-          try {
-            const response = await options.client.session.status({
-              query: { directory: options.directory },
-              ...(recovery ? { signal: context.abort } : {}),
-            });
-            status = response.error === undefined ? parseSessionStatusMap(response.data) : undefined;
-          } catch {
-            if (recovery && context.abort.aborted) throw cancellationReason(context.abort);
-            status = undefined;
-          }
-        }
+        const status = await readStatus(recovery ? context.abort : undefined);
         const ir = normalizeTrace(messages);
         const lifecycle = deriveLifecycle(ir, status, task_id);
         if (recovery) {
-          if (ir.steps.length === 0 || lifecycle.terminal !== true) {
-            const reason = ir.steps.length === 0 ? 'empty_trace' : String(lifecycle.reason);
-            const unavailableRecovery = {
-              status: 'unavailable',
-              failures: [{ stage: 'eligibility', reasons: [reason] }],
-              model: { requested: requestedRecoveryModel(options) },
-              cards_source: null,
-              phases_source: null,
-            };
-            return finalizeRecoveryProjection(recoveryProjection(task_id, ir, lifecycle, unavailableRecovery, null));
+          const ineligibleReason = target.relationship === 'self'
+            ? 'self_recovery_not_allowed'
+            : ir.steps.length === 0 ? 'empty_trace' : lifecycle.terminal !== true ? String(lifecycle.reason) : undefined;
+          if (ineligibleReason) {
+            return finalizeRecoveryProjection(recoveryProjection(
+              task_id,
+              target.relationship,
+              ir,
+              lifecycle,
+              unavailableRecovery(ineligibleReason),
+              null,
+            ));
           }
-          const recovered = await recover(options, ir, context.abort);
-          return finalizeRecoveryProjection(recoveryProjection(task_id, ir, lifecycle, recovered.recovery, recovered.semantic));
+          const recovered = await recover(options, task_id, ir, target.relationship, context.abort);
+          let refreshedMessages: unknown[] | undefined;
+          try {
+            const response = await options.client.session.messages({
+              path: { id: task_id },
+              query: { directory: options.directory },
+              signal: context.abort,
+            });
+            if (response.error === undefined && Array.isArray(response.data)) refreshedMessages = response.data;
+          } catch {
+            if (context.abort.aborted) throw cancellationReason(context.abort);
+          }
+          const refreshedStatus = await readStatus(context.abort);
+          const refreshedIR = refreshedMessages ? normalizeTrace(refreshedMessages) : ir;
+          const refreshedLifecycle = deriveLifecycle(refreshedIR, refreshedStatus, task_id);
+          const staleReason = !refreshedMessages
+            ? 'source_unavailable_after_recovery'
+            : refreshedIR.digest !== ir.digest
+              ? 'source_changed_after_recovery'
+              : refreshedStatus === undefined
+                ? 'status_unavailable_after_recovery'
+                : refreshedLifecycle.state === 'active'
+                  ? 'runtime_active_after_recovery'
+                  : refreshedLifecycle.terminal !== true ? 'lifecycle_changed_after_recovery' : undefined;
+          if (staleReason) {
+            return finalizeRecoveryProjection(recoveryProjection(
+              task_id,
+              target.relationship,
+              refreshedIR,
+              refreshedLifecycle,
+              unavailableRecovery(staleReason, 'freshness'),
+              null,
+            ));
+          }
+          return finalizeRecoveryProjection(recoveryProjection(
+            task_id,
+            target.relationship,
+            refreshedIR,
+            refreshedLifecycle,
+            recovered.recovery,
+            recovered.semantic,
+          ));
         }
-        const projected = projectReport(task_id, ir, lifecycle);
+        const projected = projectReport(task_id, target.relationship, ir, lifecycle);
         return finalizeReport(projected.report, projected.candidates);
       },
     }),
     hive_task_trace_content: tool({
-      description: 'Re-read one authorized source-backed non-reasoning task trace field by v2 content ID using UTF-8-safe byte chunks.',
+      description: 'Re-read one runtime-visible source-backed non-reasoning session trace field by v2 content ID using UTF-8-safe byte chunks.',
       args: {
-        task_id: tool.schema.string().describe('Direct child OpenCode session ID returned by native task metadata.'),
+        task_id: tool.schema.string().describe('OpenCode session ID visible through the connected runtime.'),
         content_id: tool.schema.string().describe('Opaque v2 source locator returned by hive_task_trace.'),
         offset: tool.schema.number().optional().describe('UTF-8 byte offset. Defaults to zero.'),
       },
       async execute({ task_id, content_id, offset = 0 }, context) {
         const locator = decodeLocator(content_id);
         if (!locator) return JSON.stringify({ ok: false, reason: 'invalid_content_id' });
-        if (!(await authorizeDirectChild(options.client, options.directory, task_id, context.sessionID))) {
+        if (!(await resolveTargetSession(options.client, options.directory, task_id, context.sessionID))) {
           return JSON.stringify({ ok: false, reason: 'unavailable_or_unauthorized' });
         }
         try {
@@ -1857,7 +1965,7 @@ export async function injectTaskTraceHint(
         type: 'text',
         synthetic: true,
         hiveTaskTraceHint: true,
-        text: `[hive task trace] This task result is empty or terminally unsuccessful. Inspect the direct child before relaunching with hive_task_trace({ task_id: ${JSON.stringify(childID)} }); read errors, changed_files, tool activity, and the latest/final response first. Recovery context belongs in a NEW task without task_id.`,
+        text: `[hive task trace] This task result is empty or terminally unsuccessful. Inspect the runtime-visible session before relaunching with hive_task_trace({ task_id: ${JSON.stringify(childID)} }); read errors, changed_files, tool activity, and the latest/final response first. Recovery context belongs in a NEW task without task_id.`,
       });
       break;
     }
