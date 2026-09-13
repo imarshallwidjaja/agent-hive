@@ -1424,7 +1424,6 @@ const plugin: Plugin = async (ctx) => {
     const failure = error as { reason?: string; message?: string; details?: Record<string, unknown> };
     if (!failure.reason) throw error;
     const nextAction = {
-      durable_context_limit: 'Read the context summary, then consolidate or archive stale durable files before retrying.',
       invalid_archive_reason: 'Retry hive_context_archive with a specific non-blank reason.',
       invalid_argument: 'Correct the supplied arguments, read current feature/task or context state, and retry.',
       invalid_context_kind: 'Omit kind for reserved names; otherwise use durable or evidence.',
@@ -6543,7 +6542,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       hive_context_archive: tool({
         description: 'Archive only named scoped context files after hive_context_read. Requires primary management authorization, current revision, each selected name\'s actual content hash, and an explicit reason.',
         args: {
-          names: tool.schema.array(tool.schema.string()).describe('Context names to archive.'),
+          names: tool.schema.array(tool.schema.string()).max(50).describe('Context names to archive (maximum 50).'),
           reason: tool.schema.string().describe('Specific reason for archiving these files.'),
           expectedRevision: tool.schema.number().describe('Revision from hive_context_read.'),
           expectedContentHashes: tool.schema.record(tool.schema.string(), tool.schema.string()).describe('Map of every selected context name to its actual contentHash from named hive_context_read calls.'),

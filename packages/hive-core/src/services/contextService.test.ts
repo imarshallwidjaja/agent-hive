@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { ContextService } from './contextService.js';
+import { ContextService, CONTEXT_CANDIDATE_MAX, CONTEXT_NAMESPACE_ENTRY_MAX } from './contextService.js';
 import { getProjectContextPath } from '../utils/paths.js';
 
 const TEST_DIR = '/tmp/hive-core-contextservice-services-test-' + process.pid;
@@ -287,7 +287,7 @@ describe('ContextService managed context', () => {
     expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'outside'))).toBe(false);
   });
 
-  it('requires discovery metadata on managed durable creates', () => {
+  it('requires discovery metadata on managed durable creates and replacements', () => {
     setupFeature('metadata');
 
     expect(() => service.create('metadata', 'missing', 'raw body')).toThrow('description');
@@ -301,6 +301,20 @@ describe('ContextService managed context', () => {
     const frontmatter = '---\ndescription: Boundary metadata\nread_when: Read for boundary checks.\n---\n\n';
     const boundaryContent = `${frontmatter}${'x'.repeat(8191 - Buffer.byteLength(frontmatter))}😀`;
     expect(service.create('metadata', 'boundary', boundaryContent).file.description).toBe('Boundary metadata');
+
+    expect(() => service.replace('metadata', 'notes', 'missing metadata', created.revision + 1, created.file.contentHash))
+      .toThrow('description');
+    expect(service.read('metadata', 'notes')).toBe(durable('raw body'));
+
+    const project = service.create({ type: 'project' }, 'project-notes', projectDurable('project body'));
+    expect(() => service.replace(
+      { type: 'project' },
+      'project-notes',
+      durable('missing project governance'),
+      project.revision,
+      project.file.contentHash,
+    )).toThrow('owner');
+    expect(service.read({ type: 'project' }, 'project-notes')).toBe(projectDurable('project body'));
   });
 
   it('rejects executable or ambiguous YAML metadata and keeps unknown keys non-authoritative', () => {
@@ -550,6 +564,46 @@ describe('ContextService managed context', () => {
     }
   });
 
+  it('aborts namespace and recovery enumeration while streaming the first over-limit entry', () => {
+    setupFeature('streaming-inventory-limit');
+    const contextPath = path.join(TEST_DIR, '.hive/features/streaming-inventory-limit/context');
+    fs.mkdirSync(contextPath, { recursive: true });
+    let reads = 0;
+    let closes = 0;
+    let markdownEntries = false;
+    const opendir = spyOn(fs, 'opendirSync').mockImplementation((() => ({
+      readSync() {
+        reads += 1;
+        return {
+          name: `entry-${reads}${markdownEntries ? '.md' : ''}`,
+          isFile: () => true,
+          isDirectory: () => false,
+          isSymbolicLink: () => false,
+        };
+      },
+      closeSync() { closes += 1; },
+    })) as unknown as typeof fs.opendirSync);
+    try {
+      expect(() => service.readSummary('streaming-inventory-limit')).toThrow('namespace');
+      expect(reads).toBe(CONTEXT_NAMESPACE_ENTRY_MAX + 1);
+      expect(closes).toBe(1);
+
+      reads = 0;
+      expect(() => service.readRecoverySummary('streaming-inventory-limit', { diagnosticMode: 'primary-management' }))
+        .toThrow('namespace');
+      expect(reads).toBe(CONTEXT_NAMESPACE_ENTRY_MAX + 1);
+      expect(closes).toBe(2);
+
+      reads = 0;
+      markdownEntries = true;
+      expect(() => service.readSummary('streaming-inventory-limit')).toThrow('Markdown candidates');
+      expect(reads).toBe(CONTEXT_CANDIDATE_MAX + 1);
+      expect(closes).toBe(3);
+    } finally {
+      opendir.mockRestore();
+    }
+  });
+
   it('uses Unicode code-point ordering with locale-independent ASCII query folding', () => {
     setupFeature('code-point-order');
     for (const name of ['éclair', 'alpha', 'Zulu']) service.create('code-point-order', name, durable(name, `CASE ${name}`));
@@ -666,13 +720,14 @@ describe('ContextService managed context', () => {
     service.create('write-overwrite', 'contract', durable('first'));
 
     const current = service.readContent('write-overwrite', 'contract')!;
-    const result = service.write('write-overwrite', 'contract.md', 'replacement bytes', current.revision, current.file.contentHash!);
+    const replacement = durable('replacement bytes');
+    const result = service.write('write-overwrite', 'contract.md', replacement, current.revision, current.file.contentHash!);
 
     expect(result).toContain(path.join('context', 'contract.md'));
-    expect(service.read('write-overwrite', 'contract')).toBe('replacement bytes');
+    expect(service.read('write-overwrite', 'contract')).toBe(replacement);
     expect(service.readSummary('write-overwrite')).toMatchObject({
       revision: 2,
-      durable: { fileCount: 1, chars: null, bytes: 17 },
+      durable: { fileCount: 1, chars: null, bytes: Buffer.byteLength(replacement) },
     });
   });
 
@@ -749,15 +804,15 @@ describe('ContextService managed context', () => {
     service.create('locked-reads', 'notes', durable('snapshot bytes'));
     const contextPath = path.join(TEST_DIR, '.hive', 'features', 'locked-reads', 'context');
     const lockPath = path.join(contextPath, 'index.json.lock');
-    const originalReaddirSync = fs.readdirSync;
+    const originalOpendirSync = fs.opendirSync;
     let observations = 0;
-    const readdirSpy = spyOn(fs, 'readdirSync').mockImplementation(((targetPath, options) => {
+    const opendirSpy = spyOn(fs, 'opendirSync').mockImplementation(((targetPath, options) => {
       if (String(targetPath) === contextPath) {
         observations += 1;
         expect(fs.existsSync(lockPath)).toBe(false);
       }
-      return originalReaddirSync(targetPath, options as never);
-    }) as typeof fs.readdirSync);
+      return originalOpendirSync(targetPath, options as never);
+    }) as typeof fs.opendirSync);
 
     try {
       expect(service.list('locked-reads')).toHaveLength(1);
@@ -766,7 +821,7 @@ describe('ContextService managed context', () => {
       expect(service.readSummary('locked-reads').files).toHaveLength(1);
       expect(service.readContent('locked-reads', 'notes')?.file.content).toBe(durable('snapshot bytes'));
     } finally {
-      readdirSpy.mockRestore();
+      opendirSpy.mockRestore();
     }
 
     expect(observations).toBeGreaterThanOrEqual(5);
@@ -825,7 +880,7 @@ describe('ContextService managed context', () => {
     }
 
     const read = service.readContent('over-limit', 'legacy-0')!;
-    const shrink = service.replace('over-limit', 'legacy-0', 'shorter', 0, read.file.contentHash!);
+    const shrink = service.replace('over-limit', 'legacy-0', durable('shorter'), 0, read.file.contentHash!);
     expect(shrink.revision).toBe(1);
     expect(service.append('over-limit', 'legacy-0', 'growth', shrink.revision, shrink.file.contentHash).revision).toBe(2);
     expect(service.create('over-limit', 'another', durable('new')).revision).toBe(3);
@@ -841,7 +896,7 @@ describe('ContextService managed context', () => {
     }
 
     const read = service.readContent('file-count-overage', 'legacy-0')!;
-    expect(service.replace('file-count-overage', 'legacy-0', 'xx', 0, read.file.contentHash!).revision).toBe(1);
+    expect(service.replace('file-count-overage', 'legacy-0', durable('xx'), 0, read.file.contentHash!).revision).toBe(1);
   });
 
   it('reports exact characters only for an explicit management scan', () => {
@@ -870,6 +925,31 @@ describe('ContextService managed context', () => {
     expect(service.read('archive-selected', 'remove')).toBeNull();
     expect(fs.readFileSync(result.archived[0]!.archivePath, 'utf-8')).toBe(durable('remove'));
     expect(result.archived[0]?.reason).toBe('superseded');
+  });
+
+  it('archives at most 50 selected names', () => {
+    setupFeature('archive-name-limit');
+    const hashes: Record<string, string> = {};
+    let revision = 0;
+    const names = Array.from({ length: 50 }, (_, index) => `note-${String(index).padStart(2, '0')}`);
+    for (const name of names) {
+      const created = service.create('archive-name-limit', name, 'evidence', { kind: 'evidence' });
+      hashes[name] = created.file.contentHash;
+      revision = created.revision;
+    }
+    hashes['one-too-many'] = '0'.repeat(64);
+
+    expect(() => service.archiveSelected(
+      'archive-name-limit',
+      [...names, 'one-too-many'],
+      'too many names',
+      revision,
+      hashes,
+    )).toThrow('At most 50 archive names');
+    expect(service.readSummary('archive-name-limit').files).toHaveLength(50);
+
+    const archived = service.archiveSelected('archive-name-limit', names, 'bounded archive', revision, hashes);
+    expect(archived.archived).toHaveLength(50);
   });
 
   it('preserves repeated archives of a recreated name at a fixed timestamp', () => {
@@ -922,7 +1002,7 @@ describe('ContextService managed context', () => {
     expect(service.replace(
       'kind-transitions',
       'legacy-0',
-      'y'.repeat(5001),
+      durable('y'.repeat(5001)),
       reduced.revision,
       reduced.file.contentHash,
       { kind: 'durable' },
@@ -946,13 +1026,13 @@ describe('ContextService managed context', () => {
     const transitioned = service.replace(
       'cross-cap-transition',
       'raw-log',
-      'y',
+      durable('y'),
       evidence.revision,
       evidence.file.contentHash,
       { kind: 'durable' },
     );
     expect(transitioned.revision).toBe(2);
-    expect(service.read('cross-cap-transition', 'raw-log')).toBe('y');
+    expect(service.read('cross-cap-transition', 'raw-log')).toBe(durable('y'));
   });
 
 });

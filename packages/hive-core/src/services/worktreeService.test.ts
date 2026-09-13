@@ -922,6 +922,71 @@ describe("WorktreeService composite workspaces", () => {
     expect((await service.get(feature, task))?.repos?.api.path).toBe(created.repos?.api.path);
   });
 
+  it.each([
+    ['merge', async (fixture: TestFixture) => {
+      const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+      if (!result.success) throw new Error(result.error);
+      return result;
+    }],
+    ['remove', (fixture: TestFixture) => fixture.service.remove(fixture.feature, fixture.task)],
+    ['cleanup', (fixture: TestFixture) => fixture.service.cleanup(fixture.feature)],
+    ['export', (fixture: TestFixture) => fixture.service.exportPatch(fixture.feature, fixture.task)],
+  ])('rejects former-root linkage before %s can use or mutate it', async (_operation, invoke) => {
+    const fixture = await createFixture();
+    const former = await createTempRepo();
+    const formerWorktree = path.join(former.repoPath, 'former-worktree');
+    await former.repoGit.raw(['worktree', 'add', '-b', 'former-task', formerWorktree, 'HEAD']);
+    const formerPointer = await fs.readFile(path.join(formerWorktree, '.git'), 'utf8');
+    const localPointerPath = path.join(fixture.worktreePath, '.git');
+    await fs.writeFile(localPointerPath, formerPointer, 'utf8');
+    const preserved = [
+      localPointerPath,
+      path.join(fixture.worktreePath, 'tracked.txt'),
+      path.join(formerWorktree, '.git'),
+      path.join(formerWorktree, 'tracked.txt'),
+    ];
+    const before = await Promise.all(preserved.map(file => fs.readFile(file)));
+    const forbiddenAccess: string[] = [];
+    const fsSpies = ['access', 'stat', 'lstat', 'readFile', 'realpath', 'readdir', 'open'].map(name => {
+      const original = (fs as any)[name];
+      return spyOn(fs as any, name).mockImplementation((file: any, ...args: any[]) => {
+        const candidate = String(file);
+        if (candidate === former.repoPath || candidate.startsWith(`${former.repoPath}${path.sep}`)) {
+          forbiddenAccess.push(`${name}:${candidate}`);
+        }
+        return original(file, ...args);
+      });
+    });
+    const gitCalls: Array<{ cwd: string | undefined; method: PropertyKey; args: unknown[] }> = [];
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          const value = Reflect.get(target, key);
+          if (typeof value !== 'function') return value;
+          return (...args: unknown[]) => {
+            gitCalls.push({ cwd, method: key, args });
+            return value.apply(target, args);
+          };
+        },
+      });
+    });
+    try {
+      await expect(invoke(fixture)).rejects.toThrow(/administration entry is outside the trusted Git common directory/);
+      expect(forbiddenAccess).toEqual([]);
+      expect(gitCalls).toEqual([{
+        cwd: fixture.repoPath,
+        method: 'raw',
+        args: [['rev-parse', '--git-common-dir']],
+      }]);
+    } finally {
+      fsSpies.forEach(spy => spy.mockRestore());
+      gitSpy.mockRestore();
+    }
+    expect(await Promise.all(preserved.map(file => fs.readFile(file)))).toEqual(before);
+  });
+
   it.each(['commondir', 'gitdir', 'entry-symlink', 'metadata-symlink', 'topology'])('rejects %s corruption before suspect Git or former-path access', async (fault) => {
     const fx = await createCompositeFixture({ repoIds: ['api'] });
     const created = await fx.service.create(fx.feature, fx.task);
@@ -1477,7 +1542,7 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.success).toBe(false);
     expect(result.partial).toBe(false);
     expect(result.error).toMatch(/web-ui/);
-    expect(result.error).toMatch(/branch|not found/i);
+    expect(result.error).toMatch(/linkage preflight|branch|not found/i);
     // No mutation in api despite preflight failing in web-ui
     expect((await fx.repos['api'].git.revparse(['HEAD'])).trim()).toBe(before);
   });

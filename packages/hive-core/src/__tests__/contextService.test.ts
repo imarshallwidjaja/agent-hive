@@ -27,6 +27,10 @@ function seedLegacy(featureName: string, name: string, content: string): void {
   fs.writeFileSync(path.join(directory, `${name}.md`), content);
 }
 
+function durable(content: string): string {
+  return `---\ndescription: Compatibility context\nread_when: Read when testing compatibility operations.\n---\n\n${content}`;
+}
+
 describe('ContextService', () => {
   let service: ContextService;
 
@@ -137,12 +141,13 @@ describe('ContextService', () => {
       seedLegacy(featureName, 'large1', 'x'.repeat(15000));
       seedLegacy(featureName, 'large2', 'before');
       const current = service.readContent(featureName, 'large2')!;
-      const result = service.write(featureName, 'large2', 'y'.repeat(6000), current.revision, current.file.contentHash!);
+      const replacement = durable('y'.repeat(6000));
+      const result = service.write(featureName, 'large2', replacement, current.revision, current.file.contentHash!);
 
       expect(result).toContain(path.join('context', 'large2.md'));
       expect(service.readSummary(featureName, { scanChars: true }).durable).toMatchObject({
         fileCount: 2,
-        chars: 21000,
+        chars: 15000 + replacement.length,
         overLimit: false,
       });
     });
@@ -154,7 +159,7 @@ describe('ContextService', () => {
       seedLegacy(featureName, 'small1', 'x'.repeat(5000));
       seedLegacy(featureName, 'small2', 'before');
       const current = service.readContent(featureName, 'small2')!;
-      const result = service.write(featureName, 'small2', 'y'.repeat(5000), current.revision, current.file.contentHash!);
+      const result = service.write(featureName, 'small2', durable('y'.repeat(5000)), current.revision, current.file.contentHash!);
 
       expect(result).toContain(path.join('context', 'small2.md'));
     });

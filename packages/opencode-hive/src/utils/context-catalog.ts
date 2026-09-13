@@ -21,6 +21,27 @@ export function assembleLiveContextCatalogs(
   const envelopeBytes = Buffer.byteLength(JSON.stringify(envelope), 'utf8');
   const catalogCount = Math.max(1, scopes.length);
   const share = Math.floor((LIVE_CONTEXT_CATALOG_MAX_BYTES - markerBytes - envelopeBytes + 2 - (catalogCount - 1)) / catalogCount);
+  const unavailable = (scope: ContextScope, failure?: { reason?: string; message?: string; details?: Record<string, unknown> }) => {
+    if (failure) {
+      const detailed = {
+        scope,
+        status: 'unavailable',
+        reason: failure.reason ?? 'context_catalog_error',
+        error: failure.message ?? 'Context catalog is unavailable.',
+        ...(failure.details ?? {}),
+      };
+      if (Buffer.byteLength(JSON.stringify(detailed), 'utf8') <= share) return detailed;
+    }
+    const bounded = {
+      scope,
+      status: 'unavailable',
+      reason: 'context_response_too_large',
+      error: `The catalog exceeds its ${share}-byte automatic delivery share. Use hive_context_read directly.`,
+    };
+    return Buffer.byteLength(JSON.stringify(bounded), 'utf8') <= share
+      ? bounded
+      : { status: 'unavailable', reason: 'context_response_too_large' };
+  };
   const catalogs = scopes.map(scope => {
     for (let limit = 10; limit >= 1; limit -= 1) {
       try {
@@ -29,27 +50,20 @@ export function assembleLiveContextCatalogs(
         if (Buffer.byteLength(JSON.stringify(entry), 'utf8') <= share) return entry;
       } catch (error) {
         const failure = error as { reason?: string; message?: string; details?: Record<string, unknown> };
-        return {
-          scope,
-          status: 'unavailable',
-          reason: failure.reason ?? 'context_catalog_error',
-          error: failure.message ?? String(error),
-          ...(failure.details ?? {}),
-        };
+        return unavailable(scope, { ...failure, message: failure.message ?? String(error) });
       }
     }
-    return {
-      scope,
-      status: 'unavailable',
-      reason: 'context_response_too_large',
-      error: `The first catalog page exceeds its ${share}-byte automatic delivery share. Use hive_context_read directly.`,
-    };
+    return unavailable(scope);
   });
   const payload = { ...envelope, catalogs };
   const text = `${LIVE_CONTEXT_CATALOG_MARKER}\n${JSON.stringify(payload)}`;
   const bytes = Buffer.byteLength(text, 'utf8');
   if (bytes > LIVE_CONTEXT_CATALOG_MAX_BYTES) {
-    throw new Error(`Live context catalogs exceed the ${LIVE_CONTEXT_CATALOG_MAX_BYTES}-byte automatic delivery limit.`);
+    const fallbackText = `${LIVE_CONTEXT_CATALOG_MARKER}\n${JSON.stringify({
+      ...envelope,
+      catalogs: [{ status: 'unavailable', reason: 'context_response_too_large' }],
+    })}`;
+    return { text: fallbackText, bytes: Buffer.byteLength(fallbackText, 'utf8') };
   }
   return { text, bytes };
 }

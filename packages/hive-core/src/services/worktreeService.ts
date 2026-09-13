@@ -225,6 +225,24 @@ export class WorktreeService {
     }
   }
 
+  private trustedRepositoriesForManifest(manifest: WorkspaceManifest): Map<string, ResolvedRepository> {
+    const trustedRepositories = this.resolveRepositories();
+    if (!trustedRepositories?.length) {
+      throw new Error('Worktree linkage preflight failed: trusted repository topology is unavailable');
+    }
+    const trustedById = new Map(trustedRepositories.map(repository => [repository.id, repository]));
+    for (const [id, entry] of Object.entries(manifest.repos)) {
+      const trusted = trustedById.get(id);
+      if (!trusted
+        || entry.repoRoot !== trusted.root
+        || path.resolve(entry.repoPath) !== path.resolve(trusted.path)
+        || entry.path !== path.posix.join('repos', id)) {
+        throw new Error(`Worktree linkage preflight failed for repository ${id}: workspace topology does not match the trusted repository manifest`);
+      }
+    }
+    return trustedById;
+  }
+
   private getWorktreesDir(): string {
     return path.join(this.config.hiveDir, ".worktrees");
   }
@@ -562,20 +580,10 @@ export class WorktreeService {
       const repos: Record<string, WorktreeRepoInfo> = {};
       const baseCommits: Record<string, string> = { ...manifest.baseCommits };
       const repoIds = Object.keys(manifest.repos);
-      const trustedRepositories = this.resolveRepositories();
-      if (!trustedRepositories?.length) {
-        throw new Error('Worktree linkage preflight failed: trusted repository topology is unavailable');
-      }
-      const trustedById = new Map(trustedRepositories.map(repository => [repository.id, repository]));
+      const trustedById = this.trustedRepositoriesForManifest(manifest);
       for (const id of repoIds) {
         const entry = manifest.repos[id]!;
-        const trusted = trustedById.get(id);
-        if (!trusted
-          || entry.repoRoot !== trusted.root
-          || path.resolve(entry.repoPath) !== path.resolve(trusted.path)
-          || entry.path !== path.posix.join('repos', id)) {
-          throw new Error(`Worktree linkage preflight failed for repository ${id}: workspace topology does not match the trusted repository manifest`);
-        }
+        const trusted = trustedById.get(id)!;
         const repoWtPath = path.join(compositeRoot, entry.path);
         await this.validateExactWorktreeRegistration(repoWtPath, trusted.path, id);
         let commit = manifest.repos[id].commit;
@@ -740,6 +748,7 @@ export class WorktreeService {
   }
 
   async exportPatch(feature: string, step: string, baseBranch?: string): Promise<string> {
+    await this.get(feature, step);
     const worktreePath = this.getWorktreePath(feature, step);
     const patchPath = path.join(worktreePath, "..", `${step}.patch`);
     const base = baseBranch || "HEAD~1";
@@ -841,6 +850,7 @@ export class WorktreeService {
     deleteBranch = false,
     options: RemoveOptions = {},
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
+    await this.get(feature, step);
     const manifest = await this.readWorkspaceManifest(feature, step);
     if (manifest) {
       return this.removeComposite(feature, step, manifest, deleteBranch, options);
@@ -900,8 +910,7 @@ export class WorktreeService {
     options: RemoveOptions = {},
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
     const compositeRoot = this.getCompositeRoot(feature, step);
-    const resolved = this.resolveRepositories();
-    const reposById = new Map((resolved ?? []).map(r => [r.id, r]));
+    const reposById = this.trustedRepositoriesForManifest(manifest);
 
     let allWorktreesRemoved = true;
     let allBranchesDeleted = true;
@@ -909,13 +918,12 @@ export class WorktreeService {
     let branchAttempts = 0;
 
     for (const [repoId, entry] of Object.entries(manifest.repos)) {
-      const repoRoot = entry.repoRoot || reposById.get(repoId)?.path;
+      const repositoryPath = reposById.get(repoId)!.path;
       const perRepo = await this.removeCompositeRepo(
         feature,
         step,
-        repoId,
         entry,
-        repoRoot,
+        repositoryPath,
         deleteBranch,
         options,
       );
@@ -971,8 +979,9 @@ export class WorktreeService {
 
       for (const feat of features) {
         const featurePath = path.join(worktreesDir, feat);
-        const stat = await fs.stat(featurePath).catch(() => null);
+        const stat = await fs.lstat(featurePath).catch(() => null);
 
+        if (stat?.isSymbolicLink()) throw new Error(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
         if (!stat?.isDirectory()) continue;
 
         const steps = await fs.readdir(featurePath).catch(() => []);
@@ -993,37 +1002,42 @@ export class WorktreeService {
 
   async cleanup(feature?: string): Promise<{ removed: string[]; pruned: boolean }> {
     const removed: string[] = [];
-    const git = this.getGit();
-
-    try {
-      await git.raw(["worktree", "prune"]);
-    } catch {
-      /* intentional */
-    }
 
     const worktreesDir = this.getWorktreesDir();
     const features = feature ? [feature] : await fs.readdir(worktreesDir).catch(() => []);
 
-    for (const feat of features) {
-      const featurePath = path.join(worktreesDir, feat);
-      const stat = await fs.stat(featurePath).catch(() => null);
+      for (const feat of features) {
+        const featurePath = path.join(worktreesDir, feat);
+        const stat = await fs.lstat(featurePath).catch(() => null);
 
-      if (!stat?.isDirectory()) continue;
+        if (stat?.isSymbolicLink()) throw new Error(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
+        if (!stat?.isDirectory()) continue;
 
       const steps = await fs.readdir(featurePath).catch(() => []);
 
       for (const step of steps) {
         const worktreePath = path.join(featurePath, step);
-        const stepStat = await fs.stat(worktreePath).catch(() => null);
+        const stepStat = await fs.lstat(worktreePath).catch(() => null);
 
+        if (stepStat?.isSymbolicLink()) throw new Error(`Worktree linkage preflight failed: path contains a symlink (${worktreePath})`);
         if (!stepStat?.isDirectory()) continue;
 
         const manifest = await this.readWorkspaceManifest(feat, step);
         if (manifest) {
+          const trustedById = this.trustedRepositoriesForManifest(manifest);
           // Composite: stale if any per-repo worktree fails revparse
           let stale = false;
-          for (const [, entry] of Object.entries(manifest.repos)) {
+          for (const [repoId, entry] of Object.entries(manifest.repos)) {
             const repoWt = path.join(worktreePath, entry.path);
+            const repoStat = await fs.lstat(repoWt).catch((error: NodeJS.ErrnoException) => {
+              if (error.code === 'ENOENT') return null;
+              throw error;
+            });
+            if (!repoStat) {
+              stale = true;
+              continue;
+            }
+            await this.validateExactWorktreeRegistration(repoWt, trustedById.get(repoId)!.path, repoId);
             try {
               await this.getGit(repoWt).revparse(["HEAD"]);
             } catch {
@@ -1032,22 +1046,28 @@ export class WorktreeService {
             }
           }
           if (stale) {
-            await this.remove(feat, step, false);
+            await this.removeComposite(feat, step, manifest, false);
             removed.push(worktreePath);
           }
           continue;
         }
 
+        await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
         try {
           const worktreeGit = this.getGit(worktreePath);
           await worktreeGit.revparse(["HEAD"]);
         } catch {
-          await this.remove(feat, step, false);
+          await this.removeLegacy(feat, step, false);
           removed.push(worktreePath);
         }
       }
     }
 
+    try {
+      await this.getGit().raw(["worktree", "prune"]);
+    } catch {
+      /* intentional */
+    }
     return { removed, pruned: true };
   }
 
@@ -1256,6 +1276,35 @@ export class WorktreeService {
       };
     }
 
+    let registered: WorktreeInfo | null;
+    try {
+      registered = await this.get(feature, step);
+    } catch (error) {
+      return {
+        success: false,
+        merged: false,
+        strategy,
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none',
+        cleanup: emptyCleanup,
+        error: error instanceof Error ? error.message : String(error),
+        partial: false,
+      };
+    }
+    if (!registered) {
+      return {
+        success: false,
+        merged: false,
+        strategy,
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none',
+        cleanup: emptyCleanup,
+        error: 'Worktree linkage preflight failed: task worktree is not registered',
+        partial: false,
+      };
+    }
     const manifest = await this.readWorkspaceManifest(feature, step);
     if (manifest) {
       return this.mergeComposite(feature, step, manifest, strategy, message, {
@@ -1301,6 +1350,7 @@ export class WorktreeService {
     options: { cleanup: 'none' | 'worktree' | 'worktree+branch'; preserveConflicts: boolean },
   ): Promise<MergeResult> {
     const repoIds = Object.keys(manifest.repos).sort();
+    const trustedById = this.trustedRepositoriesForManifest(manifest);
     const emptyCleanup = {
       worktreeRemoved: false,
       branchDeleted: false,
@@ -1322,10 +1372,7 @@ export class WorktreeService {
     // Preflight all repos before any mutation
     for (const repoId of repoIds) {
       const entry = manifest.repos[repoId];
-      const repoRoot = entry.repoRoot || entry.repoPath;
-      if (!repoRoot) {
-        return preflightFailure(repoId, 'missing source repo root in workspace manifest');
-      }
+      const repoRoot = trustedById.get(repoId)!.path;
       const repoGit = this.getGit(repoRoot);
 
       // Branch must exist in the source repo
@@ -1401,7 +1448,7 @@ export class WorktreeService {
 
     for (const repoId of repoIds) {
       const entry = manifest.repos[repoId];
-      const repoRoot = entry.repoRoot || entry.repoPath;
+      const repoRoot = trustedById.get(repoId)!.path;
       const repoGit = this.getGit(repoRoot);
       const repoResult = await this.mergeOneRepo({
         git: repoGit,
@@ -1466,11 +1513,10 @@ export class WorktreeService {
       const perRepoCleanups: Array<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> = [];
       for (const repoId of repoIds) {
         const entry = manifest.repos[repoId];
-        const repoRoot = entry.repoRoot || entry.repoPath;
+        const repoRoot = trustedById.get(repoId)!.path;
         const repoCleanup = await this.removeCompositeRepo(
           feature,
           step,
-          repoId,
           entry,
           repoRoot,
           deleteBranch,
@@ -1562,37 +1608,33 @@ export class WorktreeService {
   private async removeCompositeRepo(
     feature: string,
     step: string,
-    repoId: string,
     entry: WorkspaceManifestEntry,
-    repoRoot: string | undefined,
+    repositoryPath: string,
     deleteBranch: boolean,
     options: RemoveOptions = {},
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
     const compositeRoot = this.getCompositeRoot(feature, step);
     const repoWtPath = path.join(compositeRoot, entry.path);
-    const repoGit = repoRoot ? this.getGit(repoRoot) : null;
-    void repoId;
+    const repoGit = this.getGit(repositoryPath);
 
     let worktreeRemoved = false;
     let pruned = false;
     let branchDeleted = false;
 
-    if (repoGit) {
-      if (deleteBranch) {
-        await this.assertBranchDeletionSafe(repoGit, entry.branch, options.allowUnmergedCommits === true);
-      }
-      try {
-        await repoGit.raw(['worktree', 'remove', repoWtPath, '--force']);
-        worktreeRemoved = true;
-      } catch {
-        // fall through to fs.rm fallback
-      }
-      try {
-        await repoGit.raw(['worktree', 'prune']);
-        pruned = true;
-      } catch {
-        /* intentional */
-      }
+    if (deleteBranch) {
+      await this.assertBranchDeletionSafe(repoGit, entry.branch, options.allowUnmergedCommits === true);
+    }
+    try {
+      await repoGit.raw(['worktree', 'remove', repoWtPath, '--force']);
+      worktreeRemoved = true;
+    } catch {
+      // fall through to fs.rm fallback
+    }
+    try {
+      await repoGit.raw(['worktree', 'prune']);
+      pruned = true;
+    } catch {
+      /* intentional */
     }
     if (!worktreeRemoved) {
       try {
@@ -1603,7 +1645,7 @@ export class WorktreeService {
       }
     }
 
-    if (deleteBranch && repoGit) {
+    if (deleteBranch) {
       try {
         await repoGit.deleteLocalBranch(entry.branch, true);
         branchDeleted = true;

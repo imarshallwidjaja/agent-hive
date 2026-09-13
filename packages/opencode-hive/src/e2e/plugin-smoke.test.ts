@@ -1081,12 +1081,17 @@ Do it
     expect(continuationDescription).not.toMatch(/spawn.*automatically|resume.*session/i);
   });
 
-  it('documents exact task-folder metadata on context mutation tools', async () => {
+  it('documents exact task-folder metadata and bounds archive requests', async () => {
     const { hooks } = await createHooksForTest(testRoot, 'sess_context_tool_descriptions');
-    const tools = hooks.tool as unknown as Record<string, { description?: string }>;
+    const tools = hooks.tool as unknown as Record<string, {
+      description?: string;
+      args?: { names?: { safeParse(value: unknown): { success: boolean } } };
+    }>;
 
     expect(tools.hive_context_write.description).toContain('exact existing task folder');
     expect(tools.hive_context_append.description).toContain('exact existing task folder');
+    expect(tools.hive_context_archive.args?.names?.safeParse(Array(50).fill('notes')).success).toBe(true);
+    expect(tools.hive_context_archive.args?.names?.safeParse(Array(51).fill('notes')).success).toBe(false);
   });
 
   it('registers task trace tools and a hidden tool-less recovery summarizer', async () => {

@@ -49,7 +49,7 @@ export const CONTEXT_SCAN_WARNING_HEADER_BYTES = 8 * 1024 * 1024;
 const CONTEXT_QUERY_MAX_BYTES = 1024;
 const CONTEXT_CURSOR_MAX_BYTES = 4096;
 const CONTEXT_ARCHIVE_NAME_MAX_BYTES = 255;
-const CONTEXT_ARCHIVE_NAMES_MAX = 1000;
+const CONTEXT_ARCHIVE_NAMES_MAX = 50;
 const PENDING_MARKER_NAME = '.managed-mutation-pending.json';
 const INDEX_NAME = 'index.json';
 const CREATE_CONTEXT = Symbol('create-context');
@@ -632,10 +632,7 @@ export class ContextService {
     } else if (marker !== null && markerErrors.length === 0) {
       markerErrors.push('Pending marker must be an object.');
     }
-    const entries = fs.existsSync(resolved.contextPath) ? fs.readdirSync(resolved.contextPath, { withFileTypes: true }) : [];
-    if (entries.length > CONTEXT_NAMESPACE_ENTRY_MAX) throw new ContextMutationError('context_inventory_too_large', 'Diagnostic context namespace is too large.');
-    const markdown = entries.filter(entry => entry.name.endsWith('.md'));
-    if (markdown.length > CONTEXT_CANDIDATE_MAX) throw new ContextMutationError('context_inventory_too_large', 'Diagnostic Markdown inventory is too large.');
+    const markdown = fs.existsSync(resolved.contextPath) ? this.readMarkdownEntries(resolved.contextPath, true) : [];
     for (const entry of markdown) if (entry.isSymbolicLink()) throw new ContextMutationError('context_symlink_refused', `Context symlink "${entry.name}" is not allowed.`);
     const names = markdown.filter(entry => entry.isFile()).map(entry => this.normalizeName(entry.name.slice(0, -3))).sort(compareCodePoints);
     const result: ContextRecoverySummary = {
@@ -719,7 +716,7 @@ export class ContextService {
       const existing = control.index.entries[name];
       const kind = this.resolveMutableKind(name, options.kind ?? existing?.kind);
       const metadata = parseContextMetadata(Buffer.from(content));
-      if (kind === 'durable' && resolved.scope.type === 'project') this.assertMetadata(metadata, 'project');
+      if (kind === 'durable') this.assertMetadata(metadata, resolved.scope.type);
       const timestamp = this.now().toISOString();
       const hash = sha256(content);
       const nextIndex = this.withEntry(control.index, name, kind, timestamp, options.task ?? existing?.task, existing, hash);
@@ -858,14 +855,7 @@ export class ContextService {
 
   private buildInventory(resolved: ResolvedScope, control: ControlState): Inventory {
     if (!fs.existsSync(resolved.contextPath)) return { files: [], snapshot: sha256(`${control.indexDigest}\n${control.index.revision}\nempty`), diagnostics: [] };
-    const entries = fs.readdirSync(resolved.contextPath, { withFileTypes: true });
-    if (entries.length > CONTEXT_NAMESPACE_ENTRY_MAX) {
-      throw new ContextMutationError('context_inventory_too_large', `Context namespace exceeds ${CONTEXT_NAMESPACE_ENTRY_MAX} entries.`);
-    }
-    const markdown = entries.filter(entry => entry.name.endsWith('.md'));
-    if (markdown.length > CONTEXT_CANDIDATE_MAX) {
-      throw new ContextMutationError('context_inventory_too_large', `Context namespace exceeds ${CONTEXT_CANDIDATE_MAX} Markdown candidates.`);
-    }
+    const markdown = this.readMarkdownEntries(resolved.contextPath, false);
     const diagnostics: string[] = [];
     if (markdown.length > CONTEXT_SCAN_WARNING_CANDIDATES) diagnostics.push(`Large context scan: ${markdown.length} Markdown candidates.`);
     let headerBytes = 0;
@@ -902,6 +892,35 @@ export class ContextService {
     if (control.indexRaw === null && files.length > 0) diagnostics.push('Context index is missing; unindexed non-reserved Markdown is treated as legacy durable context.');
     const snapshotMaterial = files.map(file => `${file.name}\0${file.statFingerprint}\0${file.headerFingerprint}`).join('\n');
     return { files, diagnostics, snapshot: sha256(`${control.indexDigest}\n${control.index.revision}\n${snapshotMaterial}`) };
+  }
+
+  private readMarkdownEntries(directory: string, diagnostic: boolean): fs.Dirent[] {
+    const markdown: fs.Dirent[] = [];
+    let entryCount = 0;
+    const handle = fs.opendirSync(directory);
+    try {
+      let entry: fs.Dirent | null;
+      while ((entry = handle.readSync()) !== null) {
+        entryCount += 1;
+        if (entryCount > CONTEXT_NAMESPACE_ENTRY_MAX) {
+          throw new ContextMutationError(
+            'context_inventory_too_large',
+            diagnostic ? 'Diagnostic context namespace is too large.' : `Context namespace exceeds ${CONTEXT_NAMESPACE_ENTRY_MAX} entries.`,
+          );
+        }
+        if (!entry.name.endsWith('.md')) continue;
+        markdown.push(entry);
+        if (markdown.length > CONTEXT_CANDIDATE_MAX) {
+          throw new ContextMutationError(
+            'context_inventory_too_large',
+            diagnostic ? 'Diagnostic Markdown inventory is too large.' : `Context namespace exceeds ${CONTEXT_CANDIDATE_MAX} Markdown candidates.`,
+          );
+        }
+      }
+    } finally {
+      handle.closeSync();
+    }
+    return markdown;
   }
 
   private summarize(resolved: ResolvedScope, control: ControlState, inventory: Inventory, chars: number | null): ContextReadSummary {
