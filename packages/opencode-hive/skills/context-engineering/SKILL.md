@@ -69,7 +69,7 @@ hive_context_read({ name: "auth-decisions" })
 hive_context_read({ name: "auth-decisions", cursor: nextCursor, maxBytes: 16384 })
 ```
 
-Pass `nextCursor` unchanged until `complete: true`. Do not invent byte offsets. `complete: false` means the document is incomplete. A catalog page with `complete: true` is complete for that query, not proof that every note was read.
+Pass `nextCursor` unchanged until `complete: true`. Do not invent byte offsets. `complete: false` means the document is incomplete. A named-read cursor that is oversized, malformed, expired after a plugin restart, or bound to another recipient or document fails as `context_cursor_stale`; start a new named read without a cursor. A catalog page with `complete: true` is complete for that query, not proof that every note was read.
 
 Replacement, append, and archive require the current revision and the actual SHA-256 from the named read. Finish every chunk before constructing a whole-document replacement. Preserve revision and hash.
 
@@ -115,7 +115,7 @@ These are review signals, not aggregate admission rejection:
 
 `durable.bytes` is the stat-byte total. `durable.chars` is an exact UTF-16 count only after an explicit summary `scanChars` management scan; otherwise it is unavailable or stale. Automatic catalogs and status do not read all bodies for totals. When warnings appear, review counts, due/missing metadata, and metric availability, then call the explicit management tools. Do not auto-consolidate.
 
-Resource ceilings: 10,000 Markdown candidates, 20,000 namespace entries, 64 MiB scanned headers, 8 KiB frontmatter scan, 16 KiB catalog responses, 1 MiB managed write/append, 1,024/4,096 UTF-8 bytes for query/cursor inputs. Exceeding construction bounds returns `context_inventory_too_large`, never a partial `complete: true`. Exact named reads bypass inventory. Overlarge input is `context_input_too_large`.
+Resource ceilings: 10,000 Markdown candidates, 20,000 namespace entries, 64 MiB scanned headers, 8 KiB frontmatter scan, 16 KiB catalog responses, 1 MiB managed write/append, 1,024/4,096 UTF-8 bytes for query/cursor inputs. Exceeding construction bounds returns `context_inventory_too_large`, never a partial `complete: true`. Exact named reads bypass inventory. Overlarge write, query, or catalog-cursor input is `context_input_too_large`; an oversized named-read cursor instead returns `context_cursor_stale`, so restart the named read without a cursor.
 
 ## Invalid, pending, and out-of-band repair
 

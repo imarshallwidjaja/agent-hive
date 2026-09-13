@@ -374,7 +374,7 @@ Long task summaries use explicit `...[truncated]` markers and report paths. Cata
 
 `hive_worktree_start` and blocked-resume `hive_worktree_create` output include metadata fields:
 
-- **`promptMeta`**: Character counts for plan, context, previousTasks, spec, workerPrompt
+- **`promptMeta`**: Character counts for plan, previousTasks, spec, and workerPrompt. `contextChars` remains in the payload for compatibility and is `0` because supporting knowledge is delivered through live catalogs instead of inlined bodies.
 - **`payloadMeta`**: JSON payload size, whether prompt is inlined or referenced by file
 - **`budgetApplied`**: Task-summary limits and tasks included/dropped
 - **`warnings`**: Array of threshold exceedances with severity levels (info/warning/critical)

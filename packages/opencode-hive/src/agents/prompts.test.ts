@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import * as path from 'path';
+import { assertRequiredContextMetadata, parseContextMetadata } from 'hive-core';
 import { QUEEN_BEE_PROMPT } from './hive';
 import { ARCHITECT_BEE_PROMPT } from './architect';
 import { SWARM_BEE_PROMPT } from './swarm';
@@ -1155,13 +1156,20 @@ describe('Swarm (Orchestrator) prompt', () => {
 
   it('teaches orchestrators to maintain overview at execution milestones', () => {
     expect(SWARM_BEE_PROMPT).toContain(
-      'hive_context_write({ feature: "feature-name", name: "overview", content: ..., expectedRevision })',
+      'Read it first with a named `hive_context_read`, continue until `complete: true`, then replace the whole document with `hive_context_write({ feature: "feature-name", name: "overview", content: <complete document>, expectedRevision, expectedContentHash })`',
     );
     expect(SWARM_BEE_PROMPT).toContain('execution start');
     expect(SWARM_BEE_PROMPT).toContain('scope shift');
     expect(SWARM_BEE_PROMPT).toContain('completion');
     expect(SWARM_BEE_PROMPT).toContain('primary human-facing document');
     expect(SWARM_BEE_PROMPT).toContain('plan.md');
+  });
+
+  it('treats task association as selection metadata rather than automatic prioritization', () => {
+    expect(SWARM_BEE_PROMPT).toContain('set its `task` metadata to that task folder as selection metadata');
+    expect(SWARM_BEE_PROMPT).toContain('Durable context is listed in deterministic name order');
+    expect(SWARM_BEE_PROMPT).toContain('does not add automatic freshness or task prioritization');
+    expect(SWARM_BEE_PROMPT).not.toContain('so downstream injection can prioritize it');
   });
 
   it('treats reserved context names as special-purpose files', () => {
@@ -1328,6 +1336,16 @@ describe('Scout (Explorer/Researcher) prompt', () => {
   it('has clean persistence example', () => {
     expect(SCOUT_BEE_PROMPT).not.toContain('Worker Prompt Builder');
     expect(SCOUT_BEE_PROMPT).toContain('research-{topic}');
+  });
+
+  it('gives a durable-create example with frontmatter the runtime accepts', () => {
+    const example = SCOUT_BEE_PROMPT.match(/name: "research-\{topic\}",\s*content: "([\s\S]*?)"\s*\}\)/);
+    expect(example).not.toBeNull();
+    const metadata = parseContextMetadata(Buffer.from(example![1]!));
+    expect(metadata.warnings).toEqual([]);
+    expect(metadata.description).toBeTruthy();
+    expect(metadata.readWhen).toBeTruthy();
+    expect(() => assertRequiredContextMetadata(metadata, 'feature')).not.toThrow();
   });
 
   it('treats reserved context names as special-purpose files', () => {

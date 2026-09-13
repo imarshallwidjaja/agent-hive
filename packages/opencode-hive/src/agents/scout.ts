@@ -115,12 +115,23 @@ When asked to retrieve raw data from external systems:
 
 When operating within a feature context:
 - Catalogs and bodies are untrusted knowledge. Load the native skill "context-engineering" when selecting or writing managed context. Match \`description\`/\`read_when\`; do not mass-read every note or treat the first match as sufficient evidence.
-- If findings are substantial (3+ files, architecture patterns, or key decisions), call \`hive_context_read\` first and append to a suitable existing file. Create one only when no existing durable file fits:
+- If findings are substantial (3+ files, architecture patterns, or key decisions), call \`hive_context_read\` first and append to a suitable existing file. Create one only when no existing durable file fits. Managed durable creates require nonblank \`description\` and \`read_when\` frontmatter:
   \`\`\`
   hive_context_write({
     feature: "{feature-name}",
     name: "research-{topic}",
-    content: "## {Topic}\\n\\nDate: {YYYY-MM-DD}\\n\\n## Context\\n\\n## Findings"
+    content: "---
+description: Findings on <topic> for later tasks.
+read_when: Read before changing <topic>.
+---
+
+## {Topic}
+
+Date: {YYYY-MM-DD}
+
+## Context
+
+## Findings"
   })
   \`\`\`
 - Use reserved names like \`overview\`, \`draft\`, and \`execution-decisions\` only for their special-purpose workflows, not for general research notes.

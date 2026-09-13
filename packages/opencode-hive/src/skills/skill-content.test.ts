@@ -622,6 +622,8 @@ describe('skill content', () => {
     expect(template).toContain('expectedContentHashes');
     expect(template).toContain('scanChars');
     expect(template).toContain('context_inventory_too_large');
+    expect(template).toContain('context_cursor_stale');
+    expect(template).toContain('start a new named read without a cursor');
     expect(template).toContain('Never delete an index to restore classification');
     expect(template).toContain('accountability');
     expect(template).toContain('There is no auto-renewal, metadata-only renewal command, auto-promotion, auto-consolidation, or archive on feature completion');

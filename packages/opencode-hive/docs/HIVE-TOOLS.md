@@ -391,7 +391,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 
 ## Feature Resolution
 
-Feature-scoped tools resolve an omitted feature in this order: current task worktree/path, current session binding, then the sole live feature. Primary sessions may select an explicit feature. Bound child sessions cannot override their authenticated feature binding; `hive_feature_complete` uses the equivalent `name` argument.
+Feature-scoped tools resolve an omitted feature in this order: current task worktree/path, current session binding, then the sole live feature. Primary sessions may select an explicit feature, and other feature-scoped tools accept an explicit feature argument where the tool supports one. The context tools (`hive_context_*`) are the exception that enforces the authenticated feature binding: a bound caller cannot use `feature` to switch away from its bound feature, and a delegated caller without a binding is denied. `hive_feature_complete` uses the equivalent `name` argument.
 
 If multiple live features remain, the tool returns their logical names without mutating any feature. Retry with the explicit `feature` or `name` argument using one of those candidates. If no live feature exists, create one with `hive_feature_create`.
 
