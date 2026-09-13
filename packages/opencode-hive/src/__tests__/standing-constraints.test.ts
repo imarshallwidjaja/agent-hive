@@ -262,7 +262,7 @@ describe('operator standing constraints', () => {
       expect(result.error).toContain('8000');
 
       const args = await runTaskHook(hooks, 'sess_cap', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         prompt: 'Do the work.',
       });
       expect(args.prompt).toBe('Do the work.');
@@ -294,7 +294,7 @@ describe('operator standing constraints', () => {
         await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, toolContext),
       );
       const before = await runTaskHook(hooks, 'sess_clear', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         prompt: 'Do the work.',
       });
       expect(before.prompt).toContain(STANDING_CONSTRAINTS_HEADING);
@@ -313,7 +313,7 @@ describe('operator standing constraints', () => {
       expect(removed.entries).toEqual([]);
 
       const afterEmpty = await runTaskHook(hooks, 'sess_clear', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         prompt: 'Do the work.',
       });
       expect(afterEmpty.prompt).toBe('Do the work.');
@@ -335,7 +335,7 @@ describe('operator standing constraints', () => {
       expect(cleared.entries).toEqual([]);
 
       const afterWs = await runTaskHook(hooks, 'sess_clear', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         prompt: 'Do the work.',
       });
       expect(afterWs.prompt).toBe('Do the work.');
@@ -377,7 +377,7 @@ describe('operator standing constraints', () => {
       const prompt = 'Implement the parser and report verification evidence.';
 
       const args = await runTaskHook(hooks, 'sess_empty_state', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         description: 'Hive: parser',
         prompt,
       });
@@ -386,11 +386,11 @@ describe('operator standing constraints', () => {
       expect(args.prompt).not.toContain(STANDING_CONSTRAINTS_HEADING);
     });
 
-    it('appends the block for ordinary worker and reviewer targets', async () => {
+    it('appends the block for ordinary research and reviewer targets', async () => {
       const hooks = await loadHooks(testRoot);
       await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_ordinary'));
 
-      for (const target of ['forager-worker', 'code-reviewer', 'simplicity-reviewer', 'scout-researcher']) {
+      for (const target of ['code-reviewer', 'simplicity-reviewer', 'scout-researcher']) {
         const args = await runTaskHook(hooks, 'sess_ordinary', {
           subagent_type: target,
           prompt: 'Do the work.',
@@ -403,7 +403,7 @@ describe('operator standing constraints', () => {
       const hooks = await loadHooks(testRoot);
       await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_no_prompt'));
 
-      const args = await runTaskHook(hooks, 'sess_no_prompt', { subagent_type: 'forager-worker' });
+      const args = await runTaskHook(hooks, 'sess_no_prompt', { subagent_type: 'scout-researcher' });
 
       expect(args.prompt).toBe(CONSTRAINTS_BLOCK);
     });
@@ -427,11 +427,11 @@ describe('operator standing constraints', () => {
       await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_idempotent'));
 
       const first = await runTaskHook(hooks, 'sess_idempotent', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         prompt: 'Do the work.',
       });
       const second = await runTaskHook(hooks, 'sess_idempotent', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         prompt: first.prompt,
       });
 
@@ -445,7 +445,7 @@ describe('operator standing constraints', () => {
       const prompt = 'Follow instructions in @.hive/features/01_demo/tasks/01-first-task/worker-prompt.md';
 
       const args = await runTaskHook(hooks, 'sess_worker_ref', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         prompt,
       });
 
@@ -457,7 +457,7 @@ describe('operator standing constraints', () => {
       await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_owner'));
 
       const args = await runTaskHook(hooks, 'sess_other', {
-        subagent_type: 'forager-worker',
+        subagent_type: 'scout-researcher',
         prompt: 'Do the work.',
       });
 
@@ -530,12 +530,7 @@ Do it
 
       expect(set.workerPrompt).toContain(CONSTRAINTS_BLOCK);
 
-      // The launch prompt is a file reference, so the hook must not duplicate the block.
-      const args = await runTaskHook(hooks, 'sess_worktree_start', {
-        subagent_type: 'forager-worker',
-        prompt: set.launchPrompt,
-      });
-      expect(args.prompt).toBe(set.launchPrompt);
+      expect(set.launchPrompt).toContain('/assignments/attempt-1.md');
     });
   });
 
@@ -582,6 +577,22 @@ Do it
 
       // The register is injected for the model, after the adapter snapshot.
       expect(output.args.prompt).toBe(`${expectedPrompt}\n\n${CONSTRAINTS_BLOCK}`);
+
+      await hooks.event?.({ event: {
+        type: 'session.created',
+        properties: { info: { id: 'adhoc-child', parentID: sessionID } },
+      } } as never);
+      await hooks.event?.({ event: { type: 'message.part.updated', properties: { part: {
+        type: 'tool',
+        tool: 'task',
+        sessionID,
+        callID: 'call_background_launch',
+        state: { input: output.args, metadata: { sessionId: 'adhoc-child' } },
+      } } } } as never);
+      await hooks['chat.message']?.(
+        { sessionID: 'adhoc-child', agent: created.backgroundTaskCall!.subagent_type } as never,
+        { message: { agent: created.backgroundTaskCall!.subagent_type }, parts: [] } as never,
+      );
 
       await hooks['tool.execute.after']?.(
         { tool: 'task', sessionID, callID: 'call_background_launch' } as never,

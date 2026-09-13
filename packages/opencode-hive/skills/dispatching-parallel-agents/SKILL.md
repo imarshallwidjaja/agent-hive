@@ -83,19 +83,27 @@ One implementation assignment normally maps to one numbered task. For an indepen
 ### 3. Dispatch in Parallel
 
 ```typescript
-// Using Hive tools for parallel execution
-hive_worktree_start({ task: "01-fix-abort-tests" })
-hive_worktree_start({ task: "02-fix-batch-tests" })
-hive_worktree_start({ task: "03-fix-race-condition-tests" })
-// All three run concurrently in isolated worktrees
+// Gate-open only: use backgroundTaskCall when independent foreground work can continue.
+const first = JSON.parse(await hive_worktree_start({ task: "01-fix-abort-tests" }))
+task({ ...first.backgroundTaskCall })
+const second = JSON.parse(await hive_worktree_start({ task: "02-fix-batch-tests" }))
+// If the task() dispatch below returns binding-in-progress, retain
+// second.backgroundTaskCall. Do not poll
+// internal correlation or repeat the first launch. Retry second after the first child's
+// native completion notification; reprepare only if second's five-minute reservation expires.
+task({ ...second.backgroundTaskCall })
+
+// Blocking alternative, including every gate-closed session:
+const blocking = JSON.parse(await hive_worktree_start({ task: "03-fix-cleanup-tests" }))
+await task({ ...blocking.taskToolCall })
 ```
 
-Parallelize by issuing multiple task() calls in the same assistant message.
+Forager dispatch correlation is serialized even when execution is parallel. Launch preparation and any unbound claim each expire after five minutes. OpenCode's exact child correlation is internal and is not visible to the primary, and a background return may precede it. If the next dispatch reports binding-in-progress, keep that launch prepared, do not poll hidden state, and do not repeat the running child's launch. Use the first child's native completion notification as the conservative observable retry point; reprepare only if the waiting five-minute reservation expires. This includes diagnosis-only Foragers; non-feature diagnosis needs a spawning-enabled ad-hoc launch. An exact correlated parent/agent denial retires only the rejected claim, so prepare a fresh launch for a new child. When correlation is absent, Hive retains the unbound claim until correlation or expiry and never guesses ownership. If exact correlation remains missing and no native completion notification arrives, prepare a fresh launch once the five-minute reservation expires. Plugin restart also expires preparation. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
 
 ```typescript
-task({ subagent_type: '<chosen-worker-or-advisor>', prompt: 'Diagnose failure A and report without edits' })
-task({ subagent_type: '<chosen-worker-or-advisor>', prompt: 'Diagnose failure B and report without edits' })
+task({ subagent_type: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure A and report without edits' })
+task({ subagent_type: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure B and report without edits' })
 ```
 
 Choose the best-fit available descriptor for the requested output. Scout is for bounded source retrieval, not causal diagnosis or solution selection. A Forager diagnosis-only lane reports evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked; it must not fix, edit, commit, or perform destructive reproduction unless the mission separately authorizes implementation in appropriate isolation.

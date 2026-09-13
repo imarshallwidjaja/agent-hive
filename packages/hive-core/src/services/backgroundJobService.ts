@@ -24,6 +24,7 @@ export interface RegisterBackgroundJobInput {
 }
 
 export interface RegisterBackgroundPendingLaunchInput {
+  launchId: string;
   parentSessionId: string;
   expectedDescription?: string;
   expectedPrompt?: string;
@@ -33,9 +34,8 @@ export interface RegisterBackgroundPendingLaunchInput {
 }
 
 export interface ConsumeBackgroundPendingLaunchInput {
+  launchId: string;
   parentSessionId: string;
-  expectedDescription?: string;
-  expectedPrompt?: string;
 }
 
 export interface RuntimeStatePatch {
@@ -156,6 +156,7 @@ export class BackgroundJobService {
     return this.updateBoard((board) => {
       const now = new Date().toISOString();
       const pending: BackgroundPendingLaunch = {
+        launchId: input.launchId,
         parentSessionId: input.parentSessionId,
         expectedDescription: input.expectedDescription,
         expectedPrompt: input.expectedPrompt,
@@ -167,9 +168,7 @@ export class BackgroundJobService {
 
       const pendingLaunches = board.pendingLaunches ?? [];
       const existingIndex = pendingLaunches.findIndex((candidate) =>
-        candidate.parentSessionId === input.parentSessionId
-        && candidate.expectedDescription === input.expectedDescription
-        && candidate.expectedPrompt === input.expectedPrompt
+        candidate.launchId === input.launchId
       );
 
       if (existingIndex >= 0) {
@@ -195,6 +194,24 @@ export class BackgroundJobService {
       const [pending] = pendingLaunches.splice(index, 1);
       board.pendingLaunches = pendingLaunches.length > 0 ? pendingLaunches : undefined;
       return pending;
+    });
+  }
+
+  sweepExpiredPendingLaunches(ttlMs: number): BackgroundPendingLaunch[] {
+    return this.updateBoard((board) => {
+      const pendingLaunches = board.pendingLaunches ?? [];
+      const cutoff = Date.now() - ttlMs;
+      const expired = pendingLaunches.filter((pending) => {
+        const createdAt = Date.parse(pending.createdAt);
+        return !Number.isFinite(createdAt) || createdAt <= cutoff;
+      });
+      if (expired.length === 0) {
+        return [];
+      }
+      const expiredIds = new Set(expired.map(pending => pending.launchId));
+      const kept = pendingLaunches.filter(pending => !expiredIds.has(pending.launchId));
+      board.pendingLaunches = kept.length > 0 ? kept : undefined;
+      return expired;
     });
   }
 
@@ -503,13 +520,9 @@ export class BackgroundJobService {
 }
 
 function findPendingLaunchIndex(pendingLaunches: BackgroundPendingLaunch[], input: ConsumeBackgroundPendingLaunchInput): number {
-  if (!input.expectedPrompt) {
-    return -1;
-  }
-
   return pendingLaunches.findIndex(pending =>
     pending.parentSessionId === input.parentSessionId
-    && pending.expectedPrompt === input.expectedPrompt
+    && pending.launchId === input.launchId
   );
 }
 

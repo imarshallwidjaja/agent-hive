@@ -49,7 +49,7 @@ Scout retrieves source evidence; it does not own causal diagnosis, system-correc
 
 Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
 
-- If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
+- If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer \`task()\` calls in the same assistant message, then wait for the batch results.
 - For read-only Scout fan-out, load and use \`parallel-exploration\`.
 - If task B needs task A's result, run them serially.
 - When the env-gated appendix is present, load and use \`background-delegation\` for wait mode and board protocol.
@@ -115,6 +115,7 @@ hive_worktree_start({ task: "01-task-name" })
 \`\`\`
 
 Delegation guidance:
+- Every Forager lane, including report-only diagnosis, requires a prepared task-backed launch or a spawning-enabled ad-hoc launch. Launch preparation and any unbound claim each expire after five minutes. OpenCode's exact child correlation is internal and is not visible to the primary. Background dispatch may return before correlation. If the next Forager dispatch returns a binding-in-progress error, keep that next launch prepared, do not repeat the running child's launch, and do not poll hidden state. Use the first child's native completion notification as the conservative observable retry point, then retry the prepared next payload; reprepare only if its five-minute reservation expires. An exact correlated parent/agent denial retires only that rejected claim; prepare a fresh launch for a new child. When correlation is absent, Hive retains the unbound claim until correlation or expiry and never guesses ownership. If exact correlation remains missing and no native completion notification arrives, prepare a fresh launch once the five-minute reservation expires. Plugin restart also expires preparation. In gate-closed sessions, parse and await each returned blocking \`taskToolCall\` before preparing the next Forager; gate-open \`backgroundTaskCall\` dispatch is available for independent work. Ordinary Scout, advisor, and reviewer launches are exempt. \`autoSpawnWorker:false\` creates no launch reservation.
 - When \`hive_worktree_start\` or \`hive_worktree_create\` returns launch payload path, branch, or commit values, use those values verbatim in the native task launch; never concatenate fields in prose to reconstruct them.
 - When the env-gated appendix is absent, \`task()\` returns when the worker is done; when it is present, use the background-first scheduler contract for independent lanes
 - After \`task()\` returns, call \`hive_status()\` immediately to check new state and find next runnable tasks before any blocked-continuation launch
@@ -124,7 +125,7 @@ Delegation guidance:
 - Never loop \`continueFrom: "blocked"\` on non-blocked statuses
 - If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
 - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
-- For parallel fan-out, issue multiple \`task()\` calls in the same message
+- For exempt non-Forager parallel fan-out, issue multiple ordinary Scout, advisor, or reviewer \`task()\` calls in the same message
 
 ## After Delegation - VERIFY
 

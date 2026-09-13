@@ -625,7 +625,7 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
       expect(QUEEN_BEE_PROMPT).toContain('Blocking does not mean serial');
       expect(QUEEN_BEE_PROMPT).toContain(
-        'If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message'
+        'If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer `task()` calls in the same assistant message'
       );
     });
 
@@ -1012,7 +1012,7 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
       expect(SWARM_BEE_PROMPT).toContain('Blocking does not mean serial');
       expect(SWARM_BEE_PROMPT).toContain(
-        'If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message'
+        'If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer `task()` calls in the same assistant message'
       );
       expect(SWARM_BEE_PROMPT).not.toContain('During planning, default to synchronous exploration');
     });
@@ -1800,8 +1800,31 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('Wait mode decides blocking foreground vs background');
     expect(HIVE_BUILDER_PROMPT).toContain('Blocking does not mean serial');
     expect(HIVE_BUILDER_PROMPT).toContain(
-      'If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message'
+      'If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer `task()` calls in the same assistant message'
     );
+  });
+
+  it('documents the observable Forager launch handshake without hidden-state polling', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('including report-only diagnosis');
+      expect(prompt, name).toContain('binding-in-progress error');
+      expect(prompt, name).toContain("exact child correlation is internal and is not visible to the primary");
+      expect(prompt, name).toContain('keep that next launch prepared');
+      expect(prompt, name).toContain("first child's native completion notification");
+      expect(prompt, name).toContain('Launch preparation and any unbound claim each expire after five minutes');
+      expect(prompt, name).toContain('reprepare only if its five-minute reservation expires');
+      expect(prompt, name).not.toContain('wait for the native correlation event');
+      expect(prompt, name).toContain('exact correlated parent/agent denial retires only that rejected claim');
+      expect(prompt, name).toContain('retains the unbound claim until correlation or expiry');
+      expect(prompt, name).toContain('no native completion notification arrives');
+      expect(prompt, name).toContain('Ordinary Scout, advisor, and reviewer launches are exempt');
+      expect(prompt, name).toContain('taskToolCall');
+      expect(prompt, name).toContain('backgroundTaskCall');
+    }
   });
 
   it('limits recursive task use to one architect planning-helper level', () => {

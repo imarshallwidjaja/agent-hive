@@ -119,7 +119,7 @@ describe('background task lifecycle hook support', () => {
 
       await hooks['tool.execute.before']?.(
         { tool: 'task', sessionID: 'sess_parent', callID: 'call_foreground' } as never,
-        { args: { description: 'Run foreground worker', background: false, subagent_type: 'forager-worker' } } as never,
+        { args: { description: 'Run foreground research', background: false, subagent_type: 'scout-researcher' } } as never,
       );
       await hooks['tool.execute.after']?.(
         { tool: 'task', sessionID: 'sess_parent', callID: 'call_foreground' } as never,
@@ -224,7 +224,7 @@ describe('background task lifecycle hook support', () => {
         { args: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' } } as never,
       );
 
-      await hooks['tool.execute.before']?.(
+      await expect(hooks['tool.execute.before']?.(
         { tool: 'task', sessionID: 'sess_primary_fresh', callID: 'call_fresh' } as never,
         {
           args: {
@@ -233,7 +233,7 @@ describe('background task lifecycle hook support', () => {
             subagent_type: 'forager-worker',
           },
         } as never,
-      );
+      )).rejects.toThrow(/launch_binding_error[\s\S]*hive_worktree_start/);
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
       if (originalBackgroundEnv === undefined) {

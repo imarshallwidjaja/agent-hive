@@ -352,6 +352,7 @@ export interface BackgroundJobOwnership {
 }
 
 export interface BackgroundPendingLaunch {
+  launchId: string;
   parentSessionId: string;
   expectedDescription?: string;
   expectedPrompt?: string;

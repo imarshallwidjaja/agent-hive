@@ -42,12 +42,14 @@ Only `done` satisfies dependencies (not `blocked`, `failed`, `partial`, `cancell
 ### Step 3: Execute Batch
 
 For each task in the batch:
-1. Mark as in_progress via `hive_worktree_start()`
+1. Call `hive_worktree_start()` and parse its JSON result. Launch preparation and any unbound claim each expire after five minutes. In gate-closed sessions, await the returned blocking `taskToolCall` before preparing the next Forager. In gate-open sessions, `backgroundTaskCall` may return before OpenCode's internal child correlation. If the next dispatch reports binding-in-progress, keep that next launch prepared, do not poll hidden state or repeat the running child's launch, and use the first child's native completion notification as the conservative observable retry point. Reprepare only if the waiting five-minute reservation expires.
 2. Follow each step exactly (plan has bite-sized steps)
 3. Run verifications as specified
 4. Mark as completed
 
 One implementation assignment normally maps to one numbered task. Its primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. A `hive_worktree_start` or blocked-continuation launch starts a fresh worker session for that task. For a blocked task, collect the decision and use `hive_worktree_create({ task, continueFrom: "blocked", decision })` to start a new worker session in the same worktree. For failed or retry work, launch a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
+
+An exact correlated parent/agent denial retires only the rejected Forager claim, so prepare a fresh launch for a new child. When correlation is absent, Hive retains the unbound claim until correlation or expiry and never guesses ownership. If exact correlation remains missing and no native completion notification arrives, prepare a fresh launch once the five-minute reservation expires. Plugin restart also expires preparation. Diagnosis-only Foragers follow the same prepared-launch contract; non-feature diagnosis needs a spawning-enabled ad-hoc launch. Ordinary Scout, advisor, and reviewer launches are exempt.
 
 ### Step 4: Report
 When batch complete:

@@ -94,13 +94,15 @@ describe('BackgroundJobService', () => {
     expect(new Set([first.alias, second.alias, otherParent.alias]).size).toBe(3);
   });
 
-  it('consumes pending launches by prompt while leaving no-prompt launches untouched', () => {
+  it('consumes the selected pending launch by identity while leaving another launch untouched', () => {
     service.registerPendingLaunch({
+      launchId: 'launch-no-prompt',
       parentSessionId: 'parent-1',
       agentName: 'unknown',
       scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-1' },
     });
     const exact = service.registerPendingLaunch({
+      launchId: 'launch-exact',
       parentSessionId: 'parent-1',
       expectedDescription: 'Hive: 01-task',
       expectedPrompt: 'Follow instructions in @worker-prompt.md',
@@ -109,9 +111,8 @@ describe('BackgroundJobService', () => {
     });
 
     const consumed = service.consumePendingLaunch({
+      launchId: 'launch-exact',
       parentSessionId: 'parent-1',
-      expectedDescription: 'Hive: 01-task',
-      expectedPrompt: 'Follow instructions in @worker-prompt.md',
     });
 
     expect(consumed).toMatchObject({
@@ -125,8 +126,9 @@ describe('BackgroundJobService', () => {
     expect(readBoard().pendingLaunches?.[0].scope?.adHocRunId).toBe('adhoc-1');
   });
 
-  it('consumes pending launches by prompt when model-facing descriptions drift', () => {
+  it('consumes a claimed pending launch once by identity regardless of model-facing prose', () => {
     const pending = service.registerPendingLaunch({
+      launchId: 'launch-1',
       parentSessionId: 'parent-1',
       expectedDescription: 'Hive: 01-task',
       expectedPrompt: 'Follow instructions in @worker-prompt.md',
@@ -136,17 +138,18 @@ describe('BackgroundJobService', () => {
     });
 
     const consumed = service.consumePendingLaunch({
+      launchId: 'launch-1',
       parentSessionId: 'parent-1',
-      expectedDescription: 'Hive: smoke docs',
-      expectedPrompt: 'Follow instructions in @worker-prompt.md',
     });
 
     expect(consumed).toEqual(pending);
     expect(readBoard().pendingLaunches).toBeUndefined();
+    expect(service.consumePendingLaunch({ launchId: 'launch-1', parentSessionId: 'parent-1' })).toBeUndefined();
   });
 
-  it('does not consume pending launches with matching descriptions and different prompts', () => {
+  it('does not consume a pending launch with the wrong claimed identity', () => {
     service.registerPendingLaunch({
+      launchId: 'launch-a',
       parentSessionId: 'parent-1',
       expectedDescription: 'Hive: 01-task',
       expectedPrompt: 'Follow instructions in @worker-prompt-a.md',
@@ -155,18 +158,41 @@ describe('BackgroundJobService', () => {
     });
 
     const consumed = service.consumePendingLaunch({
+      launchId: 'launch-b',
       parentSessionId: 'parent-1',
-      expectedDescription: 'Hive: 01-task',
-      expectedPrompt: 'Follow instructions in @worker-prompt-b.md',
     });
 
     expect(consumed).toBeUndefined();
     expect(readBoard().pendingLaunches).toHaveLength(1);
   });
 
-  it('consumes ad-hoc pending launches by stable prompt without feature or task metadata', () => {
+  it('sweeps expired pending launches by createdAt age and keeps fresh entries', () => {
+    service.registerPendingLaunch({
+      launchId: 'stale-launch',
+      parentSessionId: 'parent-1',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-stale' },
+    });
+    service.registerPendingLaunch({
+      launchId: 'fresh-launch',
+      parentSessionId: 'parent-1',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-fresh' },
+    });
+    const board = readBoard();
+    board.pendingLaunches![0].createdAt = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board));
+
+    const swept = service.sweepExpiredPendingLaunches(5 * 60 * 1000);
+    expect(swept.map(pending => pending.launchId)).toEqual(['stale-launch']);
+    expect(readBoard().pendingLaunches?.map(pending => pending.launchId)).toEqual(['fresh-launch']);
+    expect(service.sweepExpiredPendingLaunches(5 * 60 * 1000)).toEqual([]);
+  });
+
+  it('consumes an ad-hoc pending launch by identity without feature or task metadata', () => {
     const expectedPrompt = 'Work in /tmp/adhoc-1 for ad-hoc run adhoc-1.';
     const pending = service.registerPendingLaunch({
+      launchId: 'adhoc-launch-1',
       parentSessionId: 'parent-1',
       expectedPrompt,
       agentName: 'unknown',
@@ -175,15 +201,15 @@ describe('BackgroundJobService', () => {
     });
 
     service.registerPendingLaunch({
+      launchId: 'adhoc-launch-2',
       parentSessionId: 'parent-2',
       agentName: 'unknown',
       scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-2', adHocRunId: 'adhoc-2' },
     });
 
     const consumed = service.consumePendingLaunch({
+      launchId: 'adhoc-launch-1',
       parentSessionId: 'parent-1',
-      expectedDescription: 'Investigate the failure',
-      expectedPrompt,
     });
 
     expect(consumed).toEqual(pending);

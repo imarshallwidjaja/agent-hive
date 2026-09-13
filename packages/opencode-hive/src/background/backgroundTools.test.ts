@@ -317,6 +317,7 @@ describe('background management tools', () => {
 
   it('hive_background_status surfaces pending launches instead of silently returning an empty board', async () => {
     service.registerPendingLaunch({
+      launchId: 'pending-launch-1',
       parentSessionId: 'parent-1',
       expectedPrompt: 'Work in @/tmp/worktree',
       agentName: 'unknown',

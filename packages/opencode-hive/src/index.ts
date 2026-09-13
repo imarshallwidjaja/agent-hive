@@ -434,6 +434,9 @@ function taskChildSessionID(metadata: unknown): string | undefined {
 }
 
 type HiveTaskLaunchReservation = {
+  launchId: string;
+  parentSessionID: string;
+  expiresAt: number;
   feature: string;
   task: string;
   attempt: number;
@@ -442,27 +445,31 @@ type HiveTaskLaunchReservation = {
   expectedPrompt: string;
   allowedAgents: string[];
   selectedAgent: string;
+  childSessionID?: string;
   assignment: WorkerAssignmentDescriptor;
 };
 
-type HiveTaskLaunchIntent = Omit<HiveTaskLaunchReservation, 'selectedAgent'>;
+type HiveTaskLaunchIntent = Omit<HiveTaskLaunchReservation, 'selectedAgent' | 'childSessionID'>;
 
 type AdhocLaunchIntent = {
+  launchId: string;
+  parentSessionID: string;
+  expiresAt: number;
   runId: string;
   projectRoot: string;
-  expectedDescription: string;
-  expectedPrompt: string;
   allowedAgents: string[];
 };
 
-type AdhocLaunchReservation = AdhocLaunchIntent & { selectedAgent: string };
+type AdhocLaunchReservation = AdhocLaunchIntent & { selectedAgent: string; childSessionID?: string };
 
-function runtimeTaskChildBinding(event: unknown): {
+type RuntimeTaskChildBinding = {
   primarySessionID: string;
   callID: string;
   childSessionID: string;
   expectedAgent?: string;
-} | undefined {
+};
+
+function runtimeTaskChildBinding(event: unknown): RuntimeTaskChildBinding | undefined {
   if (!event || typeof event !== 'object' || Array.isArray(event)) return undefined;
   const record = event as Record<string, unknown>;
   if (record.type !== 'message.part.updated' || !record.properties || typeof record.properties !== 'object') return undefined;
@@ -579,6 +586,7 @@ type SystemTransformHook = (
 ) => Promise<void>;
 
 const RUNTIME_ID = `pid-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const WORKER_LAUNCH_RESERVATION_TTL_MS = 5 * 60 * 1000;
 const REVIEW_ARGUMENT_GUARD_PLACEHOLDER = '$2147483647';
 const MAX_COMPOSITE_SNAPSHOT_REPOSITORIES = 32;
 const VULNERABILITY_DEEP_RESERVATION_TTL_MS = 5 * 60 * 1000;
@@ -1321,6 +1329,7 @@ const plugin: Plugin = async (ctx) => {
   });
 
   const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
+  const claimedLaunchIdsByCall = new Map<string, string>();
   // OpenCode global non-Git contexts use '/' as a sentinel; only that exact pair redirects to directory.
   const runtimeContext = detectContext(
     ctx.project?.id === 'global' && worktree === '/' ? directory : worktree || directory,
@@ -1332,6 +1341,7 @@ const plugin: Plugin = async (ctx) => {
     runtimeId: RUNTIME_ID,
     getSession: (sessionId) => sessionService.getGlobal(sessionId),
     isPrimaryAgent: (_agentName, session) => session?.sessionKind === 'primary',
+    resolveClaimedLaunchId: (sessionId, callId) => claimedLaunchIdsByCall.get(`${sessionId}\u0000${callId}`),
   });
 
   type FeatureResolutionScope = {
@@ -1980,61 +1990,222 @@ const plugin: Plugin = async (ctx) => {
   const hiveTaskLaunches = new Map<string, HiveTaskLaunchReservation>();
   const pendingAdhocLaunches = new Map<string, AdhocLaunchIntent[]>();
   const adhocLaunches = new Map<string, AdhocLaunchReservation>();
+  const claimedChildLaunches = new Map<string, { launchId: string; selectedAgent: string }>();
+  const boundLaunchChildrenByCall = new Map<string, string>();
+  const runtimeSessionParents = new Map<string, string>();
+  const observedTaskChildren = new Map<string, RuntimeTaskChildBinding>();
+  const observedTaskChildrenByCall = new Map<string, string>();
+  const completedLaunchCalls = new Set<string>();
+  const claimQueues = new Map<string, Promise<void>>();
   const hiveTaskLaunchKey = (sessionID: string, callID: string): string => `${sessionID}\u0000${callID}`;
-  const reserveHiveTaskLaunch = (
-    sessionID: string,
-    callID: string,
-    args: Record<string, unknown> | undefined,
-  ): void => {
-    const selectedAgent = typeof args?.subagent_type === 'string' ? args.subagent_type.trim() : '';
-    const expectedDescription = typeof args?.description === 'string' ? args.description : '';
-    const expectedPrompt = typeof args?.prompt === 'string' ? args.prompt : '';
-    if (!selectedAgent || !expectedDescription || !expectedPrompt) return;
-
-    const pending = pendingHiveTaskLaunches.get(sessionID) ?? [];
-    const matches = pending.filter(candidate => (
-      candidate.expectedDescription === expectedDescription
-      && candidate.expectedPrompt === expectedPrompt
-      && candidate.allowedAgents.includes(selectedAgent)
+  const launchBindingFailure = (error: string, nextAction?: string): Error => {
+    const failure = new Error(contextFailure(
+      'launch_binding_error',
+      error,
+      true,
+      nextAction,
     ));
-    if (matches.length !== 1) return;
-
-    const candidate = matches[0];
-    const verifiedBytes = readVerifiedAssignment(candidate.assignment);
-    if (typeof verifiedBytes === 'string') throw new Error(verifiedBytes);
-    args!.prompt = verifiedBytes.bytes.toString('utf8');
-    const remaining = pending.filter(pendingCandidate => pendingCandidate !== candidate);
-    if (remaining.length > 0) {
-      pendingHiveTaskLaunches.set(sessionID, remaining);
-    } else {
-      pendingHiveTaskLaunches.delete(sessionID);
+    failure.name = 'LaunchBindingError';
+    return failure;
+  };
+  const launchPreparationGuidance = 'Use hive_worktree_start, or hive_adhoc_worktree_create with worker spawning enabled. autoSpawnWorker:false prepares a workspace only.';
+  type ForagerLaunchClaimReceipt = { rollback(): void };
+  const claimForagerLaunch = async (
+    sessionID: string,
+    callID: string | undefined,
+    args: Record<string, unknown> | undefined,
+  ): Promise<ForagerLaunchClaimReceipt | undefined> => {
+    const selectedAgent = typeof args?.subagent_type === 'string' ? args.subagent_type.trim() : '';
+    if (!selectedAgent || classifySession(selectedAgent, customAgentConfigsForClassification).baseAgent !== 'forager-worker') return undefined;
+    if (!callID) {
+      throw launchBindingFailure('Forager dispatch requires a runtime call ID. Prepare a fresh launch and retry.', launchPreparationGuidance);
     }
-    hiveTaskLaunches.set(hiveTaskLaunchKey(sessionID, callID), {
-      ...candidate,
-      selectedAgent,
-    });
-    return;
+
+    backgroundJobService.sweepExpiredPendingLaunches(WORKER_LAUNCH_RESERVATION_TTL_MS);
+    const key = hiveTaskLaunchKey(sessionID, callID);
+    if (hiveTaskLaunches.has(key) || adhocLaunches.has(key) || claimedLaunchIdsByCall.has(key) || boundLaunchChildrenByCall.has(key)) {
+      throw launchBindingFailure('This forager dispatch call is already claimed. Prepare a fresh launch and retry.', launchPreparationGuidance);
+    }
+    const now = Date.now();
+    for (const [claimedKey, reservation] of [...hiveTaskLaunches.entries(), ...adhocLaunches.entries()]) {
+      if (!reservation.childSessionID && reservation.expiresAt <= now) {
+        hiveTaskLaunches.delete(claimedKey);
+        adhocLaunches.delete(claimedKey);
+        claimedLaunchIdsByCall.delete(claimedKey);
+      }
+    }
+    const activeClaim = [...hiveTaskLaunches.values(), ...adhocLaunches.values()]
+      .find(candidate => candidate.parentSessionID === sessionID && !candidate.childSessionID);
+    if (activeClaim) {
+      throw launchBindingFailure('Forager binding is still in progress. Keep the next launch prepared and do not relaunch the running child. For background work, use the first child\'s native completion notification as the conservative retry point; reprepare only if the waiting preparation expires.');
+    }
+
+    const taskPending = pendingHiveTaskLaunches.get(sessionID) ?? [];
+    const adhocPending = pendingAdhocLaunches.get(sessionID) ?? [];
+    const pending = [
+      ...taskPending.map(intent => ({ kind: 'task' as const, intent })),
+      ...adhocPending.map(intent => ({ kind: 'adhoc' as const, intent })),
+    ];
+    const fresh = pending.filter(candidate => candidate.intent.expiresAt > now);
+    const expired = pending.filter(candidate => candidate.intent.expiresAt <= now);
+    if (expired.length > 0) {
+      const freshTasks = taskPending.filter(intent => intent.expiresAt > now);
+      const freshAdhoc = adhocPending.filter(intent => intent.expiresAt > now);
+      if (freshTasks.length) pendingHiveTaskLaunches.set(sessionID, freshTasks);
+      else pendingHiveTaskLaunches.delete(sessionID);
+      if (freshAdhoc.length) pendingAdhocLaunches.set(sessionID, freshAdhoc);
+      else pendingAdhocLaunches.delete(sessionID);
+      for (const candidate of expired) {
+        backgroundJobService.consumePendingLaunch({
+          launchId: candidate.intent.launchId,
+          parentSessionId: sessionID,
+        });
+      }
+    }
+    if (fresh.length === 0) {
+      if (expired.length > 0) {
+        throw launchBindingFailure('The prepared forager launch expired. Prepare a fresh launch and retry.', launchPreparationGuidance);
+      }
+      const foreignFresh = [
+        ...[...pendingHiveTaskLaunches.entries()].filter(([parent]) => parent !== sessionID).flatMap(([, intents]) => intents),
+        ...[...pendingAdhocLaunches.entries()].filter(([parent]) => parent !== sessionID).flatMap(([, intents]) => intents),
+      ].some(intent => intent.expiresAt > now);
+      if (foreignFresh) {
+        throw launchBindingFailure('The available forager launch belongs to a different authenticated parent. Prepare the launch from this parent session.');
+      }
+      if (backgroundJobService.listPendingLaunches({ parentSessionId: sessionID }).length > 0) {
+        throw launchBindingFailure('The persisted forager launch belongs to an earlier plugin runtime. Prepare a fresh launch and retry.', launchPreparationGuidance);
+      }
+      throw launchBindingFailure('No fresh forager launch reservation exists for this parent.', launchPreparationGuidance);
+    }
+    if (fresh.length !== 1) {
+      const remainingTasks = taskPending.filter(intent => !fresh.some(candidate => candidate.kind === 'task' && candidate.intent === intent));
+      const remainingAdhoc = adhocPending.filter(intent => !fresh.some(candidate => candidate.kind === 'adhoc' && candidate.intent === intent));
+      if (remainingTasks.length) pendingHiveTaskLaunches.set(sessionID, remainingTasks);
+      else pendingHiveTaskLaunches.delete(sessionID);
+      if (remainingAdhoc.length) pendingAdhocLaunches.set(sessionID, remainingAdhoc);
+      else pendingAdhocLaunches.delete(sessionID);
+      for (const candidate of fresh) {
+        backgroundJobService.consumePendingLaunch({
+          launchId: candidate.intent.launchId,
+          parentSessionId: sessionID,
+        });
+      }
+      throw launchBindingFailure('Multiple fresh forager launch reservations exist for this parent. They were invalidated; prepare exactly one fresh launch and dispatch it.', launchPreparationGuidance);
+    }
+
+    const candidate = fresh[0]!;
+    if (!candidate.intent.allowedAgents.includes(selectedAgent)) {
+      throw launchBindingFailure(`Agent '${selectedAgent}' is not eligible for the prepared forager launch. Choose one of: ${candidate.intent.allowedAgents.join(', ')}.`);
+    }
+    let replacementPrompt: string | undefined;
+    if (candidate.kind === 'task') {
+      const status = taskService.getRawStatus(candidate.intent.feature, candidate.intent.task);
+      const latest = status?.workerAttempts?.at(-1);
+      if (
+        status?.idempotencyKey !== candidate.intent.idempotencyKey
+        || status.workerAttempt !== candidate.intent.attempt
+        || latest?.attempt !== candidate.intent.attempt
+        || latest.idempotencyKey !== candidate.intent.idempotencyKey
+        || latest.assignment?.contentHash !== candidate.intent.assignment.contentHash
+      ) {
+        throw launchBindingFailure('The prepared task attempt was superseded. Run hive_worktree_start again and dispatch that fresh launch.');
+      }
+      const verifiedBytes = readVerifiedAssignment(candidate.intent.assignment);
+      if (typeof verifiedBytes === 'string') throw new Error(verifiedBytes);
+      replacementPrompt = verifiedBytes.bytes.toString('utf8');
+    } else {
+      const worktree = await adhocWorktreeService.get(candidate.intent.runId);
+      if (!worktree || fs.realpathSync(directory) !== candidate.intent.projectRoot) {
+        throw launchBindingFailure('The prepared ad-hoc run is no longer valid. Create a fresh ad-hoc launch and retry.');
+      }
+    }
+
+    const liveAdhocPending = candidate.kind === 'adhoc'
+      ? pendingAdhocLaunches.get(sessionID) ?? []
+      : adhocPending;
+    if (
+      candidate.kind === 'adhoc'
+      && !liveAdhocPending.some(intent => intent.launchId === candidate.intent.launchId)
+    ) {
+      throw launchBindingFailure('The prepared ad-hoc launch was superseded during validation. Dispatch the current prepared launch instead.');
+    }
+    const originalIndex = candidate.kind === 'task'
+      ? taskPending.indexOf(candidate.intent)
+      : liveAdhocPending.findIndex(intent => intent.launchId === candidate.intent.launchId);
+    const hadPrompt = Object.prototype.hasOwnProperty.call(args!, 'prompt');
+    const originalPrompt = args!.prompt;
+    if (replacementPrompt !== undefined) args!.prompt = replacementPrompt;
+    if (candidate.kind === 'task') {
+      const remaining = taskPending.filter(intent => intent !== candidate.intent);
+      if (remaining.length) pendingHiveTaskLaunches.set(sessionID, remaining);
+      else pendingHiveTaskLaunches.delete(sessionID);
+      hiveTaskLaunches.set(key, { ...candidate.intent, selectedAgent });
+    } else {
+      const remaining = liveAdhocPending.filter(intent => intent.launchId !== candidate.intent.launchId);
+      if (remaining.length) pendingAdhocLaunches.set(sessionID, remaining);
+      else pendingAdhocLaunches.delete(sessionID);
+      adhocLaunches.set(key, { ...candidate.intent, selectedAgent });
+    }
+    claimedLaunchIdsByCall.set(key, candidate.intent.launchId);
+    let active = true;
+    return {
+      rollback: () => {
+        if (!active) return;
+        active = false;
+        const reservation = candidate.kind === 'task' ? hiveTaskLaunches.get(key) : adhocLaunches.get(key);
+        if (reservation?.launchId !== candidate.intent.launchId) return;
+        if (candidate.kind === 'task') {
+          hiveTaskLaunches.delete(key);
+          const pending = pendingHiveTaskLaunches.get(sessionID) ?? [];
+          if (!pending.includes(candidate.intent)) {
+            const restored = [...pending];
+            restored.splice(Math.min(originalIndex, restored.length), 0, candidate.intent);
+            pendingHiveTaskLaunches.set(sessionID, restored);
+          }
+        } else {
+          adhocLaunches.delete(key);
+          const pending = pendingAdhocLaunches.get(sessionID) ?? [];
+          if (!pending.includes(candidate.intent)) {
+            const restored = [...pending];
+            restored.splice(Math.min(originalIndex, restored.length), 0, candidate.intent);
+            pendingAdhocLaunches.set(sessionID, restored);
+          }
+        }
+        if (claimedLaunchIdsByCall.get(key) === candidate.intent.launchId) claimedLaunchIdsByCall.delete(key);
+        if (replacementPrompt !== undefined && args!.prompt === replacementPrompt) {
+          if (hadPrompt) args!.prompt = originalPrompt;
+          else delete args!.prompt;
+        }
+      },
+    };
   };
 
-  const reserveAdhocLaunch = (
+  const enqueueClaimForagerLaunch = (
     sessionID: string,
-    callID: string,
+    callID: string | undefined,
     args: Record<string, unknown> | undefined,
-  ): void => {
-    const selectedAgent = typeof args?.subagent_type === 'string' ? args.subagent_type.trim() : '';
-    const expectedDescription = typeof args?.description === 'string' ? args.description : '';
-    const expectedPrompt = typeof args?.prompt === 'string' ? args.prompt : '';
-    if (!selectedAgent || !expectedDescription || !expectedPrompt) return;
-    const pending = pendingAdhocLaunches.get(sessionID) ?? [];
-    const matches = pending.filter(candidate => candidate.expectedDescription === expectedDescription
-      && candidate.expectedPrompt === expectedPrompt
-      && candidate.allowedAgents.includes(selectedAgent));
-    if (matches.length !== 1) return;
-    const candidate = matches[0]!;
-    const remaining = pending.filter(item => item !== candidate);
-    if (remaining.length) pendingAdhocLaunches.set(sessionID, remaining);
-    else pendingAdhocLaunches.delete(sessionID);
-    adhocLaunches.set(hiveTaskLaunchKey(sessionID, callID), { ...candidate, selectedAgent });
+    adapterOutput: { args?: Record<string, unknown> },
+  ): Promise<void> => {
+    const tail = claimQueues.get(sessionID) ?? Promise.resolve();
+    const run = tail.then(() => {}, () => {}).then(async () => {
+      let claimReceipt: ForagerLaunchClaimReceipt | undefined;
+      try {
+        claimReceipt = await claimForagerLaunch(sessionID, callID, args);
+        await backgroundJobAdapter['tool.execute.before'](
+          { tool: 'task', sessionID, callID },
+          adapterOutput,
+        );
+      } catch (error) {
+        claimReceipt?.rollback();
+        throw error;
+      }
+    });
+    claimQueues.set(sessionID, run);
+    void run.catch(() => {}).then(() => {
+      if (claimQueues.get(sessionID) === run) claimQueues.delete(sessionID);
+    });
+    return run;
   };
 
   const bindTaskChildSession = (
@@ -2098,12 +2269,141 @@ const plugin: Plugin = async (ctx) => {
     primarySessionID: string;
     callID: string;
     childSessionID: string;
+    expectedAgent?: string;
   }): void => {
     const key = hiveTaskLaunchKey(binding.primarySessionID, binding.callID);
+    const boundChild = boundLaunchChildrenByCall.get(key);
+    if (boundChild) {
+      if (boundChild !== binding.childSessionID) {
+        throw launchBindingFailure('The claimed forager launch is already bound to a different child session.');
+      }
+      return;
+    }
     const taskReservation = hiveTaskLaunches.get(key);
-    if (taskReservation) bindTaskChildSession(binding.primarySessionID, binding.childSessionID, taskReservation);
     const adhocReservation = adhocLaunches.get(key);
-    if (adhocReservation) bindAdhocChildSession(binding.primarySessionID, binding.childSessionID, adhocReservation);
+    if (taskReservation && adhocReservation) {
+      throw launchBindingFailure('A dispatch call cannot claim both task-backed and ad-hoc launch authority.');
+    }
+    const reservation = taskReservation ?? adhocReservation;
+    if (!reservation) {
+      throw launchBindingFailure('No exact claimed launch matches the observed native task call. Prepare one worker and await its binding before preparing another.');
+    }
+    if (reservation.expiresAt <= Date.now()) {
+      hiveTaskLaunches.delete(key);
+      adhocLaunches.delete(key);
+      claimedLaunchIdsByCall.delete(key);
+      throw launchBindingFailure('The claimed forager launch expired before child binding. Prepare a fresh launch and retry.', launchPreparationGuidance);
+    }
+    if (reservation.childSessionID && reservation.childSessionID !== binding.childSessionID) {
+      throw launchBindingFailure('The claimed forager launch is already bound to a different child session.');
+    }
+    if (reservation.selectedAgent !== binding.expectedAgent && binding.expectedAgent) {
+      throw launchBindingFailure(`The native task metadata agent '${binding.expectedAgent}' does not match the claimed agent '${reservation.selectedAgent}'.`);
+    }
+    const existingClaim = claimedChildLaunches.get(binding.childSessionID);
+    if (existingClaim && existingClaim.launchId !== reservation.launchId) {
+      throw launchBindingFailure('The child session is already bound to a different forager launch.');
+    }
+    if (!reservation.childSessionID) {
+      if (taskReservation) {
+        bindTaskChildSession(binding.primarySessionID, binding.childSessionID, taskReservation);
+      } else {
+        bindAdhocChildSession(binding.primarySessionID, binding.childSessionID, adhocReservation!);
+      }
+      reservation.childSessionID = binding.childSessionID;
+    }
+    claimedChildLaunches.set(binding.childSessionID, {
+      launchId: reservation.launchId,
+      selectedAgent: reservation.selectedAgent,
+    });
+    boundLaunchChildrenByCall.set(key, binding.childSessionID);
+  };
+  const observeTaskChildBinding = (binding: RuntimeTaskChildBinding): void => {
+    const key = hiveTaskLaunchKey(binding.primarySessionID, binding.callID);
+    if (
+      !hiveTaskLaunches.has(key)
+      && !adhocLaunches.has(key)
+      && !boundLaunchChildrenByCall.has(key)
+    ) return;
+    const callChild = observedTaskChildrenByCall.get(key);
+    if (callChild && callChild !== binding.childSessionID) {
+      throw launchBindingFailure('The native task call reported a contradictory different child session.');
+    }
+    const childBinding = observedTaskChildren.get(binding.childSessionID);
+    if (childBinding && (
+      childBinding.primarySessionID !== binding.primarySessionID
+      || childBinding.callID !== binding.callID
+      || (childBinding.expectedAgent && binding.expectedAgent && childBinding.expectedAgent !== binding.expectedAgent)
+    )) {
+      throw launchBindingFailure('The native child session reported contradictory task correlation metadata.');
+    }
+    observedTaskChildrenByCall.set(key, binding.childSessionID);
+    observedTaskChildren.set(binding.childSessionID, {
+      ...binding,
+      expectedAgent: binding.expectedAgent ?? childBinding?.expectedAgent,
+    });
+  };
+  const releaseLaunchReservation = (key: string): void => {
+    hiveTaskLaunches.delete(key);
+    adhocLaunches.delete(key);
+    claimedLaunchIdsByCall.delete(key);
+  };
+  const bindObservedForagerChild = async (childSessionID: string, observedAgent: string): Promise<void> => {
+    const existingClaim = claimedChildLaunches.get(childSessionID);
+    if (existingClaim) {
+      completeForagerChildBinding(childSessionID, observedAgent);
+      return;
+    }
+    if (classifySession(observedAgent, customAgentConfigsForClassification).baseAgent !== 'forager-worker') return;
+    const binding = observedTaskChildren.get(childSessionID);
+    if (!binding) {
+      if (!runtimeTaskChildSessions.has(childSessionID)) return;
+      throw launchBindingFailure('The forager child has no exact native task call correlation. Ownership cannot be guessed. Do not relaunch this child; keep any next launch prepared and reprepare it only if its reservation expires.');
+    }
+    const key = hiveTaskLaunchKey(binding.primarySessionID, binding.callID);
+    const reservation = hiveTaskLaunches.get(key) ?? adhocLaunches.get(key);
+    if (!reservation) {
+      throw launchBindingFailure('The exact native task call has no active forager launch claim. Prepare a fresh launch and retry.', launchPreparationGuidance);
+    }
+    let runtimeParent = runtimeSessionParents.get(childSessionID);
+    if (!runtimeParent) {
+      try {
+        runtimeParent = await getSessionParentID(childSessionID);
+      } catch {
+        throw launchBindingFailure('The forager child runtime parent is unavailable. Wait for child session metadata and retry.', launchPreparationGuidance);
+      }
+    }
+    try {
+      if (!runtimeParent || runtimeParent !== binding.primarySessionID) {
+        throw launchBindingFailure('The native task correlation parent does not match the authenticated child runtime parent.');
+      }
+      if (reservation.selectedAgent !== observedAgent) {
+        throw launchBindingFailure(`The child runtime agent '${observedAgent}' does not match the claimed agent '${reservation.selectedAgent}'.`);
+      }
+      if (binding.expectedAgent && binding.expectedAgent !== observedAgent) {
+        throw launchBindingFailure(`The native task metadata agent '${binding.expectedAgent}' does not match the child runtime agent '${observedAgent}'.`);
+      }
+      bindCorrelatedChild(binding);
+    } catch (error) {
+      if (
+        completedLaunchCalls.has(key)
+        || (error instanceof Error && (
+          error.name === 'LaunchBindingError'
+          || error.message.includes('assignment_recovery_error')
+        ))
+      ) {
+        releaseLaunchReservation(key);
+      }
+      throw error;
+    }
+    if (completedLaunchCalls.has(key)) releaseLaunchReservation(key);
+  };
+  const completeForagerChildBinding = (childSessionID: string, observedAgent: string | undefined): void => {
+    const claim = claimedChildLaunches.get(childSessionID);
+    if (!claim || !observedAgent) return;
+    if (claim.selectedAgent !== observedAgent) {
+      throw launchBindingFailure(`The child runtime agent '${observedAgent}' does not match the claimed agent '${claim.selectedAgent}'.`);
+    }
   };
 
   const resolveStandingConstraints = (sessionID: string | undefined): string | undefined => {
@@ -2563,22 +2863,55 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
     bindFeatureSession(feature, toolContext);
     const parentSessionID = (toolContext as ToolContext)?.sessionID;
-    const launchIntent: HiveTaskLaunchIntent = {
-      feature,
-      task,
-      attempt,
-      idempotencyKey,
-      assignment,
-      expectedDescription: `Hive: ${task}`,
-      expectedPrompt: taskToolPrompt,
-      allowedAgents: eligibleAgents.map(candidate => candidate.name),
-    };
     if (parentSessionID) {
+      const createdAt = Date.now();
+      const launchIntent: HiveTaskLaunchIntent = {
+        launchId: randomUUID(),
+        parentSessionID,
+        expiresAt: createdAt + WORKER_LAUNCH_RESERVATION_TTL_MS,
+        feature,
+        task,
+        attempt,
+        idempotencyKey,
+        assignment,
+        expectedDescription: `Hive: ${task}`,
+        expectedPrompt: taskToolPrompt,
+        allowedAgents: eligibleAgents.map(candidate => candidate.name),
+      };
       const pending = pendingHiveTaskLaunches.get(parentSessionID) ?? [];
+      const supersededTaskIntents = pending.filter(candidate => candidate.feature === feature && candidate.task === task);
       pendingHiveTaskLaunches.set(parentSessionID, [
         ...pending.filter(candidate => candidate.feature !== feature || candidate.task !== task),
         launchIntent,
       ]);
+      for (const candidate of supersededTaskIntents) {
+        backgroundJobService.consumePendingLaunch({
+          launchId: candidate.launchId,
+          parentSessionId: parentSessionID,
+        });
+      }
+      if (backgroundEnabled) {
+        backgroundJobService.registerPendingLaunch({
+          launchId: launchIntent.launchId,
+          parentSessionId: parentSessionID,
+          expectedDescription: launchIntent.expectedDescription,
+          expectedPrompt: launchIntent.expectedPrompt,
+          agentName: agent,
+          scope: {
+            projectRoot: fs.realpathSync(directory),
+            parentSessionId: parentSessionID,
+            primaryAgent: (toolContext as ToolContext)?.agent,
+            feature,
+            task,
+          },
+          ownership: {
+            worktreePath: workspacePath,
+            branch: worktree.branch,
+            workerPromptPath: relativePromptPath,
+            repoIds: worktree.repos ? Object.keys(worktree.repos) : [],
+          },
+        });
+      }
     }
 
     const taskToolInstructions = `## Delegation Required
@@ -2922,6 +3255,16 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           info?: { id?: string; parentID?: string };
         };
       };
+      if (
+        (event.type === 'session.created' || event.type === 'session.updated')
+        && event.properties?.info?.id
+        && event.properties.info.parentID
+      ) {
+        runtimeSessionParents.set(event.properties.info.id, event.properties.info.parentID);
+        runtimeTaskChildSessions.add(event.properties.info.id);
+      }
+      const taskChildBinding = runtimeTaskChildBinding(input.event);
+      if (taskChildBinding) observeTaskChildBinding(taskChildBinding);
       const lifecycleSessionID = event.type === 'session.error'
         ? event.properties?.sessionID
         : event.type === 'session.status' && event.properties?.status?.type === 'idle'
@@ -2941,25 +3284,23 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         vulnerabilityReviewStage1Sessions.delete(lifecycleSessionID);
         vulnerabilityReviewPendingCommandSessions.delete(lifecycleSessionID);
       }
-      const dashTaskBinding = runtimeTaskChildBinding(input.event);
-      if (dashTaskBinding) {
-        bindCorrelatedChild(dashTaskBinding);
+      if (taskChildBinding) {
         dashReviewInvocations.bindTaskChild({
-          ...dashTaskBinding,
+          ...taskChildBinding,
           runtimeVersion: runtimeDashReviewVersion,
         });
         const deepReservation = vulnerabilityDeepReservations.get(
-          vulnerabilityDeepKey(dashTaskBinding.primarySessionID, dashTaskBinding.callID),
+          vulnerabilityDeepKey(taskChildBinding.primarySessionID, taskChildBinding.callID),
         );
         if (deepReservation && vulnerabilityDeepExpired(deepReservation)) {
           settleVulnerabilityDeepReservation(deepReservation);
         } else if (
           deepReservation
-          && (!dashTaskBinding.expectedAgent || dashTaskBinding.expectedAgent === deepReservation.expectedAgent)
+          && (!taskChildBinding.expectedAgent || taskChildBinding.expectedAgent === deepReservation.expectedAgent)
           && !deepReservation.childSessionID
         ) {
-          deepReservation.childSessionID = dashTaskBinding.childSessionID;
-          vulnerabilityDeepChildren.set(dashTaskBinding.childSessionID, deepReservation);
+          deepReservation.childSessionID = taskChildBinding.childSessionID;
+          vulnerabilityDeepChildren.set(taskChildBinding.childSessionID, deepReservation);
         }
       }
       const ephemeralEventSessionID = (input.event as { properties?: { sessionID?: string; info?: { id?: string } } }).properties?.sessionID
@@ -2999,11 +3340,59 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
       if (event.type === 'session.deleted' && lifecycleSessionID) {
         const sessionID = lifecycleSessionID;
+        const parentCallPrefix = `${sessionID}\u0000`;
+        const matchingLaunchKeys = new Set<string>();
+        const matchingChildSessionIDs = new Set([sessionID]);
+        for (const [key, reservation] of [...hiveTaskLaunches.entries(), ...adhocLaunches.entries()]) {
+          if (key.startsWith(parentCallPrefix) || reservation.childSessionID === sessionID) {
+            matchingLaunchKeys.add(key);
+            if (reservation.childSessionID) matchingChildSessionIDs.add(reservation.childSessionID);
+          }
+        }
+        for (const [key, childSessionID] of observedTaskChildrenByCall) {
+          if (key.startsWith(parentCallPrefix) || childSessionID === sessionID) {
+            matchingLaunchKeys.add(key);
+            matchingChildSessionIDs.add(childSessionID);
+          }
+        }
+        for (const [key, childSessionID] of boundLaunchChildrenByCall) {
+          if (key.startsWith(parentCallPrefix) || childSessionID === sessionID) {
+            matchingLaunchKeys.add(key);
+            matchingChildSessionIDs.add(childSessionID);
+          }
+        }
+        for (const key of claimedLaunchIdsByCall.keys()) {
+          if (key.startsWith(parentCallPrefix)) matchingLaunchKeys.add(key);
+        }
+        for (const key of matchingLaunchKeys) {
+          releaseLaunchReservation(key);
+          boundLaunchChildrenByCall.delete(key);
+          observedTaskChildrenByCall.delete(key);
+          completedLaunchCalls.delete(key);
+        }
+        for (const intent of pendingHiveTaskLaunches.get(sessionID) ?? []) {
+          backgroundJobService.consumePendingLaunch({ launchId: intent.launchId, parentSessionId: sessionID });
+        }
+        for (const intent of pendingAdhocLaunches.get(sessionID) ?? []) {
+          backgroundJobService.consumePendingLaunch({ launchId: intent.launchId, parentSessionId: sessionID });
+        }
+        pendingHiveTaskLaunches.delete(sessionID);
+        pendingAdhocLaunches.delete(sessionID);
         for (const hintID of taskTraceInjectedHintIDs) {
-          if (hintID.startsWith(`${sessionID}\u0000`)) taskTraceInjectedHintIDs.delete(hintID);
+          if (hintID.startsWith(parentCallPrefix)) taskTraceInjectedHintIDs.delete(hintID);
         }
         runtimeTaskChildSessions.delete(sessionID);
+        runtimeSessionParents.delete(sessionID);
         runtimeSessionAgents.delete(sessionID);
+        for (const childSessionID of matchingChildSessionIDs) claimedChildLaunches.delete(childSessionID);
+        for (const [childSessionID, binding] of observedTaskChildren) {
+          if (childSessionID === sessionID || binding.primarySessionID === sessionID) {
+            observedTaskChildren.delete(childSessionID);
+          }
+        }
+        for (const key of completedLaunchCalls) {
+          if (key.startsWith(parentCallPrefix)) completedLaunchCalls.delete(key);
+        }
         try {
           const results = await reviewWorkspaceService.cleanupOwnedBySession(sessionID, ['dash-review', 'vulnerability-review']);
           for (const result of results) {
@@ -3049,6 +3438,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       const observedAgent = inputAgent ?? messageAgent;
       input = { ...input, agent: observedAgent };
       if (observedAgent) output.message.agent = observedAgent;
+      if (observedAgent) await bindObservedForagerChild(input.sessionID, observedAgent);
       if (taskTraceEphemeralSessionIDs.has(input.sessionID)) {
         output.message.agent = TASK_TRACE_SUMMARIZER_AGENT;
         if (output.message.variant === undefined && taskTraceConfig.variant) output.message.variant = taskTraceConfig.variant;
@@ -3753,18 +4143,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         }
       }
 
-      await backgroundJobAdapter['tool.execute.before'](input, output);
-      if (input.tool === 'task' && input.sessionID && input.callID) {
+      if (input.tool === 'task' && input.sessionID) {
         const launchArgs = output.args as Record<string, unknown> | undefined;
-        reserveHiveTaskLaunch(input.sessionID, input.callID, launchArgs);
-        reserveAdhocLaunch(input.sessionID, input.callID, launchArgs);
+        await enqueueClaimForagerLaunch(input.sessionID, input.callID, launchArgs, output);
+      } else {
+        await backgroundJobAdapter['tool.execute.before'](input, output);
       }
 
-      // Standing constraints are appended AFTER the background adapter snapshots
-      // output.args, so pending-launch prompt correlation keeps matching the
-      // prompt the orchestrator produced. The runtime-authenticated review
-      // boundary JSON below still lands last in the prompt.
-      //
       // A task-created architect child has its own session and an empty
       // register, so its planning-helper launches fall back one level to the
       // parent's register. Depth is capped at 2 above, so one level is enough.
@@ -3902,23 +4287,30 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         );
         if (deepReservation) settleVulnerabilityDeepReservation(deepReservation);
       }
+      const observedTaskChildSessionID = input.tool === 'task' ? taskChildSessionID(output?.metadata) : undefined;
+      if (observedTaskChildSessionID && input.callID) {
+        observeTaskChildBinding({
+          primarySessionID: input.sessionID,
+          callID: input.callID,
+          childSessionID: observedTaskChildSessionID,
+          expectedAgent: typeof input.args?.subagent_type === 'string' ? input.args.subagent_type : undefined,
+        });
+      }
       if (input.tool === 'task') {
-        const childSessionID = taskChildSessionID(output?.metadata);
+        const childSessionID = observedTaskChildSessionID;
         const hiveTaskKey = input.callID
           ? hiveTaskLaunchKey(input.sessionID, input.callID)
           : undefined;
-        const hiveTaskReservation = hiveTaskKey ? hiveTaskLaunches.get(hiveTaskKey) : undefined;
-        const adhocReservation = hiveTaskKey ? adhocLaunches.get(hiveTaskKey) : undefined;
-        if (hiveTaskKey) hiveTaskLaunches.delete(hiveTaskKey);
-        if (hiveTaskKey) adhocLaunches.delete(hiveTaskKey);
-        if (
-          childSessionID
-          && hiveTaskReservation
-        ) {
-          bindTaskChildSession(input.sessionID, childSessionID, hiveTaskReservation);
-        }
-        if (childSessionID && adhocReservation) {
-          bindAdhocChildSession(input.sessionID, childSessionID, adhocReservation);
+        if (hiveTaskKey) {
+          completedLaunchCalls.add(hiveTaskKey);
+          const observedChildSessionID = observedTaskChildrenByCall.get(hiveTaskKey);
+          const correlatedChildSessionID = childSessionID ?? observedChildSessionID;
+          if (
+            correlatedChildSessionID
+            && boundLaunchChildrenByCall.get(hiveTaskKey) === correlatedChildSessionID
+          ) {
+            releaseLaunchReservation(hiveTaskKey);
+          }
         }
         if (childSessionID) {
           dashReviewInvocations.bindTaskChild({
@@ -5985,6 +6377,8 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
             const subagent_type = defaultAgent;
             const description = `Ad-hoc: ${info.runId}`;
+            const createdAt = Date.now();
+            const launchId = randomUUID();
             const { taskToolCall, backgroundTaskCall, launchMode, sessionPolicy } = buildAdhocWorkerLaunchPayloads({
               subagent_type,
               description,
@@ -5994,19 +6388,28 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
             if (taskToolCall && parentSessionId) {
               const pending = pendingAdhocLaunches.get(parentSessionId) ?? [];
+              const supersededAdhocIntents = pending.filter(candidate => candidate.runId === info.runId);
               pendingAdhocLaunches.set(parentSessionId, [
                 ...pending.filter(candidate => candidate.runId !== info.runId),
                 {
+                  launchId,
+                  parentSessionID: parentSessionId,
+                  expiresAt: createdAt + WORKER_LAUNCH_RESERVATION_TTL_MS,
                   runId: info.runId,
                   projectRoot: fs.realpathSync(directory),
-                  expectedDescription: taskToolCall.description,
-                  expectedPrompt: taskToolCall.prompt,
                   allowedAgents: eligibleAgents.map(candidate => candidate.name),
                 },
               ]);
+              for (const candidate of supersededAdhocIntents) {
+                backgroundJobService.consumePendingLaunch({
+                  launchId: candidate.launchId,
+                  parentSessionId,
+                });
+              }
             }
             if (backgroundTaskCall && backgroundScope && backgroundOwnership) {
               backgroundJobService.registerPendingLaunch({
+                launchId,
                 parentSessionId: backgroundScope.parentSessionId,
                 expectedDescription: backgroundTaskCall.description,
                 expectedPrompt: backgroundTaskCall.prompt,

@@ -20,6 +20,7 @@ function readBoard(): BackgroundJobsJson {
 
 function createHarness(enabled = true) {
   const sessions = new Map<string, SessionInfo>();
+  const claims = new Map<string, string>();
   const service = new BackgroundJobService(TEST_DIR);
   const adapter = createBackgroundJobAdapter({
     projectRoot: TEST_DIR,
@@ -36,9 +37,10 @@ function createHarness(enabled = true) {
       task: session?.taskFolder,
       workflow: session && 'workflow' in session ? (session as SessionInfo & { workflow?: string }).workflow : undefined,
     }),
+    resolveClaimedLaunchId: (sessionID, callID) => claims.get(`${sessionID}\0${callID}`),
   });
 
-  return { adapter, service, sessions };
+  return { adapter, service, sessions, claims };
 }
 
 function session(sessionId: string, agent = 'hive-master', sessionKind: SessionInfo['sessionKind'] = 'primary'): SessionInfo {
@@ -156,10 +158,11 @@ describe('createBackgroundJobAdapter', () => {
     expect(text).not.toContain('coordination: none');
   });
 
-  it('preserves pending launch metadata when task description and specialist selection drift', async () => {
-    const { adapter, service, sessions } = createHarness();
+  it('preserves claimed pending launch metadata when prose, wait mode, and specialist selection drift', async () => {
+    const { adapter, service, sessions, claims } = createHarness();
     sessions.set('parent-1', session('parent-1', 'swarm-orchestrator'));
     service.registerPendingLaunch({
+      launchId: 'launch-drift',
       parentSessionId: 'parent-1',
       expectedDescription: 'Hive: 01-add-root-smoke-documentation-file',
       expectedPrompt: 'Follow instructions in @.hive/features/17_background-smoke-test/tasks/01-add-root-smoke-documentation-file/worker-prompt.md',
@@ -167,12 +170,13 @@ describe('createBackgroundJobAdapter', () => {
       scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'swarm-orchestrator', feature: 'background-smoke-test', task: '01-add-root-smoke-documentation-file' },
       ownership: { worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'background-smoke-test', '01-add-root-smoke-documentation-file'), branch: 'hive/background-smoke-test/01-add-root-smoke-documentation-file' },
     });
+    claims.set('parent-1\0call-drift', 'launch-drift');
 
     await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-drift' }, {
       args: {
         background: true,
         description: 'Hive: smoke docs',
-        prompt: 'Follow instructions in @.hive/features/17_background-smoke-test/tasks/01-add-root-smoke-documentation-file/worker-prompt.md',
+        prompt: 'Caller-mutated prompt text',
         subagent_type: 'forager-documents',
       },
     });
@@ -201,16 +205,44 @@ describe('createBackgroundJobAdapter', () => {
     });
   });
 
+  it('stages arguments before consuming pending metadata and preserves the launch for retry on failure', async () => {
+    const { adapter, service, sessions, claims } = createHarness();
+    sessions.set('parent-1', session('parent-1', 'swarm-orchestrator'));
+    service.registerPendingLaunch({
+      launchId: 'launch-private-rollback',
+      parentSessionId: 'parent-1',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
+    });
+    const pending = readBoard().pendingLaunches;
+    claims.set('parent-1\0call-private-rollback', 'launch-private-rollback');
+    const args = new Proxy({ background: true }, {
+      ownKeys: () => { throw new Error('injected staging failure'); },
+    });
+
+    await expect(adapter['tool.execute.before']({
+      tool: 'task', sessionID: 'parent-1', callID: 'call-private-rollback',
+    }, { args })).rejects.toThrow('injected staging failure');
+    expect(readBoard().pendingLaunches).toEqual(pending);
+
+    await adapter['tool.execute.before']({
+      tool: 'task', sessionID: 'parent-1', callID: 'call-private-rollback',
+    }, { args: { background: true } });
+    expect(readBoard().pendingLaunches).toBeUndefined();
+  });
+
   it('discards matching pending launch metadata when a foreground task escape is used', async () => {
-    const { adapter, service, sessions } = createHarness();
+    const { adapter, service, sessions, claims } = createHarness();
     sessions.set('parent-1', session('parent-1'));
     service.registerPendingLaunch({
+      launchId: 'launch-foreground',
       parentSessionId: 'parent-1',
       expectedDescription: 'Hive: 01-task',
       expectedPrompt: 'Follow instructions in @worker-prompt.md',
       agentName: 'forager-worker',
       scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
     });
+    claims.set('parent-1\0call-foreground', 'launch-foreground');
 
     await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-foreground' }, {
       args: {
@@ -230,10 +262,11 @@ describe('createBackgroundJobAdapter', () => {
   });
 
   it('keeps ad-hoc pending metadata across unrelated task calls until the stable prompt launches', async () => {
-    const { adapter, service, sessions } = createHarness();
+    const { adapter, service, sessions, claims } = createHarness();
     sessions.set('parent-1', session('parent-1', 'hive-builder'));
     const expectedPrompt = 'Work in /tmp/adhoc-1 for ad-hoc run adhoc-1.';
     service.registerPendingLaunch({
+      launchId: 'launch-adhoc',
       parentSessionId: 'parent-1',
       expectedPrompt,
       agentName: 'unknown',
@@ -257,6 +290,7 @@ describe('createBackgroundJobAdapter', () => {
     });
     expect(readBoard().pendingLaunches).toHaveLength(1);
 
+    claims.set('parent-1\0call-background-adhoc', 'launch-adhoc');
     await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-background-adhoc' }, {
       args: { background: true, description: 'Run ad-hoc implementation', prompt: expectedPrompt, subagent_type: 'forager-fast' },
     });

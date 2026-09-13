@@ -314,7 +314,7 @@ describe('skill content', () => {
     expect(skill).toBeDefined();
     expect(skill!.template).toContain('task({');
     expect(skill!.template).toContain(
-      'Parallelize by issuing multiple task() calls in the same assistant message.'
+      'Launch every currently known, necessary, non-duplicative independent question before waiting for any results.'
     );
     expect(skill!.template).toContain('fit in one context window');
     expect(skill!.template).toContain('return to Hive');
@@ -437,6 +437,9 @@ describe('skill content', () => {
     expect(skill!.template).toContain('gate-closed fallback guidance');
     expect(skill!.template).toContain('Execution and Forager lanes are managed/heavy background lanes');
     expect(skill!.template).toContain('unresolved-lane checks before dependent decisions');
+    expect(skill!.template).toContain('Launch preparation and any unbound claim each expire after five minutes');
+    expect(skill!.template).toContain('no native completion notification arrives');
+    expect(skill!.template).toContain('await the returned blocking `taskToolCall` before preparing the next Forager');
     expect(skill!.template).toContain('Risk-Tier Review Routing');
     expect(skill!.template).toContain('Post-Batch Code Review');
     expect(skill!.template).toContain('recommended review path');
@@ -472,9 +475,13 @@ describe('skill content', () => {
 
     expect(skill).toBeDefined();
     expect(skill!.template).toContain('task({');
-    expect(skill!.template).toContain(
-      'Parallelize by issuing multiple task() calls in the same assistant message.'
-    );
+    expect(skill!.template).toContain('Forager dispatch correlation is serialized even when execution is parallel');
+    expect(skill!.template).toContain('Gate-open only: use backgroundTaskCall');
+    expect(skill!.template).toContain('If the task() dispatch below returns binding-in-progress');
+    expect(skill!.template).toContain('Launch preparation and any unbound claim each expire after five minutes');
+    expect(skill!.template).toContain('no native completion notification arrives');
+    expect(skill!.template).toContain('Blocking alternative, including every gate-closed session');
+    expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch');
     expect(skill!.template).toContain('one primary goal');
     expect(skill!.template).toContain('fresh subagent session');
     expect(skill!.template).toContain('disjoint path ownership or sequence overlapping writers');
@@ -521,6 +528,23 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns.');
     expect(skill!.template).toContain('Gate-closed sessions use normal blocking `task()` wait mode');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
+    expect(skill!.template).toContain('Independent ordinary Scout, advisor, and reviewer tasks can run in parallel');
+    expect(skill!.template).toContain('Every Forager lane, including report-only diagnosis');
+    expect(skill!.template).toContain('binding-in-progress error');
+    expect(skill!.template).toContain('exact child correlation is internal and is not visible to the primary');
+    expect(skill!.template).toContain('keep that next launch prepared');
+    expect(skill!.template).toContain("first child's native completion notification");
+    expect(skill!.template).toContain('Launch preparation and any unbound claim each expire after five minutes');
+    expect(skill!.template).toContain('reprepare only if its five-minute reservation expires');
+    expect(skill!.template).not.toContain('wait for the native correlation event');
+    expect(skill!.template).toContain('exact correlated parent/agent denial retires only that rejected claim');
+    expect(skill!.template).toContain('retains the unbound claim until correlation or expiry');
+    expect(skill!.template).toContain('no native completion notification arrives');
+    expect(skill!.template).toContain('Gate-closed Forager launch (blocking and sequential)');
+    expect(skill!.template).toContain('Gate-open Forager launch (background wait mode)');
+    expect(skill!.template).toContain('JSON.parse(await hive_adhoc_worktree_create');
+    expect(skill!.template).toContain('prepared.taskToolCall');
+    expect(skill!.template).toContain('prepared.backgroundTaskCall');
     expect(skill!.template).toContain('Only a delegated `architect-planner` may call `task()` from a subagent session');
     expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
     expect(skill!.template).toContain('waitingForNativeCompletion');

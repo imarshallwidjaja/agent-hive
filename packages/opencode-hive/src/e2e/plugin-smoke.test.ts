@@ -177,6 +177,27 @@ async function createHooksForTest(
   };
 }
 
+async function observeNativeTaskChild(
+  hooks: PluginHooks,
+  input: {
+    parentSessionID: string;
+    callID: string;
+    childSessionID: string;
+    expectedAgent?: string;
+  },
+): Promise<void> {
+  await hooks.event?.({ event: { type: 'message.part.updated', properties: { part: {
+    type: 'tool',
+    tool: 'task',
+    sessionID: input.parentSessionID,
+    callID: input.callID,
+    state: {
+      input: input.expectedAgent ? { subagent_type: input.expectedAgent } : {},
+      metadata: { sessionId: input.childSessionID },
+    },
+  } } } } as any);
+}
+
 async function runOpenCodeV114CommandPath(input: {
   hooks: PluginHooks;
   command: string;
@@ -273,6 +294,976 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     execSync("git add README.md .gitignore", { cwd: testRoot });
     execSync('git commit -m "init"', { cwd: testRoot });
   });
+
+  it.each([false, true])('rejects raw %s-background forager dispatch before creating a child', async (background) => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, `raw-forager-${background}`);
+
+    await expect(hooks['tool.execute.before']?.({
+      tool: 'task',
+      sessionID: toolContext.sessionID,
+      callID: `raw-forager-call-${background}`,
+    }, {
+      args: {
+        subagent_type: 'forager-worker',
+        description: 'Raw implementation launch',
+        prompt: 'Implement without preparing a Hive worktree',
+        ...(background ? { background: true } : {}),
+      },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*hive_worktree_start[\s\S]*autoSpawnWorker:false/i);
+
+    if (!background) {
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+      }, {
+        args: { subagent_type: 'forager-worker', description: 'Missing call ID', prompt: 'Do work' },
+      })).rejects.toThrow(/launch_binding_error[\s\S]*call ID/);
+    }
+  });
+
+  it('binds an authenticated ad-hoc overlay by claimed identity despite caller prose edits', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const configPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      customAgents: {
+        'forager-domain': { baseAgent: 'forager-worker', description: 'Domain implementation' },
+      },
+    }));
+    const parent = 'adhoc-parent';
+    const child = 'adhoc-child';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+
+    const workspaceOnly = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'workspace-only',
+      autoSpawnWorker: false,
+    }, toolContext) as string);
+    expect(workspaceOnly.taskToolCall).toBeUndefined();
+    await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'workspace-only-call' }, {
+      args: { subagent_type: 'forager-worker', description: 'Workspace only', prompt: 'No launch intent exists' },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*autoSpawnWorker:false/);
+
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'claimed-adhoc',
+      workerInstructions: 'Implement the bounded change.',
+    }, toolContext) as string);
+    const dispatch = { args: {
+      ...launch.backgroundTaskCall,
+      subagent_type: 'forager-domain',
+      description: 'Caller-edited description',
+      prompt: 'Caller-edited ad-hoc instructions',
+    } };
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'claimed-adhoc-call' }, dispatch);
+    const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toBeUndefined();
+    await hooks.event?.({ event: {
+      type: 'session.created',
+      properties: { info: { id: child, parentID: parent } },
+    } } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'claimed-adhoc-call',
+      childSessionID: child,
+      expectedAgent: 'forager-domain',
+    });
+    await hooks['chat.message']?.({ sessionID: child, agent: 'forager-domain' }, {
+      message: { agent: 'forager-domain' }, parts: [],
+    } as any);
+    const authority = JSON.parse(await hooks.tool!.hive_context_read.execute(
+      { scope: 'project', view: 'catalog' },
+      { ...toolContext, sessionID: child, agent: 'forager-domain' },
+    ) as string);
+    expect(authority.success).toBe(true);
+    await hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: parent, callID: 'claimed-adhoc-call', args: dispatch.args },
+      { title: 'task', output: 'done', metadata: { sessionId: child } },
+    );
+    expect(new SessionService(testRoot).getGlobal(child)).toMatchObject({
+      parentSessionId: parent,
+      adHocRunId: 'claimed-adhoc',
+      agent: 'forager-domain',
+      baseAgent: 'forager-worker',
+      sessionKind: 'task-worker',
+    });
+  }, 30_000);
+
+  it('rejects wrong-parent, expired, and restarted-runtime ad-hoc launch intents', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'intent-parent';
+    const otherParent = 'intent-other-parent';
+    const initial = await createHooksForTest(testRoot, parent);
+    await initial.hooks['chat.message']?.({ sessionID: otherParent, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
+    const wrongParentLaunch = JSON.parse(await initial.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'wrong-parent-run', workerInstructions: 'Implement one change.',
+    }, initial.toolContext) as string);
+    await expect(initial.hooks['tool.execute.before']?.({ tool: 'task', sessionID: otherParent, callID: 'wrong-parent-call' }, {
+      args: { ...wrongParentLaunch.backgroundTaskCall },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*different authenticated parent/);
+
+    const clock = spyOn(Date, 'now').mockReturnValue(Date.now() + 6 * 60 * 1000);
+    try {
+      await expect(initial.hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'expired-call' }, {
+        args: { ...wrongParentLaunch.backgroundTaskCall },
+      })).rejects.toThrow(/launch_binding_error[\s\S]*expired/);
+    } finally {
+      clock.mockRestore();
+    }
+
+    const restartedLaunch = JSON.parse(await initial.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'restart-run', workerInstructions: 'Implement after restart.',
+    }, initial.toolContext) as string);
+    const fresh = await createHooksForTest(testRoot, parent);
+    await expect(fresh.hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'restart-call' }, {
+      args: { ...restartedLaunch.backgroundTaskCall },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*earlier plugin runtime/);
+  }, 30_000);
+
+  it('does not let an older same-agent child consume the prepared forager launch claim', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'claim-theft-parent';
+    const olderChild = 'claim-older-child';
+    const realChild = 'claim-real-child';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === olderChild || input.id === realChild ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: olderChild, parentID: parent } } } } as any);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'theft-run',
+      workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'theft-call' }, {
+      args: { ...launch.backgroundTaskCall },
+    });
+
+    await expect(hooks['chat.message']?.({ sessionID: olderChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any)).rejects.toThrow(/launch_binding_error[\s\S]*correlation/i);
+    const sessions = new SessionService(testRoot);
+    expect(sessions.getGlobal(olderChild)?.adHocRunId).toBeUndefined();
+    expect(sessions.getGlobal(olderChild)?.sessionKind).not.toBe('task-worker');
+
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: realChild, parentID: parent } } } } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'theft-call',
+      childSessionID: realChild,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: realChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    expect(sessions.getGlobal(realChild)).toMatchObject({
+      parentSessionId: parent,
+      adHocRunId: 'theft-run',
+      agent: 'forager-worker',
+      baseAgent: 'forager-worker',
+      sessionKind: 'task-worker',
+    });
+  }, 30_000);
+
+  it.each([
+    ['wrong parent', 'correlation-parent-other', 'forager-worker', 'forager-worker', 'forager-worker'],
+    ['wrong selected agent', 'correlation-parent', 'forager-domain', 'forager-worker', 'forager-domain'],
+    ['wrong correlated expected agent', 'correlation-parent', 'forager-worker', 'forager-worker', 'forager-domain'],
+  ])('rejects native child correlation with %s before persisting worker authority', async (_case, correlatedParent, selectedAgent, observedAgent, expectedAgent) => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'correlation-parent';
+    const child = `correlation-child-${_case.replaceAll(' ', '-')}`;
+    const configPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      customAgents: { 'forager-domain': { baseAgent: 'forager-worker', description: 'Domain implementation' } },
+    }));
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: `correlation-${_case.replaceAll(' ', '-')}`,
+      workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: `call-${_case}` }, {
+      args: { ...launch.backgroundTaskCall, subagent_type: selectedAgent },
+    });
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: correlatedParent,
+      callID: `call-${_case}`,
+      childSessionID: child,
+      expectedAgent,
+    });
+
+    await expect(hooks['chat.message']?.({ sessionID: child, agent: observedAgent }, {
+      message: { agent: observedAgent }, parts: [],
+    } as any)).rejects.toThrow(/launch_binding_error/);
+    expect(new SessionService(testRoot).getGlobal(child)?.adHocRunId).toBeUndefined();
+    expect(new SessionService(testRoot).getGlobal(child)?.sessionKind).not.toBe('task-worker');
+  }, 30_000);
+
+  it('binds in native host order before the task after-hook exposes the child', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'native-order-parent';
+    const child = 'native-order-child';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'native-order-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'native-order-call' }, {
+      args: { ...launch.backgroundTaskCall },
+    });
+    const createdObservation = hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
+    const taskObservation = observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'native-order-call',
+      childSessionID: child,
+      expectedAgent: 'forager-worker',
+    });
+    const duplicateTaskObservation = observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'native-order-call',
+      childSessionID: child,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    await Promise.all([createdObservation, taskObservation, duplicateTaskObservation]);
+
+    const firstTool = JSON.parse(await hooks.tool!.hive_context_read.execute(
+      { scope: 'project', view: 'catalog' },
+      { ...toolContext, sessionID: child, agent: 'forager-worker' },
+    ) as string);
+    expect(firstTool.success).toBe(true);
+    expect(new SessionService(testRoot).getGlobal(child)).toMatchObject({
+      parentSessionId: parent,
+      adHocRunId: 'native-order-run',
+      agent: 'forager-worker',
+      sessionKind: 'task-worker',
+    });
+  }, 30_000);
+
+  it('keeps an unbound launch claim when a metadata-free task after-hook precedes native correlation', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'metadata-free-after-parent';
+    const child = 'metadata-free-after-child';
+    const callID = 'metadata-free-after-call';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'metadata-free-after-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    const dispatch = { args: { ...launch.backgroundTaskCall } };
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, dispatch);
+
+    await hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: parent, callID, args: dispatch.args },
+      { title: 'task', output: 'running', metadata: {} },
+    );
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID,
+      childSessionID: child,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+
+    const firstTool = JSON.parse(await hooks.tool!.hive_context_read.execute(
+      { scope: 'project', view: 'catalog' },
+      { ...toolContext, sessionID: child, agent: 'forager-worker' },
+    ) as string);
+    expect(firstTool.success).toBe(true);
+    expect(new SessionService(testRoot).getGlobal(child)).toMatchObject({
+      parentSessionId: parent,
+      adHocRunId: 'metadata-free-after-run',
+      sessionKind: 'task-worker',
+    });
+  }, 30_000);
+
+  it('cleans up a bound launch after metadata-free completion while preserving its replay guard', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'bound-metadata-free-parent';
+    const child = 'bound-metadata-free-child';
+    const replacementChild = 'bound-metadata-free-replacement';
+    const callID = 'bound-metadata-free-call';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: {
+          id: input.id,
+          parentID: input.id === child || input.id === replacementChild ? parent : undefined,
+        } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'bound-metadata-free-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    const dispatch = { args: { ...launch.backgroundTaskCall } };
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, dispatch);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID,
+      childSessionID: child,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    await hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: parent, callID, args: dispatch.args },
+      { title: 'task', output: 'running', metadata: {} },
+    );
+
+    await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, {
+      args: { ...launch.backgroundTaskCall },
+    })).rejects.toThrow(/reused session\/tool callID|already claimed/);
+
+    const replacement = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'bound-metadata-free-replacement-run', workerInstructions: 'Implement the replacement change.',
+    }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'bound-metadata-free-replacement-call' }, {
+      args: { ...replacement.backgroundTaskCall },
+    });
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'bound-metadata-free-replacement-call',
+      childSessionID: replacementChild,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: replacementChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    expect(new SessionService(testRoot).getGlobal(replacementChild)?.adHocRunId).toBe('bound-metadata-free-replacement-run');
+  }, 30_000);
+
+  it('retires only a denied correlated claim so the parent can dispatch a fresh launch', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'denied-correlation-recovery-parent';
+    const olderChild = 'denied-correlation-older-child';
+    const deniedChild = 'denied-correlation-rejected-child';
+    const freshChild = 'denied-correlation-fresh-child';
+    const childIDs = new Set([olderChild, deniedChild, freshChild]);
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: childIDs.has(input.id) ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+
+    const bindLaunch = async (runId: string, callID: string, childSessionID: string): Promise<void> => {
+      const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+        runId, workerInstructions: 'Implement one bounded change.',
+      }, toolContext) as string);
+      await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, {
+        args: { ...launch.backgroundTaskCall },
+      });
+      await observeNativeTaskChild(hooks, {
+        parentSessionID: parent,
+        callID,
+        childSessionID,
+        expectedAgent: 'forager-worker',
+      });
+      await hooks['chat.message']?.({ sessionID: childSessionID, agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+    };
+
+    await bindLaunch('denied-correlation-older-run', 'denied-correlation-older-call', olderChild);
+
+    const rejectedLaunch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'denied-correlation-rejected-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'denied-correlation-rejected-call' }, {
+      args: { ...rejectedLaunch.backgroundTaskCall },
+    });
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'denied-correlation-rejected-call',
+      childSessionID: deniedChild,
+      expectedAgent: 'forager-domain',
+    });
+    await expect(hooks['chat.message']?.({ sessionID: deniedChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any)).rejects.toThrow(/launch_binding_error[\s\S]*metadata agent/);
+
+    await bindLaunch('denied-correlation-fresh-run', 'denied-correlation-fresh-call', freshChild);
+    for (const [childSessionID, runId] of [
+      [olderChild, 'denied-correlation-older-run'],
+      [freshChild, 'denied-correlation-fresh-run'],
+    ] as const) {
+      const firstTool = JSON.parse(await hooks.tool!.hive_context_read.execute(
+        { scope: 'project', view: 'catalog' },
+        { ...toolContext, sessionID: childSessionID, agent: 'forager-worker' },
+      ) as string);
+      expect(firstTool.success).toBe(true);
+      expect(new SessionService(testRoot).getGlobal(childSessionID)?.adHocRunId).toBe(runId);
+    }
+    expect(new SessionService(testRoot).getGlobal(deniedChild)?.adHocRunId).toBeUndefined();
+  }, 30_000);
+
+  it('retires only a superseded task claim rejected before its after-hook', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'superseded-child-first-parent';
+    const rejectedChild = 'superseded-child-first-rejected';
+    const replacementChild = 'superseded-child-first-replacement';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: {
+          id: input.id,
+          parentID: input.id === rejectedChild || input.id === replacementChild ? parent : undefined,
+        } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    await hooks.tool!.hive_feature_create.execute({ name: 'superseded-child-first' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute({
+      feature: 'superseded-child-first',
+      content: createSingleTaskPlan(
+        'Superseded child first',
+        'This integration test supersedes a positively correlated child before its after-hook, then proves that only the rejected claim is retired and its replacement can bind.',
+      ),
+    }, toolContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'superseded-child-first' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'superseded-child-first' }, toolContext);
+
+    const rejectedLaunch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({
+      feature: 'superseded-child-first', task: FIRST_TASK,
+    }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'superseded-child-first-rejected-call' }, {
+      args: { ...rejectedLaunch.backgroundTaskCall },
+    });
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'superseded-child-first-rejected-call',
+      childSessionID: rejectedChild,
+      expectedAgent: 'forager-worker',
+    });
+
+    const replacementLaunch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({
+      feature: 'superseded-child-first', task: FIRST_TASK,
+    }, toolContext) as string);
+    await expect(hooks['chat.message']?.({ sessionID: rejectedChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any)).rejects.toThrow(/assignment_recovery_error/);
+    await hooks['tool.execute.after']?.(
+      {
+        tool: 'task',
+        sessionID: parent,
+        callID: 'superseded-child-first-rejected-call',
+        args: rejectedLaunch.backgroundTaskCall,
+      },
+      { title: 'task', output: 'running', metadata: { sessionId: rejectedChild } },
+    );
+
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'superseded-child-first-replacement-call' }, {
+      args: { ...replacementLaunch.backgroundTaskCall },
+    });
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'superseded-child-first-replacement-call',
+      childSessionID: replacementChild,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: replacementChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    expect(new SessionService(testRoot).getGlobal(replacementChild)).toMatchObject({
+      parentSessionId: parent,
+      featureName: 'superseded-child-first',
+      taskFolder: FIRST_TASK,
+      sessionKind: 'task-worker',
+    });
+    expect(new SessionService(testRoot).getGlobal(rejectedChild)?.workerAssignment).toBeUndefined();
+  }, 30_000);
+
+  it('deletes only the matching launch state and permits a fresh dispatch on its call ID', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'deleted-correlation-parent';
+    const otherParent = 'deleted-correlation-other-parent';
+    const deletedChild = 'deleted-correlation-child';
+    const replacementChild = 'deleted-correlation-replacement';
+    const otherChild = 'deleted-correlation-other-child';
+    const callID = 'deleted-correlation-call';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: {
+          id: input.id,
+          parentID: input.id === deletedChild || input.id === replacementChild
+            ? parent
+            : input.id === otherChild
+              ? otherParent
+              : undefined,
+        } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const otherToolContext = createToolContext(otherParent);
+    await hooks['chat.message']?.({ sessionID: otherParent, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'deleted-correlation-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    const otherLaunch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'deleted-correlation-other-run', workerInstructions: 'Implement an unrelated bounded change.',
+    }, otherToolContext) as string);
+    const dispatch = { args: { ...launch.backgroundTaskCall } };
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, dispatch);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: otherParent, callID: 'deleted-correlation-other-call' }, {
+      args: { ...otherLaunch.backgroundTaskCall },
+    });
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID,
+      childSessionID: deletedChild,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: parent, callID, args: dispatch.args },
+      { title: 'task', output: 'running', metadata: {} },
+    );
+    await hooks.event?.({ event: { type: 'session.deleted', properties: { info: { id: parent } } } } as any);
+    await hooks['chat.message']?.({ sessionID: parent, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
+
+    const replacementLaunch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'deleted-correlation-replacement-run', workerInstructions: 'Implement the replacement bounded change.',
+    }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, {
+      args: { ...replacementLaunch.backgroundTaskCall },
+    });
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID,
+      childSessionID: replacementChild,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: replacementChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: otherParent,
+      callID: 'deleted-correlation-other-call',
+      childSessionID: otherChild,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: otherChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+
+    const firstTool = JSON.parse(await hooks.tool!.hive_context_read.execute(
+      { scope: 'project', view: 'catalog' },
+      { ...toolContext, sessionID: replacementChild, agent: 'forager-worker' },
+    ) as string);
+    expect(firstTool.success).toBe(true);
+    expect(new SessionService(testRoot).getGlobal(replacementChild)?.adHocRunId).toBe('deleted-correlation-replacement-run');
+    expect(new SessionService(testRoot).getGlobal(otherChild)?.adHocRunId).toBe('deleted-correlation-other-run');
+  }, 30_000);
+
+  it.each(['after-before-message', 'message-before-after'])('preserves exact background binding when %s', async (ordering) => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = `background-order-parent-${ordering}`;
+    const child = `background-order-child-${ordering}`;
+    const callID = `background-order-call-${ordering}`;
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: `background-order-run-${ordering}`, workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    const dispatch = { args: { ...launch.backgroundTaskCall } };
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, dispatch);
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
+    await observeNativeTaskChild(hooks, { parentSessionID: parent, callID, childSessionID: child, expectedAgent: 'forager-worker' });
+    const after = () => hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: parent, callID, args: dispatch.args },
+      { title: 'task', output: 'running', metadata: { sessionId: child } },
+    );
+    const message = () => hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    if (ordering === 'after-before-message') {
+      await after();
+      await message();
+    } else {
+      await message();
+      await after();
+    }
+    expect(new SessionService(testRoot).getGlobal(child)).toMatchObject({
+      parentSessionId: parent,
+      adHocRunId: `background-order-run-${ordering}`,
+      sessionKind: 'task-worker',
+    });
+  }, 30_000);
+
+  it('restores a failed before-hook claim so the same prepared launch can retry', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'before-retry-parent';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'before-retry-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+    const originalBoard = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
+    const originalConsume = (await import('hive-core')).BackgroundJobService.prototype.consumePendingLaunch;
+    let fail = true;
+    const consume = spyOn((await import('hive-core')).BackgroundJobService.prototype, 'consumePendingLaunch').mockImplementation(function (input) {
+      if (fail) {
+        fail = false;
+        throw new Error('injected before-hook failure');
+      }
+      return originalConsume.call(this, input);
+    });
+    try {
+      await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'before-retry-call-a' }, {
+        args: { ...launch.backgroundTaskCall },
+      })).rejects.toThrow('injected before-hook failure');
+      expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual(originalBoard.pendingLaunches);
+      await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'before-retry-call-b' }, {
+        args: { ...launch.backgroundTaskCall },
+      });
+    } finally {
+      consume.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toBeUndefined();
+  }, 30_000);
+
+  it('preserves an already-bound call guard across repeated before-hook replays', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'bound-replay-parent';
+    const child = 'bound-replay-child';
+    const callID = 'bound-replay-call';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'bound-replay-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    const args = { ...launch.backgroundTaskCall };
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, { args: { ...args } });
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
+    await observeNativeTaskChild(hooks, { parentSessionID: parent, callID, childSessionID: child, expectedAgent: 'forager-worker' });
+    await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    await hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: parent, callID, args },
+      { title: 'task', output: 'running', metadata: { sessionId: child } },
+    );
+
+    const replayErrors: string[] = [];
+    for (let replay = 0; replay < 2; replay++) {
+      try {
+        await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, {
+          args: { ...args },
+        });
+      } catch (error) {
+        replayErrors.push(String(error));
+      }
+    }
+    expect(replayErrors).toHaveLength(2);
+    expect(replayErrors[1]).toBe(replayErrors[0]);
+    await expect(observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID,
+      childSessionID: 'bound-replay-other-child',
+      expectedAgent: 'forager-worker',
+    })).rejects.toThrow(/launch_binding_error[\s\S]*contradictory.*child/);
+    expect(new SessionService(testRoot).getGlobal(child)).toMatchObject({
+      parentSessionId: parent,
+      adHocRunId: 'bound-replay-run',
+      sessionKind: 'task-worker',
+    });
+  }, 30_000);
+
+  it('serializes concurrent forager dispatch claims so exactly one wins without residue', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'concurrent-claim-parent';
+    const child = 'concurrent-claim-child';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'concurrent-run',
+      workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+
+    const results = await Promise.allSettled([
+      hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'concurrent-call-a' }, { args: { ...launch.backgroundTaskCall } }),
+      hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'concurrent-call-b' }, { args: { ...launch.backgroundTaskCall } }),
+    ]);
+    const fulfilled = results.filter(result => result.status === 'fulfilled');
+    const rejected = results.filter(result => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as any).reason)).toMatch(/launch_binding_error/);
+
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: results[0]?.status === 'fulfilled' ? 'concurrent-call-a' : 'concurrent-call-b',
+      childSessionID: child,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    const sessions = new SessionService(testRoot);
+    expect(sessions.getGlobal(child)).toMatchObject({
+      parentSessionId: parent,
+      adHocRunId: 'concurrent-run',
+      agent: 'forager-worker',
+      sessionKind: 'task-worker',
+    });
+
+    const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+
+    await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'concurrent-call-c' }, {
+      args: { ...launch.backgroundTaskCall },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*No fresh forager launch reservation exists/);
+  }, 30_000);
+
+  it('preserves an ad-hoc launch prepared while another claim awaits worktree validation', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'concurrent-prepare-parent';
+    const childA = 'concurrent-prepare-child-a';
+    const childB = 'concurrent-prepare-child-b';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: {
+          id: input.id,
+          parentID: input.id === childA || input.id === childB ? parent : undefined,
+        } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const launchA = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'concurrent-prepare-a', workerInstructions: 'Implement bounded change A.',
+    }, toolContext) as string);
+    const { AdhocWorktreeService } = await import('hive-core');
+    const originalGet = AdhocWorktreeService.prototype.get;
+    let releaseValidation!: () => void;
+    let reportValidationStarted!: () => void;
+    const validationStarted = new Promise<void>((resolve) => { reportValidationStarted = resolve; });
+    const validationRelease = new Promise<void>((resolve) => { releaseValidation = resolve; });
+    let held = false;
+    const get = spyOn(AdhocWorktreeService.prototype, 'get').mockImplementation(async function (runId) {
+      if (runId === 'concurrent-prepare-a' && !held) {
+        held = true;
+        reportValidationStarted();
+        await validationRelease;
+      }
+      return originalGet.call(this, runId);
+    });
+    try {
+      const claimA = hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'concurrent-prepare-call-a' }, {
+        args: { ...launchA.backgroundTaskCall },
+      });
+      await validationStarted;
+      const launchB = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+        runId: 'concurrent-prepare-b', workerInstructions: 'Implement bounded change B.',
+      }, toolContext) as string);
+      releaseValidation();
+      await claimA;
+      await observeNativeTaskChild(hooks, {
+        parentSessionID: parent,
+        callID: 'concurrent-prepare-call-a',
+        childSessionID: childA,
+        expectedAgent: 'forager-worker',
+      });
+      await hooks['chat.message']?.({ sessionID: childA, agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+
+      await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'concurrent-prepare-call-b' }, {
+        args: { ...launchB.backgroundTaskCall },
+      });
+      await observeNativeTaskChild(hooks, {
+        parentSessionID: parent,
+        callID: 'concurrent-prepare-call-b',
+        childSessionID: childB,
+        expectedAgent: 'forager-worker',
+      });
+      await hooks['chat.message']?.({ sessionID: childB, agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+
+      expect(new SessionService(testRoot).getGlobal(childA)?.adHocRunId).toBe('concurrent-prepare-a');
+      expect(new SessionService(testRoot).getGlobal(childB)?.adHocRunId).toBe('concurrent-prepare-b');
+      const board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8'));
+      expect(board.pendingLaunches ?? []).toHaveLength(0);
+    } finally {
+      releaseValidation?.();
+      get.mockRestore();
+    }
+  }, 30_000);
+
+  it('consumes the superseded pending launch when the same task is prepared again', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'superseded-task-parent', testRoot, ROOT_SESSION_CLIENT);
+    await hooks.tool!.hive_feature_create.execute({ name: 'superseded-feature' }, toolContext);
+    await hooks.tool!.hive_plan_write.execute(
+      { content: createSingleTaskPlan('Superseded', 'This integration test proves that re-preparing the same task replaces the persisted pending launch instead of appending a superseded entry.'), feature: 'superseded-feature' },
+      toolContext,
+    );
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'superseded-feature' }, toolContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'superseded-feature' }, toolContext);
+
+    await hooks.tool!.hive_worktree_start.execute({ feature: 'superseded-feature', task: FIRST_TASK }, toolContext);
+    const relaunch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature: 'superseded-feature', task: FIRST_TASK }, toolContext) as string);
+    const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toHaveLength(1);
+
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: toolContext.sessionID, callID: 'superseded-dispatch' }, {
+      args: { ...relaunch.taskToolCall },
+    });
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+  }, 30_000);
+
+  it('consumes the superseded ad-hoc pending launch when the same run is prepared again', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'superseded-adhoc-parent';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'superseded-run', workerInstructions: 'Implement one bounded change.' }, toolContext);
+    const relaunch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'superseded-run', workerInstructions: 'Implement one bounded change.' }, toolContext) as string);
+    const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toHaveLength(1);
+
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'superseded-adhoc-dispatch' }, {
+      args: { ...relaunch.backgroundTaskCall },
+    });
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+  }, 30_000);
+
+  it('prunes stale pre-restart pending launches on first dispatch instead of only reporting them', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'stale-pending-parent';
+    const initial = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    await initial.hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'stale-run', workerInstructions: 'Implement one bounded change.' }, initial.toolContext);
+    const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+    const board = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
+    board.pendingLaunches[0].createdAt = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    fs.writeFileSync(boardPath, JSON.stringify(board));
+
+    const fresh = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    await expect(fresh.hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'stale-dispatch' }, {
+      args: { subagent_type: 'forager-worker', description: 'Stale', prompt: 'Stale dispatch' },
+    })).rejects.toThrow(/launch_binding_error/);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+  }, 30_000);
+
+  it('invalidates ambiguous reservations so exactly one fresh launch can be dispatched', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'ambiguous-recovery-parent', testRoot, ROOT_SESSION_CLIENT);
+    for (const feature of ['ambiguous-recovery-a', 'ambiguous-recovery-b', 'ambiguous-recovery-c']) {
+      await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
+      await hooks.tool!.hive_plan_write.execute(
+        { content: createSingleTaskPlan(feature, 'This integration test proves that ambiguous launch reservations are invalidated so exactly one fresh launch can be prepared and dispatched.'), feature },
+        toolContext,
+      );
+      await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
+      await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
+    }
+    await hooks.tool!.hive_worktree_start.execute({ feature: 'ambiguous-recovery-a', task: FIRST_TASK }, toolContext);
+    await hooks.tool!.hive_worktree_start.execute({ feature: 'ambiguous-recovery-b', task: FIRST_TASK }, toolContext);
+    const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+
+    await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: toolContext.sessionID, callID: 'ambiguous-recovery-call' }, {
+      args: { subagent_type: 'forager-worker', description: 'Ambiguous', prompt: 'Ambiguous dispatch' },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*Multiple fresh/);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+
+    const launchC = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature: 'ambiguous-recovery-c', task: FIRST_TASK }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: toolContext.sessionID, callID: 'recovery-dispatch' }, {
+      args: { ...launchC.taskToolCall },
+    });
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: 'recovery-child', parentID: toolContext.sessionID } } } } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: toolContext.sessionID,
+      callID: 'recovery-dispatch',
+      childSessionID: 'recovery-child',
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: 'recovery-child', agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    expect(new SessionService(testRoot).getGlobal('recovery-child')).toMatchObject({
+      parentSessionId: toolContext.sessionID,
+      sessionKind: 'task-worker',
+    });
+  }, 30_000);
+
+  it('binds a forager child whose parent metadata arrives by session.updated before its first message', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'late-parent-metadata-parent';
+    const child = 'late-parent-metadata-child';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child } } } } as any);
+
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'late-parent-run', workerInstructions: 'Implement one bounded change.' }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'late-parent-call' }, {
+      args: { ...launch.backgroundTaskCall },
+    });
+    await hooks.event?.({ event: { type: 'session.updated', properties: { info: { id: child, parentID: parent } } } } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'late-parent-call',
+      childSessionID: child,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+
+    const sessions = new SessionService(testRoot);
+    expect(sessions.getGlobal(child)).toMatchObject({
+      parentSessionId: parent,
+      adHocRunId: 'late-parent-run',
+      agent: 'forager-worker',
+      baseAgent: 'forager-worker',
+      sessionKind: 'task-worker',
+    });
+    const authority = JSON.parse(await hooks.tool!.hive_context_read.execute(
+      { scope: 'project', view: 'catalog' },
+      { ...toolContext, sessionID: child, agent: 'forager-worker' },
+    ) as string);
+    expect(authority.success).toBe(true);
+  }, 30_000);
 
   it('keeps canonical routing descriptions effective without persisting them during initialization', async () => {
     const { hooks } = await createHooksForTest(testRoot, 'sess_routing_defaults');
@@ -1835,7 +2826,7 @@ Do it
     expect(execStart.instructions).not.toContain("Read the prompt file");
   });
 
-  it("returns env-gated background task call metadata without pre-registering a blocking escape", async () => {
+  it("returns env-gated background task call metadata with one pending launch reservation", async () => {
     const previousBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "1";
 
@@ -1908,7 +2899,7 @@ Do it
       expect(result.instructions).toContain("next meaningful step depends on the worker");
 
       const boardPath = path.join(testRoot, ".hive", "background-jobs.json");
-      expect(fs.existsSync(boardPath)).toBe(false);
+      expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toHaveLength(1);
     } finally {
       if (previousBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
@@ -1980,6 +2971,19 @@ Do it
       }, {
         args: { ...taskArgs },
       });
+      await hooks.event?.({ event: {
+        type: 'session.created',
+        properties: { info: { id: 'gate-closed-child', parentID: toolContext.sessionID } },
+      } } as any);
+      await observeNativeTaskChild(hooks, {
+        parentSessionID: toolContext.sessionID,
+        callID: 'gate-closed-worker',
+        childSessionID: 'gate-closed-child',
+        expectedAgent: 'forager-worker',
+      });
+      await hooks['chat.message']?.({ sessionID: 'gate-closed-child', agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
       await hooks['tool.execute.after']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
@@ -2014,7 +3018,7 @@ Do it
     }
   }, 30_000);
 
-  it("keeps same-folder launches associated with their exact feature under one parent", async () => {
+  it("rejects ambiguous task launch reservations under one parent", async () => {
     const { hooks, toolContext } = await createHooksForTest(
       testRoot,
       "sess_same_folder_parent",
@@ -2046,36 +3050,25 @@ Do it
       toolContext,
     ) as string);
 
-    for (const [callID, launch, sessionId] of [
-      ["same-folder-b-call", launchB, "same-folder-b-child"],
-      ["same-folder-a-call", launchA, "same-folder-a-child"],
-    ] as const) {
-      await hooks["tool.execute.before"]?.(
-        { tool: "task", sessionID: toolContext.sessionID, callID, args: { ...launch.taskToolCall } },
-        { args: { ...launch.taskToolCall } },
-      );
-      await hooks["tool.execute.after"]?.(
-        { tool: "task", sessionID: toolContext.sessionID, callID, args: { ...launch.taskToolCall } },
-        { title: "task", output: "done", metadata: { sessionId } },
-      );
-    }
-
-    const statusFor = (featureDir: string) => JSON.parse(fs.readFileSync(
-      path.join(testRoot, ".hive", "features", featureDir, "tasks", FIRST_TASK, "status.json"),
-      "utf-8",
-    ));
-    expect(statusFor("01_same-folder-a").workerSession.sessionId).toBe("same-folder-a-child");
-    expect(statusFor("02_same-folder-b").workerSession.sessionId).toBe("same-folder-b-child");
+    await expect(hooks["tool.execute.before"]?.(
+      { tool: "task", sessionID: toolContext.sessionID, callID: 'ambiguous-launch', args: { ...launchB.taskToolCall } },
+      { args: { ...launchB.taskToolCall } },
+    )).rejects.toThrow(/launch_binding_error[\s\S]*Multiple fresh/);
+    expect(launchA.taskToolCall.prompt).not.toBe(launchB.taskToolCall.prompt);
   }, 30_000);
 
   it('retrieves later-page live knowledge without revising the verified assignment or weakening child authority', async () => {
     const parent = 'catalog-parent';
+    const rejectedChild = 'catalog-rejected-child';
     const child = 'catalog-child';
     const feature = 'catalog-lifecycle';
     const runtimeClient = {
       ...(ROOT_SESSION_CLIENT as any),
       session: { ...(ROOT_SESSION_CLIENT as any).session,
-        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+        get: async ({ path: input }: any) => ({ data: {
+          id: input.id,
+          parentID: input.id === rejectedChild || input.id === child ? parent : undefined,
+        } }),
       },
     } as PluginInput['client'];
     const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
@@ -2097,8 +3090,8 @@ Do it
       }
     }
     const launch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, toolContext) as string);
-    const artifact = path.join(testRoot, launch.taskToolCall.prompt.replace('Follow instructions in @', ''));
-    const original = fs.readFileSync(artifact);
+    let artifact = path.join(testRoot, launch.taskToolCall.prompt.replace('Follow instructions in @', ''));
+    let original = fs.readFileSync(artifact);
     expect(original.toString('utf8').split(publishedConstraint)).toHaveLength(2);
     const dispatch = { args: { ...launch.taskToolCall } };
     fs.writeFileSync(artifact, 'UNVERIFIED DISPATCH');
@@ -2120,15 +3113,34 @@ Do it
     expect(dispatch.args.prompt).not.toContain('CONSTRAINT-ADDED-AFTER-PUBLICATION');
     expect(dispatch.args.prompt).toContain('REQUIRED-CATALOG-CONTRACT');
     expect(dispatch.args.prompt).not.toContain(fact);
-    await expect(hooks.event!({ event: { type: 'message.part.updated', properties: { part: {
+    await hooks.event!({ event: { type: 'message.part.updated', properties: { part: {
       type: 'tool', tool: 'task', sessionID: parent, callID: 'catalog-launch',
-      state: { input: dispatch.args, metadata: { sessionId: child } },
-    } } } } as any)).rejects.toThrow(/assignment_recovery_error/);
-    expect(new SessionService(testRoot).getGlobal(child)?.workerAssignment).toBeUndefined();
+      state: { input: dispatch.args, metadata: { sessionId: rejectedChild } },
+    } } } } as any);
+    expect(new SessionService(testRoot).getGlobal(rejectedChild)?.workerAssignment).toBeUndefined();
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: rejectedChild, parentID: parent } } } } as any);
+    await expect(hooks['chat.message']!({ sessionID: rejectedChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any)).rejects.toThrow(/assignment_recovery_error/);
+    expect(new SessionService(testRoot).getGlobal(rejectedChild)?.workerAssignment).toBeUndefined();
     fs.writeFileSync(artifact, original);
     await hooks['tool.execute.after']!({ tool: 'task', sessionID: parent, callID: 'catalog-launch', args: dispatch.args }, {
-      title: 'task', output: '', metadata: { sessionId: child },
+      title: 'task', output: '', metadata: { sessionId: rejectedChild },
     });
+    await expect(hooks['chat.message']!({ sessionID: rejectedChild, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any)).rejects.toThrow(/launch_binding_error/);
+
+    const replacementLaunch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, toolContext) as string);
+    artifact = path.join(testRoot, replacementLaunch.taskToolCall.prompt.replace('Follow instructions in @', ''));
+    original = fs.readFileSync(artifact);
+    const replacementDispatch = { args: { ...replacementLaunch.taskToolCall } };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: parent, callID: 'catalog-replacement-launch' }, replacementDispatch);
+    await hooks.event!({ event: { type: 'message.part.updated', properties: { part: {
+      type: 'tool', tool: 'task', sessionID: parent, callID: 'catalog-replacement-launch',
+      state: { input: replacementDispatch.args, metadata: { sessionId: child } },
+    } } } } as any);
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
     await hooks['chat.message']!({ sessionID: child, agent: 'forager-worker' }, {
       message: { agent: 'forager-worker' }, parts: [],
     } as any);
@@ -2200,7 +3212,7 @@ Do it
       expect((output.messages.at(-1)!.parts[0] as any).text).toContain('context_index_invalid');
       fs.writeFileSync(indexPath, indexBytes);
 
-      await expect(hooks['chat.message']!({ sessionID: child, agent: 'scout-researcher' }, { message: {}, parts: [] } as any)).rejects.toThrow(/immutable/);
+      await expect(hooks['chat.message']!({ sessionID: child, agent: 'scout-researcher' }, { message: {}, parts: [] } as any)).rejects.toThrow(/launch_binding_error/);
       expect(sessions.getGlobal(child)!.sessionKind).toBe('task-worker');
       // A persisted misclassification must not bypass assignment validation either.
       const registryPath = path.join(testRoot, '.hive', 'sessions.json');
@@ -2210,12 +3222,13 @@ Do it
       fs.writeFileSync(artifact, 'INVALID ASSIGNMENT');
       catalogSpy.mockClear(); readSpy.mockClear();
       await hooks['experimental.chat.messages.transform']!({}, output as any);
-      expect((output.messages.at(-1)!.parts[0] as any).text).toContain('assignment_recovery_error');
+      expect((output.messages.at(-1)!.parts[0] as any).text).toContain('context_authorization_denied');
       const denied = JSON.parse(await hooks.tool!.hive_context_read.execute({ scope: 'project', name: 'zz-required' }, { ...childContext, agent: 'scout-researcher' }) as string);
-      expect(denied.reason).toBe('assignment_recovery_error');
+      expect(denied.reason).toBe('context_authorization_denied');
       expect(catalogSpy).not.toHaveBeenCalled();
       expect(readSpy).not.toHaveBeenCalled();
       const mutated = registry.sessions.find((session: any) => session.sessionId === child);
+      Object.assign(mutated, { agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker' });
       delete mutated.workerAssignment;
       delete mutated.workerPromptPath;
       delete mutated.assignmentSourceSessionId;
@@ -2224,7 +3237,7 @@ Do it
       inventorySpy.mockClear(); headerSpy.mockClear();
       await hooks['experimental.chat.messages.transform']!({}, output as any);
       expect((output.messages.at(-1)!.parts[0] as any).text).toContain('assignment_recovery_error');
-      const missing = JSON.parse(await hooks.tool!.hive_context_read.execute({ scope: 'project', name: 'zz-required' }, { ...childContext, agent: 'scout-researcher' }) as string);
+      const missing = JSON.parse(await hooks.tool!.hive_context_read.execute({ scope: 'project', name: 'zz-required' }, childContext) as string);
       expect(missing.reason).toBe('assignment_recovery_error');
       await expect(hooks['tool.execute.before']!({ tool: 'bash', sessionID: child, callID: 'invalid-worker-execution' }, { args: { command: 'true' } })).rejects.toThrow(/assignment_recovery_error/);
       expect(catalogSpy).not.toHaveBeenCalled();
@@ -2254,10 +3267,16 @@ Do it
     await initial.hooks.tool!.hive_tasks_sync.execute({ feature }, initial.toolContext);
     const launch = JSON.parse(await initial.hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, initial.toolContext) as string);
     await initial.hooks['tool.execute.before']!({ tool: 'task', sessionID: oldParent, callID: 'old-launch' }, { args: { ...launch.taskToolCall } });
+    await initial.hooks.event?.({ event: { type: 'session.created', properties: { info: { id: oldChild, parentID: oldParent } } } } as any);
+    await observeNativeTaskChild(initial.hooks, { parentSessionID: oldParent, callID: 'old-launch', childSessionID: oldChild, expectedAgent: 'forager-worker' });
+    await initial.hooks['chat.message']!({ sessionID: oldChild, agent: 'forager-worker' }, { message: { agent: 'forager-worker' }, parts: [] } as any);
     await initial.hooks['tool.execute.after']!({ tool: 'task', sessionID: oldParent, callID: 'old-launch', args: launch.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: oldChild } });
     const historical = new SessionService(testRoot).getGlobal(oldChild)!;
     const oldRun = JSON.parse(await initial.hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'historical-run', workerInstructions: 'Inspect project supporting knowledge.' }, initial.toolContext) as string);
     await initial.hooks['tool.execute.before']!({ tool: 'task', sessionID: oldParent, callID: 'old-run-launch' }, { args: { ...oldRun.taskToolCall } });
+    await initial.hooks.event?.({ event: { type: 'session.created', properties: { info: { id: oldAdhocChild, parentID: oldParent } } } } as any);
+    await observeNativeTaskChild(initial.hooks, { parentSessionID: oldParent, callID: 'old-run-launch', childSessionID: oldAdhocChild, expectedAgent: 'forager-worker' });
+    await initial.hooks['chat.message']!({ sessionID: oldAdhocChild, agent: 'forager-worker' }, { message: { agent: 'forager-worker' }, parts: [] } as any);
     await initial.hooks['tool.execute.after']!({ tool: 'task', sessionID: oldParent, callID: 'old-run-launch', args: oldRun.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: oldAdhocChild } });
     const historicalRun = new SessionService(testRoot).getGlobal(oldAdhocChild)!;
     expect(historicalRun.adHocRunId).toBe('historical-run');
@@ -2305,15 +3324,16 @@ Do it
       const recovered = JSON.parse(await fresh.hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, fresh.toolContext) as string);
       expect(recovered.taskToolCall).toBeDefined();
       await fresh.hooks['tool.execute.before']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-launch' }, { args: { ...recovered.taskToolCall } });
+      await fresh.hooks.event?.({ event: { type: 'session.created', properties: { info: { id: freshChild, parentID: freshParent } } } } as any);
+      await observeNativeTaskChild(fresh.hooks, { parentSessionID: freshParent, callID: 'fresh-launch', childSessionID: freshChild, expectedAgent: 'forager-worker' });
+      await fresh.hooks['chat.message']!({ sessionID: freshChild, agent: 'forager-worker' }, { message: { agent: 'forager-worker' }, parts: [] } as any);
       await fresh.hooks['tool.execute.after']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-launch', args: recovered.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: freshChild } });
       const freshRun = JSON.parse(await fresh.hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'fresh-run', workerInstructions: 'Inspect project supporting knowledge.' }, fresh.toolContext) as string);
       await fresh.hooks['tool.execute.before']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-run-launch' }, { args: { ...freshRun.taskToolCall } });
+      await fresh.hooks.event?.({ event: { type: 'session.created', properties: { info: { id: freshAdhocChild, parentID: freshParent } } } } as any);
+      await observeNativeTaskChild(fresh.hooks, { parentSessionID: freshParent, callID: 'fresh-run-launch', childSessionID: freshAdhocChild, expectedAgent: 'forager-worker' });
+      await fresh.hooks['chat.message']!({ sessionID: freshAdhocChild, agent: 'forager-worker' }, { message: { agent: 'forager-worker' }, parts: [] } as any);
       await fresh.hooks['tool.execute.after']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-run-launch', args: freshRun.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: freshAdhocChild } });
-      for (const sessionID of [freshChild, freshAdhocChild]) {
-        await fresh.hooks['chat.message']!({ sessionID, agent: 'forager-worker' }, {
-          message: { agent: 'forager-worker' }, parts: [],
-        } as any);
-      }
       const sessions = new SessionService(relocated);
       expect(sessions.getGlobal(oldChild)).toEqual(historical);
       expect(sessions.getGlobal(oldAdhocChild)).toEqual(historicalRun);
@@ -2388,9 +3408,6 @@ Do it
         taskToolCall: { description: string; prompt: string; subagent_type: string };
         backgroundTaskCall: { background: true; description: string; prompt: string; subagent_type: string };
       };
-      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
-      delete process.env.OPENCODE_EXPERIMENTAL;
-
       const statusPath = path.join(
         testRoot,
         ".hive",
@@ -2440,22 +3457,78 @@ Do it
       await hooks['tool.execute.before']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
-        callID: 'mutated-worker',
-        args: { ...launch.backgroundTaskCall },
+        callID: 'generic-review',
       }, {
-        args: { ...launch.backgroundTaskCall, prompt: '' },
+        args: {
+          subagent_type: 'code-reviewer',
+          description: 'Review something else',
+          prompt: 'Review unrelated code',
+        },
       });
-      await hooks['tool.execute.after']?.({
+
+      const canonicalAssignmentPath = launch.taskToolCall.prompt.replace('Follow instructions in @', '');
+      const canonicalAssignment = fs.readFileSync(path.join(testRoot, canonicalAssignmentPath), 'utf8');
+      const workerOutput = {
+        title: 'task',
+        output: '',
+        metadata: { sessionId: 'feature-task-child' },
+      };
+      const mutatedDispatch = { args: {
+        ...launch.backgroundTaskCall,
+        description: 'Caller-edited task description',
+        prompt: 'Caller-written text must not become the assignment',
+      } };
+      await hooks['tool.execute.before']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
         callID: 'mutated-worker',
         args: { ...launch.backgroundTaskCall },
-      }, {
-        title: 'task',
-        output: 'mutated',
-        metadata: { sessionId: 'mutated-child' },
+      }, mutatedDispatch);
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'second-before-child',
+      }, { args: { ...launch.backgroundTaskCall } })).rejects.toThrow(/launch_binding_error[\s\S]*binding is still in progress/);
+      expect(mutatedDispatch.args.prompt).toBe(canonicalAssignment);
+      expect(mutatedDispatch.args.prompt).not.toContain('Caller-written text');
+      expect(JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8')).pendingLaunches).toBeUndefined();
+
+      await hooks.event?.({ event: {
+        type: 'session.created',
+        properties: { info: { id: 'feature-task-child', parentID: toolContext.sessionID } },
+      } } as any);
+      await observeNativeTaskChild(hooks, {
+        parentSessionID: toolContext.sessionID,
+        callID: 'mutated-worker',
+        childSessionID: 'feature-task-child',
+        expectedAgent: 'forager-worker',
       });
-      expect(JSON.parse(fs.readFileSync(statusPath, "utf-8")).workerSession).toBeUndefined();
+      await hooks['chat.message']?.({ sessionID: 'feature-task-child', agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+      const earlyAuthority = JSON.parse(await hooks.tool!.hive_context_read.execute(
+        { scope: 'project', view: 'catalog' },
+        { ...toolContext, sessionID: 'feature-task-child', agent: 'forager-worker' },
+      ) as string);
+      expect(earlyAuthority.success).toBe(true);
+      await hooks.event?.({ event: {
+        type: 'session.created',
+        properties: { info: { id: 'feature-task-child', parentID: toolContext.sessionID } },
+      } } as any);
+      await hooks['chat.message']?.({ sessionID: 'feature-task-child', agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+      await expect(hooks.event?.({ event: { type: 'message.part.updated', properties: { part: {
+        type: 'tool', tool: 'task', sessionID: toolContext.sessionID, callID: 'mutated-worker',
+        state: { input: mutatedDispatch.args, metadata: { sessionId: 'second-child' } },
+      } } } } as any)).rejects.toThrow(/launch_binding_error[\s\S]*different child/);
+      await hooks['tool.execute.after']?.({
+        tool: 'task',
+        sessionID: toolContext.sessionID,
+        callID: 'mutated-worker',
+        args: mutatedDispatch.args,
+      }, workerOutput);
+      expect(JSON.parse(fs.readFileSync(statusPath, "utf-8")).workerSession.sessionId).toBe('feature-task-child');
 
       failSessionLookup = true;
       await expect(hooks['tool.execute.before']?.({
@@ -2467,26 +3540,7 @@ Do it
         args: { ...launch.backgroundTaskCall },
       })).rejects.toThrow('Runtime session lineage is unavailable');
       failSessionLookup = false;
-      expect(JSON.parse(fs.readFileSync(statusPath, "utf-8")).workerSession).toBeUndefined();
-
-      const workerOutput = {
-        title: 'task',
-        output: '',
-        metadata: { sessionId: 'feature-task-child' },
-      };
-      await hooks['tool.execute.before']?.({
-        tool: 'task',
-        sessionID: toolContext.sessionID,
-        callID: 'hive-worker',
-      }, {
-        args: { ...launch.backgroundTaskCall },
-      });
-      await hooks['tool.execute.after']?.({
-        tool: 'task',
-        sessionID: toolContext.sessionID,
-        callID: 'hive-worker',
-        args: { ...launch.backgroundTaskCall },
-      }, workerOutput);
+      expect(JSON.parse(fs.readFileSync(statusPath, "utf-8")).workerSession.sessionId).toBe('feature-task-child');
 
       const associated = JSON.parse(fs.readFileSync(statusPath, "utf-8")) as {
         workerSession?: { sessionId?: string; mode?: string };
@@ -2494,15 +3548,11 @@ Do it
       };
       expect(associated.workerSession?.sessionId).toBe('feature-task-child');
       expect(associated.workerSession?.mode).toBe('delegate');
-      expect(associated.workerAssignment?.locator).toBe(launch.taskToolCall.prompt.replace('Follow instructions in @', ''));
+      expect(associated.workerAssignment?.locator).toBe(canonicalAssignmentPath);
       const assignmentBytes = fs.readFileSync(path.join(testRoot, associated.workerAssignment.locator));
       expect(createHash('sha256').update(assignmentBytes).digest('hex')).toBe(associated.workerAssignment.contentHash);
       const boundChild = new SessionService(testRoot).getGlobal('feature-task-child');
       expect(boundChild?.workerAssignment).toEqual(associated.workerAssignment);
-      await hooks['chat.message']?.({ sessionID: 'feature-task-child', agent: 'forager-worker' }, {
-        message: { agent: 'forager-worker' }, parts: [],
-      } as any);
-
       const catalogOutput = {
         messages: [{
           info: { id: 'catalog-base', sessionID: 'feature-task-child', role: 'assistant', time: { created: Date.now() } },
@@ -2530,23 +3580,13 @@ Do it
       };
       expect(hiveStatus.tasks.list[0].traceTaskId).toBe('feature-task-child');
 
-      await hooks['tool.execute.before']?.({
+      await expect(hooks['tool.execute.before']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
         callID: 'replayed-worker',
       }, {
         args: { ...launch.backgroundTaskCall },
-      });
-      await hooks['tool.execute.after']?.({
-        tool: 'task',
-        sessionID: toolContext.sessionID,
-        callID: 'replayed-worker',
-        args: { ...launch.backgroundTaskCall },
-      }, {
-        title: 'task',
-        output: 'replayed',
-        metadata: { sessionId: 'replayed-child' },
-      });
+      })).rejects.toThrow(/launch_binding_error/);
       expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession.sessionId).toBe('feature-task-child');
 
       const replacementRaw = await hooks.tool!.hive_worktree_start.execute(
@@ -2591,7 +3631,7 @@ Do it
       });
       expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
 
-      await expect(hooks['tool.execute.after']?.({
+      await hooks['tool.execute.after']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
         callID: 'delayed-second-attempt',
@@ -2600,7 +3640,14 @@ Do it
         title: 'task',
         output: 'late second attempt',
         metadata: { sessionId: 'late-second-child' },
-      })).rejects.toThrow('assignment_recovery_error');
+      });
+      await hooks.event?.({ event: {
+        type: 'session.created',
+        properties: { info: { id: 'late-second-child', parentID: toolContext.sessionID } },
+      } } as any);
+      await expect(hooks['chat.message']?.({ sessionID: 'late-second-child', agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any)).rejects.toThrow('assignment_recovery_error');
       expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
 
       await hooks['tool.execute.before']?.({
@@ -4325,6 +5372,19 @@ Do it
     await hooks['tool.execute.before']?.({
       tool: 'task', sessionID: toolContext.sessionID, callID: 'blocked-continuation-child',
     }, { args: { ...continuation.taskToolCall } });
+    await hooks.event?.({ event: {
+      type: 'session.created',
+      properties: { info: { id: 'blocked-continuation-worker', parentID: toolContext.sessionID } },
+    } } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: toolContext.sessionID,
+      callID: 'blocked-continuation-child',
+      childSessionID: 'blocked-continuation-worker',
+      expectedAgent: continuation.taskToolCall!.subagent_type,
+    });
+    await hooks['chat.message']?.({ sessionID: 'blocked-continuation-worker', agent: continuation.taskToolCall!.subagent_type }, {
+      message: { agent: continuation.taskToolCall!.subagent_type }, parts: [],
+    } as any);
     await hooks['tool.execute.after']?.({
       tool: 'task', sessionID: toolContext.sessionID, callID: 'blocked-continuation-child', args: { ...continuation.taskToolCall },
     }, { title: 'task', output: 'done', metadata: { sessionId: 'blocked-continuation-worker' } });

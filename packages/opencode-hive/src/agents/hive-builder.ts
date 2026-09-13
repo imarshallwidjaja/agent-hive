@@ -66,7 +66,7 @@ For failed or retry work, launch a new worker with a concise self-contained hand
 
 Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
 
-- If several subagent tasks are independent, emit all of their \`task()\` calls in the same assistant message, then wait for the batch results.
+- If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer \`task()\` calls in the same assistant message, then wait for the batch results.
 - For read-only Scout fan-out, load and use \`parallel-exploration\`.
 - If task B needs task A's result, run them serially.
 - When the env-gated appendix is present, follow its scheduling and wait-mode rules for independent lanes and foreground escapes.
@@ -104,7 +104,7 @@ Use only explicit IDs returned by prior ad-hoc tool calls. Do not rely on hidden
 When an optional ad-hoc tool argument is not needed, omit it instead of sending an empty string.
 
 Use the ad-hoc lifecycle tools in order:
-- \`hive_adhoc_worktree_create\` creates the isolated workspace and returns \`runId\`, \`workspacePath\`, \`branch\`, and a worker launch payload when \`autoSpawnWorker\` is not false.
+- \`hive_adhoc_worktree_create\` creates the isolated workspace and returns \`runId\`, \`workspacePath\`, \`branch\`, and a worker launch payload when \`autoSpawnWorker\` is not false. Every ad-hoc Forager lane, including report-only diagnosis, needs this spawning-enabled preparation. Launch preparation and any unbound claim each expire after five minutes. OpenCode's exact child correlation is internal and is not visible to the primary. Background dispatch may return before correlation. If the next Forager dispatch returns a binding-in-progress error, keep that next launch prepared, do not repeat the running child's launch, and do not poll hidden state. Use the first child's native completion notification as the conservative observable retry point, then retry the prepared next payload; reprepare only if its five-minute reservation expires. An exact correlated parent/agent denial retires only that rejected claim; prepare a fresh launch for a new child. When correlation is absent, Hive retains the unbound claim until correlation or expiry and never guesses ownership. If exact correlation remains missing and no native completion notification arrives, prepare a fresh launch once the five-minute reservation expires. Plugin restart also expires preparation. In gate-closed sessions, parse and await each returned blocking \`taskToolCall\` before preparing the next Forager; gate-open \`backgroundTaskCall\` dispatch is available for independent work. Ordinary Scout, advisor, and reviewer launches are exempt. \`autoSpawnWorker:false\` is setup-only and creates no worker reservation.
 - \`hive_adhoc_worktree_commit\` commits completed work for that \`runId\`.
 - \`hive_adhoc_merge\` integrates the committed branch.
 - \`hive_adhoc_cleanup\` removes the ad-hoc worktree and branch when cleanup is not already part of merge.

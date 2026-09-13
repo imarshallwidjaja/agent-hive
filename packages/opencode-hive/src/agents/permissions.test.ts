@@ -1251,13 +1251,15 @@ describe('Agent permissions', () => {
       ['root-builder', 'hive-builder'],
     ] as const) {
       await trackAgent(sessionID, agent);
-      await callTask(sessionID, 'forager-worker');
+      await expect(callTask(sessionID, 'forager-worker')).rejects.toThrow('launch_binding_error');
       for (const forbiddenTarget of ['hive-master', 'swarm-orchestrator', 'hive-builder']) {
         await expect(callTask(sessionID, forbiddenTarget), `${agent} -> ${forbiddenTarget}`).rejects.toThrow('primary-only');
       }
     }
     await callTask('root-hive', 'architect-planner');
-    await callTask('root-hive', 'forager-domain');
+    await expect(callTask('root-hive', 'forager-domain')).rejects.toThrow('launch_binding_error');
+    await callTask('root-hive', 'code-reviewer');
+    await callTask('root-hive', 'scout-researcher');
     await trackAgent('root-architect', 'architect-planner');
     await callTask('root-architect', 'scout-researcher');
 
@@ -1288,6 +1290,10 @@ describe('Agent permissions', () => {
       ['builder-child', 'hive-builder'],
       ['forager-child', 'forager-worker'],
     ] as const) {
+      if (agent === 'forager-worker') {
+        await expect(trackAgent(sessionID, agent)).rejects.toThrow('launch_binding_error');
+        continue;
+      }
       await trackAgent(sessionID, agent);
       await expect(callTask(sessionID, 'scout-researcher'), agent)
         .rejects.toThrow(/not authorized|cannot acquire primary authority|assignment_recovery_error/);
@@ -2172,10 +2178,15 @@ describe('Agent permissions', () => {
           event: { type: 'session.updated', properties: { info: { id: sessionID, parentID } } },
         } as any);
       }
-      await hooks['chat.message']?.(
+      const observeAgent = hooks['chat.message']?.(
         { sessionID, agent },
         { message: { agent }, parts: [] } as any,
       );
+      if (agent === 'forager-worker') {
+        await expect(observeAgent).rejects.toThrow('launch_binding_error');
+        continue;
+      }
+      await observeAgent;
       const authorityDenial = agent === 'architect-planner'
         ? 'unavailable in task-created child sessions'
         : agent === 'forager-worker'
@@ -2210,17 +2221,6 @@ describe('Agent permissions', () => {
     );
     expect(childSystem.system.join('\n')).toContain('return the exact clarification question in your terminal response');
 
-    await hooks['tool.execute.before']?.(
-      { tool: 'task', sessionID: 'untracked-resume-root', callID: 'resume-forager-child' },
-      {
-        args: {
-          description: 'Resume child',
-          prompt: 'Continue the existing child',
-          subagent_type: 'forager-worker',
-          task_id: 'forager-child',
-        },
-      } as any,
-    );
     const resumedChildSystem = { system: ['base'] };
     await (hooks['experimental.chat.system.transform'] as any)?.(
       { sessionID: 'forager-child', agent: 'forager-worker' },

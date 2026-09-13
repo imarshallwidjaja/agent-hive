@@ -1,4 +1,5 @@
 import type {
+  BackgroundPendingLaunch,
   BackgroundJobRecord,
   BackgroundJobRuntimeState,
   BackgroundJobScope,
@@ -39,6 +40,7 @@ export interface BackgroundJobAdapterOptions {
   getSession?: (sessionId: string) => SessionInfo | undefined;
   isPrimaryAgent?: (agentName: string | undefined, session: SessionInfo | undefined) => boolean;
   resolvePromptScope?: (input: unknown, session: SessionInfo | undefined) => BackgroundJobScope;
+  resolveClaimedLaunchId?: (sessionId: string, callId: string) => string | undefined;
   parseLifecycleEvent?: (input: unknown, output: unknown, context?: TaskLifecycleContext) => ParsedTaskLifecycleEvent | undefined;
   warn?: (message: string) => void;
 }
@@ -74,6 +76,7 @@ export function classifyRuntimeEpochStaleJobs(input: {
 
 export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions) {
   const toolArgsByCall = new Map<string, Record<string, unknown>>();
+  const claimedPendingLaunchesByCall = new Map<string, BackgroundPendingLaunch>();
   const parseLifecycleEvent = options.parseLifecycleEvent ?? parseTaskLifecycleEvent;
   const warn = options.warn ?? ((message: string) => console.warn(message));
 
@@ -84,7 +87,23 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       }
 
       if ((input.tool === 'task' || input.tool === 'task_status') && input.sessionID && input.callID && output.args && typeof output.args === 'object') {
-        toolArgsByCall.set(toolCallKey(input.sessionID, input.callID), { ...output.args });
+        const stagedArgs = { ...output.args };
+        const key = toolCallKey(input.sessionID, input.callID);
+        const launchId = input.tool === 'task'
+          ? options.resolveClaimedLaunchId?.(input.sessionID, input.callID)
+          : undefined;
+        let claimedPending: BackgroundPendingLaunch | undefined;
+        if (launchId) {
+          claimedPending = options.service.consumePendingLaunch({
+            launchId,
+            parentSessionId: input.sessionID,
+          });
+          if (!claimedPending) {
+            throw new Error('launch_binding_error: claimed launch bookkeeping is missing or already consumed');
+          }
+        }
+        if (claimedPending) claimedPendingLaunchesByCall.set(key, claimedPending);
+        toolArgsByCall.set(key, stagedArgs);
       }
     },
 
@@ -94,9 +113,9 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       }
 
       const context = resolveLifecycleContext(input);
-      const event = parseLifecycleEvent(input, output, context);
+      const event = parseLifecycleEvent(input, output, context?.lifecycle);
       if (event) {
-        await handleLifecycleEvent(event);
+        await handleLifecycleEvent(event, context?.pendingLaunch);
       }
     },
 
@@ -165,7 +184,10 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     },
   };
 
-  function resolveLifecycleContext(input: unknown): TaskLifecycleContext | undefined {
+  function resolveLifecycleContext(input: unknown): {
+    lifecycle: TaskLifecycleContext;
+    pendingLaunch?: BackgroundPendingLaunch;
+  } | undefined {
     if (!input || typeof input !== 'object') {
       return undefined;
     }
@@ -173,34 +195,32 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     const record = input as { sessionID?: string; callID?: string };
     const key = record.sessionID && record.callID ? toolCallKey(record.sessionID, record.callID) : undefined;
     const args = key ? toolArgsByCall.get(key) : undefined;
+    const pendingLaunch = key ? claimedPendingLaunchesByCall.get(key) : undefined;
     if (key) {
       toolArgsByCall.delete(key);
+      claimedPendingLaunchesByCall.delete(key);
     }
 
     const session = record.sessionID ? options.getSession?.(record.sessionID) : undefined;
     return {
-      args,
-      agentName: typeof session?.agent === 'string' ? session.agent : undefined,
+      lifecycle: {
+        args,
+        agentName: typeof session?.agent === 'string' ? session.agent : undefined,
+      },
+      pendingLaunch,
     };
   }
 
-  async function handleLifecycleEvent(event: ParsedTaskLifecycleEvent): Promise<void> {
+  async function handleLifecycleEvent(
+    event: ParsedTaskLifecycleEvent,
+    pendingLaunch?: BackgroundPendingLaunch,
+  ): Promise<void> {
     if (event.tool === 'task') {
       if (event.args.background !== true) {
-        options.service.consumePendingLaunch({
-          parentSessionId: event.parentSessionId,
-          expectedDescription: event.args.description,
-          expectedPrompt: event.args.prompt,
-        });
         return;
       }
 
       const parentSession = options.getSession?.(event.parentSessionId);
-      const pendingLaunch = options.service.consumePendingLaunch({
-        parentSessionId: event.parentSessionId,
-        expectedDescription: event.args.description,
-        expectedPrompt: event.args.prompt,
-      });
       try {
         const scopeSource = pendingLaunch ? 'pending-launch' : 'native-fallback';
         options.service.registerLaunch({
