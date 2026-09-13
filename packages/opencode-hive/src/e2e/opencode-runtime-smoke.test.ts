@@ -58,13 +58,18 @@ function safeRm(dir: string) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-function hasOpencodeRuntime(): boolean {
+function getOpencodeRuntimeVersion(): string | null {
   const result = spawnSync('opencode', ['--version'], {
-    stdio: 'ignore',
+    encoding: 'utf8',
   });
 
-  return !result.error && result.status === 0;
+  if (result.error || result.status !== 0) return null;
+
+  const version = result.stdout.trim();
+  return version || null;
 }
+
+const OPENCODE_RUNTIME_VERSION = getOpencodeRuntimeVersion();
 
 function pickHivePluginEntry(): string {
   const distEntry = path.resolve(import.meta.dir, "..", "..", "dist", "index.js");
@@ -197,6 +202,31 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
       const requestsNativeTask = serializedMessages.includes('runtime_native_task');
       const nativeTaskChild = serializedMessages.includes('NATIVE_TASK_CHILD_FINAL_ONLY');
 
+      if (requestsNativeTask) {
+        const tools = Array.isArray(body.tools) ? body.tools : [];
+        const taskDefinition = tools.find((entry) => (
+          isRecord(entry)
+          && isRecord(entry.function)
+          && entry.function.name === 'task'
+        ));
+        const taskFunction = isRecord(taskDefinition) && isRecord(taskDefinition.function)
+          ? taskDefinition.function
+          : undefined;
+        const taskParameters = isRecord(taskFunction?.parameters) ? taskFunction.parameters : undefined;
+        const taskProperties = isRecord(taskParameters?.properties) ? taskParameters.properties : undefined;
+        const preservesBaseTaskFields = ['description', 'prompt', 'subagent_type'].every((field) => (
+          isRecord(taskProperties?.[field])
+        ));
+        const advertisesHiveLaunchID = isRecord(taskProperties?.hive_launch_id)
+          && taskProperties.hive_launch_id.type === 'string';
+
+        if (!preservesBaseTaskFields || !advertisesHiveLaunchID) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(jsonResponse({ error: 'task schema does not preserve base fields and advertise hive_launch_id' }));
+          return;
+        }
+      }
+
       if (body.stream !== true) {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(jsonResponse({ error: 'streaming required' }));
@@ -221,6 +251,8 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
               prompt: 'NATIVE_TASK_CHILD_FINAL_ONLY: return a short final response without tools.',
               subagent_type: 'scout-researcher',
               background: false,
+              hive_launch_id: 'runtime-launch-contract',
+              runtime_unknown_probe: 'survives-model-schema-validation',
             }
           : requestsLargeSnapshot
             ? {}
@@ -314,8 +346,8 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
   };
 }
 
-describe("e2e: OpenCode runtime loads opencode-hive", () => {
-  it.skipIf(!hasOpencodeRuntime())("exposes hive tools via /experimental/tool/ids", async () => {
+describe('e2e: OpenCode runtime capability smoke', () => {
+  it.skipIf(OPENCODE_RUNTIME_VERSION === null)('loads Hive tools and validates a synthetic-plugin native task capability', async () => {
     const tmpBase = "/tmp/hive-e2e-runtime";
     safeRm(tmpBase);
     fs.mkdirSync(tmpBase, { recursive: true });
@@ -325,12 +357,75 @@ describe("e2e: OpenCode runtime loads opencode-hive", () => {
 
     const hivePluginEntry = pickHivePluginEntry();
     const pluginRuntimeEntry = import.meta.resolve('@opencode-ai/plugin');
+    const effectRuntimeEntry = import.meta.resolve('effect');
     const pluginFile = path.join(projectDir, ".opencode", "plugin", "hive.ts");
+    const correlationFile = path.join(projectDir, 'runtime-task-correlation.json');
     const pluginSource = `import hive from ${JSON.stringify(hivePluginEntry)}
 import { tool } from ${JSON.stringify(pluginRuntimeEntry)}
+import { Schema } from ${JSON.stringify(effectRuntimeEntry)}
+import * as fs from 'node:fs'
+
+const runtimeCorrelatedChildren = new Set<string>()
+const runtimeTaskBefore = new Map<string, { callID: string; sessionID: string }>()
+const runtimeTaskCorrelationFile = ${JSON.stringify(correlationFile)}
 
 export const HivePlugin = hive
 export const RuntimeLargeSnapshotPlugin = async () => ({
+  config: async (config: any) => {
+    config.agent ??= {}
+    config.agent['scout-researcher'] = {
+      ...config.agent['scout-researcher'],
+      model: '${RUNTIME_PROVIDER_ID}/${RUNTIME_MODEL_ID}',
+    }
+  },
+  'tool.definition': async (input: any, output: any) => {
+    if (input.toolID !== 'task') return
+    if (!output.parameters?.fields) throw new Error('Native task parameters are not an Effect Struct')
+    output.parameters = Schema.Struct({
+      ...output.parameters.fields,
+      hive_launch_id: Schema.String.annotate({ description: 'Prepared Hive launch identity.' }),
+    })
+  },
+  'tool.execute.before': async (input: any, output: any) => {
+    if (input.tool !== 'task' || output.args?.hive_launch_id !== 'runtime-launch-contract') return
+    if (output.args.runtime_unknown_probe !== 'survives-model-schema-validation') {
+      throw new Error('Unadvertised task argument did not reach tool.execute.before')
+    }
+    if (typeof input.callID !== 'string' || typeof input.sessionID !== 'string') {
+      throw new Error('Native task before-hook omitted callID or sessionID')
+    }
+    runtimeTaskBefore.set(input.callID, { callID: input.callID, sessionID: input.sessionID })
+    output.args.prompt += '\\nRUNTIME_BEFORE_HOOK_SAW_LAUNCH_ID'
+    delete output.args.hive_launch_id
+    delete output.args.runtime_unknown_probe
+  },
+  event: async ({ event }: any) => {
+    if (event.type !== 'message.part.updated') return
+    const part = event.properties?.part
+    if (part?.tool !== 'task') return
+    const callID = part.callID
+    const parentSessionID = part.sessionID
+    const childSessionID = part.state?.metadata?.sessionId
+    if (typeof callID !== 'string' || typeof parentSessionID !== 'string' || typeof childSessionID !== 'string') return
+    const before = runtimeTaskBefore.get(callID)
+    if (!before) throw new Error('Task-part event has no matching before-hook observation')
+    fs.writeFileSync(runtimeTaskCorrelationFile, JSON.stringify({
+      before,
+      part: { callID, sessionID: parentSessionID },
+      metadata: { sessionId: childSessionID },
+    }))
+    runtimeCorrelatedChildren.add(childSessionID)
+  },
+  'chat.message': async (input: any, output: any) => {
+    const text = output.parts?.find((part: any) => (
+      part?.type === 'text' && part.text.includes('NATIVE_TASK_CHILD_FINAL_ONLY')
+    ))
+    if (!text) return
+    if (!runtimeCorrelatedChildren.has(input.sessionID)) {
+      throw new Error('Child chat.message ran before parent task metadata correlation')
+    }
+    text.text += '\\nRUNTIME_CHILD_CORRELATION_SYNC_PREFIX_SEEN'
+  },
   tool: {
     runtime_large_snapshot: tool({
       description: 'Return envelope-first oversized snapshot output for runtime truncation verification.',
@@ -444,6 +539,11 @@ export const RuntimeLargeSnapshotPlugin = async () => ({
         toolsLoaded: false,
         promptCompleted: false,
         promptReachedProvider: false,
+      };
+      const runtimeEnvironment = {
+        opencodeVersion: OPENCODE_RUNTIME_VERSION,
+        experimentalBackgroundSubagents: process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS ?? null,
+        experimental: process.env.OPENCODE_EXPERIMENTAL ?? null,
       };
 
       const ids = await waitForTools(
@@ -707,22 +807,88 @@ export const RuntimeLargeSnapshotPlugin = async () => ({
       const nativeTaskState = isRecord(nativeTaskPart) && isRecord(nativeTaskPart.state)
         ? nativeTaskPart.state
         : undefined;
-      const nativeTaskMetadata = isRecord(nativeTaskPart) && isRecord(nativeTaskPart.metadata)
-        ? nativeTaskPart.metadata
-        : isRecord(nativeTaskState?.metadata)
-          ? nativeTaskState.metadata
-          : undefined;
+      const nativeTaskMetadata = isRecord(nativeTaskState?.metadata)
+        ? nativeTaskState.metadata
+        : undefined;
       const nativeTaskChildID = typeof nativeTaskMetadata?.sessionId === 'string'
         ? nativeTaskMetadata.sessionId
         : null;
+      expect(nativeTaskState?.error).toBeUndefined();
+      expect(nativeTaskState?.status).toBe('completed');
       expect(nativeTaskChildID).not.toBeNull();
       expect(nativeTaskChildID).not.toBe(decoyID);
+      expect(isRecord(nativeTaskState?.input)).toBe(true);
+      if (!isRecord(nativeTaskState?.input)) {
+        throw new Error('Completed native task state omitted its input record');
+      }
+      const nativeTaskInput = nativeTaskState.input;
+      expect(nativeTaskInput.subagent_type).toBe('scout-researcher');
+      expect(nativeTaskInput.background).toBe(false);
+      expect(nativeTaskInput.prompt).toEqual(expect.stringContaining('NATIVE_TASK_CHILD_FINAL_ONLY'));
+      expect(nativeTaskInput.prompt).toEqual(expect.stringContaining('RUNTIME_BEFORE_HOOK_SAW_LAUNCH_ID'));
+      expect(nativeTaskInput).not.toHaveProperty('hive_launch_id');
+      expect(nativeTaskInput).not.toHaveProperty('runtime_unknown_probe');
       if (nativeTaskChildID) {
         expect(await runtimeSession.get({
           path: { id: nativeTaskChildID },
           query: { directory: projectDir },
         })).toMatchObject({ id: nativeTaskChildID, parentID: taskParentID });
       }
+
+      const nativeTaskRequests = providerServer.getRequests().filter((request) => (
+        JSON.stringify(request.messages).includes('runtime_native_task')
+        || JSON.stringify(request.messages).includes('NATIVE_TASK_CHILD_FINAL_ONLY')
+      ));
+      const parentTaskRequest = nativeTaskRequests.find((request) => (
+        JSON.stringify(request.messages).includes('runtime_native_task')
+      ));
+      const taskDefinitions = Array.isArray(parentTaskRequest?.tools) ? parentTaskRequest.tools : [];
+      const taskDefinition = taskDefinitions.find((entry) => (
+        isRecord(entry)
+        && isRecord(entry.function)
+        && entry.function.name === 'task'
+      ));
+      const taskFunction = isRecord(taskDefinition) && isRecord(taskDefinition.function)
+        ? taskDefinition.function
+        : undefined;
+      const taskParameters = isRecord(taskFunction?.parameters) ? taskFunction.parameters : undefined;
+      const taskProperties = isRecord(taskParameters?.properties) ? taskParameters.properties : undefined;
+      expect(taskProperties?.description).toBeDefined();
+      expect(taskProperties?.prompt).toBeDefined();
+      expect(taskProperties?.subagent_type).toBeDefined();
+      expect(taskProperties?.hive_launch_id).toMatchObject({ type: 'string' });
+
+      expect(fs.existsSync(correlationFile)).toBe(true);
+      const correlation = JSON.parse(fs.readFileSync(correlationFile, 'utf8')) as unknown;
+      expect(isRecord(correlation)).toBe(true);
+      const correlationBefore = isRecord(correlation) && isRecord(correlation.before)
+        ? correlation.before
+        : undefined;
+      const correlationPart = isRecord(correlation) && isRecord(correlation.part)
+        ? correlation.part
+        : undefined;
+      const correlationMetadata = isRecord(correlation) && isRecord(correlation.metadata)
+        ? correlation.metadata
+        : undefined;
+      expect(correlationBefore?.sessionID).toBe(taskParentID);
+      expect(correlationPart?.sessionID).toBe(taskParentID);
+      expect(correlationBefore?.callID).toBe(correlationPart?.callID);
+      expect(correlationPart?.callID).toBe(isRecord(nativeTaskPart) ? nativeTaskPart.callID : undefined);
+      expect(correlationMetadata?.sessionId).toBe(nativeTaskChildID);
+      expect(isRecord(nativeTaskPart) ? nativeTaskPart.sessionID : undefined).toBe(taskParentID);
+
+      const childTaskRequest = nativeTaskRequests.find((request) => (
+        JSON.stringify(request.messages).includes('RUNTIME_CHILD_CORRELATION_SYNC_PREFIX_SEEN')
+      ));
+      const childTaskMessages = JSON.stringify(childTaskRequest?.messages);
+      expect(childTaskMessages).toContain('RUNTIME_BEFORE_HOOK_SAW_LAUNCH_ID');
+      expect(childTaskMessages).toContain('RUNTIME_CHILD_CORRELATION_SYNC_PREFIX_SEEN');
+      console.info(JSON.stringify({
+        probe: 'synthetic-plugin native task capability',
+        ...runtimeEnvironment,
+        observedNativeTaskWaitMode: 'blocking',
+        productionHiveSelectorExercised: false,
+      }));
 
       abortController.abort();
       await permissionTask.catch(() => undefined);
