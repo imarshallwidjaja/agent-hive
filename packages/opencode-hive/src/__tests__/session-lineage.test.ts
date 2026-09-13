@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { PluginInput } from '@opencode-ai/plugin';
@@ -89,6 +89,88 @@ describe('session origin stamp and lineage tracking', () => {
       $: createStubShell(),
     });
   }
+
+  it('stamps unconstrained primary observation before a metadata-cloned backup is created', async () => {
+    const hooks = await loadTestHooks(testRoot);
+    await hooks['chat.message']!({ sessionID: 'origin', agent: 'hive-master' } as any, { message: { agent: 'hive-master' }, parts: [] } as any);
+    expect(sessionStore.origin?.metadata?.agentHive?.originSessionId).toBe('origin');
+    const metadata = structuredClone(sessionStore.origin.metadata);
+    await hooks['chat.message']!({ sessionID: 'origin', agent: 'hive-master' } as any, { message: { agent: 'hive-master' }, parts: [] } as any);
+    expect(sessionStore.origin.metadata).toEqual(metadata);
+    sessionStore.backup = { id: 'backup', metadata };
+    await hooks.event!({ event: { type: 'session.created', properties: { info: sessionStore.backup } } } as any);
+    await hooks['chat.message']!({ sessionID: 'backup', agent: 'hive-master' } as any, { message: { agent: 'hive-master' }, parts: [] } as any);
+    await hooks['tool.execute.before']!({ sessionID: 'backup', tool: 'read' } as any, { args: {} });
+    for (const tool of ['task', 'hive_feature_create']) {
+      await hooks['tool.execute.before']!({ sessionID: 'backup', tool } as any, { args: {} });
+    }
+    sessionStore.child = { id: 'child', parentID: 'origin' };
+    await hooks['chat.message']!({ sessionID: 'child', agent: 'architect-planner' } as any, { message: { agent: 'architect-planner' }, parts: [] } as any);
+    expect(sessionStore.child.metadata).toBeUndefined();
+  });
+
+  it('warns on missing optional origin continuity without rejecting session creation or creating partial Hive state', async () => {
+    const hooks = await loadTestHooks(testRoot);
+    sessionStore.backup = { id: 'backup', metadata: { agentHive: { originSessionId: 'missing' } } };
+    const warning = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await hooks.event!({ event: { type: 'session.created', properties: { info: sessionStore.backup } } } as any);
+      const registryPath = path.join(testRoot, '.hive', 'sessions.json');
+      expect(fs.existsSync(registryPath)).toBe(false);
+      expect(warning.mock.calls.some(args => String(args[0]).includes('[hive:session] Optional origin continuity unavailable'))).toBe(true);
+      expect(sessionStore.backup.metadata?.agentHive?.originSessionId).toBe('backup');
+      await hooks['chat.message']!({ sessionID: 'backup', agent: 'hive-master' } as any, { message: { agent: 'hive-master' }, parts: [] } as any);
+      await hooks['tool.execute.before']!({ sessionID: 'backup', tool: 'read' } as any, { args: {} });
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('keeps non-Hive child tools without granting Hive authority or injecting catalogs', async () => {
+    const hooks = await loadTestHooks(testRoot);
+    sessionStore.child = { id: 'child', parentID: 'parent' };
+    await hooks['chat.message']!({ sessionID: 'child', agent: 'general' } as any, { message: { agent: 'general' }, parts: [] } as any);
+    await hooks['tool.execute.before']!({ sessionID: 'child', tool: 'read' } as any, { args: {} });
+    const output = { system: [] as string[] };
+    await hooks['experimental.chat.system.transform']!({ sessionID: 'child' } as any, output);
+    expect(output.system.join('')).not.toContain('hive-live-context-catalog');
+    await expect(hooks['tool.execute.before']!({ sessionID: 'child', tool: 'hive_feature_create' } as any, { args: { name: 'unauthorized' } })).rejects.toThrow(/context_authorization_denied/);
+  });
+
+  it('retains primary tools after origin stamping fails and a backup is promoted', async () => {
+    (opencodeClient.session as any).update = async () => { throw new Error('metadata unsupported'); };
+    const hooks = await loadTestHooks(testRoot);
+    for (const sessionID of ['origin', 'backup']) {
+      await hooks.event!({ event: { type: 'session.created', properties: { info: { id: sessionID } } } } as any);
+      await hooks['chat.message']!({ sessionID, agent: 'hive-master' } as any, { message: { agent: 'hive-master' }, parts: [] } as any);
+      for (const tool of ['read', 'task', 'hive_feature_create']) {
+        await hooks['tool.execute.before']!({ sessionID, tool } as any, { args: {} });
+      }
+    }
+  });
+
+  it('denies plan-read revalidation without changing session or ownership bytes', async () => {
+    const hooks = await loadTestHooks(testRoot);
+    const sessionID = 'primary';
+    await hooks['chat.message']!({ sessionID, agent: 'hive-master' } as any, { message: { agent: 'hive-master' }, parts: [] } as any);
+    const { FeatureService, SessionService, getFeaturePath } = await import('hive-core');
+    new FeatureService(testRoot).create('plan-read');
+    new SessionService(testRoot).bindFeature('owner', 'plan-read');
+    const featurePath = getFeaturePath(testRoot, 'plan-read');
+    fs.writeFileSync(path.join(featurePath, 'plan.md'), '# Plan');
+    const paths = [path.join(testRoot, '.hive/sessions.json'), path.join(featurePath, 'sessions.json'), path.join(featurePath, 'feature.json')];
+    const before = paths.map(file => fs.readFileSync(file, 'utf8'));
+    const get = opencodeClient.session.get;
+    let calls = 0;
+    (opencodeClient.session as any).get = async (...args: any[]) => {
+      if (++calls === 2) throw new Error('runtime unavailable');
+      return (get as any)(...args);
+    };
+    await hooks['tool.execute.before']!({ sessionID, tool: 'hive_plan_read' } as any, { args: { feature: 'plan-read' } });
+    const result = JSON.parse(await hooks.tool!.hive_plan_read.execute({ feature: 'plan-read' }, { sessionID, agent: 'hive-master' } as any) as string);
+    expect(result.reason).toBe('context_authorization_denied');
+    expect(paths.map(file => fs.readFileSync(file, 'utf8'))).toEqual(before);
+  });
 
   it('stamps session origin in metadata when hive_constraints_add is called', async () => {
     const hooks = await loadTestHooks(testRoot);
@@ -286,17 +368,17 @@ describe('session origin stamp and lineage tracking', () => {
     expect(sessionStore[dupSessionID]?.metadata?.agentHive?.originSessionId).toBe(dupSessionID);
     expect(sessionStore[structuredDupSessionID]?.metadata?.agentHive?.originSessionId).toBe(structuredDupSessionID);
 
-    // 3. Verify task() dispatch from dupSessionID carries the migrated standing constraints!
+    // Constraint inheritance does not authenticate a duplicated root for dispatch.
     const output = {
       args: {
         subagent_type: 'forager-worker',
         prompt: 'Implement the task.',
       },
     };
-    await hooks['tool.execute.before']?.(
+    await expect(hooks['tool.execute.before']?.(
       { tool: 'task', sessionID: dupSessionID, callID: 'call_dup_task' } as any,
       output as any,
-    );
-    expect(output.args.prompt).toBe(`Implement the task.\n\n${CONSTRAINTS_BLOCK}`);
+    )).rejects.toThrow('context_authorization_denied');
+    expect(output.args.prompt).toBe('Implement the task.');
   });
 });

@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { TaskService, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
 import { TaskStatus } from "../types";
+import type { WorkerAssignmentDescriptor } from "../types";
 import { getLockPath, readJson } from "../utils/paths";
 
 const TEST_DIR = "/tmp/hive-core-taskservice-test-" + process.pid;
@@ -420,6 +421,64 @@ describe("TaskService", () => {
       )).toThrow(/already associated/i);
     });
 
+    it.each([
+      ["noncanonical locator", { locator: "wrong.md" }],
+      ["wrong root", { projectRoot: "/wrong-project" }],
+      ["wrong numbered directory", { locator: ".hive/features/99-test-feature/tasks/01-test-task/assignments/attempt-1.md" }],
+      ["wrong custom directory", { locator: ".hive/features/custom/tasks/01-test-task/assignments/attempt-1.md" }],
+      ["invalid hash", { contentHash: "not-a-sha256" }],
+      ["unsafe feature segment", { featureName: "../test-feature" }],
+      ["unsafe task segment", { taskFolder: "../01-test-task" }],
+      ["unsafe attempt", { attempt: Number.MAX_SAFE_INTEGER + 1 }],
+      ["invalid format", { format: "hive-worker-assignment/v2" }],
+      ["non-string root", { projectRoot: 42 }],
+      ["blank root", { projectRoot: " " }],
+      ["null descriptor", null],
+    ])("rejects publication with %s without changing status bytes", (_name, patch) => {
+      const featureName = "test-feature";
+      const taskFolder = "01-test-task";
+      setupFeature(featureName);
+      setupTask(featureName, taskFolder, { status: "in_progress" });
+      const allocation = service.allocateWorkerAttempt(featureName, taskFolder);
+      const statusPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", taskFolder, "status.json");
+      const before = fs.readFileSync(statusPath);
+      const descriptor = patch === null ? null : {
+        format: "hive-worker-assignment/v1",
+        projectRoot: TEST_DIR,
+        featureName,
+        taskFolder,
+        attempt: allocation.attempt,
+        locator: `.hive/features/${featureName}/tasks/${taskFolder}/assignments/attempt-${allocation.attempt}.md`,
+        contentHash: "a".repeat(64),
+        ...patch,
+      };
+
+      try {
+        expect(() => service.publishWorkerAssignment(
+          featureName, taskFolder, allocation.idempotencyKey,
+          descriptor as WorkerAssignmentDescriptor,
+        )).toThrow(/assignment_recovery_error/);
+      } finally {
+        expect(fs.readFileSync(statusPath)).toEqual(before);
+      }
+    });
+
+    it("publishes a logical feature stored in a custom directory", () => {
+      const featureName = "test-feature";
+      const taskFolder = "01-test-task";
+      setupFeature(featureName);
+      setupTask(featureName, taskFolder, { status: "in_progress" });
+      fs.renameSync(path.join(TEST_DIR, ".hive/features", featureName), path.join(TEST_DIR, ".hive/features/custom-directory"));
+      const allocation = service.allocateWorkerAttempt(featureName, taskFolder);
+      const assignment: WorkerAssignmentDescriptor = {
+        format: "hive-worker-assignment/v1", projectRoot: fs.realpathSync(TEST_DIR), featureName, taskFolder,
+        attempt: allocation.attempt,
+        locator: ".hive/features/custom-directory/tasks/01-test-task/assignments/attempt-1.md",
+        contentHash: "a".repeat(64),
+      };
+      expect(service.publishWorkerAssignment(featureName, taskFolder, allocation.idempotencyKey, assignment).workerAssignment).toEqual(assignment);
+    });
+
     it("records failed publication and refuses later association", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
@@ -466,7 +525,7 @@ describe("TaskService", () => {
         featureName,
         taskFolder: "01-test-task",
         attempt: allocation.attempt,
-        locator: "new.md",
+        locator: `.hive/features/${featureName}/tasks/01-test-task/assignments/attempt-${allocation.attempt}.md`,
         contentHash: "b".repeat(64),
       };
       service.publishWorkerAssignment(featureName, "01-test-task", allocation.idempotencyKey, descriptor);

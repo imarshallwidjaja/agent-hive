@@ -817,6 +817,12 @@ describe("e2e: Forager compaction loop mitigation (in-process)", () => {
     const hooks = await plugin(ctx);
     const sessionID = "sess_runtime_immutable_recovery";
     const parentSessionID = "sess_runtime_immutable_parent";
+    (client.session as any).get = async ({ path: inputPath }: { path: { id: string } }) => ({
+      data: { id: inputPath.id, ...(inputPath.id === sessionID ? { parentID: parentSessionID } : {}) },
+    });
+    await hooks["chat.message"]?.({ sessionID, agent: "forager-worker" }, {
+      message: { agent: "forager-worker" }, parts: [],
+    } as any);
     const featureName = "compaction-loop";
     const taskFolder = "01-resume";
     const assignmentDir = path.join(

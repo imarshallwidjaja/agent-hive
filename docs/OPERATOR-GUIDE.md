@@ -56,7 +56,21 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 
 **`vulnerability-reviewer`** exists to trace attacker-controlled input or capability to concrete impact with local evidence. `/vuln-review` uses it as the specialist base; primaries can also send a scoped security question to the stock seat. It does not exploit systems, edit source, run scanners or shell, or emit a patch.
 
+### Recovery and session authority
+
 `hive-helper` is a runtime-only recovery assistant for merge recovery, state clarification, and safe append-only follow-up inside an approved feature DAG. It is not a seat you start from.
+
+An authenticated helper child can use its configured ordinary and merge-recovery tools, including `hive_merge` and `hive_status`. Managed context remains unavailable to helpers, and they cannot dispatch native tasks.
+
+A runtime-authenticated top-level primary fork, including a promoted Magic Compact backup, retains full primary capabilities after normal agent observation: ordinary tools, task dispatch, managed context, and primary management. Stored identity must corroborate the observed primary agent and parent-free runtime lineage. Actual worker assignments, ad-hoc bindings, parent lineage, conflicting identity, and malformed state still deny authority.
+
+Task-worker copies retain delegated execution authority, including when parent-free, when their copied immutable assignments and authenticated assignment-copy provenance validate. The external/session flow must supply authenticated origin metadata that triggers `copyWorkerAssignment`, and the source must have a valid immutable assignment. Hive does not automatically stamp worker origins or produce worker backups. Generic forks of ad-hoc or unassigned subagent sessions do not inherit execution authority and require a fresh authenticated launch.
+
+Hive stamps authenticated primary origins on a best-effort basis, including sessions without standing constraints. Origin metadata supports copying feature context, directives, and constraints; it is not an authorization prerequisite for primary backups. Worker copies depend on authenticated assignment-copy provenance. Primary origin copies exclude stale worker prompt paths, task folders, and ad-hoc run IDs. If metadata stamping is unsupported or promotion loses optional copied continuity, the observed primary session remains usable and can re-establish feature context. Magic Compact is an external compaction plugin/flow whose backup may be promoted. Hive supports that backup as a primary once runtime authentication succeeds; backup promotion and deletion of the original are controlled by the external flow.
+
+Helpers do not receive managed compaction directive or assignment replay. Primary forks use the same directive replay rules as other primaries; worker assignment replay requires authenticated worker provenance. After a plugin restart, stored identity alone is insufficient: send a new message in the session so the runtime observes its agent again before using Hive-governed tools. Restart OpenCode after installing this change to load the rebuilt plugin.
+
+A copied worker assignment retains its original owner and immediate duplicate source. Generic copies and worker copies reject conflicting recipient identity or stored parent provenance before changing the recipient or its constraints. Missing generic origin continuity is skipped with a warning and no recipient copy, rather than returned as an operator-facing error. Unknown non-Hive children keep their configured ordinary tools and receive no live-context catalog solely from parentage. Every `hive_*` call requires authority from a supported Hive role.
 
 ## Standing constraints
 

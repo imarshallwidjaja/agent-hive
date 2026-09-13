@@ -469,6 +469,9 @@ describe('operator standing constraints', () => {
       // Architect task targets are only populated once the config hook runs.
       await hooks.config?.({} as never);
       await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_architect_primary'));
+      await hooks.event?.({ event: { type: 'session.created', properties: {
+        info: { id: 'sess_architect_child', parentID: 'sess_architect_primary' },
+      } } } as any);
       await hooks['chat.message']?.(
         { sessionID: 'sess_architect_child', agent: 'architect-planner' } as never,
         { message: { agent: 'architect-planner' }, parts: [] } as never,
@@ -488,6 +491,10 @@ describe('operator standing constraints', () => {
       initGitRoot(testRoot);
       const hooks = await loadHooks(testRoot);
       const toolContext = createToolContext('sess_worktree_start');
+      await hooks['chat.message']?.(
+        { sessionID: 'sess_worktree_start', agent: 'hive-master' } as never,
+        { message: {}, parts: [] } as never,
+      );
 
       const startWorkerPrompt = async (feature: string): Promise<{ launchPrompt: string; workerPrompt: string }> => {
         const plan = `# ${feature}

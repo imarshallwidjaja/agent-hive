@@ -152,6 +152,8 @@ function getCurrentHiveManagedPath(opencodeConfig: Record<string, unknown>): str
 }
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' });
+(OPENCODE_CLIENT.session as any).get = async ({ path: { id } }: { path: { id: string } }) => ({ data: { id } });
+(OPENCODE_CLIENT.session as any).update = async () => ({ data: {} });
 const TEST_ROOT_BASE = '/tmp/hive-config-autoload-skills-test';
 const HIVE_GENERATED_SEGMENT = path.join('.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills');
 const PACKAGED_SKILLS_DIR = fileURLToPath(new URL('../../skills', import.meta.url));

@@ -300,6 +300,8 @@ import {
   DockerSandboxService,
   BackgroundJobService,
   SessionService,
+  SessionContinuityError,
+  validateAssignmentDescriptorShape,
   workerAssignmentsEqual,
   DEFAULT_COUNCIL_CONFIG,
   buildEffectiveDependencies,
@@ -646,6 +648,7 @@ const plugin: Plugin = async (ctx) => {
     ephemeralSessionIDs: taskTraceEphemeralSessionIDs,
   });
   const runtimeAgentPrompts = new Map<string, string>();
+  const runtimeSessionAgents = new Map<string, string>();
   let runtimeBackgroundGuidance: BackgroundDelegationAvailability = { available: false, reason: 'availability-unknown' };
   let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
   let runtimeDashReviewLanes: HiveCommandDashReviewLane[] = [];
@@ -727,6 +730,15 @@ const plugin: Plugin = async (ctx) => {
     }
     return response.data.parentID;
   };
+  const isHiveGovernedSession = (sessionID: string): boolean => {
+    const stored = sessionService.getGlobal(sessionID);
+    const agents = [runtimeSessionAgents.get(sessionID), stored?.agent, stored?.baseAgent];
+    return agents.some(agent => classifySession(agent ?? '', customAgentConfigsForClassification).sessionKind !== 'unknown')
+      || (!!stored?.sessionKind && stored.sessionKind !== 'unknown')
+      || (!!stored && ['duplicatedFromSessionId', 'projectRoot', 'featureName', 'taskFolder',
+        'workerAssignment', 'assignmentSourceSessionId', 'adHocRunId', 'workerPromptPath']
+        .some(field => Object.hasOwn(stored, field)));
+  };
   const stampSessionOrigin = async (sessionID: string): Promise<void> => {
     try {
       const currentSession = await client.session.get({
@@ -750,7 +762,7 @@ const plugin: Plugin = async (ctx) => {
         });
       }
     } catch {
-      // Best-effort stamp; non-fatal
+      console.warn('[hive:session] Origin metadata could not be stamped; backup continuity may need to be re-established. Primary authority is unchanged.');
     }
   };
   const reviewWorkspaceWorkflowAliases = (): ReviewWorkspaceWorkflowAliases[] => [
@@ -1461,6 +1473,31 @@ const plugin: Plugin = async (ctx) => {
     sessionID: string;
     management: boolean;
   };
+  type StoredSessionIdentity = {
+    assignment?: WorkerAssignmentDescriptor;
+    hasAdHocRun: boolean;
+    hasAssignment: boolean;
+    hasAssignmentSource: boolean;
+    hasDuplicateSource: boolean;
+    hasParentSession: boolean;
+    hasTaskFolder: boolean;
+    hasWorkerPrompt: boolean;
+  };
+  type RuntimeLineage = {
+    parentID: string | undefined;
+  };
+  type SessionAuthority = {
+    kind: 'primary' | 'delegated' | 'helper';
+    stored: NonNullable<ReturnType<SessionService['getGlobal']>>;
+    verifiedAssignment?: VerifiedAssignment;
+  } | {
+    kind: 'denied';
+    failure: string;
+  };
+  type VerifiedAssignment = {
+    bytes: Buffer;
+    status: ReturnType<TaskService['getRawStatus']>;
+  };
   const contextFailure = (
     reason: string,
     error: string,
@@ -1477,7 +1514,68 @@ const plugin: Plugin = async (ctx) => {
     const relative = path.relative(root, candidate);
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   };
-  const validateContextRuntimeRoot = (): string | null => {
+  const assignmentRecoveryFailure = (): string => contextFailure(
+    'assignment_recovery_error',
+    'The stored assignment descriptor is malformed or incompatible with the authenticated runtime.',
+  );
+  const inspectStoredSessionIdentity = (
+    stored: ReturnType<SessionService['getGlobal']>,
+  ): StoredSessionIdentity | string => {
+    const hasParentSession = stored?.parentSessionId !== undefined;
+    const hasAssignment = stored?.workerAssignment !== undefined;
+    const hasAdHocRun = stored?.adHocRunId !== undefined;
+    const hasAssignmentSource = stored?.assignmentSourceSessionId !== undefined;
+    const hasDuplicateSource = stored?.duplicatedFromSessionId !== undefined;
+    const hasTaskFolder = stored?.taskFolder !== undefined;
+    const hasWorkerPrompt = stored?.workerPromptPath !== undefined;
+    const nonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+    const malformed = !!stored && (
+      (hasParentSession && !nonEmptyString(stored.parentSessionId))
+      || (hasAssignment && !validateAssignmentDescriptorShape(stored.workerAssignment))
+      || (hasAdHocRun && !nonEmptyString(stored.adHocRunId))
+      || (hasAssignmentSource && !nonEmptyString(stored.assignmentSourceSessionId))
+      || (hasDuplicateSource && !nonEmptyString(stored.duplicatedFromSessionId))
+      || (hasTaskFolder && !nonEmptyString(stored.taskFolder))
+      || (hasWorkerPrompt && !nonEmptyString(stored.workerPromptPath))
+      || (stored?.projectRoot !== undefined && !nonEmptyString(stored.projectRoot))
+      || (stored?.featureName !== undefined && (!nonEmptyString(stored.featureName)
+        || stored.featureName === '.' || stored.featureName === '..' || /[\\/\x00]/.test(stored.featureName)))
+      || (stored?.agent !== undefined && !nonEmptyString(stored.agent))
+      || (stored?.baseAgent !== undefined && !nonEmptyString(stored.baseAgent))
+    );
+    if (malformed) return assignmentRecoveryFailure();
+    return {
+      assignment: hasAssignment ? stored!.workerAssignment : undefined,
+      hasAdHocRun,
+      hasAssignment,
+      hasAssignmentSource,
+      hasDuplicateSource,
+      hasParentSession,
+      hasTaskFolder,
+      hasWorkerPrompt,
+    };
+  };
+  const readRuntimeLineage = async (sessionID: string): Promise<RuntimeLineage | string> => {
+    let session: { id?: string; parentID?: unknown } | undefined;
+    try {
+      session = (await client.session.get({
+        path: { id: sessionID },
+        query: { directory },
+      })).data;
+    } catch {
+      return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
+    }
+    if (!session || session.id !== sessionID) {
+      return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
+    }
+    const parentID = session.parentID;
+    if (parentID === undefined) return { parentID: undefined };
+    if (typeof parentID !== 'string' || parentID.trim().length === 0) {
+      return contextFailure('context_authorization_denied', 'Runtime session lineage is malformed.');
+    }
+    return { parentID };
+  };
+  const validateSessionRuntimeRoot = (): string | null => {
     try {
       const canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
       const runtimeWorkspaceInput = ctx.project?.id === 'global' && worktree === '/' ? directory : worktree || directory;
@@ -1501,55 +1599,67 @@ const plugin: Plugin = async (ctx) => {
       return 'The runtime workspace or canonical project root could not be resolved.';
     }
   };
-  const readVerifiedAssignment = (assignment: WorkerAssignmentDescriptor): Buffer | string => {
-    const canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
-    if (
-      assignment.format !== 'hive-worker-assignment/v1'
-      || assignment.projectRoot !== canonicalRoot
-      || !Number.isInteger(assignment.attempt)
-      || !/^[a-f0-9]{64}$/.test(assignment.contentHash)
-    ) {
-      return contextFailure('assignment_recovery_error', 'The stored assignment format, root, feature, task, attempt, or hash does not match the authenticated runtime.');
-    }
-    const taskDir = path.join(
-      canonicalRoot,
-      '.hive',
-      'features',
-      resolveFeatureDirectoryName(canonicalRoot, assignment.featureName),
-      'tasks',
-      assignment.taskFolder,
-      'assignments',
-    );
-    const artifactPath = path.resolve(canonicalRoot, assignment.locator);
-    if (!pathIsContained(taskDir, artifactPath)) {
-      return contextFailure('assignment_recovery_error', 'The assignment locator is outside the exact task assignment directory.');
-    }
-    let bytes: Buffer;
+  const readVerifiedAssignment = (assignment: WorkerAssignmentDescriptor): VerifiedAssignment | string => {
+    if (!validateAssignmentDescriptorShape(assignment)) return assignmentRecoveryFailure();
     try {
-      bytes = fs.readFileSync(artifactPath);
+      const canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
+      if (assignment.projectRoot !== canonicalRoot) {
+        return contextFailure('assignment_recovery_error', 'The stored assignment root does not match the authenticated runtime.');
+      }
+      const featuresRoot = path.resolve(canonicalRoot, '.hive', 'features');
+      const featureRoot = path.resolve(featuresRoot, resolveFeatureDirectoryName(canonicalRoot, assignment.featureName));
+      const tasksRoot = path.resolve(featureRoot, 'tasks');
+      const taskRoot = path.resolve(tasksRoot, assignment.taskFolder);
+      const assignmentRoot = path.resolve(taskRoot, 'assignments');
+      const artifactPath = path.resolve(canonicalRoot, assignment.locator);
+      if (artifactPath !== path.join(assignmentRoot, `attempt-${assignment.attempt}.md`)) {
+        return assignmentRecoveryFailure();
+      }
+      if (!pathIsContained(featuresRoot, featureRoot) || featureRoot === featuresRoot
+        || !pathIsContained(tasksRoot, taskRoot) || taskRoot === tasksRoot
+        || !pathIsContained(assignmentRoot, artifactPath)) {
+        return contextFailure('assignment_recovery_error', 'The assignment locator is outside the exact task assignment directory.');
+      }
+      const bytes = fs.readFileSync(artifactPath);
+      if (createHash('sha256').update(bytes).digest('hex') !== assignment.contentHash) {
+        return contextFailure('assignment_recovery_error', 'The immutable assignment artifact hash does not match its descriptor.');
+      }
+      const status = statusToolServices.tasks.getRawStatus(assignment.featureName, assignment.taskFolder);
+      if (!workerAssignmentsEqual(status?.workerAssignment, assignment)) {
+        return contextFailure('assignment_recovery_error', 'The task status does not contain this exact assignment descriptor.');
+      }
+      return { bytes, status };
     } catch {
-      return contextFailure('assignment_recovery_error', 'The immutable assignment artifact is missing or unreadable.');
+      return contextFailure('assignment_recovery_error', 'The immutable assignment artifact or task association is missing or unreadable.');
     }
-    if (createHash('sha256').update(bytes).digest('hex') !== assignment.contentHash) {
-      return contextFailure('assignment_recovery_error', 'The immutable assignment artifact hash does not match its descriptor.');
-    }
-    const status = statusToolServices.tasks.getRawStatus(assignment.featureName, assignment.taskFolder);
-    if (!workerAssignmentsEqual(status?.workerAssignment, assignment)) {
-      return contextFailure('assignment_recovery_error', 'The task status does not contain this exact assignment descriptor.');
-    }
-    return bytes;
   };
-  const validateWorkerAssignment = (sessionID: string, stored: ReturnType<SessionService['getGlobal']>): Buffer | string | null => {
+  const validateWorkerAssignment = (
+    sessionID: string,
+    stored: ReturnType<SessionService['getGlobal']>,
+    knownIdentity?: StoredSessionIdentity,
+  ): VerifiedAssignment | string | null => {
     if (!stored) return null;
-    const assignment = stored.workerAssignment;
-    if (stored.adHocRunId && stored.projectRoot !== fs.realpathSync(runtimeContext.projectRoot)) {
+    const inspected = knownIdentity ?? inspectStoredSessionIdentity(stored);
+    if (typeof inspected === 'string') return inspected;
+    const assignment = inspected.assignment;
+    let canonicalRoot: string;
+    try {
+      canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
+    } catch {
+      return contextFailure('assignment_recovery_error', 'The authenticated runtime root is unavailable.');
+    }
+    if (inspected.hasAdHocRun && stored.projectRoot !== canonicalRoot) {
       return contextFailure('assignment_recovery_error', 'The immutable ad-hoc run root does not match the runtime.');
     }
-    const hasTaskProvenance = !!(assignment || stored.taskFolder || stored.assignmentSourceSessionId);
-    if (!hasTaskProvenance && stored.adHocRunId) return null;
-    if (!hasTaskProvenance && !stored.workerPromptPath && stored.sessionKind !== 'task-worker') return null;
+    if (assignment && inspected.hasAdHocRun) {
+      return contextFailure('assignment_recovery_error', 'A session cannot combine immutable task and ad-hoc identities.');
+    }
+    const hasTaskProvenance = assignment !== undefined || inspected.hasTaskFolder
+      || inspected.hasAssignmentSource || inspected.hasDuplicateSource;
+    if (!hasTaskProvenance && inspected.hasAdHocRun) return null;
+    if (!hasTaskProvenance && !inspected.hasWorkerPrompt && stored.sessionKind !== 'task-worker') return null;
     if (!assignment) {
-      return stored.workerPromptPath
+      return inspected.hasWorkerPrompt
         ? contextFailure('legacy_assignment_reanchor_required', 'This worker uses a legacy mutable prompt binding. A primary must create a fresh launch and authenticated child session.')
         : contextFailure('assignment_recovery_error', 'The task worker has no immutable assignment descriptor.');
     }
@@ -1557,21 +1667,140 @@ const plugin: Plugin = async (ctx) => {
       || stored.taskFolder !== assignment.taskFolder) {
       return contextFailure('assignment_recovery_error', 'The session does not match its immutable assignment identity.');
     }
-    const bytes = readVerifiedAssignment(assignment);
-    if (typeof bytes === 'string') return bytes;
-    const status = statusToolServices.tasks.getRawStatus(assignment.featureName, assignment.taskFolder);
+    const verified = readVerifiedAssignment(assignment);
+    if (typeof verified === 'string') return verified;
+    const { status } = verified;
     const expectedSourceSession = stored.assignmentSourceSessionId ?? sessionID;
     if (status?.workerSession?.sessionId !== expectedSourceSession) {
       return contextFailure('assignment_recovery_error', 'The assignment session identity does not match the task association.');
     }
-    if (stored.assignmentSourceSessionId) {
-      const source = contextToolScope.sessions.getGlobal(stored.assignmentSourceSessionId);
-      if (!workerAssignmentsEqual(source?.workerAssignment, assignment)) {
-        return contextFailure('assignment_recovery_error', 'The duplicated recipient has no valid immutable source assignment provenance.');
+    if (inspected.hasDuplicateSource !== inspected.hasAssignmentSource) {
+      return contextFailure('assignment_recovery_error', 'The duplicated recipient identity does not match its assignment source.');
+    }
+    if (inspected.hasAssignmentSource) {
+      const visited = new Set([sessionID]);
+      let sourceID = stored.duplicatedFromSessionId;
+      while (sourceID) {
+        if (visited.has(sourceID) || visited.size > 32) return assignmentRecoveryFailure();
+        visited.add(sourceID);
+        const source = sessionService.getGlobal(sourceID);
+        const sourceIdentity = inspectStoredSessionIdentity(source);
+        if (typeof sourceIdentity === 'string') return sourceIdentity;
+        if (!source || sourceIdentity.hasAdHocRun || !workerAssignmentsEqual(sourceIdentity.assignment, assignment)
+          || source.agent !== stored.agent || source.baseAgent !== stored.baseAgent
+          || source.sessionKind !== stored.sessionKind) return assignmentRecoveryFailure();
+        if (sourceID === expectedSourceSession) {
+          if (sourceIdentity.hasAssignmentSource || sourceIdentity.hasDuplicateSource) return assignmentRecoveryFailure();
+          break;
+        }
+        if (source.assignmentSourceSessionId !== expectedSourceSession) return assignmentRecoveryFailure();
+        sourceID = source.duplicatedFromSessionId;
+      }
+      if (!sourceID) return assignmentRecoveryFailure();
+    }
+    return verified;
+  };
+  const resolveSessionAuthority = async (
+    sessionID: string,
+    expectedAgent?: string,
+  ): Promise<SessionAuthority> => {
+    const deny = (failure: string): SessionAuthority => ({ kind: 'denied', failure });
+    const rootFailure = validateSessionRuntimeRoot();
+    if (rootFailure) return deny(contextFailure(
+      'context_root_mismatch', rootFailure, true,
+      'Open the canonical project workspace and retry from a freshly authenticated session.',
+    ));
+    const runtimeAgent = runtimeSessionAgents.get(sessionID);
+    if (!runtimeAgent || (expectedAgent && expectedAgent !== runtimeAgent)) {
+      return deny(contextFailure('context_authorization_denied', 'The runtime agent identity is unavailable or does not match the caller.'));
+    }
+    const classification = classifySession(runtimeAgent, customAgentConfigsForClassification);
+    if (classification.sessionKind === 'unknown') {
+      return deny(contextFailure('context_authorization_denied', 'The runtime caller is not authorized for managed session authority.'));
+    }
+    const stored = sessionService.getGlobal(sessionID);
+    if (!stored) {
+      return deny(contextFailure('context_authorization_denied', 'The runtime session has no corroborating stored identity.'));
+    }
+    const identity = inspectStoredSessionIdentity(stored);
+    if (typeof identity === 'string') return deny(identity);
+    if (stored.agent !== runtimeAgent || stored.baseAgent !== classification.baseAgent
+      || stored.sessionKind !== classification.sessionKind) {
+      return deny(contextFailure('context_authorization_denied', 'The stored session identity does not match the observed runtime agent.'));
+    }
+    const runtimeLineage = await readRuntimeLineage(sessionID);
+    if (typeof runtimeLineage === 'string') return deny(runtimeLineage);
+    let canonicalRoot: string;
+    try {
+      canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
+    } catch {
+      return deny(contextFailure('context_root_mismatch', 'The canonical project root is unavailable.'));
+    }
+    if (stored.projectRoot !== undefined && stored.projectRoot !== canonicalRoot) {
+      return deny(contextFailure('context_root_mismatch', 'The stored session project root does not match the canonical runtime root.'));
+    }
+
+    if (classification.sessionKind === 'primary' && runtimeLineage.parentID === undefined) {
+      if (identity.hasAssignment || identity.hasAdHocRun || identity.hasAssignmentSource
+        || identity.hasParentSession) {
+        return deny(contextFailure('context_authorization_denied', 'The primary runtime identity contradicts stored delegated-session provenance.'));
+      }
+      return { kind: 'primary', stored };
+    }
+    if (classification.sessionKind === 'primary' && classification.baseAgent !== 'architect-planner') {
+      return deny(contextFailure('context_authorization_denied', 'Primary orchestration agents cannot acquire primary authority from a child session.'));
+    }
+
+    if (runtimeLineage.parentID !== undefined) {
+      if (stored.parentSessionId !== runtimeLineage.parentID) {
+        return deny(contextFailure('context_authorization_denied', 'The child session is not bound to its authenticated runtime lineage.'));
+      }
+      const visited = new Set([sessionID]);
+      let parentID: string | undefined = runtimeLineage.parentID;
+      for (let depth = 0; parentID && depth < 32; depth += 1) {
+        if (visited.has(parentID)) {
+          return deny(contextFailure('context_authorization_denied', 'Runtime session lineage is cyclic.'));
+        }
+        visited.add(parentID);
+        const parentLineage = await readRuntimeLineage(parentID);
+        if (typeof parentLineage === 'string') return deny(parentLineage);
+        parentID = parentLineage.parentID;
+      }
+      if (parentID) {
+        return deny(contextFailure('context_authorization_denied', 'Runtime session lineage exceeds the supported depth.'));
+      }
+      if (classification.baseAgent === 'hive-helper') {
+        if (identity.hasAssignment || identity.hasAdHocRun || identity.hasAssignmentSource || identity.hasDuplicateSource) {
+          return deny(contextFailure('context_authorization_denied', 'Helper authority cannot carry worker or duplicate provenance.'));
+        }
+        return { kind: 'helper', stored };
+      }
+      if (classification.baseAgent !== 'architect-planner'
+        && !['forager-worker', 'scout-researcher', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor']
+          .includes(classification.baseAgent ?? '')) {
+        return deny(contextFailure('context_authorization_denied', 'The runtime child agent is not eligible for delegated authority.'));
+      }
+    } else {
+      const authenticatedDuplicate = classification.sessionKind === 'task-worker'
+        && !identity.hasParentSession
+        && identity.hasDuplicateSource
+        && identity.hasAssignmentSource;
+      if (!authenticatedDuplicate) {
+        return deny(contextFailure('context_authorization_denied', 'A non-primary context recipient requires authenticated child or duplicate provenance.'));
       }
     }
-    return bytes;
+    const assignmentFailure = validateWorkerAssignment(sessionID, stored, identity);
+    if (typeof assignmentFailure === 'string') return deny(assignmentFailure);
+    if (classification.sessionKind === 'task-worker' && identity.assignment === undefined
+      && (!identity.hasAdHocRun || stored.projectRoot !== canonicalRoot)) {
+      return deny(contextFailure('context_authorization_denied', 'The worker has no authenticated task assignment or ad-hoc run binding.'));
+    }
+    return { kind: 'delegated', stored, verifiedAssignment: assignmentFailure ?? undefined };
   };
+  const managedSessionAuthority = (authority: SessionAuthority): SessionAuthority =>
+    authority.kind === 'helper'
+      ? { kind: 'denied', failure: contextFailure('context_authorization_denied', 'This session has ordinary tool authority only; managed context requires an authenticated management or delegated context recipient.') }
+      : authority;
   const isPrivateContextRecipient = (toolContext: unknown): boolean => {
     const caller = toolContext as ToolContext | undefined;
     const lanes = reviewRuntimeLanes();
@@ -1581,9 +1810,11 @@ const plugin: Plugin = async (ctx) => {
     while (sessionID && visited.size < 32) {
       if (visited.has(sessionID)) return true;
       visited.add(sessionID);
-      const session = contextToolScope.sessions.getGlobal(sessionID);
+      const session = sessionService.getGlobal(sessionID);
       if (resolveReviewCallerPolicy(session?.agent, lanes)) return true;
-      sessionID = session?.parentSessionId ?? session?.duplicatedFromSessionId;
+      const nextSessionID = session?.parentSessionId ?? session?.duplicatedFromSessionId;
+      if (nextSessionID !== undefined && (typeof nextSessionID !== 'string' || nextSessionID.length === 0)) return false;
+      sessionID = nextSessionID;
     }
     return sessionID !== undefined;
   };
@@ -1595,95 +1826,20 @@ const plugin: Plugin = async (ctx) => {
     management: boolean;
     boundFeature?: string;
   } | string> => {
-    if (isPrivateContextRecipient(toolContext)) {
-      return contextFailure('context_authorization_denied', 'Live context is unavailable in private review lanes.');
-    }
-    const rootFailure = validateContextRuntimeRoot();
-    if (rootFailure) {
-      return contextFailure(
-        'context_root_mismatch',
-        rootFailure,
-        true,
-        'Open the canonical project workspace and retry from a freshly authenticated session.',
-      );
-    }
     const caller = toolContext as ToolContext | undefined;
     if (!caller?.sessionID || !caller.agent) {
       return contextFailure('context_authorization_denied', 'Context access requires an authenticated runtime session.');
     }
-    const classification = classifySession(caller.agent, customAgentConfigsForClassification);
-    if (classification.sessionKind === 'unknown' || classification.baseAgent === 'hive-helper') {
-      return contextFailure('context_authorization_denied', 'The runtime caller is not authorized for managed context.');
+    if (isPrivateContextRecipient(toolContext)) {
+      return contextFailure('context_authorization_denied', 'Live context is unavailable in private review lanes.');
     }
-    let runtimeSession: { id?: string; parentID?: string } | undefined;
-    try {
-      runtimeSession = (await client.session.get({
-        path: { id: caller.sessionID },
-        query: { directory },
-      })).data;
-    } catch {
-      return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
-    }
-    if (!runtimeSession || runtimeSession.id !== caller.sessionID) {
-      return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
-    }
-    const stored = contextToolScope.sessions.getGlobal(caller.sessionID);
-    if (runtimeSession.parentID) {
-      if (
-        !stored
-        || stored.parentSessionId !== runtimeSession.parentID
-        || stored.agent !== caller.agent
-        || stored.sessionKind !== classification.sessionKind
-        || stored.baseAgent !== classification.baseAgent
-      ) {
-        return contextFailure('context_authorization_denied', 'The child session is not bound to its authenticated runtime identity.');
-      }
-      const visited = new Set([caller.sessionID]);
-      let parentID: string | undefined = runtimeSession.parentID;
-      for (let depth = 0; parentID && depth < 32; depth += 1) {
-        if (visited.has(parentID)) {
-          return contextFailure('context_authorization_denied', 'Runtime session lineage is cyclic.');
-        }
-        visited.add(parentID);
-        try {
-          const parent = (await client.session.get({ path: { id: parentID }, query: { directory } })).data;
-          if (!parent || parent.id !== parentID) {
-            return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
-          }
-          parentID = parent.parentID;
-        } catch {
-          return contextFailure('context_authorization_denied', 'Runtime session lineage is unavailable.');
-        }
-      }
-      if (parentID) return contextFailure('context_authorization_denied', 'Runtime session lineage exceeds the supported depth.');
-      if (
-        classification.baseAgent !== 'architect-planner'
-        && !['forager-worker', 'scout-researcher', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor']
-          .includes(classification.baseAgent ?? '')
-      ) {
-        return contextFailure('context_authorization_denied', 'Primary orchestration agents cannot acquire primary authority from a child session.');
-      }
-    }
-    if (!runtimeSession.parentID && classification.sessionKind !== 'primary') {
-      const authenticatedDuplicate = classification.sessionKind === 'task-worker'
-        && stored?.duplicatedFromSessionId
-        && stored.assignmentSourceSessionId === stored.duplicatedFromSessionId;
-      if (!authenticatedDuplicate) {
-        return contextFailure('context_authorization_denied', 'A non-primary context recipient requires authenticated child or duplicate provenance.');
-      }
-    }
-    const assignmentFailure = validateWorkerAssignment(caller.sessionID, stored);
-    if (typeof assignmentFailure === 'string') return assignmentFailure;
-    if (classification.sessionKind === 'task-worker' && !stored?.workerAssignment) {
-      if (!stored?.adHocRunId || stored.projectRoot !== fs.realpathSync(runtimeContext.projectRoot)) {
-        return contextFailure('context_authorization_denied', 'The worker has no authenticated task assignment or ad-hoc run binding.');
-      }
-    }
-    const management = !runtimeSession.parentID && classification.sessionKind === 'primary';
+    const authority = managedSessionAuthority(await resolveSessionAuthority(caller.sessionID, caller.agent));
+    if (authority.kind === 'denied') return authority.failure;
+    const management = authority.kind === 'primary';
     if (operation === 'archive' && !management) {
       return contextFailure('context_authorization_denied', 'Archiving context requires an authenticated primary management session.');
     }
-    return { sessionID: caller.sessionID, management, boundFeature: stored?.featureName };
+    return { sessionID: caller.sessionID, management, boundFeature: authority.stored.featureName };
   };
   const authorizeContextScope = async (
     operation: ContextToolOperation,
@@ -1749,6 +1905,7 @@ const plugin: Plugin = async (ctx) => {
   const refreshLiveContextCatalog = async (
     sessionID: string,
     messages: ReplayMessageEntry[],
+    authority: SessionAuthority,
   ): Promise<void> => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index]!;
@@ -1763,32 +1920,9 @@ const plugin: Plugin = async (ctx) => {
     }
     const stored = sessionService.getGlobal(sessionID);
     if (!stored?.agent) return;
-    let authorizationFailure: string | null = null;
-    if (isPrivateContextRecipient({ sessionID, agent: stored.agent })) {
-      return;
-    }
-    const rootFailure = validateContextRuntimeRoot();
-    if (rootFailure) {
-      authorizationFailure = contextFailure('context_root_mismatch', rootFailure);
-    }
-    const classification = classifySession(stored.agent, customAgentConfigsForClassification);
-    if (classification.sessionKind === 'unknown' || classification.baseAgent === 'hive-helper') return;
-    if (classification.sessionKind !== 'primary' && !stored.parentSessionId) {
-      const authenticatedDuplicate = classification.sessionKind === 'task-worker'
-        && stored.duplicatedFromSessionId
-        && stored.assignmentSourceSessionId === stored.duplicatedFromSessionId;
-      if (!authenticatedDuplicate) return;
-    }
-    const assignmentValidation = authorizationFailure ?? validateWorkerAssignment(sessionID, stored);
-    if (typeof assignmentValidation === 'string') authorizationFailure = assignmentValidation;
-    if (classification.sessionKind === 'task-worker' && !stored.workerAssignment
-      && (!stored.adHocRunId || stored.projectRoot !== fs.realpathSync(runtimeContext.projectRoot))) {
-      authorizationFailure ??= contextFailure('context_authorization_denied', 'The worker has no authenticated task assignment or ad-hoc run binding.');
-    }
-    if (authorizationFailure) {
-      const failure = JSON.parse(authorizationFailure) as { reason?: string };
-      if (!['assignment_recovery_error', 'legacy_assignment_reanchor_required', 'context_root_mismatch'].includes(failure.reason ?? '')) return;
-      const text = `${LIVE_CONTEXT_CATALOG_MARKER}\n${authorizationFailure}`;
+    if (isPrivateContextRecipient({ sessionID, agent: stored.agent })) return;
+    if (authority.kind === 'denied') {
+      const text = `${LIVE_CONTEXT_CATALOG_MARKER}\n${authority.failure}`;
       messages.push({
         info: { id: `msg_context_catalog_${sessionID}`, sessionID, role: 'user', time: { created: Date.now() } },
         parts: [{
@@ -1803,8 +1937,8 @@ const plugin: Plugin = async (ctx) => {
       return;
     }
     const scopes: Array<{ type: 'project' } | { type: 'feature'; featureName: string }> = [{ type: 'project' }];
-    if (stored.featureName && contextToolScope.features.get(stored.featureName)) {
-      scopes.push({ type: 'feature', featureName: stored.featureName });
+    if (authority.stored.featureName && contextToolScope.features.get(authority.stored.featureName)) {
+      scopes.push({ type: 'feature', featureName: authority.stored.featureName });
     }
     const catalog = assembleLiveContextCatalogs(contextToolScope.contexts, scopes);
     messages.push({
@@ -1869,7 +2003,7 @@ const plugin: Plugin = async (ctx) => {
     const candidate = matches[0];
     const verifiedBytes = readVerifiedAssignment(candidate.assignment);
     if (typeof verifiedBytes === 'string') throw new Error(verifiedBytes);
-    args!.prompt = verifiedBytes.toString('utf8');
+    args!.prompt = verifiedBytes.bytes.toString('utf8');
     const remaining = pending.filter(pendingCandidate => pendingCandidate !== candidate);
     if (remaining.length > 0) {
       pendingHiveTaskLaunches.set(sessionID, remaining);
@@ -2076,13 +2210,12 @@ const plugin: Plugin = async (ctx) => {
     return !!session?.workerAssignment || (session?.sessionKind === 'task-worker' && !!session.workerPromptPath);
   };
 
-  const buildWorkerReplayText = (session: NonNullable<ReturnType<SessionService['getGlobal']>>): string | null => {
+  const buildWorkerReplayText = (session: NonNullable<ReturnType<SessionService['getGlobal']>>, verified: VerifiedAssignment | undefined): string | null => {
     if (!session.workerAssignment) {
       return 'legacy_assignment_reanchor_required: This mutable worker prompt cannot be replayed. Return to an authenticated primary and create a fresh worker launch.';
     }
-    const failure = validateWorkerAssignment(session.sessionId, session);
-    if (typeof failure === 'string') return `Post-compaction assignment recovery failed.\n${failure}`;
-    const assignment = failure!.toString('utf8');
+    if (!verified) return null;
+    const assignment = verified.bytes.toString('utf8');
     return [
       `Post-compaction recovery: replaying hash-verified immutable assignment attempt ${session.workerAssignment.attempt}.`,
       '',
@@ -2850,16 +2983,15 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
             const originSessionId = info.metadata?.agentHive?.originSessionId as string | undefined;
             if (originSessionId && originSessionId !== eventSessionID) {
               const originSession = sessionService.getGlobal(originSessionId);
-              sessionService.trackGlobal(eventSessionID, {
-                duplicatedFromSessionId: originSessionId,
-                ...(originSession?.standingConstraints ? { standingConstraints: originSession.standingConstraints } : {}),
-                ...(originSession?.standingConstraintEntries ? { standingConstraintEntries: originSession.standingConstraintEntries } : {}),
-                ...(originSession?.standingConstraintsRevision !== undefined ? { standingConstraintsRevision: originSession.standingConstraintsRevision } : {}),
-                ...(originSession?.sessionKind ? { sessionKind: originSession.sessionKind } : {}),
-                ...(originSession?.featureName ? { featureName: originSession.featureName } : {}),
-              });
-              if (originSession?.workerAssignment) {
-                sessionService.copyWorkerAssignment(eventSessionID, originSessionId);
+              try {
+                if (originSession && Object.prototype.hasOwnProperty.call(originSession, 'workerAssignment')) {
+                  sessionService.copyWorkerAssignment(eventSessionID, originSessionId);
+                } else {
+                  sessionService.copySessionOrigin(eventSessionID, originSessionId);
+                }
+              } catch (error) {
+                if (!(error instanceof SessionContinuityError)) throw error;
+                console.warn(`[hive:session] Optional origin continuity unavailable (${error.reason}); continuing session observation.`);
               }
               await stampSessionOrigin(eventSessionID);
             }
@@ -2872,6 +3004,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           if (hintID.startsWith(`${sessionID}\u0000`)) taskTraceInjectedHintIDs.delete(hintID);
         }
         runtimeTaskChildSessions.delete(sessionID);
+        runtimeSessionAgents.delete(sessionID);
         try {
           const results = await reviewWorkspaceService.cleanupOwnedBySession(sessionID, ['dash-review', 'vulnerability-review']);
           for (const result of results) {
@@ -2890,6 +3023,8 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
 
       const sessionID = input.event.properties.sessionID;
+      const authority = managedSessionAuthority(await resolveSessionAuthority(sessionID));
+      if (authority.kind === 'denied') return;
       const existing = sessionService.getGlobal(sessionID);
       const directiveReplayPatch = getDirectiveReplayCompactionPatch(existing);
       if (directiveReplayPatch) {
@@ -2907,12 +3042,22 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     // for the hook's output parameter type. The hook only accesses output.message.agent and
     // output.message.variant, which exist on UserMessage.
     "chat.message": (async (input, output) => {
+      const inputAgent = typeof input.agent === 'string' && input.agent.trim() ? input.agent : undefined;
+      const messageAgent = typeof output.message.agent === 'string' && output.message.agent.trim() ? output.message.agent : undefined;
+      if (inputAgent && messageAgent && inputAgent !== messageAgent) {
+        throw new Error(contextFailure('context_authorization_denied', 'Contradictory observed runtime agent identities.'));
+      }
+      const observedAgent = inputAgent ?? messageAgent;
+      input = { ...input, agent: observedAgent };
+      if (observedAgent) output.message.agent = observedAgent;
       if (taskTraceEphemeralSessionIDs.has(input.sessionID)) {
         output.message.agent = TASK_TRACE_SUMMARIZER_AGENT;
         if (output.message.variant === undefined && taskTraceConfig.variant) output.message.variant = taskTraceConfig.variant;
         return;
       }
-      const observedDashAgent = input.agent ?? output.message.agent;
+      const runtimeAgent = observedAgent;
+      if (runtimeAgent) runtimeSessionAgents.set(input.sessionID, runtimeAgent);
+      const observedDashAgent = observedAgent;
       if (
         observedDashAgent
         && observedDashAgent !== DASH_REVIEW_PRIMARY_AGENT
@@ -3050,6 +3195,10 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
         customAgentConfigsForClassification,
       );
       await variantHook(input, output);
+      if (runtimeAgent && classifySession(runtimeAgent, customAgentConfigsForClassification).sessionKind === 'primary') {
+        const authority = await resolveSessionAuthority(input.sessionID);
+        if (authority.kind === 'primary') await stampSessionOrigin(input.sessionID);
+      }
     }) as any,
 
     "experimental.chat.system.transform": (async (
@@ -3093,6 +3242,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
       if (taskTraceEphemeralSessionIDs.has(sessionID)) return;
 
+      if (!isHiveGovernedSession(sessionID)) return;
+      const authority = managedSessionAuthority(await resolveSessionAuthority(sessionID));
+      if (authority.kind === 'denied') {
+        await refreshLiveContextCatalog(sessionID, output.messages, authority);
+        return;
+      }
+
       await injectTaskTraceHint(output.messages, async (childID, parentID) => {
         try {
           const response = await client.session.get({ path: { id: childID }, query: { directory } });
@@ -3122,13 +3278,13 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
 
       const refreshed = sessionService.getGlobal(sessionID);
       await backgroundJobAdapter['experimental.chat.messages.transform'](_input, output);
-      await refreshLiveContextCatalog(sessionID, output.messages);
+      await refreshLiveContextCatalog(sessionID, output.messages, authority);
       if (!refreshed?.replayDirectivePending) {
         return;
       }
 
       if (shouldUseWorkerReplay(refreshed)) {
-        const workerText = buildWorkerReplayText(refreshed);
+        const workerText = buildWorkerReplayText(refreshed, authority.verifiedAssignment);
         if (!workerText) {
           sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
           return;
@@ -3253,11 +3409,11 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
     },
 
     "tool.execute.before": async (input, output) => {
-      const executingSession = sessionService.getGlobal(input.sessionID);
-      if (executingSession?.taskFolder || executingSession?.workerAssignment || executingSession?.assignmentSourceSessionId
-        || (executingSession?.workerPromptPath && !executingSession.adHocRunId)) {
-        const assignmentValidation = validateWorkerAssignment(input.sessionID, executingSession);
-        if (typeof assignmentValidation === 'string') throw new Error(assignmentValidation);
+      const observedAgent = runtimeSessionAgents.get(input.sessionID);
+      const requiresAuthorityResolution = input.tool.startsWith('hive_') || isHiveGovernedSession(input.sessionID);
+      if (requiresAuthorityResolution && !resolveReviewCallerPolicy(observedAgent, reviewRuntimeLanes())) {
+        const authority = await resolveSessionAuthority(input.sessionID);
+        if (authority.kind === 'denied') throw new Error(authority.failure);
       }
       if (input.tool === 'task' && output.args?.subagent_type === TASK_TRACE_SUMMARIZER_AGENT) {
         throw new Error('The task trace summarizer cannot be dispatched through the native task tool.');
@@ -5287,6 +5443,9 @@ NEXT: Ask your first clarifying question about this feature.`;
         async execute({ feature: explicitFeature, mode }, toolContext) {
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
+          const caller = toolContext as { sessionID?: string; agent?: string };
+          const authority = await resolveSessionAuthority(caller.sessionID, caller.agent);
+          if (authority.kind === 'denied') return authority.failure;
           captureSession(feature, toolContext);
           bindFeatureSession(feature, toolContext);
           const result = mode === 'outline'

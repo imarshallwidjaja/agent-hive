@@ -165,9 +165,14 @@ async function createHooksForTest(
     client,
     $: createStubShell(),
   };
+  const hooks = await plugin(ctx);
+  await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+    message: { agent: 'hive-master' },
+    parts: [],
+  } as any);
 
   return {
-    hooks: await plugin(ctx),
+    hooks,
     toolContext: createToolContext(sessionID),
   };
 }
@@ -579,6 +584,9 @@ Do it
     await hooks.tool!.hive_feature_create.execute({ name: 'sole-live-feature' }, toolContext);
 
     const unboundSessionID = 'sess_sole_feature_context_write';
+    await hooks['chat.message']?.({ sessionID: unboundSessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
     const output = await hooks.tool!.hive_context_write.execute(
       { name: 'notes', content: durableContext('# Sole feature notes') },
       createToolContext(unboundSessionID),
@@ -783,7 +791,9 @@ Do it
     const documentPath = path.join(testRoot, '.hive', 'context', 'project-notes.md');
     expect(reconstructed).toBe(fs.readFileSync(documentPath, 'utf8'));
 
+    expect(fs.readFileSync(sessionsPath, 'utf8')).toBe(sessionsBeforeReads);
     const restarted = await createHooksForTest(testRoot, 'sess_scoped_context', testRoot, ROOT_SESSION_CLIENT);
+    const sessionsBeforeRestartedReads = fs.readFileSync(sessionsPath, 'utf8');
     const readSpy = spyOn(ContextService.prototype, 'readContent');
     try {
       const envelope = JSON.parse(Buffer.from(firstChunk.nextCursor, 'base64url').toString());
@@ -859,7 +869,7 @@ Do it
       content: projectContext('must not persist'),
     }, toolContext) as string)).toMatchObject({ success: false, reason: 'invalid_argument' });
     expect(fs.existsSync(path.join(testRoot, '.hive', 'context', 'rejected.md'))).toBe(false);
-    expect(fs.readFileSync(sessionsPath, 'utf8')).toBe(sessionsBeforeReads);
+    expect(fs.readFileSync(sessionsPath, 'utf8')).toBe(sessionsBeforeRestartedReads);
   });
 
   it('returns management-only recovery diagnostics for invalid context control state', async () => {
@@ -2114,6 +2124,9 @@ Do it
     await hooks['tool.execute.after']!({ tool: 'task', sessionID: parent, callID: 'catalog-launch', args: dispatch.args }, {
       title: 'task', output: '', metadata: { sessionId: child },
     });
+    await hooks['chat.message']!({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
     const sessions = new SessionService(testRoot);
     const bound = sessions.getGlobal(child)!;
     const childContext = { ...toolContext, sessionID: child, agent: 'forager-worker' };
@@ -2291,6 +2304,11 @@ Do it
       const freshRun = JSON.parse(await fresh.hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'fresh-run', workerInstructions: 'Inspect project supporting knowledge.' }, fresh.toolContext) as string);
       await fresh.hooks['tool.execute.before']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-run-launch' }, { args: { ...freshRun.taskToolCall } });
       await fresh.hooks['tool.execute.after']!({ tool: 'task', sessionID: freshParent, callID: 'fresh-run-launch', args: freshRun.taskToolCall }, { title: 'task', output: '', metadata: { sessionId: freshAdhocChild } });
+      for (const sessionID of [freshChild, freshAdhocChild]) {
+        await fresh.hooks['chat.message']!({ sessionID, agent: 'forager-worker' }, {
+          message: { agent: 'forager-worker' }, parts: [],
+        } as any);
+      }
       const sessions = new SessionService(relocated);
       expect(sessions.getGlobal(oldChild)).toEqual(historical);
       expect(sessions.getGlobal(oldAdhocChild)).toEqual(historicalRun);
@@ -2323,7 +2341,9 @@ Do it
             return {
               data: {
                 id: inputPath.id,
-                parentID: undefined,
+                parentID: inputPath.id === 'feature-task-child'
+                  ? 'sess_background_no_worker_session'
+                  : undefined,
                 time: { created: Date.now(), updated: Date.now() },
               },
             };
@@ -2440,7 +2460,7 @@ Do it
         args: { ...launch.backgroundTaskCall },
       }, {
         args: { ...launch.backgroundTaskCall },
-      })).rejects.toThrow('task authorization failed because session lineage is unavailable');
+      })).rejects.toThrow('Runtime session lineage is unavailable');
       failSessionLookup = false;
       expect(JSON.parse(fs.readFileSync(statusPath, "utf-8")).workerSession).toBeUndefined();
 
@@ -2474,6 +2494,9 @@ Do it
       expect(createHash('sha256').update(assignmentBytes).digest('hex')).toBe(associated.workerAssignment.contentHash);
       const boundChild = new SessionService(testRoot).getGlobal('feature-task-child');
       expect(boundChild?.workerAssignment).toEqual(associated.workerAssignment);
+      await hooks['chat.message']?.({ sessionID: 'feature-task-child', agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
 
       const catalogOutput = {
         messages: [{
@@ -3216,6 +3239,9 @@ Candidate-specific conditions in an individual description still apply, includin
 
     const hooks = await plugin(ctx);
     const toolContext = createToolContext("sess_blocked_status");
+    await hooks['chat.message']?.({ sessionID: toolContext.sessionID, agent: toolContext.agent }, {
+      message: { agent: toolContext.agent }, parts: [],
+    } as any);
 
     await hooks.tool!.hive_feature_create.execute(
       { name: "blocked-status-feature" },
@@ -3362,6 +3388,9 @@ Do it
 
     const hooks = await plugin(ctx);
     const toolContext = createToolContext("sess_overview_status");
+    await hooks['chat.message']?.({ sessionID: toolContext.sessionID, agent: toolContext.agent }, {
+      message: { agent: toolContext.agent }, parts: [],
+    } as any);
 
     await hooks.tool!.hive_feature_create.execute(
       { name: "overview-status-feature" },
@@ -5298,7 +5327,7 @@ Do it
       worktree: testRoot,
       serverUrl: new URL("http://localhost:1"),
       project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
+      client: ROOT_SESSION_CLIENT,
       $: createStubShell(),
     };
 
@@ -5335,6 +5364,9 @@ Do it
     );
 
     const workerContext = createToolContext("sess_worker_plan_bind");
+    await hooks['chat.message']!({ sessionID: workerContext.sessionID, agent: 'hive-master' } as any, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
     await hooks.tool!.hive_plan_read.execute(
       { feature: "plan-bind-feature" },
       workerContext
@@ -5375,6 +5407,9 @@ Do it
     );
 
     const workerContext = createToolContext("sess_worker_ctx_bind");
+    await hooks['chat.message']?.({ sessionID: workerContext.sessionID, agent: workerContext.agent }, {
+      message: { agent: workerContext.agent }, parts: [],
+    } as any);
     const output = await hooks.tool!.hive_context_write.execute(
       { name: "notes", content: durableContext("test notes"), feature: "ctx-bind-feature" },
       workerContext
@@ -5428,6 +5463,9 @@ Do it
 
     const hooks = await plugin(ctx);
     const writerSessionID = "sess_global_worktree_writer";
+    await hooks['chat.message']?.({ sessionID: writerSessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
     const output = await hooks.tool!.hive_context_write.execute(
       { name: "notes", content: durableContext("worktree notes"), feature: featureName },
       createToolContext(writerSessionID),
@@ -5492,7 +5530,7 @@ Do it
       "notes.md",
     ))).toBe(false);
     expect(readGlobalSessionFeatureName(worktreeRoot, writerSessionID)).toBe(featureName);
-    expect(fs.existsSync(path.join(testRoot, ".hive"))).toBe(false);
+    expect(fs.existsSync(path.join(testRoot, ".hive", "features"))).toBe(false);
   });
 
   it("does not redirect the root sentinel for a non-global project", async () => {
@@ -5539,6 +5577,9 @@ Do it
   it('uses a root session binding before unrelated live repository candidates', async () => {
     const { hooks } = await createHooksForTest(testRoot, 'sess_context_binding_setup');
     const boundContext = createToolContext('sess_bound_context_write');
+    await hooks['chat.message']?.({ sessionID: boundContext.sessionID, agent: boundContext.agent }, {
+      message: { agent: boundContext.agent }, parts: [],
+    } as any);
 
     await hooks.tool!.hive_feature_create.execute(
       { name: 'bound-context-feature' },
@@ -5602,6 +5643,10 @@ Do it
       adhocWorktreePath,
     );
     const boundContext = createToolContext('sess_adhoc_bound_write');
+    const unboundContext = createToolContext('sess_adhoc_unbound_write');
+    await adhocHooks['chat.message']?.({ sessionID: unboundContext.sessionID, agent: unboundContext.agent }, {
+      message: { agent: unboundContext.agent }, parts: [],
+    } as any);
 
     const explicitOutput = await adhocHooks.tool!.hive_context_write.execute(
       { feature: 'adhoc-bound-feature', name: 'initial-notes', content: durableContext('initial') },
@@ -5613,7 +5658,7 @@ Do it
     );
     const unboundOutput = await adhocHooks.tool!.hive_context_write.execute(
       { name: 'unsafe-notes', content: 'must not write' },
-      createToolContext('sess_adhoc_unbound_write'),
+      unboundContext,
     );
 
     expect(explicitOutput).toContain(path.join('01_adhoc-bound-feature', 'context', 'initial-notes.md'));
@@ -5727,6 +5772,9 @@ Do it
   it('fails a missing detected feature without falling back to a valid session-bound feature', async () => {
     const { hooks } = await createHooksForTest(testRoot, 'sess_missing_detected_setup');
     const boundContext = createToolContext('sess_missing_detected_write');
+    await hooks['chat.message']?.({ sessionID: boundContext.sessionID, agent: boundContext.agent }, {
+      message: { agent: boundContext.agent }, parts: [],
+    } as any);
 
     await hooks.tool!.hive_feature_create.execute(
       { name: 'session-bound-feature' },
@@ -5792,6 +5840,9 @@ Do it
     fs.writeFileSync(contextPath, 'not-a-directory');
 
     const sessionID = 'sess_write_fail_unbound';
+    await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
     await expect(
       hooks.tool!.hive_context_write.execute(
         { feature: 'write-fail-feature', name: 'failed-notes', content: 'should not persist' },
@@ -5892,6 +5943,9 @@ Do it
 
     const hooks = await plugin(ctx);
     const toolContext = createToolContext("sess_manual_spec_preservation");
+    await hooks['chat.message']?.({ sessionID: toolContext.sessionID, agent: toolContext.agent }, {
+      message: { agent: toolContext.agent }, parts: [],
+    } as any);
 
     await hooks.tool!.hive_feature_create.execute(
       { name: "manual-spec-feature" },

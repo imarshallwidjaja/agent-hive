@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { SessionService } from './sessionService.js';
+import { SessionService, SessionContinuityError } from './sessionService.js';
 import { getGlobalSessionsPath } from '../utils/paths.js';
 
 const TEST_DIR = '/tmp/hive-core-sessionservice-test-' + process.pid;
@@ -33,6 +33,63 @@ describe('SessionService', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  describe('generic origin copy', () => {
+    for (const malformed of [null, false, '', 0, {}, [], { format: 'hive-worker-assignment/v1' }]) {
+      for (const target of ['source', 'recipient']) {
+        it(`rejects malformed ${target} assignment ${JSON.stringify(malformed)} without changing registry bytes`, () => {
+          service.trackGlobal('source', { sessionKind: 'primary' });
+          service.trackGlobal('recipient');
+          const registryPath = getGlobalSessionsPath(PROJECT_ROOT);
+          const data = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+          data.sessions.find((session: any) => session.sessionId === target).workerAssignment = malformed;
+          fs.writeFileSync(registryPath, JSON.stringify(data));
+          const before = fs.readFileSync(registryPath);
+          expect(() => service.copySessionOrigin('recipient', 'source')).toThrow(/assignment_recovery_error/);
+          expect(fs.readFileSync(registryPath)).toEqual(before);
+        });
+      }
+    }
+    it('copies primary continuity without stale worker provenance', () => {
+      service.trackGlobal('source', { sessionKind: 'primary', featureName: 'feature', taskFolder: 'stale', workerPromptPath: '/stale', adHocRunId: 'stale' });
+      const copied = service.copySessionOrigin('recipient', 'source');
+      expect(copied.featureName).toBe('feature');
+      expect(copied.taskFolder).toBeUndefined();
+      expect(copied.workerPromptPath).toBeUndefined();
+      expect(copied.adHocRunId).toBeUndefined();
+    });
+
+    it('rejects a missing origin without creating a recipient', () => {
+      service.trackGlobal('existing');
+      const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
+      expect(() => service.copySessionOrigin('recipient', 'missing')).toThrow(/assignment_recovery_error: missing generic duplicate source/);
+      expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
+    });
+    it.each([
+      { parentSessionId: 'parent' },
+      { sessionKind: 'task-worker' as const },
+      { featureName: 'other-feature' },
+      { duplicatedFromSessionId: 'other-source' },
+    ])('preserves registry bytes for a conflicting recipient (%j)', (identity) => {
+      service.trackGlobal('source', { sessionKind: 'primary', featureName: 'source-feature' });
+      service.trackGlobal('recipient', identity);
+      const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
+      expect(() => service.copySessionOrigin('recipient', 'source')).toThrow(/immutable/);
+      expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
+    });
+
+    it('copies non-worker identity and constraints once without inheriting parentage', () => {
+      service.trackGlobal('source', { agent: 'scout-researcher', baseAgent: 'scout-researcher', sessionKind: 'subagent', parentSessionId: 'parent' });
+      service.addStandingConstraint('source', 'Keep this directive');
+      const copied = service.copySessionOrigin('recipient', 'source');
+      expect(copied).toMatchObject({ sessionKind: 'subagent', duplicatedFromSessionId: 'source' });
+      expect(copied.parentSessionId).toBeUndefined();
+      expect(copied.standingConstraintEntries).toEqual(service.getGlobal('source')!.standingConstraintEntries);
+      const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
+      expect(service.copySessionOrigin('recipient', 'source')).toEqual(copied);
+      expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
+    });
   });
 
   describe('existing per-feature behavior', () => {
@@ -327,6 +384,144 @@ describe('SessionService', () => {
   });
 
   describe('bindWorkerAssignment', () => {
+    const validAssignment = {
+      format: 'hive-worker-assignment/v1' as const, projectRoot: PROJECT_ROOT,
+      featureName: 'feature-copy', taskFolder: '01-task', attempt: 1,
+      locator: '.hive/features/feature-copy/tasks/01-task/assignments/attempt-1.md', contentHash: 'b'.repeat(64),
+    };
+    it.each(['missing', 'generic'])('rejects malformed recipients even when source %s has no assignment', (source) => {
+      service.trackGlobal('generic');
+      service.trackGlobal('recipient');
+      const registry = getGlobalSessionsPath(PROJECT_ROOT);
+      const data = JSON.parse(fs.readFileSync(registry, 'utf8'));
+      data.sessions.find((session: any) => session.sessionId === 'recipient').workerAssignment = { ...validAssignment, contentHash: 'invalid' };
+      fs.writeFileSync(registry, JSON.stringify(data));
+      const before = fs.readFileSync(registry);
+      expect(() => service.copyWorkerAssignment('recipient', source)).toThrow(SessionContinuityError);
+      expect(fs.readFileSync(registry)).toEqual(before);
+    });
+    it.each(['feature-copy', '01_feature-copy', '01-feature-copy', 'custom-directory'])('copies canonical assignment locators for feature directory %s', (directory) => {
+      const featureRoot = path.join(PROJECT_ROOT, '.hive/features', directory);
+      fs.mkdirSync(featureRoot, { recursive: true });
+      fs.writeFileSync(path.join(featureRoot, 'feature.json'), JSON.stringify({ name: 'feature-copy' }));
+      const assignment = { ...validAssignment, locator: `.hive/features/${directory}/tasks/01-task/assignments/attempt-1.md` };
+      service.bindWorkerAssignment('source', 'parent', assignment);
+      expect(service.copyWorkerAssignment('recipient', 'source')?.workerAssignment).toEqual(assignment);
+      expect(JSON.parse(fs.readFileSync(path.join(featureRoot, 'sessions.json'), 'utf8')).sessions).toHaveLength(2);
+    });
+    for (const patch of [
+      { contentHash: 'invalid' }, { contentHash: 'G'.repeat(64) },
+      { featureName: '../escape' }, { featureName: '.' }, { taskFolder: '../escape' }, { taskFolder: 'a\\b' },
+      { locator: 'assignment.md' },
+      { locator: '.hive/features/../tasks/01-task/assignments/attempt-1.md' },
+      { locator: '.hive/features/feature-copy/tasks/02-other/assignments/attempt-1.md' },
+      { locator: '.hive/features/feature-copy/tasks/01-task/assignments/attempt-2.md' },
+      { locator: '.hive/features/feature-copy/tasks/01-task/assignments/../assignments/attempt-1.md' },
+      { attempt: 0 }, { attempt: -1 }, { attempt: 1.5 }, { attempt: Number.MAX_SAFE_INTEGER + 1 },
+      { attempt: '1' }, { format: 'hive-worker-assignment/v2' }, { projectRoot: 42 },
+      { projectRoot: ' ' }, { featureName: [] }, { taskFolder: null }, { locator: false }, { contentHash: 42 },
+    ]) {
+      it(`rejects field-complete malformed descriptors before copies or patches (${JSON.stringify(patch)})`, () => {
+        const malformed = { ...validAssignment, ...patch };
+        service.bindWorkerAssignment('source', 'parent', validAssignment);
+        service.trackGlobal('generic', { sessionKind: 'primary' });
+        service.trackGlobal('recipient');
+        const registry = getGlobalSessionsPath(PROJECT_ROOT);
+        const pristine = fs.readFileSync(registry);
+        const projection = path.join(PROJECT_ROOT, validAssignment.locator.split('/tasks/')[0], 'sessions.json');
+        const projectionBefore = fs.readFileSync(projection);
+        for (const target of ['source', 'recipient']) {
+          const data = JSON.parse(pristine.toString());
+          data.sessions.find((session: any) => session.sessionId === target).workerAssignment = malformed;
+          fs.writeFileSync(registry, JSON.stringify(data));
+          const before = fs.readFileSync(registry);
+          for (const mutate of [
+            () => service.copyWorkerAssignment('recipient', 'source'),
+            () => service.copySessionOrigin('recipient', target === 'source' ? 'source' : 'generic'),
+            () => service.trackGlobal(target, { standingConstraints: 'changed' }),
+          ]) {
+            expect(mutate).toThrow(SessionContinuityError);
+            expect(fs.readFileSync(registry)).toEqual(before);
+            expect(fs.readFileSync(projection)).toEqual(projectionBefore);
+          }
+        }
+        fs.writeFileSync(registry, pristine);
+        for (const target of ['source', 'recipient']) {
+          expect(() => service.trackGlobal(target, { workerAssignment: malformed as any })).toThrow(SessionContinuityError);
+          expect(fs.readFileSync(registry)).toEqual(pristine);
+        }
+      });
+    }
+    it.each([null, false, '', 0, {}, [], { format: 'hive-worker-assignment/v1' }].map(value => [value]))('rejects malformed recipient assignment %j across worker copy and immutable patches', (malformed) => {
+      const assignment = {
+        format: 'hive-worker-assignment/v1' as const, projectRoot: PROJECT_ROOT,
+        featureName: 'feature-copy', taskFolder: '01-task', attempt: 1,
+        locator: '.hive/features/feature-copy/tasks/01-task/assignments/attempt-1.md', contentHash: 'b'.repeat(64),
+      };
+      service.bindWorkerAssignment('source', 'parent', assignment);
+      service.trackGlobal('recipient');
+      const registryPath = getGlobalSessionsPath(PROJECT_ROOT);
+      const data = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+      data.sessions.find((session: any) => session.sessionId === 'recipient').workerAssignment = malformed;
+      fs.writeFileSync(registryPath, JSON.stringify(data));
+      const before = fs.readFileSync(registryPath);
+      for (const mutate of [
+        () => service.copyWorkerAssignment('recipient', 'source'),
+        () => service.trackGlobal('recipient', { workerAssignment: assignment }),
+        () => service.trackGlobal('recipient', { sessionKind: 'primary' }),
+      ]) {
+        expect(mutate).toThrow(/assignment_recovery_error/);
+        expect(fs.readFileSync(registryPath)).toEqual(before);
+      }
+    });
+    it.each(['run-id', '', null, false, 0].map(value => [value]))('rejects recipient ad-hoc identity %j before worker assignment writes', (adHocRunId) => {
+      service.bindWorkerAssignment('source', 'parent', validAssignment);
+      service.trackGlobal('generic');
+      service.trackGlobal('recipient');
+      const registryPath = getGlobalSessionsPath(PROJECT_ROOT);
+      const data = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+      data.sessions.find((session: any) => session.sessionId === 'recipient').adHocRunId = adHocRunId;
+      fs.writeFileSync(registryPath, JSON.stringify(data));
+      const before = fs.readFileSync(registryPath);
+      for (const mutate of [
+        () => service.bindWorkerAssignment('recipient', 'parent', validAssignment),
+        () => service.copyWorkerAssignment('recipient', 'source'),
+        () => service.copyWorkerAssignment('recipient', 'missing'),
+        () => service.copyWorkerAssignment('recipient', 'generic'),
+        () => service.trackGlobal('recipient', { sessionKind: 'primary' }),
+        () => service.trackGlobal('recipient', { adHocRunId: 'run-2' }),
+        () => service.bindFeature('recipient', 'other-feature'),
+      ]) {
+        expect(mutate).toThrow(/assignment_recovery_error/);
+        expect(fs.readFileSync(registryPath)).toEqual(before);
+      }
+    });
+    it('keeps duplicate source immutable before assignment binding and permits identical retries', () => {
+      service.trackGlobal('fork', { duplicatedFromSessionId: 'source' });
+      service.addStandingConstraint('fork', 'Keep me');
+      service.trackGlobal('fork', { duplicatedFromSessionId: 'source' });
+      const before = service.getGlobal('fork');
+      expect(() => service.trackGlobal('fork', { duplicatedFromSessionId: 'other', standingConstraints: 'Overwrite' })).toThrow(/immutable/);
+      expect(service.getGlobal('fork')).toEqual(before);
+    });
+
+    it.each([
+      { agent: 'hive-master' }, { baseAgent: 'scout-researcher' }, { sessionKind: 'primary' as const },
+      { featureName: 'other' }, { taskFolder: '02-other' }, { projectRoot: '/other' },
+      { parentSessionId: 'parent' }, { assignmentSourceSessionId: 'other' }, { duplicatedFromSessionId: 'other' },
+    ])('rejects conflicting unassigned duplicate identity atomically (%j)', (identity) => {
+      service.bindWorkerAssignment('source', 'parent', {
+        format: 'hive-worker-assignment/v1', projectRoot: PROJECT_ROOT,
+        featureName: 'feature-copy', taskFolder: '01-task', attempt: 1,
+        locator: '.hive/features/feature-copy/tasks/01-task/assignments/attempt-1.md', contentHash: 'b'.repeat(64),
+      }, { agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker' });
+      service.trackGlobal('recipient', identity);
+      service.addStandingConstraint('recipient', 'Keep recipient constraints');
+      const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
+      expect(() => service.copyWorkerAssignment('recipient', 'source')).toThrow(/immutable/);
+      expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
+    });
+
     it('keeps authenticated ad-hoc run identity immutable across ordinary patches and feature binding', () => {
       const bound = service.trackGlobal('adhoc', { parentSessionId: 'parent', adHocRunId: 'run-1', projectRoot: PROJECT_ROOT, agent: 'forager-worker', sessionKind: 'task-worker' });
       for (const patch of [{ adHocRunId: 'run-2' }, { projectRoot: '/relocated' }, { parentSessionId: 'other' }, { sessionKind: 'subagent' as const }]) {
@@ -375,7 +570,24 @@ describe('SessionService', () => {
       expect(() => service.bindWorkerAssignment('sess-worker', 'sess-parent', {
         ...assignment,
         attempt: 2,
+        locator: '.hive/features/feature-assignment/tasks/01-task/assignments/attempt-2.md',
       })).toThrow(/immutable assignment/i);
+    });
+    it.each(['run-id', '', null, false])('rejects assignment/ad-hoc hybrid ancestry %j without writes', (adHocRunId) => {
+      service.bindWorkerAssignment('source', 'parent', validAssignment);
+      service.copyWorkerAssignment('copy', 'source');
+      const registry = getGlobalSessionsPath(PROJECT_ROOT);
+      const projection = path.join(PROJECT_ROOT, '.hive/features/feature-copy/sessions.json');
+      const data = JSON.parse(fs.readFileSync(registry, 'utf8'));
+      data.sessions.find((session: any) => session.sessionId === 'source').adHocRunId = adHocRunId;
+      fs.writeFileSync(registry, JSON.stringify(data));
+      const before = fs.readFileSync(registry);
+      const projectionBefore = fs.readFileSync(projection);
+      for (const source of ['source', 'copy']) {
+        expect(() => service.copyWorkerAssignment('recipient', source)).toThrow(/assignment_recovery_error/);
+        expect(fs.readFileSync(registry)).toEqual(before);
+        expect(fs.readFileSync(projection)).toEqual(projectionBefore);
+      }
     });
 
     it('copies assignment provenance to a duplicate without changing the source identity', () => {
@@ -386,18 +598,55 @@ describe('SessionService', () => {
         featureName: 'feature-copy',
         taskFolder: '01-task',
         attempt: 1,
-        locator: 'assignment.md',
+        locator: '.hive/features/feature-copy/tasks/01-task/assignments/attempt-1.md',
         contentHash: 'b'.repeat(64),
       };
-      service.trackGlobal('source', { parentSessionId: 'parent', sessionKind: 'task-worker' });
-      service.bindWorkerAssignment('source', 'parent', assignment);
+      const source = service.bindWorkerAssignment('source', 'parent', assignment, {
+        agent: 'forager-custom', baseAgent: 'forager-worker', sessionKind: 'task-worker',
+      });
 
       const duplicate = service.copyWorkerAssignment('duplicate', 'source');
 
       expect(duplicate?.sessionId).toBe('duplicate');
       expect(duplicate?.assignmentSourceSessionId).toBe('source');
       expect(duplicate?.workerAssignment).toEqual(assignment);
-      expect(service.getGlobal('source')?.assignmentSourceSessionId).toBeUndefined();
+      expect(duplicate).toMatchObject({
+        agent: 'forager-custom', baseAgent: 'forager-worker', sessionKind: 'task-worker',
+        duplicatedFromSessionId: 'source',
+      });
+      expect(duplicate?.parentSessionId).toBeUndefined();
+      expect(service.get('feature-copy', 'duplicate')).toEqual(duplicate);
+      expect(service.copyWorkerAssignment('duplicate', 'source')).toMatchObject({
+        agent: 'forager-custom', baseAgent: 'forager-worker', workerAssignment: assignment,
+      });
+      service.bindWorkerAssignment('other-worker', 'parent', assignment, {
+        agent: 'other-custom', baseAgent: 'forager-worker', sessionKind: 'task-worker',
+        assignmentSourceSessionId: 'source',
+      });
+      const other = service.getGlobal('other-worker');
+      expect(() => service.copyWorkerAssignment('other-worker', 'source')).toThrow(/immutable/);
+      expect(service.getGlobal('other-worker')).toEqual(other);
+      expect(service.getGlobal('source')).toEqual(source);
+    });
+
+    it('duplicate retries preserve recipient constraints and reject cyclic provenance without writes', () => {
+      setupFeature('feature-copy');
+      const assignment = {
+        format: 'hive-worker-assignment/v1' as const, projectRoot: PROJECT_ROOT,
+        featureName: 'feature-copy', taskFolder: '01-task', attempt: 1,
+        locator: '.hive/features/feature-copy/tasks/01-task/assignments/attempt-1.md', contentHash: 'b'.repeat(64),
+      };
+      service.bindWorkerAssignment('source', 'parent', assignment, {
+        agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker',
+        standingConstraints: 'Original constraints',
+      });
+      service.copyWorkerAssignment('copy', 'source');
+      service.trackGlobal('source', { standingConstraints: 'Changed source constraints' });
+      const before = service.getGlobal('copy');
+      expect(service.copyWorkerAssignment('copy', 'source')).toEqual(before);
+      expect(() => service.copyWorkerAssignment('source', 'copy')).toThrow(/provenance/);
+      expect(service.getGlobal('copy')).toEqual(before);
+      expect(service.getGlobal('source')?.standingConstraints).toBe('Changed source constraints');
     });
   });
 

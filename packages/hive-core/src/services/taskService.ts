@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import {
   getTasksPath,
   getTaskPath,
@@ -39,7 +40,7 @@ import {
   renderAggregateBranchDiff,
 } from '../types.js';
 import { RepositoryService } from './repositoryService.js';
-import { workerAssignmentsEqual } from './sessionService.js';
+import { validateAssignmentDescriptorShape, workerAssignmentsEqual } from './sessionService.js';
 
 /** Current schema version for TaskStatus */
 export const TASK_STATUS_SCHEMA_VERSION = 1;
@@ -748,6 +749,17 @@ export class TaskService {
     lockOptions?: LockOptions,
   ): TaskStatus {
     return this.updateWorkerAttempt(featureName, taskFolder, lockOptions, (current, attempts) => {
+      if (!validateAssignmentDescriptorShape(assignment)
+        || assignment.featureName !== featureName
+        || assignment.taskFolder !== taskFolder) {
+        throw new Error('assignment_recovery_error: assignment descriptor identity is invalid');
+      }
+      const canonicalRoot = fs.realpathSync(this.projectRoot);
+      const assignmentPath = path.join(getTaskPath(canonicalRoot, featureName, taskFolder), 'assignments', `attempt-${assignment.attempt}.md`);
+      const expectedLocator = path.relative(canonicalRoot, assignmentPath).split(path.sep).join('/');
+      if (assignment.projectRoot !== canonicalRoot || assignment.locator !== expectedLocator) {
+        throw new Error('assignment_recovery_error: assignment descriptor does not match the repository context');
+      }
       const record = attempts.at(-1);
       if (!record
         || record.attempt !== assignment.attempt
@@ -758,17 +770,6 @@ export class TaskService {
       }
       if (record.state !== 'allocated') {
         throw new Error(`assignment_recovery_error: attempt ${assignment.attempt} is already ${record.state}`);
-      }
-      if (
-        assignment.featureName !== featureName
-        || assignment.taskFolder !== taskFolder
-        || assignment.format !== 'hive-worker-assignment/v1'
-        || !Number.isInteger(assignment.attempt)
-        || !/^[a-f0-9]{64}$/.test(assignment.contentHash)
-        || !assignment.projectRoot
-        || !assignment.locator
-      ) {
-        throw new Error('assignment_recovery_error: assignment descriptor identity is invalid');
       }
       record.state = 'published';
       record.assignment = { ...assignment };

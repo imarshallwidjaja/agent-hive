@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn, afterEach, mock } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { ConfigService, ContextService, DEFAULT_HIVE_CONFIG, ReviewEvidenceBundleService, ReviewWorkspaceService, SessionService } from 'hive-core';
 import * as path from 'path';
@@ -115,7 +116,7 @@ type AgentConfig = {
 };
 
 function createLineageClient(
-  parentBySession: Record<string, string | undefined>,
+  parentBySession: Record<string, unknown>,
   created = 1,
 ): unknown {
   const client = createStubClient() as {
@@ -164,6 +165,59 @@ function createGitRepository(repository: string): void {
   writeFileSync(path.join(repository, 'README.md'), 'snapshot fixture\n');
   execFileSync('git', ['-C', repository, 'add', '.'], { shell: false });
   execFileSync('git', ['-C', repository, 'commit', '-m', 'initial'], { shell: false });
+}
+
+function createValidAssignmentIdentity(
+  repository: string,
+  sessionID: string,
+  sourceSessionID = sessionID,
+): Record<string, unknown> {
+  const featureName = 'assigned-feature';
+  const taskFolder = '01-assigned-task';
+  const content = '# Immutable assignment';
+  const locator = `.hive/features/${featureName}/tasks/${taskFolder}/assignments/attempt-1.md`;
+  const assignment = {
+    format: 'hive-worker-assignment/v1' as const,
+    projectRoot: repository,
+    featureName,
+    taskFolder,
+    attempt: 1,
+    locator,
+    contentHash: createHash('sha256').update(content).digest('hex'),
+  };
+  const taskDir = path.join(repository, '.hive', 'features', featureName, 'tasks', taskFolder);
+  mkdirSync(path.join(taskDir, 'assignments'), { recursive: true });
+  writeFileSync(path.join(repository, locator), content);
+  writeFileSync(path.join(taskDir, 'status.json'), JSON.stringify({
+    status: 'in_progress',
+    origin: 'plan',
+    workerAttempt: 1,
+    workerAssignment: assignment,
+    workerAttempts: [{
+      attempt: 1,
+      idempotencyKey: 'attempt-1',
+      state: 'associated',
+      assignment,
+      workerSessionId: sourceSessionID,
+    }],
+    workerSession: { sessionId: sourceSessionID, attempt: 1 },
+  }));
+  const sessions = new SessionService(repository);
+  if (sourceSessionID !== sessionID) {
+    sessions.trackGlobal(sourceSessionID, {
+      projectRoot: repository,
+      featureName,
+      taskFolder,
+      workerAssignment: assignment,
+    });
+  }
+  return {
+    projectRoot: repository,
+    featureName,
+    taskFolder,
+    workerAssignment: assignment,
+    ...(sourceSessionID === sessionID ? {} : { assignmentSourceSessionId: sourceSessionID }),
+  };
 }
 
 function gitAt(repository: string, args: string[]): string {
@@ -941,8 +995,16 @@ function fingerprintLegacyReviewSourceScope(input: {
 }
 
 describe('Agent permissions', () => {
+  const isolatedRoots: string[] = [];
+  const createPermissionRoot = () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'hive-permission-lineage-'));
+    createGitRepository(root);
+    isolatedRoots.push(root);
+    return root;
+  };
   afterEach(() => {
     mock.restore();
+    for (const root of isolatedRoots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
   it('registers hive-master, scout, forager, and hygienic in unified mode', async () => {
@@ -1148,7 +1210,7 @@ describe('Agent permissions', () => {
       'forager-child': 'root',
       'scout-grandchild': 'architect-child',
     };
-    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const repoRoot = createPermissionRoot();
     const hooks = await plugin({
       directory: repoRoot,
       worktree: repoRoot,
@@ -1160,6 +1222,12 @@ describe('Agent permissions', () => {
     await hooks.config?.({});
 
     const trackAgent = async (sessionID: string, agent: string) => {
+      const parentID = sessions[sessionID];
+      if (parentID !== undefined) {
+        await hooks.event?.({
+          event: { type: 'session.updated', properties: { info: { id: sessionID, parentID } } },
+        } as any);
+      }
       await hooks['chat.message']?.(
         { sessionID, agent },
         { message: { agent }, parts: [] } as any,
@@ -1221,7 +1289,8 @@ describe('Agent permissions', () => {
       ['forager-child', 'forager-worker'],
     ] as const) {
       await trackAgent(sessionID, agent);
-      await expect(callTask(sessionID, 'scout-researcher'), agent).rejects.toThrow('not authorized');
+      await expect(callTask(sessionID, 'scout-researcher'), agent)
+        .rejects.toThrow(/not authorized|cannot acquire primary authority|assignment_recovery_error/);
     }
 
     await trackAgent('scout-grandchild', 'scout-researcher');
@@ -1275,7 +1344,7 @@ describe('Agent permissions', () => {
       agents: {},
     } as any);
 
-    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const repoRoot = createPermissionRoot();
     const hooks = await plugin({
       directory: repoRoot,
       worktree: repoRoot,
@@ -1288,6 +1357,9 @@ describe('Agent permissions', () => {
       $: createStubShell(),
     } as any);
     await hooks.config?.({});
+    await hooks.event?.({
+      event: { type: 'session.updated', properties: { info: { id: 'cycle-child', parentID: 'cycle-parent' } } },
+    } as any);
     await hooks['chat.message']?.(
       { sessionID: 'cycle-child', agent: 'architect-planner' },
       { message: { agent: 'architect-planner' }, parts: [] } as any,
@@ -1303,11 +1375,11 @@ describe('Agent permissions', () => {
         throw new Error('cyclic lineage authorization timed out');
       }),
     ]);
-    await expect(boundedTaskCall).rejects.toThrow('not authorized');
+    await expect(boundedTaskCall).rejects.toThrow(/cyclic|not authorized/);
     await expect(hooks['tool.execute.before']?.(
       { tool: 'question', sessionID: 'cycle-child', callID: 'cycle-question' },
       { args: { questions: [] } } as any,
-    )).rejects.toThrow('unavailable in task-created child sessions');
+    )).rejects.toThrow('Runtime session lineage is cyclic');
   });
 
   it('reauthorizes scoped context access from runtime lineage before continuations or recovery reads', async () => {
@@ -1473,7 +1545,554 @@ describe('Agent permissions', () => {
     }
   });
 
-  it('rejects context access when the runtime workspace resolves to another canonical root', async () => {
+  it('ignores stale task projection fields for a runtime-authenticated top-level primary', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-polluted-primary-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'polluted-primary';
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: undefined }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+        message: { agent: 'hive-master' }, parts: [],
+      } as any);
+      const sessions = new SessionService(repository);
+      sessions.trackGlobal(sessionID, {
+        projectRoot: repository,
+        taskFolder: '01-stale-task',
+        workerPromptPath: '.hive/features/old/tasks/01-stale-task/worker-prompt.md',
+      });
+
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'task', sessionID, callID: 'polluted-primary-task',
+      }, { args: { subagent_type: 'scout-researcher', prompt: 'Inspect only.' } } as any)).resolves.toBeUndefined();
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'question', sessionID, callID: 'polluted-primary-question',
+      }, { args: { questions: [] } } as any)).resolves.toBeUndefined();
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'hive_review_workspace_create', sessionID, callID: 'polluted-primary-workflow-tool',
+      }, { args: {} } as any)).resolves.toBeUndefined();
+      await expect(hooks.tool!.hive_review_workspace_create.execute(
+        {},
+        { ...snapshotContext('hive-master'), sessionID },
+      )).rejects.toThrow('Caller is not authorized to manage review workspaces');
+
+      const context = JSON.parse(await hooks.tool!.hive_context_read.execute({
+        scope: 'project',
+      }, { ...snapshotContext('hive-master'), sessionID }) as string);
+      expect(context).toMatchObject({ success: true, scope: { type: 'project' } });
+      expect(sessions.getGlobal(sessionID)).toMatchObject({
+        taskFolder: '01-stale-task',
+        workerPromptPath: '.hive/features/old/tasks/01-stale-task/worker-prompt.md',
+      });
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['immutable assignment', 'context_authorization_denied', (repository: string, sessionID: string) => createValidAssignmentIdentity(repository, sessionID)],
+    ['ad-hoc identity', 'context_authorization_denied', (repository: string) => ({ adHocRunId: 'valid-run', projectRoot: repository })],
+    ['stored parent identity', 'context_authorization_denied', () => ({ parentSessionId: 'stored-parent' })],
+    ['assignment source', 'context_authorization_denied', (repository: string, sessionID: string) => createValidAssignmentIdentity(repository, sessionID, 'assignment-source')],
+    ['duplicate source', 'context_authorization_denied', (repository: string, sessionID: string) => ({
+      ...createValidAssignmentIdentity(repository, sessionID, 'duplicate-source'),
+      duplicatedFromSessionId: 'duplicate-source',
+    })],
+    ['cross-root identity', 'context_root_mismatch', (repository: string) => ({ projectRoot: path.join(repository, 'other-root') })],
+  ])('denies project context management to a runtime primary with %s', async (_label, reason, storedPatch) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-contradictory-primary-management-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'contradictory-primary';
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: undefined }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+        message: { agent: 'hive-master' }, parts: [],
+      } as any);
+      new SessionService(repository).trackGlobal(sessionID, storedPatch(repository, sessionID));
+
+      const denied = JSON.parse(await hooks.tool!.hive_context_write.execute({
+        name: 'contradictory-primary', content: 'must not be written', scope: 'project',
+      }, { ...snapshotContext('hive-master'), sessionID }) as string);
+      expect(denied).toMatchObject({ success: false, reason });
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  function corruptStoredSession(repository: string, sessionID: string, patch: Record<string, unknown>): void {
+    const registry = path.join(repository, '.hive/sessions.json');
+    const data = JSON.parse(fs.readFileSync(registry, 'utf8'));
+    Object.assign(data.sessions.find((session: any) => session.sessionId === sessionID), patch);
+    fs.writeFileSync(registry, JSON.stringify(data));
+  }
+
+  it.each([
+    ['unsupported format', { format: 'hive-worker-assignment/v2' }],
+    ['empty project root', { projectRoot: '' }],
+    ['non-string feature', { featureName: null }],
+    ['empty task folder', { taskFolder: '' }],
+    ['zero attempt', { attempt: 0 }],
+    ['fractional attempt', { attempt: 1.5 }],
+    ['object attempt', { attempt: { toString: null } }],
+    ['non-string locator', { locator: null }],
+    ['invalid content hash', { contentHash: 'not-a-hash' }],
+    ['traversal feature', { featureName: '../../outside' }],
+    ['traversal task', { taskFolder: '../../outside' }],
+    ['backslash feature', { featureName: '..\\outside' }],
+    ['cross-bound attempt', { locator: '.hive/features/assigned-feature/tasks/01-assigned-task/assignments/attempt-2.md' }],
+    ['cross-bound task', { locator: '.hive/features/assigned-feature/tasks/02-other/assignments/attempt-1.md' }],
+    ['cross-bound feature', { locator: '.hive/features/other-feature/tasks/01-assigned-task/assignments/attempt-1.md' }],
+    ['noncanonical locator', { locator: '.hive/features/assigned-feature/tasks/01-assigned-task/assignments/../assignments/attempt-1.md' }],
+  ])('denies a malformed nested assignment descriptor before reading its artifact: %s', async (_label, assignmentPatch) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-malformed-assignment-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'malformed-assignment-worker';
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: 'worker-parent', 'worker-parent': undefined }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks['chat.message']?.({ sessionID, agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+      const assignment = {
+        format: 'hive-worker-assignment/v1',
+        projectRoot: repository,
+        featureName: 'assigned-feature',
+        taskFolder: '01-assigned-task',
+        attempt: 1,
+        locator: '.hive/features/assigned-feature/tasks/01-assigned-task/assignments/attempt-1.md',
+        contentHash: '0'.repeat(64),
+        ...assignmentPatch,
+      };
+      corruptStoredSession(repository, sessionID, {
+        parentSessionId: 'worker-parent',
+        projectRoot: assignment.projectRoot,
+        featureName: assignment.featureName,
+        taskFolder: assignment.taskFolder,
+        workerAssignment: assignment,
+      } as any);
+      const read = spyOn(fs, 'readFileSync');
+      const exists = spyOn(fs, 'existsSync');
+      try {
+        await expect(hooks['tool.execute.before']?.({
+          tool: 'read', sessionID, callID: `malformed-assignment-${_label}`,
+        }, { args: { filePath: path.join(repository, 'README.md') } } as any))
+          .rejects.toThrow('assignment_recovery_error');
+        expect(read.mock.calls.some(call => String(call[0]).includes('/assignments/'))).toBe(false);
+        // Directory identity requires feature.json resolution; malformed structure does not.
+        if (_label !== 'cross-bound feature') {
+          expect(exists.mock.calls.some(call => String(call[0]).includes('/features/'))).toBe(false);
+        }
+      } finally {
+        read.mockRestore();
+        exists.mockRestore();
+      }
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a fully observed legacy task worker denied from ordinary tools', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-observed-legacy-worker-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'observed-legacy-worker';
+      const parentSessionID = 'worker-parent';
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: parentSessionID, [parentSessionID]: undefined }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks['chat.message']?.({ sessionID, agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+      const sessions = new SessionService(repository);
+      sessions.trackGlobal(sessionID, {
+        parentSessionId: parentSessionID,
+        featureName: 'legacy-feature',
+        taskFolder: '01-legacy-task',
+        workerPromptPath: '.hive/features/legacy-feature/tasks/01-legacy-task/worker-prompt.md',
+      });
+      expect(sessions.getGlobal(sessionID)).toMatchObject({
+        agent: 'forager-worker',
+        baseAgent: 'forager-worker',
+        sessionKind: 'task-worker',
+      });
+
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'read', sessionID, callID: 'observed-legacy-worker-read',
+      }, { args: { filePath: path.join(repository, 'README.md') } } as any))
+        .rejects.toThrow('legacy_assignment_reanchor_required');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['general', 'custom-assistant'])('admits ordinary tools for non-Hive children without injecting authority context (%s)', async (agent) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-non-hive-child-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'custom-child';
+      const hooks = await plugin({
+        directory: repository, worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: 'parent', parent: undefined }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: sessionID, parentID: 'parent' } } } } as any);
+      await hooks['chat.message']?.({ sessionID, agent }, { message: { agent }, parts: [] } as any);
+      for (const tool of ['read', 'bash', 'glob']) {
+        await hooks['tool.execute.before']?.({ tool, sessionID, callID: tool }, { args: {} } as any);
+      }
+      const output = { messages: [{ info: { id: 'message', sessionID, role: 'user' }, parts: [{ type: 'text', text: 'Continue' }] }] };
+      const before = JSON.stringify(output);
+      await hooks['experimental.chat.messages.transform']?.({}, output as any);
+      expect(JSON.stringify(output)).toBe(before);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  type PollutedPrimaryDenialScenario = {
+    runtimeParent?: string;
+    lookupFailure?: boolean;
+    runtimeSessionID?: string;
+    skipRuntimeAgent?: boolean;
+    storedPatch?: Record<string, unknown>;
+  };
+  const pollutedPrimaryDenialScenarios: Array<[string, PollutedPrimaryDenialScenario]> = [
+    ['runtime child', { runtimeParent: 'real-parent' }],
+    ['runtime lookup failure', { lookupFailure: true }],
+    ['runtime session ID mismatch', { runtimeSessionID: 'different-session' }],
+    ['restart without an observed runtime agent', { skipRuntimeAgent: true }],
+    ['malformed empty runtime parent', { runtimeParent: '' }],
+    ['stored agent conflict', { storedPatch: { agent: 'forager-worker' } }],
+    ['stored base-agent conflict', { storedPatch: { baseAgent: 'swarm-orchestrator' } }],
+    ['stored session-kind conflict', { storedPatch: { sessionKind: 'task-worker' } }],
+    ['immutable assignment provenance', { storedPatch: { workerAssignment: {
+      format: 'hive-worker-assignment/v1',
+      projectRoot: '/wrong-root',
+      featureName: 'old',
+      taskFolder: '01-stale-task',
+      attempt: 1,
+      locator: '.hive/features/old/tasks/01-stale-task/assignments/attempt-1.md',
+      contentHash: '0'.repeat(64),
+    } } }],
+    ['malformed null assignment provenance', { storedPatch: { workerAssignment: null } }],
+    ['ad-hoc provenance', { storedPatch: { adHocRunId: 'adhoc-run' } }],
+    ['assignment-source provenance', { storedPatch: { assignmentSourceSessionId: 'source-worker' } }],
+    ['malformed empty parent lineage', { storedPatch: { parentSessionId: '' } }],
+    ['malformed empty ad-hoc provenance', { storedPatch: { adHocRunId: '' } }],
+    ['malformed empty assignment-source provenance', { storedPatch: { assignmentSourceSessionId: '' } }],
+    ['malformed empty duplicate provenance', { storedPatch: { duplicatedFromSessionId: '' } }],
+  ];
+  it.each(pollutedPrimaryDenialScenarios)('does not ignore stale task projection fields with %s', async (_label, scenario) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-polluted-primary-denied-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'polluted-primary';
+      const client = createLineageClient({ [sessionID]: scenario.runtimeParent });
+      if (scenario.lookupFailure) {
+        (client as any).session.get = async () => { throw new Error('injected lookup failure'); };
+      } else if (scenario.runtimeSessionID) {
+        (client as any).session.get = async () => ({ data: { id: scenario.runtimeSessionID } });
+      }
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client,
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      if (!scenario.skipRuntimeAgent) {
+        await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+          message: { agent: 'hive-master' }, parts: [],
+        } as any);
+      } else {
+        new SessionService(repository).trackGlobal(sessionID, {
+          agent: 'hive-master', baseAgent: 'hive-master', sessionKind: 'primary',
+        });
+      }
+      corruptStoredSession(repository, sessionID, {
+        taskFolder: '01-stale-task',
+        workerPromptPath: '.hive/features/old/tasks/01-stale-task/worker-prompt.md',
+        ...scenario.storedPatch,
+      } as any);
+
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'question', sessionID, callID: 'polluted-primary-denied',
+      }, { args: { questions: [] } } as any)).rejects.toThrow(/legacy_assignment_reanchor_required|assignment_recovery_error|context_authorization_denied/);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  const malformedStoredProvenanceScenarios: Array<[string, string, null | '' | false]> = [
+    ['null worker assignment', 'workerAssignment', null],
+    ['empty worker assignment', 'workerAssignment', ''],
+    ['false worker assignment', 'workerAssignment', false],
+    ['null ad-hoc run', 'adHocRunId', null],
+    ['empty ad-hoc run', 'adHocRunId', ''],
+    ['false ad-hoc run', 'adHocRunId', false],
+    ['null assignment source', 'assignmentSourceSessionId', null],
+    ['empty assignment source', 'assignmentSourceSessionId', ''],
+    ['false assignment source', 'assignmentSourceSessionId', false],
+    ['null duplicate source', 'duplicatedFromSessionId', null],
+    ['empty duplicate source', 'duplicatedFromSessionId', ''],
+    ['false duplicate source', 'duplicatedFromSessionId', false],
+    ['null stored parent', 'parentSessionId', null],
+    ['empty stored parent', 'parentSessionId', ''],
+    ['false stored parent', 'parentSessionId', false],
+  ];
+
+  it.each(malformedStoredProvenanceScenarios)('rejects generic tool admission with isolated %s provenance', async (_label, field, value) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-malformed-provenance-tool-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'malformed-primary';
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: undefined }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+        message: { agent: 'hive-master' }, parts: [],
+      } as any);
+      const sessions = new SessionService(repository);
+      corruptStoredSession(repository, sessionID, { [field]: value });
+
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'question', sessionID, callID: `malformed-${field}`,
+      }, { args: { questions: [] } } as any)).rejects.toThrow('assignment_recovery_error');
+      expect((sessions.getGlobal(sessionID) as any)[field]).toBe(value);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it.each(malformedStoredProvenanceScenarios)('rejects project context mutation with isolated %s provenance', async (_label, field, value) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-malformed-provenance-context-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'malformed-primary';
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: undefined }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+        message: { agent: 'hive-master' }, parts: [],
+      } as any);
+      const sessions = new SessionService(repository);
+      corruptStoredSession(repository, sessionID, { [field]: value });
+
+      const denied = JSON.parse(await hooks.tool!.hive_context_write.execute({
+        name: 'malformed-provenance', content: 'must not be written', scope: 'project',
+      }, { ...snapshotContext('hive-master'), sessionID }) as string);
+      expect(denied).toMatchObject({ success: false, reason: 'assignment_recovery_error' });
+      expect((sessions.getGlobal(sessionID) as any)[field]).toBe(value);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  const malformedRuntimeParents: Array<[string, null | '' | ' ' | false]> = [
+    ['null', null],
+    ['empty', ''],
+    ['blank', ' '],
+    ['false', false],
+  ];
+
+  it.each(malformedRuntimeParents)('rejects generic tool admission with %s runtime parentID', async (_label, parentID) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-malformed-runtime-tool-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'malformed-runtime-primary';
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: parentID }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+        message: { agent: 'hive-master' }, parts: [],
+      } as any);
+
+      await expect(hooks['tool.execute.before']?.({
+        tool: 'question', sessionID, callID: `malformed-runtime-${_label}`,
+      }, { args: { questions: [] } } as any)).rejects.toThrow('context_authorization_denied');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it.each(malformedRuntimeParents)('rejects project context mutation with %s runtime parentID', async (_label, parentID) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-malformed-runtime-context-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'malformed-runtime-primary';
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: parentID }),
+        $: createStubShell(),
+      } as any);
+      await hooks.config?.({});
+      await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+        message: { agent: 'hive-master' }, parts: [],
+      } as any);
+
+      const denied = JSON.parse(await hooks.tool!.hive_context_write.execute({
+        name: 'malformed-lineage', content: 'must not be written', scope: 'project',
+      }, { ...snapshotContext('hive-master'), sessionID }) as string);
+      expect(denied).toMatchObject({ success: false, reason: 'context_authorization_denied' });
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('requires a fresh runtime observation for an unpolluted persisted primary after restart', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-unobserved-primary-'));
+    createGitRepository(repository);
+    try {
+      new SessionService(repository).trackGlobal('root', {
+        agent: 'hive-master', baseAgent: 'hive-master', sessionKind: 'primary',
+      });
+      const hooks = await plugin({
+        directory: repository, worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ root: undefined }), $: createStubShell(),
+      } as any);
+      const invoke = () => hooks['tool.execute.before']!({ tool: 'question', sessionID: 'root', callID: 'restart' }, { args: {} } as any);
+      await expect(invoke()).rejects.toThrow('context_authorization_denied');
+      await hooks['chat.message']?.({ sessionID: 'root', agent: 'hive-master' }, { message: { agent: 'hive-master' }, parts: [] } as any);
+      await expect(invoke()).resolves.toBeUndefined();
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['forager-worker', 'hive-master'])('preserves task-worker duplicate identity through the first %s runtime message', async (runtimeAgent) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-valid-duplicate-'));
+    createGitRepository(repository);
+    try {
+      const sessionID = 'duplicate-worker';
+      const sessions = new SessionService(repository);
+      const identity = createValidAssignmentIdentity(repository, 'source-worker');
+      const source = sessions.bindWorkerAssignment('source-worker', 'parent', identity.workerAssignment as any, {
+        agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker',
+      });
+      const hooks = await plugin({
+        directory: repository, worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ [sessionID]: undefined }), $: createStubShell(),
+      } as any);
+      await hooks.event!({ event: {
+        type: 'session.created', properties: { info: {
+          id: sessionID, metadata: { agentHive: { originSessionId: 'source-worker' } },
+        } },
+      } } as any);
+      const observe = () => hooks['chat.message']!({ sessionID, agent: runtimeAgent }, {
+        message: { agent: runtimeAgent }, parts: [],
+      } as any);
+      const admit = () => hooks['tool.execute.before']!({ tool: 'read', sessionID, callID: 'duplicate-read' }, {
+        args: { filePath: path.join(repository, 'README.md') },
+      } as any);
+      if (runtimeAgent === 'forager-worker') {
+        await expect(observe()).resolves.toBeUndefined();
+        await expect(admit()).resolves.toBeUndefined();
+      } else {
+        await expect(observe()).rejects.toThrow('assignment_recovery_error');
+        await expect(admit()).rejects.toThrow('context_authorization_denied');
+      }
+      expect(sessions.getGlobal(sessionID)).toMatchObject({
+        agent: source.agent, baseAgent: source.baseAgent, sessionKind: source.sessionKind,
+        projectRoot: source.projectRoot, featureName: source.featureName, taskFolder: source.taskFolder,
+        workerAssignment: source.workerAssignment,
+        assignmentSourceSessionId: 'source-worker', duplicatedFromSessionId: 'source-worker',
+      });
+      expect(sessions.getGlobal('source-worker')).toEqual(source);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['source-worker', 'intermediate-worker'])('denies duplicate authority through hybrid ancestor %s', async (ancestor) => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-hybrid-duplicate-'));
+    createGitRepository(repository);
+    try {
+      const sessions = new SessionService(repository);
+      const identity = createValidAssignmentIdentity(repository, 'source-worker');
+      sessions.bindWorkerAssignment('source-worker', 'parent', identity.workerAssignment as any, {
+        agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker',
+      });
+      sessions.copyWorkerAssignment('intermediate-worker', 'source-worker');
+      sessions.copyWorkerAssignment('duplicate-worker', 'intermediate-worker');
+      const registry = path.join(repository, '.hive/sessions.json');
+      const data = JSON.parse(readFileSync(registry, 'utf8'));
+      data.sessions.find((session: any) => session.sessionId === ancestor).adHocRunId = 'hybrid-run';
+      writeFileSync(registry, JSON.stringify(data));
+      const hooks = await plugin({
+        directory: repository, worktree: repository, serverUrl: new URL('http://localhost:1'),
+        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
+        client: createLineageClient({ 'duplicate-worker': undefined }), $: createStubShell(),
+      } as any);
+      await hooks['chat.message']!({ sessionID: 'duplicate-worker', agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+      await expect(hooks['tool.execute.before']!({ tool: 'read', sessionID: 'duplicate-worker', callID: 'hybrid-read' }, {
+        args: { filePath: path.join(repository, 'README.md') },
+      } as any)).rejects.toThrow('assignment_recovery_error');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects context and generic tools when the runtime workspace resolves to another canonical root', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-context-root-'));
     const otherRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-context-other-root-'));
     createGitRepository(repository);
@@ -1494,6 +2113,9 @@ describe('Agent permissions', () => {
       }, { ...snapshotContext('hive-master'), sessionID: 'root' }) as string);
       expect(result).toMatchObject({ success: false, reason: 'context_root_mismatch' });
       expect(result).not.toHaveProperty('files');
+      await hooks['chat.message']?.({ sessionID: 'root', agent: 'hive-master' }, { message: { agent: 'hive-master' }, parts: [] } as any);
+      await expect(hooks['tool.execute.before']?.({ tool: 'question', sessionID: 'root', callID: 'cross-root' }, { args: {} } as any))
+        .rejects.toThrow('context_root_mismatch');
     } finally {
       rmSync(repository, { recursive: true, force: true });
       rmSync(otherRoot, { recursive: true, force: true });
@@ -1519,7 +2141,7 @@ describe('Agent permissions', () => {
       'builder-child': 'root',
       'forager-child': 'root',
     };
-    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const repoRoot = createPermissionRoot();
     const hooks = await plugin({
       directory: repoRoot,
       worktree: repoRoot,
@@ -1544,14 +2166,25 @@ describe('Agent permissions', () => {
       ['builder-child', 'hive-builder'],
       ['forager-child', 'forager-worker'],
     ] as const) {
+      const parentID = sessions[sessionID];
+      if (parentID !== undefined) {
+        await hooks.event?.({
+          event: { type: 'session.updated', properties: { info: { id: sessionID, parentID } } },
+        } as any);
+      }
       await hooks['chat.message']?.(
         { sessionID, agent },
         { message: { agent }, parts: [] } as any,
       );
+      const authorityDenial = agent === 'architect-planner'
+        ? 'unavailable in task-created child sessions'
+        : agent === 'forager-worker'
+          ? 'assignment_recovery_error'
+          : 'cannot acquire primary authority';
       await expect(hooks['tool.execute.before']?.(
         { tool: 'question', sessionID, callID: `${sessionID}-question` },
         { args: { questions: [] } } as any,
-      ), agent).rejects.toThrow('unavailable in task-created child sessions');
+      ), agent).rejects.toThrow(authorityDenial);
     }
 
     for (const [sessionID, agent] of [
@@ -6442,7 +7075,7 @@ describe('Per-agent tool filtering', () => {
       } as any);
       await expect(taskHook({ tool: 'task', sessionID: 'untracked-dash-session', callID: 'after-delete' }, {
         args: { subagent_type: safeAlias },
-      })).resolves.toBeUndefined();
+      })).rejects.toThrow('context_authorization_denied');
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
