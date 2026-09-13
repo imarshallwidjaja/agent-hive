@@ -17,7 +17,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService, SessionService, WorktreeService } from 'hive-core';
+import { ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService, SessionService, WorktreeService } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 const ROOT_SESSION_CLIENT = {
@@ -3535,6 +3535,55 @@ Do it
         }),
       ])
     );
+  });
+
+  it("keeps hive_status usable when the managed context summary read fails", async () => {
+    const ctx: PluginInput = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL("http://localhost:1"),
+      project: createProject(testRoot),
+      client: ROOT_SESSION_CLIENT,
+      $: createStubShell(),
+    };
+
+    const hooks = await plugin(ctx);
+    const toolContext = createToolContext("sess_status_context_degraded");
+    await hooks['chat.message']?.({ sessionID: toolContext.sessionID, agent: toolContext.agent }, {
+      message: { agent: toolContext.agent }, parts: [],
+    } as any);
+
+    await hooks.tool!.hive_feature_create.execute(
+      { name: "status-context-degraded-feature" },
+      toolContext
+    );
+
+    const summarySpy = spyOn(ContextService.prototype, 'readSummary').mockImplementation(() => {
+      throw new ContextMutationError('context_inventory_too_large', 'Context response construction exceeds 16384 bytes.');
+    });
+
+    try {
+      const raw = await hooks.tool!.hive_status.execute(
+        { feature: "status-context-degraded-feature" },
+        toolContext
+      );
+      const result = JSON.parse(raw as string) as {
+        feature?: { name: string };
+        overview?: { exists: boolean };
+        tasks?: { total: number };
+        context?: { available?: boolean; fileCount: number | null; reason?: string; error?: string };
+      };
+
+      expect(result.feature?.name).toBe("status-context-degraded-feature");
+      expect(result.overview?.exists).toBe(false);
+      expect(result.tasks?.total).toBe(0);
+      expect(result.context?.available).toBe(false);
+      expect(result.context?.fileCount).toBeNull();
+      expect(result.context?.reason).toBe("context_inventory_too_large");
+      expect(result.context?.error).toContain("16384");
+    } finally {
+      summarySpy.mockRestore();
+    }
   });
 
   it("omits the removed projected-todo field and stale todo-sync hints from the trimmed runtime contract", async () => {

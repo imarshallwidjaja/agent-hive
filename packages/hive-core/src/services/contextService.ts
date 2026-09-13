@@ -384,12 +384,12 @@ export class ContextService {
     let chars: number | null = null;
     if (options.scanChars) chars = this.scanDurableChars(resolved, observation.inventory.files);
     const summary = this.summarize(resolved, observation.control, observation.inventory, chars);
-    this.assertResponseSize(summary, CONTEXT_CATALOG_MAX_BYTES);
+    const bounded = this.boundSummary(summary);
     const after = this.observe(resolved);
     if (after.inventory.snapshot !== observation.inventory.snapshot) {
       throw new ContextMutationError('context_changed_during_read', 'Context changed while its summary was being read. Retry the read.');
     }
-    return summary;
+    return bounded;
   }
 
   readCatalog(scope: string | ContextScope, options: ContextCatalogOptions = {}): ContextCatalogRead {
@@ -933,6 +933,29 @@ export class ContextService {
       files: inventory.files.map(file => this.publicInventoryFile(file)),
       durable: this.durableMetrics(resolved, inventory, chars),
       diagnostics: inventory.diagnostics,
+    };
+  }
+
+  private boundSummary(summary: ContextReadSummary): ContextReadSummary {
+    if (Buffer.byteLength(JSON.stringify(summary), 'utf8') <= CONTEXT_CATALOG_MAX_BYTES) return summary;
+    const clipped: ContextReadSummary = {
+      ...summary,
+      files: summary.files.map(file => this.identityOnlyFile(file)),
+      diagnostics: [...summary.diagnostics, 'Summary exceeded the response construction limit; per-file descriptive metadata (description, read_when, owner, review_after, task, warnings, created_at) was omitted. Use a catalog read for full metadata.'],
+    };
+    this.assertResponseSize(clipped, CONTEXT_CATALOG_MAX_BYTES);
+    return clipped;
+  }
+
+  private identityOnlyFile(file: Omit<ContextFile, 'content' | 'contentHash'>): Omit<ContextFile, 'content' | 'contentHash'> {
+    return {
+      name: file.name,
+      updatedAt: file.updatedAt,
+      ...(file.kind ? { kind: file.kind } : {}),
+      role: file.role,
+      includeInExecution: file.includeInExecution,
+      includeInNetwork: file.includeInNetwork,
+      ...(file.bytes !== undefined ? { bytes: file.bytes } : {}),
     };
   }
 

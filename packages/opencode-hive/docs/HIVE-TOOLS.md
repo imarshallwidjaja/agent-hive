@@ -313,6 +313,8 @@ Invalid indexes return `context_index_invalid`; surviving managed-mutation marke
 
 - Frozen dash-review and vulnerability-review recipients, including their recorded descendants, receive only `context: { available: false, reason: "context_authorization_denied" }`. The recipient policy runs before status storage reads, so no context names, revision, or metrics are exposed.
 
+- When the managed context summary read fails (for example, an oversized context inventory), `hive_status` degrades instead of failing: feature, plan, task, review, and helper state remain valid, and `context` becomes `{ available: false, reason, error, hint }` with null context metrics. Use `hive_context_read` with the catalog view to inspect context metadata in that case.
+
 - `helperStatus.mergeEligibility` is the canonical operator surface for whether completed task work has a live worktree and can be considered for merge or cleanup.
 - A task list item includes `traceTaskId` only after Hive deterministically associates native task metadata with that feature-task launch. Blocked and failed `nextAction` guidance includes the exact forensic call when this ID exists and explicitly says when it does not.
 - Background board state is intentionally separate. Reconcile terminal background jobs first, then refresh `hive_status` before making dependent task or merge decisions.

@@ -325,6 +325,7 @@ import {
   type TaskAggregateBranchDiff,
   type BudgetedTask,
   type TruncationEvent,
+  type ContextReadSummary,
   type WorkerAssignmentDescriptor,
 } from "hive-core";
 import {
@@ -6628,8 +6629,17 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
 
           const plan = statusToolServices.plans.read(feature);
           const tasks = statusToolServices.tasks.list(feature);
-          const managedContext = statusToolServices.contexts.readSummary(feature);
-          const overview = managedContext.files.find((file) => file.name === 'overview');
+          let managedContext: ContextReadSummary | null = null;
+          let contextReadFailure: { reason: string; error: string } | null = null;
+          try {
+            managedContext = statusToolServices.contexts.readSummary(feature);
+          } catch (error) {
+            contextReadFailure = {
+              reason: error instanceof ContextMutationError ? error.reason : 'context_summary_read_failed',
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+          const overview = managedContext?.files.find((file) => file.name === 'overview');
           const readThreads = (filePath: string): Array<unknown> | null => {
             if (!fs.existsSync(filePath)) {
               return null;
@@ -6673,7 +6683,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             };
           }));
 
-          const contextSummary = managedContext.files.map(c => ({
+          const contextSummary = (managedContext?.files ?? []).map(c => ({
             name: c.name,
             bytes: c.bytes,
             updatedAt: c.updatedAt,
@@ -6844,11 +6854,20 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               },
               ambiguityFlags,
             },
-            context: {
+            context: managedContext ? {
               fileCount: managedContext.files.length,
               files: contextSummary,
               revision: managedContext.revision,
               durable: managedContext.durable,
+            } : {
+              fileCount: null,
+              files: [],
+              revision: null,
+              durable: null,
+              available: false,
+              reason: contextReadFailure!.reason,
+              error: contextReadFailure!.error,
+              hint: 'The managed context summary could not be read. Feature, plan, and task state above remains valid; use hive_context_read with the catalog view to inspect context metadata.',
             },
             warning: configFallbackWarning ?? undefined,
             nextAction: getNextAction(planStatus, tasksSummary, runnable, !!plan, !!overview),

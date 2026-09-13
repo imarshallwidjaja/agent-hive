@@ -75,6 +75,22 @@ describe('ContextService reserved overview context', () => {
     expect(names).toEqual(Array.from({ length: 7 }, (_, index) => `note-${index}`));
   });
 
+  it('clips per-file descriptive metadata instead of failing when the summary exceeds the response bound', () => {
+    setupFeature('summary-clipping');
+    for (let index = 0; index < 12; index++) {
+      service.create('summary-clipping', `note-${index}`, durable('body', 'D'.repeat(1600)));
+    }
+    const summary = service.readSummary('summary-clipping');
+    expect(Buffer.byteLength(JSON.stringify(summary), 'utf8')).toBeLessThanOrEqual(16 * 1024);
+    expect(summary.files).toHaveLength(12);
+    expect(summary.files[0]!.name).toBe('note-0');
+    expect(summary.files[0]!.bytes).toBeGreaterThan(0);
+    expect(summary.files[0]!.description).toBeUndefined();
+    expect(summary.files[0]!.readWhen).toBeUndefined();
+    expect(summary.diagnostics.join('\n')).toContain('descriptive metadata');
+    expect(service.readCatalog('summary-clipping').files[0]!.description).toContain('DDDD');
+  });
+
   it('defaults catalog pages to ten and caps requested pages at fifty', () => {
     setupFeature('page-limits');
     for (let index = 0; index < 65; index++) service.create('page-limits', `n${index}`, durable(''));
