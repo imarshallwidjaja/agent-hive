@@ -65,6 +65,8 @@ export async function archiveContext(
     let revision = 0;
     let cursor: string | undefined;
     let complete = false;
+    const originatingFilename = item?.filename;
+    let originatingDeselected = false;
 
     while (true) {
       const page = service.readManagementCatalog(scope, cursor ? { cursor, limit: ARCHIVE_PAGE_LIMIT } : { limit: ARCHIVE_PAGE_LIMIT });
@@ -80,7 +82,8 @@ export async function archiveContext(
         label: `${file.name}.md`,
         description: contextDescription(file),
         detail: contextTooltip(file, scope.type === 'project'),
-        picked: chosen.some(selected => selected.name === file.name) || item!.filename === `${file.name}.md`,
+        picked: chosen.some(selected => selected.name === file.name)
+          || (!originatingDeselected && `${file.name}.md` === originatingFilename),
         name: file.name,
       }));
       if (!complete && cursor) {
@@ -94,6 +97,11 @@ export async function archiveContext(
         matchOnDetail: true,
       });
       if (!picked?.length) return;
+      if (originatingFilename
+        && candidates.some(candidate => `${candidate.name}.md` === originatingFilename)
+        && !picked.some(pick => `${pick.name}.md` === originatingFilename)) {
+        originatingDeselected = true;
+      }
       const resolveChosen = (selection: ArchivePick[]): ContextFileMeta[] =>
         selection.filter(pick => !pick.loadMore)
           .map(pick => candidates.find(candidate => candidate.name === pick.name))

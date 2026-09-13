@@ -133,13 +133,10 @@ class ContextFolderItem extends vscode.TreeItem {
   }
 
   private static collapsibleState(snapshot: ContextSnapshot): vscode.TreeItemCollapsibleState {
-    if (snapshot.state === 'ready') {
-      return snapshot.catalog.totalFiles > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None
+    if (snapshot.state === 'busy' || snapshot.state === 'failed') {
+      return vscode.TreeItemCollapsibleState.None
     }
-    if (snapshot.state === 'reconciliation' || snapshot.state === 'invalidIndex') {
-      return vscode.TreeItemCollapsibleState.Collapsed
-    }
-    return vscode.TreeItemCollapsibleState.None
+    return vscode.TreeItemCollapsibleState.Collapsed
   }
 
   private applyReadyState(snapshot: ContextSnapshot, measuredChars: { chars: number; snapshotId: string } | undefined): void {
@@ -317,12 +314,13 @@ class ContextRawFileItem extends vscode.TreeItem {
 class ContextTooLargeItem extends vscode.TreeItem {
   constructor(message: string) {
     super('Context inventory too large', vscode.TreeItemCollapsibleState.None)
-    this.description = 'Bounded summary exceeded its response limit'
+    this.description = 'Bounded listing exceeded its construction limit'
     this.contextValue = 'context-too-large'
     this.iconPath = new vscode.ThemeIcon('warning')
     this.tooltip = [
       message,
-      'Automatic discovery is unavailable for this scope. Use OpenCode context management (catalog view) for bounded listing; Archive Context in this sidebar still lists the paginated catalog.',
+      'Automatic discovery, catalog listing, and Archive Context share this inventory construction limit and stay unavailable while the scope stays oversized. Exact named reads through OpenCode context management still bypass the inventory.',
+      'Reduce the inventory out of band through trusted local editing while no writer is active, then Refresh.',
     ].join('\n')
   }
 }
@@ -557,15 +555,16 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
   private loadSnapshot(scope: ContextScope): ContextSnapshot {
     const service = new ContextService(this.workspaceRoot)
     const contextPath = this.contextPathFor(scope)
-    if (fs.existsSync(path.join(contextPath, CONTEXT_PENDING_MARKER_NAME))) {
-      return { state: 'reconciliation', recovery: this.loadRecovery(service, scope) }
-    }
-    if (fs.existsSync(path.join(contextPath, CONTEXT_INDEX_LOCK_NAME))) return { state: 'busy' }
+    const lockPresent = () => fs.existsSync(path.join(contextPath, CONTEXT_INDEX_LOCK_NAME))
+    const markerPresent = () => fs.existsSync(path.join(contextPath, CONTEXT_PENDING_MARKER_NAME))
+    if (lockPresent()) return { state: 'busy' }
+    if (markerPresent()) return { state: 'reconciliation', recovery: this.loadRecovery(service, scope) }
     try {
       return { state: 'ready', catalog: service.readManagementCatalog(scope, { limit: CONTEXT_PAGE_SIZE }) }
     } catch (error) {
       if (error instanceof ContextMutationError) {
         if (error.reason === 'context_reconciliation_required') {
+          if (lockPresent() || !markerPresent()) return { state: 'busy' }
           return { state: 'reconciliation', recovery: this.loadRecovery(service, scope) }
         }
         if (error.reason === 'context_index_invalid') {

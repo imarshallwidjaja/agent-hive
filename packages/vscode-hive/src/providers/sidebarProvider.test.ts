@@ -547,6 +547,66 @@ describe('HiveSidebarProvider', () => {
     expect(ui.messages.at(-1)).toContain('Archived 1 context document(s)');
   });
 
+  it('keeps an explicitly deselected originating document deselected across load more and confirmation', async () => {
+    const { archiveContext } = await import('./contextInspection.js');
+    new FeatureService(testRoot).create('deselect');
+    const service = new hiveCore.ContextService(testRoot);
+    const contextPath = hiveCore.getContextPath(testRoot, 'deselect');
+    fs.mkdirSync(contextPath, { recursive: true });
+    for (let index = 0; index < 12; index++) {
+      fs.writeFileSync(path.join(contextPath, `note-${String(index).padStart(2, '0')}.md`), `note ${index}`);
+    }
+    const archivePath = path.join(contextPath, '..', 'archive', 'context');
+    let refreshes = 0;
+    const pages: any[][] = [];
+    const run = () => archiveContext(testRoot, { scope: { type: 'feature', featureName: 'deselect' }, filename: 'note-00.md' }, () => refreshes++);
+
+    ui.picks.push((items: any[]) => { pages.push(items); return items.filter((item: any) => item.loadMore); });
+    ui.picks.push((items: any[]) => { pages.push(items); return items.filter((item: any) => item.name === 'note-11'); });
+    ui.inputs.push('rotate without the preselected note');
+    ui.confirmations.push('Archive Context');
+    await run();
+    expect(ui.errors).toEqual([]);
+    expect(pages).toHaveLength(2);
+    expect(pages[0].find((item: any) => item.name === 'note-00')?.picked).toBe(true);
+    expect(pages[1].find((item: any) => item.name === 'note-00')?.picked).toBe(false);
+    expect(service.read('deselect', 'note-00')).not.toBeNull();
+    expect(service.read('deselect', 'note-11')).toBeNull();
+    expect(fs.readdirSync(archivePath).some(name => name.includes('note-11'))).toBe(true);
+    expect(refreshes).toBe(1);
+    expect(ui.messages.at(-1)).toContain('Archived 1 context document(s)');
+  });
+
+  it('keeps the originating document preselected when load more reveals it on a later page', async () => {
+    const { archiveContext } = await import('./contextInspection.js');
+    new FeatureService(testRoot).create('laterorigin');
+    const service = new hiveCore.ContextService(testRoot);
+    const contextPath = hiveCore.getContextPath(testRoot, 'laterorigin');
+    fs.mkdirSync(contextPath, { recursive: true });
+    for (let index = 0; index < 12; index++) {
+      fs.writeFileSync(path.join(contextPath, `note-${String(index).padStart(2, '0')}.md`), `note ${index}`);
+    }
+    const archivePath = path.join(contextPath, '..', 'archive', 'context');
+    let refreshes = 0;
+    const pages: any[][] = [];
+    const run = () => archiveContext(testRoot, { scope: { type: 'feature', featureName: 'laterorigin' }, filename: 'note-11.md' }, () => refreshes++);
+
+    ui.picks.push((items: any[]) => { pages.push(items); return items.filter((item: any) => item.loadMore); });
+    ui.picks.push((items: any[]) => { pages.push(items); return items.filter((item: any) => item.name === 'note-11'); });
+    ui.inputs.push('rotate the opened later-page note');
+    ui.confirmations.push('Archive Context');
+    await run();
+    expect(ui.errors).toEqual([]);
+    expect(pages).toHaveLength(2);
+    expect(pages[0].find((item: any) => item.name === 'note-11')).toBeUndefined();
+    expect(pages[1].find((item: any) => item.name === 'note-11')?.picked).toBe(true);
+    expect(service.read('laterorigin', 'note-11')).toBeNull();
+    expect(service.read('laterorigin', 'note-00')).not.toBeNull();
+    expect(fs.readdirSync(archivePath).some(name => name.includes('note-11'))).toBe(true);
+    expect(refreshes).toBe(1);
+    expect(ui.messages.at(-1)).toContain('Archived 1 context document(s)');
+  });
+
   it('reports drift conflicts between the captured list and managed writes before confirming', async () => {
     const { archiveContext } = await import('./contextInspection.js');
     new FeatureService(testRoot).create('drift');
@@ -664,6 +724,7 @@ describe('HiveSidebarProvider', () => {
     const feature = await firstFeature(provider, 'absent');
     const before = fs.readdirSync(path.dirname(contextPath));
     const folder = (await provider.getChildren(feature)).find(item => item.label === 'Context')!;
+    expect(folder.collapsibleState).toBe(1);
     const emptyChildren = await provider.getChildren(folder);
     expect(emptyChildren).toHaveLength(1);
     expect(emptyChildren[0].label).toBe('No context documents');
@@ -799,6 +860,62 @@ describe('HiveSidebarProvider', () => {
     expect(markerOpen.command.arguments[0].fsPath).toBe(markerPath);
     expect(fs.readFileSync(markerPath, 'utf8')).toBe(markerBefore);
     expect(fs.existsSync(path.join(contextPath, 'index.json.lock'))).toBe(false);
+  });
+
+  it('shows busy while a writer lock coexists with the pending marker and reconciliation only for marker-only state', async () => {
+    new FeatureService(testRoot).create('lockmark');
+    const service = new hiveCore.ContextService(testRoot);
+    service.create('lockmark', 'notes', '---\ndescription: Lock note\nread_when: Read when checking lock precedence.\n---\nlock body');
+    const contextPath = hiveCore.getContextPath(testRoot, 'lockmark');
+    const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
+    fs.writeFileSync(markerPath, JSON.stringify({
+      schemaVersion: 1,
+      operation: 'replace',
+      names: ['notes.md'],
+      archiveDestinations: [],
+      startedAt: '2026-01-01T00:00:00.000Z',
+      startingRevision: 1,
+      startingIndexDigest: 'abc',
+    }));
+    fs.writeFileSync(path.join(contextPath, 'index.json.lock'), 'writer');
+    const provider = new HiveSidebarProvider(testRoot);
+    const feature = await firstFeature(provider, 'lockmark');
+    const folderOf = async () => (await provider.getChildren(feature)).find(item => item.label === 'Context')!;
+
+    const busyFolder = await folderOf();
+    expect(busyFolder.description).toBe('Waiting for context changes to finish');
+    expect(((busyFolder.iconPath as any).id)).toBe('clock');
+    expect((await provider.getChildren(busyFolder)).map(item => item.label)).toEqual(['Context temporarily unavailable']);
+
+    fs.rmSync(path.join(contextPath, 'index.json.lock'));
+    const reconciling = await folderOf();
+    expect(reconciling.description).toBe('Reconciliation required');
+    expect(((reconciling.iconPath as any).id)).toBe('error');
+    expect((await provider.getChildren(reconciling))[0].label).toBe('Context recovery inspection');
+    expect(fs.existsSync(markerPath)).toBe(true);
+  });
+
+  it('reaches oversized-inventory guidance through an expandable folder without claiming catalog or archive recovery', async () => {
+    new FeatureService(testRoot).create('oversize');
+    const contextPath = hiveCore.getContextPath(testRoot, 'oversize');
+    fs.mkdirSync(contextPath, { recursive: true });
+    for (let index = 0; index < 10001; index++) {
+      fs.writeFileSync(path.join(contextPath, `note-${String(index).padStart(4, '0')}.md`), '');
+    }
+    const provider = new HiveSidebarProvider(testRoot);
+    const feature = await firstFeature(provider, 'oversize');
+    const folder = (await provider.getChildren(feature)).find(item => item.label === 'Context')!;
+    expect(folder.description).toBe('Inventory too large');
+    expect(folder.collapsibleState).toBe(1);
+    expect(((folder.iconPath as any).id)).toBe('warning');
+    const [tooLarge] = await provider.getChildren(folder);
+    expect(tooLarge.label).toBe('Context inventory too large');
+    expect(tooLarge.tooltip).toContain('exceeds 10000 Markdown candidates');
+    expect(tooLarge.tooltip).toContain('catalog listing, and Archive Context share this inventory construction limit');
+    expect(tooLarge.tooltip).not.toContain('still lists the paginated catalog');
+    expect(tooLarge.tooltip).not.toContain('bounded catalog view');
+    expect(tooLarge.tooltip).toContain('trusted local editing');
+    expect(tooLarge.tooltip).toContain('Refresh');
   });
 
   it('ignores non-.hive workspace artifacts', async () => {
