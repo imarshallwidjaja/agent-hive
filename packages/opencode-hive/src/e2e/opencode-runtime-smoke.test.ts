@@ -789,7 +789,6 @@ export const ZRuntimeModelPlugin = async () => ({
 
     const permissionTasks: Promise<void>[] = [];
     let permissionApproversStopped = false;
-    let permissionApproversStopTask: Promise<void> | undefined;
 
     async function approvePermissions(sessionID: string): Promise<void> {
       const sse = await client.event.subscribe({
@@ -821,18 +820,15 @@ export const ZRuntimeModelPlugin = async () => ({
       permissionTasks.push(task);
     }
 
-    function stopPermissionApprovers(): Promise<void> {
-      permissionApproversStopTask ??= (async () => {
-        permissionApproversStopped = true;
-        if (permissionTasks.length === 0) return;
+    async function stopPermissionApprovers(): Promise<void> {
+      permissionApproversStopped = true;
+      if (permissionTasks.length === 0) return;
 
-        await client.session.create({
-          body: { title: 'runtime permission stream shutdown' },
-          query: { directory: projectDir },
-        });
-        await Promise.all(permissionTasks);
-      })();
-      return permissionApproversStopTask;
+      await client.session.create({
+        body: { title: 'runtime permission stream shutdown' },
+        query: { directory: projectDir },
+      });
+      await Promise.all(permissionTasks);
     }
 
     let primaryError: unknown;
@@ -1313,7 +1309,6 @@ export const ZRuntimeModelPlugin = async () => ({
         status(input: unknown): Promise<unknown>;
       };
       let permissionApproversStopped = false;
-      let permissionApproversStopTask: Promise<void> | undefined;
       const sse = await client.event.subscribe({
         query: { directory: projectDir },
       });
@@ -1332,16 +1327,13 @@ export const ZRuntimeModelPlugin = async () => ({
         }
       })();
       void permissionTask.catch(() => undefined);
-      stopPermissionApprovers = () => {
-        permissionApproversStopTask ??= (async () => {
-          permissionApproversStopped = true;
-          await runtimeSession.create({
-            body: { title: 'shipping permission stream shutdown' },
-            query: { directory: projectDir },
-          });
-          await permissionTask;
-        })();
-        return permissionApproversStopTask;
+      stopPermissionApprovers = async () => {
+        permissionApproversStopped = true;
+        await runtimeSession.create({
+          body: { title: 'shipping permission stream shutdown' },
+          query: { directory: projectDir },
+        });
+        await permissionTask;
       };
 
       const waitFor = async (predicate: () => boolean | Promise<boolean>, label: string, timeoutMs = 15000): Promise<void> => {

@@ -10,7 +10,7 @@
     "build": "bun run --filter hive-core build && bun run --filter oc-arkive build && bun run --filter vscode-arkive build",
     "build:opencode": "bun run --filter hive-core build && bun run --filter oc-arkive build",
     "dev": "bun run --filter hive-core build && bun run --filter '*' dev",
-    "test": "npm -ws --if-present run test",
+    "test": "npm --workspaces --if-present run test",
     "release:check": "bun install && bun run --filter hive-core build && bun run --filter vscode-arkive build && node --test release-artifacts.test.mjs && node --test release-workflow.test.mjs && node --test release-vscode-bundle.test.mjs && bun run build:opencode && bun run --filter hive-core test && bun run --filter oc-arkive test && bun run --filter vscode-arkive test"
   },
   "license": "MIT"
