@@ -66,6 +66,45 @@ type ReviewSnapshotRepositoryOutcome =
   | { repositoryId: string; outcome: 'resolved'; snapshot: GitSnapshot }
   | { repositoryId: string; outcome: 'failed'; error: unknown };
 
+function describeSnapshotFailure(error: unknown): string {
+  try {
+    if (error instanceof GitSnapshotError) {
+      if (error.code === 'missing-ref') {
+        const field = error.details.field;
+        const ref = error.details.ref;
+        if (field !== undefined && typeof ref === 'string' && ref.length > 0) {
+          return `${field} commit ${ref.slice(0, 200)} is absent from this repository's object store (shallow clone or un-fetched history)`;
+        }
+      } else if (error.code === 'merge-base-unavailable') {
+        return 'git merge-base is unavailable for the selected refs';
+      } else if (error.code === 'timeout') {
+        return 'git command timed out (transient; safe to retry)';
+      } else if (error.code === 'output-truncated') {
+        return 'snapshot output exceeded limits (narrow paths, maxFiles, or maxPatchBytes)';
+      }
+      return error.code;
+    }
+    const message = typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message: unknown }).message)
+      : String(error);
+    const firstLine = message.split(/\r?\n/, 1)[0] ?? '';
+    return `error: ${firstLine.slice(0, 200)}`;
+  } catch {
+    return 'unrenderable failure';
+  }
+}
+
+function reviewSnapshotSetMessage(
+  outcomeCount: number,
+  failures: readonly Extract<ReviewSnapshotRepositoryOutcome, { outcome: 'failed' }>[],
+): string {
+  const fragments = failures
+    .map(({ repositoryId, error }) => `${repositoryId} (${describeSnapshotFailure(error)})`)
+    .join(', ');
+  return `Review snapshot failed for ${failures.length} of ${outcomeCount} repositories: ${fragments}. `
+    + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.';
+}
+
 export class ReviewSnapshotSetError extends Error {
   readonly outcomes: readonly ReviewSnapshotRepositoryOutcome[];
   readonly failures: readonly Extract<ReviewSnapshotRepositoryOutcome, { outcome: 'failed' }>[];
@@ -75,7 +114,7 @@ export class ReviewSnapshotSetError extends Error {
     const failures = canonical.filter((outcome): outcome is Extract<ReviewSnapshotRepositoryOutcome, { outcome: 'failed' }> => (
       outcome.outcome === 'failed'
     ));
-    super(`Review snapshot failed for repositories: ${failures.map(({ repositoryId }) => repositoryId).join(', ')}.`);
+    super(reviewSnapshotSetMessage(canonical.length, failures));
     this.name = 'ReviewSnapshotSetError';
     this.outcomes = Object.freeze(canonical);
     this.failures = Object.freeze(failures);

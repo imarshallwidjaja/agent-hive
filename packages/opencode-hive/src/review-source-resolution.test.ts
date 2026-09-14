@@ -411,6 +411,10 @@ describe('shared review source resolution', () => {
     const error = await collection.catch((failure) => failure);
     expect(error).toBeInstanceOf(ReviewSnapshotSetError);
     expect(error.failures.map((failure: { repositoryId: string }) => failure.repositoryId)).toEqual(['api', 'web']);
+    expect(error.message).toBe(
+      `Review snapshot failed for 2 of 2 repositories: api (targetRef commit ${headSha} is absent from this repository's object store (shallow clone or un-fetched history)), web (git merge-base is unavailable for the selected refs). `
+      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+    );
   });
 
   it('retains successful composite outcomes when one repository fails', async () => {
@@ -434,6 +438,73 @@ describe('shared review source resolution', () => {
       { repositoryId: 'api', outcome: 'resolved' },
       { repositoryId: 'web', outcome: 'failed' },
     ]);
+    expect(error.message).toBe(
+      'Review snapshot failed for 1 of 2 repositories: web (git merge-base is unavailable for the selected refs). '
+      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+    );
+  });
+
+  it('renders non-git failure reasons as the first line of the error message', async () => {
+    const error = await collectReviewSnapshotSet({
+      manifestRepositoryIds: ['api', 'web'],
+      selectedRepositoryIds: ['api', 'web'],
+      repositories: [{ id: 'web', path: '/repo/web' }, { id: 'api', path: '/repo/api' }],
+    }, async (repository) => {
+      if (repository.id === 'web') throw new Error('provider exploded\nstack line');
+      return {
+        ...snapshot({}),
+        repository: { root: repository.path, currentHead: 'c'.repeat(40) },
+      };
+    }).catch((failure) => failure);
+
+    expect(error).toBeInstanceOf(ReviewSnapshotSetError);
+    expect(error.message).toBe(
+      'Review snapshot failed for 1 of 2 repositories: web (error: provider exploded). '
+      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+    );
+  });
+
+  it('produces an identical message for identical outcomes and falls back to the bare code', () => {
+    const outcomes = [
+      { repositoryId: 'api', outcome: 'failed' as const, error: new GitSnapshotError('missing-ref') },
+      { repositoryId: 'web', outcome: 'failed' as const, error: new GitSnapshotError('timeout') },
+    ];
+    const first = new ReviewSnapshotSetError(outcomes);
+    const second = new ReviewSnapshotSetError(outcomes);
+    expect(first.message).toBe(second.message);
+    expect(first.message).toBe(
+      'Review snapshot failed for 2 of 2 repositories: api (missing-ref), web (git command timed out (transient; safe to retry)). '
+      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+    );
+  });
+
+  it('caps oversized missing-ref identifiers in failure messages', () => {
+    const ref = 'f'.repeat(300);
+    const error = new ReviewSnapshotSetError([
+      { repositoryId: 'api', outcome: 'failed', error: new GitSnapshotError('missing-ref', { field: 'baseRef', ref }) },
+    ]);
+    expect(error.message).toBe(
+      `Review snapshot failed for 1 of 1 repositories: api (baseRef commit ${'f'.repeat(200)} is absent from this repository's object store (shallow clone or un-fetched history)). `
+      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+    );
+  });
+
+  it('renders unrenderable failure without throwing when the message getter throws', () => {
+    const hostile = {
+      get message(): string {
+        throw new Error('hostile getter');
+      },
+    };
+    let error: ReviewSnapshotSetError | undefined;
+    expect(() => {
+      error = new ReviewSnapshotSetError([
+        { repositoryId: 'api', outcome: 'failed', error: hostile },
+      ]);
+    }).not.toThrow();
+    expect(error?.message).toBe(
+      'Review snapshot failed for 1 of 1 repositories: api (unrenderable failure). '
+      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+    );
   });
 
   it.each([
