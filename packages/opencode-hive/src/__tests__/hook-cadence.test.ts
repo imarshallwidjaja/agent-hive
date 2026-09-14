@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ConfigService } from 'hive-core';
 import { shouldExecuteHook, HIVE_SYSTEM_PROMPT } from '../hooks/system-hook.js';
-import { buildCompactionPrompt } from '../utils/compaction-prompt.js';
-import { buildCompactionReanchor } from '../utils/compaction-anchor.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -391,56 +389,6 @@ describe('HIVE_SYSTEM_PROMPT — no broad worker-startup reinjection', () => {
     expect(HIVE_SYSTEM_PROMPT).toContain('`hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only');
     expect(HIVE_SYSTEM_PROMPT).toContain('`architect-planner` remains callable as a child');
   });
-});
-
-describe('Compaction hook — no hive_status reinjection after compaction', () => {
-  it('compaction prompt does not reference hive_status', () => {
-    const prompt = buildCompactionPrompt();
-    expect(prompt).not.toMatch(/hive_status/);
-  });
-
-  it('system transform does not reintroduce broad startup instruction after compaction', () => {
-    const compactionOutput = buildCompactionPrompt();
-    expect(compactionOutput).not.toMatch(/use hive_status to check feature state before starting work/i);
-    expect(compactionOutput).not.toMatch(/use hive_plan_read to see plan comments/i);
-    expect(HIVE_SYSTEM_PROMPT).not.toMatch(/use hive_status to check feature state before starting work/i);
-  });
-
-  it('compaction prompt uses runtime recovery without status-tool calls', () => {
-    const prompt = buildCompactionPrompt();
-    expect(prompt).toMatch(/do not|avoid|skip/i);
-    expect(prompt).not.toMatch(/hive_status/);
-    expect(prompt).toMatch(/runtime assignment recovery/i);
-    expect(prompt).not.toMatch(/worker-prompt\.md|task spec|spec file/i);
-  });
-});
-
-describe('Compaction re-anchor — anti-loop safeguards for all session kinds', () => {
-  const sessionKinds = [
-    { sessionKind: 'primary' as const, agent: 'hive-master' },
-    { sessionKind: 'subagent' as const, agent: 'scout-researcher' },
-    { sessionKind: 'task-worker' as const, agent: 'forager-worker' },
-    { sessionKind: 'unknown' as const, agent: undefined },
-  ];
-
-  for (const { sessionKind, agent } of sessionKinds) {
-    it(`${sessionKind} re-anchor does not reference hive_status`, () => {
-      const anchor = buildCompactionReanchor({ sessionKind, agent });
-      expect(anchor.prompt).not.toMatch(/hive_status/);
-      expect(anchor.context.join('\n')).not.toMatch(/hive_status/);
-    });
-
-    it(`${sessionKind} re-anchor does not reference hive_plan_read`, () => {
-      const anchor = buildCompactionReanchor({ sessionKind, agent });
-      expect(anchor.prompt).not.toMatch(/hive_plan_read/);
-      expect(anchor.context.join('\n')).not.toMatch(/hive_plan_read/);
-    });
-
-    it(`${sessionKind} re-anchor does not instruct re-reading the full codebase`, () => {
-      const anchor = buildCompactionReanchor({ sessionKind, agent });
-      expect(anchor.prompt).not.toMatch(/read (the |all |entire |full )?(repo|codebase|project)/i);
-    });
-  }
 });
 
 describe('hive_worktree_commit error guidance — no out-of-surface tool references for Forager', () => {

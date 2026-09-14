@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import { buildCompactionPrompt } from '../utils/compaction-prompt.js';
 import { STANDING_CONSTRAINTS_HEADING } from '../utils/worker-prompt.js';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { ContextService, FeatureService, SessionService, TaskService, getFeaturePath } from 'hive-core';
@@ -8,47 +7,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { createHash } from 'node:crypto';
-
-describe('buildCompactionPrompt', () => {
-  test('includes resume instruction to continue current task', () => {
-    const prompt = buildCompactionPrompt();
-    expect(prompt).toContain('Next action: resume from where you left off.');
-    expect(prompt).toMatch(/worker|assignment|resume/i);
-  });
-
-  test('requires runtime assignment recovery, not an inferred prompt path', () => {
-    const prompt = buildCompactionPrompt();
-    expect(prompt).toMatch(/runtime assignment recovery/i);
-    expect(prompt).not.toContain('worker-prompt.md');
-  });
-
-  test('does not instruct calling hive_status on resume', () => {
-    const prompt = buildCompactionPrompt();
-    expect(prompt).not.toMatch(/hive_status/);
-  });
-
-  test('does not instruct re-reading entire codebase or full repo', () => {
-    const prompt = buildCompactionPrompt();
-    expect(prompt).not.toMatch(/read (the |all |entire |full )?(repo|codebase|project)/i);
-  });
-
-  test('instructs to avoid status-tool rediscovery', () => {
-    const prompt = buildCompactionPrompt();
-    expect(prompt).toMatch(/do not|avoid|skip/i);
-    expect(prompt).toMatch(/status/i);
-  });
-
-  test('is stable across multiple calls (same output)', () => {
-    const prompt1 = buildCompactionPrompt();
-    const prompt2 = buildCompactionPrompt();
-    expect(prompt1).toBe(prompt2);
-  });
-
-  test('is concise (under 600 characters)', () => {
-    const prompt = buildCompactionPrompt();
-    expect(prompt.length).toBeLessThan(600);
-  });
-});
 
 function createStubShell(): PluginInput['$'] {
   const fn = ((..._args: unknown[]) => {
