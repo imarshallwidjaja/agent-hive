@@ -119,7 +119,7 @@ describe('createBackgroundJobAdapter', () => {
     expect(board.jobs).toHaveLength(1);
     expect(board.jobs[0]).toMatchObject({
       taskId: 'task-launch',
-      sessionId: 'parent-1:task-launch',
+      sessionId: 'task-launch',
       runtimeState: 'running',
       agentName: 'scout-researcher',
       description: 'Explore implementation',
@@ -189,6 +189,7 @@ describe('createBackgroundJobAdapter', () => {
     expect(board.jobs).toHaveLength(1);
     expect(board.jobs[0]).toMatchObject({
       taskId: 'ses_141cefb43ffeGAlDdBIqeETGNH',
+      launchId: 'launch-drift',
       agentName: 'forager-documents',
       description: 'Hive: smoke docs',
       scopeSource: 'pending-launch',
@@ -203,6 +204,148 @@ describe('createBackgroundJobAdapter', () => {
         branch: 'hive/background-smoke-test/01-add-root-smoke-documentation-file',
       },
     });
+  });
+
+  it('registers claimed launches with unresolved provenance when native output is missing or unparseable', async () => {
+    const { adapter, service, sessions, claims } = createHarness();
+    sessions.set('parent-1', session('parent-1', 'swarm-orchestrator'));
+
+    for (const [suffix, output] of [
+      ['missing', {}],
+      ['unparseable', { output: 'Background launch accepted without a task identifier.' }],
+    ] as const) {
+      const launchId = `launch-${suffix}`;
+      const callID = `call-${suffix}`;
+      service.registerPendingLaunch({
+        launchId,
+        parentSessionId: 'parent-1',
+        agentName: 'forager-worker',
+        scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'swarm-orchestrator', feature: 'feature-a', task: `task-${suffix}` },
+        ownership: { branch: `hive/feature-a/task-${suffix}` },
+      });
+      claims.set(`parent-1\0${callID}`, launchId);
+
+      await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID }, {
+        args: { background: true, description: `Claimed ${suffix}`, subagent_type: 'forager-worker' },
+      });
+      await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID }, output);
+    }
+
+    const board = readBoard();
+    expect(board.jobs).toHaveLength(0);
+    expect(board.pendingLaunches).toEqual([
+      expect.objectContaining({
+        launchId: 'launch-missing',
+        agentName: 'forager-worker',
+        disposition: 'claimed',
+        callId: 'call-missing',
+        scope: expect.objectContaining({ feature: 'feature-a', task: 'task-missing' }),
+        ownership: expect.objectContaining({ branch: 'hive/feature-a/task-missing' }),
+      }),
+      expect.objectContaining({
+        launchId: 'launch-unparseable',
+        disposition: 'claimed',
+        callId: 'call-unparseable',
+      }),
+    ]);
+    expect(board.jobs.some(job => job.scopeSource === 'native-fallback')).toBe(false);
+    const prompt = messagesFor('parent-1');
+    await adapter['experimental.chat.messages.transform']({}, prompt);
+    expect(injectedText(prompt)).toContain('launch-missing');
+    expect(injectedText(prompt)).toContain('Native identity unavailable; execution may still be running');
+    expect(injectedText(prompt)).toContain('does not stop execution or authorize a replacement writer');
+    const foreignPrompt = messagesFor('parent-2');
+    sessions.set('parent-2', session('parent-2'));
+    await adapter['experimental.chat.messages.transform']({}, foreignPrompt);
+    expect(injectedText(foreignPrompt)).not.toContain('launch-missing');
+
+    // A repeated SDK callback can carry real identity after the original output failed.
+    const callback = { tool: 'task', sessionID: 'parent-1', callID: 'call-missing', args: { background: true } };
+    const restarted = createBackgroundJobAdapter({ projectRoot: TEST_DIR, service, isEnabled: () => true });
+    await restarted['tool.execute.after'](callback, { output: 'task_id: ses-real' });
+    await restarted['tool.execute.after'](callback, { output: 'task_id: ses-real' });
+    expect(service.listScoped()).toHaveLength(1);
+    expect(service.resolve('launch-missing')).toMatchObject({ taskId: 'ses-real', sessionId: 'ses-real', scopeSource: 'pending-launch', ownership: { branch: 'hive/feature-a/task-missing' } });
+    await expect(restarted['tool.execute.after'](callback, { output: 'task_id: ses-contradiction' })).rejects.toThrow('contradictory');
+    expect(service.listScoped()).toHaveLength(1);
+  });
+
+  it('registers the active claim through the after hook when archived call history exists', async () => {
+    const { adapter, service, sessions, claims } = createHarness();
+    sessions.set('parent-1', session('parent-1', 'swarm-orchestrator'));
+    const scope = { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a' };
+    service.registerPendingLaunch({ launchId: 'archived-launch', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
+    service.claimPendingLaunch({ launchId: 'archived-launch', parentSessionId: 'parent-1', callId: 'reused-call', background: true });
+    service.archiveClaimedLaunch('archived-launch', 'parent-1', 'ignored', 'Previous native launch was ignored');
+    service.registerPendingLaunch({ launchId: 'active-launch', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
+    claims.set('parent-1\0reused-call', 'active-launch');
+
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'reused-call' }, {
+      args: { background: true, description: 'Replacement launch', subagent_type: 'forager-worker' },
+    });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'reused-call' }, {
+      output: 'task_id: ses-active',
+    });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'reused-call' }, {
+      output: 'task_id: ses-active',
+    });
+
+    const history = service.listPendingLaunches({}, { includeArchived: true });
+    expect(service.resolve('active-launch')).toMatchObject({ taskId: 'ses-active', launchId: 'active-launch', scopeSource: 'pending-launch' });
+    expect(service.listScoped({}, { includeArchived: true })).toHaveLength(1);
+    expect(history).toEqual([
+      expect.objectContaining({ launchId: 'archived-launch', archiveReason: 'ignored' }),
+    ]);
+    expect(history[0].registrationError).toBeUndefined();
+
+    await expect(adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'reused-call' }, {
+      output: 'task_id: ses-other',
+    })).rejects.toThrow('contradictory');
+    expect(service.listScoped({}, { includeArchived: true })).toHaveLength(1);
+  });
+
+  it('registers a sole archived claim from a late callback without losing the archive decision', async () => {
+    const { service } = createHarness();
+    const scope = { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a' };
+    service.registerPendingLaunch({ launchId: 'late-launch', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
+    service.claimPendingLaunch({ launchId: 'late-launch', parentSessionId: 'parent-1', callId: 'late-call', background: true });
+    service.archiveClaimedLaunch('late-launch', 'parent-1', 'reconciled', 'Native execution was confirmed externally');
+    const restarted = createBackgroundJobAdapter({ projectRoot: TEST_DIR, service, isEnabled: () => true });
+
+    await restarted['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'late-call', args: { background: true } }, {
+      output: 'task_id: ses-late',
+    });
+
+    expect(service.resolve('late-launch')).toMatchObject({
+      taskId: 'ses-late',
+      archiveReason: 'reconciled',
+      reconciliationSummary: 'Native execution was confirmed externally',
+    });
+    expect(service.listScoped()).toEqual([]);
+  });
+
+  it('retains conflicting claims and clears staged arguments when claimed lookup fails', async () => {
+    const { adapter, service } = createHarness();
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'ambiguous-call' }, {
+      args: { background: true, description: 'Staged background launch', subagent_type: 'forager-worker' },
+    });
+    for (const launchId of ['archived-1', 'archived-2']) {
+      service.registerPendingLaunch({ launchId, parentSessionId: 'parent-1', agentName: 'forager-worker' });
+      service.claimPendingLaunch({ launchId, parentSessionId: 'parent-1', callId: 'ambiguous-call', background: true });
+      service.archiveClaimedLaunch(launchId, 'parent-1', 'ignored', `Retain ${launchId}`);
+    }
+
+    await expect(adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'ambiguous-call' }, {
+      output: 'task_id: ses-ambiguous',
+    })).rejects.toThrow('ambiguous claimed call');
+    expect(service.listPendingLaunches({}, { includeArchived: true })).toHaveLength(2);
+
+    service.finishClaimedLaunch('archived-1', 'parent-1', 'ambiguous-call');
+    service.finishClaimedLaunch('archived-2', 'parent-1', 'ambiguous-call');
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'ambiguous-call', args: { background: false } }, {
+      output: 'task_id: ses-foreground',
+    });
+    expect(service.listScoped()).toEqual([]);
   });
 
   it('stages arguments before consuming pending metadata and preserves the launch for retry on failure', async () => {
@@ -228,10 +371,67 @@ describe('createBackgroundJobAdapter', () => {
     await adapter['tool.execute.before']({
       tool: 'task', sessionID: 'parent-1', callID: 'call-private-rollback',
     }, { args: { background: true } });
-    expect(readBoard().pendingLaunches).toBeUndefined();
+    expect(readBoard().pendingLaunches?.[0]).toMatchObject({ disposition: 'claimed', callId: 'call-private-rollback' });
   });
 
-  it('discards matching pending launch metadata when a foreground task escape is used', async () => {
+  it('keeps staged task arguments isolated by parent and call', async () => {
+    const { adapter, sessions } = createHarness();
+    sessions.set('parent-1', session('parent-1'));
+
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'background-call' }, {
+      args: { background: true, description: 'Background A', subagent_type: 'scout-researcher' },
+    });
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'blocking-call' }, {
+      args: { background: false, description: 'Blocking B', subagent_type: 'code-reviewer' },
+    });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'blocking-call' }, { output: 'task_id: blocking-task' });
+    await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'background-call' }, { output: 'task_id: background-task' });
+
+    expect(readBoard().jobs).toEqual([
+      expect.objectContaining({ taskId: 'background-task', description: 'Background A', agentName: 'scout-researcher' }),
+    ]);
+  });
+
+  it('preserves claimed provenance when parsing or registration fails after dispatch', async () => {
+    const { service, claims } = createHarness();
+    for (const failure of ['parse', 'register']) {
+      service.registerPendingLaunch({ launchId: failure, parentSessionId: 'parent-1', agentName: 'forager-worker', scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' } });
+      claims.set(`parent-1\0${failure}`, failure);
+      const adapter = createBackgroundJobAdapter({ projectRoot: TEST_DIR, service, isEnabled: () => true, resolveClaimedLaunchId: (_parent, call) => claims.get(`parent-1\0${call}`), ...(failure === 'parse' ? { parseLifecycleEvent: () => { throw new Error('parse failure'); } } : {}) });
+      await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: failure }, { args: { background: true } });
+      const original = service.registerLaunch;
+      if (failure === 'register') service.registerLaunch = () => { throw new Error('register failure'); };
+      try {
+        await expect(adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: failure }, { output: 'task_id: ses-native' })).rejects.toThrow(`${failure} failure`);
+      } finally { service.registerLaunch = original; }
+      expect(new BackgroundJobService(TEST_DIR).findClaimedLaunch('parent-1', failure)).toMatchObject({ launchId: failure, disposition: 'claimed', registrationError: `Native registration failed: ${failure} failure` });
+      expect(service.sweepExpiredPendingLaunches(0)).toEqual([]);
+      expect(service.listScoped()).toHaveLength(0);
+    }
+  });
+
+  it('reports storage failure while retaining the durable claim instead of restoring preparation', async () => {
+    const { service } = createHarness();
+    service.registerPendingLaunch({ launchId: 'storage', parentSessionId: 'parent-1', agentName: 'forager-worker', scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' }, ownership: { branch: 'owned-branch' } });
+    const warnings: string[] = [];
+    const adapter = createBackgroundJobAdapter({ projectRoot: TEST_DIR, service, isEnabled: () => true, resolveClaimedLaunchId: () => 'storage', warn: message => warnings.push(message) });
+    await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'storage-call' }, { args: { background: true } });
+    const writer = service as unknown as { writeBoard: (board: BackgroundJobsJson) => void };
+    const original = writer.writeBoard;
+    writer.writeBoard = () => { throw new Error('disk failure'); };
+    try {
+      await expect(adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'storage-call' }, { output: 'task_id: ses-storage' })).rejects.toThrow('disk failure');
+    } finally { writer.writeBoard = original; }
+    expect(warnings.join('\n')).toContain('failed to persist registration error');
+    const persisted = new BackgroundJobService(TEST_DIR);
+    expect(persisted.findClaimedLaunch('parent-1', 'storage-call')).toMatchObject({ disposition: 'claimed', ownership: { branch: 'owned-branch' } });
+    expect(persisted.listScoped()).toEqual([]);
+    const restarted = createBackgroundJobAdapter({ projectRoot: TEST_DIR, service: persisted, isEnabled: () => true });
+    await restarted['tool.execute.after']({ tool: 'task', sessionID: 'parent-1', callID: 'storage-call' }, { output: 'task_id: ses-storage' });
+    expect(persisted.resolve('storage')?.taskId).toBe('ses-storage');
+  });
+
+  it('clears pending bookkeeping without registration when a prepared payload is dispatched in blocking mode', async () => {
     const { adapter, service, sessions, claims } = createHarness();
     sessions.set('parent-1', session('parent-1'));
     service.registerPendingLaunch({
@@ -246,7 +446,6 @@ describe('createBackgroundJobAdapter', () => {
 
     await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent-1', callID: 'call-foreground' }, {
       args: {
-        background: false,
         description: 'Hive: 01-task',
         prompt: 'Follow instructions in @worker-prompt.md',
         subagent_type: 'forager-worker',
@@ -309,9 +508,15 @@ describe('createBackgroundJobAdapter', () => {
   });
 
   it('updates last-known runtime state and terminal metadata from native task_status', async () => {
-    const { adapter, sessions } = createHarness();
+    const { adapter, service, sessions } = createHarness();
     sessions.set('parent-1', session('parent-1'));
     await launchTask(adapter, 'parent-1', 'task-status');
+
+    for (const launchId of ['status-history-1', 'status-history-2']) {
+      service.registerPendingLaunch({ launchId, parentSessionId: 'parent-1', agentName: 'forager-worker' });
+      service.claimPendingLaunch({ launchId, parentSessionId: 'parent-1', callId: 'status-1' });
+      service.archiveClaimedLaunch(launchId, 'parent-1', 'ignored', `Historical ${launchId}`);
+    }
 
     await adapter['tool.execute.before']({ tool: 'task_status', sessionID: 'parent-1', callID: 'status-1' }, {
       args: { task_id: 'task-status' },
@@ -326,6 +531,7 @@ describe('createBackgroundJobAdapter', () => {
       resultSummary: 'Worker finished.',
       terminalUnreconciled: true,
     });
+    expect(service.listPendingLaunches({}, { includeArchived: true })).toHaveLength(2);
   });
 
   it('terminalizes registered non-worker jobs from native completion notifications without task_status', async () => {

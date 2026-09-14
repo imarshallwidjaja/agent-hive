@@ -76,7 +76,6 @@ export function classifyRuntimeEpochStaleJobs(input: {
 
 export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions) {
   const toolArgsByCall = new Map<string, Record<string, unknown>>();
-  const claimedPendingLaunchesByCall = new Map<string, BackgroundPendingLaunch>();
   const parseLifecycleEvent = options.parseLifecycleEvent ?? parseTaskLifecycleEvent;
   const warn = options.warn ?? ((message: string) => console.warn(message));
 
@@ -88,34 +87,54 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
 
       if ((input.tool === 'task' || input.tool === 'task_status') && input.sessionID && input.callID && output.args && typeof output.args === 'object') {
         const stagedArgs = { ...output.args };
+        if (input.tool === 'task' && stagedArgs.background === undefined) stagedArgs.background = false;
         const key = toolCallKey(input.sessionID, input.callID);
         const launchId = input.tool === 'task'
           ? options.resolveClaimedLaunchId?.(input.sessionID, input.callID)
           : undefined;
         let claimedPending: BackgroundPendingLaunch | undefined;
         if (launchId) {
-          claimedPending = options.service.consumePendingLaunch({
+          claimedPending = options.service.claimPendingLaunch({
             launchId,
             parentSessionId: input.sessionID,
+            callId: input.callID,
+            runtimeId: options.runtimeId,
+            background: stagedArgs.background === true,
           });
           if (!claimedPending) {
             throw new Error('launch_binding_error: claimed launch bookkeeping is missing or already consumed');
           }
         }
-        if (claimedPending) claimedPendingLaunchesByCall.set(key, claimedPending);
         toolArgsByCall.set(key, stagedArgs);
       }
     },
 
     'tool.execute.after': async (input: unknown, output: unknown): Promise<void> => {
       if (!options.isEnabled()) {
+        clearLifecycleContext(input);
         return;
       }
 
-      const context = resolveLifecycleContext(input);
-      const event = parseLifecycleEvent(input, output, context?.lifecycle);
-      if (event) {
-        await handleLifecycleEvent(event, context?.pendingLaunch);
+      let context: ReturnType<typeof resolveLifecycleContext>;
+      try {
+        context = resolveLifecycleContext(input);
+        const event = parseLifecycleEvent(input, output, context?.lifecycle);
+        if (event) {
+          await handleLifecycleEvent(event, context?.pendingLaunch);
+        } else if (context?.pendingLaunch) {
+          options.service.finishClaimedLaunch(context.pendingLaunch.launchId, context.pendingLaunch.parentSessionId, context.pendingLaunch.callId!, context.lifecycle.args?.background === false ? undefined : 'Native identity unavailable: launch output was missing or could not be parsed. Execution may still be running.');
+        }
+      } catch (error) {
+        if (context?.pendingLaunch) {
+          try {
+            options.service.finishClaimedLaunch(context.pendingLaunch.launchId, context.pendingLaunch.parentSessionId, context.pendingLaunch.callId!, `Native registration failed: ${error instanceof Error ? error.message : String(error)}`);
+          } catch (storageError) {
+            warn(`[hive:background] claimed launch ${context.pendingLaunch.launchId} remains unresolved; failed to persist registration error: ${String(storageError)}`);
+          }
+        }
+        throw error;
+      } finally {
+        clearLifecycleContext(input);
       }
     },
 
@@ -150,11 +169,13 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         .listScoped({ projectRoot: options.projectRoot })
         .filter(job => isJobVisibleInPrompt(job, scope, sessionID))
         .filter(job => shouldShowJobInPrompt(job, sessionID));
-      if (jobs.length === 0) {
+      const unresolved = options.service.listPendingLaunches({ projectRoot: options.projectRoot, parentSessionId: sessionID })
+        .filter(pending => pending.disposition === 'claimed' && isJobVisibleInPrompt({ scope: pending.scope } as BackgroundJobRecord, scope, sessionID));
+      if (jobs.length === 0 && unresolved.length === 0) {
         return;
       }
 
-      const board = formatPromptBoard(jobs);
+      const board = [formatPromptBoard(jobs), ...unresolved.map(pending => `- launch ${pending.launchId}, parent ${pending.parentSessionId}, call ${pending.callId}: registration unresolved. Native identity unavailable; execution may still be running. Scope: ${JSON.stringify(pending.scope)}. Ownership: ${JSON.stringify(pending.ownership)}. Inspect native execution or archive bookkeeping with hive_background_reconcile(identifier: launchId, decision: ignored, summary: reason). Archiving does not stop execution or authorize a replacement writer.`)].join('\n');
       if (targetMessage.parts.some(part => part.text?.includes('## Background Job Board'))) {
         return;
       }
@@ -192,23 +213,36 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       return undefined;
     }
 
-    const record = input as { sessionID?: string; callID?: string };
+    const record = input as { tool?: string; sessionID?: string; callID?: string; args?: Record<string, unknown> };
     const key = record.sessionID && record.callID ? toolCallKey(record.sessionID, record.callID) : undefined;
-    const args = key ? toolArgsByCall.get(key) : undefined;
-    const pendingLaunch = key ? claimedPendingLaunchesByCall.get(key) : undefined;
-    if (key) {
-      toolArgsByCall.delete(key);
-      claimedPendingLaunchesByCall.delete(key);
-    }
+    const args = (key ? toolArgsByCall.get(key) : undefined) ?? record.args;
+    const pendingLaunch = record.tool === 'task' && record.sessionID && record.callID
+      ? options.service.findClaimedLaunch(record.sessionID, record.callID)
+      : undefined;
+    if (pendingLaunch && args?.background !== undefined && pendingLaunch.background !== undefined && args.background !== pendingLaunch.background) throw new Error('launch_binding_error: contradictory dispatch mode');
 
     const session = record.sessionID ? options.getSession?.(record.sessionID) : undefined;
     return {
       lifecycle: {
-        args,
+        args: pendingLaunch ? { subagent_type: pendingLaunch.agentName, ...args, background: pendingLaunch.background } : args,
         agentName: typeof session?.agent === 'string' ? session.agent : undefined,
       },
       pendingLaunch,
     };
+  }
+
+  function clearLifecycleContext(input: unknown): void {
+    if (!input || typeof input !== 'object') {
+      return;
+    }
+
+    const record = input as { sessionID?: string; callID?: string };
+    if (!record.sessionID || !record.callID) {
+      return;
+    }
+
+    const key = toolCallKey(record.sessionID, record.callID);
+    toolArgsByCall.delete(key);
   }
 
   async function handleLifecycleEvent(
@@ -216,16 +250,28 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     pendingLaunch?: BackgroundPendingLaunch,
   ): Promise<void> {
     if (event.tool === 'task') {
+      if (pendingLaunch && (pendingLaunch.parentSessionId !== event.parentSessionId || pendingLaunch.callId !== event.callId)) throw new Error('launch_binding_error: lifecycle parent/call contradiction');
       if (event.args.background !== true) {
+        if (pendingLaunch && event.args.background === false) options.service.finishClaimedLaunch(pendingLaunch.launchId, pendingLaunch.parentSessionId, pendingLaunch.callId!);
         return;
       }
 
       const parentSession = options.getSession?.(event.parentSessionId);
-      try {
+      {
+        const existingCalls = event.callId ? options.service.listScoped({ projectRoot: options.projectRoot, parentSessionId: event.parentSessionId }, { includeArchived: true }).filter(job => job.callId === event.callId) : [];
+        if (existingCalls.length > 1) throw new Error('launch_binding_error: ambiguous native callback');
+        const existingCall = existingCalls[0];
+        if (existingCall) {
+          const activePendingLaunch = pendingLaunch && !pendingLaunch.archivedAt ? pendingLaunch : undefined;
+          if (existingCall.taskId !== event.taskId || (activePendingLaunch && existingCall.launchId !== activePendingLaunch.launchId)) throw new Error('launch_binding_error: contradictory native callback');
+          return;
+        }
         const scopeSource = pendingLaunch ? 'pending-launch' : 'native-fallback';
         options.service.registerLaunch({
           taskId: event.taskId,
-          sessionId: `${event.parentSessionId}:${event.taskId}`,
+          sessionId: event.taskId,
+          launchId: pendingLaunch?.launchId,
+          callId: event.callId,
           agentName: event.args.subagent_type ?? pendingLaunch?.agentName ?? 'unknown',
           description: event.args.description,
           runtimeId: options.runtimeId,
@@ -238,10 +284,6 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
           },
           ownership: pendingLaunch?.ownership,
         });
-      } catch (error) {
-        if (!(error instanceof Error) || !/already registered/.test(error.message)) {
-          warn(`[hive:background] failed to register background task ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
-        }
       }
       return;
     }
@@ -250,6 +292,8 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     if (!status) {
       return;
     }
+    const statusJob = options.service.resolve(event.taskId);
+    if (!statusJob || !isNotificationForJob(statusJob, event.parentSessionId)) return;
 
     const state = normalizeBackgroundRuntimeState(status.runtimeState, status.error?.kind);
     try {
@@ -310,14 +354,14 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     if (job.scope?.parentSessionId) {
       return job.scope.parentSessionId === parentSessionId;
     }
-    return true;
+    return false;
   }
 
   return adapter;
 }
 
 function toolCallKey(sessionID: string, callID: string): string {
-  return `${sessionID}:${callID}`;
+  return JSON.stringify([sessionID, callID]);
 }
 
 function defaultIsPrimaryAgent(_agentName: string | undefined, session: SessionInfo | undefined): boolean {
@@ -360,7 +404,7 @@ function isJobVisibleInPrompt(job: BackgroundJobRecord, scope: BackgroundJobScop
   if (jobScope.projectRoot && jobScope.projectRoot !== scope.projectRoot) {
     return false;
   }
-  if (jobScope.parentSessionId && jobScope.parentSessionId !== sessionID) {
+  if (jobScope.parentSessionId !== sessionID) {
     return false;
   }
   if (scope.primaryAgent && jobScope.primaryAgent && jobScope.primaryAgent !== scope.primaryAgent) {

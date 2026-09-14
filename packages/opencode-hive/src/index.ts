@@ -646,6 +646,11 @@ const plugin: Plugin = async (ctx) => {
     console.warn(`[hive:dash-review] stale review evidence cleanup failed: ${(error as Error).message}`);
   });
   const backgroundJobService = new BackgroundJobService(directory);
+  try {
+    backgroundJobService.sweepExpiredPendingLaunches(WORKER_LAUNCH_RESERVATION_TTL_MS);
+  } catch (error) {
+    console.warn(`[hive:background] stale pending launch cleanup failed: ${(error as Error).message}`);
+  }
   const taskTraceEphemeralSessionIDs = new Set<string>();
   const taskTraceInjectedHintIDs = new Set<string>();
   const taskTraceConfig = configService.get().taskTraceSummarizer ?? { temperature: 0 };
@@ -3340,6 +3345,7 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }
       if (event.type === 'session.deleted' && lifecycleSessionID) {
         const sessionID = lifecycleSessionID;
+        backgroundJobService.retireParentLaunches(sessionID);
         const parentCallPrefix = `${sessionID}\u0000`;
         const matchingLaunchKeys = new Set<string>();
         const matchingChildSessionIDs = new Set([sessionID]);
@@ -3369,12 +3375,6 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           boundLaunchChildrenByCall.delete(key);
           observedTaskChildrenByCall.delete(key);
           completedLaunchCalls.delete(key);
-        }
-        for (const intent of pendingHiveTaskLaunches.get(sessionID) ?? []) {
-          backgroundJobService.consumePendingLaunch({ launchId: intent.launchId, parentSessionId: sessionID });
-        }
-        for (const intent of pendingAdhocLaunches.get(sessionID) ?? []) {
-          backgroundJobService.consumePendingLaunch({ launchId: intent.launchId, parentSessionId: sessionID });
         }
         pendingHiveTaskLaunches.delete(sessionID);
         pendingAdhocLaunches.delete(sessionID);

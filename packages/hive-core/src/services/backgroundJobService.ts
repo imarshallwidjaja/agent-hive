@@ -13,6 +13,8 @@ import { isBackgroundJobArchived } from '../types.js';
 export interface RegisterBackgroundJobInput {
   taskId: string;
   sessionId: string;
+  launchId?: string;
+  callId?: string;
   agentName: string;
   customAgentBase?: string;
   description?: string;
@@ -54,6 +56,8 @@ export interface BackgroundJobListOptions {
   includeArchived?: boolean;
 }
 
+const CLAIMED_LAUNCH_ARCHIVE_LIMIT_PER_PARENT = 100;
+
 export class BackgroundJobService {
   constructor(private readonly projectRoot: string) {}
 
@@ -85,7 +89,9 @@ export class BackgroundJobService {
   }
 
   private findRecord(board: BackgroundJobsJson, identifier: string): BackgroundJobRecord {
-    const record = board.jobs.find(job => job.taskId === identifier || job.sessionId === identifier || job.alias === identifier);
+    const matches = board.jobs.filter(job => job.taskId === identifier || job.sessionId === identifier || job.alias === identifier || job.launchId === identifier);
+    if (matches.length > 1) throw new Error(`Ambiguous background job identifier: ${identifier}`);
+    const record = matches[0];
     if (!record) {
       throw new Error(`Background job not found: ${identifier}`);
     }
@@ -106,6 +112,32 @@ export class BackgroundJobService {
     return alias;
   }
 
+  private findPendingLaunch(board: BackgroundJobsJson, launchId: string): BackgroundPendingLaunch | undefined {
+    const matches = (board.pendingLaunches ?? []).filter(item => item.launchId === launchId);
+    if (matches.length > 1) throw new Error('launch_binding_error: ambiguous launch identity');
+    return matches[0];
+  }
+
+  private pruneClaimedLaunchArchives(board: BackgroundJobsJson, parentSessionId: string): void {
+    const pendingLaunches = board.pendingLaunches ?? [];
+    const archived = pendingLaunches
+      .map((pending, index) => ({ pending, index }))
+      .filter(({ pending }) => pending.parentSessionId === parentSessionId && pending.disposition === 'claimed' && pending.archivedAt)
+      .sort((left, right) => {
+        const byTime = Date.parse(right.pending.archivedAt!) - Date.parse(left.pending.archivedAt!);
+        return Number.isFinite(byTime) && byTime !== 0 ? byTime : right.index - left.index;
+      });
+    if (archived.length <= CLAIMED_LAUNCH_ARCHIVE_LIMIT_PER_PARENT) return;
+
+    const retained = new Set(archived.slice(0, CLAIMED_LAUNCH_ARCHIVE_LIMIT_PER_PARENT).map(({ pending }) => pending));
+    const kept = pendingLaunches.filter(pending =>
+      pending.parentSessionId !== parentSessionId
+      || !pending.archivedAt
+      || pending.disposition !== 'claimed'
+      || retained.has(pending));
+    board.pendingLaunches = kept.length ? kept : undefined;
+  }
+
   private applyIfChanged<T extends keyof BackgroundJobRecord>(record: BackgroundJobRecord, key: T, value: BackgroundJobRecord[T]): boolean {
     if (record[key] === value) {
       return false;
@@ -122,6 +154,22 @@ export class BackgroundJobService {
 
   registerLaunch(input: RegisterBackgroundJobInput): BackgroundJobRecord {
     return this.updateBoard((board) => {
+      const pending = input.launchId ? this.findPendingLaunch(board, input.launchId) : undefined;
+      if (input.callId && board.pendingLaunches?.some(item => !item.archivedAt && item.parentSessionId === input.scope?.parentSessionId && item.callId === input.callId && item !== pending)) throw new Error('launch_binding_error: native registration conflicts with claimed call');
+      if (input.launchId && (pending || input.callId || board.jobs.some(job => job.launchId === input.launchId)) && (!pending || pending.disposition !== 'claimed' || pending.parentSessionId !== input.scope?.parentSessionId || pending.callId !== input.callId)) {
+        const existingMatches = board.jobs.filter(job => job.launchId === input.launchId);
+        if (existingMatches.length > 1) throw new Error('launch_binding_error: ambiguous registered launch');
+        const existing = existingMatches[0];
+        if (existing && existing.taskId === input.taskId && existing.sessionId === input.sessionId && existing.callId === input.callId && existing.scope?.parentSessionId === input.scope?.parentSessionId) return existing;
+        throw new Error('launch_binding_error: launch, parent and call must match the claimed launch');
+      }
+      const callMatches = input.callId ? board.jobs.filter(job => job.callId === input.callId && job.scope?.parentSessionId === input.scope?.parentSessionId) : [];
+      if (callMatches.length > 1) throw new Error('launch_binding_error: ambiguous native call');
+      const sameCall = callMatches[0];
+      if (sameCall) {
+        if (sameCall.taskId === input.taskId && sameCall.sessionId === input.sessionId && sameCall.launchId === input.launchId) return sameCall;
+        throw new Error('launch_binding_error: contradictory native identity for call');
+      }
       if (board.jobs.some(job => job.taskId === input.taskId)) {
         throw new Error(`Background job already registered for task ID: ${input.taskId}`);
       }
@@ -133,6 +181,8 @@ export class BackgroundJobService {
       const record: BackgroundJobRecord = {
         taskId: input.taskId,
         sessionId: input.sessionId,
+        launchId: input.launchId,
+        callId: input.callId,
         agentName: input.agentName,
         customAgentBase: input.customAgentBase,
         description: input.description,
@@ -143,17 +193,26 @@ export class BackgroundJobService {
         runtimeState: 'running',
         scopeSource: input.scopeSource,
         alias: this.nextAlias(board, input.scope?.parentSessionId),
-        scope: input.scope,
-        ownership: input.ownership,
+        scope: pending?.scope ?? input.scope,
+        ownership: pending?.ownership ?? input.ownership,
+        archivedAt: pending?.archivedAt,
+        archiveReason: pending?.archiveReason,
+        reconciliationSummary: pending?.reconciliationSummary,
       };
 
       board.jobs.push(record);
+      if (pending) {
+        const remaining = board.pendingLaunches!.filter(item => item !== pending);
+        board.pendingLaunches = remaining.length ? remaining : undefined;
+      }
       return record;
     });
   }
 
   registerPendingLaunch(input: RegisterBackgroundPendingLaunchInput): BackgroundPendingLaunch {
     return this.updateBoard((board) => {
+      if (board.jobs.some(job => job.launchId === input.launchId)) throw new Error('launch_binding_error: launch already registered');
+      if (input.scope?.parentSessionId && input.scope.parentSessionId !== input.parentSessionId) throw new Error('launch_binding_error: contradictory parent scope');
       const now = new Date().toISOString();
       const pending: BackgroundPendingLaunch = {
         launchId: input.launchId,
@@ -164,14 +223,17 @@ export class BackgroundJobService {
         scope: input.scope,
         ownership: input.ownership,
         createdAt: now,
+        disposition: 'prepared',
       };
 
       const pendingLaunches = board.pendingLaunches ?? [];
+      this.findPendingLaunch(board, input.launchId);
       const existingIndex = pendingLaunches.findIndex((candidate) =>
         candidate.launchId === input.launchId
       );
 
       if (existingIndex >= 0) {
+        if (pendingLaunches[existingIndex].disposition === 'claimed' || pendingLaunches[existingIndex].parentSessionId !== input.parentSessionId) throw new Error('launch_binding_error: cannot replace claimed or foreign preparation');
         pendingLaunches[existingIndex] = pending;
       } else {
         pendingLaunches.push(pending);
@@ -192,16 +254,93 @@ export class BackgroundJobService {
       }
 
       const [pending] = pendingLaunches.splice(index, 1);
+      if (pending.disposition === 'claimed') throw new Error('launch_binding_error: claimed launches cannot be consumed as preparation');
       board.pendingLaunches = pendingLaunches.length > 0 ? pendingLaunches : undefined;
       return pending;
     });
   }
 
+  claimPendingLaunch(input: ConsumeBackgroundPendingLaunchInput & { callId: string; runtimeId?: string; background?: boolean }): BackgroundPendingLaunch {
+    return this.updateBoard(board => {
+      const pending = this.findPendingLaunch(board, input.launchId);
+      const callMatches = board.pendingLaunches?.filter(item => !item.archivedAt && item.parentSessionId === input.parentSessionId && item.callId === input.callId) ?? [];
+      if (!pending || pending.archivedAt || pending.parentSessionId !== input.parentSessionId || (pending.callId && pending.callId !== input.callId) || callMatches.some(item => item !== pending) || board.jobs.some(job => job.launchId === input.launchId || (job.scope?.parentSessionId === input.parentSessionId && job.callId === input.callId))) {
+        throw new Error('launch_binding_error: missing or contradictory launch claim');
+      }
+      pending.disposition = 'claimed';
+      pending.callId = input.callId;
+      pending.claimedAt ??= new Date().toISOString();
+      pending.runtimeId ??= input.runtimeId;
+      pending.background ??= input.background;
+      return pending;
+    });
+  }
+
+  findClaimedLaunch(parentSessionId: string, callId: string): BackgroundPendingLaunch | undefined {
+    const matches = (this.readBoard().pendingLaunches ?? []).filter(item => item.disposition === 'claimed' && item.parentSessionId === parentSessionId && item.callId === callId);
+    const activeMatches = matches.filter(item => !item.archivedAt);
+    const selectedMatches = activeMatches.length > 0 ? activeMatches : matches;
+    if (selectedMatches.length > 1) throw new Error('launch_binding_error: ambiguous claimed call');
+    return selectedMatches[0] ? { ...selectedMatches[0], archivedAt: selectedMatches[0].archivedAt } : undefined;
+  }
+
+  finishClaimedLaunch(launchId: string, parentSessionId: string, callId: string, registrationError?: string): void {
+    this.updateBoard(board => {
+      const pending = this.findPendingLaunch(board, launchId);
+      if (!pending || pending.disposition !== 'claimed' || pending.parentSessionId !== parentSessionId || pending.callId !== callId) throw new Error('launch_binding_error: claimed launch mismatch');
+      if (registrationError) pending.registrationError = registrationError;
+      else {
+        const remaining = board.pendingLaunches!.filter(item => item !== pending);
+        board.pendingLaunches = remaining.length ? remaining : undefined;
+      }
+    });
+  }
+
+  archiveClaimedLaunch(launchId: string, parentSessionId: string, decision: 'ignored' | 'reconciled', summary: string): BackgroundPendingLaunch {
+    if (!summary.trim()) throw new Error('A non-empty reconciliation reason is required');
+    return this.updateBoard(board => {
+      const pending = this.findPendingLaunch(board, launchId);
+      if (!pending || pending.parentSessionId !== parentSessionId || pending.disposition !== 'claimed') throw new Error('launch_binding_error: claimed launch not found');
+      pending.archivedAt ??= new Date().toISOString();
+      pending.archiveReason = decision;
+      pending.reconciliationSummary = summary;
+      this.pruneClaimedLaunchArchives(board, parentSessionId);
+      return pending;
+    });
+  }
+
+  retireParentLaunches(parentSessionId: string): BackgroundPendingLaunch[] {
+    if (!this.readBoard().pendingLaunches?.some(pending => pending.parentSessionId === parentSessionId)) return [];
+
+    return this.updateBoard(board => {
+      const now = new Date().toISOString();
+      const archivedClaims: BackgroundPendingLaunch[] = [];
+      const retained = (board.pendingLaunches ?? []).filter(pending => {
+        if (pending.parentSessionId !== parentSessionId) return true;
+        if (pending.disposition !== 'claimed') return false;
+
+        pending.archivedAt ??= now;
+        pending.archiveReason ??= 'ignored';
+        pending.reconciliationSummary ??= 'Parent session deleted; claimed launch bookkeeping retired without changing native execution state.';
+        archivedClaims.push(pending);
+        return true;
+      });
+      board.pendingLaunches = retained.length ? retained : undefined;
+      this.pruneClaimedLaunchArchives(board, parentSessionId);
+      return archivedClaims;
+    });
+  }
+
   sweepExpiredPendingLaunches(ttlMs: number): BackgroundPendingLaunch[] {
+    if (!this.readBoard().pendingLaunches?.length) {
+      return [];
+    }
+
     return this.updateBoard((board) => {
       const pendingLaunches = board.pendingLaunches ?? [];
       const cutoff = Date.now() - ttlMs;
       const expired = pendingLaunches.filter((pending) => {
+        if (pending.disposition === 'claimed') return false;
         const createdAt = Date.parse(pending.createdAt);
         return !Number.isFinite(createdAt) || createdAt <= cutoff;
       });
@@ -442,15 +581,16 @@ export class BackgroundJobService {
     });
   }
 
-  listPendingLaunches(filter: BackgroundJobScopeFilter = {}): BackgroundPendingLaunch[] {
+  listPendingLaunches(filter: BackgroundJobScopeFilter = {}, options: BackgroundJobListOptions = {}): BackgroundPendingLaunch[] {
     return (this.readBoard().pendingLaunches ?? []).filter((pending) => {
+      if (pending.archivedAt && !options.includeArchived) return false;
       const scope = pending.scope || {};
       return Object.entries(filter).every(([key, value]) => {
         if (value === undefined) {
           return true;
         }
         if (key === 'parentSessionId') {
-          return pending.parentSessionId === value || scope.parentSessionId === value;
+          return pending.parentSessionId === value;
         }
         return scope[key as keyof BackgroundJobScope] === value;
       });
@@ -459,7 +599,9 @@ export class BackgroundJobService {
 
   resolve(identifier: string): BackgroundJobRecord | undefined {
     const board = this.readBoard();
-    return board.jobs.find(job => job.taskId === identifier || job.sessionId === identifier || job.alias === identifier);
+    const matches = board.jobs.filter(job => job.taskId === identifier || job.sessionId === identifier || job.alias === identifier || job.launchId === identifier);
+    if (matches.length > 1) throw new Error(`Ambiguous background job identifier: ${identifier}`);
+    return matches[0];
   }
 
   recordRetry(identifier: string, input: RegisterBackgroundJobInput): BackgroundJobRecord {
@@ -500,11 +642,12 @@ export class BackgroundJobService {
 
   formatForPrompt(filter: BackgroundJobScopeFilter = {}): string {
     const jobs = this.listScoped(filter);
-    if (jobs.length === 0) {
+    const claims = this.listPendingLaunches(filter).filter(item => item.disposition === 'claimed');
+    if (jobs.length === 0 && claims.length === 0) {
       return 'No background jobs are currently visible for this scope.';
     }
 
-    return jobs.map((job) => {
+    const lines = jobs.map((job) => {
       const scopeParts = [job.scope?.feature, job.scope?.task, job.scope?.adHocRunId, job.scope?.workflow].filter(Boolean).join('/');
       const details = [
         job.resultSummary,
@@ -515,7 +658,8 @@ export class BackgroundJobService {
       ].filter(Boolean).join('; ');
 
       return `- ${job.alias} ${job.runtimeState} ${job.agentName} ${scopeParts || 'unscoped'}${details ? ` (${details})` : ''}`;
-    }).join('\n');
+    });
+    return [...lines, ...claims.map(item => `- launch ${item.launchId} parent ${item.parentSessionId} call ${item.callId}: native identity unavailable; execution may still be running. Scope: ${JSON.stringify(item.scope)}; ownership: ${JSON.stringify(item.ownership)}. Inspect native execution or archive bookkeeping by launchId with a reason. Archiving does not stop execution or authorize a replacement writer.`)].join('\n');
   }
 }
 

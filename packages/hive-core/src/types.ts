@@ -354,6 +354,15 @@ export interface BackgroundJobOwnership {
 export interface BackgroundPendingLaunch {
   launchId: string;
   parentSessionId: string;
+  disposition?: 'prepared' | 'claimed';
+  background?: boolean;
+  callId?: string;
+  claimedAt?: string;
+  runtimeId?: string;
+  registrationError?: string;
+  archivedAt?: string;
+  archiveReason?: 'ignored' | 'reconciled';
+  reconciliationSummary?: string;
   expectedDescription?: string;
   expectedPrompt?: string;
   agentName: string;
@@ -365,6 +374,8 @@ export interface BackgroundPendingLaunch {
 export interface BackgroundJobRecord {
   taskId: string;
   sessionId: string;
+  launchId?: string;
+  callId?: string;
   agentName: string;
   customAgentBase?: string;
   description?: string;

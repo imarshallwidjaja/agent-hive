@@ -21,6 +21,7 @@ function registerJob(service: BackgroundJobService, taskId = 'task-1', sessionId
   return service.registerLaunch({
     taskId,
     sessionId,
+    launchId: taskId === 'task-1' ? 'launch-1' : `launch-${taskId}`,
     agentName: 'forager-worker',
     scopeSource: 'pending-launch',
     description: 'Implement the worker task',
@@ -65,6 +66,7 @@ describe('BackgroundJobService', () => {
     expect(board.jobs[0]).toMatchObject({
       taskId: record.taskId,
       sessionId: 'sess-1',
+      launchId: 'launch-1',
       agentName: 'forager-worker',
       runtimeState: 'running',
       scopeSource: 'pending-launch',
@@ -76,6 +78,11 @@ describe('BackgroundJobService', () => {
         task: '01-task',
       },
     });
+  });
+
+  it('sweeps safely before a background board exists', () => {
+    expect(service.sweepExpiredPendingLaunches(5 * 60 * 1000)).toEqual([]);
+    expect(fs.existsSync(BOARD_PATH)).toBe(false);
   });
 
   it('generates aliases scoped to the parent session without collisions', () => {
@@ -217,6 +224,31 @@ describe('BackgroundJobService', () => {
     expect(readBoard().pendingLaunches?.[0].parentSessionId).toBe('parent-2');
   });
 
+  it('retains claimed provenance across restart/sweep and resolves exact identity atomically', () => {
+    service.registerPendingLaunch({
+      launchId: 'launch-missing-output',
+      parentSessionId: 'parent-1',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
+      ownership: { branch: 'hive/feature-a/01-task' },
+    });
+    service.claimPendingLaunch({ launchId: 'launch-missing-output', parentSessionId: 'parent-1', callId: 'call-1' });
+    service = new BackgroundJobService(TEST_DIR);
+    expect(service.sweepExpiredPendingLaunches(0)).toEqual([]);
+    expect(service.listScoped()).toEqual([]);
+    expect(() => service.consumePendingLaunch({ launchId: 'launch-missing-output', parentSessionId: 'parent-1' })).toThrow('claimed');
+    const input = { taskId: 'ses-native', sessionId: 'ses-native', launchId: 'launch-missing-output', callId: 'call-1', agentName: 'forager-worker', scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' } };
+    expect(() => service.registerLaunch({ ...input, callId: 'wrong' })).toThrow('launch_binding_error');
+    expect(service.findClaimedLaunch('parent-1', 'call-1')?.ownership?.branch).toBe('hive/feature-a/01-task');
+    const record = service.registerLaunch(input);
+    expect(service.registerLaunch(input)).toEqual(record);
+    expect(service.resolve('launch-missing-output')).toEqual(record);
+    expect(service.listPendingLaunches()).toEqual([]);
+    expect(service.listScoped()).toHaveLength(1);
+    expect(record.ownership?.branch).toBe('hive/feature-a/01-task');
+    expect(() => service.registerLaunch({ ...input, taskId: 'different' })).toThrow('launch_binding_error');
+  });
+
   it('updates last-known runtime state idempotently', () => {
     registerJob(service);
 
@@ -227,6 +259,101 @@ describe('BackgroundJobService', () => {
     expect(second.runtimeState).toBe('running');
     expect(second.statusUncertain).toBe(true);
     expect(readBoard().jobs).toHaveLength(1);
+  });
+
+  it('archives unresolved bookkeeping without losing exact late correlation or permitting redispatch', () => {
+    const scope = { projectRoot: TEST_DIR, parentSessionId: 'parent-1' };
+    service.registerPendingLaunch({ launchId: 'archived-claim', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
+    service.claimPendingLaunch({ launchId: 'archived-claim', parentSessionId: 'parent-1', callId: 'call-archive' });
+    expect(() => service.archiveClaimedLaunch('archived-claim', 'parent-2', 'ignored', 'reason')).toThrow('launch_binding_error');
+    expect(() => service.archiveClaimedLaunch('archived-claim', 'parent-1', 'ignored', ' ')).toThrow('reason');
+    service.archiveClaimedLaunch('archived-claim', 'parent-1', 'reconciled', 'Tracked native inspection elsewhere');
+    expect(service.listPendingLaunches()).toEqual([]);
+    expect(() => service.registerPendingLaunch({ launchId: 'archived-claim', parentSessionId: 'parent-1', agentName: 'forager-worker', scope })).toThrow('claimed');
+    const job = service.registerLaunch({ taskId: 'ses-archived', sessionId: 'ses-archived', launchId: 'archived-claim', callId: 'call-archive', agentName: 'forager-worker', scope });
+    expect(job.runtimeState).toBe('running');
+    expect(job.archiveReason).toBe('reconciled');
+    expect(service.listScoped()).toEqual([]);
+    expect(service.resolve('archived-claim')?.taskId).toBe('ses-archived');
+  });
+
+  it('prefers a unique active claim over archived history and rejects same-state ambiguity', () => {
+    const scope = { projectRoot: TEST_DIR, parentSessionId: 'parent-1' };
+    service.registerPendingLaunch({ launchId: 'archived-1', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
+    service.claimPendingLaunch({ launchId: 'archived-1', parentSessionId: 'parent-1', callId: 'reused-call' });
+    service.archiveClaimedLaunch('archived-1', 'parent-1', 'reconciled', 'First launch was inspected');
+    service.registerPendingLaunch({ launchId: 'active', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
+    service.claimPendingLaunch({ launchId: 'active', parentSessionId: 'parent-1', callId: 'reused-call' });
+
+    expect(service.findClaimedLaunch('parent-1', 'reused-call')).toMatchObject({
+      launchId: 'active',
+      archivedAt: undefined,
+    });
+
+    service.finishClaimedLaunch('active', 'parent-1', 'reused-call');
+    expect(service.findClaimedLaunch('parent-1', 'reused-call')).toMatchObject({
+      launchId: 'archived-1',
+      archiveReason: 'reconciled',
+      reconciliationSummary: 'First launch was inspected',
+    });
+
+    service.registerPendingLaunch({ launchId: 'archived-2', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
+    service.claimPendingLaunch({ launchId: 'archived-2', parentSessionId: 'parent-1', callId: 'reused-call' });
+    service.archiveClaimedLaunch('archived-2', 'parent-1', 'ignored', 'Second launch was intentionally ignored');
+    expect(() => service.findClaimedLaunch('parent-1', 'reused-call')).toThrow('ambiguous claimed call');
+
+    const board = readBoard();
+    for (const pending of board.pendingLaunches ?? []) pending.archivedAt = undefined;
+    fs.writeFileSync(BOARD_PATH, JSON.stringify(board));
+    expect(() => service.findClaimedLaunch('parent-1', 'reused-call')).toThrow('ambiguous claimed call');
+  });
+
+  it('retires only one parent launch state and bounds its archived claim history', () => {
+    const oldArchiveTime = new Date(Date.now() - 60_000).toISOString();
+    const archived = Array.from({ length: 100 }, (_, index) => ({
+      launchId: `old-${index}`,
+      parentSessionId: 'parent-1',
+      disposition: 'claimed' as const,
+      callId: `old-call-${index}`,
+      claimedAt: oldArchiveTime,
+      archivedAt: oldArchiveTime,
+      archiveReason: 'ignored' as const,
+      reconciliationSummary: 'Previously retired',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' },
+      createdAt: oldArchiveTime,
+    }));
+    fs.mkdirSync(path.dirname(BOARD_PATH), { recursive: true });
+    fs.writeFileSync(BOARD_PATH, JSON.stringify({
+      schemaVersion: 1,
+      jobs: [],
+      pendingLaunches: [
+        ...archived,
+        { launchId: 'prepared', parentSessionId: 'parent-1', disposition: 'prepared', agentName: 'forager-worker', createdAt: oldArchiveTime },
+        { launchId: 'active', parentSessionId: 'parent-1', disposition: 'claimed', callId: 'reused-call', agentName: 'forager-worker', createdAt: oldArchiveTime },
+        { launchId: 'foreign', parentSessionId: 'parent-2', disposition: 'claimed', callId: 'foreign-call', agentName: 'forager-worker', createdAt: oldArchiveTime },
+      ],
+    }));
+
+    service.retireParentLaunches('parent-1');
+
+    const retained = service.listPendingLaunches({}, { includeArchived: true });
+    const parentHistory = retained.filter(pending => pending.parentSessionId === 'parent-1');
+    expect(parentHistory).toHaveLength(100);
+    expect(parentHistory.some(pending => pending.launchId === 'old-0')).toBe(false);
+    expect(parentHistory.find(pending => pending.launchId === 'active')).toMatchObject({
+      archivedAt: expect.any(String),
+      archiveReason: 'ignored',
+      reconciliationSummary: expect.stringContaining('without changing native execution state'),
+    });
+    expect(retained.find(pending => pending.launchId === 'prepared')).toBeUndefined();
+    expect(retained.find(pending => pending.launchId === 'foreign')?.archivedAt).toBeUndefined();
+
+    service.registerPendingLaunch({ launchId: 'replacement', parentSessionId: 'parent-1', agentName: 'forager-worker' });
+    expect(service.claimPendingLaunch({ launchId: 'replacement', parentSessionId: 'parent-1', callId: 'reused-call' })).toMatchObject({
+      disposition: 'claimed',
+      callId: 'reused-call',
+    });
   });
 
   it('marks terminal runtime states unreconciled without changing the terminal runtime result during reconciliation', () => {

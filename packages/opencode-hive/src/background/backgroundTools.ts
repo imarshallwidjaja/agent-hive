@@ -64,10 +64,11 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         const archivedJobs = allJobs.filter(job => isBackgroundJobArchived(job));
         const activeJobs = allJobs.filter(job => !isBackgroundJobArchived(job));
         const staleActiveJobs = activeJobs.filter(isNonTerminalStaleJob);
-        const pendingLaunches = options.backgroundJobService
-          .listPendingLaunches({ projectRoot: options.projectRoot })
+        const allPendingLaunches = options.backgroundJobService
+          .listPendingLaunches({ projectRoot: options.projectRoot }, { includeArchived: includeArchived === true })
           .filter(pending => isPendingLaunchVisible(pending, toolContext as ToolContext))
           .filter(pending => matchesOptionalScope(pending, { feature, task, adHocRunId, workflow }));
+        const pendingLaunches = allPendingLaunches.filter(pending => !pending.archivedAt);
         const nextActions = buildNextActions(activeJobs, pendingLaunches);
         const waitingForNativeCompletion = buildNativeCompletionWaits(activeJobs);
         const orchestrationBurden = buildOrchestrationBurden(activeJobs, pendingLaunches);
@@ -87,7 +88,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           scope: currentScope(options.projectRoot, toolContext as ToolContext),
           jobs: allJobs.map(formatJob),
           archivedCount: archivedJobs.length > 0 ? archivedJobs.length : undefined,
-          pendingLaunches: pendingLaunches.length > 0 ? pendingLaunches.map(formatPendingLaunch) : undefined,
+          pendingLaunches: allPendingLaunches.length > 0 ? allPendingLaunches.map(formatPendingLaunch) : undefined,
           waitingForNativeCompletion: waitingForNativeCompletion.length > 0 ? waitingForNativeCompletion : undefined,
           nextActions: nextActions.length > 0 ? nextActions : undefined,
           recommendedNextAction,
@@ -99,9 +100,9 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
     }),
 
     hive_background_reconcile: tool({
-      description: 'Mark a terminal or stale background job reconciled or ignored without changing its runtime result.',
+      description: 'Archive terminal/stale jobs or unresolved claimed launches. Archiving bookkeeping does not stop execution or authorize a replacement writer.',
       args: {
-        identifier: tool.schema.string().describe('Task ID, session ID, or scoped alias to reconcile.'),
+        identifier: tool.schema.string().describe('Task ID, session ID, launch ID, or scoped alias to reconcile.'),
         decision: tool.schema.enum(['reconciled', 'ignored']).describe('Whether the terminal job was reconciled into task state or intentionally ignored. Stale non-terminal jobs may only be ignored.'),
         summary: tool.schema.string().describe('Required reconciliation summary or ignore reason.'),
       },
@@ -186,6 +187,12 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           return json(failure('cancel_reason_required', 'A non-empty cancellation reason is required.'));
         }
 
+        const unresolved = visibleClaim(options.backgroundJobService, identifier, options.projectRoot, toolContext as ToolContext);
+        if (unresolved) {
+          return json(unresolved.archivedAt
+            ? failure('job_archived', 'Claimed launch bookkeeping is archived and cannot be cancelled.')
+            : failure('native_identity_unavailable', unresolvedRecoveryMessage));
+        }
         const resolved = resolveVisibleJob(options.backgroundJobService, identifier, options.projectRoot, toolContext as ToolContext);
         if (!resolved.success) {
           return json(resolved);
@@ -253,6 +260,12 @@ function reconcileVisibleJob(
   if (!trimmedSummary) {
     return { identifier: item.identifier, ...failure('summary_required', 'A non-empty summary is required to reconcile or ignore a background job.') };
   }
+  const unresolved = visibleClaim(backgroundJobService, item.identifier, projectRoot, toolContext);
+  if (unresolved) {
+    if (unresolved.archivedAt) return { identifier: item.identifier, ...failure('job_archived', 'Claimed launch bookkeeping is already archived.') };
+    const archived = backgroundJobService.archiveClaimedLaunch(unresolved.launchId, unresolved.parentSessionId, item.decision, trimmedSummary);
+    return { identifier: item.identifier, success: true, decision: item.decision, launch: formatPendingLaunch(archived), archive: { archived: true, message: 'Only bookkeeping was archived. Execution may still be running; archiving does not stop execution or authorize a replacement writer.' } };
+  }
 
   const resolved = resolveVisibleJob(backgroundJobService, item.identifier, projectRoot, toolContext);
   if (!resolved.success) {
@@ -309,7 +322,7 @@ function reconcileVisibleJob(
 }
 
 function isJobVisible(job: BackgroundJobRecord, toolContext: ToolContext): boolean {
-  if (toolContext.sessionID && job.scope?.parentSessionId !== toolContext.sessionID) {
+  if (!toolContext.sessionID || job.scope?.parentSessionId !== toolContext.sessionID) {
     return false;
   }
   if (toolContext.agent && job.scope?.primaryAgent && job.scope.primaryAgent !== toolContext.agent) {
@@ -319,13 +332,19 @@ function isJobVisible(job: BackgroundJobRecord, toolContext: ToolContext): boole
 }
 
 function isPendingLaunchVisible(pending: BackgroundPendingLaunch, toolContext: ToolContext): boolean {
-  if (toolContext.sessionID && pending.parentSessionId !== toolContext.sessionID) {
+  if (!toolContext.sessionID || pending.parentSessionId !== toolContext.sessionID) {
     return false;
   }
   if (toolContext.agent && pending.scope?.primaryAgent && pending.scope.primaryAgent !== toolContext.agent) {
     return false;
   }
   return true;
+}
+
+const unresolvedRecoveryMessage = 'Native identity unavailable; execution may still be running. Inspect native execution or archive this launch by launchId with hive_background_reconcile and a reason. Archiving only removes bookkeeping; it does not stop execution or authorize a replacement writer.';
+
+function visibleClaim(service: BackgroundJobService, identifier: string, projectRoot: string, context: ToolContext): BackgroundPendingLaunch | undefined {
+  return service.listPendingLaunches({ projectRoot }, { includeArchived: true }).find(pending => pending.launchId === identifier.trim() && pending.disposition === 'claimed' && isPendingLaunchVisible(pending, context));
 }
 
 function matchesOptionalScope(
@@ -346,7 +365,10 @@ function buildNextActions(jobs: BackgroundJobRecord[], pendingLaunches: Backgrou
     .filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true)
     .map(reconcileRequiredAction);
 
-  if (pendingLaunches.length > 0) {
+  for (const pending of pendingLaunches.filter(item => item.disposition === 'claimed')) {
+    actions.push({ reason: 'claimed_launch_registration_unresolved', launchId: pending.launchId, message: unresolvedRecoveryMessage });
+  }
+  if (pendingLaunches.some(item => item.disposition !== 'claimed')) {
     actions.push({
       reason: 'pending_launch_without_registered_job',
       command: 'launch or verify the native task({ background: true, ... }) call, then call hive_background_status again',
@@ -369,7 +391,7 @@ function buildOrchestrationBurden(jobs: BackgroundJobRecord[], pendingLaunches: 
   const actionableLanes = reconcileItemsRequired + pendingLaunches.length;
 
   return {
-    visibleLanes: jobs.length,
+    visibleLanes: jobs.length + pendingLaunches.filter(item => item.disposition === 'claimed').length,
     actionableLanes,
     pendingLaunches: pendingLaunches.length,
     completionNotificationsPending,
@@ -383,6 +405,14 @@ function buildRecommendedNextAction(
   pendingLaunches: BackgroundPendingLaunch[],
   reconciledJobs: BackgroundJobRecord[] = [],
 ): RecommendedNextAction {
+  const unresolved = pendingLaunches.filter(item => item.disposition === 'claimed');
+  if (unresolved.length) return {
+    action: 'inspect_unresolved_launch',
+    reasonCode: 'claimed_launch_registration_unresolved',
+    launchIds: unresolved.map(item => item.launchId),
+    message: unresolvedRecoveryMessage,
+    requiresHiveStatusRefresh: false,
+  };
   const staleJobs = jobs.filter(isNonTerminalStaleJob);
   if (staleJobs.length > 0) {
     return buildStaleRecoveryAction(staleJobs);
@@ -543,6 +573,8 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
   return {
     taskId: job.taskId,
     sessionId: job.sessionId,
+    launchId: job.launchId,
+    callId: job.callId,
     alias: job.alias,
     agentName: job.agentName,
     description: job.description,
@@ -585,7 +617,17 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
 
 function formatPendingLaunch(pending: BackgroundPendingLaunch): Record<string, unknown> {
   return {
+    launchId: pending.launchId,
     parentSessionId: pending.parentSessionId,
+    disposition: pending.disposition ?? 'prepared',
+    callId: pending.callId,
+    claimedAt: pending.claimedAt,
+    runtimeId: pending.runtimeId,
+    registrationError: pending.registrationError,
+    archivedAt: pending.archivedAt,
+    archiveReason: pending.archiveReason,
+    reconciliationSummary: pending.reconciliationSummary,
+    recovery: pending.disposition === 'claimed' ? unresolvedRecoveryMessage : undefined,
     expectedDescription: pending.expectedDescription,
     expectedPrompt: pending.expectedPrompt,
     agentName: pending.agentName,

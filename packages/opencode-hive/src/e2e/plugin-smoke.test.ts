@@ -361,7 +361,9 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     } };
     await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'claimed-adhoc-call' }, dispatch);
     const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
-    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
+      expect.objectContaining({ disposition: 'claimed', callId: 'claimed-adhoc-call' }),
+    ]);
     await hooks.event?.({ event: {
       type: 'session.created',
       properties: { info: { id: child, parentID: parent } },
@@ -855,6 +857,13 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
       { title: 'task', output: 'running', metadata: {} },
     );
     await hooks.event?.({ event: { type: 'session.deleted', properties: { info: { id: parent } } } } as any);
+    const retiredLaunches = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8')).pendingLaunches;
+    expect(retiredLaunches.find((pending: any) => pending.scope?.adHocRunId === 'deleted-correlation-run')).toMatchObject({
+      disposition: 'claimed',
+      archivedAt: expect.any(String),
+      archiveReason: 'ignored',
+    });
+    expect(retiredLaunches.find((pending: any) => pending.scope?.adHocRunId === 'deleted-correlation-other-run')?.archivedAt).toBeUndefined();
     await hooks['chat.message']?.({ sessionID: parent, agent: 'hive-master' }, {
       message: { agent: 'hive-master' }, parts: [],
     } as any);
@@ -936,14 +945,14 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     }, toolContext) as string);
     const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
     const originalBoard = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
-    const originalConsume = (await import('hive-core')).BackgroundJobService.prototype.consumePendingLaunch;
+    const originalClaim = (await import('hive-core')).BackgroundJobService.prototype.claimPendingLaunch;
     let fail = true;
-    const consume = spyOn((await import('hive-core')).BackgroundJobService.prototype, 'consumePendingLaunch').mockImplementation(function (input) {
+    const claim = spyOn((await import('hive-core')).BackgroundJobService.prototype, 'claimPendingLaunch').mockImplementation(function (input) {
       if (fail) {
         fail = false;
         throw new Error('injected before-hook failure');
       }
-      return originalConsume.call(this, input);
+      return originalClaim.call(this, input);
     });
     try {
       await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'before-retry-call-a' }, {
@@ -954,9 +963,11 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
         args: { ...launch.backgroundTaskCall },
       });
     } finally {
-      consume.mockRestore();
+      claim.mockRestore();
     }
-    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
+      expect.objectContaining({ disposition: 'claimed', callId: 'before-retry-call-b' }),
+    ]);
   }, 30_000);
 
   it('preserves an already-bound call guard across repeated before-hook replays', async () => {
@@ -1005,7 +1016,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     });
   }, 30_000);
 
-  it('serializes concurrent forager dispatch claims so exactly one wins without residue', async () => {
+  it('serializes concurrent forager dispatch claims so exactly one durable claim wins', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const parent = 'concurrent-claim-parent';
     const child = 'concurrent-claim-child';
@@ -1021,6 +1032,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     ]);
     const fulfilled = results.filter(result => result.status === 'fulfilled');
     const rejected = results.filter(result => result.status === 'rejected');
+    const winningCallID = results[0]?.status === 'fulfilled' ? 'concurrent-call-a' : 'concurrent-call-b';
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
     expect(String((rejected[0] as any).reason)).toMatch(/launch_binding_error/);
@@ -1028,7 +1040,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
     await observeNativeTaskChild(hooks, {
       parentSessionID: parent,
-      callID: results[0]?.status === 'fulfilled' ? 'concurrent-call-a' : 'concurrent-call-b',
+      callID: winningCallID,
       childSessionID: child,
       expectedAgent: 'forager-worker',
     });
@@ -1044,11 +1056,13 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     });
 
     const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
-    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
+      expect.objectContaining({ disposition: 'claimed', callId: winningCallID }),
+    ]);
 
     await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'concurrent-call-c' }, {
       args: { ...launch.backgroundTaskCall },
-    })).rejects.toThrow(/launch_binding_error[\s\S]*No fresh forager launch reservation exists/);
+    })).rejects.toThrow(/launch_binding_error[\s\S]*persisted forager launch/);
   }, 30_000);
 
   it('preserves an ad-hoc launch prepared while another claim awaits worktree validation', async () => {
@@ -1120,14 +1134,18 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
       expect(new SessionService(testRoot).getGlobal(childA)?.adHocRunId).toBe('concurrent-prepare-a');
       expect(new SessionService(testRoot).getGlobal(childB)?.adHocRunId).toBe('concurrent-prepare-b');
       const board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8'));
-      expect(board.pendingLaunches ?? []).toHaveLength(0);
+      expect(board.pendingLaunches).toHaveLength(2);
+      expect(board.pendingLaunches).toEqual(expect.arrayContaining([
+        expect.objectContaining({ disposition: 'claimed', callId: 'concurrent-prepare-call-a' }),
+        expect.objectContaining({ disposition: 'claimed', callId: 'concurrent-prepare-call-b' }),
+      ]));
     } finally {
       releaseValidation?.();
       get.mockRestore();
     }
   }, 30_000);
 
-  it('consumes the superseded pending launch when the same task is prepared again', async () => {
+  it('replaces and claims the superseded pending launch when the same task is prepared again', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'superseded-task-parent', testRoot, ROOT_SESSION_CLIENT);
     await hooks.tool!.hive_feature_create.execute({ name: 'superseded-feature' }, toolContext);
@@ -1146,10 +1164,12 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     await hooks['tool.execute.before']?.({ tool: 'task', sessionID: toolContext.sessionID, callID: 'superseded-dispatch' }, {
       args: { ...relaunch.taskToolCall },
     });
-    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
+      expect.objectContaining({ disposition: 'claimed', callId: 'superseded-dispatch' }),
+    ]);
   }, 30_000);
 
-  it('consumes the superseded ad-hoc pending launch when the same run is prepared again', async () => {
+  it('replaces and claims the superseded ad-hoc pending launch when the same run is prepared again', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const parent = 'superseded-adhoc-parent';
     const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
@@ -1161,10 +1181,12 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'superseded-adhoc-dispatch' }, {
       args: { ...relaunch.backgroundTaskCall },
     });
-    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
+      expect.objectContaining({ disposition: 'claimed', callId: 'superseded-adhoc-dispatch' }),
+    ]);
   }, 30_000);
 
-  it('prunes stale pre-restart pending launches on first dispatch instead of only reporting them', async () => {
+  it('prunes unused preparations at initialization while preserving unresolved claimed execution', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const parent = 'stale-pending-parent';
     const initial = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
@@ -1172,13 +1194,25 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
     const board = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
     board.pendingLaunches[0].createdAt = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    board.pendingLaunches.push({
+      ...board.pendingLaunches[0],
+      launchId: 'claimed-before-restart',
+      disposition: 'claimed',
+      callId: 'claimed-call',
+      background: true,
+      runtimeId: 'old-runtime',
+      claimedAt: board.pendingLaunches[0].createdAt,
+    });
     fs.writeFileSync(boardPath, JSON.stringify(board));
 
     const fresh = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
+      expect.objectContaining({ launchId: 'claimed-before-restart', disposition: 'claimed', callId: 'claimed-call' }),
+    ]);
     await expect(fresh.hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'stale-dispatch' }, {
       args: { subagent_type: 'forager-worker', description: 'Stale', prompt: 'Stale dispatch' },
     })).rejects.toThrow(/launch_binding_error/);
-    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toHaveLength(1);
   }, 30_000);
 
   it('invalidates ambiguous reservations so exactly one fresh launch can be dispatched', async () => {
@@ -3535,7 +3569,9 @@ Do it
       }, { args: { ...launch.backgroundTaskCall } })).rejects.toThrow(/launch_binding_error[\s\S]*binding is still in progress/);
       expect(mutatedDispatch.args.prompt).toBe(canonicalAssignment);
       expect(mutatedDispatch.args.prompt).not.toContain('Caller-written text');
-      expect(JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8')).pendingLaunches).toBeUndefined();
+      expect(JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8')).pendingLaunches).toEqual([
+        expect.objectContaining({ disposition: 'claimed', callId: 'mutated-worker' }),
+      ]);
 
       await hooks.event?.({ event: {
         type: 'session.created',

@@ -45,11 +45,13 @@ function registerScopedJob(
     primaryAgent?: string;
     feature?: string;
     task?: string;
+    launchId?: string;
   },
 ) {
   return service.registerLaunch({
     taskId: input.taskId,
     sessionId: input.sessionId,
+    launchId: input.launchId,
     agentName: 'forager-worker',
     description: `Background job ${input.taskId}`,
     scope: {
@@ -109,8 +111,40 @@ describe('background management tools', () => {
     cleanup();
   });
 
+  it('shows unresolved claims without native wait/cancel and archives only same-parent bookkeeping', async () => {
+    service.registerPendingLaunch({ launchId: 'unresolved', parentSessionId: 'parent-1', agentName: 'forager-worker', scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'run-1' }, ownership: { branch: 'branch-1' } });
+    service.claimPendingLaunch({ launchId: 'unresolved', parentSessionId: 'parent-1', callId: 'call-1', runtimeId: 'current' });
+    let cancels = 0;
+    const tools = createBackgroundTools({ backgroundJobService: service, projectRoot: TEST_DIR, isEnabled: () => true, currentRuntimeId: 'current', cancelRuntimeTask: () => { cancels++; return { cancelled: true }; } });
+    const status = JSON.parse(await tools.hive_background_status.execute({}, createToolContext()) as string);
+    expect(status.jobs).toEqual([]);
+    expect(status.pendingLaunches[0]).toMatchObject({ launchId: 'unresolved', disposition: 'claimed', callId: 'call-1', ownership: { branch: 'branch-1' } });
+    expect(status.recommendedNextAction.action).toBe('inspect_unresolved_launch');
+    expect(status.recommendedNextAction.message).toContain('execution may still be running');
+    expect(status.waitingForNativeCompletion).toBeUndefined();
+    expect(status.schedulerGuidance).toBeUndefined();
+    const cancelled = JSON.parse(await tools.hive_background_cancel.execute({ identifier: 'unresolved', reason: 'stop' }, createToolContext()) as string);
+    expect(cancelled.reason).toBe('native_identity_unavailable');
+    expect(cancels).toBe(0);
+    const foreign = JSON.parse(await tools.hive_background_status.execute({}, createToolContext('parent-2')) as string);
+    expect(foreign.pendingLaunches).toBeUndefined();
+    const denied = JSON.parse(await tools.hive_background_reconcile.execute({ identifier: 'unresolved', decision: 'ignored', summary: 'inspect separately' }, createToolContext('parent-2')) as string);
+    expect(denied.success).toBe(false);
+    const archived = JSON.parse(await tools.hive_background_reconcile.execute({ identifier: 'unresolved', decision: 'ignored', summary: 'Native inspection tracked separately' }, createToolContext()) as string);
+    expect(archived.success).toBe(true);
+    expect(archived.archive.message).toContain('does not stop execution or authorize a replacement writer');
+    expect(service.listPendingLaunches()).toEqual([]);
+    expect(service.listScoped()).toEqual([]);
+    const history = JSON.parse(await tools.hive_background_status.execute({ includeArchived: true }, createToolContext()) as string);
+    expect(history.pendingLaunches[0].archiveReason).toBe('ignored');
+    expect(history.recommendedNextAction.action).toBe('idle');
+    const archivedCancel = JSON.parse(await tools.hive_background_cancel.execute({ identifier: 'unresolved', reason: 'stop' }, createToolContext()) as string);
+    expect(archivedCancel.reason).toBe('job_archived');
+    expect(cancels).toBe(0);
+  });
+
   it('hive_background_status returns scoped jobs with runtime state separate from coordination metadata', async () => {
-    const visible = registerScopedJob(service, { taskId: 'visible-task', sessionId: 'visible-session' });
+    const visible = registerScopedJob(service, { taskId: 'visible-task', sessionId: 'visible-session', launchId: 'visible-launch' });
     service.markTerminal('visible-task', 'completed', { resultSummary: 'worker finished' });
     service.markPromptNotified(['visible-task'], 'parent-1');
     service.markPromptAcknowledgedForSession('parent-1');
@@ -129,6 +163,7 @@ describe('background management tools', () => {
       success?: boolean;
       jobs?: Array<{
         taskId: string;
+        launchId?: string;
         alias: string;
         runtime: { state: string; resultSummary?: string };
         coordination: { terminalUnreconciled?: boolean; staleAt?: string; promptAcknowledgedAt?: string; promptBoardInjectionCount?: number };
@@ -142,6 +177,7 @@ describe('background management tools', () => {
     expect(defaultResult.jobs?.map(job => job.taskId)).toEqual(['visible-task', 'stale-task']);
     expect(defaultResult.jobs?.[0]).toMatchObject({
       taskId: 'visible-task',
+      launchId: 'visible-launch',
       alias: visible.alias,
       runtime: { state: 'completed', resultSummary: 'worker finished' },
       coordination: { terminalUnreconciled: true },
@@ -333,13 +369,14 @@ describe('background management tools', () => {
 
     const result = parseToolJson<{
       jobs?: unknown[];
-      pendingLaunches?: Array<{ expectedPrompt?: string; scope?: { adHocRunId?: string }; ownership?: { branch?: string } }>;
+      pendingLaunches?: Array<{ launchId?: string; expectedPrompt?: string; scope?: { adHocRunId?: string }; ownership?: { branch?: string } }>;
       nextActions?: Array<{ reason: string; command?: string; message?: string }>;
       recommendedNextAction?: { action: string; reasonCode: string; requiresHiveStatusRefresh: boolean };
     }>(await tools.hive_background_status.execute({}, createToolContext()));
 
     expect(result.jobs).toEqual([]);
     expect(result.pendingLaunches).toEqual([expect.objectContaining({
+      launchId: 'pending-launch-1',
       expectedPrompt: 'Work in @/tmp/worktree',
       scope: expect.objectContaining({ adHocRunId: 'adhoc-1' }),
       ownership: expect.objectContaining({ branch: 'hive/adhoc/adhoc-1' }),
