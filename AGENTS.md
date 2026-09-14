@@ -13,9 +13,11 @@ bun run build
 # Development mode (all packages)
 bun run dev
 
-# Run tests (from package directories)
-bun run test              # Run all tests
-bun run test -- <file>    # Run specific test
+# Run all workspace tests from the repository root
+bun run test
+
+# Run a focused test from the owning package
+bun test <file>
 
 # Release verification / manual preparation
 bun run release:check     # Install, build, and test release artifacts
@@ -253,7 +255,7 @@ This is a **bun workspaces** monorepo:
 
 - Dependencies are hoisted to root `node_modules/`
 - Each package has its own `package.json`
-- Run package scripts from the package directory (for example, `packages/vscode-hive/` → `bun run build`)
+- Run aggregate `build` and `test` scripts from the repository root. Run package-specific scripts and focused tests from the owning package directory.
 
 ## Hive - Feature Development System
 
