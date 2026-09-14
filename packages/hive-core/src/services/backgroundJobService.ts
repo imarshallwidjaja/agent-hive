@@ -56,8 +56,6 @@ export interface BackgroundJobListOptions {
   includeArchived?: boolean;
 }
 
-const CLAIMED_LAUNCH_ARCHIVE_LIMIT_PER_PARENT = 100;
-
 export class BackgroundJobService {
   constructor(private readonly projectRoot: string) {}
 
@@ -116,26 +114,6 @@ export class BackgroundJobService {
     const matches = (board.pendingLaunches ?? []).filter(item => item.launchId === launchId);
     if (matches.length > 1) throw new Error('launch_binding_error: ambiguous launch identity');
     return matches[0];
-  }
-
-  private pruneClaimedLaunchArchives(board: BackgroundJobsJson, parentSessionId: string): void {
-    const pendingLaunches = board.pendingLaunches ?? [];
-    const archived = pendingLaunches
-      .map((pending, index) => ({ pending, index }))
-      .filter(({ pending }) => pending.parentSessionId === parentSessionId && pending.disposition === 'claimed' && pending.archivedAt)
-      .sort((left, right) => {
-        const byTime = Date.parse(right.pending.archivedAt!) - Date.parse(left.pending.archivedAt!);
-        return Number.isFinite(byTime) && byTime !== 0 ? byTime : right.index - left.index;
-      });
-    if (archived.length <= CLAIMED_LAUNCH_ARCHIVE_LIMIT_PER_PARENT) return;
-
-    const retained = new Set(archived.slice(0, CLAIMED_LAUNCH_ARCHIVE_LIMIT_PER_PARENT).map(({ pending }) => pending));
-    const kept = pendingLaunches.filter(pending =>
-      pending.parentSessionId !== parentSessionId
-      || !pending.archivedAt
-      || pending.disposition !== 'claimed'
-      || retained.has(pending));
-    board.pendingLaunches = kept.length ? kept : undefined;
   }
 
   private applyIfChanged<T extends keyof BackgroundJobRecord>(record: BackgroundJobRecord, key: T, value: BackgroundJobRecord[T]): boolean {
@@ -304,7 +282,6 @@ export class BackgroundJobService {
       pending.archivedAt ??= new Date().toISOString();
       pending.archiveReason = decision;
       pending.reconciliationSummary = summary;
-      this.pruneClaimedLaunchArchives(board, parentSessionId);
       return pending;
     });
   }
@@ -326,7 +303,6 @@ export class BackgroundJobService {
         return true;
       });
       board.pendingLaunches = retained.length ? retained : undefined;
-      this.pruneClaimedLaunchArchives(board, parentSessionId);
       return archivedClaims;
     });
   }

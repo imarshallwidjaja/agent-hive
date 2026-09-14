@@ -7259,12 +7259,16 @@ NEXT: Ask your first clarifying question about this feature.`;
             }
             return await prepareAdhocLaunch(info, workerInstructions, toolContext);
           } catch (error) {
+            const classification = classifyServiceThrow(error);
             return respond({
               success: false,
               reason: 'adhoc_start_failed',
               runId,
               error: error instanceof Error ? error.message : String(error),
-              nextAction: 'Inspect the exact prior native execution if fenced, or resolve the ad-hoc run validation error, then retry hive_adhoc_worktree_start.',
+              ...(classification ? worktreeOutcomeFields(classification) : {}),
+              nextAction: classification
+                ? worktreeNextAction(classification.action)
+                : 'Inspect the exact prior native execution if fenced, or resolve the ad-hoc run validation error, then retry hive_adhoc_worktree_start.',
             });
           }
         },

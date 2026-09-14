@@ -1294,7 +1294,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     }
   }, 30_000);
 
-  it('does not let archived background bookkeeping unlock an unresolved writer', async () => {
+  it('retains more than 100 archived unresolved writers without fencing unrelated targets', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const parent = 'archived-writer-parent';
     const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
@@ -1310,13 +1310,37 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
       'ignored',
       'Bookkeeping archived without native cancellation.',
     );
-
-    const retry = JSON.parse(await hooks.tool!.hive_adhoc_worktree_start.execute({
-      runId: 'archived-writer-run', workerInstructions: 'Unsafe retry.',
+    const unrelated = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'archived-writer-unrelated-run', autoSpawnWorker: false,
     }, toolContext) as string);
+    const backgroundJobs = new BackgroundJobService(testRoot);
+    for (let index = 0; index < 100; index += 1) {
+      const launchId = `archived-writer-history-${index}`;
+      const callId = `archived-writer-history-call-${index}`;
+      backgroundJobs.registerPendingLaunch({
+        launchId,
+        parentSessionId: parent,
+        agentName: 'forager-worker',
+        scope: { projectRoot: testRoot, parentSessionId: parent, adHocRunId: `archived-history-run-${index}` },
+      });
+      backgroundJobs.claimPendingLaunch({ launchId, parentSessionId: parent, callId });
+      backgroundJobs.archiveClaimedLaunch(launchId, parent, 'ignored', 'Retained unresolved execution history.');
+    }
+    const fresh = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+
+    const retry = JSON.parse(await fresh.hooks.tool!.hive_adhoc_worktree_start.execute({
+      runId: 'archived-writer-run', workerInstructions: 'Unsafe retry.',
+    }, fresh.toolContext) as string);
     expect(retry.success).toBe(false);
     expect(retry.error).toContain('writer_fence_error');
-    expect(retry.error).toContain('prior claimed launch');
+    expect(retry.error).toContain(`claimed launch '${launch.launchId}'`);
+    expect(backgroundJobs.listPendingLaunches({}, { includeArchived: true }).some(pending => pending.launchId === launch.launchId)).toBe(true);
+
+    const unrelatedStart = JSON.parse(await fresh.hooks.tool!.hive_adhoc_worktree_start.execute({
+      runId: unrelated.runId, workerInstructions: 'Use the unrelated target.',
+    }, fresh.toolContext) as string);
+    expect(unrelatedStart.success).toBe(true);
+    expect(unrelatedStart.taskToolCall).toBeDefined();
   }, 30_000);
 
   it('blocks an active bound writer before mutation and permits retry after confirmed cancellation', async () => {
@@ -3610,6 +3634,18 @@ Do it
         expect(deniedStart.taskToolCall).toBeUndefined();
         expect(String(deniedStart.nextAction)).toContain('independently valid workspace');
         expect(String(deniedStart.nextAction)).toContain('Do not repair, rewrite, or migrate Git metadata');
+        const deniedAdhocStart = JSON.parse(await fresh.hooks.tool!.hive_adhoc_worktree_start.execute(
+          { runId: 'historical-run', workerInstructions: 'Do not reuse the relocated workspace.' },
+          fresh.toolContext,
+        ) as string);
+        expect(deniedAdhocStart.success).toBe(false);
+        expect(deniedAdhocStart.reasonCode).toBe('WORKTREE_LINKAGE_INVALID');
+        expect(deniedAdhocStart.retryable).toBe(false);
+        expect(deniedAdhocStart.action).toBe('start_fresh_run');
+        expect(deniedAdhocStart.launchId).toBeUndefined();
+        expect(deniedAdhocStart.taskToolCall).toBeUndefined();
+        expect(deniedAdhocStart.backgroundTaskCall).toBeUndefined();
+        expect(String(deniedAdhocStart.nextAction)).toContain('independently valid workspace');
         fs.writeFileSync(copiedStatusPath, JSON.stringify({ ...JSON.parse(copiedStatusBefore), status: 'done' }));
         const deniedTaskMerge = JSON.parse(await fresh.hooks.tool!.hive_merge.execute(
           { feature, task: FIRST_TASK, strategy: 'squash', message: TEST_MERGE_MESSAGE },

@@ -713,11 +713,14 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(typeof result.nextAction).toBe('string');
   });
 
-  it('hive_adhoc_worktree_create classifies a trusted-identity denial as start_fresh_run and keeps retry guidance for unclassified errors', async () => {
+  it('ad-hoc launch preparation classifies trusted-identity denials and keeps retry guidance for unclassified errors', async () => {
     initGitRoot(testRoot);
     const hooks = await loadHooks(testRoot);
     const toolContext = createToolContext('sess_adhoc_create_denial_classification');
     const createTool = hooks.tool!.hive_adhoc_worktree_create as unknown as {
+      execute(args: Record<string, unknown>, context: ToolContext): Promise<unknown>;
+    };
+    const startTool = hooks.tool!.hive_adhoc_worktree_start as unknown as {
       execute(args: Record<string, unknown>, context: ToolContext): Promise<unknown>;
     };
 
@@ -775,6 +778,47 @@ describe('ad-hoc worktree plugin tools', () => {
       expect(result.nextAction ?? '', denial.label).not.toMatch(/retry hive_adhoc_worktree_create/i);
       expect(result.nextAction, denial.label).toContain('Preserve the workspace and Git metadata');
       expect(result.nextAction, denial.label).toContain('independently valid workspace');
+
+      const getSpy = spyOn(AdhocWorktreeService.prototype, 'get').mockImplementation(async () => {
+        throw denial.error;
+      });
+      let startRaw: unknown;
+      try {
+        startRaw = await startTool.execute({
+          runId: 'denial-classification',
+          workerInstructions: 'Prepare a fresh worker.',
+        }, toolContext);
+      } finally {
+        getSpy.mockRestore();
+      }
+      const startResult = parseToolJson<{
+        success?: boolean;
+        reason?: string;
+        reasonCode?: string;
+        phase?: string;
+        mutation?: string;
+        retryable?: boolean;
+        action?: string;
+        error?: string;
+        nextAction?: string;
+        launchId?: string;
+        taskToolCall?: unknown;
+        backgroundTaskCall?: unknown;
+      }>(startRaw);
+      expect(startResult.success, denial.label).toBe(false);
+      expect(startResult.reason, denial.label).toBe('adhoc_start_failed');
+      expect(startResult.reasonCode, denial.label).toBe(denial.reasonCode);
+      expect(startResult.phase, denial.label).toBe('preflight');
+      expect(startResult.mutation, denial.label).toBe('none');
+      expect(startResult.retryable, denial.label).toBe(false);
+      expect(startResult.action, denial.label).toBe('start_fresh_run');
+      expect(startResult.error, denial.label).toContain(denial.error.message);
+      expect(startResult.nextAction ?? '', denial.label).not.toMatch(/retry hive_adhoc_worktree_start/i);
+      expect(startResult.nextAction, denial.label).toContain('Preserve the workspace and Git metadata');
+      expect(startResult.nextAction, denial.label).toContain('independently valid workspace');
+      expect(startResult.launchId, denial.label).toBeUndefined();
+      expect(startResult.taskToolCall, denial.label).toBeUndefined();
+      expect(startResult.backgroundTaskCall, denial.label).toBeUndefined();
     }
 
     const plainErrorSpy = spyOn(AdhocWorktreeService.prototype, 'create').mockImplementation(async () => {
@@ -802,6 +846,31 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(plain).not.toHaveProperty('reasonCode');
     expect(plain).not.toHaveProperty('action');
     expect(plain.nextAction).toContain('retry hive_adhoc_worktree_create');
+
+    const plainStartErrorSpy = spyOn(AdhocWorktreeService.prototype, 'get').mockImplementation(async () => {
+      throw new Error('simulated unclassified start failure');
+    });
+    let plainStartRaw: unknown;
+    try {
+      plainStartRaw = await startTool.execute({
+        runId: 'unclassified-start-error',
+        workerInstructions: 'Prepare a fresh worker.',
+      }, toolContext);
+    } finally {
+      plainStartErrorSpy.mockRestore();
+    }
+    const plainStart = parseToolJson<{
+      success?: boolean;
+      reason?: string;
+      reasonCode?: string;
+      action?: string;
+      nextAction?: string;
+    }>(plainStartRaw);
+    expect(plainStart.success).toBe(false);
+    expect(plainStart.reason).toBe('adhoc_start_failed');
+    expect(plainStart).not.toHaveProperty('reasonCode');
+    expect(plainStart).not.toHaveProperty('action');
+    expect(plainStart.nextAction).toContain('retry hive_adhoc_worktree_start');
   });
 
   it('hive_worktree_start still returns feature_required without a feature', async () => {

@@ -308,7 +308,7 @@ describe('BackgroundJobService', () => {
     expect(() => service.findClaimedLaunch('parent-1', 'reused-call')).toThrow('ambiguous claimed call');
   });
 
-  it('retires only one parent launch state and bounds its archived claim history', () => {
+  it('retires only one parent launch state and retains its archived claim history', () => {
     const oldArchiveTime = new Date(Date.now() - 60_000).toISOString();
     const archived = Array.from({ length: 100 }, (_, index) => ({
       launchId: `old-${index}`,
@@ -339,8 +339,8 @@ describe('BackgroundJobService', () => {
 
     const retained = service.listPendingLaunches({}, { includeArchived: true });
     const parentHistory = retained.filter(pending => pending.parentSessionId === 'parent-1');
-    expect(parentHistory).toHaveLength(100);
-    expect(parentHistory.some(pending => pending.launchId === 'old-0')).toBe(false);
+    expect(parentHistory).toHaveLength(101);
+    expect(parentHistory.some(pending => pending.launchId === 'old-0')).toBe(true);
     expect(parentHistory.find(pending => pending.launchId === 'active')).toMatchObject({
       archivedAt: expect.any(String),
       archiveReason: 'ignored',

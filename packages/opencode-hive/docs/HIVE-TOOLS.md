@@ -163,7 +163,7 @@ These tools are for isolated ad-hoc orchestration work. They operate on `.hive/.
 - `hive_adhoc_merge` returns `commitMessage` when it creates a merge/squash commit.
 - A failed non-preserved integration restores the affected target repository to its original HEAD and clean state. `preserveConflicts: true` retains only an actual conflict state.
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID.
-- Ad-hoc commit, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)); see that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
+- Ad-hoc create, start, commit, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)) when classified. Unclassified commit, merge, and cleanup errors fall back to the operation phase's conservative `inspect_state` classification; unclassified create and start errors keep their tool-specific fallback fields. See that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
 
 ### Background Orchestration (4 tools)
 
