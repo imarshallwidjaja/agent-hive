@@ -55,6 +55,48 @@
 - Structured manual task metadata can include `goal`, `description`, `acceptanceCriteria`, `references`, `files`, `reason`, and `source`; Hive uses it to build worker-facing `spec.md` content.
 - Use manual tasks for isolated ad-hoc/operator work. In the issue-72 `3b` / `3c` shape, first ask `hive-helper` for observable state clarification or interrupted-state wrap-up; only request a manual task when the follow-up can append safely after the approved DAG. If review feedback changes downstream sequencing, dependencies, or scope, amend `plan.md` instead, then run `hive_tasks_sync({ refreshPending: true })`.
 
+### Recovery fields and failure classification
+
+Task-backed worktree, ad-hoc worktree, and merge results carry the same recovery classification fields, added alongside all existing fields rather than replacing them. They describe where an operation stopped and what the caller may safely do next; a `NO_TRACKED_CHANGES` no-op also carries them, with `action: 'none'`. The core service owns the facts; OpenCode wrappers only render guidance from them.
+
+| Field | Meaning |
+|------|---------|
+| `phase` | Where the operation stopped: `validation`, `preflight`, `integration`, `rollback`, `verification`, or `cleanup`. |
+| `reasonCode` | Stable uppercase code naming the condition. See the classification table below. |
+| `mutation` | Durable target state relative to the operation's starting state: `none`, `applied`, `partial`, `preserved`, or `unknown`. Cleanup itself never changes this value; a failed cleanup after a completed integration still reports the integration's `applied`, because the target moved. |
+| `retryable` | True only when the exact same tool call may be repeated after satisfying the reported prerequisite and no durable target mutation occurred from this attempt. False whenever `mutation` is anything other than `none`. |
+| `action` | The conservative recovery step: `correct_arguments`, `clean_target`, `resolve_conflicts`, `inspect_state`, `retry_same_operation`, `cleanup_only`, `start_fresh_run`, `manual_recovery`, or `none`. |
+
+| `reasonCode` | `phase` | `mutation` | `retryable` | `action` |
+|------|------|------|------|------|
+| `INVALID_ARGUMENTS` | `validation` | `none` | `false` | `correct_arguments` |
+| `INVALID_COMMIT_MESSAGE` | `validation` | `none` | `false` | `correct_arguments` |
+| `INVALID_MERGE_MESSAGE` | `validation` | `none` | `false` | `correct_arguments` |
+| `MESSAGE_NOT_ALLOWED_FOR_REBASE` | `validation` | `none` | `false` | `correct_arguments` |
+| `RUN_NOT_FOUND` | `preflight` | `none` | `false` | `inspect_state` |
+| `WORKTREE_NOT_REGISTERED` | `preflight` | `none` | `false` | `inspect_state` |
+| `WORKTREE_LINKAGE_INVALID` | `preflight` | `none` | `false` | `start_fresh_run` |
+| `WORKSPACE_TOPOLOGY_MISMATCH` | `preflight` | `none` | `false` | `start_fresh_run` |
+| `WORKTREE_LOOKUP_FAILED` | `preflight` | `none` | `true` | `inspect_state` |
+| `SOURCE_BRANCH_MISSING` | `preflight` | `none` | `false` | `inspect_state` |
+| `TARGET_DIRTY` | `preflight` | `none` | `true` | `clean_target` |
+| `GIT_OPERATION_IN_PROGRESS` | `preflight` | `none` | `false` | `inspect_state` |
+| `NO_TRACKED_CHANGES` | `integration` | `none` | `false` | `none` |
+| `MERGE_CONFLICT_ABORTED` | `integration` | `none` | `true` | `retry_same_operation` |
+| `MERGE_CONFLICT_PRESERVED` | `integration` | `preserved` | `false` | `resolve_conflicts` |
+| `GIT_OPERATION_FAILED` | `integration` | `none` | `true` | `inspect_state` |
+| `ROLLBACK_FAILED` | `rollback` | `unknown` | `false` | `manual_recovery` |
+| `POST_INTEGRATION_VERIFICATION_FAILED` | `verification` | `unknown` | `false` | `inspect_state` |
+| `CLEANUP_FAILED` | `cleanup` | `applied` after a completed integration; `none` for cleanup-only runs | `false` | `cleanup_only` |
+| `COMPOSITE_PARTIAL` | `integration` | `partial` | `false` | `inspect_state` |
+
+- `NO_TRACKED_CHANGES` keeps its current meaning: the source had no net tracked changes to integrate, the operation is a successful no-op, `merged` stays `false`, and no `sha` is reported. An operation never reports `merged: true` when the target HEAD did not actually move; `rebase` with no applicable source commits reports this same no-op.
+- `filesChanged` behavior fix: on a successful integration, `filesChanged` is the observed difference between the target HEAD immediately before integration and the target HEAD after integration. The earlier two-endpoint comparison between the target HEAD and the source branch could include files that only the target changed after the source branch forked, so it did not describe the integration. `filesChanged` is empty for a no-op, for a failure that was fully restored to its starting state, and for a preserved conflict; conflict paths remain in `conflicts`. Composite results flatten entries as `repoId:path`.
+- Cleanup results report per-step status for worktree removal, branch deletion, and prune using `not_requested`, `not_attempted`, `already_absent`, `succeeded`, or `failed`, plus a `failures` list naming the step and cause. `worktreeRemoved`, `branchDeleted`, and `pruned` remain as factual projections of those steps.
+- `WORKTREE_LINKAGE_INVALID` and `WORKSPACE_TOPOLOGY_MISMATCH` mean the run's worktree identity no longer matches its trusted Git registration. Neither is retryable. Recovery is a fresh authenticated attempt or ad-hoc run at an independently valid workspace, per the relocation rules in the [Operator Guide](../../../docs/OPERATOR-GUIDE.md#when-work-blocks-or-fails). Recovery never repairs, rewrites, or migrates Git metadata or roots.
+- `COMPOSITE_PARTIAL` means at least one repository was integrated and a later repository failed. Earlier repositories remain integrated. Per-repository results are authoritative, and an aggregate top-level `sha` is a representative value from one repository, not a cross-repository identifier. Start recovery from the per-repository results rather than repeating the whole operation.
+- When integration succeeds and requested cleanup does not fully complete, the result reports `CLEANUP_FAILED` with `action: 'cleanup_only'`. `mutation` still reflects the completed integration. Repeat only the cleanup step; the caller must not re-run the merge.
+
 ### Worktree (4 tools)
 | Tool | Purpose |
 |------|---------|
@@ -80,6 +122,7 @@
   - `taskState`: resulting persisted task state
   - `nextAction`: explicit next step for worker/orchestrator
 - Non-terminal responses (for example `reason: "verification_required"`) require worker remediation and retry.
+- Failures from worktree operations report the shared recovery classification fields alongside the existing control-flow fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)).
 
 #### hive_worktree_start / hive_worktree_create output
 
@@ -93,6 +136,7 @@
 - The `question` tool is reserved for primary sessions. Subagents return required operator clarification as an exact terminal-response question for their parent orchestrator.
 - A blocked feature continuation starts a new worker session in the same worktree with the operator decision. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
 - One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
+- `hive_worktree_start` and `hive_worktree_create` preflight failures report the shared recovery fields instead of launch payloads ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)).
 
 ### Ad-hoc Worktree (4 tools)
 
@@ -117,6 +161,7 @@ These tools are for isolated ad-hoc orchestration work. They operate on `.hive/.
 - `hive_adhoc_merge` returns `commitMessage` when it creates a merge/squash commit.
 - A failed non-preserved integration restores the affected target repository to its original HEAD and clean state. `preserveConflicts: true` retains only an actual conflict state.
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID.
+- Ad-hoc commit, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)); see that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
 
 ### Background Orchestration (4 tools)
 
@@ -262,11 +307,16 @@ hive_task_trace_content({ task_id: "child", content_id: "<content_id from hive_t
   - `filesChanged`
   - `conflicts`
   - `conflictState` (`none`, `aborted`, or `preserved`)
+  - `phase`, `reasonCode`, `mutation`, `retryable`, `action`: shared recovery classification ([Recovery fields and failure classification](#recovery-fields-and-failure-classification))
   - `cleanup.worktreeRemoved`
   - `cleanup.branchDeleted`
   - `cleanup.pruned`
   - `error?`
-- If the task branch has no net tracked changes to integrate, `hive_merge` returns `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, omits `sha`, and still performs requested cleanup when safe.
+- The `cleanup` block also reports per-step status and a `failures` list; the three booleans remain factual projections ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)).
+- Composite merges also return per-repository `repos` results. Per-repository results are authoritative for what each repository integrated.
+- `filesChanged` reports the observed integration delta ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)).
+- A branch with no net tracked changes is the successful `NO_TRACKED_CHANGES` no-op, and requested cleanup still runs when safe ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)).
+- If the integration succeeds but requested cleanup does not fully complete, the result reports `reasonCode: 'CLEANUP_FAILED'` with `action: 'cleanup_only'`. The integration remains in place and must not be re-run; repeat only the cleanup step.
 - `conflictState: 'preserved'` means the caller requested `preserveConflicts: true` and must resolve the merge locally before cleanup can finish.
 
 ### Context (4 tools)

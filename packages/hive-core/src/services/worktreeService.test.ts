@@ -5,6 +5,8 @@ import * as path from "path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import type { ResolvedRepository } from "../types";
 import { WorktreeService } from "./worktreeService";
+import type { MergeResult } from "./worktreeService";
+import { WorktreeLinkageError } from "./worktreeOutcome";
 
 interface TestFixture {
   repoPath: string;
@@ -238,7 +240,9 @@ describe("WorktreeService merge and commit messages", () => {
     expect(result.success).toBe(true);
     expect(result.strategy).toBe('merge');
     expect(result.conflictState).toBe('none');
-    expect(result.cleanup).toEqual({
+    expect(result.cleanup).toMatchObject({
+      requested: 'none',
+      outcome: 'not_requested',
       worktreeRemoved: false,
       branchDeleted: false,
       pruned: false,
@@ -255,7 +259,9 @@ describe("WorktreeService merge and commit messages", () => {
     expect(result.success).toBe(true);
     expect(result.strategy).toBe('squash');
     expect(result.conflictState).toBe('none');
-    expect(result.cleanup).toEqual({
+    expect(result.cleanup).toMatchObject({
+      requested: 'none',
+      outcome: 'not_requested',
       worktreeRemoved: false,
       branchDeleted: false,
       pruned: false,
@@ -489,6 +495,39 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(false);
   });
 
+  it('does not roll back a completed integration when the requested cleanup throws', async () => {
+    const fixture = await createCommittedFixture();
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const cleanupSpy = spyOn(fixture.service as any, 'removeLegacy').mockImplementation(async () => {
+      throw new Error('simulated cleanup failure');
+    });
+    let result: MergeResult;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+        cleanup: 'worktree',
+      });
+    } finally {
+      cleanupSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'CLEANUP_FAILED',
+      phase: 'cleanup',
+      mutation: 'applied',
+      retryable: false,
+      action: 'cleanup_only',
+    });
+    expect(result.error).toMatch(/simulated cleanup failure/);
+    // The integration commit is durable: no --hard reset to the starting HEAD.
+    const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(afterHead).not.toBe(beforeHead);
+    expect(await readHeadBody(fixture.repoPath)).toBe(mergeMessage);
+    expect(await pathExists(fixture.worktreePath)).toBe(true);
+  });
+
   it('returns NO_TRACKED_CHANGES for divergent histories with identical endpoint trees and leaves target HEAD untouched', async () => {
     const fixture = await createFixture();
     const worktreeGit = simpleGit(fixture.worktreePath);
@@ -525,6 +564,208 @@ describe("WorktreeService merge and commit messages", () => {
     expect(afterStatus.isClean()).toBe(true);
     expect(afterStatus.current).toBe(beforeStatus.current);
   });
+
+  // The reported delta must describe the integration, not the endpoint
+  // comparison: a target that advanced independently after the task branch
+  // forked contributes its own files to `git diff <start> <branch>`.
+  for (const strategy of ['merge', 'squash', 'rebase'] as const) {
+    it(`reports only integration paths in filesChanged for ${strategy} when the target advanced independently`, async () => {
+      const fixture = await createFixture();
+      await fs.writeFile(path.join(fixture.worktreePath, 'task-only.txt'), 'task content\n', 'utf-8');
+      const taskCommit = await fixture.service.commitChanges(
+        fixture.feature,
+        fixture.task,
+        testCommitMessage('chore: task-only change'),
+      );
+      expect(taskCommit.committed).toBe(true);
+
+      await fixture.repoGit.checkout('main');
+      await fs.writeFile(path.join(fixture.repoPath, 'main-only.txt'), 'main content\n', 'utf-8');
+      await fixture.repoGit.add('-A');
+      await fixture.repoGit.commit(testCommitMessage('feat: independent target advance'));
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      const branchName = `hive/${fixture.feature}/${fixture.task}`;
+      const endpointDiff = (
+        await fixture.repoGit.diff([beforeHead, branchName, '--name-only'])
+      ).split('\n').map((line) => line.trim()).filter(Boolean);
+
+      expect(endpointDiff).toContain('main-only.txt');
+      expect(endpointDiff).toContain('task-only.txt');
+
+      const result = await fixture.service.merge(
+        fixture.feature,
+        fixture.task,
+        strategy,
+        strategy === 'rebase' ? undefined : mergeMessage,
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        merged: true,
+        strategy,
+        mutation: 'applied',
+        retryable: false,
+        action: 'none',
+      });
+      expect(result.filesChanged).toEqual(['task-only.txt']);
+      expect(result.filesChanged).not.toContain('main-only.txt');
+      const observed = (
+        await fixture.repoGit.diff([beforeHead, result.sha!, '--name-only'])
+      ).split('\n').map((line) => line.trim()).filter(Boolean);
+      expect(result.filesChanged).toEqual(observed);
+    });
+  }
+
+  it('classifies a linkage preflight failure as WORKTREE_LINKAGE_INVALID with a fresh-run action', async () => {
+    const fixture = await createFixture();
+    const former = await createTempRepo();
+    const formerWorktree = path.join(former.repoPath, 'former-worktree');
+    await former.repoGit.raw(['worktree', 'add', '-b', 'former-branch', formerWorktree, 'HEAD']);
+    const formerPointer = await fs.readFile(path.join(formerWorktree, '.git'), 'utf8');
+    await fs.writeFile(path.join(fixture.worktreePath, '.git'), formerPointer, 'utf8');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'WORKTREE_LINKAGE_INVALID',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'start_fresh_run',
+      partial: false,
+    });
+    expect(result.error).toMatch(/Worktree linkage preflight failed/);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+  });
+
+  it('classifies an untyped worktree lookup failure as WORKTREE_LOOKUP_FAILED and keeps typed denials on a fresh run', async () => {
+    const fixture = await createFixture();
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const untypedSpy = spyOn(fixture.service, 'get').mockImplementation(async () => {
+      throw new Error('EIO: i/o error, read');
+    });
+    let untyped: MergeResult;
+    try {
+      untyped = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    } finally {
+      untypedSpy.mockRestore();
+    }
+
+    expect(untyped).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'WORKTREE_LOOKUP_FAILED',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: true,
+      action: 'inspect_state',
+      partial: false,
+    });
+    expect(untyped.action).not.toBe('start_fresh_run');
+
+    const typedSpy = spyOn(fixture.service, 'get').mockImplementation(async () => {
+      throw new WorktreeLinkageError(
+        'Worktree linkage preflight failed for repository legacy: administration backlink does not select this exact worktree',
+      );
+    });
+    let typed: MergeResult;
+    try {
+      typed = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    } finally {
+      typedSpy.mockRestore();
+    }
+
+    expect(typed).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'WORKTREE_LINKAGE_INVALID',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'start_fresh_run',
+      partial: false,
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+  });
+
+  it('classifies an unregistered worktree as WORKTREE_NOT_REGISTERED', async () => {
+    const fixture = await createFixture();
+    await fixture.repoGit.raw(['worktree', 'remove', fixture.worktreePath, '--force']);
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'WORKTREE_NOT_REGISTERED',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'inspect_state',
+      partial: false,
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+  });
+
+  it('classifies a squash-hook verification failure after the commit exists as POST_INTEGRATION_VERIFICATION_FAILED', async () => {
+    const fixture = await createCommittedFixture();
+    const hookPath = path.join(fixture.repoPath, '.git', 'hooks', 'prepare-commit-msg');
+    await fs.writeFile(hookPath, `#!/bin/sh\nprintf '%s\\n' 'subject only' > "$1"\n`, 'utf-8');
+    await fs.chmod(hookPath, 0o755);
+    await fixture.repoGit.raw(['config', 'core.hooksPath', path.dirname(hookPath)]);
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'POST_INTEGRATION_VERIFICATION_FAILED',
+      phase: 'verification',
+      mutation: 'unknown',
+      retryable: false,
+      action: 'inspect_state',
+      filesChanged: [],
+      cleanup: {
+        requested: 'none',
+        outcome: 'not_requested',
+      },
+    });
+    expect(result.error).toMatch(/subject.*blank line.*body/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect((await fixture.repoGit.status()).isClean()).toBe(true);
+  });
+
+  for (const strategy of ['merge', 'squash', 'rebase'] as const) {
+    it(`does not report merged=true when ${strategy} leaves the target HEAD unchanged`, async () => {
+      const fixture = await createNetZeroCommittedFixture();
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+      const result = await fixture.service.merge(
+        fixture.feature,
+        fixture.task,
+        strategy,
+        strategy === 'rebase' ? undefined : mergeMessage,
+      );
+
+      expect(result.merged).toBe(false);
+      expect(result).toMatchObject({
+        success: true,
+        reasonCode: 'NO_TRACKED_CHANGES',
+        filesChanged: [],
+        mutation: 'none',
+        retryable: false,
+        action: 'none',
+      });
+      expect('sha' in result).toBe(false);
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    });
+  }
 
   for (const strategy of ['merge', 'squash', 'rebase'] as const) {
     it(`returns a cleanup-eligible no-op for a net-zero ${strategy} task merge`, async () => {
@@ -611,9 +852,13 @@ describe("WorktreeService merge and commit messages", () => {
       success: false,
       merged: false,
       strategy: 'merge',
-      filesChanged: ['tracked.txt'],
+      filesChanged: [],
       conflicts: ['tracked.txt'],
       conflictState: 'aborted',
+      reasonCode: 'MERGE_CONFLICT_ABORTED',
+      mutation: 'none',
+      retryable: true,
+      action: 'retry_same_operation',
       cleanup: {
         worktreeRemoved: false,
         branchDeleted: false,
@@ -636,9 +881,13 @@ describe("WorktreeService merge and commit messages", () => {
       success: false,
       merged: false,
       strategy: 'merge',
-      filesChanged: ['tracked.txt'],
+      filesChanged: [],
       conflicts: ['tracked.txt'],
       conflictState: 'preserved',
+      reasonCode: 'MERGE_CONFLICT_PRESERVED',
+      mutation: 'preserved',
+      retryable: false,
+      action: 'resolve_conflicts',
       cleanup: {
         worktreeRemoved: false,
         branchDeleted: false,
@@ -653,22 +902,27 @@ describe("WorktreeService merge and commit messages", () => {
   it("rejects rebase plus custom message", async () => {
     const fixture = await createCommittedFixture();
 
-    expect(await fixture.service.merge(fixture.feature, fixture.task, "rebase", "feat: custom\n\nbody")).toEqual(
-      {
-        success: false,
-        merged: false,
-        strategy: 'rebase',
-        filesChanged: [],
-        conflicts: [],
-        conflictState: 'none',
-        cleanup: {
-          worktreeRemoved: false,
-          branchDeleted: false,
-          pruned: false,
-        },
-        error: "Custom merge message is not supported for rebase strategy",
+    const result = await fixture.service.merge(fixture.feature, fixture.task, "rebase", "feat: custom\n\nbody");
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      strategy: 'rebase',
+      filesChanged: [],
+      conflicts: [],
+      conflictState: 'none',
+      reasonCode: 'MESSAGE_NOT_ALLOWED_FOR_REBASE',
+      phase: 'validation',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
+      cleanup: {
+        worktreeRemoved: false,
+        branchDeleted: false,
+        pruned: false,
       },
-    );
+      error: "Custom merge message is not supported for rebase strategy",
+    });
   });
 });
 
@@ -1255,6 +1509,42 @@ describe("WorktreeService composite workspaces", () => {
     expect(result.pruned).toBe(true);
     expect(await pathExists(wt.path)).toBe(false);
   });
+
+  it("remove reports per-step cleanup status for a composite workspace", async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+
+    const result = await fx.service.remove(fx.feature, fx.task, true);
+
+    expect(result).toMatchObject({ worktreeRemoved: true, branchDeleted: true, pruned: true });
+    expect(result.cleanup).toMatchObject({
+      requested: 'worktree+branch',
+      outcome: 'complete',
+      failures: [],
+    });
+    expect(result.cleanup.worktreeRemoval.status).toBe('succeeded');
+    expect(result.cleanup.branchDeletion.status).toBe('succeeded');
+    expect(result.cleanup.prune.status).toBe('succeeded');
+    expect(await pathExists(wt.path)).toBe(false);
+  });
+
+  it("remove reports not_requested for branch deletion and an already absent worktree", async () => {
+    const fixture = await createFixture();
+    await fixture.repoGit.raw(['worktree', 'remove', fixture.worktreePath, '--force']);
+
+    const result = await fixture.service.remove(fixture.feature, fixture.task, false);
+
+    expect(result.cleanup).toMatchObject({
+      requested: 'worktree',
+      outcome: 'complete',
+      failures: [],
+    });
+    expect(result.cleanup.worktreeRemoval.status).toBe('already_absent');
+    expect(result.cleanup.branchDeletion.status).toBe('not_requested');
+    expect(result.worktreeRemoved).toBe(true);
+    expect(result.branchDeleted).toBe(false);
+    expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(true);
+  });
 });
 
 describe("WorktreeService composite diff aggregation", () => {
@@ -1725,6 +2015,34 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(apiHeadAfter).not.toBe(apiHeadBefore);
   });
 
+  it('reports the durable repository integration delta on a composite partial merge', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'api-new.txt', 'api\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+
+    // web-ui rejects the merge commit through a pre-merge-commit hook, so the
+    // api integration is durable and web-ui is not.
+    const hookDir = path.join(fx.repos['web-ui'].path, '.git', 'hooks');
+    await fs.mkdir(hookDir, { recursive: true });
+    const hookPath = path.join(hookDir, 'pre-merge-commit');
+    await fs.writeFile(hookPath, '#!/bin/sh\nexit 1\n', 'utf-8');
+    await fs.chmod(hookPath, 0o755);
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      partial: true,
+      reasonCode: 'COMPOSITE_PARTIAL',
+      mutation: 'partial',
+    });
+    expect(result.repos!['api'].merged).toBe(true);
+    expect(result.repos!['web-ui'].success).toBe(false);
+    expect(result.filesChanged).toEqual(['api:api-new.txt']);
+  });
+
   it('rolls back a later repo after its second cherry-pick fails and reports only the earlier repo as partial progress', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     await fx.service.create(fx.feature, fx.task);
@@ -1750,13 +2068,97 @@ describe("WorktreeService composite merge aggregation", () => {
 
     const result = await fx.service.merge(fx.feature, fx.task, 'rebase');
 
-    expect(result.success).toBe(false);
-    expect(result.partial).toBe(true);
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      partial: true,
+      reasonCode: 'COMPOSITE_PARTIAL',
+      phase: 'integration',
+      mutation: 'partial',
+      retryable: false,
+      action: 'inspect_state',
+    });
     expect(result.repos!.api).toMatchObject({ success: true, merged: true });
     expect(result.repos!['web-ui']).toMatchObject({ success: false, merged: false, conflictState: 'aborted' });
     expect((await fx.repos.api.git.revparse(['HEAD'])).trim()).not.toBe(before.api);
     expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(before.web);
     expect((await fx.repos['web-ui'].git.status()).isClean()).toBe(true);
+  });
+
+  it('classifies a composite preflight failure with its specific reason code and no partial progress', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+    await fs.writeFile(path.join(fx.repos['api'].path, 'README.md'), 'dirty\n', 'utf-8');
+    const beforeWeb = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'TARGET_DIRTY',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: true,
+      action: 'clean_target',
+      partial: false,
+    });
+    expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(beforeWeb);
+  });
+
+  it('classifies a linkage preflight failure in a composite repo as WORKTREE_LINKAGE_INVALID', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const selectedPath = created.repos!.api.path;
+    const siblingPath = path.join(fx.projectRoot, 'api-sibling');
+    await fx.repos.api.git.raw(['worktree', 'add', '-b', 'sibling-registration', siblingPath, 'HEAD']);
+    const siblingPointer = await fs.readFile(path.join(siblingPath, '.git'), 'utf8');
+    await fs.writeFile(path.join(selectedPath, '.git'), siblingPointer, 'utf8');
+    const beforeHead = (await fx.repos.api.git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'WORKTREE_LINKAGE_INVALID',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'start_fresh_run',
+      partial: false,
+    });
+    expect(result.error).toMatch(/backlink does not select this exact worktree/);
+    expect((await fx.repos.api.git.revparse(['HEAD'])).trim()).toBe(beforeHead);
+  });
+
+  it('classifies a workspace topology mismatch as WORKSPACE_TOPOLOGY_MISMATCH', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const manifestPath = path.join(created.path, 'workspace.json');
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    const former = path.join(fx.projectRoot, 'former');
+    await fs.mkdir(former, { recursive: true });
+    manifest.repos.api.repoRoot = former;
+    await fs.writeFile(manifestPath, JSON.stringify(manifest));
+    const beforeHead = (await fx.repos.api.git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'WORKSPACE_TOPOLOGY_MISMATCH',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'start_fresh_run',
+      partial: false,
+    });
+    expect(result.error).toMatch(/workspace topology does not match the trusted repository manifest/);
+    expect((await fx.repos.api.git.revparse(['HEAD'])).trim()).toBe(beforeHead);
   });
 
   it("cleanup=worktree+branch aggregates per-repo cleanup across composite repos", async () => {
@@ -1792,7 +2194,9 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.success).toBe(true);
     expect(result.repos).toBeDefined();
     for (const id of ['api', 'web-ui']) {
-      expect(result.repos![id].cleanup).toEqual({
+      expect(result.repos![id].cleanup).toMatchObject({
+        requested: 'worktree+branch',
+        outcome: 'complete',
         worktreeRemoved: true,
         branchDeleted: true,
         pruned: true,

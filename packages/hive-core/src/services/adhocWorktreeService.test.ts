@@ -5,6 +5,8 @@ import * as path from "path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import type { ResolvedRepository } from "../types";
 import { AdhocWorktreeService } from "./adhocWorktreeService";
+import type { AdhocMergeResult } from "./adhocWorktreeService";
+import { WorktreeLinkageError } from "./worktreeOutcome";
 
 interface AdhocFixture {
   repoPath: string;
@@ -276,7 +278,9 @@ describe("AdhocWorktreeService.merge", () => {
       'feat: integrate ad-hoc work\n\nIntegrate the verified ad-hoc implementation as one commit.',
     );
     expect(result.conflictState).toBe("none");
-    expect(result.cleanup).toEqual({
+    expect(result.cleanup).toMatchObject({
+      requested: 'none',
+      outcome: 'not_requested',
       worktreeRemoved: false,
       branchDeleted: false,
       pruned: false,
@@ -340,6 +344,136 @@ describe("AdhocWorktreeService.merge", () => {
     const afterStatus = await fixture.repoGit.status();
     expect(afterStatus.isClean()).toBe(true);
     expect(afterStatus.current).toBe(beforeStatus.current);
+  });
+
+  // The reported delta must describe the integration, not the endpoint
+  // comparison: a target that advanced independently after the ad-hoc branch
+  // forked contributes its own files to `git diff <start> <branch>`, and those
+  // must not appear in `filesChanged`.
+  for (const strategy of ["squash", "merge", "rebase"] as const) {
+    it(`reports only integration paths in filesChanged for ${strategy} when the target advanced independently`, async () => {
+      const fixture = await createFixture();
+      const created = await fixture.service.create({ runId: `target-advanced-${strategy}` });
+      await fs.writeFile(path.join(created.path, "adhoc-only.txt"), "from ad-hoc branch\n", "utf-8");
+      await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc-only change'));
+
+      await fixture.repoGit.checkout("main");
+      await fs.writeFile(path.join(fixture.repoPath, "main-only.txt"), "from main after fork\n", "utf-8");
+      await fixture.repoGit.add("-A");
+      await fixture.repoGit.commit(testCommitMessage("feat: independent target advance"));
+      const beforeHead = (await fixture.repoGit.revparse(["HEAD"])).trim();
+      const endpointDiff = (
+        await fixture.repoGit.diff([beforeHead, created.branch, "--name-only"])
+      ).split("\n").map((line) => line.trim()).filter(Boolean);
+
+      // Sanity: the pre-merge endpoint comparison does see the target-only file.
+      expect(endpointDiff).toContain("main-only.txt");
+      expect(endpointDiff).toContain("adhoc-only.txt");
+
+      const result = await fixture.service.merge(created.runId, strategy, strategy === "rebase" ? undefined : mergeMessage);
+
+      expect(result).toMatchObject({
+        success: true,
+        merged: true,
+        strategy,
+        mutation: "applied",
+        retryable: false,
+        action: "none",
+      });
+      expect(result.sha).toBeTruthy();
+      expect(result.filesChanged).toEqual(["adhoc-only.txt"]);
+      expect(result.filesChanged).not.toContain("main-only.txt");
+
+      const observed = (
+        await fixture.repoGit.diff([beforeHead, result.sha!, "--name-only"])
+      ).split("\n").map((line) => line.trim()).filter(Boolean);
+      expect(result.filesChanged).toEqual(observed);
+      expect(await pathExists(path.join(fixture.repoPath, "adhoc-only.txt"))).toBe(true);
+      expect(await pathExists(path.join(fixture.repoPath, "main-only.txt"))).toBe(true);
+    });
+  }
+
+  it("does not report merged=true when rebase applies no source commits", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "rebase-no-applicable-commits" });
+    // Source branch carries a commit whose net tracked change already exists on
+    // main, so the endpoint trees match and nothing is applicable.
+    await fs.writeFile(path.join(created.path, "tracked.txt"), "already on main\n", "utf-8");
+    await fixture.service.commit(created.runId, testCommitMessage('feat: converges with target'));
+
+    await fixture.repoGit.checkout("main");
+    await fs.writeFile(path.join(fixture.repoPath, "tracked.txt"), "already on main\n", "utf-8");
+    await fixture.repoGit.add("-A");
+    await fixture.repoGit.commit(testCommitMessage('feat: target already contains the change'));
+    const beforeHead = (await fixture.repoGit.revparse(["HEAD"])).trim();
+
+    const result = await fixture.service.merge(created.runId, "rebase");
+
+    expect(result).toMatchObject({
+      success: true,
+      merged: false,
+      reasonCode: "NO_TRACKED_CHANGES",
+      filesChanged: [],
+      mutation: "none",
+      retryable: false,
+      action: "none",
+    });
+    expect("sha" in result).toBe(false);
+    expect((await fixture.repoGit.revparse(["HEAD"])).trim()).toBe(beforeHead);
+    expect((await fixture.repoGit.status()).isClean()).toBe(true);
+  });
+
+  it("classifies a dirty target as TARGET_DIRTY without mutating anything", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "dirty-target-classification" });
+    await fs.writeFile(path.join(created.path, "adhoc-file.txt"), "content\n", "utf-8");
+    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc change'));
+
+    await fixture.repoGit.checkout("main");
+    const dirtyPath = path.join(fixture.repoPath, "user-note.txt");
+    await fs.writeFile(dirtyPath, "untracked user content\n", "utf-8");
+    const beforeHead = (await fixture.repoGit.revparse(["HEAD"])).trim();
+
+    const result = await fixture.service.merge(created.runId, "squash", mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: "TARGET_DIRTY",
+      phase: "preflight",
+      mutation: "none",
+      retryable: true,
+      action: "clean_target",
+      filesChanged: [],
+      conflicts: [],
+    });
+    expect((await fixture.repoGit.revparse(["HEAD"])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(dirtyPath, "utf-8")).toBe("untracked user content\n");
+  });
+
+  it("classifies an active Git operation as GIT_OPERATION_IN_PROGRESS", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "active-state-classification" });
+    await fs.writeFile(path.join(created.path, "adhoc-file.txt"), "content\n", "utf-8");
+    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc change'));
+
+    await fixture.repoGit.checkout("main");
+    await fs.writeFile(path.join(fixture.repoPath, ".git", "MERGE_HEAD"), "deadbeef\n", "utf-8");
+    const beforeHead = (await fixture.repoGit.revparse(["HEAD"])).trim();
+
+    const result = await fixture.service.merge(created.runId, "squash", mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: "GIT_OPERATION_IN_PROGRESS",
+      phase: "preflight",
+      mutation: "none",
+      retryable: false,
+      action: "inspect_state",
+    });
+    expect((await fixture.repoGit.revparse(["HEAD"])).trim()).toBe(beforeHead);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
   });
 
   it("returns a cleanup-eligible no-op when an ad-hoc branch has commits but zero tracked diff", async () => {
@@ -587,9 +721,304 @@ describe("AdhocWorktreeService.merge", () => {
 
     const result = await fixture.service.merge(created.runId, 'rebase');
 
-    expect(result).toMatchObject({ success: false, merged: false, conflictState: 'aborted' });
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      conflictState: 'aborted',
+      reasonCode: 'MERGE_CONFLICT_ABORTED',
+      phase: 'integration',
+      mutation: 'none',
+      retryable: true,
+      action: 'retry_same_operation',
+      filesChanged: [],
+    });
     expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
     expect((await fixture.repoGit.status()).isClean()).toBe(true);
+  });
+
+  it('classifies rebase plus a non-blank message as MESSAGE_NOT_ALLOWED_FOR_REBASE', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'rebase-message-classification' });
+    await fs.writeFile(path.join(created.path, 'adhoc-file.txt'), 'content\n', 'utf-8');
+    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc change'));
+    await fixture.repoGit.checkout('main');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(created.runId, 'rebase', 'feat: custom rebase message\n\nBody.');
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'MESSAGE_NOT_ALLOWED_FOR_REBASE',
+      phase: 'validation',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+  });
+
+  it('classifies a malformed aggregate message as INVALID_MERGE_MESSAGE before mutation', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'invalid-merge-message' });
+    await fs.writeFile(path.join(created.path, 'adhoc-file.txt'), 'content\n', 'utf-8');
+    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc change'));
+    await fixture.repoGit.checkout('main');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(created.runId, 'squash', 'subject only');
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'INVALID_MERGE_MESSAGE',
+      phase: 'validation',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
+    });
+    expect(result.error).toMatch(/subject.*blank line.*body/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+  });
+
+  it('classifies a malformed exact source commit as INVALID_COMMIT_MESSAGE before mutation', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'invalid-source-commit-message' });
+    const worktreeGit = simpleGit(created.path);
+    await fs.writeFile(path.join(created.path, 'bad-source.txt'), 'bad\n', 'utf-8');
+    await worktreeGit.add('-A');
+    await worktreeGit.commit('subject only');
+    await fixture.repoGit.checkout('main');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(created.runId, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'INVALID_COMMIT_MESSAGE',
+      phase: 'validation',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
+    });
+    expect(result.error).toMatch(/source commit.*subject.*blank line.*body/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+  });
+
+  it('classifies a preserved conflict as MERGE_CONFLICT_PRESERVED with a resolve-conflicts action', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'preserved-conflict-classification' });
+    await fs.writeFile(path.join(created.path, 'tracked.txt'), 'branch side\n', 'utf-8');
+    await fixture.service.commit(created.runId, testCommitMessage('feat: conflicting ad-hoc change'));
+    await fs.writeFile(path.join(fixture.repoPath, 'tracked.txt'), 'main side\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: conflicting target change'));
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, {
+      preserveConflicts: true,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      conflictState: 'preserved',
+      reasonCode: 'MERGE_CONFLICT_PRESERVED',
+      phase: 'integration',
+      mutation: 'preserved',
+      retryable: false,
+      action: 'resolve_conflicts',
+      filesChanged: [],
+      conflicts: ['tracked.txt'],
+    });
+    expect((await fixture.repoGit.status()).conflicted).toContain('tracked.txt');
+  });
+
+  it("reports CLEANUP_FAILED with cleanup_only when a successful integration's cleanup does not finish", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "merge-cleanup-failure" });
+    await fs.writeFile(path.join(created.path, "merge-file.txt"), "hi\n", "utf-8");
+    await fixture.service.commit(created.runId, testCommitMessage('chore: merge content'));
+    await fixture.repoGit.checkout("main");
+
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key === 'deleteLocalBranch') {
+            return () => Promise.reject(new Error('simulated branch deletion failure'));
+          }
+          return Reflect.get(target, key);
+        },
+      });
+    });
+    let result;
+    try {
+      result = await fixture.service.merge(created.runId, "merge", mergeMessage, {
+        cleanup: "worktree+branch",
+      });
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    // The integration succeeded and is durable; only cleanup fell short.
+    expect(result).toMatchObject({
+      success: true,
+      merged: true,
+      reasonCode: "CLEANUP_FAILED",
+      phase: "cleanup",
+      mutation: "applied",
+      retryable: false,
+      action: "cleanup_only",
+      filesChanged: ["merge-file.txt"],
+    });
+    expect(result.cleanup.outcome).toBe('partial');
+    expect(result.cleanup.branchDeletion.status).toBe('failed');
+    expect(result.cleanup.failures).toEqual([
+      expect.objectContaining({ step: 'branch-deletion' }),
+    ]);
+    expect(await readHeadBody(fixture.repoPath)).toBe(mergeMessage);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+  });
+
+  it('does not roll back a completed integration when the requested cleanup throws', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'merge-cleanup-throw' });
+    await fs.writeFile(path.join(created.path, 'merge-file.txt'), 'hi\n', 'utf-8');
+    await fixture.service.commit(created.runId, testCommitMessage('chore: merge content'));
+    await fixture.repoGit.checkout('main');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const cleanupSpy = spyOn(fixture.service, 'cleanup').mockImplementation(async () => {
+      throw new Error('simulated cleanup failure');
+    });
+    let result;
+    try {
+      result = await fixture.service.merge(created.runId, 'merge', mergeMessage, {
+        cleanup: 'worktree',
+      });
+    } finally {
+      cleanupSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'CLEANUP_FAILED',
+      phase: 'cleanup',
+      mutation: 'applied',
+      retryable: false,
+      action: 'cleanup_only',
+    });
+    expect(result.error).toMatch(/simulated cleanup failure/);
+    // The integration commit is durable: no --hard reset to the starting HEAD.
+    const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(afterHead).not.toBe(beforeHead);
+    expect(await readHeadBody(fixture.repoPath)).toBe(mergeMessage);
+    expect(await pathExists(created.path)).toBe(true);
+  });
+
+  it('classifies a merge-hook verification failure after the commit exists as POST_INTEGRATION_VERIFICATION_FAILED', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'post-integration-verification' });
+    await fs.writeFile(path.join(created.path, 'new-file.txt'), 'new\n', 'utf-8');
+    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc source change'));
+    await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'subject only' > "$1"`);
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'POST_INTEGRATION_VERIFICATION_FAILED',
+      phase: 'verification',
+      mutation: 'unknown',
+      retryable: false,
+      action: 'inspect_state',
+      filesChanged: [],
+    });
+    expect(result.error).toMatch(/subject.*blank line.*body/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect((await fixture.repoGit.status()).isClean()).toBe(true);
+  });
+
+  it('classifies a failed restore as ROLLBACK_FAILED with an unconfirmed target state', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'rollback-failure' });
+    await fs.writeFile(path.join(created.path, 'new-file.txt'), 'new\n', 'utf-8');
+    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc source change'));
+    await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'subject only' > "$1"`);
+    const originalHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    // Force the restore itself to fail: the hook already invalidated the new
+    // aggregate commit, and `reset --hard` must not succeed afterwards.
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return (...args: unknown[]) => {
+            const command = args[0];
+            if (Array.isArray(command) && command[0] === 'reset' && command[1] === '--hard') {
+              return Promise.reject(new Error('simulated restore failure'));
+            }
+            return (target.raw as (...inner: unknown[]) => Promise<unknown>).apply(target, args);
+          };
+        },
+      });
+    });
+    try {
+      const result = await fixture.service.merge(created.runId, 'squash', mergeMessage);
+
+      expect(result).toMatchObject({
+        success: false,
+        merged: false,
+        reasonCode: 'ROLLBACK_FAILED',
+        phase: 'rollback',
+        mutation: 'unknown',
+        retryable: false,
+        action: 'manual_recovery',
+        filesChanged: [],
+      });
+      expect(result.error).toMatch(/failed to restore target/i);
+    } finally {
+      gitSpy.mockRestore();
+      await fixture.repoGit.raw(['reset', '--hard', originalHead]);
+    }
+  });
+
+  it('keeps the retryable-implies-no-mutation invariant across failure results', async () => {
+    const fixture = await createFixture();
+    const responses: AdhocMergeResult[] = [];
+
+    const cleanRun = await fixture.service.create({ runId: 'invariant-clean' });
+    await fs.writeFile(path.join(cleanRun.path, 'f.txt'), 'f\n', 'utf-8');
+    await fixture.service.commit(cleanRun.runId, testCommitMessage('feat: ad-hoc change'));
+    await fs.writeFile(path.join(fixture.repoPath, 'dirty.txt'), 'dirty\n', 'utf-8');
+    responses.push(await fixture.service.merge(cleanRun.runId, 'squash', mergeMessage));
+    await fs.rm(path.join(fixture.repoPath, 'dirty.txt'), { force: true });
+
+    responses.push(await fixture.service.merge(cleanRun.runId, 'rebase', 'feat: with message\n\nBody.'));
+    responses.push(await fixture.service.merge('missing-run-id', 'squash', mergeMessage));
+
+    const conflictRun = await fixture.service.create({ runId: 'invariant-conflict' });
+    await fs.writeFile(path.join(conflictRun.path, 'tracked.txt'), 'branch side\n', 'utf-8');
+    await fixture.service.commit(conflictRun.runId, testCommitMessage('feat: conflicting ad-hoc change'));
+    await fs.writeFile(path.join(fixture.repoPath, 'tracked.txt'), 'main side\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: conflicting target change'));
+    responses.push(await fixture.service.merge(conflictRun.runId, 'squash', mergeMessage));
+
+    expect(responses.length).toBeGreaterThan(0);
+    for (const response of responses) {
+      if (response.retryable) {
+        expect(response.mutation).toBe('none');
+      }
+    }
+    expect(responses.some((response) => response.retryable)).toBe(true);
   });
 });
 
@@ -971,13 +1400,196 @@ describe("AdhocWorktreeService composite merge", () => {
 
     const result = await fixture.service.merge(created.runId, 'rebase');
 
-    expect(result.success).toBe(false);
-    expect(result.partial).toBe(true);
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      partial: true,
+      reasonCode: 'COMPOSITE_PARTIAL',
+      mutation: 'partial',
+      retryable: false,
+      action: 'inspect_state',
+    });
     expect(result.repos!.api).toMatchObject({ success: true, merged: true });
     expect(result.repos!.web).toMatchObject({ success: false, merged: false, conflictState: 'aborted' });
+    // The merged repository's SHA is reported only under its repo entry.
+    expect('sha' in result).toBe(false);
+    expect(result.repos!.api.sha).toBe((await fixture.apiGit.revparse(['HEAD'])).trim());
     expect((await fixture.apiGit.revparse(['HEAD'])).trim()).not.toBe(before.api);
     expect((await fixture.webGit.revparse(['HEAD'])).trim()).toBe(before.web);
     expect((await fixture.webGit.status()).isClean()).toBe(true);
+  });
+
+  it("classifies a composite preflight failure with its specific reason code and no partial flag", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "merge-composite-preflight-classification",
+      repoIds: ["api", "web"],
+    });
+    await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
+    await fixture.service.commit(created.runId, testCommitMessage('feat: api change only'));
+    await fs.writeFile(path.join(fixture.repos[0].path, "dirty.txt"), "dirty\n", "utf-8");
+
+    const result = await fixture.service.merge(created.runId, "squash", mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: 'TARGET_DIRTY',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: true,
+      action: 'clean_target',
+      partial: false,
+    });
+  });
+
+  it("classifies a composite stop after an earlier repository merged as COMPOSITE_PARTIAL", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: "merge-composite-partial-nonconflict",
+      repoIds: ["api", "web"],
+    });
+    await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
+    await fs.writeFile(path.join(created.repos!.web.path, "web-new.txt"), "w\n", "utf-8");
+    await fixture.service.commit(created.runId, testCommitMessage('feat: changes in both repos'));
+
+    // web rejects the merge commit through a pre-merge-commit hook.
+    const hookDir = path.join(fixture.repos[1].path, '.git', 'hooks');
+    await fs.mkdir(hookDir, { recursive: true });
+    const hookPath = path.join(hookDir, 'pre-merge-commit');
+    await fs.writeFile(hookPath, '#!/bin/sh\nexit 1\n', 'utf-8');
+    await fs.chmod(hookPath, 0o755);
+
+    const result = await fixture.service.merge(created.runId, "merge", mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      partial: true,
+      reasonCode: 'COMPOSITE_PARTIAL',
+      mutation: 'partial',
+      retryable: false,
+      action: 'inspect_state',
+    });
+    expect(result.repos!.api).toMatchObject({ success: true, merged: true });
+    expect(result.repos!.web.success).toBe(false);
+    // The api integration is durable, so its observed delta is flattened.
+    expect(result.filesChanged).toEqual(['api:api-new.txt']);
+  });
+});
+
+describe("AdhocWorktreeService cleanup observability", () => {
+  it("reports a failed requested branch deletion as partial with the step and cause", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "cleanup-branch-failure" });
+
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key === 'deleteLocalBranch') {
+            return () => Promise.reject(new Error('simulated branch deletion failure'));
+          }
+          return Reflect.get(target, key);
+        },
+      });
+    });
+    let result;
+    try {
+      result = await fixture.service.cleanup(created.runId, true);
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(result.cleanup.branchDeletion.status).toBe('failed');
+    expect(result.cleanup.branchDeletion.error).toMatch(/simulated branch deletion failure/);
+    expect(result.cleanup.outcome).toBe('partial');
+    expect(result.cleanup.requested).toBe('worktree+branch');
+    expect(result.cleanup.failures).toEqual([
+      expect.objectContaining({ step: 'branch-deletion' }),
+    ]);
+    expect(result.branchDeleted).toBe(false);
+    expect(result.reasonCode).toBe('CLEANUP_FAILED');
+    expect(result.retryable).toBe(false);
+    expect(result.action).toBe('cleanup_only');
+    expect(await pathExists(created.path)).toBe(false);
+  });
+
+  it("reports an already absent branch as already_absent and keeps cleanup complete", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "cleanup-branch-absent" });
+    await fixture.repoGit.raw(["worktree", "remove", created.path, "--force"]);
+    await fixture.repoGit.deleteLocalBranch(created.branch, true);
+
+    const result = await fixture.service.cleanup(created.runId, true);
+
+    expect(result.cleanup.branchDeletion.status).toBe('already_absent');
+    expect(result.cleanup.worktreeRemoval.status).toBe('already_absent');
+    expect(result.cleanup.outcome).toBe('complete');
+    expect(result.branchDeleted).toBe(true);
+    expect(result.worktreeRemoved).toBe(true);
+    expect(result.reasonCode).toBeUndefined();
+    expect(result.action).toBe('none');
+  });
+
+  it("reports not_requested for branch deletion when deleteBranch is false while cleanup completes", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "cleanup-no-branch" });
+
+    const result = await fixture.service.cleanup(created.runId, false);
+
+    expect(result.cleanup).toMatchObject({
+      requested: 'worktree',
+      outcome: 'complete',
+    });
+    expect(result.cleanup.branchDeletion.status).toBe('not_requested');
+    expect(result.cleanup.worktreeRemoval.status).toBe('succeeded');
+    expect(result.cleanup.prune.status).toBe('succeeded');
+    expect(result.branchDeleted).toBe(false);
+    expect(result.worktreeRemoved).toBe(true);
+    expect(result.reasonCode).toBeUndefined();
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+  });
+
+  it("names the failing repository when composite cleanup preflight fails", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: "cleanup-composite-preflight", repoIds: ["api", "web"] });
+    await fixture.webGit.raw(["worktree", "remove", created.repos!.web.path, "--force"]);
+
+    const result = await fixture.service.cleanup(created.runId, true);
+
+    expect(result.cleanup.outcome).toBe('failed');
+    expect(result.cleanup.worktreeRemoval.status).toBe('not_attempted');
+    expect(result.cleanup.failures).toEqual([
+      expect.objectContaining({ step: 'preflight', repoId: 'web' }),
+    ]);
+    expect(result.reasonCode).toBe('CLEANUP_FAILED');
+    expect(result.phase).toBe('cleanup');
+    expect(result.mutation).toBe('none');
+    expect(result.retryable).toBe(false);
+    expect(result.action).toBe('cleanup_only');
+    expect(await pathExists(created.workspacePath!)).toBe(true);
+  });
+
+  it("reports composite cleanup complete across repos when every step succeeds", async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: "cleanup-composite-complete", repoIds: ["api", "web"] });
+
+    const result = await fixture.service.cleanup(created.runId, true);
+
+    expect(result.cleanup).toMatchObject({
+      requested: 'worktree+branch',
+      outcome: 'complete',
+      failures: [],
+    });
+    expect(result.cleanup.worktreeRemoval.status).toBe('succeeded');
+    expect(result.cleanup.branchDeletion.status).toBe('succeeded');
+    expect(result.cleanup.prune.status).toBe('succeeded');
+    expect(result.worktreeRemoved).toBe(true);
+    expect(result.branchDeleted).toBe(true);
+    expect(result.reasonCode).toBeUndefined();
+    expect(await pathExists(created.workspacePath!)).toBe(false);
   });
 });
 
@@ -1138,7 +1750,23 @@ describe("AdhocWorktreeService linkage preflight", () => {
 
     const result = await fixture.service.cleanup(created.runId, true);
 
-    expect(result).toEqual({ worktreeRemoved: false, branchDeleted: false, pruned: false });
+    expect(result).toMatchObject({
+      worktreeRemoved: false,
+      branchDeleted: false,
+      pruned: false,
+      reasonCode: 'CLEANUP_FAILED',
+      phase: 'cleanup',
+      mutation: 'none',
+      retryable: false,
+      action: 'cleanup_only',
+      cleanup: {
+        requested: 'worktree+branch',
+        outcome: 'failed',
+        failures: [
+          expect.objectContaining({ step: 'preflight', repoId: 'web' }),
+        ],
+      },
+    });
     expect(await pathExists(created.workspacePath!)).toBe(true);
     expect(await pathExists(created.repos!.api.path)).toBe(true);
     expect((await fixture.apiGit.revparse(["hive/adhoc/api/cleanup-preflight"])).trim()).toBe(apiBranchHead);
@@ -1295,5 +1923,65 @@ describe("AdhocWorktreeService linkage preflight", () => {
     expect(reloaded?.mode).toBe("adhoc-composite");
     expect(reloaded?.repos?.api.path).toBe(created.repos!.api.path);
     expect((await source.repoGit.raw(["rev-parse", "--git-common-dir"])).trim()).not.toBe("");
+  });
+
+  it("classifies an untyped lookup failure as WORKTREE_LOOKUP_FAILED and keeps typed denials on a fresh run", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: "lookup-failure-classification" });
+    await fs.writeFile(path.join(created.path, "adhoc-file.txt"), "content\n", "utf-8");
+    await fixture.service.commit(created.runId, testCommitMessage("feat: ad-hoc change"));
+    await fixture.repoGit.checkout("main");
+    const beforeHead = (await fixture.repoGit.revparse(["HEAD"])).trim();
+    const preservedBytes = await fs.readFile(path.join(created.path, "adhoc-file.txt"));
+
+    const untypedSpy = spyOn(fixture.service, "get").mockImplementation(async () => {
+      throw new Error("EACCES: permission denied, scandir");
+    });
+    let untyped: AdhocMergeResult;
+    try {
+      untyped = await fixture.service.merge(created.runId, "squash", mergeMessage);
+    } finally {
+      untypedSpy.mockRestore();
+    }
+
+    expect(untyped).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: "WORKTREE_LOOKUP_FAILED",
+      phase: "preflight",
+      mutation: "none",
+      retryable: true,
+      action: "inspect_state",
+      filesChanged: [],
+      conflicts: [],
+    });
+    expect(untyped.action).not.toBe("start_fresh_run");
+
+    const typedSpy = spyOn(fixture.service, "get").mockImplementation(async () => {
+      throw new WorktreeLinkageError(
+        "Worktree linkage preflight failed for repository adhoc: administration backlink does not select this exact worktree",
+      );
+    });
+    let typed: AdhocMergeResult;
+    try {
+      typed = await fixture.service.merge(created.runId, "squash", mergeMessage);
+    } finally {
+      typedSpy.mockRestore();
+    }
+
+    expect(typed).toMatchObject({
+      success: false,
+      merged: false,
+      reasonCode: "WORKTREE_LINKAGE_INVALID",
+      phase: "preflight",
+      mutation: "none",
+      retryable: false,
+      action: "start_fresh_run",
+      filesChanged: [],
+      conflicts: [],
+    });
+    expect((await fixture.repoGit.revparse(["HEAD"])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(path.join(created.path, "adhoc-file.txt"))).toEqual(preservedBytes);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
   });
 });

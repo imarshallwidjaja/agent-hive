@@ -3360,7 +3360,15 @@ Do it
         expect(denied.success).toBe(false);
         const deniedRun = JSON.parse(await fresh.hooks.tool!.hive_context_read.execute({ scope: 'project' }, { ...fresh.toolContext, sessionID: oldAdhocChild, agent: 'forager-worker' }) as string);
         expect(deniedRun.success).toBe(false);
-        await expect(fresh.hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, fresh.toolContext)).rejects.toThrow('Worktree linkage preflight failed');
+        const deniedStart = JSON.parse(await fresh.hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, fresh.toolContext) as string);
+        expect(deniedStart.success).toBe(false);
+        expect(deniedStart.terminal).toBe(true);
+        expect(deniedStart.reasonCode).toBe('WORKTREE_LINKAGE_INVALID');
+        expect(deniedStart.retryable).toBe(false);
+        expect(deniedStart.action).toBe('start_fresh_run');
+        expect(deniedStart.taskToolCall).toBeUndefined();
+        expect(String(deniedStart.nextAction)).toContain('independently valid workspace');
+        expect(String(deniedStart.nextAction)).toContain('Do not repair, rewrite, or migrate Git metadata');
         fs.writeFileSync(copiedStatusPath, JSON.stringify({ ...JSON.parse(copiedStatusBefore), status: 'done' }));
         const deniedTaskMerge = JSON.parse(await fresh.hooks.tool!.hive_merge.execute(
           { feature, task: FIRST_TASK, strategy: 'squash', message: TEST_MERGE_MESSAGE },
@@ -3369,10 +3377,14 @@ Do it
         expect(deniedTaskMerge.success).toBe(false);
         expect(String(deniedTaskMerge.error)).toContain('linkage preflight failed');
         fs.writeFileSync(copiedStatusPath, copiedStatusBefore);
-        await expect(fresh.hooks.tool!.hive_worktree_discard.execute(
+        const deniedDiscard = JSON.parse(await fresh.hooks.tool!.hive_worktree_discard.execute(
           { feature, task: FIRST_TASK },
           fresh.toolContext,
-        )).rejects.toThrow('Worktree linkage preflight failed');
+        ) as string);
+        expect(deniedDiscard.success).toBe(false);
+        expect(deniedDiscard.reasonCode).toBe('WORKTREE_LINKAGE_INVALID');
+        expect(deniedDiscard.retryable).toBe(false);
+        expect(deniedDiscard.action).toBe('start_fresh_run');
         const deniedAdhocMerge = JSON.parse(await fresh.hooks.tool!.hive_adhoc_merge.execute(
           { runId: 'historical-run', strategy: 'squash', message: TEST_MERGE_MESSAGE },
           fresh.toolContext,
@@ -5976,6 +5988,82 @@ Do it
     expect(mergeResult.message).not.toContain('merged successfully');
   });
 
+  it('hive_merge reports the no-op prose, not a successful merge, when requested cleanup did not finish', async () => {
+    const feature = 'merge-noop-cleanup-failed-feature';
+    const { hooks, toolContext } = await createSingleTaskWorktree(
+      testRoot,
+      'sess_merge_noop_cleanup_failed',
+      feature,
+      'Merge Noop Cleanup Failed Feature',
+      'Yes, this regression test validates that a NO_TRACKED_CHANGES no-op whose requested cleanup failed does not read as a successful merge.',
+    );
+
+    await hooks.tool!.hive_worktree_commit.execute(
+      {
+        feature,
+        task: FIRST_TASK,
+        status: 'completed',
+        summary: 'Completed without tracked file changes.',
+      },
+      toolContext,
+    );
+
+    // The service marks a no-op whose requested cleanup fell short by
+    // overriding reasonCode with CLEANUP_FAILED while keeping success=true and
+    // merged=false. The wrapper must still render no-op prose.
+    const mergeSpy = spyOn(WorktreeService.prototype, 'merge').mockImplementation(async function (
+      _feature: string,
+      _step: string,
+      strategy: 'merge' | 'squash' | 'rebase',
+    ) {
+      return {
+        success: true,
+        merged: false,
+        strategy,
+        reason: 'nothing_to_merge',
+        reasonCode: 'CLEANUP_FAILED',
+        cleanupEligible: true,
+        taskUpdateRecommended: true,
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none' as const,
+        cleanup: {
+          requested: 'worktree' as const,
+          outcome: 'failed' as const,
+          worktreeRemoval: { status: 'failed' as const, error: 'simulated removal failure' },
+          branchDeletion: { status: 'not_requested' as const },
+          prune: { status: 'succeeded' as const },
+          failures: [{ step: 'worktree-removal', cause: 'simulated removal failure' }],
+          worktreeRemoved: false,
+          branchDeleted: false,
+          pruned: false,
+        },
+        phase: 'cleanup' as const,
+        mutation: 'none' as const,
+        retryable: false,
+        action: 'cleanup_only' as const,
+      };
+    });
+    let mergeResult: { success: boolean; merged: boolean; reasonCode?: string; action?: string; message: string };
+    try {
+      const mergeRaw = await hooks.tool!.hive_merge.execute(
+        { feature, task: FIRST_TASK, strategy: 'merge', cleanup: 'worktree' },
+        toolContext,
+      );
+      mergeResult = JSON.parse(mergeRaw as string);
+    } finally {
+      mergeSpy.mockRestore();
+    }
+
+    expect(mergeResult.success).toBe(true);
+    expect(mergeResult.merged).toBe(false);
+    expect(mergeResult.reasonCode).toBe('CLEANUP_FAILED');
+    expect(mergeResult.action).toBe('cleanup_only');
+    expect(mergeResult.message).not.toContain('merged successfully');
+    expect(mergeResult.message).toContain('had no tracked changes to merge');
+    expect(mergeResult.message).toContain('cleanup did not finish');
+  });
+
   it("uses custom commit message in task worktree head", async () => {
     const feature = "commit-custom-message-feature";
     const { hooks, toolContext, worktreePath } = await createSingleTaskWorktree(
@@ -6304,17 +6392,28 @@ Do it
       message: string;
     };
 
-    expect(mergeResult).toEqual({
+    expect(mergeResult).toMatchObject({
       success: false,
       merged: false,
       strategy: 'rebase',
       filesChanged: [],
       conflicts: [],
       conflictState: 'none',
+      reasonCode: 'MESSAGE_NOT_ALLOWED_FOR_REBASE',
+      phase: 'validation',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
       cleanup: {
         worktreeRemoved: false,
         branchDeleted: false,
         pruned: false,
+        requested: 'none',
+        outcome: 'not_requested',
+        worktreeRemoval: { status: 'not_requested' },
+        branchDeletion: { status: 'not_requested' },
+        prune: { status: 'not_requested' },
+        failures: [],
       },
       error: 'Custom merge message is not supported for rebase strategy',
       message: 'Merge failed: Custom merge message is not supported for rebase strategy',
@@ -6352,21 +6451,32 @@ Do it
       message: string;
     };
 
-    expect(mergeResult).toEqual({
+    expect(mergeResult).toMatchObject({
       success: false,
       merged: false,
       strategy: 'merge',
       filesChanged: [],
       conflicts: [],
       conflictState: 'none',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'inspect_state',
       cleanup: {
         worktreeRemoved: false,
         branchDeleted: false,
         pruned: false,
+        requested: 'none',
+        outcome: 'not_requested',
+        worktreeRemoval: { status: 'not_requested' },
+        branchDeletion: { status: 'not_requested' },
+        prune: { status: 'not_requested' },
+        failures: [],
       },
       error: 'Task must be completed before merging. Use hive_worktree_commit first.',
       message: 'Merge failed: Task must be completed before merging. Use hive_worktree_commit first.',
     });
+    expect(mergeResult.reasonCode).toBeUndefined();
   });
 
   it("auto-loads parallel exploration for planner agents by default", async () => {
@@ -8484,10 +8594,25 @@ Do it.
     fs.rmSync(repos.web.path, { recursive: true, force: true });
 
     const apiHead = execSync('git rev-parse HEAD', { cwd: repos.api.path, encoding: 'utf8' }).trim();
-    await expect(hooks.tool!.hive_worktree_commit.execute(
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
       { feature, task: '01-composite-task', status: 'completed', summary: 'Composite preflight failure attempt. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
-    )).rejects.toThrow(/linkage preflight failed/);
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      reasonCode?: string;
+      retryable?: boolean;
+      action?: string;
+      error?: string;
+      commit?: unknown;
+    };
+    expect(commitResult.ok).toBe(false);
+    expect(commitResult.terminal).toBe(true);
+    expect(commitResult.reasonCode).toBe('WORKTREE_LINKAGE_INVALID');
+    expect(commitResult.retryable).toBe(false);
+    expect(commitResult.action).toBe('start_fresh_run');
+    expect(commitResult.commit).toBeUndefined();
     expect(execSync('git rev-parse HEAD', { cwd: repos.api.path, encoding: 'utf8' }).trim()).toBe(apiHead);
     const taskStatusPath = path.join(
       testRoot,
@@ -8511,10 +8636,25 @@ Do it.
     fs.writeFileSync(path.join(repos.web.path, 'web-note.txt'), 'web only\n');
     fs.rmSync(repos.web.path, { recursive: true, force: true });
 
-    await expect(hooks.tool!.hive_worktree_commit.execute(
+    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
       { feature, task: '01-composite-task', status: 'completed', summary: 'Later-repo failure after earlier no-change. Tests pass.', message: TEST_COMMIT_MESSAGE },
       toolContext,
-    )).rejects.toThrow(/linkage preflight failed/);
+    );
+    const commitResult = JSON.parse(commitRaw as string) as {
+      ok: boolean;
+      terminal: boolean;
+      reasonCode?: string;
+      retryable?: boolean;
+      action?: string;
+      commit?: { committed?: boolean; repos?: Record<string, { committed: boolean }> };
+    };
+    expect(commitResult.ok).toBe(false);
+    expect(commitResult.terminal).toBe(true);
+    expect(commitResult.reasonCode).toBe('WORKTREE_LINKAGE_INVALID');
+    expect(commitResult.retryable).toBe(false);
+    expect(commitResult.action).toBe('start_fresh_run');
+    expect(commitResult.commit).toBeUndefined();
+    expect(execSync('git log --oneline', { cwd: repos.api.path, encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
   });
 
   it('hive_merge (composite single-repo): returns aggregate repos and success', async () => {

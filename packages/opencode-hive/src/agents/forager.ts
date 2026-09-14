@@ -133,7 +133,7 @@ hive_worktree_commit({
 
 Use this protocol only when the assignment supplies an actual managed feature and task. Then inspect the tool response fields:
 - If \`terminal=true\` (regardless of \`ok\`): send one final concise handoff response to the orchestrator, then stop
-- If \`ok=false\` or \`terminal=false\`: DO NOT STOP. Follow \`nextAction\`, remediate, and retry \`hive_worktree_commit\`
+- If \`terminal=false\`: DO NOT STOP. Follow \`nextAction\`, remediate, and retry \`hive_worktree_commit\`
 
 Use the handoff response to summarize what changed, why (if relevant), and verification evidence (or "Not run" with reason).
 

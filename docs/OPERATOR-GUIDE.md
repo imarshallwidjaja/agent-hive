@@ -181,6 +181,22 @@ Exact-worktree registration is the Git integrity prerequisite, not trusted repos
 
 Prepare or recreate an independently valid workspace at the new root, then launch a fresh attempt or run. Recovery does not rewrite `.git` or administration metadata, migrate roots, delete/repair/recreate worktrees automatically, or add a recovery record. Error notices are not empty or current catalogs. Never delete an index to restore classification. Invalid-index and pending-mutation repair stays out of band: quiesce writers, inspect bytes, restore the index/manifest, then reconcile the marker. `.hive/sessions.json` is canonical global session truth.
 
+### Reading a failure result
+
+Git-affecting worktree, ad-hoc, and merge failures return classification fields alongside the existing result: `phase`, `reasonCode`, `mutation`, `retryable`, and `action`. Field definitions and the full code table live in [Recovery fields and failure classification](../packages/opencode-hive/docs/HIVE-TOOLS.md#recovery-fields-and-failure-classification). Read `mutation` before anything else: it says whether the target moved, and it governs whether the operation can be repeated. If `retryable` is `false`, repeating the same call is not the recovery path.
+
+Group the codes by the decision you actually make:
+
+- **Fix the call.** `correct_arguments` covers missing or invalid input, commit or merge message shape, and a message supplied with `rebase`, which accepts none. No durable target mutation occurred, so no repair is needed beyond the corrected call.
+- **Inspect first.** `inspect_state` means the reported condition must be read before the next move. It covers an unknown run or worktree, a missing source branch, an in-progress Git operation, an unclassified Git failure, a failed post-integration check, and a partially merged composite run. `GIT_OPERATION_FAILED` also reports `retryable: true` even though it lands in this group: inspect it first, and repeat the same call only once the cause is understood.
+- **Narrow preconditions.** `clean_target` and `retry_same_operation` gate a retry on satisfying a stated prerequisite: a clean target, or a conflict Hive already aborted and restored to its starting state. Satisfy it, then repeat the same call.
+- **Handle state that Hive left in place.** `resolve_conflicts` applies to `MERGE_CONFLICT_PRESERVED`, where the conflict state is preserved for you; conflict paths are in `conflicts`. `cleanup_only` applies to `CLEANUP_FAILED`, where cleanup ran after a successful integration and did not fully finish. Read the per-step cleanup status and the `failures` list, repeat only the cleanup step, and do not re-run the merge.
+- **Do not retry.** `WORKTREE_LINKAGE_INVALID` and `WORKSPACE_TOPOLOGY_MISMATCH` mean the run's worktree identity no longer matches its trusted Git registration. Neither is retryable, and neither is repaired in place. Prepare or recreate an independently valid workspace, then launch a fresh authenticated attempt or ad-hoc run, following the relocation rules above. `manual_recovery` applies to `ROLLBACK_FAILED`, where Hive could not restore the target and the durable state is `unknown`; inspect the repository by hand.
+
+A composite run that integrated an earlier repository and then failed reports `COMPOSITE_PARTIAL` with `mutation: 'partial'`. Earlier repositories remain integrated, so the result does not mean nothing happened, and repeating the whole operation is not the recovery. Read the per-repository results, which are authoritative; an aggregate top-level `sha` is a representative value from one repository, not a cross-repository identifier.
+
+`filesChanged` describes the integration itself: it is the difference in the target between immediately before and immediately after integration. A no-op, a failure fully restored to its starting state, and a preserved conflict report it empty; conflict paths stay in `conflicts`. `NO_TRACKED_CHANGES` remains the successful no-op: `success: true`, `merged: false`, no `sha`, and cleanup still runs when requested. A merge never reports `merged: true` when the target HEAD did not move.
+
 ## Inspect context and constraints in VS Code
 
 In Features, expand a task to open **Latest handoff report** or expand **Report history** for immutable revisions, newest first; revisions count report writes, not attempts or commits. Legacy tasks without revision files show only the latest report.

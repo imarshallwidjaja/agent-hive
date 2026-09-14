@@ -9,6 +9,23 @@ import type {
   WorkspaceManifestEntry,
 } from './workspaceManifest.js';
 import { readCompositeWorkspaceManifest } from './workspaceManifest.js';
+import {
+  buildCleanupOutcome,
+  classifyThrownWorktreeError,
+  classifyWorktreeOutcome,
+  combineRepoCleanupOutcomes,
+  isRetryableWithMutation,
+  WorktreeTopologyMismatchError,
+  WorktreeLinkageError,
+} from './worktreeOutcome.js';
+import type {
+  CleanupStepOutcome,
+  WorktreeCleanupOutcome,
+  WorktreeMutationState,
+  WorktreeOperationPhase,
+  WorktreeReasonCode,
+  WorktreeRecoveryAction,
+} from './worktreeOutcome.js';
 
 export type WorktreeMode = 'legacy' | 'composite';
 
@@ -64,12 +81,22 @@ export interface CommitResult {
   partial?: boolean;
   /** First per-repo error encountered, if any. */
   error?: string;
+  phase: WorktreeOperationPhase;
+  reasonCode?: WorktreeReasonCode;
+  mutation: WorktreeMutationState;
+  retryable: boolean;
+  action: WorktreeRecoveryAction;
 }
 
 export interface RepoCommitResult {
   committed: boolean;
   sha: string;
   message?: string;
+  phase?: WorktreeOperationPhase;
+  reasonCode?: WorktreeReasonCode;
+  mutation?: WorktreeMutationState;
+  retryable?: boolean;
+  action?: WorktreeRecoveryAction;
 }
 
 export interface MergeOptions {
@@ -84,17 +111,13 @@ export interface MergeResult {
   sha?: string;
   commitMessage?: string;
   reason?: string;
-  reasonCode?: 'NO_TRACKED_CHANGES';
+  reasonCode?: WorktreeReasonCode;
   cleanupEligible?: boolean;
   taskUpdateRecommended?: boolean;
   filesChanged: string[];
   conflicts: string[];
   conflictState: 'none' | 'aborted' | 'preserved';
-  cleanup: {
-    worktreeRemoved: boolean;
-    branchDeleted: boolean;
-    pruned: boolean;
-  };
+  cleanup: MergeCleanupBlock;
   error?: string;
   /** Per-repo merge results when the workspace is a composite. Omitted for legacy single-root workspaces. */
   repos?: Record<string, RepoMergeResult>;
@@ -104,6 +127,17 @@ export interface MergeResult {
    * Undefined for legacy single-root merges and for clean composite success.
    */
   partial?: boolean;
+  phase: WorktreeOperationPhase;
+  mutation: WorktreeMutationState;
+  retryable: boolean;
+  action: WorktreeRecoveryAction;
+}
+
+/** Merge-result cleanup block: per-step truth plus the legacy factual booleans. */
+export interface MergeCleanupBlock extends WorktreeCleanupOutcome {
+  worktreeRemoved: boolean;
+  branchDeleted: boolean;
+  pruned: boolean;
 }
 
 export interface RepoMergeResult {
@@ -112,18 +146,18 @@ export interface RepoMergeResult {
   sha?: string;
   commitMessage?: string;
   reason?: string;
-  reasonCode?: 'NO_TRACKED_CHANGES';
+  reasonCode?: WorktreeReasonCode;
   cleanupEligible?: boolean;
   taskUpdateRecommended?: boolean;
   filesChanged: string[];
   conflicts: string[];
   conflictState: 'none' | 'aborted' | 'preserved';
-  cleanup: {
-    worktreeRemoved: boolean;
-    branchDeleted: boolean;
-    pruned: boolean;
-  };
+  cleanup: MergeCleanupBlock;
   error?: string;
+  phase: WorktreeOperationPhase;
+  mutation: WorktreeMutationState;
+  retryable: boolean;
+  action: WorktreeRecoveryAction;
 }
 
 export interface RepositoryResolver {
@@ -147,6 +181,195 @@ interface RemoveOptions {
   allowUnmergedCommits?: boolean;
 }
 
+function cleanupStepDone(step: CleanupStepOutcome): boolean {
+  return step.status === 'succeeded' || step.status === 'already_absent';
+}
+
+function noCleanupRequested(): WorktreeCleanupOutcome {
+  return buildCleanupOutcome('none', {
+    worktreeRemoval: { status: 'not_requested' },
+    branchDeletion: { status: 'not_requested' },
+    prune: { status: 'not_requested' },
+  });
+}
+
+function toMergeCleanupBlock(outcome: WorktreeCleanupOutcome): MergeCleanupBlock {
+  return {
+    ...outcome,
+    worktreeRemoved: cleanupStepDone(outcome.worktreeRemoval),
+    branchDeleted: outcome.requested === 'worktree+branch' && cleanupStepDone(outcome.branchDeletion),
+    pruned: outcome.prune.status === 'succeeded',
+  };
+}
+
+/**
+ * Promote a single-repo commit result to the aggregate shape. `retryable` is
+ * re-derived so the aggregate can never claim a safe retry after a mutation.
+ */
+function aggregateFromRepoCommit(repoResult: RepoCommitResult): CommitResult {
+  const mutation = repoResult.mutation ?? 'none';
+  return {
+    committed: repoResult.committed,
+    sha: repoResult.sha,
+    ...(repoResult.message !== undefined ? { message: repoResult.message } : {}),
+    ...(repoResult.reasonCode !== undefined ? { reasonCode: repoResult.reasonCode } : {}),
+    phase: repoResult.phase ?? 'integration',
+    mutation,
+    retryable: repoResult.retryable === true && isRetryableWithMutation(mutation),
+    action: repoResult.action ?? 'none',
+  };
+}
+
+function commitFailure(
+  reasonCode: WorktreeReasonCode,
+  message: string,
+  overrides: { sha?: string; mutation?: WorktreeMutationState } = {},
+): RepoCommitResult {
+  const classification = classifyWorktreeOutcome(reasonCode, overrides.mutation);
+  return {
+    committed: false,
+    sha: overrides.sha ?? '',
+    message,
+    phase: classification.phase,
+    reasonCode,
+    mutation: classification.mutation,
+    retryable: classification.retryable,
+    action: classification.action,
+  };
+}
+
+/**
+ * Classify the aggregate composite commit result. A repo that committed and a
+ * later repo that failed leaves durable partial history, so the aggregate is
+ * never reported as retryable.
+ */
+function aggregateCommitClassification(input: {
+  repos: RepoCommitResult[];
+  anyCommitted: boolean;
+  anyFailed: boolean;
+}): Pick<CommitResult, 'phase' | 'reasonCode' | 'mutation' | 'retryable' | 'action'> {
+  if (!input.anyFailed) {
+    return input.anyCommitted
+      ? { phase: 'integration', mutation: 'applied', retryable: false, action: 'none' }
+      : { phase: 'integration', mutation: 'none', retryable: false, action: 'none' };
+  }
+  if (!input.anyCommitted) {
+    const failed = input.repos.find((repo) => repo.reasonCode !== undefined);
+    if (failed?.reasonCode) {
+      const classification = classifyWorktreeOutcome(failed.reasonCode, failed.mutation);
+      return {
+        phase: classification.phase,
+        reasonCode: failed.reasonCode,
+        mutation: classification.mutation,
+        retryable: classification.retryable,
+        action: classification.action,
+      };
+    }
+    return { phase: 'integration', mutation: 'none', retryable: false, action: 'inspect_state' };
+  }
+  const classification = classifyWorktreeOutcome('COMPOSITE_PARTIAL');
+  return {
+    phase: classification.phase,
+    reasonCode: 'COMPOSITE_PARTIAL',
+    mutation: classification.mutation,
+    retryable: classification.retryable,
+    action: classification.action,
+  };
+}
+
+function mergeRepoFailure(
+  reasonCode: WorktreeReasonCode,
+  error: string,
+  options: {
+    mutation?: WorktreeMutationState;
+    conflicts?: string[];
+    conflictState?: 'none' | 'aborted' | 'preserved';
+  } = {},
+): RepoMergeResult {
+  const classification = classifyWorktreeOutcome(reasonCode, options.mutation);
+  return {
+    success: false,
+    merged: false,
+    filesChanged: [],
+    conflicts: options.conflicts ?? [],
+    conflictState: options.conflictState ?? 'none',
+    cleanup: toMergeCleanupBlock(noCleanupRequested()),
+    error,
+    phase: classification.phase,
+    reasonCode,
+    mutation: classification.mutation,
+    retryable: classification.retryable,
+    action: classification.action,
+  };
+}
+
+function mergeFailure(
+  strategy: 'merge' | 'squash' | 'rebase',
+  reasonCode: WorktreeReasonCode,
+  error: string,
+  options: {
+    mutation?: WorktreeMutationState;
+    conflicts?: string[];
+    conflictState?: 'none' | 'aborted' | 'preserved';
+    filesChanged?: string[];
+    repos?: Record<string, RepoMergeResult>;
+    partial?: boolean;
+  } = {},
+): MergeResult {
+  const classification = classifyWorktreeOutcome(reasonCode, options.mutation);
+  return {
+    success: false,
+    merged: false,
+    strategy,
+    filesChanged: options.filesChanged ?? [],
+    conflicts: options.conflicts ?? [],
+    conflictState: options.conflictState ?? 'none',
+    cleanup: toMergeCleanupBlock(noCleanupRequested()),
+    error,
+    ...(options.repos !== undefined ? { repos: options.repos } : {}),
+    ...(options.partial !== undefined ? { partial: options.partial } : {}),
+    phase: classification.phase,
+    reasonCode,
+    mutation: classification.mutation,
+    retryable: classification.retryable,
+    action: classification.action,
+  };
+}
+
+/** Project a cleanup outcome onto the legacy factual booleans. */
+function mergeCleanupResult(outcome: WorktreeCleanupOutcome): {
+  worktreeRemoved: boolean;
+  branchDeleted: boolean;
+  pruned: boolean;
+  cleanup: WorktreeCleanupOutcome;
+} {
+  return {
+    worktreeRemoved: cleanupStepDone(outcome.worktreeRemoval),
+    branchDeleted: outcome.requested === 'worktree+branch' && cleanupStepDone(outcome.branchDeletion),
+    pruned: outcome.prune.status === 'succeeded',
+    cleanup: outcome,
+  };
+}
+
+/** A merge that moved the target but whose requested cleanup did not finish. */
+function mergeSuccessClassification(
+  requested: 'none' | 'worktree' | 'worktree+branch',
+  cleanup: WorktreeCleanupOutcome,
+  mutation: WorktreeMutationState,
+): Pick<RepoMergeResult, 'phase' | 'reasonCode' | 'mutation' | 'retryable' | 'action'> {
+  if (requested !== 'none' && cleanup.outcome !== 'complete') {
+    const classification = classifyWorktreeOutcome('CLEANUP_FAILED', mutation);
+    return {
+      phase: classification.phase,
+      reasonCode: 'CLEANUP_FAILED',
+      mutation: classification.mutation,
+      retryable: classification.retryable,
+      action: classification.action,
+    };
+  }
+  return { phase: 'integration', mutation, retryable: false, action: 'none' };
+}
+
 export class WorktreeService {
   private config: WorktreeConfig;
 
@@ -165,7 +388,7 @@ export class WorktreeService {
 
   private async trustedGitCommonDirectory(repositoryPath: string): Promise<string> {
     const raw = (await this.getGit(repositoryPath).raw(['rev-parse', '--git-common-dir'])).trim();
-    if (!raw) throw new Error(`Worktree linkage preflight failed: trusted repository has no Git common directory (${repositoryPath})`);
+    if (!raw) throw new WorktreeLinkageError(`Worktree linkage preflight failed: trusted repository has no Git common directory (${repositoryPath})`);
     return fs.realpath(path.isAbsolute(raw) ? raw : path.resolve(repositoryPath, raw));
   }
 
@@ -176,11 +399,11 @@ export class WorktreeService {
       current = path.join(current, segment);
       const stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
         if (allowMissing && error.code === 'ENOENT') return null;
-        throw new Error(`Worktree linkage preflight failed: cannot inspect path component ${current}: ${error.message}`);
+        throw new WorktreeLinkageError(`Worktree linkage preflight failed: cannot inspect path component ${current}: ${error.message}`);
       });
       if (!stat) return;
       if (stat.isSymbolicLink()) {
-        throw new Error(`Worktree linkage preflight failed: path contains a symlink (${current})`);
+        throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${current})`);
       }
     }
   }
@@ -195,17 +418,17 @@ export class WorktreeService {
     const localGitPath = path.join(worktreePath, '.git');
     const localGitStat = await fs.lstat(localGitPath).catch(() => null);
     if (!localGitStat?.isFile() || localGitStat.isSymbolicLink()) {
-      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: local .git must be a regular pointer file`);
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: local .git must be a regular pointer file`);
     }
     const pointer = await fs.readFile(localGitPath, 'utf8');
     const match = pointer.match(/^gitdir:\s*(.+?)\s*$/);
-    if (!match) throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: invalid local .git pointer`);
+    if (!match) throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: invalid local .git pointer`);
     const administrationPath = path.normalize(path.isAbsolute(match[1]!)
       ? match[1]!
       : path.resolve(worktreePath, match[1]!));
     const worktreesDirectory = path.join(commonDirectory, 'worktrees');
     if (!this.isContained(worktreesDirectory, administrationPath) || administrationPath === worktreesDirectory) {
-      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: administration entry is outside the trusted Git common directory`);
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: administration entry is outside the trusted Git common directory`);
     }
     await this.assertNoSymlinkComponents(commonDirectory, administrationPath);
     await this.assertNoSymlinkComponents(administrationPath, path.join(administrationPath, 'commondir'));
@@ -214,21 +437,21 @@ export class WorktreeService {
     const commondirBytes = await fs.readFile(path.join(administrationPath, 'commondir'), 'utf8');
     const selectedCommonDirectory = path.normalize(path.resolve(administrationPath, commondirBytes.trim()));
     if (selectedCommonDirectory !== path.normalize(commonDirectory)) {
-      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: commondir does not match the trusted repository`);
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: commondir does not match the trusted repository`);
     }
     const backlinkBytes = await fs.readFile(path.join(administrationPath, 'gitdir'), 'utf8');
     const backlink = path.normalize(path.isAbsolute(backlinkBytes.trim())
       ? backlinkBytes.trim()
       : path.resolve(administrationPath, backlinkBytes.trim()));
     if (backlink !== path.normalize(localGitPath)) {
-      throw new Error(`Worktree linkage preflight failed for repository ${repositoryId}: administration backlink does not select this exact worktree`);
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: administration backlink does not select this exact worktree`);
     }
   }
 
   private trustedRepositoriesForManifest(manifest: WorkspaceManifest): Map<string, ResolvedRepository> {
     const trustedRepositories = this.resolveRepositories();
     if (!trustedRepositories?.length) {
-      throw new Error('Worktree linkage preflight failed: trusted repository topology is unavailable');
+      throw new WorktreeLinkageError('Worktree linkage preflight failed: trusted repository topology is unavailable');
     }
     const trustedById = new Map(trustedRepositories.map(repository => [repository.id, repository]));
     for (const [id, entry] of Object.entries(manifest.repos)) {
@@ -237,7 +460,7 @@ export class WorktreeService {
         || entry.repoRoot !== trusted.root
         || path.resolve(entry.repoPath) !== path.resolve(trusted.path)
         || entry.path !== path.posix.join('repos', id)) {
-        throw new Error(`Worktree linkage preflight failed for repository ${id}: workspace topology does not match the trusted repository manifest`);
+        throw new WorktreeTopologyMismatchError(`Worktree linkage preflight failed for repository ${id}: workspace topology does not match the trusted repository manifest`);
       }
     }
     return trustedById;
@@ -365,10 +588,10 @@ export class WorktreeService {
     }
 
     try {
-      await git.raw(["worktree", "add", "-b", branchName, worktreePath, base]);
+      await git.raw(["worktree", "add", "-b", branchName, "--", worktreePath, base]);
     } catch {
       try {
-        await git.raw(["worktree", "add", worktreePath, branchName]);
+        await git.raw(["worktree", "add", "--", worktreePath, branchName]);
       } catch (retryError) {
         throw new Error(`Failed to create worktree: ${retryError}`);
       }
@@ -464,7 +687,7 @@ export class WorktreeService {
         await fs.mkdir(path.dirname(repoWtPath), { recursive: true });
 
         try {
-          await repoGit.raw(["worktree", "add", "-b", branchName, repoWtPath, base]);
+          await repoGit.raw(["worktree", "add", "-b", branchName, "--", repoWtPath, base]);
         } catch (createError) {
           throw new Error(`Failed to create worktree for repo ${repoId}: ${createError}`);
         }
@@ -849,7 +1072,7 @@ export class WorktreeService {
     step: string,
     deleteBranch = false,
     options: RemoveOptions = {},
-  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
+  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
     await this.get(feature, step);
     const manifest = await this.readWorkspaceManifest(feature, step);
     if (manifest) {
@@ -863,43 +1086,24 @@ export class WorktreeService {
     step: string,
     deleteBranch: boolean,
     options: RemoveOptions = {},
-  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
+  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
     const worktreePath = this.getWorktreePath(feature, step);
     const branchName = this.getLegacyBranchName(feature, step);
     const git = this.getGit();
-    let worktreeRemoved = false;
-    let branchDeleted = false;
-    let pruned = false;
 
     if (deleteBranch) {
       await this.assertBranchDeletionSafe(git, branchName, options.allowUnmergedCommits === true);
     }
 
-    try {
-      await git.raw(["worktree", "remove", worktreePath, "--force"]);
-      worktreeRemoved = true;
-    } catch {
-      await fs.rm(worktreePath, { recursive: true, force: true });
-      worktreeRemoved = true;
-    }
-
-    try {
-      await git.raw(["worktree", "prune"]);
-      pruned = true;
-    } catch {
-      /* intentional */
-    }
-
-    if (deleteBranch) {
-      try {
-        await git.deleteLocalBranch(branchName, true);
-        branchDeleted = true;
-      } catch {
-        /* intentional */
-      }
-    }
-
-    return { worktreeRemoved, branchDeleted, pruned };
+    const requested = deleteBranch ? 'worktree+branch' : 'worktree';
+    const outcome = buildCleanupOutcome(requested, {
+      worktreeRemoval: await this.removeWorktreeStep(git, worktreePath),
+      prune: await this.pruneWorktreesStep(git),
+      branchDeletion: deleteBranch
+        ? await this.deleteBranchStep(git, branchName)
+        : { status: 'not_requested' },
+    });
+    return mergeCleanupResult(outcome);
   }
 
   private async removeComposite(
@@ -908,18 +1112,14 @@ export class WorktreeService {
     manifest: WorkspaceManifest,
     deleteBranch: boolean,
     options: RemoveOptions = {},
-  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
+  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
     const compositeRoot = this.getCompositeRoot(feature, step);
     const reposById = this.trustedRepositoriesForManifest(manifest);
 
-    let allWorktreesRemoved = true;
-    let allBranchesDeleted = true;
-    let prunedAny = false;
-    let branchAttempts = 0;
-
+    const perRepo: Array<{ repoId: string; cleanup: WorktreeCleanupOutcome }> = [];
     for (const [repoId, entry] of Object.entries(manifest.repos)) {
       const repositoryPath = reposById.get(repoId)!.path;
-      const perRepo = await this.removeCompositeRepo(
+      const perRepoResult = await this.removeCompositeRepo(
         feature,
         step,
         entry,
@@ -927,26 +1127,24 @@ export class WorktreeService {
         deleteBranch,
         options,
       );
-      if (!perRepo.worktreeRemoved) allWorktreesRemoved = false;
-      if (perRepo.pruned) prunedAny = true;
-      if (deleteBranch) {
-        branchAttempts++;
-        if (!perRepo.branchDeleted) allBranchesDeleted = false;
-      }
+      perRepo.push({ repoId, cleanup: perRepoResult });
     }
 
     // Clean up the composite root directory itself
+    let rootFailure: { cause: string } | undefined;
     try {
       await fs.rm(compositeRoot, { recursive: true, force: true });
-    } catch {
-      allWorktreesRemoved = false;
+    } catch (error: unknown) {
+      const err = error as { message?: string };
+      rootFailure = { cause: err.message || 'composite root removal failed' };
     }
 
-    return {
-      worktreeRemoved: allWorktreesRemoved,
-      branchDeleted: deleteBranch && branchAttempts > 0 && allBranchesDeleted,
-      pruned: prunedAny,
-    };
+    const outcome = combineRepoCleanupOutcomes(
+      deleteBranch ? 'worktree+branch' : 'worktree',
+      perRepo,
+      rootFailure,
+    );
+    return mergeCleanupResult(outcome);
   }
 
   private async assertBranchDeletionSafe(git: SimpleGit, branchName: string, allowUnmergedCommits: boolean): Promise<void> {
@@ -989,7 +1187,7 @@ export class WorktreeService {
         throw error;
       });
 
-      if (stat?.isSymbolicLink()) throw new Error(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
+      if (stat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
       if (!stat?.isDirectory()) continue;
 
       const steps = await fs.readdir(featurePath).catch((error: NodeJS.ErrnoException) => {
@@ -1018,7 +1216,7 @@ export class WorktreeService {
         const featurePath = path.join(worktreesDir, feat);
         const stat = await fs.lstat(featurePath).catch(() => null);
 
-        if (stat?.isSymbolicLink()) throw new Error(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
+        if (stat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
         if (!stat?.isDirectory()) continue;
 
       const steps = await fs.readdir(featurePath).catch(() => []);
@@ -1027,7 +1225,7 @@ export class WorktreeService {
         const worktreePath = path.join(featurePath, step);
         const stepStat = await fs.lstat(worktreePath).catch(() => null);
 
-        if (stepStat?.isSymbolicLink()) throw new Error(`Worktree linkage preflight failed: path contains a symlink (${worktreePath})`);
+        if (stepStat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${worktreePath})`);
         if (!stepStat?.isDirectory()) continue;
 
         const manifest = await this.readWorkspaceManifest(feat, step);
@@ -1192,6 +1390,11 @@ export class WorktreeService {
       sha: firstResult.sha,
       message: firstResult.message,
       repos,
+      ...aggregateCommitClassification({
+        repos: repoIds.map((repoId) => repos[repoId]),
+        anyCommitted,
+        anyFailed,
+      }),
     };
     if (partial) result.partial = true;
     if (firstError) result.error = firstError;
@@ -1202,11 +1405,12 @@ export class WorktreeService {
     try {
       await fs.access(repoWtPath);
     } catch {
-      return { committed: false, sha: '', message: 'Worktree not found' };
+      return commitFailure('WORKTREE_NOT_REGISTERED', 'Worktree not found');
     }
 
     const git = this.getGit(repoWtPath);
     let startingHead: string | undefined;
+    let source: 'message' | 'commit' = 'commit';
     try {
       const status = await git.status();
       const hasChanges =
@@ -1218,10 +1422,20 @@ export class WorktreeService {
 
       if (!hasChanges) {
         const currentSha = (await git.revparse(['HEAD']).catch(() => '')).trim();
-        return { committed: false, sha: currentSha, message: 'No changes to commit' };
+        return {
+          committed: false,
+          sha: currentSha,
+          message: 'No changes to commit',
+          phase: 'integration',
+          mutation: 'none',
+          retryable: false,
+          action: 'none',
+        };
       }
 
+      source = 'message';
       const message = normalizeCommitMessage(commitMessage);
+      source = 'commit';
       startingHead = (await git.revparse(['HEAD'])).trim();
 
       await git.add('-A');
@@ -1229,9 +1443,25 @@ export class WorktreeService {
       const head = (await git.revparse(['HEAD'])).trim();
       if (head === startingHead) throw new Error('Commit failed');
       const createdMessage = await this.readValidatedCommitMessage(git, head);
-      return { committed: true, sha: head, message: createdMessage };
+      return {
+        committed: true,
+        sha: head,
+        message: createdMessage,
+        phase: 'integration',
+        mutation: 'applied',
+        retryable: false,
+        action: 'none',
+      };
     } catch (error: unknown) {
       const err = error as { message?: string };
+      if (source === 'message') {
+        // Invalid input was rejected before any Git mutation.
+        return commitFailure('INVALID_COMMIT_MESSAGE', err.message || 'Invalid commit message');
+      }
+      const headAtFailure = startingHead
+        ? (await git.revparse(['HEAD']).catch(() => startingHead)).trim()
+        : undefined;
+      const commitExisted = headAtFailure !== undefined && headAtFailure !== startingHead;
       let rollbackError: string | undefined;
       if (startingHead) {
         try {
@@ -1241,18 +1471,26 @@ export class WorktreeService {
         }
       }
       const currentSha = (await git.revparse(['HEAD']).catch(() => '')).trim();
-      return {
-        committed: false,
-        sha: currentSha,
-        message: rollbackError
-          ? `${err.message || 'Commit failed'}; failed to restore worktree HEAD: ${rollbackError}`
-          : err.message || 'Commit failed',
-      };
+      const message = rollbackError
+        ? `${err.message || 'Commit failed'}; failed to restore worktree HEAD: ${rollbackError}`
+        : err.message || 'Commit failed';
+      if (rollbackError) {
+        return commitFailure('ROLLBACK_FAILED', message, { sha: currentSha, mutation: 'unknown' });
+      }
+      if (commitExisted) {
+        // The commit existed and verification rejected its message. Report a
+        // durable mutation so callers inspect instead of repeating the commit.
+        return commitFailure('POST_INTEGRATION_VERIFICATION_FAILED', message, {
+          sha: currentSha,
+          mutation: 'applied',
+        });
+      }
+      return commitFailure('GIT_OPERATION_FAILED', message, { sha: currentSha });
     }
   }
 
   private async commitLegacy(feature: string, step: string, message?: string): Promise<CommitResult> {
-    return this.commitOneRepo(this.getWorktreePath(feature, step), message);
+    return aggregateFromRepoCommit(await this.commitOneRepo(this.getWorktreePath(feature, step), message));
   }
 
   async merge(
@@ -1265,53 +1503,32 @@ export class WorktreeService {
     const cleanupMode = options.cleanup ?? 'none';
     const preserveConflicts = options.preserveConflicts ?? false;
 
-    const emptyCleanup = {
-      worktreeRemoved: false,
-      branchDeleted: false,
-      pruned: false,
-    };
-
     if (strategy === "rebase" && message?.trim()) {
-      return {
-        success: false,
-        merged: false,
-        strategy,
-        filesChanged: [],
-        conflicts: [],
-        conflictState: 'none',
-        cleanup: emptyCleanup,
-        error: "Custom merge message is not supported for rebase strategy",
-      };
+      return mergeFailure(strategy, 'MESSAGE_NOT_ALLOWED_FOR_REBASE', "Custom merge message is not supported for rebase strategy");
     }
 
     let registered: WorktreeInfo | null;
     try {
       registered = await this.get(feature, step);
     } catch (error) {
-      return {
-        success: false,
-        merged: false,
+      // Only typed identity denials map to a fresh run. An untyped lookup
+      // failure (transient filesystem or Git error) is inspectable state, not
+      // evidence that the worktree identity is invalid.
+      const reasonCode: WorktreeReasonCode = classifyThrownWorktreeError(error) ?? 'WORKTREE_LOOKUP_FAILED';
+      return mergeFailure(
         strategy,
-        filesChanged: [],
-        conflicts: [],
-        conflictState: 'none',
-        cleanup: emptyCleanup,
-        error: error instanceof Error ? error.message : String(error),
-        partial: false,
-      };
+        reasonCode,
+        error instanceof Error ? error.message : String(error),
+        { partial: false },
+      );
     }
     if (!registered) {
-      return {
-        success: false,
-        merged: false,
+      return mergeFailure(
         strategy,
-        filesChanged: [],
-        conflicts: [],
-        conflictState: 'none',
-        cleanup: emptyCleanup,
-        error: 'Worktree linkage preflight failed: task worktree is not registered',
-        partial: false,
-      };
+        'WORKTREE_NOT_REGISTERED',
+        'Worktree linkage preflight failed: task worktree is not registered',
+        { partial: false },
+      );
     }
     const manifest = await this.readWorkspaceManifest(feature, step);
     if (manifest) {
@@ -1346,6 +1563,10 @@ export class WorktreeService {
       conflictState: repoResult.conflictState,
       cleanup: repoResult.cleanup,
       ...(repoResult.error !== undefined ? { error: repoResult.error } : {}),
+      phase: repoResult.phase,
+      mutation: repoResult.mutation,
+      retryable: repoResult.retryable,
+      action: repoResult.action,
     };
   }
 
@@ -1359,23 +1580,9 @@ export class WorktreeService {
   ): Promise<MergeResult> {
     const repoIds = Object.keys(manifest.repos).sort();
     const trustedById = this.trustedRepositoriesForManifest(manifest);
-    const emptyCleanup = {
-      worktreeRemoved: false,
-      branchDeleted: false,
-      pruned: false,
-    };
 
-    const preflightFailure = (repoId: string, reason: string): MergeResult => ({
-      success: false,
-      merged: false,
-      strategy,
-      filesChanged: [],
-      conflicts: [],
-      conflictState: 'none',
-      cleanup: emptyCleanup,
-      error: `${repoId}: ${reason}`,
-      partial: false,
-    });
+    const preflightFailure = (repoId: string, reason: string, reasonCode: WorktreeReasonCode): MergeResult =>
+      mergeFailure(strategy, reasonCode, `${repoId}: ${reason}`, { partial: false });
 
     // Preflight all repos before any mutation
     for (const repoId of repoIds) {
@@ -1387,11 +1594,11 @@ export class WorktreeService {
       try {
         const branches = await repoGit.branch();
         if (!branches.all.includes(entry.branch)) {
-          return preflightFailure(repoId, `branch ${entry.branch} not found`);
+          return preflightFailure(repoId, `branch ${entry.branch} not found`, 'SOURCE_BRANCH_MISSING');
         }
       } catch (e: unknown) {
         const msg = (e as { message?: string }).message ?? 'unable to list branches';
-        return preflightFailure(repoId, msg);
+        return preflightFailure(repoId, msg, 'GIT_OPERATION_FAILED');
       }
 
       // Source repo target must be clean
@@ -1405,11 +1612,11 @@ export class WorktreeService {
           status.created.length > 0 ||
           status.conflicted.length > 0;
         if (dirty) {
-          return preflightFailure(repoId, 'target repo has uncommitted (dirty) changes');
+          return preflightFailure(repoId, 'target repo has uncommitted (dirty) changes', 'TARGET_DIRTY');
         }
       } catch (e: unknown) {
         const msg = (e as { message?: string }).message ?? 'unable to read status';
-        return preflightFailure(repoId, msg);
+        return preflightFailure(repoId, msg, 'GIT_OPERATION_FAILED');
       }
 
       // No active merge/rebase/cherry-pick state. Resolve state paths via
@@ -1426,7 +1633,7 @@ export class WorktreeService {
         const statePath = await this.resolveGitPath(repoGit, repoRoot, name);
         try {
           await fs.access(statePath);
-          return preflightFailure(repoId, `active ${label} state in progress`);
+          return preflightFailure(repoId, `active ${label} state in progress`, 'GIT_OPERATION_IN_PROGRESS');
         } catch {
           // not present -> ok
         }
@@ -1438,7 +1645,7 @@ export class WorktreeService {
       if (changedFiles) {
         if (strategy !== 'squash') {
           const sourceError = await this.validateSourceCommitMessages(repoGit, currentBranch, entry.branch);
-          if (sourceError) return preflightFailure(repoId, sourceError);
+          if (sourceError) return preflightFailure(repoId, sourceError, 'INVALID_COMMIT_MESSAGE');
         }
       }
     }
@@ -1465,7 +1672,7 @@ export class WorktreeService {
         message,
         preserveConflicts: options.preserveConflicts,
         cleanupMode: 'none', // defer cleanup until after all repos succeed
-        cleanupFn: async () => ({ worktreeRemoved: false, branchDeleted: false, pruned: false }),
+        cleanupFn: async () => mergeCleanupResult(noCleanupRequested()),
       });
       repos[repoId] = repoResult;
       if (repoResult.merged) {
@@ -1498,27 +1705,27 @@ export class WorktreeService {
     if (stoppedRepoId !== undefined) {
       // Stop: do not rollback earlier successful repo merges
       const partial = anyActualMerge;
-      return {
-        success: false,
-        merged: false,
-        strategy,
+      const stopped = repos[stoppedRepoId];
+      const reasonCode: WorktreeReasonCode = partial
+        ? 'COMPOSITE_PARTIAL'
+        : (stopped.reasonCode ?? 'GIT_OPERATION_FAILED');
+      return mergeFailure(strategy, reasonCode, firstError ?? 'merge failed', {
+        mutation: partial ? 'partial' : stopped.mutation,
         filesChanged: flattenedFiles,
         conflicts: flattenedConflicts,
         conflictState: lastConflictState,
-        cleanup: emptyCleanup,
-        error: firstError,
         repos,
         partial,
-      };
+      });
     }
 
     // All repos merged. Apply per-repo cleanup and populate each
     // repos[repoId].cleanup field; aggregate top-level cleanup from per-repo
     // results so the contract holds for both shapes.
-    let cleanup = { worktreeRemoved: false, branchDeleted: false, pruned: false };
+    let cleanup = noCleanupRequested();
     if (options.cleanup !== 'none') {
       const deleteBranch = options.cleanup === 'worktree+branch';
-      const perRepoCleanups: Array<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> = [];
+      const perRepo: Array<{ repoId: string; cleanup: WorktreeCleanupOutcome }> = [];
       for (const repoId of repoIds) {
         const entry = manifest.repos[repoId];
         const repoRoot = trustedById.get(repoId)!.path;
@@ -1530,22 +1737,19 @@ export class WorktreeService {
           deleteBranch,
           { allowUnmergedCommits: true },
         );
-        repos[repoId].cleanup = repoCleanup;
-        perRepoCleanups.push(repoCleanup);
+        repos[repoId].cleanup = toMergeCleanupBlock(repoCleanup);
+        perRepo.push({ repoId, cleanup: repoCleanup });
       }
       // Tear down the composite root after per-repo cleanup.
       const compositeRoot = this.getCompositeRoot(feature, step);
-      let rootRemoved = true;
+      let rootFailure: { cause: string } | undefined;
       try {
         await fs.rm(compositeRoot, { recursive: true, force: true });
-      } catch {
-        rootRemoved = false;
+      } catch (error: unknown) {
+        const err = error as { message?: string };
+        rootFailure = { cause: err.message || 'composite root removal failed' };
       }
-      cleanup = {
-        worktreeRemoved: rootRemoved && perRepoCleanups.every(c => c.worktreeRemoved),
-        branchDeleted: deleteBranch && perRepoCleanups.length > 0 && perRepoCleanups.every(c => c.branchDeleted),
-        pruned: perRepoCleanups.some(c => c.pruned),
-      };
+      cleanup = combineRepoCleanupOutcomes(options.cleanup, perRepo, rootFailure);
     }
 
     if (!anyActualMerge) {
@@ -1560,7 +1764,8 @@ export class WorktreeService {
         filesChanged: [],
         conflicts: [],
         conflictState: 'none',
-        cleanup,
+        cleanup: toMergeCleanupBlock(cleanup),
+        ...mergeSuccessClassification(options.cleanup, cleanup, 'none'),
         repos,
       };
     }
@@ -1574,7 +1779,8 @@ export class WorktreeService {
       filesChanged: flattenedFiles,
       conflicts: flattenedConflicts,
       conflictState: 'none',
-      cleanup,
+      cleanup: toMergeCleanupBlock(cleanup),
+      ...mergeSuccessClassification(options.cleanup, cleanup, 'applied'),
       repos,
     };
   }
@@ -1620,49 +1826,78 @@ export class WorktreeService {
     repositoryPath: string,
     deleteBranch: boolean,
     options: RemoveOptions = {},
-  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }> {
+  ): Promise<WorktreeCleanupOutcome> {
     const compositeRoot = this.getCompositeRoot(feature, step);
     const repoWtPath = path.join(compositeRoot, entry.path);
     const repoGit = this.getGit(repositoryPath);
 
-    let worktreeRemoved = false;
-    let pruned = false;
-    let branchDeleted = false;
-
     if (deleteBranch) {
       await this.assertBranchDeletionSafe(repoGit, entry.branch, options.allowUnmergedCommits === true);
     }
-    try {
-      await repoGit.raw(['worktree', 'remove', repoWtPath, '--force']);
-      worktreeRemoved = true;
-    } catch {
-      // fall through to fs.rm fallback
-    }
-    try {
-      await repoGit.raw(['worktree', 'prune']);
-      pruned = true;
-    } catch {
-      /* intentional */
-    }
-    if (!worktreeRemoved) {
-      try {
-        await fs.rm(repoWtPath, { recursive: true, force: true });
-        worktreeRemoved = true;
-      } catch {
-        worktreeRemoved = false;
-      }
-    }
 
-    if (deleteBranch) {
-      try {
-        await repoGit.deleteLocalBranch(entry.branch, true);
-        branchDeleted = true;
-      } catch {
-        branchDeleted = false;
-      }
-    }
+    return buildCleanupOutcome(deleteBranch ? 'worktree+branch' : 'worktree', {
+      worktreeRemoval: await this.removeWorktreeStep(repoGit, repoWtPath),
+      prune: await this.pruneWorktreesStep(repoGit),
+      branchDeletion: deleteBranch
+        ? await this.deleteBranchStep(repoGit, entry.branch)
+        : { status: 'not_requested' },
+    });
+  }
 
-    return { worktreeRemoved, branchDeleted, pruned };
+  /**
+   * Remove one registered worktree. Reports already_absent when the path is
+   * gone, and captures the underlying cause when removal fails.
+   */
+  private async removeWorktreeStep(git: SimpleGit, worktreePath: string): Promise<CleanupStepOutcome> {
+    const stat = await fs.lstat(worktreePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat) return { status: 'already_absent' };
+
+    let gitError: string | undefined;
+    try {
+      await git.raw(['worktree', 'remove', worktreePath, '--force']);
+      return { status: 'succeeded' };
+    } catch (error: unknown) {
+      gitError = (error as { message?: string }).message;
+    }
+    try {
+      await fs.rm(worktreePath, { recursive: true, force: true });
+      return { status: 'succeeded' };
+    } catch (error: unknown) {
+      const err = error as { message?: string };
+      const cause = err.message || 'worktree removal failed';
+      return { status: 'failed', error: gitError ? `${cause} (git: ${gitError})` : cause };
+    }
+  }
+
+  private async pruneWorktreesStep(git: SimpleGit): Promise<CleanupStepOutcome> {
+    try {
+      await git.raw(['worktree', 'prune']);
+      return { status: 'succeeded' };
+    } catch (error: unknown) {
+      const err = error as { message?: string };
+      return { status: 'failed', error: err.message || 'worktree prune failed' };
+    }
+  }
+
+  /**
+   * Delete one branch. Reports already_absent when the branch is already gone
+   * so a partially repeated cleanup still describes reality.
+   */
+  private async deleteBranchStep(git: SimpleGit, branchName: string): Promise<CleanupStepOutcome> {
+    const present = await git.branch()
+      .then((branches) => branches.all.includes(branchName))
+      .catch(() => true);
+    if (!present) return { status: 'already_absent' };
+    try {
+      await git.deleteLocalBranch(branchName, true);
+      return { status: 'succeeded' };
+    } catch (error: unknown) {
+      const err = error as { message?: string };
+      return { status: 'failed', error: err.message || 'branch deletion failed' };
+    }
   }
 
   private async mergeOneRepo(opts: {
@@ -1672,30 +1907,22 @@ export class WorktreeService {
     message: string | undefined;
     preserveConflicts: boolean;
     cleanupMode: 'none' | 'worktree' | 'worktree+branch';
-    cleanupFn: (deleteBranch: boolean) => Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean }>;
+    cleanupFn: (deleteBranch: boolean) => Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }>;
   }): Promise<RepoMergeResult> {
     const { git, branchName, strategy, message, preserveConflicts, cleanupMode, cleanupFn } = opts;
-    const emptyCleanup = {
-      worktreeRemoved: false,
-      branchDeleted: false,
-      pruned: false,
-    };
 
-    let filesChanged: string[] = [];
     let startingHead: string | undefined;
+    // Set immediately before a requested cleanup call in each success path to
+    // the mutation that path reports. Once set, the target state is final: a
+    // cleanup throw is classified as a cleanup failure over that state and must
+    // not be rolled back.
+    let cleanupFailureMutation: WorktreeMutationState | undefined;
+    let verificationFailure = false;
 
     try {
       const branches = await git.branch();
       if (!branches.all.includes(branchName)) {
-        return {
-          success: false,
-          merged: false,
-          filesChanged: [],
-          conflicts: [],
-          conflictState: 'none',
-          cleanup: emptyCleanup,
-          error: `Branch ${branchName} not found`,
-        };
+        return mergeRepoFailure('SOURCE_BRANCH_MISSING', `Branch ${branchName} not found`);
       }
 
       const currentBranch = branches.current;
@@ -1712,15 +1939,7 @@ export class WorktreeService {
         const statePath = await this.resolveGitPath(git, repoRoot, name);
         try {
           await fs.access(statePath);
-          return {
-            success: false,
-            merged: false,
-            filesChanged: [],
-            conflicts: [],
-            conflictState: 'none',
-            cleanup: emptyCleanup,
-            error: `active ${label} state in progress`,
-          };
+          return mergeRepoFailure('GIT_OPERATION_IN_PROGRESS', `active ${label} state in progress`);
         } catch {
           // not present -> ok
         }
@@ -1728,26 +1947,23 @@ export class WorktreeService {
 
       const targetStatus = await git.status();
       if (!targetStatus.isClean()) {
-        return {
-          success: false,
-          merged: false,
-          filesChanged: [],
-          conflicts: [],
-          conflictState: 'none',
-          cleanup: emptyCleanup,
-          error: 'Target repo has uncommitted (dirty) changes',
-        };
+        return mergeRepoFailure('TARGET_DIRTY', 'Target repo has uncommitted (dirty) changes');
       }
       startingHead = (await git.revparse(['HEAD'])).trim();
 
-      const diffNames = await git.diff([startingHead, branchName, '--name-only']);
-      filesChanged = diffNames
-        .split("\n")
+      // Endpoint comparison only decides whether there is anything to
+      // integrate. It is not the reported delta: it can include files that
+      // only the target changed after the source branch forked.
+      const candidateFiles = (await git.diff([startingHead, branchName, '--name-only']))
+        .split('\n')
         .map(l => l.trim())
         .filter(Boolean);
 
-      if (filesChanged.length === 0) {
-        const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
+      if (candidateFiles.length === 0) {
+        cleanupFailureMutation = 'none';
+        const cleanup = cleanupMode === 'none'
+          ? noCleanupRequested()
+          : (await cleanupFn(cleanupMode === 'worktree+branch')).cleanup;
         return {
           success: true,
           merged: false,
@@ -1758,71 +1974,121 @@ export class WorktreeService {
           filesChanged: [],
           conflicts: [],
           conflictState: 'none',
-          cleanup,
+          cleanup: toMergeCleanupBlock(cleanup),
+          ...mergeSuccessClassification(cleanupMode, cleanup, 'none'),
         };
       }
 
-      const commitMessage = strategy === 'rebase' ? undefined : normalizeCommitMessage(message);
+      let commitMessage: string | undefined;
+      if (strategy === 'rebase') {
+        if (message?.trim()) {
+          return mergeRepoFailure(
+            'MESSAGE_NOT_ALLOWED_FOR_REBASE',
+            'Custom merge message is not supported for rebase strategy',
+          );
+        }
+      } else {
+        try {
+          commitMessage = normalizeCommitMessage(message);
+        } catch (error: unknown) {
+          const err = error as { message?: string };
+          return mergeRepoFailure('INVALID_MERGE_MESSAGE', err.message || 'Invalid merge message');
+        }
+      }
       if (strategy !== 'squash') {
         const sourceError = await this.validateSourceCommitMessages(git, currentBranch, branchName);
-        if (sourceError) throw new Error(sourceError);
+        if (sourceError) return mergeRepoFailure('INVALID_COMMIT_MESSAGE', sourceError);
       }
 
-      if (strategy === "squash") {
-        await git.raw(["merge", "--squash", branchName]);
+      let finalHead: string;
+      let conflicts: string[] = [];
+      let createdCommitMessage: string | undefined;
+      if (strategy === 'squash') {
+        await git.raw(['merge', '--squash', branchName]);
         await git.commit(commitMessage!);
-        const head = (await git.revparse(["HEAD"])).trim();
-        if (head === startingHead) throw new Error('Failed to create squash commit');
-        const createdCommitMessage = await this.readValidatedCommitMessage(git, head);
-        const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
-        return {
-          success: true,
-          merged: true,
-          sha: head,
-          commitMessage: createdCommitMessage,
-          filesChanged,
-          conflicts: [],
-          conflictState: 'none',
-          cleanup,
-        };
-      } else if (strategy === "rebase") {
+        finalHead = (await git.revparse(['HEAD'])).trim();
+        if (finalHead === startingHead) throw new Error('Failed to create squash commit');
+        try {
+          createdCommitMessage = await this.readValidatedCommitMessage(git, finalHead);
+        } catch (verificationError: unknown) {
+          verificationFailure = true;
+          throw verificationError;
+        }
+      } else if (strategy === 'rebase') {
         const sourceHashesOutput = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${branchName}`])).trim();
         const sourceHashes = sourceHashesOutput ? sourceHashesOutput.split('\n').filter(Boolean) : [];
         for (const hash of sourceHashes) {
-          await git.raw(["cherry-pick", hash]);
+          await git.raw(['cherry-pick', hash]);
           const cherryPickedHead = (await git.revparse(['HEAD'])).trim();
-          await this.readValidatedCommitMessage(git, cherryPickedHead);
+          try {
+            await this.readValidatedCommitMessage(git, cherryPickedHead);
+          } catch (verificationError: unknown) {
+            verificationFailure = true;
+            throw verificationError;
+          }
         }
-        const head = (await git.revparse(["HEAD"])).trim();
-        const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
+        finalHead = (await git.revparse(['HEAD'])).trim();
+      } else {
+        const result = await git.merge([branchName, '--no-ff', '-m', commitMessage!]);
+        finalHead = (await git.revparse(['HEAD'])).trim();
+        if (result.failed || finalHead === startingHead) throw new Error('Failed to create merge commit');
+        try {
+          createdCommitMessage = await this.readValidatedCommitMessage(git, finalHead);
+        } catch (verificationError: unknown) {
+          verificationFailure = true;
+          throw verificationError;
+        }
+        conflicts = result.conflicts?.map(c => c.file || String(c)) || [];
+      }
+
+      // Integration must move HEAD. A rebase with no applicable source commits
+      // leaves the target at its starting commit and is a successful no-op.
+      if (finalHead === startingHead) {
+        cleanupFailureMutation = 'none';
+        const cleanup = cleanupMode === 'none'
+          ? noCleanupRequested()
+          : (await cleanupFn(cleanupMode === 'worktree+branch')).cleanup;
         return {
           success: true,
-          merged: true,
-          sha: head,
-          filesChanged,
+          merged: false,
+          reason: 'nothing_to_merge',
+          reasonCode: 'NO_TRACKED_CHANGES',
+          cleanupEligible: true,
+          taskUpdateRecommended: true,
+          filesChanged: [],
           conflicts: [],
           conflictState: 'none',
-          cleanup,
-        };
-      } else {
-        const result = await git.merge([branchName, "--no-ff", "-m", commitMessage!]);
-        const head = (await git.revparse(["HEAD"])).trim();
-        if (result.failed || head === startingHead) throw new Error('Failed to create merge commit');
-        const createdCommitMessage = await this.readValidatedCommitMessage(git, head);
-        const cleanup = cleanupMode === 'none' ? emptyCleanup : await cleanupFn(cleanupMode === 'worktree+branch');
-        return {
-          success: true,
-          merged: true,
-          sha: head,
-          commitMessage: createdCommitMessage,
-          filesChanged,
-          conflicts: result.conflicts?.map(c => c.file || String(c)) || [],
-          conflictState: 'none',
-          cleanup,
+          cleanup: toMergeCleanupBlock(cleanup),
+          ...mergeSuccessClassification(cleanupMode, cleanup, 'none'),
         };
       }
+
+      const observedFiles = await this.observedDeltaFiles(git, startingHead, finalHead);
+      cleanupFailureMutation = 'applied';
+      const cleanup = cleanupMode === 'none'
+        ? noCleanupRequested()
+        : (await cleanupFn(cleanupMode === 'worktree+branch')).cleanup;
+      return {
+        success: true,
+        merged: true,
+        sha: finalHead,
+        ...(createdCommitMessage !== undefined ? { commitMessage: createdCommitMessage } : {}),
+        filesChanged: observedFiles,
+        conflicts,
+        conflictState: 'none',
+        cleanup: toMergeCleanupBlock(cleanup),
+        ...mergeSuccessClassification(cleanupMode, cleanup, 'applied'),
+      };
     } catch (error: unknown) {
       const err = error as { message?: string };
+      if (cleanupFailureMutation !== undefined) {
+        // The target state was already final when the requested cleanup threw.
+        // Rolling back would discard a completed integration, so report a
+        // cleanup failure over the durable state instead.
+        return mergeRepoFailure('CLEANUP_FAILED', err.message || 'Cleanup failed', {
+          mutation: cleanupFailureMutation,
+        });
+      }
       const conflicts = await this.getActiveConflictFiles(git);
       const isConflict = conflicts.length > 0;
       const preserveConflictState = isConflict && preserveConflicts;
@@ -1846,30 +2112,48 @@ export class WorktreeService {
         }
       }
 
-      if (isConflict) {
-        return {
-          success: false,
-          merged: false,
-          filesChanged,
-          conflicts,
-          conflictState: preserveConflictState ? 'preserved' : 'aborted',
-          cleanup: emptyCleanup,
-          error: rollbackError ? `Merge conflicts detected; failed to restore target: ${rollbackError}` : "Merge conflicts detected",
-        };
+      if (rollbackError) {
+        return mergeRepoFailure(
+          'ROLLBACK_FAILED',
+          `${err.message || "Merge failed"}; failed to restore target: ${rollbackError}`,
+          { mutation: 'unknown', conflicts: isConflict ? conflicts : [], conflictState: preserveConflictState ? 'preserved' : 'none' },
+        );
       }
 
-      return {
-        success: false,
-        merged: false,
-        filesChanged,
-        conflicts: [],
-        conflictState: 'none',
-        cleanup: emptyCleanup,
-        error: rollbackError
-          ? `${err.message || "Merge failed"}; failed to restore target: ${rollbackError}`
-          : err.message || "Merge failed",
-      };
+      if (isConflict) {
+        return mergeRepoFailure(
+          preserveConflictState ? 'MERGE_CONFLICT_PRESERVED' : 'MERGE_CONFLICT_ABORTED',
+          "Merge conflicts detected",
+          {
+            conflicts,
+            conflictState: preserveConflictState ? 'preserved' : 'aborted',
+          },
+        );
+      }
+
+      if (verificationFailure) {
+        // A commit was created and its message was rejected. The target was
+        // restored, but the created commit's identity is not confirmed, so
+        // callers inspect instead of repeating the integration.
+        return mergeRepoFailure('POST_INTEGRATION_VERIFICATION_FAILED', err.message || "Merge failed", {
+          mutation: 'unknown',
+        });
+      }
+
+      return mergeRepoFailure('GIT_OPERATION_FAILED', err.message || "Merge failed");
     }
+  }
+
+  /**
+   * Reported integration delta: the observed target difference between the
+   * pre-merge starting commit and the final commit.
+   */
+  private async observedDeltaFiles(git: SimpleGit, startingHead: string, finalHead: string): Promise<string[]> {
+    const output = await git.diff([startingHead, finalHead, '--name-only']);
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
   }
 
   async hasUncommittedChanges(feature: string, step: string): Promise<boolean> {

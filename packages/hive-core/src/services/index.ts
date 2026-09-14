@@ -11,7 +11,10 @@ export type {
   DiffResult,
   ApplyResult,
   CommitResult,
+  RepoCommitResult,
   MergeResult,
+  MergeCleanupBlock,
+  RepoMergeResult,
   WorktreeConfig,
   RepositoryResolver,
   TaskRepoResolver,
@@ -29,8 +32,28 @@ export type {
   AdhocMergeOptions,
   AdhocMergeResult,
   AdhocRepoMergeResult,
+  AdhocMergeCleanupBlock,
   AdhocCleanupResult,
 } from './adhocWorktreeService.js';
+export {
+  buildCleanupOutcome,
+  buildNotRequestedMergeCleanupBlock,
+  classifyThrownWorktreeError,
+  classifyWorktreeOutcome,
+  combineRepoCleanupOutcomes,
+  isRetryableWithMutation,
+  WorktreeLinkageError,
+  WorktreeTopologyMismatchError,
+} from './worktreeOutcome.js';
+export type {
+  CleanupStepOutcome,
+  CleanupStepStatus,
+  WorktreeCleanupOutcome,
+  WorktreeMutationState,
+  WorktreeOperationPhase,
+  WorktreeReasonCode,
+  WorktreeRecoveryAction,
+} from './worktreeOutcome.js';
 export {
   ReviewWorkspaceService,
   REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,

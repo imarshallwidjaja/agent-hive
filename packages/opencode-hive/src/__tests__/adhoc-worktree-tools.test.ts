@@ -1,10 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import plugin from '../index';
+import { AdhocWorktreeService, WorktreeLinkageError, WorktreeTopologyMismatchError } from 'hive-core';
+import type { WorktreeReasonCode } from 'hive-core';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { HIVE_SESSION_POLICY } from '../utils/session-policy.js';
 
@@ -631,6 +633,97 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(typeof result.nextAction).toBe('string');
   });
 
+  it('hive_adhoc_worktree_create classifies a trusted-identity denial as start_fresh_run and keeps retry guidance for unclassified errors', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_create_denial_classification');
+    const createTool = hooks.tool!.hive_adhoc_worktree_create as unknown as {
+      execute(args: Record<string, unknown>, context: ToolContext): Promise<unknown>;
+    };
+
+    const typedDenials: Array<{ label: string; reasonCode: WorktreeReasonCode; error: Error }> = [
+      {
+        label: 'linkage invalid',
+        reasonCode: 'WORKTREE_LINKAGE_INVALID',
+        error: new WorktreeLinkageError(
+          'Worktree linkage preflight failed for repository adhoc: administration backlink does not select this exact worktree',
+        ),
+      },
+      {
+        label: 'workspace topology mismatch',
+        reasonCode: 'WORKSPACE_TOPOLOGY_MISMATCH',
+        error: new WorktreeTopologyMismatchError(
+          'Workspace topology mismatch for repository adhoc: recorded topology does not match the trusted repository manifest',
+        ),
+      },
+    ];
+
+    for (const denial of typedDenials) {
+      const createSpy = spyOn(AdhocWorktreeService.prototype, 'create').mockImplementation(async () => {
+        throw denial.error;
+      });
+
+      let raw: unknown;
+      try {
+        raw = await createTool.execute({ label: 'denial-classification' }, toolContext);
+      } catch (error: unknown) {
+        throw new Error(`${denial.label} threw instead of returning JSON: ${(error as Error).message}`);
+      } finally {
+        createSpy.mockRestore();
+      }
+
+      const result = parseToolJson<{
+        success?: boolean;
+        reason?: string;
+        reasonCode?: string;
+        phase?: string;
+        mutation?: string;
+        retryable?: boolean;
+        action?: string;
+        error?: string;
+        nextAction?: string;
+      }>(raw);
+
+      expect(result.success, denial.label).toBe(false);
+      expect(result.reason, denial.label).toBe('adhoc_create_failed');
+      expect(result.reasonCode, denial.label).toBe(denial.reasonCode);
+      expect(result.phase, denial.label).toBe('preflight');
+      expect(result.mutation, denial.label).toBe('none');
+      expect(result.retryable, denial.label).toBe(false);
+      expect(result.action, denial.label).toBe('start_fresh_run');
+      expect(result.error, denial.label).toContain(denial.error.message);
+      expect(result.nextAction ?? '', denial.label).not.toMatch(/retry hive_adhoc_worktree_create/i);
+      expect(result.nextAction, denial.label).toContain('Preserve the workspace and Git metadata');
+      expect(result.nextAction, denial.label).toContain('independently valid workspace');
+    }
+
+    const plainErrorSpy = spyOn(AdhocWorktreeService.prototype, 'create').mockImplementation(async () => {
+      throw new Error('simulated create collision on the target path');
+    });
+
+    let plainRaw: unknown;
+    try {
+      plainRaw = await createTool.execute({ label: 'unclassified-create-error' }, toolContext);
+    } finally {
+      plainErrorSpy.mockRestore();
+    }
+
+    const plain = parseToolJson<{
+      success?: boolean;
+      reason?: string;
+      reasonCode?: string;
+      action?: string;
+      error?: string;
+      nextAction?: string;
+    }>(plainRaw);
+
+    expect(plain.success).toBe(false);
+    expect(plain.reason).toBe('adhoc_create_failed');
+    expect(plain).not.toHaveProperty('reasonCode');
+    expect(plain).not.toHaveProperty('action');
+    expect(plain.nextAction).toContain('retry hive_adhoc_worktree_create');
+  });
+
   it('hive_worktree_start still returns feature_required without a feature', async () => {
     initGitRoot(testRoot);
     const hooks = await loadHooks(testRoot);
@@ -799,6 +892,9 @@ describe('ad-hoc worktree plugin tools', () => {
       success?: boolean;
       error?: string;
       reason?: string;
+      reasonCode?: string;
+      retryable?: boolean;
+      action?: string;
       commit?: {
         committed?: boolean;
         partial?: boolean;
@@ -816,7 +912,13 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(commit.commit?.message).not.toBe('No changes to commit');
     expect(commit.commit?.repos!.api.committed).toBe(false);
     expect(commit.commit?.repos!.web.committed).toBe(false);
-    expect(commit.nextAction ?? '').toMatch(/fail|resolve|retry/i);
+    // Guidance is derived from the classification, not from a blanket retry:
+    // an unclassified Git failure must be inspected before it is repeated.
+    expect(commit.reasonCode).toBe('GIT_OPERATION_FAILED');
+    expect(commit.retryable).toBe(true);
+    expect(commit.action).toBe('inspect_state');
+    expect(commit.nextAction).toContain('Inspect the current run, worktree, and Git state before acting');
+    expect(commit.nextAction).not.toContain('call hive_adhoc_worktree_commit again');
   });
 
   it('ad-hoc merge response contains workspacePath, branch, and nextAction', async () => {
@@ -947,5 +1049,302 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(cleanup.reason).toBe('adhoc_run_not_found');
     expect(cleanup.workspacePath).toBeUndefined();
     expect(cleanup.branch).toBeUndefined();
+  });
+
+  it('ad-hoc commit rejects missing or blank identity arguments without a Node path error', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_commit_invalid_arguments');
+
+    const createRaw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { runId: 'invalid-arguments-run' },
+      toolContext,
+    );
+    const created = parseToolJson<{ runId: string; workspacePath: string; branch: string }>(createRaw);
+    fs.writeFileSync(path.join(created.workspacePath, 'note.txt'), 'hello\n');
+    const headBefore = execSync('git rev-parse HEAD', { cwd: created.workspacePath, encoding: 'utf8' }).trim();
+
+    const commitTool = hooks.tool!.hive_adhoc_worktree_commit as unknown as {
+      execute(args: Record<string, unknown>, context: ToolContext): Promise<unknown>;
+    };
+    const baseArgs = {
+      runId: created.runId,
+      workspacePath: created.workspacePath,
+      branch: created.branch,
+      message: 'feat: adhoc note\n\nRecord the ad-hoc note in test history.',
+    };
+
+    // Direct .execute calls bypass schema validation, which is what leaked
+    // `The "paths[0]" property must be of type string, got undefined`.
+    const cases: Array<{ label: string; args: Record<string, unknown>; missingField: string }> = [
+      { label: 'workspacePath omitted', args: { ...baseArgs, workspacePath: undefined }, missingField: 'workspacePath' },
+      { label: 'branch omitted', args: { ...baseArgs, branch: undefined }, missingField: 'branch' },
+      { label: 'workspacePath blank', args: { ...baseArgs, workspacePath: '   ' }, missingField: 'workspacePath' },
+      { label: 'branch blank', args: { ...baseArgs, branch: '' }, missingField: 'branch' },
+      { label: 'message blank', args: { ...baseArgs, message: '   ' }, missingField: 'message' },
+      { label: 'runId blank', args: { ...baseArgs, runId: '' }, missingField: 'runId' },
+    ];
+
+    for (const testCase of cases) {
+      let raw: unknown;
+      try {
+        raw = await commitTool.execute(testCase.args, toolContext);
+      } catch (error: unknown) {
+        throw new Error(`${testCase.label} threw instead of returning JSON: ${(error as Error).message}`);
+      }
+      const result = parseToolJson<{
+        success?: boolean;
+        runId?: string;
+        reason?: string;
+        reasonCode?: string;
+        phase?: string;
+        mutation?: string;
+        retryable?: boolean;
+        action?: string;
+        error?: string;
+        nextAction?: string;
+      }>(raw);
+
+      expect(result.success, testCase.label).toBe(false);
+      expect(result.reasonCode, testCase.label).toBe('INVALID_ARGUMENTS');
+      expect(result.phase, testCase.label).toBe('validation');
+      expect(result.mutation, testCase.label).toBe('none');
+      expect(result.retryable, testCase.label).toBe(false);
+      expect(result.action, testCase.label).toBe('correct_arguments');
+      expect(result.error, testCase.label).toContain(testCase.missingField);
+      expect(JSON.stringify(result), testCase.label).not.toContain('paths[0]');
+      expect(result.nextAction, testCase.label).toContain('hive_adhoc_worktree_create');
+    }
+
+    expect(execSync('git rev-parse HEAD', { cwd: created.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
+    expect(execSync('git log --oneline', { cwd: created.workspacePath, encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
+  });
+
+  it('ad-hoc cleanup reports non-success with per-step truth when a requested branch deletion fails', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_cleanup_branch_failure');
+
+    const createRaw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { runId: 'cleanup-branch-failure' },
+      toolContext,
+    );
+    const created = parseToolJson<{ runId: string; workspacePath: string; branch: string }>(createRaw);
+
+    const getGit = (AdhocWorktreeService.prototype as any).getGit;
+    const gitSpy = spyOn(AdhocWorktreeService.prototype as any, 'getGit').mockImplementation(function (this: any, cwd?: string) {
+      const git = getGit.call(this, cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key === 'deleteLocalBranch') {
+            return () => Promise.reject(new Error('simulated branch deletion failure'));
+          }
+          return Reflect.get(target, key);
+        },
+      });
+    });
+
+    let cleanupRaw: unknown;
+    try {
+      cleanupRaw = await hooks.tool!.hive_adhoc_cleanup.execute(
+        { runId: created.runId, deleteBranch: true },
+        toolContext,
+      );
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    const cleanup = parseToolJson<{
+      success?: boolean;
+      cleanup?: {
+        requested?: string;
+        outcome?: string;
+        worktreeRemoval?: { status?: string };
+        branchDeletion?: { status?: string; error?: string };
+        prune?: { status?: string };
+        failures?: Array<{ step?: string }>;
+      };
+      reasonCode?: string;
+      action?: string;
+      retryable?: boolean;
+      nextAction?: string;
+    }>(cleanupRaw);
+
+    expect(cleanup.success).toBe(false);
+    expect(cleanup.cleanup?.requested).toBe('worktree+branch');
+    expect(cleanup.cleanup?.outcome).toBe('partial');
+    expect(cleanup.cleanup?.branchDeletion?.status).toBe('failed');
+    expect(cleanup.cleanup?.branchDeletion?.error).toContain('simulated branch deletion failure');
+    expect(cleanup.cleanup?.failures).toEqual([expect.objectContaining({ step: 'branch-deletion' })]);
+    expect(cleanup.reasonCode).toBe('CLEANUP_FAILED');
+    expect(cleanup.action).toBe('cleanup_only');
+    expect(cleanup.retryable).toBe(false);
+    expect(cleanup.nextAction ?? '').not.toContain('No further action required');
+    expect(cleanup.nextAction ?? '').toContain('Repeat only the cleanup step');
+  });
+
+  it('ad-hoc merge reports a linkage denial as a non-retryable start_fresh_run without recommending a merge retry', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_merge_linkage_denied');
+
+    const createRaw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { runId: 'linkage-denied-run' },
+      toolContext,
+    );
+    const created = parseToolJson<{ runId: string }>(createRaw);
+    expect(created.runId).toBe('linkage-denied-run');
+
+    const getSpy = spyOn(AdhocWorktreeService.prototype, 'get').mockImplementation(async function () {
+      throw new WorktreeLinkageError(
+        'Worktree linkage preflight failed for repository adhoc: administration backlink does not select this exact worktree',
+      );
+    });
+
+    let mergeRaw: unknown;
+    try {
+      mergeRaw = await hooks.tool!.hive_adhoc_merge.execute(
+        { runId: created.runId, strategy: 'squash', message: 'feat: integrate\n\nIntegrate the ad-hoc work as one commit.' },
+        toolContext,
+      );
+    } finally {
+      getSpy.mockRestore();
+    }
+
+    const merge = parseToolJson<{
+      success?: boolean;
+      reasonCode?: string;
+      phase?: string;
+      mutation?: string;
+      retryable?: boolean;
+      action?: string;
+      nextAction?: string;
+      error?: string;
+    }>(mergeRaw);
+
+    expect(merge.success).toBe(false);
+    expect(merge.reasonCode).toBe('WORKTREE_LINKAGE_INVALID');
+    expect(merge.phase).toBe('preflight');
+    expect(merge.mutation).toBe('none');
+    expect(merge.retryable).toBe(false);
+    expect(merge.action).toBe('start_fresh_run');
+    expect(merge.nextAction).toContain('independently valid workspace');
+    expect(merge.nextAction).toContain('Do not repair, rewrite, or migrate Git metadata');
+    expect(merge.nextAction ?? '').not.toContain('call the same tool again');
+    expect(merge.nextAction ?? '').not.toContain('retry hive_adhoc_merge');
+  });
+
+  it('ad-hoc create rejects non-string optional arguments instead of passing them to path or Git', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_create_invalid_optional');
+
+    const createTool = hooks.tool!.hive_adhoc_worktree_create as unknown as {
+      execute(args: Record<string, unknown>, context: ToolContext): Promise<unknown>;
+    };
+    const raw = await createTool.execute({ runId: 42, baseBranch: { name: 'main' } }, toolContext);
+    const result = parseToolJson<{
+      success?: boolean;
+      reasonCode?: string;
+      action?: string;
+      error?: string;
+    }>(raw);
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCode).toBe('INVALID_ARGUMENTS');
+    expect(result.action).toBe('correct_arguments');
+    expect(result.error).toContain('runId');
+    expect(result.error).toContain('baseBranch');
+    expect(JSON.stringify(result)).not.toContain('paths[0]');
+  });
+
+  it('ad-hoc create rejects a dash-prefixed baseBranch as invalid arguments', async () => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_create_dash_base_branch');
+
+    const createTool = hooks.tool!.hive_adhoc_worktree_create as unknown as {
+      execute(args: Record<string, unknown>, context: ToolContext): Promise<unknown>;
+    };
+    const raw = await createTool.execute({ baseBranch: '--no-checkout' }, toolContext);
+    const result = parseToolJson<{
+      success?: boolean;
+      reasonCode?: string;
+      phase?: string;
+      mutation?: string;
+      retryable?: boolean;
+      action?: string;
+      error?: string;
+    }>(raw);
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCode).toBe('INVALID_ARGUMENTS');
+    expect(result.phase).toBe('validation');
+    expect(result.mutation).toBe('none');
+    expect(result.retryable).toBe(false);
+    expect(result.action).toBe('correct_arguments');
+    expect(result.error).toContain('baseBranch');
+  });
+
+  it('ad-hoc create still accepts a legitimate baseBranch', async () => {
+    initGitRoot(testRoot);
+    execSync('git branch base-branch', { cwd: testRoot });
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext('sess_adhoc_create_valid_base_branch');
+
+    const raw = await hooks.tool!.hive_adhoc_worktree_create.execute(
+      { label: 'valid-base-run', baseBranch: 'base-branch', autoSpawnWorker: false },
+      toolContext,
+    );
+    const result = parseToolJson<{
+      success?: boolean;
+      workspacePath?: string;
+      branch?: string;
+    }>(raw);
+
+    expect(result.success).toBe(true);
+    expect(typeof result.workspacePath).toBe('string');
+    expect(typeof result.branch).toBe('string');
+    expect(fs.existsSync(result.workspacePath!)).toBe(true);
+    expect(fs.existsSync(path.join(result.workspacePath!, 'README.md'))).toBe(true);
+  });
+
+  it.each([
+    { toolName: 'hive_adhoc_merge' as const, args: { strategy: 'squash', message: 'feat: x\n\nbody' } },
+    { toolName: 'hive_adhoc_cleanup' as const, args: { deleteBranch: true } },
+  ])('$toolName rejects a missing or blank runId with a classified validation failure', async ({ toolName, args }) => {
+    initGitRoot(testRoot);
+    const hooks = await loadHooks(testRoot);
+    const toolContext = createToolContext(`sess_${toolName}_invalid_run_id`);
+    const tool = hooks.tool![toolName] as unknown as {
+      execute(input: Record<string, unknown>, context: ToolContext): Promise<unknown>;
+    };
+
+    for (const runId of [undefined, '', '   ']) {
+      let raw: unknown;
+      try {
+        raw = await tool.execute({ ...args, runId }, toolContext);
+      } catch (error: unknown) {
+        throw new Error(`${toolName} with runId=${JSON.stringify(runId)} threw instead of returning JSON: ${(error as Error).message}`);
+      }
+      const result = parseToolJson<{
+        success?: boolean;
+        reasonCode?: string;
+        phase?: string;
+        mutation?: string;
+        retryable?: boolean;
+        action?: string;
+        error?: string;
+      }>(raw);
+
+      expect(result.success, `${toolName} runId=${JSON.stringify(runId)}`).toBe(false);
+      expect(result.reasonCode).toBe('INVALID_ARGUMENTS');
+      expect(result.phase).toBe('validation');
+      expect(result.mutation).toBe('none');
+      expect(result.retryable).toBe(false);
+      expect(result.action).toBe('correct_arguments');
+      expect(result.error).toContain('runId');
+      expect(JSON.stringify(result)).not.toContain('paths[0]');
+    }
   });
 });

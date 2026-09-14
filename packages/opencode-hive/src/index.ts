@@ -82,6 +82,64 @@ function normalizeOptionalStringList(values: string[] | undefined): string[] | u
   return normalized && normalized.length > 0 ? normalized : undefined;
 }
 
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+interface WorktreeFailureClassification {
+  phase: WorktreeOperationPhase;
+  reasonCode?: WorktreeReasonCode;
+  mutation: WorktreeMutationState;
+  retryable: boolean;
+  action: WorktreeRecoveryAction;
+}
+
+const WORKTREE_RECOVERY_NEXT_ACTION: Record<WorktreeRecoveryAction, string> = {
+  correct_arguments: 'Correct the named invalid or missing arguments, then call the same tool again.',
+  clean_target: 'Clean the target working tree, then call the same tool again.',
+  resolve_conflicts: 'Resolve or abort the preserved conflict state in the target repository, then continue. Do not repeat the merge first.',
+  inspect_state: 'Inspect the current run, worktree, and Git state before acting; when per-repository results are present, read them before deciding. Do not repeat the same call blindly.',
+  retry_same_operation: 'The conflict was aborted and the target was restored to its starting state; call the same tool again to retry.',
+  cleanup_only: 'Repeat only the cleanup step for this run; do not repeat any earlier merge or integration.',
+  start_fresh_run: 'Preserve the workspace and Git metadata. Prepare or recreate an independently valid workspace, then launch a fresh authenticated attempt or run there. Do not repair, rewrite, or migrate Git metadata or roots.',
+  manual_recovery: 'Inspect the repository by hand; Hive could not restore the target and its durable state is unknown.',
+  none: 'No recovery action is required.',
+};
+
+/**
+ * Fallback classification for an untyped service exception: the operation's
+ * durable state cannot be confirmed, so the caller must inspect before acting.
+ * Each catch site names the phase where that operation stopped; every other
+ * value is shared and must stay single-sourced here.
+ */
+const FALLBACK_SERVICE_CLASSIFICATION = {
+  mutation: 'unknown',
+  retryable: false,
+  action: 'inspect_state',
+} as const;
+
+function fallbackServiceClassification(phase: WorktreeOperationPhase): WorktreeFailureClassification {
+  return { phase, ...FALLBACK_SERVICE_CLASSIFICATION };
+}
+
+function worktreeOutcomeFields(classification: WorktreeFailureClassification): Record<string, unknown> {
+  return {
+    phase: classification.phase,
+    ...(classification.reasonCode !== undefined ? { reasonCode: classification.reasonCode } : {}),
+    mutation: classification.mutation,
+    retryable: classification.retryable,
+    action: classification.action,
+  };
+}
+
+function worktreeNextAction(action: WorktreeRecoveryAction): string {
+  return WORKTREE_RECOVERY_NEXT_ACTION[action];
+}
+
+function linkDeniedMergeCleanupBlock(): MergeCleanupBlock {
+  return buildNotRequestedMergeCleanupBlock();
+}
+
 function buildAdhocWorkerPrompt(params: {
   runId: string;
   workspacePath: string;
@@ -315,6 +373,9 @@ import {
   resolveFeatureDirectoryName,
   applyTaskBudget,
   DEFAULT_BUDGET,
+  buildNotRequestedMergeCleanupBlock,
+  classifyThrownWorktreeError,
+  classifyWorktreeOutcome,
   type CustomAgentBase,
   type ResolvedCustomAgentConfig,
   type WorktreeInfo,
@@ -322,12 +383,19 @@ import {
   type AdhocCommitResult,
   type AdhocMergeResult,
   type AdhocCleanupResult,
+  type CommitResult,
+  type MergeResult,
+  type MergeCleanupBlock,
   type PlanPatchOperation,
   type TaskAggregateBranchDiff,
   type BudgetedTask,
   type TruncationEvent,
   type ContextReadSummary,
   type WorkerAssignmentDescriptor,
+  type WorktreeMutationState,
+  type WorktreeOperationPhase,
+  type WorktreeReasonCode,
+  type WorktreeRecoveryAction,
 } from "hive-core";
 import {
   buildStandingConstraintsBlock,
@@ -2765,6 +2833,54 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
   const respond = (payload: Record<string, unknown>) => JSON.stringify(payload, null, 2);
 
+  /**
+   * Classify an exception thrown by a worktree or ad-hoc service. Returns
+   * undefined for anything that is not a typed trusted-identity denial so the
+   * caller can rethrow it unchanged rather than inventing a reason code.
+   */
+  const classifyServiceThrow = (error: unknown): WorktreeFailureClassification | undefined => {
+    const reasonCode = classifyThrownWorktreeError(error);
+    if (reasonCode === undefined) return undefined;
+    return { ...classifyWorktreeOutcome(reasonCode), reasonCode };
+  };
+
+  /**
+   * Reject malformed wrapper arguments before any service call, filesystem
+   * access, or path resolution. Raw Node validation errors must never reach an
+   * agent, so the message names the offending fields instead.
+   */
+  const invalidAdhocArgumentsResponse = (
+    toolName: string,
+    fields: string[],
+    options: { runId?: string; reuseCreateIdentity?: boolean } = {},
+  ): string => {
+    const classification = classifyWorktreeOutcome('INVALID_ARGUMENTS');
+    const detail = `Missing or blank required argument(s) for ${toolName}: ${fields.join(', ')}.`;
+    return respond({
+      success: false,
+      reason: 'invalid_arguments',
+      ...(options.runId !== undefined ? { runId: options.runId } : {}),
+      error: detail,
+      message: detail,
+      ...worktreeOutcomeFields(classification),
+      nextAction: options.reuseCreateIdentity
+        ? `${worktreeNextAction(classification.action)} Reuse the exact runId, workspacePath, and branch values returned by hive_adhoc_worktree_create.`
+        : worktreeNextAction(classification.action),
+    });
+  };
+
+  const describeInvalidStringArguments = (
+    args: Array<{ name: string; value: unknown }>,
+  ): string[] => args
+    .filter((arg) => !isNonBlankString(arg.value))
+    .map((arg) => arg.name);
+
+  const describeNonStringArguments = (
+    args: Array<{ name: string; value: unknown }>,
+  ): string[] => args
+    .filter((arg) => arg.value !== undefined && arg.value !== null && typeof arg.value !== 'string')
+    .map((arg) => arg.name);
+
   const deriveTopLevelAreas = (files: string[]): string[] => {
     const compareText = (left: string, right: string): number =>
       left < right ? -1 : left > right ? 1 : 0;
@@ -3262,7 +3378,22 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       });
     }
 
-    const worktree = await worktreeService.create(feature, task);
+    let worktree: WorktreeInfo;
+    try {
+      worktree = await worktreeService.create(feature, task);
+    } catch (error: unknown) {
+      const classification = classifyServiceThrow(error);
+      if (!classification) throw error;
+      return respond({
+        success: false,
+        terminal: true,
+        feature,
+        task,
+        error: error instanceof Error ? error.message : String(error),
+        ...worktreeOutcomeFields(classification),
+        nextAction: worktreeNextAction(classification.action),
+      });
+    }
     return buildWorktreeLaunchResponse({ feature, task, taskInfo, worktree, toolContext });
   };
 
@@ -3377,7 +3508,23 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       });
     }
 
-    const worktree = await worktreeService.get(feature, task);
+    let worktree: WorktreeInfo | null;
+    try {
+      worktree = await worktreeService.get(feature, task);
+    } catch (error: unknown) {
+      const classification = classifyServiceThrow(error);
+      if (!classification) throw error;
+      return respond({
+        success: false,
+        terminal: true,
+        feature,
+        task,
+        currentStatus: taskInfo.status,
+        error: error instanceof Error ? error.message : String(error),
+        ...worktreeOutcomeFields(classification),
+        nextAction: worktreeNextAction(classification.action),
+      });
+    }
     if (!worktree) {
       return respond({
         success: false,
@@ -6278,7 +6425,28 @@ NEXT: Ask your first clarifying question about this feature.`;
               blocker: blocker as any,
             } as any);
 
-            const worktree = await worktreeService.get(feature, task);
+            let worktree: WorktreeInfo | null;
+            try {
+              worktree = await worktreeService.get(feature, task);
+            } catch (error: unknown) {
+              const classification = classifyServiceThrow(error);
+              if (!classification) throw error;
+              return respond({
+                ok: false,
+                terminal: true,
+                status: 'error',
+                reason: 'blocked_handoff_worktree_unavailable',
+                feature,
+                task,
+                taskState: 'blocked',
+                summary,
+                blocker,
+                error: error instanceof Error ? error.message : String(error),
+                ...worktreeOutcomeFields(classification),
+                message: `Blocked handoff for task "${task}" was recorded, but the worktree can no longer be inspected.`,
+                nextAction: `${worktreeNextAction(classification.action)} The blocked report is already persisted, so do not repeat hive_worktree_commit.`,
+              });
+            }
             const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
             return respond({
               ok: true,
@@ -6303,7 +6471,34 @@ NEXT: Ask your first clarifying question about this feature.`;
           }
 
           // For failed/partial, still commit what we have
-          const commitResult = await worktreeService.commitChanges(feature, task, message);
+          let commitResult: CommitResult;
+          try {
+            commitResult = await worktreeService.commitChanges(feature, task, message);
+          } catch (error: unknown) {
+            const classification = classifyServiceThrow(error);
+            if (!classification) throw error;
+            return respond({
+              ok: false,
+              terminal: true,
+              status: 'error',
+              reason: 'commit_failed',
+              feature,
+              task,
+              taskState: taskInfo.status,
+              summary,
+              error: error instanceof Error ? error.message : String(error),
+              ...worktreeOutcomeFields(classification),
+              nextAction: worktreeNextAction(classification.action),
+            });
+          }
+
+          const commitClassification = {
+            phase: commitResult.phase,
+            ...(commitResult.reasonCode !== undefined ? { reasonCode: commitResult.reasonCode } : {}),
+            mutation: commitResult.mutation,
+            retryable: commitResult.retryable,
+            action: commitResult.action,
+          };
 
           // Aggregate composite partial failure: at least one repo committed, at
           // least one repo failed. Do not let this silently become `done`; keep
@@ -6319,6 +6514,7 @@ NEXT: Ask your first clarifying question about this feature.`;
               task,
               taskState: taskInfo.status,
               summary,
+              ...commitClassification,
               commit: {
                 committed: commitResult.committed,
                 sha: commitResult.sha,
@@ -6326,9 +6522,10 @@ NEXT: Ask your first clarifying question about this feature.`;
                 partial: true,
                 ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
                 ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
+                ...commitClassification,
               },
               message: `Partial commit failure: ${commitResult.error || 'one or more repos failed to commit after an earlier repo succeeded'}.`,
-              nextAction: 'Resolve the failed repo, then call hive_worktree_commit again. If unrecoverable, report blocked or failed.',
+              nextAction: `${worktreeNextAction(commitResult.action)} If unrecoverable, report blocked or failed instead of retrying.`,
             });
           }
 
@@ -6342,19 +6539,40 @@ NEXT: Ask your first clarifying question about this feature.`;
               task,
               taskState: taskInfo.status,
               summary,
+              ...commitClassification,
               commit: {
                 committed: commitResult.committed,
                 sha: commitResult.sha,
                 message: commitResult.message,
                 ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
                 ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
+                ...commitClassification,
               },
               message: `Commit failed: ${commitResult.error || commitResult.message || 'unknown error'}`,
-              nextAction: 'Resolve git/worktree issue, then call hive_worktree_commit again.',
+              nextAction: worktreeNextAction(commitResult.action),
             });
           }
 
-          const diff = await worktreeService.getDiff(feature, task);
+          let diff: Awaited<ReturnType<WorktreeService['getDiff']>>;
+          try {
+            diff = await worktreeService.getDiff(feature, task);
+          } catch (error: unknown) {
+            const classification = classifyServiceThrow(error);
+            if (!classification) throw error;
+            return respond({
+              ok: false,
+              terminal: true,
+              status: 'error',
+              reason: 'commit_diff_unavailable',
+              feature,
+              task,
+              taskState: taskInfo.status,
+              summary,
+              error: error instanceof Error ? error.message : String(error),
+              ...worktreeOutcomeFields(classification),
+              nextAction: worktreeNextAction(classification.action),
+            });
+          }
 
           const reportLines: string[] = [
             `# Task Report: ${task}`,
@@ -6405,7 +6623,38 @@ NEXT: Ask your first clarifying question about this feature.`;
             aggregateBranchDiff,
           });
 
-          const worktree = await worktreeService.get(feature, task);
+          let worktree: WorktreeInfo | null;
+          try {
+            worktree = await worktreeService.get(feature, task);
+          } catch (error: unknown) {
+            const classification = classifyServiceThrow(error);
+            if (!classification) throw error;
+            return respond({
+              ok: false,
+              terminal: true,
+              status,
+              feature,
+              task,
+              taskState: finalStatus,
+              summary,
+              ...(verificationNote && { verificationNote }),
+              commit: {
+                committed: commitResult.committed,
+                sha: commitResult.sha,
+                message: commitResult.message,
+                ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
+                ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
+                ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
+                ...commitClassification,
+              },
+              reportPath,
+              reportReference,
+              error: error instanceof Error ? error.message : String(error),
+              ...worktreeOutcomeFields(classification),
+              message: `Task "${task}" ${status}; the commit and report are persisted, but the worktree can no longer be inspected.`,
+              nextAction: `${worktreeNextAction(classification.action)} The commit and report are already persisted, so do not repeat hive_worktree_commit.`,
+            });
+          }
           const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
           return respond({
             ok: true,
@@ -6423,6 +6672,7 @@ NEXT: Ask your first clarifying question about this feature.`;
               ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
               ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
               ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
+              ...commitClassification,
             },
             worktreePath: worktree?.path,
             branch: worktree?.branch,
@@ -6450,7 +6700,22 @@ NEXT: Ask your first clarifying question about this feature.`;
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
 
-          await worktreeService.remove(feature, task);
+          try {
+            await worktreeService.remove(feature, task);
+          } catch (error: unknown) {
+            const classification = classifyServiceThrow(error);
+            if (!classification) throw error;
+            return respond({
+              ok: false,
+              terminal: true,
+              success: false,
+              feature,
+              task,
+              error: error instanceof Error ? error.message : String(error),
+              ...worktreeOutcomeFields(classification),
+              nextAction: worktreeNextAction(classification.action),
+            });
+          }
           taskService.update(feature, task, { status: 'pending' });
 
           return `Task "${task}" aborted. Status reset to pending.`;
@@ -6469,20 +6734,26 @@ NEXT: Ask your first clarifying question about this feature.`;
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
         },
         async execute({ task, strategy = 'squash', message, preserveConflicts, cleanup, feature: explicitFeature }, toolContext) {
-          const failure = (error: string) => respond({
+          const failure = (
+            error: string,
+            classification: WorktreeFailureClassification = {
+              phase: 'preflight',
+              mutation: 'none',
+              retryable: false,
+              action: 'inspect_state',
+            },
+          ) => respond({
             success: false,
             merged: false,
             strategy,
             filesChanged: [],
             conflicts: [],
             conflictState: 'none',
-            cleanup: {
-              worktreeRemoved: false,
-              branchDeleted: false,
-              pruned: false,
-            },
+            cleanup: linkDeniedMergeCleanupBlock(),
             error,
+            ...worktreeOutcomeFields(classification),
             message: `Merge failed: ${error}`,
+            nextAction: worktreeNextAction(classification.action),
           });
 
           const feature = resolveFeature(explicitFeature, toolContext);
@@ -6492,13 +6763,22 @@ NEXT: Ask your first clarifying question about this feature.`;
           if (!taskInfo) return failure(`Task "${task}" not found`);
           if (taskInfo.status !== 'done') return failure('Task must be completed before merging. Use hive_worktree_commit first.');
 
-          const result = await worktreeService.merge(feature, task, strategy, message, {
-            preserveConflicts,
-            cleanup,
-          });
+          let result: MergeResult;
+          try {
+            result = await worktreeService.merge(feature, task, strategy, message, {
+              preserveConflicts,
+              cleanup,
+            });
+          } catch (error: unknown) {
+            const classification = classifyServiceThrow(error);
+            if (!classification) throw error;
+            return failure(error instanceof Error ? error.message : String(error), classification);
+          }
 
-          const responseMessage = result.success && result.merged === false && result.reasonCode === 'NO_TRACKED_CHANGES'
-            ? `Task "${task}" had no tracked changes to merge; cleanup ${result.cleanup.worktreeRemoved || result.cleanup.branchDeleted || result.cleanup.pruned ? 'completed' : 'available'}.`
+          const responseMessage = result.success && result.merged === false
+            ? result.action === 'cleanup_only'
+              ? `Task "${task}" had no tracked changes to merge; cleanup did not finish.`
+              : `Task "${task}" had no tracked changes to merge; cleanup ${result.cleanup.worktreeRemoved || result.cleanup.branchDeleted || result.cleanup.pruned ? 'completed' : 'available'}.`
             : result.success
               ? `Task "${task}" merged successfully using ${strategy} strategy.`
               : `Merge failed: ${result.error}`;
@@ -6506,6 +6786,7 @@ NEXT: Ask your first clarifying question about this feature.`;
           return respond({
             ...result,
             message: responseMessage,
+            ...(result.action !== 'none' ? { nextAction: worktreeNextAction(result.action) } : {}),
           });
         },
       }),
@@ -6521,6 +6802,28 @@ NEXT: Ask your first clarifying question about this feature.`;
           workerInstructions: tool.schema.string().optional().describe('Self-contained ad-hoc worker handoff instructions. Used as the objective in taskToolCall/backgroundTaskCall.prompt when auto-spawning a worker.'),
         },
         async execute({ runId, label, baseBranch, repoIds, autoSpawnWorker, workerInstructions }, toolContext) {
+          // Blank optional strings are treated as omitted; only non-string
+          // values are rejected because those would reach path or Git as-is.
+          const malformedOptional = describeNonStringArguments([
+            { name: 'runId', value: runId },
+            { name: 'label', value: label },
+            { name: 'baseBranch', value: baseBranch },
+            { name: 'workerInstructions', value: workerInstructions },
+          ]);
+          const malformedRepoIds = repoIds !== undefined
+            && (!Array.isArray(repoIds) || !repoIds.every((repoId) => typeof repoId === 'string'));
+          if (malformedOptional.length > 0 || malformedRepoIds) {
+            return invalidAdhocArgumentsResponse('hive_adhoc_worktree_create', [
+              ...malformedOptional,
+              ...(malformedRepoIds ? ['repoIds'] : []),
+            ]);
+          }
+          // A valid Git ref can never begin with a dash, and Git parses options
+          // after positional arguments, so a dash-prefixed value would be read
+          // as an option rather than a revision.
+          if (typeof baseBranch === 'string' && baseBranch.trim().startsWith('-')) {
+            return invalidAdhocArgumentsResponse('hive_adhoc_worktree_create', ['baseBranch']);
+          }
           if (!hasRepositoryManifest() && !isProjectRootGitRepo()) {
             return respond({
               success: false,
@@ -6644,11 +6947,18 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
             });
           } catch (error: unknown) {
             const err = error as { message?: string };
+            // A trusted-identity denial must not read as a retryable collision or
+            // Git failure. Unclassified create errors keep the original guidance,
+            // which is correct for collisions and missing repositories.
+            const classification = classifyServiceThrow(error);
             return respond({
               success: false,
               reason: 'adhoc_create_failed',
               error: err?.message ?? String(error),
-              nextAction: 'Resolve the underlying error (collision, missing repo, git failure) and retry hive_adhoc_worktree_create.',
+              ...(classification ? worktreeOutcomeFields(classification) : {}),
+              nextAction: classification
+                ? worktreeNextAction(classification.action)
+                : 'Resolve the underlying error (collision, missing repo, git failure) and retry hive_adhoc_worktree_create.',
             });
           }
         },
@@ -6663,15 +6973,30 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           message: tool.schema.string().describe('Git commit message with a non-empty one-line subject, a blank line, and a non-empty descriptive body.'),
         },
         async execute({ runId, workspacePath: expectedWorkspacePath, branch: expectedBranch, message }) {
+          const invalidArguments = describeInvalidStringArguments([
+            { name: 'runId', value: runId },
+            { name: 'workspacePath', value: expectedWorkspacePath },
+            { name: 'branch', value: expectedBranch },
+            { name: 'message', value: message },
+          ]);
+          if (invalidArguments.length > 0) {
+            return invalidAdhocArgumentsResponse(
+              'hive_adhoc_worktree_commit',
+              invalidArguments,
+              { runId: isNonBlankString(runId) ? runId : undefined, reuseCreateIdentity: true },
+            );
+          }
           try {
             const info = await adhocWorktreeService.get(runId);
             if (!info) {
+              const classification = classifyWorktreeOutcome('RUN_NOT_FOUND');
               return respond({
                 success: false,
                 reason: 'adhoc_run_not_found',
                 runId,
                 error: `Ad-hoc run "${runId}" not found.`,
-                nextAction: 'Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.',
+                ...worktreeOutcomeFields(classification),
+                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.`,
               });
             }
             const workspacePath = info.workspacePath ?? info.path;
@@ -6691,11 +7016,19 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
             const hasError = Boolean(result.error) || isPartial;
             const isNoChange = !result.committed && result.message === 'No changes to commit' && !hasError;
             const success = !hasError && (result.committed || isNoChange);
+            const commitClassification = {
+              phase: result.phase,
+              ...(result.reasonCode !== undefined ? { reasonCode: result.reasonCode } : {}),
+              mutation: result.mutation,
+              retryable: result.retryable,
+              action: result.action,
+            };
             return respond({
               success,
               runId,
               workspacePath,
               branch: info.branch,
+              ...commitClassification,
               commit: {
                 committed: result.committed,
                 sha: result.sha,
@@ -6703,24 +7036,26 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
                 ...(result.partial !== undefined ? { partial: result.partial } : {}),
                 ...(result.error !== undefined ? { error: result.error } : {}),
                 ...(result.repos !== undefined ? { repos: result.repos } : {}),
+                ...commitClassification,
               },
               ...(hasError && result.error !== undefined ? { error: result.error } : {}),
-              nextAction: isPartial
-                ? 'Resolve the failed repo, then call hive_adhoc_worktree_commit again.'
+              nextAction: !success
+                ? worktreeNextAction(result.action)
                 : result.committed
                 ? 'Call hive_adhoc_merge with an explicit valid aggregate message. Keep the default squash strategy unless preserved multi-commit history is intentionally valuable, or call hive_adhoc_cleanup to discard.'
-                : (isNoChange
-                  ? 'No changes were committed. Modify the worktree and retry hive_adhoc_worktree_commit.'
-                  : 'Resolve the commit failure (per-repo error or git state) and retry hive_adhoc_worktree_commit.'),
+                : 'No changes were committed. Modify the worktree and retry hive_adhoc_worktree_commit.',
             });
           } catch (error: unknown) {
             const err = error as { message?: string };
+            const classification = classifyServiceThrow(error)
+              ?? fallbackServiceClassification('integration');
             return respond({
               success: false,
               reason: 'adhoc_commit_failed',
               runId,
               error: err?.message ?? String(error),
-              nextAction: 'Resolve the underlying error and retry hive_adhoc_worktree_commit.',
+              ...worktreeOutcomeFields(classification),
+              nextAction: worktreeNextAction(classification.action),
             });
           }
         },
@@ -6736,15 +7071,20 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional().describe('Cleanup mode after a successful merge (default: none).'),
         },
         async execute({ runId, strategy = 'squash', message, preserveConflicts, cleanup }) {
+          if (!isNonBlankString(runId)) {
+            return invalidAdhocArgumentsResponse('hive_adhoc_merge', ['runId']);
+          }
           try {
             const info = await adhocWorktreeService.get(runId);
             if (!info) {
+              const classification = classifyWorktreeOutcome('RUN_NOT_FOUND');
               return respond({
                 success: false,
                 reason: 'adhoc_run_not_found',
                 runId,
                 error: `Ad-hoc run "${runId}" not found.`,
-                nextAction: 'Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.',
+                ...worktreeOutcomeFields(classification),
+                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.`,
               });
             }
             const workspacePath = info.workspacePath ?? info.path;
@@ -6757,20 +7097,23 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
               runId,
               workspacePath,
               branch: info.branch,
-              nextAction: result.success
-                ? (result.cleanup.worktreeRemoved
+              nextAction: result.action !== 'none'
+                ? worktreeNextAction(result.action)
+                : (result.cleanup.worktreeRemoved
                   ? 'Ad-hoc worktree cleaned up. No further action required.'
-                  : 'Call hive_adhoc_cleanup({ runId, deleteBranch }) to remove the worktree when finished.')
-                : 'Resolve the merge failure (conflicts, dirty target, missing branch) and retry hive_adhoc_merge.',
+                  : 'Call hive_adhoc_cleanup({ runId, deleteBranch }) to remove the worktree when finished.'),
             });
           } catch (error: unknown) {
             const err = error as { message?: string };
+            const classification = classifyServiceThrow(error)
+              ?? fallbackServiceClassification('integration');
             return respond({
               success: false,
               reason: 'adhoc_merge_failed',
               runId,
               error: err?.message ?? String(error),
-              nextAction: 'Resolve the underlying error and retry hive_adhoc_merge.',
+              ...worktreeOutcomeFields(classification),
+              nextAction: worktreeNextAction(classification.action),
             });
           }
         },
@@ -6783,38 +7126,56 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
           deleteBranch: tool.schema.boolean().optional().describe('Delete the ad-hoc branch in addition to the worktree (default: false).'),
         },
         async execute({ runId, deleteBranch }) {
+          if (!isNonBlankString(runId)) {
+            return invalidAdhocArgumentsResponse('hive_adhoc_cleanup', ['runId']);
+          }
           try {
             const info = await adhocWorktreeService.get(runId);
             if (!info) {
+              const classification = classifyWorktreeOutcome('RUN_NOT_FOUND');
               return respond({
                 success: false,
                 reason: 'adhoc_run_not_found',
                 runId,
                 error: `Ad-hoc run "${runId}" not found.`,
-                nextAction: 'Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.',
+                ...worktreeOutcomeFields(classification),
+                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.`,
               });
             }
             const workspacePath = info.workspacePath ?? info.path;
             const branch = info.branch;
             const result: AdhocCleanupResult = await adhocWorktreeService.cleanup(runId, deleteBranch ?? false);
+            const cleanupSucceeded = result.cleanup.outcome === 'complete' || result.cleanup.outcome === 'not_requested';
             return respond({
-              success: result.worktreeRemoved,
+              success: cleanupSucceeded,
               runId,
               workspacePath,
               branch,
-              cleanup: result,
-              nextAction: result.worktreeRemoved
-                ? 'Ad-hoc worktree removed. No further action required.'
-                : 'Worktree could not be fully removed. Inspect the workspace path manually.',
+              cleanup: {
+                ...result.cleanup,
+                worktreeRemoved: result.worktreeRemoved,
+                branchDeleted: result.branchDeleted,
+                pruned: result.pruned,
+              },
+              ...worktreeOutcomeFields(result),
+              message: cleanupSucceeded
+                ? 'Ad-hoc cleanup finished; no further action is required.'
+                : `Ad-hoc cleanup did not finish: ${result.cleanup.failures.map((failure) => `${failure.step}${failure.repoId ? ` (${failure.repoId})` : ''}: ${failure.cause}`).join('; ') || `outcome ${result.cleanup.outcome}`}.`,
+              nextAction: cleanupSucceeded
+                ? 'Cleanup complete; no further action is required for this run.'
+                : worktreeNextAction(result.action),
             });
           } catch (error: unknown) {
             const err = error as { message?: string };
+            const classification = classifyServiceThrow(error)
+              ?? fallbackServiceClassification('cleanup');
             return respond({
               success: false,
               reason: 'adhoc_cleanup_failed',
               runId,
               error: err?.message ?? String(error),
-              nextAction: 'Resolve the underlying error and retry hive_adhoc_cleanup.',
+              ...worktreeOutcomeFields(classification),
+              nextAction: worktreeNextAction(classification.action),
             });
           }
         },
