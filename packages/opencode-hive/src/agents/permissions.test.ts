@@ -587,6 +587,7 @@ function currentChangeProposal(runtimeSourceResolution?: Record<string, any>): R
         omissions: {
           changedPaths: { comparison: 0, staged: 0, unstaged: 0, untracked: 0 },
           patch: { truncated: false, omittedBytes: 0 },
+          sections: [],
         },
         error: null,
       }],
@@ -2840,6 +2841,209 @@ describe('Per-agent tool filtering', () => {
         scope: scopeAlias,
       });
       expect(grant.preview.evidence.sourceResolution.provenance.repositories[0].sourceRoot).toBe(repository);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the versioned envelope to a permitted caller and denies review and anonymous sessions distinctly', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-envelope-'));
+    createGitRepository(repository);
+    try {
+      spyOn(ConfigService.prototype, 'get').mockReturnValue({ agentMode: 'unified', agents: {} } as any);
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'snapshot-envelope', worktree: repository, time: { created: Date.now() } },
+        client: createStubClient(),
+        $: createStubShell(),
+      } as any);
+      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      const ready = JSON.parse(await execute({}, snapshotContext('external-agent')));
+      expect(ready.schema).toBe('hive-git-snapshot/v1');
+      expect(ready.status).toBe('ready');
+      expect(ready.consistency).toBe('validated');
+      expect(ready.repositoryIds).toEqual(['root']);
+      expect(ready.snapshot.repository.root).toBe(fs.realpathSync(repository));
+      expect(ready.snapshot.consistency).toBe('validated');
+
+      // An anonymous call is denied with the identity message, not the review message.
+      await expect(execute({}, { agent: '', sessionID: 'snapshot-session' })).rejects.toThrow('requires an authenticated session identity');
+      await expect(execute({}, { agent: 'external-agent', sessionID: '' })).rejects.toThrow('requires an authenticated session identity');
+
+      const config: {
+        agent?: Record<string, AgentConfig>;
+        command?: Record<string, { agent?: string }>;
+      } = {};
+      await hooks.config?.(config);
+      const scopeAlias = findDashScopeAlias(config.agent)!;
+      const codeAlias = findDashCodeAlias(config.agent)!;
+
+      // Review lanes keep the review-denial message.
+      await expect(execute({}, snapshotContext(codeAlias))).rejects.toThrow('Direct review hive_git_snapshot access is denied');
+      await expect(execute({}, snapshotContext(scopeAlias))).rejects.toThrow('Direct review hive_git_snapshot access is denied');
+      await expect(execute({}, snapshotContext('__hive_dash_review_primary'))).rejects.toThrow('Direct review hive_git_snapshot access is denied');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('reports unknown composite repository ids through the same failure envelope a single root uses', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-envelope-fail-'));
+    createGitRepository(repository);
+    try {
+      spyOn(ConfigService.prototype, 'get').mockReturnValue({ agentMode: 'unified', agents: {} } as any);
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'snapshot-envelope-fail', worktree: repository, time: { created: Date.now() } },
+        client: createStubClient(),
+        $: createStubShell(),
+      } as any);
+      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+
+      const failed = JSON.parse(await execute({ repositoryIds: ['missing-repo'] }, snapshotContext('external-agent')));
+      expect(failed.schema).toBe('hive-git-snapshot/v1');
+      expect(failed.status).toBe('failed');
+      expect(failed.snapshot).toBeUndefined();
+      expect(Array.isArray(failed.failure.repositories)).toBe(true);
+      expect(failed.failure.repositories).toHaveLength(1);
+      expect(failed.failure.repositories[0].code).toBe('INTERNAL_ERROR');
+      expect(failed.failure.repositories[0].repositoryId).toBe('missing-repo');
+      expect(typeof failed.failure.retry).toBe('string');
+      expect(typeof failed.failure.message).toBe('string');
+      expect(failed.failure.message).toContain('missing-repo');
+      // The envelope carries no raw Git stderr.
+      expect(failed.failure.message).not.toContain('fatal:');
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a composite failure through the same envelope shape a single root uses', async () => {
+    const composite = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-envelope-composite-'));
+    const api = path.join(composite, 'repos', 'api');
+    const web = path.join(composite, 'repos', 'web');
+    createGitRepository(api);
+    createGitRepository(web);
+    writeCompositeWorkspaceManifest(composite, ['api', 'web']);
+    try {
+      spyOn(ConfigService.prototype, 'get').mockReturnValue({ agentMode: 'unified', agents: {} } as any);
+      const hooks = await plugin({
+        directory: composite,
+        worktree: composite,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'snapshot-envelope-composite', worktree: composite, time: { created: Date.now() } },
+        client: createStubClient(),
+        $: createStubShell(),
+      } as any);
+      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+      const context = snapshotContext('external-agent');
+
+      const ready = JSON.parse(await execute({ repositoryIds: ['api', 'web'] }, context));
+      expect(ready.schema).toBe('hive-git-snapshot/v1');
+      expect(ready.status).toBe('ready');
+      expect(ready.consistency).toBe('validated');
+      expect(ready.composite).toBe(true);
+      expect(ready.repositoryIds).toEqual(['api', 'web']);
+      expect(ready.snapshots.map((entry: { repositoryId: string }) => entry.repositoryId)).toEqual(['api', 'web']);
+
+      // A composite failure selects a repository that cannot resolve a ref, so the
+      // envelope carries a real per-repository failure rather than a routing error.
+      const failed = JSON.parse(await execute({
+        repositoryIds: ['api', 'web'],
+        targetRef: 'missing-ref-xyz',
+      }, context));
+      expect(failed.schema).toBe('hive-git-snapshot/v1');
+      expect(failed.status).toBe('failed');
+      expect(failed.snapshot).toBeUndefined();
+      expect(failed.failure.repositories).toHaveLength(2);
+      expect(failed.failure.repositories.map((entry: { repositoryId: string }) => entry.repositoryId))
+        .toEqual(['api', 'web']);
+      expect(failed.failure.repositoryIds).toEqual(['api', 'web']);
+      expect(failed.failure.code).toBe(failed.failure.repositories[0].code);
+      expect(failed.failure.retry).toBe('operator-action');
+      for (const entry of failed.failure.repositories) {
+        expect(typeof entry.code).toBe('string');
+        expect(typeof entry.phase).toBe('string');
+        expect(typeof entry.message).toBe('string');
+        expect(typeof entry.retry).toBe('string');
+      }
+
+      // A single-root caller parses the identical envelope shape, so one parser
+      // serves both scopes.
+      const singleRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-envelope-single-'));
+      createGitRepository(singleRoot);
+      try {
+        spyOn(ConfigService.prototype, 'get').mockReturnValue({ agentMode: 'unified', agents: {} } as any);
+        const singleHooks = await plugin({
+          directory: singleRoot,
+          worktree: singleRoot,
+          serverUrl: new URL('http://localhost:1'),
+          project: { id: 'snapshot-envelope-single', worktree: singleRoot, time: { created: Date.now() } },
+          client: createStubClient(),
+          $: createStubShell(),
+        } as any);
+        const singleExecute = singleHooks.tool!.hive_git_snapshot.execute as (
+          input: unknown,
+          context: unknown,
+        ) => Promise<string>;
+        const single = JSON.parse(await singleExecute({ targetRef: 'missing-ref-xyz' }, context));
+        expect(Object.keys(single).sort()).toEqual(Object.keys(failed).sort());
+        expect(Object.keys(single.failure).sort()).toEqual(Object.keys(failed.failure).sort());
+        expect(single.failure.repositories).toHaveLength(1);
+        expect(single.failure.repositories[0].repositoryId).toBe('root');
+        expect(single.failure.repositoryIds).toEqual(['root']);
+        expect(single.failure.repositories[0].code).toBe(failed.failure.repositories[0].code);
+      } finally {
+        rmSync(singleRoot, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(composite, { recursive: true, force: true });
+    }
+  });
+
+  it('denies a session whose recorded lineage passes through a review role with the frozen-lane message', async () => {
+    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-snapshot-frozen-lane-'));
+    createGitRepository(repository);
+    try {
+      spyOn(ConfigService.prototype, 'get').mockReturnValue({ agentMode: 'unified', agents: {} } as any);
+      const hooks = await plugin({
+        directory: repository,
+        worktree: repository,
+        serverUrl: new URL('http://localhost:1'),
+        project: { id: 'snapshot-frozen', worktree: repository, time: { created: Date.now() } },
+        client: createStubClient(),
+        $: createStubShell(),
+      } as any);
+      const config: { agent?: Record<string, AgentConfig> } = {};
+      await hooks.config?.(config);
+      const scopeAlias = findDashScopeAlias(config.agent)!;
+
+      // The caller's own agent is not a review role, so the review denial does not
+      // apply; its recorded lineage reaches a review role, which is what the
+      // frozen-lane denial covers.
+      const sessions = new SessionService(repository);
+      sessions.trackGlobal('frozen-ancestor', {
+        agent: scopeAlias,
+        sessionKind: 'subagent',
+        parentSessionId: 'dash-primary',
+      });
+      sessions.trackGlobal('frozen-descendant', {
+        agent: 'external-agent',
+        baseAgent: 'external-agent',
+        sessionKind: 'subagent',
+        parentSessionId: 'frozen-ancestor',
+      });
+
+      const execute = hooks.tool!.hive_git_snapshot.execute as (input: unknown, context: unknown) => Promise<string>;
+      await expect(execute({}, {
+        ...snapshotContext('external-agent'),
+        sessionID: 'frozen-descendant',
+      })).rejects.toThrow('hive_git_snapshot is not available to frozen review lanes.');
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }

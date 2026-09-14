@@ -331,13 +331,64 @@ Invalid indexes return `context_index_invalid`; surviving managed-mutation marke
 
 | Tool | Purpose | Authorized caller |
 |------|---------|-------------------|
-| `hive_git_snapshot` | Preview a structured read-only Git snapshot set outside private review workflows | Non-review callers; all `/dash-review` and `/vuln-review` roles are denied |
+| `hive_git_snapshot` | Preview a structured read-only Git snapshot set as a versioned `hive-git-snapshot/v1` envelope | Authenticated primary, operator, or external sessions that the runtime does not classify as a review role; all `/dash-review` and `/vuln-review` roles are denied |
 | `hive_review_evidence_resolve` | Resolve one invocation-bound `git`, `inline`, or `local-artifacts` evidence kind and return compact fingerprints/provenance | The exact bound Stage A child; vulnerability review accepts `git` only |
 | `hive_vulnerability_compare_report_read` | Consume the current vulnerability invocation's normalized prior-report capability; accepts neither a path nor a token and has no arguments | The bound vulnerability scope lane only |
 | `hive_review_workspace_create` | Materialize the stored evidence plan from its exact `resolutionFingerprint`; vulnerability review also supplies its stored source-resolution fingerprint | The active workflow's generated private scope lane |
 | `hive_review_workspace_claim` | Bind a created workspace to the active private primary session | The same workflow's private primary, with the returned token |
 | `hive_review_workspace_inspect` | Compare the workspace with its materialized baseline and revalidate the live source identity | The owning private primary |
 | `hive_review_workspace_cleanup` | Remove the disposable workspace and release its persisted run state | The owning private primary, or the vulnerability scope lane with exact failed-materialize cleanup authority |
+
+### Direct snapshot diagnostic (`hive_git_snapshot`)
+
+`hive_git_snapshot` is a low-level diagnostic, not the normal agent interface. It exists so an authenticated primary, operator, or external session can inspect Git state without shell access and without Git flags. Built-in Hive agents do not receive it in their tool allowlists. Private review does not use it directly; `/dash-review` and `/vuln-review` acquire Git evidence through `hive_review_evidence_resolve`, which drives the same capture engine under one-shot invocation authority.
+
+Authorization is positive. A call proceeds only when the caller presents a non-empty agent and session identity, does not resolve to a review policy role, holds no active review invocation or vulnerability consumer reservation, and is not a review lane task target or frozen workspace recipient. Tool visibility is not an authorization boundary on its own. Denials are distinct: a review role keeps `Direct review hive_git_snapshot access is denied; use hive_review_evidence_resolve.`, a frozen review lane receives `hive_git_snapshot is not available to frozen review lanes.`, and a missing identity receives `hive_git_snapshot requires an authenticated session identity.`
+
+#### Response envelope
+
+Every call returns the same `hive-git-snapshot/v1` envelope, so a single-root caller and a composite caller parse one shape.
+
+A successful call reports `status: "ready"` and `consistency: "validated"`. The `validated` value is a claim about the payload: every entry in `changedPaths`, every patch component, and the `fingerprint` describe one validated repository generation. A single root returns `snapshot`; a composite workspace returns `composite`, `manifestRepositoryIds`, `selectedRepositoryIds`, `excludedRepositoryIds`, `fingerprint`, and `snapshots`. Both carry `repositoryIds`.
+
+A failed call reports `status: "failed"` with a `failure` object: `code`, `phase`, `repositoryIds`, a `repositories` array sorted by repository ID, an aggregate `retry`, and a bounded `message`. Each `repositories` entry carries its own `code`, `phase`, `message`, `retry`, and `elapsedMs`/`limitMs` when known. `failure.retry` is the most conservative action across the listed repositories, with precedence `not-retryable`, `operator-action`, `narrow-scope`, `fresh-capture`. Messages are derived from structured fields and never carry raw Git stderr.
+
+#### Failure codes
+
+The engine reports its contract codes in uppercase. Four legacy kebab-case codes (`missing-ref`, `merge-base-unavailable`, `output-truncated`, `timeout`) remain in the union and keep their historical values, because existing review renderers and tests branch on them. A caller that needs to handle every failure must accept both vocabularies; the phase and retry columns below apply to both.
+
+| Code | Meaning | Phase | Retry |
+|------|---------|-------|-------|
+| `INVALID_REQUEST` | Input failed validation before any Git command ran. | `validation` | `not-retryable` |
+| `MISSING_REF` / `missing-ref` | A requested ref does not resolve in the object store. | `ref-resolution` | `operator-action` |
+| `MERGE_BASE_UNAVAILABLE` / `merge-base-unavailable` | No merge base exists for the comparison. | `ref-resolution` | `narrow-scope` |
+| `UNSAFE_REPOSITORY_STATE` | In-scope submodule gitlink, concealed index path, unsupported filter attribute, or unrecognized untracked file type. | `preflight` | `operator-action` |
+| `INCOMPLETE_UNTRACKED_CAPTURE` | Untracked inventory exceeded its count, per-file, total-byte, or deadline bound. | `untracked-capture` | `narrow-scope` |
+| `OUTPUT_LIMIT_EXCEEDED` / `output-truncated` | A Git command exceeded the output byte bound. | `capture` | `narrow-scope` |
+| `OPERATION_TIMEOUT` | The whole-operation deadline elapsed. | the running phase | `fresh-capture` |
+| `SOURCE_DRIFT` | Repository content changed during capture and could not be revalidated. | `revalidation` | `fresh-capture` |
+| `timeout` | One Git command exceeded its own bound. | `capture` | `fresh-capture` |
+| `INTERNAL_ERROR` | Any other unclassified failure. | the running phase | `operator-action` |
+
+#### Capture consistency and timing
+
+Capture is bracketed by a generation check. The engine observes a generation marker, captures diffs, path lists, and untracked content, then re-observes the marker. A mismatch fails with `SOURCE_DRIFT` rather than returning material from two generations. The engine does not retry internally. A committed snapshot (`targetRef` or `range`) scopes the marker to resolved commits, so unrelated dirty state stays excluded.
+
+One whole-operation deadline of 15 seconds covers repository resolution, preflight, diffs, path capture, untracked capture, and revalidation. Each Git command additionally receives the smaller of its own five-second bound and the remaining operation time. An `OPERATION_TIMEOUT` therefore reports the phase that was running and the elapsed and limit values, and is not the same as a single command exceeding five seconds.
+
+`fresh-capture` means repeating the call starts a new capture against source that may have changed. It never resumes, repairs, or continues the previous attempt. `narrow-scope` means reduce `paths`, `maxFiles`, `maxPatchBytes`, or `repositoryIds` and call again. `operator-action` means fix the repository or the ref first. `not-retryable` means the same call fails again unchanged.
+
+#### Per-section omissions
+
+`omissions.changedPaths` and `omissions.patch` keep their existing meaning, and `omissions.sections` adds a per-section breakdown. Section names are `comparison`, `staged`, `unstaged`, and `untracked:<repository-relative-path>`. Each entry reports `capturedBytes`, `returnedBytes`, `omittedBytes`, and a `reason` of `section-preview-limit`, `aggregate-limit`, or `null`, and the identity `capturedBytes = returnedBytes + omittedBytes` holds per section. When a section is clipped by both the per-source preview cap and the final aggregate truncation, `reason` reports `section-preview-limit` because it is the earlier cause, and the aggregate remains visible in `patch.omittedBytes`.
+
+#### Composite behavior
+
+A composite snapshot set is all-or-error. Every selected repository is captured while failures are collected, and no partial success is returned. This is not a simultaneous capture: a successful set reports independently observed repository snapshots rather than one shared instant. Per-repository failures and their causes are reported in the failure envelope.
+
+#### Hard limits
+
+Caller-supplied `maxFiles` (cap 200) and `maxPatchBytes` (cap 256 KiB) are clamped, and the effective values appear in `limits`. Other bounds are fixed and are not caller arguments: 8 MiB per Git command, 5 seconds per Git command, 15 seconds per operation, 100 untracked files, 2 MiB per untracked file, 8 MiB total untracked bytes, 128 KiB total untracked preview, and 32 composite repositories. A request below a bound still fails when a fixed bound is exceeded, so a narrow request is the remedy rather than a larger limit.
 
 ### Review workspace lifecycle and gates
 

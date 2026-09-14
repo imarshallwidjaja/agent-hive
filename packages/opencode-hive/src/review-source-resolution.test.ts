@@ -21,6 +21,11 @@ const descriptor = { owner: 'Example', repository: 'project.js', number: 295 };
 const baseSha = 'a'.repeat(40);
 const headSha = 'b'.repeat(40);
 
+const SNAPSHOT_SET_SUFFIX = 'The snapshot set is all-or-error: every selected repository is captured while failures are collected, '
+  + 'and no partial success is returned, so a successful set reports independently observed repository snapshots rather than one shared instant. '
+  + 'Direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; a retry starts a new capture. '
+  + 'Review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.';
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((complete) => {
@@ -52,6 +57,7 @@ function snapshot(input: GitSnapshotInput, dirty = false): GitSnapshot {
     omissions: {
       changedPaths: { comparison: 0, staged: 0, unstaged: 0, untracked: 0 },
       patch: { truncated: false, omittedBytes: 0 },
+      sections: [],
     },
   };
 }
@@ -202,6 +208,7 @@ describe('shared review source resolution', () => {
       omissions: {
         changedPaths: { comparison: 0, staged: 0, unstaged: 0, untracked: 0 },
         patch: { truncated: false, omittedBytes: 0 },
+        sections: [],
       },
     });
     expect(resolution.provenanceEnvelope).toEqual({
@@ -317,6 +324,7 @@ describe('shared review source resolution', () => {
         omissions: {
           changedPaths: { comparison: 3, staged: 0, unstaged: 0, untracked: 0 },
           patch: { truncated: true, omittedBytes: 4096 },
+          sections: [],
         },
       }),
     });
@@ -413,12 +421,49 @@ describe('shared review source resolution', () => {
     expect(error.failures.map((failure: { repositoryId: string }) => failure.repositoryId)).toEqual(['api', 'web']);
     expect(error.message).toBe(
       `Review snapshot failed for 2 of 2 repositories: api (targetRef commit ${headSha} is absent from this repository's object store (shallow clone or un-fetched history)), web (git merge-base is unavailable for the selected refs). `
-      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+      + SNAPSHOT_SET_SUFFIX
     );
   });
 
-  it('retains successful composite outcomes when one repository fails', async () => {
+  it('preserves phase and timing metadata on each composite repository failure', async () => {
     const error = await collectReviewSnapshotSet({
+      manifestRepositoryIds: ['api', 'web'],
+      selectedRepositoryIds: ['api', 'web'],
+      repositories: [{ id: 'web', path: '/repo/web' }, { id: 'api', path: '/repo/api' }],
+    }, async (repository) => {
+      if (repository.id === 'web') {
+        throw new GitSnapshotError('OPERATION_TIMEOUT', {}, {
+          phase: 'untracked-capture',
+          retry: 'fresh-capture',
+          elapsedMs: 19_000,
+          limitMs: 15_000,
+        });
+      }
+      throw new GitSnapshotError('SOURCE_DRIFT', {}, { retry: 'fresh-capture' });
+    }).catch((failure) => failure);
+
+    expect(error).toBeInstanceOf(ReviewSnapshotSetError);
+    const failures = (error as ReviewSnapshotSetError).failures;
+    const api = failures.find(({ repositoryId }: { repositoryId: string }) => repositoryId === 'api')!.error as GitSnapshotError;
+    const web = failures.find(({ repositoryId }: { repositoryId: string }) => repositoryId === 'web')!.error as GitSnapshotError;
+
+    // Repository attribution is added without discarding the engine's own facts.
+    expect(api.details.repositoryId).toBe('api');
+    expect(api.code).toBe('SOURCE_DRIFT');
+    expect(api.phase).toBe('revalidation');
+    expect(api.retry).toBe('fresh-capture');
+
+    expect(web.details.repositoryId).toBe('web');
+    expect(web.phase).toBe('untracked-capture');
+    expect(web.retry).toBe('fresh-capture');
+    expect(web.elapsedMs).toBe(19_000);
+    expect(web.limitMs).toBe(15_000);
+    // The rendered message reports the real bounds rather than an unknown duration.
+    expect((error as ReviewSnapshotSetError).message).toContain('19000ms');
+    expect((error as ReviewSnapshotSetError).message).toContain('15000ms');
+  });
+
+  it('retains successful composite outcomes when one repository fails', async () => {    const error = await collectReviewSnapshotSet({
       manifestRepositoryIds: ['api', 'web'],
       selectedRepositoryIds: ['api', 'web'],
       repositories: [{ id: 'web', path: '/repo/web' }, { id: 'api', path: '/repo/api' }],
@@ -440,7 +485,7 @@ describe('shared review source resolution', () => {
     ]);
     expect(error.message).toBe(
       'Review snapshot failed for 1 of 2 repositories: web (git merge-base is unavailable for the selected refs). '
-      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+      + SNAPSHOT_SET_SUFFIX
     );
   });
 
@@ -460,7 +505,7 @@ describe('shared review source resolution', () => {
     expect(error).toBeInstanceOf(ReviewSnapshotSetError);
     expect(error.message).toBe(
       'Review snapshot failed for 1 of 2 repositories: web (error: provider exploded). '
-      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+      + SNAPSHOT_SET_SUFFIX
     );
   });
 
@@ -473,9 +518,92 @@ describe('shared review source resolution', () => {
     const second = new ReviewSnapshotSetError(outcomes);
     expect(first.message).toBe(second.message);
     expect(first.message).toBe(
-      'Review snapshot failed for 2 of 2 repositories: api (missing-ref), web (git command timed out (transient; safe to retry)). '
-      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+      'Review snapshot failed for 2 of 2 repositories: api (missing-ref), web (git command timed out; a retry starts a new capture). '
+      + SNAPSHOT_SET_SUFFIX
     );
+  });
+
+  it('renders the new uppercase failure codes with structured values and no retry-as-resume wording', () => {
+    const drift = new ReviewSnapshotSetError([
+      { repositoryId: 'api', outcome: 'failed', error: new GitSnapshotError('SOURCE_DRIFT') },
+    ]);
+    expect(drift.message).toContain('repository content changed during capture');
+    expect(drift.message).toContain('a retry starts a new capture');
+
+    // Elapsed and limit come off the error fields, not from parsing prose.
+    const timeout = new ReviewSnapshotSetError([
+      {
+        repositoryId: 'api',
+        outcome: 'failed',
+        error: new GitSnapshotError('OPERATION_TIMEOUT', {}, {
+          phase: 'revalidation',
+          elapsedMs: 412,
+          limitMs: 15_000,
+        }),
+      },
+    ]);
+    expect(timeout.message).toContain('revalidation');
+    expect(timeout.message).toContain('412ms');
+    expect(timeout.message).toContain('15000ms');
+    expect(timeout.message).not.toContain('per-command');
+
+    const untracked = new ReviewSnapshotSetError([
+      { repositoryId: 'api', outcome: 'failed', error: new GitSnapshotError('INCOMPLETE_UNTRACKED_CAPTURE') },
+    ]);
+    expect(untracked.message).toContain('untracked inventory');
+
+    for (const [code, expected] of [
+      ['UNSAFE_REPOSITORY_STATE', 'unsafe to capture'],
+      ['OUTPUT_LIMIT_EXCEEDED', 'snapshot output exceeded limits'],
+      ['INVALID_REQUEST', 'rejected before capture started'],
+      ['INTERNAL_ERROR', 'internal snapshot failure'],
+    ] as const) {
+      const error = new ReviewSnapshotSetError([
+        { repositoryId: 'api', outcome: 'failed', error: new GitSnapshotError(code) },
+      ]);
+      expect(error.message).toContain(expected);
+      expect(error.message).not.toContain(code);
+    }
+  });
+
+  it('never describes a retry as continuing or resuming the previous snapshot', () => {
+    const codes = [
+      'SOURCE_DRIFT',
+      'OPERATION_TIMEOUT',
+      'INCOMPLETE_UNTRACKED_CAPTURE',
+      'OUTPUT_LIMIT_EXCEEDED',
+      'UNSAFE_REPOSITORY_STATE',
+      'INTERNAL_ERROR',
+      'INVALID_REQUEST',
+      'missing-ref',
+      'merge-base-unavailable',
+      'timeout',
+      'output-truncated',
+    ] as const;
+    const error = new ReviewSnapshotSetError(codes.map((code, index) => ({
+      repositoryId: `repo-${index}`,
+      outcome: 'failed' as const,
+      error: new GitSnapshotError(code),
+    })));
+    // A retry is always a new capture, so no message may assert that it continues
+    // or resumes the failed one. Negations are allowed; assertions are not.
+    const forbiddenAssertions = [
+      'will continue',
+      'continues the previous',
+      'continuing the previous',
+      'continue the previous',
+      'resumes the previous',
+      'resuming the previous',
+      'resume the previous',
+      'resumes this capture',
+      'resuming this capture',
+      'repairs the previous',
+      'repairs this capture',
+    ];
+    const message = error.message.toLowerCase();
+    for (const forbidden of forbiddenAssertions) {
+      expect(message).not.toContain(forbidden);
+    }
   });
 
   it('caps oversized missing-ref identifiers in failure messages', () => {
@@ -485,7 +613,7 @@ describe('shared review source resolution', () => {
     ]);
     expect(error.message).toBe(
       `Review snapshot failed for 1 of 1 repositories: api (baseRef commit ${'f'.repeat(200)} is absent from this repository's object store (shallow clone or un-fetched history)). `
-      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+      + SNAPSHOT_SET_SUFFIX
     );
   });
 
@@ -503,7 +631,7 @@ describe('shared review source resolution', () => {
     }).not.toThrow();
     expect(error?.message).toBe(
       'Review snapshot failed for 1 of 1 repositories: api (unrenderable failure). '
-      + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.'
+      + SNAPSHOT_SET_SUFFIX
     );
   });
 

@@ -78,9 +78,25 @@ function describeSnapshotFailure(error: unknown): string {
       } else if (error.code === 'merge-base-unavailable') {
         return 'git merge-base is unavailable for the selected refs';
       } else if (error.code === 'timeout') {
-        return 'git command timed out (transient; safe to retry)';
+        return 'git command timed out; a retry starts a new capture';
       } else if (error.code === 'output-truncated') {
         return 'snapshot output exceeded limits (narrow paths, maxFiles, or maxPatchBytes)';
+      } else if (error.code === 'SOURCE_DRIFT') {
+        return 'repository content changed during capture, so no coherent snapshot exists; a retry starts a new capture';
+      } else if (error.code === 'OPERATION_TIMEOUT') {
+        const elapsed = error.elapsedMs === undefined ? 'an unknown duration' : `${error.elapsedMs}ms`;
+        const limit = error.limitMs === undefined ? 'an unknown limit' : `${error.limitMs}ms`;
+        return `the operation phase "${error.phase}" exceeded its bounds after ${elapsed} against a ${limit} limit; a retry starts a new capture`;
+      } else if (error.code === 'INCOMPLETE_UNTRACKED_CAPTURE') {
+        return 'the untracked inventory exceeded its count, per-file byte, total byte, or capture deadline bound; narrow paths, excludePaths, or the scoped path set';
+      } else if (error.code === 'UNSAFE_REPOSITORY_STATE') {
+        return 'the repository state is unsafe to capture (submodule gitlink, concealed index path, or filter attribute)';
+      } else if (error.code === 'OUTPUT_LIMIT_EXCEEDED') {
+        return 'snapshot output exceeded limits (narrow paths, maxFiles, or maxPatchBytes)';
+      } else if (error.code === 'INVALID_REQUEST') {
+        return 'the request was rejected before capture started';
+      } else if (error.code === 'INTERNAL_ERROR') {
+        return `an internal snapshot failure occurred during phase "${error.phase}"`;
       }
       return error.code;
     }
@@ -102,7 +118,7 @@ function reviewSnapshotSetMessage(
     .map(({ repositoryId, error }) => `${repositoryId} (${describeSnapshotFailure(error)})`)
     .join(', ');
   return `Review snapshot failed for ${failures.length} of ${outcomeCount} repositories: ${fragments}. `
-    + 'The snapshot set is atomic and read-only: direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.';
+    + 'The snapshot set is all-or-error: every selected repository is captured while failures are collected, and no partial success is returned, so a successful set reports independently observed repository snapshots rather than one shared instant. Direct callers may fix the listed causes and retry or narrow the request with repositoryIds/paths; a retry starts a new capture. Review-lane resolution is one-shot, so report this failure for the operator to fix the cause and rerun the command.';
 }
 
 export class ReviewSnapshotSetError extends Error {
@@ -142,8 +158,16 @@ export async function collectReviewSnapshotSet(
     try {
       return { repositoryId: repository.id, outcome: 'resolved', snapshot: await execute(repository) };
     } catch (error) {
+      // Preserve the new phase/retry/timing metadata; only the repository
+      // attribution is added, so composite envelopes carry the same facts a
+      // single-root failure does.
       const failure = error instanceof GitSnapshotError
-        ? new GitSnapshotError(error.code, { ...error.details, repositoryId: repository.id })
+        ? new GitSnapshotError(error.code, { ...error.details, repositoryId: repository.id }, {
+            phase: error.phase,
+            retry: error.retry,
+            ...(error.elapsedMs === undefined ? {} : { elapsedMs: error.elapsedMs }),
+            ...(error.limitMs === undefined ? {} : { limitMs: error.limitMs }),
+          })
         : error;
       return { repositoryId: repository.id, outcome: 'failed', error: failure };
     }
@@ -401,14 +425,33 @@ function parseChangedPaths(value: unknown, field: string): GitSnapshot['changedP
 }
 
 function parseOmissions(value: unknown, field: string): GitSnapshot['omissions'] {
-  const record = recordValue(value, ['changedPaths', 'patch'], [], field);
+  const record = recordValue(value, ['changedPaths', 'patch', 'sections'], [], field);
   const changed = recordValue(record.changedPaths, ['comparison', 'staged', 'unstaged', 'untracked'], [], `${field}.changedPaths`);
   const patch = recordValue(record.patch, ['truncated', 'omittedBytes'], [], `${field}.patch`);
   const count = (entry: unknown, entryField: string): number => {
     if (!Number.isSafeInteger(entry) || (entry as number) < 0) throw new Error(`${entryField}: must be a non-negative integer`);
     return entry as number;
   };
+  const reason = (entry: unknown, entryField: string): GitSnapshot['omissions']['sections'][number]['reason'] => {
+    if (entry === null) return null;
+    if (entry === 'section-preview-limit' || entry === 'aggregate-limit') return entry;
+    throw new Error(`${entryField}: must be section-preview-limit, aggregate-limit, or null`);
+  };
   if (typeof patch.truncated !== 'boolean') throw new Error(`${field}.patch.truncated: must be boolean`);
+  if (!Array.isArray(record.sections)) throw new Error(`${field}.sections: must be an array`);
+  const sections = record.sections.map((entry, index): GitSnapshot['omissions']['sections'][number] => {
+    const entryField = `${field}.sections[${index}]`;
+    const parsed = recordValue(entry, [
+      'section', 'capturedBytes', 'returnedBytes', 'omittedBytes', 'reason',
+    ], [], entryField);
+    return {
+      section: stringValue(parsed.section, `${entryField}.section`),
+      capturedBytes: count(parsed.capturedBytes, `${entryField}.capturedBytes`),
+      returnedBytes: count(parsed.returnedBytes, `${entryField}.returnedBytes`),
+      omittedBytes: count(parsed.omittedBytes, `${entryField}.omittedBytes`),
+      reason: reason(parsed.reason, `${entryField}.reason`),
+    };
+  });
   return {
     changedPaths: {
       comparison: count(changed.comparison, `${field}.changedPaths.comparison`),
@@ -420,6 +463,7 @@ function parseOmissions(value: unknown, field: string): GitSnapshot['omissions']
       truncated: patch.truncated,
       omittedBytes: count(patch.omittedBytes, `${field}.patch.omittedBytes`),
     },
+    sections,
   };
 }
 

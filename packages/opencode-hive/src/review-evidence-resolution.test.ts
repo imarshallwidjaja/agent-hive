@@ -58,6 +58,7 @@ function snapshot(input: GitSnapshotInput): GitSnapshot {
     omissions: {
       changedPaths: { comparison: 0, staged: 0, unstaged: 0, untracked: 0 },
       patch: { truncated: false, omittedBytes: 0 },
+      sections: [],
     },
   };
 }

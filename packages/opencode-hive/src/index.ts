@@ -39,6 +39,7 @@ import {
   fingerprintReviewRepositoryMaterializations,
   fingerprintReviewSourceScope,
   fingerprintReviewWorkspace,
+  GitSnapshotError,
   inspectGitSnapshot,
   isExactGitTopLevel,
   materializeReviewWorkspace,
@@ -378,6 +379,7 @@ import {
   collectReviewSnapshotSet,
   revalidateReviewProviderHead,
   reviewProvenanceEnvelope,
+  ReviewSnapshotSetError,
   REVIEW_SOURCE_RESOLUTION_ADAPTERS,
   resolveFixedVulnerabilityReviewSourceInput,
   resolveReviewSource,
@@ -806,6 +808,156 @@ const plugin: Plugin = async (ctx) => {
       taskTarget: lane.taskTarget,
     })),
   ];
+
+  /**
+   * Positive authorization for the direct Git snapshot diagnostic. Tool
+   * visibility is not an authorization boundary by itself, so every call is
+   * decided here: a non-empty agent and session identity, no review policy
+   * role, no active review invocation or consumer reservation, and no review
+   * lane task target or frozen review workspace recipient.
+   */
+  const authorizeDirectSnapshotCaller = (
+    toolContext: unknown,
+  ): { allowed: true; agent: string; sessionID: string } | { allowed: false; reason: string } => {
+    const caller = toolContext as ToolContext | undefined;
+    const agent = typeof caller?.agent === 'string' ? caller.agent.trim() : '';
+    const sessionID = typeof caller?.sessionID === 'string' ? caller.sessionID.trim() : '';
+    if (!agent || !sessionID) {
+      return { allowed: false, reason: 'hive_git_snapshot requires an authenticated session identity.' };
+    }
+    const lanes = reviewRuntimeLanes();
+    if (resolveReviewCallerPolicy(agent, lanes)
+      || dashReviewInvocations.hasActiveInvocation(sessionID)
+      || vulnerabilityConsumerReservations.has(sessionID)
+      || lanes.some((lane) => lane.taskTarget === agent)) {
+      return {
+        allowed: false,
+        reason: 'Direct review hive_git_snapshot access is denied; use hive_review_evidence_resolve.',
+      };
+    }
+    if (isPrivateContextRecipient(toolContext)) {
+      return { allowed: false, reason: 'hive_git_snapshot is not available to frozen review lanes.' };
+    }
+    return { allowed: true, agent, sessionID };
+  };
+
+  type SnapshotFailureEntry = {
+    repositoryId: string;
+    code: string;
+    phase: string;
+    message: string;
+    retry: string;
+    elapsedMs?: number;
+    limitMs?: number;
+  };
+
+  const SNAPSHOT_FAILURE_RETRY_PRECEDENCE = [
+    'not-retryable',
+    'operator-action',
+    'narrow-scope',
+    'fresh-capture',
+  ] as const;
+
+  const snapshotFailureRetry = (entries: readonly SnapshotFailureEntry[]): string => {
+    const present = new Set(entries.map((entry) => entry.retry));
+    return SNAPSHOT_FAILURE_RETRY_PRECEDENCE.find((candidate) => present.has(candidate))
+      ?? SNAPSHOT_FAILURE_RETRY_PRECEDENCE[SNAPSHOT_FAILURE_RETRY_PRECEDENCE.length - 1];
+  };
+
+  const MAX_SNAPSHOT_FAILURE_MESSAGE_CHARS = 512;
+  const MAX_SNAPSHOT_FAILURE_MESSAGE_REPOSITORIES = 8;
+
+  function boundedSnapshotFailureMessage(message: string): string {
+    return message.length > MAX_SNAPSHOT_FAILURE_MESSAGE_CHARS
+      ? `${message.slice(0, MAX_SNAPSHOT_FAILURE_MESSAGE_CHARS)}...`
+      : message;
+  }
+
+  /**
+   * Normalizes a capture failure into the versioned envelope. Single-root and
+   * composite callers receive the same shape, so no caller needs a second parser.
+   *
+   * The aggregate message is derived from the structured fields only: repository
+   * IDs and their codes, bounded in both count and length. Child-process text,
+   * command lines, and Git stderr never reach it.
+   */
+  const snapshotFailureEnvelope = (
+    repositoryIds: readonly string[],
+    entries: readonly SnapshotFailureEntry[],
+  ): Record<string, unknown> => {
+    const canonical = [...entries].sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId));
+    const retry = snapshotFailureRetry(canonical);
+    const primary = canonical[0]!;
+    const listed = canonical.slice(0, MAX_SNAPSHOT_FAILURE_MESSAGE_REPOSITORIES);
+    const remainder = canonical.length - listed.length;
+    return {
+      schema: 'hive-git-snapshot/v1',
+      status: 'failed',
+      failure: {
+        code: primary.code,
+        phase: primary.phase,
+        repositoryIds: [...repositoryIds].sort(compareUnicodeCodePoints),
+        repositories: canonical.map((entry) => ({
+          repositoryId: entry.repositoryId,
+          code: entry.code,
+          phase: entry.phase,
+          message: boundedSnapshotFailureMessage(entry.message),
+          retry: entry.retry,
+          ...(entry.elapsedMs === undefined ? {} : { elapsedMs: entry.elapsedMs }),
+          ...(entry.limitMs === undefined ? {} : { limitMs: entry.limitMs }),
+        })),
+        retry,
+        message: boundedSnapshotFailureMessage(
+          `Snapshot capture failed for ${canonical.length} of ${repositoryIds.length} repositories: `
+          + listed.map((entry) => `${entry.repositoryId} (${entry.code})`).join(', ')
+          + (remainder > 0 ? `, and ${remainder} more.` : '.'),
+        ),
+      },
+    };
+  };
+
+  /**
+   * Reduces a capture failure to bounded structured fields. A typed engine error
+   * carries its own message. A raw child-process error is described by
+   * classification only, because its message embeds the exact Git command line and
+   * the stderr bytes; the structural check is intentional, so an internal failure
+   * from this plugin keeps its own diagnostic instead of being flattened.
+   */
+  const snapshotFailureEntry = (repositoryId: string, error: unknown): SnapshotFailureEntry => {
+    if (error instanceof GitSnapshotError) {
+      return {
+        repositoryId,
+        code: error.code,
+        phase: error.phase,
+        message: error.message,
+        retry: error.retry,
+        ...(error.elapsedMs === undefined ? {} : { elapsedMs: error.elapsedMs }),
+        ...(error.limitMs === undefined ? {} : { limitMs: error.limitMs }),
+      };
+    }
+    const failure = error as { code?: unknown; killed?: unknown; signal?: unknown; cmd?: unknown; stderr?: unknown };
+    const isChildProcessFailure = typeof failure?.cmd === 'string' || failure?.stderr !== undefined;
+    const exitCode = typeof failure?.code === 'number' ? failure.code : undefined;
+    const killed = failure?.killed === true || failure?.signal === 'SIGTERM' || failure?.signal === 'SIGKILL';
+    let description = 'unclassified snapshot failure';
+    if (isChildProcessFailure) {
+      description = exitCode !== undefined
+        ? `git command failed with exit status ${exitCode}`
+        : killed
+          ? 'git command was terminated while capturing repository state'
+          : 'git command failed without an exit status';
+    } else if (error instanceof Error) {
+      description = boundedSnapshotFailureMessage((error.message.split(/\r?\n/, 1)[0] ?? '').trim()) || error.name;
+    }
+    return {
+      repositoryId,
+      code: 'INTERNAL_ERROR',
+      phase: 'capture',
+      message: description,
+      retry: 'operator-action',
+    };
+  };
+
   const evidenceBundleCaller = (caller: ReturnType<typeof inferReviewWorkspaceCaller>) => {
     if (caller.workflow !== 'dash-review') throw new Error('Review evidence bundle caller was denied.');
     return { ...caller, workflow: 'dash-review' as const };
@@ -5684,9 +5836,9 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
       }),
 
       hive_git_snapshot: tool({
-        description: 'Inspect an atomic read-only Git snapshot set with structured refs, ranges, repository-relative paths, and bounded patch material. Composite workspaces snapshot every manifest repository unless repositoryIds narrows the declared scope. Does not accept shell commands or Git flags.',
+        description: 'Inspect a read-only Git snapshot set with structured refs, ranges, repository-relative paths, and bounded patch material. Composite workspaces snapshot every manifest repository unless repositoryIds narrows the declared scope. Does not accept shell commands or Git flags. Returns a versioned hive-git-snapshot/v1 envelope that carries either a validated snapshot or a structured failure; a composite set is all-or-error rather than one shared instant.',
         args: {
-          repositoryIds: tool.schema.array(tool.schema.string()).optional().describe('Optional composite repository IDs. Omit to snapshot every repository in the active workspace manifest atomically.'),
+          repositoryIds: tool.schema.array(tool.schema.string()).optional().describe('Optional composite repository IDs. Omit to snapshot every repository in the active workspace manifest.'),
           baseRef: tool.schema.string().optional().describe('Optional Git base ref for the comparison.'),
           targetRef: tool.schema.string().optional().describe('Optional Git target ref for the comparison.'),
           range: tool.schema.string().optional().describe('Optional Git range in base..target or base...target form. Cannot be combined with baseRef or targetRef.'),
@@ -5695,20 +5847,55 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           maxPatchBytes: tool.schema.number().optional().describe('Maximum patch material bytes returned, capped by the tool.'),
         },
         async execute(input, context) {
-          const policy = resolveReviewCallerPolicy(context.agent, reviewRuntimeLanes());
-          if (
-            policy
-            || dashReviewInvocations.hasActiveInvocation(context.sessionID)
-            || vulnerabilityConsumerReservations.has(context.sessionID)
-          ) {
-            throw new Error('Direct review hive_git_snapshot access is denied; use hive_review_evidence_resolve.');
+          const authorization = authorizeDirectSnapshotCaller(context);
+          if (authorization.allowed === false) {
+            throw new Error(authorization.reason);
           }
           const { repositoryIds, ...snapshotInput } = input;
-          const resolved = await resolveSnapshotRepositories(repositoryIds);
-          const captured = await reviewSnapshotSet(resolved, snapshotInput);
+          const requestedIds = repositoryIds === undefined ? [] : [...repositoryIds];
+          let resolved: Awaited<ReturnType<typeof resolveSnapshotRepositories>>;
+          try {
+            resolved = await resolveSnapshotRepositories(repositoryIds);
+          } catch (error) {
+            return JSON.stringify(snapshotFailureEnvelope(
+              requestedIds.length > 0 ? requestedIds : ['root'],
+              [snapshotFailureEntry(requestedIds[0] ?? 'root', error)],
+            ), null, 2);
+          }
+          const scopeIds = resolved.composite
+            ? resolved.selectedRepositoryIds
+            : resolved.repositories.map((repository) => repository.id);
+          let captured: Awaited<ReturnType<typeof reviewSnapshotSet>>;
+          try {
+            captured = await reviewSnapshotSet(resolved, snapshotInput);
+          } catch (error) {
+            if (error instanceof ReviewSnapshotSetError) {
+              return JSON.stringify(snapshotFailureEnvelope(
+                scopeIds,
+                error.outcomes
+                  .filter((outcome): outcome is Extract<typeof outcome, { outcome: 'failed' }> => outcome.outcome === 'failed')
+                  .map((outcome) => snapshotFailureEntry(outcome.repositoryId, outcome.error)),
+              ), null, 2);
+            }
+            return JSON.stringify(snapshotFailureEnvelope(
+              scopeIds,
+              [snapshotFailureEntry(scopeIds[0] ?? 'root', error)],
+            ), null, 2);
+          }
+          const repositoryIdsOut = captured.snapshots.map(({ repositoryId }) => repositoryId).sort(compareUnicodeCodePoints);
           return JSON.stringify(!resolved.composite
-            ? captured.snapshots[0]!.snapshot
+            ? {
+                schema: 'hive-git-snapshot/v1',
+                status: 'ready',
+                consistency: 'validated',
+                repositoryIds: repositoryIdsOut,
+                snapshot: captured.snapshots[0]!.snapshot,
+              }
             : {
+                schema: 'hive-git-snapshot/v1',
+                status: 'ready',
+                consistency: 'validated',
+                repositoryIds: repositoryIdsOut,
                 composite: true,
                 manifestRepositoryIds: resolved.manifestRepositoryIds,
                 selectedRepositoryIds: resolved.selectedRepositoryIds,
