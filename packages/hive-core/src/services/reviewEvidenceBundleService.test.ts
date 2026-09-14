@@ -335,6 +335,8 @@ describe('ReviewEvidenceBundleService', () => {
     await writeArtifact(projectRoot, '.git/config', 'private git data\n');
     await writeArtifact(projectRoot, '.hive/private.json', 'private hive data\n');
     const service = createService(projectRoot);
+    // Validation-only failures return before the constructor's project-root promise settles.
+    await service.captureArtifacts(['allowed.txt']);
     const rejected = [
       '',
       '/etc/passwd',
