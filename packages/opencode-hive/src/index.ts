@@ -818,7 +818,7 @@ const plugin: Plugin = async (ctx) => {
    */
   const authorizeDirectSnapshotCaller = (
     toolContext: unknown,
-  ): { allowed: true; agent: string; sessionID: string } | { allowed: false; reason: string } => {
+  ): { allowed: true } | { allowed: false; reason: string } => {
     const caller = toolContext as ToolContext | undefined;
     const agent = typeof caller?.agent === 'string' ? caller.agent.trim() : '';
     const sessionID = typeof caller?.sessionID === 'string' ? caller.sessionID.trim() : '';
@@ -838,7 +838,7 @@ const plugin: Plugin = async (ctx) => {
     if (isPrivateContextRecipient(toolContext)) {
       return { allowed: false, reason: 'hive_git_snapshot is not available to frozen review lanes.' };
     }
-    return { allowed: true, agent, sessionID };
+    return { allowed: true };
   };
 
   type SnapshotFailureEntry = {
@@ -5857,9 +5857,12 @@ Use the \`@path\` attachment syntax in the prompt to reference the file. Do not 
           try {
             resolved = await resolveSnapshotRepositories(repositoryIds);
           } catch (error) {
+            // A routing failure is not attributable to one repository, so every
+            // requested ID carries the same failure rather than an arbitrary first.
+            const scope = requestedIds.length > 0 ? [...requestedIds].sort(compareUnicodeCodePoints) : ['root'];
             return JSON.stringify(snapshotFailureEnvelope(
-              requestedIds.length > 0 ? requestedIds : ['root'],
-              [snapshotFailureEntry(requestedIds[0] ?? 'root', error)],
+              scope,
+              scope.map((repositoryId) => snapshotFailureEntry(repositoryId, error)),
             ), null, 2);
           }
           const scopeIds = resolved.composite
