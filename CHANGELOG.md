@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Forager launches select a prepared assignment by `hive_launch_id` (OpenCode `>= 1.18.30`). `hive_adhoc_worktree_start` prepares a fresh worker on an existing ad-hoc run. Unused preparations expire after five minutes; claimed uncertain execution stays fenced until native terminal evidence.
+
 ## [2.5.0] - 2026-09-08
 
 ### Added

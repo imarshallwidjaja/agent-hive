@@ -1732,10 +1732,13 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('evidence');
     expect(HIVE_BUILDER_PROMPT).toContain('expected result');
     expect(HIVE_BUILDER_PROMPT).toContain('done criteria');
+    expect(HIVE_BUILDER_PROMPT).toContain('Put ad-hoc Forager instructions in `workerInstructions`');
+    expect(HIVE_BUILDER_PROMPT).toContain('Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`');
   });
 
   it('contains explicit ad-hoc tool names', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_create');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_start');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_commit');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_merge');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_cleanup');
@@ -1804,27 +1807,37 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     );
   });
 
-  it('documents the observable Forager launch handshake without hidden-state polling', () => {
+  it('documents the explicit Forager launch selector without hidden-state polling', () => {
     for (const [name, prompt] of [
       ['Hive', QUEEN_BEE_PROMPT],
       ['Swarm', SWARM_BEE_PROMPT],
       ['Hive Builder', HIVE_BUILDER_PROMPT],
     ] as const) {
       expect(prompt, name).toContain('including report-only diagnosis');
-      expect(prompt, name).toContain('binding-in-progress error');
-      expect(prompt, name).toContain("exact child correlation is internal and is not visible to the primary");
-      expect(prompt, name).toContain('keep that next launch prepared');
-      expect(prompt, name).toContain("first child's native completion notification");
-      expect(prompt, name).toContain('Launch preparation and any unbound claim each expire after five minutes');
-      expect(prompt, name).toContain('reprepare only if its five-minute reservation expires');
+      expect(prompt, name).toContain('hive_launch_id');
+      expect(prompt, name).toContain('launchId');
+      expect(prompt, name).toContain('The preparation response includes `launchId`');
+      expect(prompt, name).toContain('taskToolCall.hive_launch_id');
+      expect(prompt, name).toContain('do not pass `launchId` as a `task()` argument');
+      expect(prompt, name).toContain('editing a prepared Forager dispatch prompt cannot update its instructions');
+      expect(prompt, name).toContain('Independent targets may be prepared and dispatched under one parent');
+      expect(prompt, name).toContain('fences that resource');
+      expect(prompt, name).toContain('Unused preparation expires after five minutes');
+      expect(prompt, name).toContain('Claimed uncertain execution is not stopped by expiry, restart, or archive');
+      expect(prompt, name).toContain('exact parent/call metadata');
+      expect(prompt, name).toContain('If exact native evidence cannot establish that the old execution stopped');
+      expect(prompt, name).toContain('preserve the original worktree');
+      expect(prompt, name).toContain('A normal recoverable retry reuses the original worktree');
+      expect(prompt, name).not.toContain('binding-in-progress');
       expect(prompt, name).not.toContain('wait for the native correlation event');
-      expect(prompt, name).toContain('exact correlated parent/agent denial retires only that rejected claim');
-      expect(prompt, name).toContain('retains the unbound claim until correlation or expiry');
-      expect(prompt, name).toContain('no native completion notification arrives');
       expect(prompt, name).toContain('Ordinary Scout, advisor, and reviewer launches are exempt');
       expect(prompt, name).toContain('taskToolCall');
       expect(prompt, name).toContain('backgroundTaskCall');
     }
+    expect(QUEEN_BEE_PROMPT).toContain('creates or reuses the worktree and prepares a Forager; dispatch the returned payload later');
+    expect(QUEEN_BEE_PROMPT).toContain('Creates or reuses the worktree and prepares a Forager; dispatch later');
+    expect(QUEEN_BEE_PROMPT).not.toContain('creates worktree + Forager');
+    expect(QUEEN_BEE_PROMPT).not.toContain('Creates worktree + Forager');
   });
 
   it('limits recursive task use to one architect planning-helper level', () => {

@@ -5,7 +5,7 @@
 
 OpenCode workflow plugin for plan-first development: feature plans, approval gates, isolated git worktrees, durable `.hive/` state, and optional review commands.
 
-Requires **OpenCode >= 1.14.48**. Open your project and ask Hive to work.
+Requires **OpenCode >= 1.18.30** (native `tool.definition` and Forager `hive_launch_id`). Open your project and ask Hive to work.
 
 Human onboarding starts in the [root README](../../README.md). This README is the detailed npm and operator reference.
 
@@ -292,7 +292,7 @@ When a task branch has no net tracked changes to integrate, `hive_merge` reports
 
 Use ad-hoc orchestration when you need isolation, delegation, verification, and merge without a feature, plan, or task record. Dedicated mode uses `hive-builder`; unified mode can use `hive-master`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#ad-hoc-lifecycle-hive-builder).
 
-The ad-hoc orchestrator uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. This orchestrator works in both gate-closed and gate-open sessions; gate-closed sessions return blocking `taskToolCall` payloads, while gate-open sessions return both `taskToolCall` and `backgroundTaskCall` (identical except `background: true`) so blocking remains available when the next step depends on the worker. `hive_adhoc_worktree_create` accepts `autoSpawnWorker`, default `true`; set it to `false` only for inspection, routing, or setup-only worktrees where no worker should auto-launch. See `docs/HIVE-TOOLS.md` for the full tool contracts.
+The ad-hoc orchestrator uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. `hive_adhoc_worktree_create` creates the workspace and, unless `autoSpawnWorker: false`, prepares the first Forager launch. `hive_adhoc_worktree_start({ runId, workerInstructions })` prepares a fresh attempt on that run. Gate-closed sessions return blocking `taskToolCall`; gate-open sessions also return `backgroundTaskCall` (same `hive_launch_id`, plus `background: true`). Spread the returned call object so `hive_launch_id` is preserved; do not invent one. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only worktrees. Reuse the existing worktree on retry; do not discard failed work by default. See `docs/HIVE-TOOLS.md` for the full tool contracts.
 
 ### Background Orchestration
 
@@ -308,7 +308,7 @@ With the env gate set, primary agents can launch independent native background t
 
 Prompt acknowledgment only means Hive showed a terminal result to the parent session. It does not clear `terminalUnreconciled`; the primary agent still reconciles or ignores the job after consuming the result.
 
-Cancellation is not rollback. A cancellation request does not revert files, branches, worktrees, commits, or reports. If a stale lane cannot be resumed safely, use no-resume retry/escalation: start a fresh scoped attempt when safe, ignore the stale terminal entry with a reason, or escalate the blocker.
+Cancellation is not rollback. A cancellation request does not revert files, branches, worktrees, commits, or reports. Cancel is unavailable without a real native identity. Claimed launches without a native task ID stay on the board as unresolved bookkeeping; archive/ignore does not stop a worker or authorize a replacement writer. If a stale lane cannot be resumed safely, use no-resume retry/escalation: start a fresh scoped attempt when the resource is unfenced, ignore the stale bookkeeping with a reason, or escalate the blocker.
 
 ### Runtime Session Inspection
 

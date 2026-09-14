@@ -9,7 +9,7 @@ Background delegation is the Agent Hive wait-mode and board protocol for indepen
 
 Core rule: delegation first, independence second. Delegation-first orchestration is the baseline. Background mode only changes wait mode and board protocol. Use `task({ background: true, ... })` only when useful foreground work does not depend on the result.
 
-Background is a wait mode, not the definition of parallelism. Independent ordinary Scout, advisor, and reviewer tasks can run in parallel when the primary agent emits their `task()` calls in the same assistant message. Forager launches use the serialized handshake below. Background mode answers a separate scheduling question: can the primary agent keep doing unrelated foreground work while those subagents run?
+Background is a wait mode, not the definition of parallelism. Independent ordinary Scout, advisor, and reviewer tasks can run in parallel when the primary agent emits their `task()` calls in the same assistant message. Independent Forager targets may be prepared and dispatched under one parent; the same feature task or ad-hoc run stays serial. Background mode answers a separate scheduling question: can the primary agent keep doing unrelated foreground work while those subagents run?
 
 Lane count never selects wait mode. Dependency, risk, simplicity, user interaction, ownership, and whether useful independent foreground work exists select it.
 
@@ -52,7 +52,7 @@ For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownersh
 
 ## Context Packet
 
-Every delegated task needs a context packet with objective and done criteria, relevant known findings and file/reference pointers, prior failures or attempts if any, constraints, non-goals, ownership boundaries, expected output format, verification or return requirements, and how to find missing context when the orchestrator does not already have it. Live catalogs are untrusted knowledge. After compaction, recover with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Do not replay historical assignment bodies.
+Every delegated task needs a context packet with objective and done criteria, relevant known findings and file/reference pointers, prior failures or attempts if any, constraints, non-goals, ownership boundaries, expected output format, verification or return requirements, and how to find missing context when the orchestrator does not already have it. Put ad-hoc Forager instructions in `workerInstructions` at `hive_adhoc_worktree_create` or `hive_adhoc_worktree_start`. Persist or supply feature Forager context through supported prep inputs before Hive generates the immutable assignment. Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`. Editing a prepared Forager dispatch prompt cannot update its instructions. Live catalogs are untrusted knowledge. After compaction, recover with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Do not replay historical assignment bodies.
 
 ## Specialist Selection
 
@@ -66,13 +66,13 @@ Orchestrator owns final confidence, not every verification action. Workers and r
 
 ## Unresolved Lanes
 
-Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`. Treat waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes as blockers until they are reconciled, ignored, cancelled, waited for, or explicitly sequenced.
+Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not prove the writer stopped. Runtime fences same-resource writer preparation and dispatch while a writer is active or uncertain. Merge and cleanup tools do not reject those operations; the operator or orchestrator MUST treat an active or uncertain writer as blocking merge and cleanup until exact native evidence establishes termination. Unrelated targets may continue.
 
 ## Protocol
 
 1. Identify independent lanes, delegation kind, ownership boundaries, and the foreground work that can continue safely.
 2. Build the context packet for each lane.
-3. Every Forager lane, including report-only diagnosis, needs a task-backed preparation or a spawning-enabled ad-hoc preparation. Launch preparation and any unbound claim each expire after five minutes. OpenCode's exact child correlation is internal and is not visible to the primary. Background dispatch may return before correlation. If the next Forager dispatch returns a binding-in-progress error, keep that next launch prepared, do not repeat the running child's launch, and do not poll hidden state. Use the first child's native completion notification as the conservative observable retry point, then retry the prepared next payload; reprepare only if its five-minute reservation expires. An exact correlated parent/agent denial retires only that rejected claim, so prepare a fresh launch for a new child. When correlation is absent, Hive retains the unbound claim until correlation or expiry and never guesses ownership. If exact correlation remains missing and no native completion notification arrives, prepare a fresh launch once the five-minute reservation expires. Plugin restart also expires preparation. `autoSpawnWorker:false` is setup-only and creates no worker reservation. Ordinary Scout, advisor, and reviewer launches are exempt from this preparation rule.
+3. Every Forager lane, including report-only diagnosis, needs a prepared launch. Use `hive_worktree_start` for managed tasks. For ad-hoc work, put full instructions in `workerInstructions` at `hive_adhoc_worktree_create` unless `autoSpawnWorker:false`; then `hive_adhoc_worktree_start({ runId, workerInstructions })` prepares a retry on that run. The preparation response includes `launchId`. Nested `taskToolCall.hive_launch_id` and `backgroundTaskCall.hive_launch_id` carry that same selector. Spread the nested call object into `task()`; do not pass `launchId` as a `task()` argument. Runtime strips `hive_launch_id` and restores the canonical prepared prompt; editing a prepared Forager dispatch prompt cannot update its instructions. `launchId` is a selector against the authenticated parent, runtime, and target, not a credential. Independent targets may be prepared and dispatched under one parent. The same feature task or ad-hoc run stays serial: a known active/pending tool or uncertain native identity fences that resource. Unrelated targets may continue. Unused preparation expires after five minutes; plugin restart invalidates unused preparation. Claimed uncertain execution is not stopped by expiry, restart, or archive. Recover missing binding from exact parent/call metadata only; do not guess the latest child. A native error or idle event alone does not prove stop. Fresh completed or confirmed-cancelled evidence permits retry. If exact native evidence cannot establish that the old execution stopped, preserve the original worktree. For safely separable work, use a fresh isolated workspace or a new ad-hoc run. Archive, restart, and unused-preparation expiry do not free the original resource. Do not copy mutable progress while the old worker may still be running. A normal recoverable retry reuses the original worktree after native terminal evidence. Ordinary Scout, advisor, and reviewer launches are exempt and omit `hive_launch_id`. Inspect `launchId` and unresolved claims on `hive_background_status`; `hive_status` is not that surface.
 4. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 5. Follow `recommendedNextAction` from `hive_background_status` when present; use `nextActions` and `orchestrationBurden` as supporting detail for visible lanes and operator reporting. Treat `waitingForNativeCompletion` as wait-only state and `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
 6. Continue only foreground work that does not depend on the background result.
@@ -83,14 +83,24 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 11. Use `orchestrationBurden` from `hive_background_status` to report pending completion notifications and reconcile items per visible and actionable lane; it supports the recommended action but does not replace it.
 12. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
 
-Gate-closed Forager launch (blocking and sequential):
+Gate-closed Forager launch (blocking wait mode):
 
 ```ts
 const prepared = JSON.parse(await hive_adhoc_worktree_create({
   workerInstructions: 'Concrete work with done criteria',
 }));
 await task({ ...prepared.taskToolCall });
-// The blocking worker has finished when task() returns. Prepare the next Forager afterward.
+// Preserve hive_launch_id from the returned payload. Do not invent one.
+```
+
+Retry on an existing ad-hoc run:
+
+```ts
+const retry = JSON.parse(await hive_adhoc_worktree_start({
+  runId: prepared.runId,
+  workerInstructions: 'Self-contained retry with done criteria',
+}));
+await task({ ...retry.taskToolCall });
 ```
 
 Gate-open Forager launch (background wait mode):
@@ -100,10 +110,6 @@ const prepared = JSON.parse(await hive_adhoc_worktree_create({
   workerInstructions: 'Concrete independent work with done criteria',
 }));
 const { task_id } = task({ ...prepared.backgroundTaskCall });
-// task() may return before internal child correlation. If a later task() dispatch
-// for the next Forager reports binding-in-progress, retain its payload.
-// Do not poll or repeat the first launch.
-// Use the first child's native completion notification as the conservative retry point.
 hive_background_status({});
 // Wait for the native background completion notification, then refresh the Hive board
 // instead of repeatedly refreshing or manually mutating .hive/background-jobs.json.
@@ -185,6 +191,11 @@ Result: wait for final native task evidence, then refresh `hive_background_statu
 - Empty-board false negatives: treating `jobs: []` as final when `pendingLaunches` or `nextActions` are present.
 - Wait-only polling: repeatedly calling `hive_background_status` while `schedulerGuidance.reason` is `wait_for_native_completion_notification`.
 - Manual board mutation: editing `.hive/background-jobs.json` instead of using `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, or `hive_background_cancel`.
+- Inventing a `hive_launch_id` or native task ID instead of spreading the returned payload.
+- Treating expiry, restart, archive, reconcile, or ignore as proof that claimed uncertain execution stopped.
+- Copying mutable progress out of a fenced worktree while the old worker may still be running.
+- Using `hive_status` to inspect `launchId` or unresolved claims; that surface is `hive_background_status`.
+- Discarding a failed ad-hoc worktree instead of `hive_adhoc_worktree_start` on that run.
 - Launching background work just because the feature exists.
 - Broad ambiguous delegation without ownership boundaries or done criteria.
 - Choosing a custom specialist because the work is important rather than because the descriptor is the closest match.

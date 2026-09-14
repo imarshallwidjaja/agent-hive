@@ -437,9 +437,10 @@ describe('skill content', () => {
     expect(skill!.template).toContain('gate-closed fallback guidance');
     expect(skill!.template).toContain('Execution and Forager lanes are managed/heavy background lanes');
     expect(skill!.template).toContain('unresolved-lane checks before dependent decisions');
-    expect(skill!.template).toContain('Launch preparation and any unbound claim each expire after five minutes');
-    expect(skill!.template).toContain('no native completion notification arrives');
-    expect(skill!.template).toContain('await the returned blocking `taskToolCall` before preparing the next Forager');
+    expect(skill!.template).toContain('Unused preparation expires after five minutes');
+    expect(skill!.template).toContain('hive_launch_id');
+    expect(skill!.template).toContain('The preparation response includes `launchId`');
+    expect(skill!.template).toContain('In gate-closed sessions launch the blocking `taskToolCall`');
     expect(skill!.template).toContain('Risk-Tier Review Routing');
     expect(skill!.template).toContain('Post-Batch Code Review');
     expect(skill!.template).toContain('recommended review path');
@@ -470,16 +471,26 @@ describe('skill content', () => {
     expect(template).not.toContain('finishing-a-development-branch');
   });
 
+  it('parses hive_worktree_start JSON in the core hive skill examples', () => {
+    const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
+
+    expect(hiveSkill).toContain('JSON.parse(await hive_worktree_start({ task: "01-task-name" }))');
+    expect(hiveSkill).toContain('JSON.parse(await hive_worktree_start({ task: "02-task-a" }))');
+    expect(hiveSkill).toContain('task({ ...prepared.taskToolCall })');
+  });
+
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'dispatching-parallel-agents');
 
     expect(skill).toBeDefined();
     expect(skill!.template).toContain('task({');
-    expect(skill!.template).toContain('Forager dispatch correlation is serialized even when execution is parallel');
+    expect(skill!.template).toContain('Independent Forager targets may be prepared and dispatched under one parent');
     expect(skill!.template).toContain('Gate-open only: use backgroundTaskCall');
-    expect(skill!.template).toContain('If the task() dispatch below returns binding-in-progress');
-    expect(skill!.template).toContain('Launch preparation and any unbound claim each expire after five minutes');
-    expect(skill!.template).toContain('no native completion notification arrives');
+    expect(skill!.template).toContain('hive_launch_id');
+    expect(skill!.template).toContain('The preparation response includes `launchId`');
+    expect(skill!.template).toContain('taskToolCall.hive_launch_id');
+    expect(skill!.template).toContain('Unused preparation expires after five minutes');
+    expect(skill!.template).toContain('fences that resource');
     expect(skill!.template).toContain('Blocking alternative, including every gate-closed session');
     expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch');
     expect(skill!.template).toContain('one primary goal');
@@ -522,25 +533,37 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Direct Work Boundary');
     expect(skill!.template).toContain('Delegation Kind Reference');
     expect(skill!.template).toContain('Context Packet');
+    expect(skill!.template).toContain('Put ad-hoc Forager instructions in `workerInstructions`');
+    expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`');
+    expect(skill!.template).toContain('Editing a prepared Forager dispatch prompt cannot update its instructions');
     expect(skill!.template).toContain('descriptor is a closer match');
     expect(skill!.template).toContain('Orchestrator owns final confidence');
     expect(skill!.template).toContain('terminal-unreconciled');
+    expect(skill!.template).toContain('Reconcile and ignore are bookkeeping only');
+    expect(skill!.template).toContain('Runtime fences same-resource writer preparation and dispatch');
+    expect(skill!.template).toContain('Merge and cleanup tools do not reject those operations');
+    expect(skill!.template).toContain('MUST treat an active or uncertain writer as blocking merge and cleanup');
+    expect(skill!.template).toContain('`hive_status` is not that surface');
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns.');
     expect(skill!.template).toContain('Gate-closed sessions use normal blocking `task()` wait mode');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Independent ordinary Scout, advisor, and reviewer tasks can run in parallel');
     expect(skill!.template).toContain('Every Forager lane, including report-only diagnosis');
-    expect(skill!.template).toContain('binding-in-progress error');
-    expect(skill!.template).toContain('exact child correlation is internal and is not visible to the primary');
-    expect(skill!.template).toContain('keep that next launch prepared');
-    expect(skill!.template).toContain("first child's native completion notification");
-    expect(skill!.template).toContain('Launch preparation and any unbound claim each expire after five minutes');
-    expect(skill!.template).toContain('reprepare only if its five-minute reservation expires');
+    expect(skill!.template).toContain('hive_launch_id');
+    expect(skill!.template).toContain('hive_adhoc_worktree_start');
+    expect(skill!.template).toContain('The preparation response includes `launchId`');
+    expect(skill!.template).toContain('taskToolCall.hive_launch_id');
+    expect(skill!.template).toContain('Independent targets may be prepared and dispatched under one parent');
+    expect(skill!.template).toContain('fences that resource');
+    expect(skill!.template).toContain('Unused preparation expires after five minutes');
+    expect(skill!.template).toContain('Claimed uncertain execution is not stopped by expiry, restart, or archive');
+    expect(skill!.template).toContain('If exact native evidence cannot establish that the old execution stopped');
+    expect(skill!.template).toContain('preserve the original worktree');
+    expect(skill!.template).toContain('A normal recoverable retry reuses the original worktree');
+    expect(skill!.template).toContain('Inspect `launchId` and unresolved claims on `hive_background_status`');
+    expect(skill!.template).not.toContain('binding-in-progress');
     expect(skill!.template).not.toContain('wait for the native correlation event');
-    expect(skill!.template).toContain('exact correlated parent/agent denial retires only that rejected claim');
-    expect(skill!.template).toContain('retains the unbound claim until correlation or expiry');
-    expect(skill!.template).toContain('no native completion notification arrives');
-    expect(skill!.template).toContain('Gate-closed Forager launch (blocking and sequential)');
+    expect(skill!.template).toContain('Gate-closed Forager launch (blocking wait mode)');
     expect(skill!.template).toContain('Gate-open Forager launch (background wait mode)');
     expect(skill!.template).toContain('JSON.parse(await hive_adhoc_worktree_create');
     expect(skill!.template).toContain('prepared.taskToolCall');
@@ -567,7 +590,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
     expect(skill!.template).toContain('Lane count never selects wait mode');
     expect(skill!.template).toContain(
-      'Treat waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes as blockers'
+      'Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action'
     );
     expect(skill!.template).not.toContain('Treat unresolved lanes as blockers.');
     expect(skill!.template).toContain('tightly coupled code, tests, docs, and multiple files');

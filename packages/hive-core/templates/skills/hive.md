@@ -255,8 +255,8 @@ hive_tasks_sync()
 ### Execute Each Task
 
 ```
-hive_worktree_start({ task: "01-task-name" })  // Creates worktree; returns delegation instructions
-task({ ...taskCall })  // Only when delegationRequired is true
+const prepared = JSON.parse(await hive_worktree_start({ task: "01-task-name" }))
+task({ ...prepared.taskToolCall })  // Preserve hive_launch_id from the returned payload
   ↓
 [Worker implements in worktree]
   ↓
@@ -283,11 +283,13 @@ When multiple tasks have their dependencies satisfied (runnable), the orchestrat
 }
 ```
 
-If `delegationRequired` is returned for a task, call `task` to spawn that worker.
+Independent tasks may be prepared and dispatched under one parent. The same feature task stays serial until native terminal evidence.
 
 ```
-hive_worktree_start({ task: "02-task-a" })
-hive_worktree_start({ task: "03-task-b" })
+const a = JSON.parse(await hive_worktree_start({ task: "02-task-a" }))
+const b = JSON.parse(await hive_worktree_start({ task: "03-task-b" }))
+task({ ...a.taskToolCall })
+task({ ...b.taskToolCall })
 hive_status()  // Monitor all
 ```
 
@@ -373,8 +375,7 @@ If "Revise Plan":
 
 ### Task Failed
 ```
-hive_worktree_discard({ task })  # Discard
-hive_worktree_start({ task })  # Fresh start
+hive_worktree_start({ task })  # Reuse the worktree; fresh assignment. Do not discard failed work by default.
 ```
 
 ### After 3 Failures

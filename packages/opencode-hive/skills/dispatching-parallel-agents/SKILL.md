@@ -87,10 +87,6 @@ One implementation assignment normally maps to one numbered task. For an indepen
 const first = JSON.parse(await hive_worktree_start({ task: "01-fix-abort-tests" }))
 task({ ...first.backgroundTaskCall })
 const second = JSON.parse(await hive_worktree_start({ task: "02-fix-batch-tests" }))
-// If the task() dispatch below returns binding-in-progress, retain
-// second.backgroundTaskCall. Do not poll
-// internal correlation or repeat the first launch. Retry second after the first child's
-// native completion notification; reprepare only if second's five-minute reservation expires.
 task({ ...second.backgroundTaskCall })
 
 // Blocking alternative, including every gate-closed session:
@@ -98,7 +94,7 @@ const blocking = JSON.parse(await hive_worktree_start({ task: "03-fix-cleanup-te
 await task({ ...blocking.taskToolCall })
 ```
 
-Forager dispatch correlation is serialized even when execution is parallel. Launch preparation and any unbound claim each expire after five minutes. OpenCode's exact child correlation is internal and is not visible to the primary, and a background return may precede it. If the next dispatch reports binding-in-progress, keep that launch prepared, do not poll hidden state, and do not repeat the running child's launch. Use the first child's native completion notification as the conservative observable retry point; reprepare only if the waiting five-minute reservation expires. This includes diagnosis-only Foragers; non-feature diagnosis needs a spawning-enabled ad-hoc launch. An exact correlated parent/agent denial retires only the rejected claim, so prepare a fresh launch for a new child. When correlation is absent, Hive retains the unbound claim until correlation or expiry and never guesses ownership. If exact correlation remains missing and no native completion notification arrives, prepare a fresh launch once the five-minute reservation expires. Plugin restart also expires preparation. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
+Independent Forager targets may be prepared and dispatched under one parent. The preparation response includes `launchId`; nested `taskToolCall.hive_launch_id` and `backgroundTaskCall.hive_launch_id` carry that same selector. Spread the nested call object; do not invent a `hive_launch_id`. The same feature task or ad-hoc run stays serial: a known active/pending tool or uncertain native identity fences that resource. Unrelated targets may continue. Unused preparation expires after five minutes. Claimed uncertain execution is not stopped by expiry, restart, or archive. If exact native evidence cannot establish that the old execution stopped, preserve the original worktree. For safely separable work, use a fresh isolated workspace or a new ad-hoc run. Do not copy mutable progress while the old worker may still be running. A normal recoverable retry reuses the original worktree after native terminal evidence. This includes diagnosis-only Foragers; non-feature diagnosis uses spawning-enabled `hive_adhoc_worktree_create` or `hive_adhoc_worktree_start` on an existing run. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch and omit `hive_launch_id`. Inspect `launchId` and unresolved claims on `hive_background_status`; `hive_status` is not that surface.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
 
 ```typescript
