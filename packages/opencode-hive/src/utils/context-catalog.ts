@@ -2,6 +2,7 @@ import type { ContextCatalogRead, ContextScope } from 'hive-core';
 
 export const LIVE_CONTEXT_CATALOG_MARKER = '[hive-live-context-catalog/v1]';
 export const LIVE_CONTEXT_CATALOG_MAX_BYTES = 8 * 1024;
+const LIVE_CONTEXT_CATALOG_ENTRY_LIMIT = 8;
 
 type CatalogReader = {
   readCatalog(scope: ContextScope, options: { limit: number }): ContextCatalogRead;
@@ -43,7 +44,7 @@ export function assembleLiveContextCatalogs(
       : { status: 'unavailable', reason: 'context_response_too_large' };
   };
   const catalogs = scopes.map(scope => {
-    for (let limit = 10; limit >= 1; limit -= 1) {
+    for (let limit = LIVE_CONTEXT_CATALOG_ENTRY_LIMIT; limit >= 1; limit -= 1) {
       try {
         const catalog = reader.readCatalog(scope, { limit });
         const entry = { scope, status: 'available', catalog };

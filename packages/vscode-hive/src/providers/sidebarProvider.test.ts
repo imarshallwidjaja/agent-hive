@@ -278,18 +278,25 @@ describe('HiveSidebarProvider', () => {
     expect(first.command?.arguments?.[0].fsPath).toBe(path.join(testRoot, '.hive', 'context', 'project-note-0.md'));
   });
 
-  it('warns on overdue project reviews through descriptions and the folder icon', async () => {
+  it('marks project reviews due today while leaving future reviews current', async () => {
     const service = new hiveCore.ContextService(testRoot);
     const project = { type: 'project' } as const;
-    service.create(project, 'overdue-note',
-      '---\ndescription: Overdue project note\nread_when: Read during project reviews.\nowner: platform-team\nreview_after: 2020-01-01\n---\n\nstale body');
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    service.create(project, 'due-today',
+      `---\ndescription: Project note due today\nread_when: Read during project reviews.\nowner: platform-team\nreview_after: ${today}\n---\n\nstale body`);
+    service.create(project, 'due-future',
+      `---\ndescription: Future project note\nread_when: Read during project reviews.\nowner: platform-team\nreview_after: ${tomorrow}\n---\n\nfresh body`);
     const provider = new HiveSidebarProvider(testRoot);
     const projectItem = (await provider.getChildren())[0];
     expect(((projectItem as any).iconPath as any).id).toBe('warning');
-    expect((projectItem as any).description).toBe(`1 documents · 1/32 durable · ${fs.statSync(path.join(testRoot, '.hive', 'context', 'overdue-note.md')).size} B · chars unavailable`);
-    const [file] = await provider.getChildren(projectItem);
-    expect(file.description).toBe(`Durable · ${fs.statSync(path.join(testRoot, '.hive', 'context', 'overdue-note.md')).size} bytes · review overdue`);
-    expect(file.tooltip).toContain('Review after: 2020-01-01 (overdue)');
+    const files = await provider.getChildren(projectItem);
+    const dueToday = files.find(file => file.label === 'due-today.md')!;
+    const dueFuture = files.find(file => file.label === 'due-future.md')!;
+    expect(dueToday.description).toContain('review overdue');
+    expect(dueToday.tooltip).toContain(`Review after: ${today} (overdue)`);
+    expect(dueFuture.description).not.toContain('review overdue');
+    expect(dueFuture.tooltip).not.toContain('(overdue)');
   });
 
   it('filters context metadata and warns only above either durable cap', async () => {
@@ -428,15 +435,20 @@ describe('HiveSidebarProvider', () => {
     const { archiveContext } = await import('./contextInspection.js');
     const service = new hiveCore.ContextService(testRoot);
     const project = { type: 'project' } as const;
+    const today = new Date().toISOString().slice(0, 10);
     for (let index = 0; index < 12; index++) {
       service.create(project, `shared-note-${String(index).padStart(2, '0')}`,
-        `---\ndescription: Shared note ${index}\nread_when: Read during project reviews.\nowner: platform-team\nreview_after: 2999-12-31\n---\n\nshared ${index}`);
+        `---\ndescription: Shared note ${index}\nread_when: Read during project reviews.\nowner: platform-team\nreview_after: ${index === 0 ? today : '2999-12-31'}\n---\n\nshared ${index}`);
     }
     const archivePath = path.join(testRoot, '.hive', 'archive', 'context');
     let refreshes = 0;
     const run = () => archiveContext(testRoot, { scope: project }, () => refreshes++);
 
+    let firstPage: any[] = [];
+    ui.picks.push((items: any[]) => { firstPage = items; return undefined; });
     await run(); // Picker cancellation on the first page.
+    expect(firstPage.find(item => item.name === 'shared-note-00')?.description).toContain('review overdue');
+    expect(firstPage.find(item => item.name === 'shared-note-01')?.description).not.toContain('review overdue');
     ui.picks.push((items: any[]) => items); // Load more instead of submitting.
     await run();
     expect(fs.existsSync(archivePath)).toBe(false);

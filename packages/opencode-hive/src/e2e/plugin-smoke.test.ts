@@ -1765,13 +1765,15 @@ Do it
       scope: { type: 'project' },
       files: [{ name: 'project-notes', owner: 'platform' }],
       complete: true,
+      hasMore: false,
+      searchedFields: ['name', 'description', 'read_when'],
     });
     expect(catalog.files[0].content).toBeUndefined();
 
     const firstPage = JSON.parse(await hooks.tool!.hive_context_read.execute({
       scope: 'project', view: 'catalog', limit: 1,
     }, toolContext) as string);
-    expect(firstPage).toMatchObject({ success: true, complete: false });
+    expect(firstPage).toMatchObject({ success: true, complete: false, hasMore: true });
     expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
       scope: 'project', view: 'catalog', query: 'different', cursor: firstPage.nextCursor,
     }, toolContext) as string)).toMatchObject({ success: false, reason: 'invalid_context_cursor' });
@@ -1789,7 +1791,7 @@ Do it
     }, toolContext) as string;
     const firstChunk = JSON.parse(firstChunkRaw);
     expect(Buffer.byteLength(firstChunkRaw, 'utf8')).toBeLessThanOrEqual(2_048);
-    expect(firstChunk).toMatchObject({ success: true, complete: false, range: { start: 0 } });
+    expect(firstChunk).toMatchObject({ success: true, complete: false, range: { startByte: 0 } });
     expect(firstChunk.file.content.length).toBeGreaterThan(0);
 
     const secondChunk = JSON.parse(await hooks.tool!.hive_context_read.execute({
@@ -1798,7 +1800,7 @@ Do it
       cursor: firstChunk.nextCursor,
       maxBytes: 2_048,
     }, toolContext) as string);
-    expect(secondChunk.range.start).toBe(firstChunk.range.end);
+    expect(secondChunk.range.startByte).toBe(firstChunk.range.endByte);
     expect(firstChunk.nextOffset).toBeUndefined();
     let chunk = secondChunk;
     let reconstructed = firstChunk.file.content + chunk.file.content;
@@ -1809,7 +1811,7 @@ Do it
       expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(2_048);
       const next = JSON.parse(raw);
       expect(next.success).toBe(true);
-      expect(next.range.start).toBe(chunk.range.end);
+      expect(next.range.startByte).toBe(chunk.range.endByte);
       reconstructed += next.file.content;
       chunk = next;
     }
@@ -4532,7 +4534,7 @@ Do it
     );
   });
 
-  it("keeps hive_status usable when the managed context summary read fails", async () => {
+  it("keeps hive_status usable with bounded, reason-aware context failure guidance", async () => {
     const ctx: PluginInput = {
       directory: testRoot,
       worktree: testRoot,
@@ -4562,9 +4564,8 @@ Do it
       toolContext
     );
 
-    const summarySpy = spyOn(ContextService.prototype, 'readSummary').mockImplementation(() => {
-      throw new ContextMutationError('context_inventory_too_large', 'Context response construction exceeds 16384 bytes.');
-    });
+    let failure = new ContextMutationError('context_response_too_large', 'Context response construction exceeds 16384 bytes.');
+    const summarySpy = spyOn(ContextService.prototype, 'readSummary').mockImplementation(() => { throw failure; });
 
     try {
       const raw = await hooks.tool!.hive_status.execute(
@@ -4575,7 +4576,7 @@ Do it
         feature?: { name: string };
         overview?: { exists: boolean; updatedAt: string | null };
         tasks?: { total: number };
-        context?: { available?: boolean; fileCount: number | null; reason?: string; error?: string };
+        context?: { available?: boolean; fileCount: number | null; reason?: string; error?: string; hint?: string };
       };
 
       expect(result.feature?.name).toBe("status-context-degraded-feature");
@@ -4584,8 +4585,41 @@ Do it
       expect(result.tasks?.total).toBe(0);
       expect(result.context?.available).toBe(false);
       expect(result.context?.fileCount).toBeNull();
-      expect(result.context?.reason).toBe("context_inventory_too_large");
+      expect(result.context?.reason).toBe("context_response_too_large");
       expect(result.context?.error).toContain("16384");
+      expect(result.context?.hint).toContain('catalog');
+
+      failure = new ContextMutationError('context_inventory_too_large', 'Context namespace exceeds 20000 entries.');
+      const inventory = JSON.parse(await hooks.tool!.hive_status.execute(
+        { feature: "status-context-degraded-feature" }, toolContext,
+      ) as string);
+      expect(inventory.context).toMatchObject({ available: false, reason: 'context_inventory_too_large' });
+      expect(inventory.context.hint).toContain('out of band');
+      expect(inventory.context.hint).toContain('exact named');
+      expect(inventory.context.hint).not.toContain('catalog view');
+
+      failure = new ContextMutationError('context_reconciliation_required', 'pending marker');
+      const pending = JSON.parse(await hooks.tool!.hive_status.execute(
+        { feature: "status-context-degraded-feature" }, toolContext,
+      ) as string);
+      expect(pending.context.hint).toContain('diagnostics');
+      expect(pending.context.hint).toContain('reconcile');
+
+      failure = new ContextMutationError('context_index_invalid', 'invalid index detail');
+      const invalid = JSON.parse(await hooks.tool!.hive_status.execute(
+        { feature: "status-context-degraded-feature" }, toolContext,
+      ) as string);
+      expect(invalid.context).toMatchObject({ available: false, reason: 'context_index_invalid' });
+      expect(invalid.context.hint).toContain('diagnostics');
+      expect(invalid.context.hint).toContain('repair');
+
+      failure = new ContextMutationError('context_authorization_denied' as any, 'secret scope detail');
+      const denied = JSON.parse(await hooks.tool!.hive_status.execute(
+        { feature: "status-context-degraded-feature" }, toolContext,
+      ) as string);
+      expect(denied.context).toMatchObject({ available: false, reason: 'context_authorization_denied' });
+      expect(denied.context.error).not.toContain('secret scope detail');
+      expect(denied.context.hint).not.toContain('catalog');
     } finally {
       summarySpy.mockRestore();
     }
@@ -4655,13 +4689,13 @@ Do it
       toolContext
     );
 
-    for (let index = 0; index < 12; index++) {
+    for (let index = 0; index < 30; index++) {
       const name = `notes-${String(index).padStart(2, "0")}`;
       await hooks.tool!.hive_context_write.execute(
         {
           feature: "status-context-clipped-feature",
           name,
-          content: `---\ndescription: ${"D".repeat(1600)}\nread_when: Read when exercising summary clipping.\n---\n\nbody`,
+          content: `---\ndescription: ${"D".repeat(512)}\nread_when: ${"R".repeat(512)}\n---\n\nbody`,
         },
         toolContext
       );
@@ -4684,12 +4718,12 @@ Do it
     expect(result.feature?.name).toBe("status-context-clipped-feature");
     expect(result.context?.metadataClipped).toBe(true);
     expect(result.context?.diagnostics?.join("\n")).toContain("descriptive metadata");
-    expect(result.context?.fileCount).toBe(12);
-    expect(result.context?.files).toHaveLength(12);
+    expect(result.context?.fileCount).toBe(30);
+    expect(result.context?.files).toHaveLength(30);
     expect(result.context?.files).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "notes-00", bytes: expect.any(Number) }),
-        expect.objectContaining({ name: "notes-11", bytes: expect.any(Number) }),
+        expect.objectContaining({ name: "notes-29", bytes: expect.any(Number) }),
       ])
     );
   });

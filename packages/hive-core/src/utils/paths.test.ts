@@ -5,6 +5,7 @@ import {
   acquireLock,
   acquireLockSync,
   writeAtomic,
+  writeAtomicDurable,
   writeJsonAtomic,
   writeJsonLocked,
   writeJsonLockedSync,
@@ -188,6 +189,51 @@ describe("Atomic + Locked JSON Utilities", () => {
 
       expect(fs.existsSync(tempPath)).toBe(false);
       expect(fs.existsSync(filePath)).toBe(false);
+    });
+  });
+
+  describe("writeAtomicDurable", () => {
+    it("flushes the temporary file before rename and the containing directory after rename", () => {
+      const filePath = path.join(TEST_DIR, "durable", "atomic.txt");
+      const directory = path.dirname(filePath);
+      const descriptorPaths = new Map<number, string>();
+      const events: string[] = [];
+      const originalOpen = fs.openSync;
+      const originalFsync = fs.fsyncSync;
+      const originalRename = fs.renameSync;
+      const openSpy = spyOn(fs, "openSync").mockImplementation(((target, flags, mode) => {
+        const descriptor = originalOpen(target, flags, mode);
+        descriptorPaths.set(descriptor, String(target));
+        return descriptor;
+      }) as typeof fs.openSync);
+      const fsyncSpy = spyOn(fs, "fsyncSync").mockImplementation((descriptor => {
+        events.push(`fsync:${descriptorPaths.get(descriptor)}`);
+        originalFsync(descriptor);
+      }) as typeof fs.fsyncSync);
+      const renameSpy = spyOn(fs, "renameSync").mockImplementation(((source, destination) => {
+        events.push(`rename:${String(destination)}`);
+        originalRename(source, destination);
+      }) as typeof fs.renameSync);
+
+      try {
+        writeAtomicDurable(filePath, "durable content");
+      } finally {
+        renameSpy.mockRestore();
+        fsyncSpy.mockRestore();
+        openSpy.mockRestore();
+      }
+
+      expect(fs.readFileSync(filePath, "utf-8")).toBe("durable content");
+      const renameIndex = events.indexOf(`rename:${filePath}`);
+      const tempSyncIndex = events.findIndex(event => event.startsWith(`fsync:${filePath}.tmp.`));
+      expect(tempSyncIndex).toBeGreaterThanOrEqual(0);
+      expect(renameIndex).toBeGreaterThanOrEqual(0);
+      expect(tempSyncIndex).toBeLessThan(renameIndex);
+      if (process.platform !== "win32") {
+        const directorySyncIndex = events.indexOf(`fsync:${directory}`);
+        expect(directorySyncIndex).toBeGreaterThanOrEqual(0);
+        expect(directorySyncIndex).toBeGreaterThan(renameIndex);
+      }
     });
   });
 

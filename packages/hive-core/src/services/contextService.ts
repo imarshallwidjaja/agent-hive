@@ -8,8 +8,10 @@ import {
   getContextPath,
   getProjectContextPath,
   readText,
-  writeAtomic,
-  writeJsonAtomic,
+  syncDirectory,
+  syncFile,
+  writeAtomicDurable,
+  writeJsonAtomicDurable,
 } from '../utils/paths.js';
 import {
   assertRequiredContextMetadata,
@@ -21,12 +23,13 @@ import type {
   ContextIndex,
   ContextIndexEntry,
   ContextKind,
+  ContextKindSource,
   ContextMetadata,
   ContextRole,
   ContextScope,
 } from '../types.js';
 
-export type { ContextFile, ContextIndex, ContextIndexEntry, ContextKind, ContextMetadata, ContextRole, ContextScope };
+export type { ContextFile, ContextIndex, ContextIndexEntry, ContextKind, ContextKindSource, ContextMetadata, ContextRole, ContextScope };
 
 export const OVERVIEW_CONTEXT_NAME = 'overview';
 export const CONTEXT_INDEX_SCHEMA_VERSION = 1;
@@ -114,9 +117,8 @@ export interface ContextContentRead {
   revision: number;
   snapshot: string;
   file: ContextFile;
-  range: { start: number; end: number; totalBytes: number };
+  range: { startByte: number; endByte: number; totalBytes: number };
   complete: boolean;
-  nextOffset?: number;
 }
 
 export interface ContextCatalogRead {
@@ -126,7 +128,9 @@ export interface ContextCatalogRead {
   snapshot: string;
   files: Array<Omit<ContextFile, 'content' | 'contentHash'>>;
   complete: boolean;
+  hasMore: boolean;
   nextCursor?: string;
+  searchedFields?: ['name', 'description', 'read_when'];
   diagnostics: string[];
 }
 
@@ -138,6 +142,7 @@ export interface ContextManagementCatalog {
   totalFiles: number;
   files: Array<Omit<ContextFile, 'content' | 'contentHash'>>;
   complete: boolean;
+  hasMore: boolean;
   nextCursor?: string;
   durable: ContextDurableMetrics;
   diagnostics: string[];
@@ -218,6 +223,7 @@ interface ControlState {
   index: ContextIndex;
   indexRaw: Buffer | null;
   indexDigest: string;
+  classificationState: 'trusted' | 'invalid' | 'pending';
 }
 
 interface InventoryFile extends Omit<ContextFile, 'content' | 'contentHash'> {
@@ -323,10 +329,10 @@ export class ContextService {
       delete nextEntries[name];
       const nextIndex = { ...control.index, revision: control.index.revision + 1, entries: nextEntries };
       this.publish(control, resolved, 'delete', [name], [], () => {
-        fs.unlinkSync(filePath);
-        writeJsonAtomic(this.indexPath(resolved), nextIndex);
+        this.unlinkDurable(filePath);
+        writeJsonAtomicDurable(this.indexPath(resolved), nextIndex);
       }, () => {
-        writeAtomic(filePath, prior);
+        writeAtomicDurable(filePath, prior);
         this.restoreIndex(resolved, control.indexRaw);
       });
       return true;
@@ -410,14 +416,14 @@ export class ContextService {
     }
     const foldedQuery = asciiFold(query);
     const candidates = observation.inventory.files.filter(file => file.kind === 'durable' && (
-      !foldedQuery || asciiFold([file.name, file.description, file.readWhen, file.owner].filter(Boolean).join('\n')).includes(foldedQuery)
+      !foldedQuery || asciiFold([file.name, file.description, file.readWhen].filter(Boolean).join('\n')).includes(foldedQuery)
     ));
     const limit = Math.max(1, Math.min(options.limit ?? 10, 50));
     const result = this.admitCatalogPage(
       candidates,
       position,
       limit,
-      (files, complete, nextCursor) => this.catalogEnvelope(resolved, observation, files, complete, nextCursor),
+      (files, complete, nextCursor) => this.catalogEnvelope(resolved, observation, files, complete, query.length > 0, nextCursor),
       (nextPosition) => this.encodeCursor({
         version: 1, scope: resolved.identity, query,
         snapshot: observation.inventory.snapshot, position: nextPosition,
@@ -492,11 +498,15 @@ export class ContextService {
       throw new ContextMutationError('context_changed_during_read', 'Context changed during the named read. Retry from the beginning.');
     }
     const currentControl = this.readControl(resolved, diagnostic);
-    if (currentControl.indexDigest !== control.indexDigest || currentControl.index.revision !== control.index.revision) {
+    if (currentControl.indexDigest !== control.indexDigest || currentControl.index.revision !== control.index.revision
+      || currentControl.classificationState !== control.classificationState) {
       throw new ContextMutationError('context_changed_during_read', 'Context control data changed during the named read. Retry from the beginning.');
     }
     const indexed = control.index.entries[name];
-    const kind = diagnostic && control.indexRaw !== null && !indexed ? undefined : this.effectiveKind(name, indexed?.kind);
+    const kind = diagnostic && control.classificationState !== 'trusted' && !indexed ? undefined : this.effectiveKind(name, indexed?.kind);
+    const kindSource = diagnostic && control.classificationState !== 'trusted' && !indexed
+      ? undefined
+      : this.kindSource(name, indexed);
     const classification = diagnostic && kind === undefined && !this.isSpecialName(name)
       ? { role: 'operational' as const, includeInExecution: false, includeInNetwork: false }
       : this.classifyContextName(name, kind);
@@ -513,6 +523,7 @@ export class ContextService {
       createdAt: indexed?.createdAt ?? before.birthtime.toISOString(),
       updatedAt: indexed?.updatedAt ?? before.mtime.toISOString(),
       kind,
+      kindSource,
       task: indexed?.task,
       ...classification,
       ...metadataFields,
@@ -786,19 +797,34 @@ export class ContextService {
     }
     const indexPath = this.indexPath(resolved);
     const raw = this.readFileBuffer(indexPath);
-    if (raw === null) return { index: { schemaVersion: 1, revision: 0, entries: {} }, indexRaw: null, indexDigest: 'missing' };
+    if (raw === null) return {
+      index: { schemaVersion: 1, revision: 0, entries: {} },
+      indexRaw: null,
+      indexDigest: 'missing',
+      classificationState: marker === null ? 'trusted' : 'pending',
+    };
     let parsed: unknown;
     try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); }
     catch (error) {
-      if (diagnostic) return { index: { schemaVersion: 1, revision: 0, entries: {} }, indexRaw: raw, indexDigest: sha256(raw) };
+      if (diagnostic) return {
+        index: { schemaVersion: 1, revision: 0, entries: {} },
+        indexRaw: raw,
+        indexDigest: sha256(raw),
+        classificationState: marker === null ? 'invalid' : 'pending',
+      };
       throw new ContextMutationError('context_index_invalid', 'Context index is invalid JSON and requires primary management.', { error: error instanceof Error ? error.message : String(error) });
     }
     try { this.validateIndex(parsed); }
     catch (error) {
-      if (diagnostic) return { index: { schemaVersion: 1, revision: 0, entries: {} }, indexRaw: raw, indexDigest: sha256(raw) };
+      if (diagnostic) return {
+        index: { schemaVersion: 1, revision: 0, entries: {} },
+        indexRaw: raw,
+        indexDigest: sha256(raw),
+        classificationState: marker === null ? 'invalid' : 'pending',
+      };
       throw error;
     }
-    return { index: parsed, indexRaw: raw, indexDigest: sha256(raw) };
+    return { index: parsed, indexRaw: raw, indexDigest: sha256(raw), classificationState: marker === null ? 'trusted' : 'pending' };
   }
 
   private validateIndex(value: unknown): asserts value is ContextIndex {
@@ -845,6 +871,7 @@ export class ContextService {
         createdAt: indexed?.createdAt ?? stat.birthtime.toISOString(),
         updatedAt: indexed?.updatedAt ?? stat.mtime.toISOString(),
         kind,
+        kindSource: this.kindSource(name, indexed),
         task: indexed?.task,
         ...this.classifyContextName(name, kind),
         ...this.metadataFields(metadata, resolved.scope.type),
@@ -909,7 +936,7 @@ export class ContextService {
       files: summary.files.map(file => this.identityOnlyFile(file)),
       diagnostics: [...summary.diagnostics, 'Summary exceeded the response construction limit; per-file descriptive metadata (description, read_when, owner, review_after, task, warnings, created_at) was omitted. Use a catalog read for full metadata.'],
     };
-    this.assertResponseSize(clipped, CONTEXT_CATALOG_MAX_BYTES);
+    this.assertResponseSize(clipped, CONTEXT_CATALOG_MAX_BYTES, 'context_response_too_large');
     return clipped;
   }
 
@@ -918,6 +945,7 @@ export class ContextService {
       name: file.name,
       updatedAt: file.updatedAt,
       ...(file.kind ? { kind: file.kind } : {}),
+      ...(file.kindSource ? { kindSource: file.kindSource } : {}),
       role: file.role,
       includeInExecution: file.includeInExecution,
       includeInNetwork: file.includeInNetwork,
@@ -940,7 +968,7 @@ export class ContextService {
         if (!file.owner || !file.reviewAfter) {
           warnings.push(`Project context "${file.name}" is missing owner or review_after metadata.`);
           governanceIssues += 1;
-        } else if (file.reviewAfter < today) {
+        } else if (file.reviewAfter <= today) {
           warnings.push(`Project context "${file.name}" review was due ${file.reviewAfter}; re-review and replace it deliberately.`);
           governanceIssues += 1;
         }
@@ -961,11 +989,11 @@ export class ContextService {
   }
 
   private managementEnvelope(resolved: ResolvedScope, observation: { control: ControlState; inventory: Inventory }, durable: ContextDurableMetrics, files: ContextManagementCatalog['files'], complete: boolean, nextCursor?: string): ContextManagementCatalog {
-    return { schemaVersion: 1, scope: resolved.scope, revision: observation.control.index.revision, snapshot: observation.inventory.snapshot, totalFiles: observation.inventory.files.length, files, complete, ...(nextCursor ? { nextCursor } : {}), durable, diagnostics: observation.inventory.diagnostics };
+    return { schemaVersion: 1, scope: resolved.scope, revision: observation.control.index.revision, snapshot: observation.inventory.snapshot, totalFiles: observation.inventory.files.length, files, complete, hasMore: !complete, ...(nextCursor ? { nextCursor } : {}), durable, diagnostics: observation.inventory.diagnostics };
   }
 
-  private catalogEnvelope(resolved: ResolvedScope, observation: { control: ControlState; inventory: Inventory }, files: ContextCatalogRead['files'], complete: boolean, nextCursor?: string): ContextCatalogRead {
-    return { schemaVersion: 1, scope: resolved.scope, revision: observation.control.index.revision, snapshot: observation.inventory.snapshot, files, complete, ...(nextCursor ? { nextCursor } : {}), diagnostics: observation.inventory.diagnostics };
+  private catalogEnvelope(resolved: ResolvedScope, observation: { control: ControlState; inventory: Inventory }, files: ContextCatalogRead['files'], complete: boolean, searched: boolean, nextCursor?: string): ContextCatalogRead {
+    return { schemaVersion: 1, scope: resolved.scope, revision: observation.control.index.revision, snapshot: observation.inventory.snapshot, files, complete, hasMore: !complete, ...(nextCursor ? { nextCursor } : {}), ...(searched ? { searchedFields: ['name', 'description', 'read_when'] as ['name', 'description', 'read_when'] } : {}), diagnostics: observation.inventory.diagnostics };
   }
 
   private admitCatalogPage<T>(
@@ -997,8 +1025,8 @@ export class ContextService {
     return buildEnvelope(files, complete, complete ? undefined : encodeCursor(nextPosition));
   }
 
-  private contentEnvelope(resolved: ResolvedScope, control: ControlState, file: ContextFile, start: number, end: number, totalBytes: number): ContextContentRead {
-    return { scope: resolved.scope, revision: control.index.revision, snapshot: sha256(`${control.indexDigest}\n${control.index.revision}`), file, range: { start, end, totalBytes }, complete: end >= totalBytes, ...(end < totalBytes ? { nextOffset: end } : {}) };
+  private contentEnvelope(resolved: ResolvedScope, control: ControlState, file: ContextFile, startByte: number, endByte: number, totalBytes: number): ContextContentRead {
+    return { scope: resolved.scope, revision: control.index.revision, snapshot: sha256(`${control.indexDigest}\n${control.index.revision}\n${control.classificationState}`), file, range: { startByte, endByte, totalBytes }, complete: endByte >= totalBytes };
   }
 
   private mutate<T>(scope: string | ContextScope, expectedRevision: number | typeof CREATE_CONTEXT, mutation: (control: ControlState, resolved: ResolvedScope) => T): T {
@@ -1023,12 +1051,12 @@ export class ContextService {
 
   private publishContent(control: ControlState, resolved: ResolvedScope, operation: string, name: string, filePath: string, prior: Buffer | null, content: string, nextIndex: ContextIndex): void {
     this.publish(control, resolved, operation, [name], [], () => {
-      writeAtomic(filePath, content);
-      writeJsonAtomic(this.indexPath(resolved), nextIndex);
+      writeAtomicDurable(filePath, content);
+      writeJsonAtomicDurable(this.indexPath(resolved), nextIndex);
     }, () => {
       if (prior === null) {
-        if (fileExists(filePath)) fs.unlinkSync(filePath);
-      } else writeAtomic(filePath, prior);
+        if (fileExists(filePath)) this.unlinkDurable(filePath);
+      } else writeAtomicDurable(filePath, prior);
       this.restoreIndex(resolved, control.indexRaw);
     });
   }
@@ -1037,21 +1065,29 @@ export class ContextService {
     const manifestPath = path.join(resolved.archivePath, '..', 'context-index.json');
     const priorManifest = timestamp ? this.readFileBuffer(manifestPath) : null;
     const moved: typeof moves = [];
+    const createdDirectories: string[] = [];
     this.publish(control, resolved, operation, moves.map(item => item.name), moves.map(item => item.destination), () => {
       for (const item of moves) {
+        this.ensureDirectoryDurable(path.dirname(item.destination), createdDirectories);
         fs.copyFileSync(item.source, item.destination, fs.constants.COPYFILE_EXCL);
         moved.push(item);
-        fs.unlinkSync(item.source);
+        syncFile(item.destination);
+        syncDirectory(path.dirname(item.destination));
+        this.unlinkDurable(item.source);
       }
-      writeJsonAtomic(this.indexPath(resolved), nextIndex);
+      writeJsonAtomicDurable(this.indexPath(resolved), nextIndex);
       if (timestamp) this.appendArchiveRecord(manifestPath, timestamp, reason, moved);
     }, () => {
       this.restoreIndex(resolved, control.indexRaw);
       if (timestamp) this.restoreIndex({ ...resolved, contextPath: path.dirname(manifestPath) }, priorManifest, path.basename(manifestPath));
       for (const item of [...moved].reverse()) {
         if (!fileExists(item.destination)) continue;
-        if (!fileExists(item.source)) fs.renameSync(item.destination, item.source);
-        else fs.unlinkSync(item.destination);
+        if (!fileExists(item.source)) this.renameDurable(item.destination, item.source);
+        else this.unlinkDurable(item.destination);
+      }
+      for (const directory of [...createdDirectories].reverse()) {
+        fs.rmdirSync(directory);
+        syncDirectory(path.dirname(directory));
       }
     });
   }
@@ -1059,16 +1095,20 @@ export class ContextService {
   private publish(control: ControlState, resolved: ResolvedScope, operation: string, names: string[], archiveDestinations: string[], apply: () => void, rollback: () => void): void {
     const markerPath = this.markerPath(resolved);
     const marker: PendingMarker = { schemaVersion: 1, operation, names, archiveDestinations, startedAt: new Date().toISOString(), startingRevision: control.index.revision, startingIndexDigest: control.indexDigest };
-    writeJsonAtomic(markerPath, marker);
+    writeJsonAtomicDurable(markerPath, marker);
+    let applied = false;
     try {
       apply();
-      fs.unlinkSync(markerPath);
+      applied = true;
+      this.unlinkDurable(markerPath);
     } catch (error) {
       try {
+        writeJsonAtomicDurable(markerPath, marker);
         rollback();
-        fs.unlinkSync(markerPath);
+        if (!applied) this.unlinkDurable(markerPath);
       } catch {
         // The marker intentionally survives when complete rollback cannot be proven.
+        try { writeJsonAtomicDurable(markerPath, marker); } catch { /* Preserve the original failure. */ }
       }
       throw error;
     }
@@ -1076,8 +1116,6 @@ export class ContextService {
 
   private prepareArchiveMoves(resolved: ResolvedScope, names: string[], compatibility: boolean): Array<{ name: string; source: string; destination: string }> {
     const archivePath = compatibility ? path.join(resolved.contextPath, '..', 'archive') : resolved.archivePath;
-    this.assertNamespaceSafe(archivePath);
-    ensureDir(archivePath);
     this.assertNamespaceSafe(archivePath);
     const timestamp = this.now().toISOString().replace(/[:.]/g, '-');
     const reserved = new Set<string>();
@@ -1104,7 +1142,7 @@ export class ContextService {
   }
 
   private mutationResult(resolved: ResolvedScope, name: string, content: string, updatedAt: string, kind: ContextKind | undefined, task: string | undefined, revision: number, filePath: string, hash: string, metadata: ReturnType<typeof parseContextMetadata>): ContextMutationResult {
-    return { revision, path: filePath, file: { name, chars: content.length, bytes: Buffer.byteLength(content), contentHash: hash, updatedAt, kind, task, ...this.classifyContextName(name, kind), ...this.metadataFields(metadata, resolved.scope.type) } };
+    return { revision, path: filePath, file: { name, chars: content.length, bytes: Buffer.byteLength(content), contentHash: hash, updatedAt, kind, ...(kind ? { kindSource: 'index' as const } : {}), task, ...this.classifyContextName(name, kind), ...this.metadataFields(metadata, resolved.scope.type) } };
   }
 
   private metadataFields(metadata: ReturnType<typeof parseContextMetadata>, scopeType: 'feature' | 'project'): Pick<ContextFile, 'description' | 'readWhen' | 'owner' | 'reviewAfter' | 'warnings'> {
@@ -1232,6 +1270,11 @@ export class ContextService {
     return this.isSpecialName(name) ? undefined : indexedKind ?? 'durable';
   }
 
+  private kindSource(name: string, indexed?: ContextIndexEntry): ContextKindSource | undefined {
+    if (this.isSpecialName(name)) return undefined;
+    return indexed ? 'index' : 'legacy_default';
+  }
+
   private classifyContextName(name: string, kind?: ContextKind): Pick<ContextFile, 'role' | 'includeInExecution' | 'includeInNetwork'> {
     if (SPECIAL_CONTEXTS[name as keyof typeof SPECIAL_CONTEXTS]) return SPECIAL_CONTEXTS[name as keyof typeof SPECIAL_CONTEXTS];
     if (kind === 'evidence') return { role: 'evidence', includeInExecution: false, includeInNetwork: false };
@@ -1301,8 +1344,35 @@ export class ContextService {
   private restoreIndex(resolved: ResolvedScope, prior: Buffer | null, name = INDEX_NAME): void {
     const target = path.join(resolved.contextPath, name);
     if (prior === null) {
-      if (fileExists(target)) fs.unlinkSync(target);
-    } else writeAtomic(target, prior);
+      if (fileExists(target)) this.unlinkDurable(target);
+    } else writeAtomicDurable(target, prior);
+  }
+
+  private unlinkDurable(filePath: string): void {
+    fs.unlinkSync(filePath);
+    syncDirectory(path.dirname(filePath));
+  }
+
+  private renameDurable(source: string, destination: string): void {
+    fs.renameSync(source, destination);
+    syncDirectory(path.dirname(source));
+    if (path.dirname(destination) !== path.dirname(source)) syncDirectory(path.dirname(destination));
+  }
+
+  private ensureDirectoryDurable(directory: string, created: string[]): void {
+    const missing: string[] = [];
+    let current = directory;
+    while (!fileExists(current)) {
+      missing.push(current);
+      const parent = path.dirname(current);
+      if (parent === current) throw new Error(`Cannot create context directory ${directory}.`);
+      current = parent;
+    }
+    for (const target of missing.reverse()) {
+      fs.mkdirSync(target);
+      created.push(target);
+      syncDirectory(path.dirname(target));
+    }
   }
 
   private appendArchiveRecord(manifestPath: string, archivedAt: string, reason: string, moved: Array<{ name: string; destination: string }>): void {
@@ -1314,7 +1384,7 @@ export class ContextService {
       manifest = parsed;
     }
     manifest.records.push(...moved.map(item => ({ name: item.name, archivedAt, reason, path: item.destination })));
-    writeJsonAtomic(manifestPath, manifest);
+    writeJsonAtomicDurable(manifestPath, manifest);
   }
 
   private publicInventoryFile(file: InventoryFile): Omit<ContextFile, 'content' | 'contentHash'> {
@@ -1334,9 +1404,9 @@ export class ContextService {
     if (value !== undefined && (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > maxBytes)) throw new ContextMutationError('context_input_too_large', `Context ${field} exceeds ${maxBytes} bytes.`);
   }
 
-  private assertResponseSize(value: unknown, maxBytes: number): void {
+  private assertResponseSize(value: unknown, maxBytes: number, reason: 'context_inventory_too_large' | 'context_response_too_large' = 'context_inventory_too_large'): void {
     const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
-    if (bytes > maxBytes) throw new ContextMutationError('context_inventory_too_large', `Context response construction exceeds ${maxBytes} bytes.`, { bytes });
+    if (bytes > maxBytes) throw new ContextMutationError(reason, `Context response construction exceeds ${maxBytes} bytes.`, { bytes });
   }
 
   private encodeCursor(payload: { version: 1; scope: string; query: string; snapshot: string; position: number }): string {

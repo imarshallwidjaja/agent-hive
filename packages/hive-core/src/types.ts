@@ -246,6 +246,7 @@ export interface FeatureInfo {
 
 export type ContextRole = 'human' | 'scratchpad' | 'operational' | 'durable' | 'evidence';
 export type ContextKind = 'durable' | 'evidence';
+export type ContextKindSource = 'index' | 'legacy_default';
 
 export type ContextScope =
   | { type: 'feature'; featureName: string }
@@ -279,6 +280,7 @@ export interface ContextFile {
   updatedAt: string;
   createdAt?: string;
   kind?: ContextKind;
+  kindSource?: ContextKindSource;
   task?: string;
   role: ContextRole;
   includeInExecution: boolean;

@@ -123,6 +123,7 @@ export type {
   ContextDurableMetrics,
   ContextManagementCatalog,
   ContextManagementOptions,
+  ContextKindSource,
   ContextMutationErrorReason,
   ContextMutationResult,
   ContextReadOptions,

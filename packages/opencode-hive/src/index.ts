@@ -1670,9 +1670,10 @@ const plugin: Plugin = async (ctx) => {
       stale_revision: 'Call hive_context_read, then retry with the current revision.',
       context_index_invalid: 'A primary management session must inspect the bounded recovery summary and raw named documents, repair the control files out of band, then retry.',
       context_reconciliation_required: 'A primary management session must inspect the bounded recovery summary, reconcile the pending mutation out of band, then retry.',
-      context_inventory_too_large: 'Reduce the context inventory out of band before retrying this managed operation.',
+      context_inventory_too_large: 'An authorized manager must inspect exact named documents or reduce the context inventory out of band before retrying this managed operation.',
       context_input_too_large: 'Reduce the requested input or budget parameters and retry.',
-      context_response_too_large: 'For a named read, increase maxBytes within the documented limit. For inventory, use catalog query and limit to reduce the result.',
+      context_response_too_large: 'For a named read, increase maxBytes within the documented limit. For a summary response, use the paginated catalog view.',
+      context_authorization_denied: 'Retry only from an authenticated session authorized for the requested context operation.',
       invalid_context_cursor: 'Restart hive_context_read without a cursor for the intended scope and query.',
       stale_context_cursor: 'Context changed after the cursor was issued. Restart hive_context_read without a cursor.',
       context_changed_during_read: 'Context changed during the read. Retry from the beginning.',
@@ -7367,7 +7368,8 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
                 throw new ContextMutationError('context_changed_during_read', 'Context changed between chunks. Read the document again explicitly.');
               }
               if (!result) return contextFailure('context_not_found', `Context '${name}' not found.`, false);
-              const { nextOffset, ...chunk } = result;
+              const chunk = result;
+              const nextOffset = result.complete ? undefined : result.range.endByte;
               const payload = JSON.stringify({ v: 1, b: binding, r: result.revision, s: result.snapshot, h: result.file.contentHash, o: nextOffset });
               const nextCursor = nextOffset === undefined ? undefined : Buffer.from(JSON.stringify({
                 payload,
@@ -7531,7 +7533,11 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         async execute({ feature: explicitFeature }, toolContext) {
           const respond = (payload: Record<string, unknown>) => JSON.stringify(payload, null, 2);
           if (isPrivateContextRecipient(toolContext)) {
-            return respond({ context: { available: false, reason: 'context_authorization_denied' } });
+            return respond({ context: {
+              available: false,
+              reason: 'context_authorization_denied',
+              hint: 'Managed context status is unavailable to this recipient. Retry only from an authenticated authorized session.',
+            } });
           }
           const feature = resolveFeature(explicitFeature, toolContext, contextToolScope);
           if (!feature) {
@@ -7593,9 +7599,11 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             };
           }
           const contextReadHints: Record<string, string> = {
-            context_inventory_too_large: 'The managed context summary is too large to return inline. Use hive_context_read with the catalog view; it paginates and keeps full metadata.',
-            context_reconciliation_required: 'Managed context control state needs repair by an authenticated primary management session before context reads succeed.',
-            context_index_invalid: 'Managed context control state needs repair by an authenticated primary management session before context reads succeed.',
+            context_response_too_large: 'The managed context summary is too large to return inline. Use hive_context_read with the catalog view; it paginates and keeps full metadata.',
+            context_inventory_too_large: 'Context inventory construction exceeded a safety limit. An authenticated primary manager can inspect exact named documents or reduce the inventory out of band before retrying.',
+            context_reconciliation_required: 'Managed context has a pending mutation. An authenticated primary manager must inspect bounded diagnostics and reconcile the preserved state before retrying.',
+            context_index_invalid: 'Managed context has an invalid index. An authenticated primary manager must inspect bounded diagnostics and repair the preserved control state before retrying.',
+            context_authorization_denied: 'Managed context status is unavailable to this recipient. Retry only from an authenticated authorized session.',
             context_symlink_refused: 'A managed context path is a symlink and must be removed before context reads succeed.',
             context_changed_during_read: 'The context changed during the read. Retry hive_status.',
           };
@@ -7829,8 +7837,10 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               durable: null,
               available: false,
               reason: contextReadFailure!.reason,
-              error: contextReadFailure!.error,
-              hint: contextReadHints[contextReadFailure!.reason] ?? 'The managed context summary could not be read. Inspect the error and retry; use the catalog view only if failures persist.',
+              error: contextReadFailure!.reason === 'context_authorization_denied'
+                ? 'Managed context status is unavailable to this recipient.'
+                : contextReadFailure!.error,
+              hint: contextReadHints[contextReadFailure!.reason] ?? 'The managed context summary could not be read. Inspect the bounded error and retry from an authorized session.',
             },
             warning: configFallbackWarning ?? undefined,
             nextAction: getNextAction(planStatus, tasksSummary, runnable, !!plan),

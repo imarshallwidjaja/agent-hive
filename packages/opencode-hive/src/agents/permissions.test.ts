@@ -1531,13 +1531,21 @@ describe('Agent permissions', () => {
           const status = JSON.parse(await hooks.tool!.hive_status.execute({ feature: 'authorized' }, {
             ...snapshotContext(agent), sessionID: `private-status-${agent}`,
           }) as string);
-          expect(status.context).toEqual({ available: false, reason: 'context_authorization_denied' });
+          expect(status.context).toEqual({
+            available: false,
+            reason: 'context_authorization_denied',
+            hint: 'Managed context status is unavailable to this recipient. Retry only from an authenticated authorized session.',
+          });
         }
         expect(contextReads).not.toHaveBeenCalled();
         const descendant = JSON.parse(await hooks.tool!.hive_status.execute({ feature: 'authorized' }, {
           ...snapshotContext('forager-worker'), sessionID: 'review-descendant',
         }) as string);
-        expect(descendant.context).toEqual({ available: false, reason: 'context_authorization_denied' });
+        expect(descendant.context).toEqual({
+          available: false,
+          reason: 'context_authorization_denied',
+          hint: 'Managed context status is unavailable to this recipient. Retry only from an authenticated authorized session.',
+        });
         expect(contextReads).not.toHaveBeenCalled();
       } finally {
         contextReads.mockRestore();

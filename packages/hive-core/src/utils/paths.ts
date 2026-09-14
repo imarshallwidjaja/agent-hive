@@ -404,11 +404,54 @@ export function writeAtomic(filePath: string, content: string | NodeJS.ArrayBuff
   }
 }
 
+export function syncFile(filePath: string): void {
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+export function syncDirectory(directoryPath: string): void {
+  // Node does not expose a portable directory flush on Windows.
+  if (process.platform === 'win32') return;
+  const descriptor = fs.openSync(directoryPath, 'r');
+  try {
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+export function writeAtomicDurable(filePath: string, content: string | NodeJS.ArrayBufferView): void {
+  ensureDir(path.dirname(filePath));
+  const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+
+  try {
+    fs.writeFileSync(tempPath, content);
+    syncFile(tempPath);
+    fs.renameSync(tempPath, filePath);
+    syncDirectory(path.dirname(filePath));
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // The rename may already have published the destination.
+    }
+    throw error;
+  }
+}
+
 /**
  * Write JSON atomically
  */
 export function writeJsonAtomic<T>(filePath: string, data: T): void {
   writeAtomic(filePath, JSON.stringify(data, null, 2));
+}
+
+export function writeJsonAtomicDurable<T>(filePath: string, data: T): void {
+  writeAtomicDurable(filePath, JSON.stringify(data, null, 2));
 }
 
 /**

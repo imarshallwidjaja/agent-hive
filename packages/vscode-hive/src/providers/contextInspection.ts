@@ -37,7 +37,7 @@ export function contextTooltip(file: ContextFileMeta, project = false): string {
   lines.push(`Task: ${file.task || 'None'}`);
   if (file.owner) lines.push(`Owner: ${file.owner}`);
   if (file.reviewAfter) {
-    lines.push(`Review after: ${file.reviewAfter}${project && file.reviewAfter < today ? ' (overdue)' : ''}`);
+    lines.push(`Review after: ${file.reviewAfter}${project && file.reviewAfter <= today ? ' (overdue)' : ''}`);
   }
   lines.push(`Updated: ${file.updatedAt}`);
   lines.push(`Automatic execution inclusion: ${file.includeInExecution ? 'Yes' : 'No'}`);
@@ -80,7 +80,8 @@ export async function archiveContext(
       }
       const picks: ArchivePick[] = candidates.map(file => ({
         label: `${file.name}.md`,
-        description: contextDescription(file),
+        description: contextDescription(file,
+          scope.type === 'project' && !!file.reviewAfter && file.reviewAfter <= new Date().toISOString().slice(0, 10)),
         detail: contextTooltip(file, scope.type === 'project'),
         picked: chosen.some(selected => selected.name === file.name)
           || (!originatingDeselected && `${file.name}.md` === originatingFilename),

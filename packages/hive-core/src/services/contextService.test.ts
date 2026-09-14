@@ -43,6 +43,13 @@ function projectDurable(body: string, reviewAfter = '2026-09-30'): string {
   return `---\ndescription: Project context\nread_when: Read for project-wide decisions.\nowner: platform\nreview_after: ${reviewAfter}\n---\n\n${body}`;
 }
 
+function requiredEventAfter(events: string[], expected: string | ((event: string) => boolean), after = -1): number {
+  const predicate = typeof expected === 'string' ? (event: string) => event === expected : expected;
+  const index = events.findIndex((event, candidate) => candidate > after && predicate(event));
+  expect(index).toBeGreaterThan(after);
+  return index;
+}
+
 describe('ContextService reserved overview context', () => {
   let service: ContextService;
 
@@ -58,9 +65,9 @@ describe('ContextService reserved overview context', () => {
 
   it('admits catalog candidates with their actual continuation envelope near the byte cap', () => {
     setupFeature('catalog-boundary');
-    const query = 'q'.repeat(1024);
-    for (let index = 0; index < 7; index++) {
-      service.create('catalog-boundary', `note-${index}`, durable('body', query + 'x'.repeat(6200)));
+    const query = 'q'.repeat(512);
+    for (let index = 0; index < 20; index++) {
+      service.create('catalog-boundary', `note-${String(index).padStart(2, '0')}`, `---\ndescription: ${query}\nread_when: ${'x'.repeat(512)}\n---\n\nbody`);
     }
     const names: string[] = [];
     let cursor: string | undefined;
@@ -72,17 +79,17 @@ describe('ContextService reserved overview context', () => {
       cursor = page.nextCursor;
       expect(page.complete).toBe(cursor === undefined);
     } while (cursor);
-    expect(names).toEqual(Array.from({ length: 7 }, (_, index) => `note-${index}`));
+    expect(names).toEqual(Array.from({ length: 20 }, (_, index) => `note-${String(index).padStart(2, '0')}`));
   });
 
   it('clips per-file descriptive metadata instead of failing when the summary exceeds the response bound', () => {
     setupFeature('summary-clipping');
-    for (let index = 0; index < 12; index++) {
-      service.create('summary-clipping', `note-${index}`, durable('body', 'D'.repeat(1600)));
+    for (let index = 0; index < 30; index++) {
+      service.create('summary-clipping', `note-${index}`, `---\ndescription: ${'D'.repeat(512)}\nread_when: ${'R'.repeat(512)}\n---\n\nbody`);
     }
     const summary = service.readSummary('summary-clipping');
     expect(Buffer.byteLength(JSON.stringify(summary), 'utf8')).toBeLessThanOrEqual(16 * 1024);
-    expect(summary.files).toHaveLength(12);
+    expect(summary.files).toHaveLength(30);
     expect(summary.files[0]!.name).toBe('note-0');
     expect(summary.files[0]!.bytes).toBeGreaterThan(0);
     expect(summary.files[0]!.description).toBeUndefined();
@@ -106,7 +113,7 @@ describe('ContextService reserved overview context', () => {
       service.readSummary('summary-clipped-oversized');
       throw new Error('expected the clipped summary to fail the response bound');
     } catch (error) {
-      expect((error as { reason?: string }).reason).toBe('context_inventory_too_large');
+      expect((error as { reason?: string }).reason).toBe('context_response_too_large');
     }
   });
 
@@ -173,6 +180,16 @@ describe('ContextService reserved overview context', () => {
     });
     expect(fs.readFileSync(markerPath, 'utf8')).toBe(bytes);
     expect(fs.readdirSync(directory)).toEqual(['.managed-mutation-pending.json']);
+
+    fs.writeFileSync(path.join(directory, 'notes.md'), 'preserved pending bytes');
+    expect(service.readContent('pending-create', 'notes', { diagnosticMode: 'primary-management' })?.file).toMatchObject({
+      content: 'preserved pending bytes',
+      kind: undefined,
+      kindSource: undefined,
+      role: 'operational',
+      includeInExecution: false,
+      includeInNetwork: false,
+    });
   });
 
   it('inspects absent and read-only context without filesystem writes or lock acquisition', () => {
@@ -352,6 +369,88 @@ describe('ContextService managed context', () => {
     expect(service.read({ type: 'project' }, 'project-notes')).toBe(projectDurable('project body'));
   });
 
+  it('enforces metadata limits by Unicode code point and preserves oversized direct edits as diagnostics', () => {
+    setupFeature('metadata-limits');
+    const description512 = '😀'.repeat(512);
+    const readWhen512 = '𐐀'.repeat(512);
+    const owner128 = '😀'.repeat(128);
+    expect(service.create(
+      'metadata-limits',
+      'feature-boundary',
+      `---\ndescription: ${description512}\nread_when: ${readWhen512}\n---\n\nbody`,
+    ).file).toMatchObject({ description: description512, readWhen: readWhen512 });
+    const projectBoundary = service.create(
+      { type: 'project' },
+      'project-boundary',
+      `---\ndescription: boundary\nread_when: boundary\nowner: ${owner128}\nreview_after: 2026-09-30\n---\n\nbody`,
+    );
+    expect(projectBoundary.file.owner).toBe(owner128);
+
+    expect(() => service.create(
+      'metadata-limits',
+      'description-over',
+      `---\ndescription: ${'😀'.repeat(513)}\nread_when: boundary\n---\n\nbody`,
+    )).toThrow('512 Unicode code points');
+    expect(() => service.create(
+      'metadata-limits',
+      'read-when-over',
+      `---\ndescription: boundary\nread_when: ${'𐐀'.repeat(513)}\n---\n\nbody`,
+    )).toThrow('512 Unicode code points');
+    expect(() => service.create(
+      { type: 'project' },
+      'owner-over',
+      `---\ndescription: boundary\nread_when: boundary\nowner: ${'😀'.repeat(129)}\nreview_after: 2026-09-30\n---\n\nbody`,
+    )).toThrow('128 Unicode code points');
+
+    const oversized = `---\ndescription: ${'😀'.repeat(513)}\nread_when: Direct-edit diagnostics.\n---\n\npreserved`;
+    seedLegacy('metadata-limits', 'legacy-oversized', oversized);
+    const indexed = service.create('metadata-limits', 'indexed-oversized', durable('before'));
+    expect(() => service.replace(
+      'metadata-limits', 'indexed-oversized', oversized, indexed.revision, indexed.file.contentHash,
+    )).toThrow('512 Unicode code points');
+    expect(() => service.replace(
+      { type: 'project' },
+      'project-boundary',
+      `---\ndescription: boundary\nread_when: boundary\nowner: ${'😀'.repeat(129)}\nreview_after: 2026-09-30\n---\n\nbody`,
+      projectBoundary.revision,
+      projectBoundary.file.contentHash,
+    )).toThrow('128 Unicode code points');
+    const indexedPath = path.join(TEST_DIR, '.hive/features/metadata-limits/context/indexed-oversized.md');
+    fs.writeFileSync(indexedPath, oversized);
+
+    const summary = service.readSummary('metadata-limits');
+    const legacyFile = summary.files.find(file => file.name === 'legacy-oversized')!;
+    const indexedFile = summary.files.find(file => file.name === 'indexed-oversized')!;
+    expect(legacyFile).toMatchObject({ kind: 'durable', kindSource: 'legacy_default', description: undefined });
+    expect(indexedFile).toMatchObject({ kind: 'durable', kindSource: 'index', description: undefined });
+    expect(legacyFile.warnings?.join('\n')).toContain('512 Unicode code points');
+    expect(indexedFile.warnings?.join('\n')).toContain('512 Unicode code points');
+    expect(service.readCatalog('metadata-limits').files.map(file => file.name)).toContain('legacy-oversized');
+    expect(fs.readFileSync(indexedPath, 'utf8')).toBe(oversized);
+    expect(indexed.file.contentHash).not.toBe(createHash('sha256').update(oversized).digest('hex'));
+  });
+
+  it('withholds invalid direct-edited review dates and reports project governance gaps', () => {
+    const indexed = service.create({ type: 'project' }, 'indexed-invalid-date', projectDurable('before'));
+    const contextPath = getProjectContextPath(PROJECT_ROOT);
+    const impossibleDate = projectDurable('preserved impossible date', '2026-02-30');
+    const nonDate = projectDurable('preserved non-date', 'after-launch');
+    fs.writeFileSync(path.join(contextPath, 'indexed-invalid-date.md'), impossibleDate);
+    fs.writeFileSync(path.join(contextPath, 'legacy-invalid-date.md'), nonDate);
+
+    const catalog = service.readManagementCatalog({ type: 'project' });
+    const indexedFile = catalog.files.find(file => file.name === 'indexed-invalid-date')!;
+    const legacyFile = catalog.files.find(file => file.name === 'legacy-invalid-date')!;
+    expect(indexedFile).toMatchObject({ kindSource: 'index', reviewAfter: undefined });
+    expect(legacyFile).toMatchObject({ kindSource: 'legacy_default', reviewAfter: undefined });
+    expect(indexedFile.warnings?.join('\n')).toContain('review_after must use YYYY-MM-DD');
+    expect(legacyFile.warnings?.join('\n')).toContain('review_after must use YYYY-MM-DD');
+    expect(catalog.durable.governanceIssues).toBe(2);
+    expect(fs.readFileSync(path.join(contextPath, 'indexed-invalid-date.md'), 'utf8')).toBe(impossibleDate);
+    expect(fs.readFileSync(path.join(contextPath, 'legacy-invalid-date.md'), 'utf8')).toBe(nonDate);
+    expect(indexed.file.contentHash).not.toBe(createHash('sha256').update(impossibleDate).digest('hex'));
+  });
+
   it('rejects executable or ambiguous YAML metadata and keeps unknown keys non-authoritative', () => {
     setupFeature('metadata-safety');
     const invalid = [
@@ -484,27 +583,374 @@ describe('ContextService managed context', () => {
     expect(created.file.contentHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it.each(['create', 'replace'] as const)('durably orders %s content and index publication around the pending marker', (operation) => {
+    const featureName = `durable-${operation}`;
+    setupFeature(featureName);
+    const created = operation === 'replace' ? service.create(featureName, 'notes', durable('before')) : undefined;
+    const contextPath = path.join(TEST_DIR, '.hive/features', featureName, 'context');
+    const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
+    const contentPath = path.join(contextPath, 'notes.md');
+    const indexPath = path.join(contextPath, 'index.json');
+    const descriptorPaths = new Map<number, string>();
+    const events: string[] = [];
+    const originalWrite = fs.writeFileSync;
+    const originalOpen = fs.openSync;
+    const originalFsync = fs.fsyncSync;
+    const originalRename = fs.renameSync;
+    const originalUnlink = fs.unlinkSync;
+    const writeSpy = spyOn(fs, 'writeFileSync').mockImplementation(((target, data, options) => {
+      events.push(`write:${String(target)}`);
+      originalWrite(target, data, options as never);
+    }) as typeof fs.writeFileSync);
+    const openSpy = spyOn(fs, 'openSync').mockImplementation(((target, flags, mode) => {
+      const descriptor = originalOpen(target, flags, mode);
+      descriptorPaths.set(descriptor, String(target));
+      return descriptor;
+    }) as typeof fs.openSync);
+    const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((descriptor => {
+      events.push(`fsync:${descriptorPaths.get(descriptor)}`);
+      originalFsync(descriptor);
+    }) as typeof fs.fsyncSync);
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation(((source, destination) => {
+      events.push(`rename:${String(destination)}`);
+      originalRename(source, destination);
+    }) as typeof fs.renameSync);
+    const unlinkSpy = spyOn(fs, 'unlinkSync').mockImplementation((target => {
+      events.push(`unlink:${String(target)}`);
+      originalUnlink(target);
+    }) as typeof fs.unlinkSync);
+
+    try {
+      if (created) service.replace(featureName, 'notes', durable('after'), created.revision, created.file.contentHash);
+      else service.create(featureName, 'notes', durable('after'));
+    } finally {
+      unlinkSpy.mockRestore();
+      renameSpy.mockRestore();
+      fsyncSpy.mockRestore();
+      openSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+
+    const markerWrite = requiredEventAfter(events, event => event.startsWith(`write:${markerPath}.tmp.`));
+    const markerFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${markerPath}.tmp.`), markerWrite);
+    const markerRename = requiredEventAfter(events, `rename:${markerPath}`, markerFileSync);
+    const markerDirectorySync = process.platform === 'win32'
+      ? markerRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, markerRename);
+    const contentWrite = requiredEventAfter(events, event => event.startsWith(`write:${contentPath}.tmp.`), markerDirectorySync);
+    const contentFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${contentPath}.tmp.`), contentWrite);
+    const contentRename = requiredEventAfter(events, `rename:${contentPath}`, contentFileSync);
+    const contentDirectorySync = process.platform === 'win32'
+      ? contentRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, contentRename);
+    const indexWrite = requiredEventAfter(events, event => event.startsWith(`write:${indexPath}.tmp.`), contentDirectorySync);
+    const indexFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${indexPath}.tmp.`), indexWrite);
+    const indexRename = requiredEventAfter(events, `rename:${indexPath}`, indexFileSync);
+    const indexDirectorySync = process.platform === 'win32'
+      ? indexRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, indexRename);
+    const markerUnlink = requiredEventAfter(events, `unlink:${markerPath}`, indexDirectorySync);
+    if (process.platform !== 'win32') requiredEventAfter(events, `fsync:${contextPath}`, markerUnlink);
+  });
+
   it('clears the pending marker only after a proven content/index rollback', () => {
     setupFeature('rollback');
     const created = service.create('rollback', 'notes', durable('before'));
     const contextPath = path.join(TEST_DIR, '.hive/features/rollback/context');
     const indexPath = path.join(contextPath, 'index.json');
+    const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
+    const contentPath = path.join(contextPath, 'notes.md');
     const beforeIndex = fs.readFileSync(indexPath, 'utf8');
+    const descriptorPaths = new Map<number, string>();
+    const events: string[] = [];
+    const originalWrite = fs.writeFileSync;
+    const originalOpen = fs.openSync;
+    const originalFsync = fs.fsyncSync;
     const originalRename = fs.renameSync;
+    const originalUnlink = fs.unlinkSync;
     let failed = false;
+    const writeSpy = spyOn(fs, 'writeFileSync').mockImplementation(((target, data, options) => {
+      events.push(`write:${String(target)}`);
+      originalWrite(target, data, options as never);
+    }) as typeof fs.writeFileSync);
+    const openSpy = spyOn(fs, 'openSync').mockImplementation(((target, flags, mode) => {
+      const descriptor = originalOpen(target, flags, mode);
+      descriptorPaths.set(descriptor, String(target));
+      return descriptor;
+    }) as typeof fs.openSync);
+    const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((descriptor => {
+      events.push(`fsync:${descriptorPaths.get(descriptor)}`);
+      originalFsync(descriptor);
+    }) as typeof fs.fsyncSync);
     const rename = spyOn(fs, 'renameSync').mockImplementation(((source: fs.PathLike, destination: fs.PathLike) => {
-      if (!failed && String(destination) === indexPath && fs.existsSync(path.join(contextPath, '.managed-mutation-pending.json'))) {
+      events.push(`rename:${String(destination)}`);
+      if (!failed && String(destination) === indexPath && fs.existsSync(markerPath)) {
         failed = true;
         throw new Error('simulated index publication failure');
       }
       return originalRename(source, destination);
     }) as typeof fs.renameSync);
+    const unlinkSpy = spyOn(fs, 'unlinkSync').mockImplementation((target => {
+      events.push(`unlink:${String(target)}`);
+      originalUnlink(target);
+    }) as typeof fs.unlinkSync);
     try {
       expect(() => service.replace('rollback', 'notes', durable('after'), created.revision, created.file.contentHash)).toThrow('simulated');
-    } finally { rename.mockRestore(); }
-    expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe(durable('before'));
+    } finally {
+      unlinkSpy.mockRestore();
+      rename.mockRestore();
+      fsyncSpy.mockRestore();
+      openSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+    expect(fs.readFileSync(contentPath, 'utf8')).toBe(durable('before'));
     expect(fs.readFileSync(indexPath, 'utf8')).toBe(beforeIndex);
-    expect(fs.existsSync(path.join(contextPath, '.managed-mutation-pending.json'))).toBe(false);
+    expect(fs.existsSync(markerPath)).toBe(false);
+
+    const initialMarkerWrite = requiredEventAfter(events, event => event.startsWith(`write:${markerPath}.tmp.`));
+    const initialMarkerFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${markerPath}.tmp.`), initialMarkerWrite);
+    const initialMarkerRename = requiredEventAfter(events, `rename:${markerPath}`, initialMarkerFileSync);
+    const initialMarkerDirectorySync = process.platform === 'win32'
+      ? initialMarkerRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, initialMarkerRename);
+    const forwardContentWrite = requiredEventAfter(events, event => event.startsWith(`write:${contentPath}.tmp.`), initialMarkerDirectorySync);
+    const forwardContentFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${contentPath}.tmp.`), forwardContentWrite);
+    const forwardContentRename = requiredEventAfter(events, `rename:${contentPath}`, forwardContentFileSync);
+    const forwardContentDirectorySync = process.platform === 'win32'
+      ? forwardContentRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, forwardContentRename);
+    const failedIndexWrite = requiredEventAfter(events, event => event.startsWith(`write:${indexPath}.tmp.`), forwardContentDirectorySync);
+    const failedIndexFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${indexPath}.tmp.`), failedIndexWrite);
+    const failedIndexRename = requiredEventAfter(events, `rename:${indexPath}`, failedIndexFileSync);
+    const restoredMarkerWrite = requiredEventAfter(events, event => event.startsWith(`write:${markerPath}.tmp.`), failedIndexRename);
+    const restoredMarkerFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${markerPath}.tmp.`), restoredMarkerWrite);
+    const restoredMarkerRename = requiredEventAfter(events, `rename:${markerPath}`, restoredMarkerFileSync);
+    const restoredMarkerDirectorySync = process.platform === 'win32'
+      ? restoredMarkerRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, restoredMarkerRename);
+    const rollbackContentWrite = requiredEventAfter(events, event => event.startsWith(`write:${contentPath}.tmp.`), restoredMarkerDirectorySync);
+    const rollbackContentFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${contentPath}.tmp.`), rollbackContentWrite);
+    const rollbackContentRename = requiredEventAfter(events, `rename:${contentPath}`, rollbackContentFileSync);
+    const rollbackContentDirectorySync = process.platform === 'win32'
+      ? rollbackContentRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, rollbackContentRename);
+    const rollbackIndexWrite = requiredEventAfter(events, event => event.startsWith(`write:${indexPath}.tmp.`), rollbackContentDirectorySync);
+    const rollbackIndexFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${indexPath}.tmp.`), rollbackIndexWrite);
+    const rollbackIndexRename = requiredEventAfter(events, `rename:${indexPath}`, rollbackIndexFileSync);
+    const rollbackIndexDirectorySync = process.platform === 'win32'
+      ? rollbackIndexRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, rollbackIndexRename);
+    const markerUnlink = requiredEventAfter(events, `unlink:${markerPath}`, rollbackIndexDirectorySync);
+    if (process.platform !== 'win32') requiredEventAfter(events, `fsync:${contextPath}`, markerUnlink);
+  });
+
+  it('durably orders archive publication after the pending marker and before marker removal', () => {
+    setupFeature('durable-order');
+    const created = service.create('durable-order', 'notes', durable('archive me'));
+    const contextPath = path.join(TEST_DIR, '.hive/features/durable-order/context');
+    const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
+    const descriptorPaths = new Map<number, string>();
+    const events: string[] = [];
+    const originalOpen = fs.openSync;
+    const originalWrite = fs.writeFileSync;
+    const originalFsync = fs.fsyncSync;
+    const originalRename = fs.renameSync;
+    const originalCopy = fs.copyFileSync;
+    const originalUnlink = fs.unlinkSync;
+    const originalMkdir = fs.mkdirSync;
+    const writeSpy = spyOn(fs, 'writeFileSync').mockImplementation(((target, data, options) => {
+      events.push(`write:${String(target)}`);
+      originalWrite(target, data, options as never);
+    }) as typeof fs.writeFileSync);
+    const openSpy = spyOn(fs, 'openSync').mockImplementation(((target, flags, mode) => {
+      const descriptor = originalOpen(target, flags, mode);
+      descriptorPaths.set(descriptor, String(target));
+      return descriptor;
+    }) as typeof fs.openSync);
+    const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((descriptor => {
+      events.push(`fsync:${descriptorPaths.get(descriptor)}`);
+      originalFsync(descriptor);
+    }) as typeof fs.fsyncSync);
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation(((source, destination) => {
+      events.push(`rename:${String(destination)}`);
+      originalRename(source, destination);
+    }) as typeof fs.renameSync);
+    const copySpy = spyOn(fs, 'copyFileSync').mockImplementation(((source, destination, mode) => {
+      events.push(`copy:${String(destination)}`);
+      originalCopy(source, destination, mode);
+    }) as typeof fs.copyFileSync);
+    const unlinkSpy = spyOn(fs, 'unlinkSync').mockImplementation((target => {
+      events.push(`unlink:${String(target)}`);
+      originalUnlink(target);
+    }) as typeof fs.unlinkSync);
+    const mkdirSpy = spyOn(fs, 'mkdirSync').mockImplementation(((target, options) => {
+      events.push(`mkdir:${String(target)}`);
+      return originalMkdir(target, options as never);
+    }) as typeof fs.mkdirSync);
+
+    let archived;
+    try {
+      archived = service.archiveSelected('durable-order', ['notes'], 'durability check', created.revision, { notes: created.file.contentHash });
+    } finally {
+      mkdirSpy.mockRestore();
+      unlinkSpy.mockRestore();
+      copySpy.mockRestore();
+      renameSpy.mockRestore();
+      fsyncSpy.mockRestore();
+      openSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+
+    const destination = archived!.archived[0]!.archivePath;
+    const featurePath = path.join(TEST_DIR, '.hive/features/durable-order');
+    const archiveRoot = path.join(featurePath, 'archive');
+    const archiveDirectory = path.dirname(destination);
+    const source = path.join(contextPath, 'notes.md');
+    const indexPath = path.join(contextPath, 'index.json');
+    const manifestPath = path.join(archiveRoot, 'context-index.json');
+    const markerWrite = requiredEventAfter(events, event => event.startsWith(`write:${markerPath}.tmp.`));
+    const markerFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${markerPath}.tmp.`), markerWrite);
+    const markerRename = requiredEventAfter(events, `rename:${markerPath}`, markerFileSync);
+    const markerDirectorySync = process.platform === 'win32'
+      ? markerRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, markerRename);
+    const archiveRootMkdir = requiredEventAfter(events, `mkdir:${archiveRoot}`, markerDirectorySync);
+    const featureDirectorySync = process.platform === 'win32'
+      ? archiveRootMkdir
+      : requiredEventAfter(events, `fsync:${featurePath}`, archiveRootMkdir);
+    const archiveDirectoryMkdir = requiredEventAfter(events, `mkdir:${archiveDirectory}`, featureDirectorySync);
+    const archiveRootSync = process.platform === 'win32'
+      ? archiveDirectoryMkdir
+      : requiredEventAfter(events, `fsync:${archiveRoot}`, archiveDirectoryMkdir);
+    const archiveCopy = requiredEventAfter(events, `copy:${destination}`, archiveRootSync);
+    const archiveFileSync = requiredEventAfter(events, `fsync:${destination}`, archiveCopy);
+    const archiveDirectorySync = process.platform === 'win32'
+      ? archiveFileSync
+      : requiredEventAfter(events, `fsync:${archiveDirectory}`, archiveFileSync);
+    const sourceUnlink = requiredEventAfter(events, `unlink:${source}`, archiveDirectorySync);
+    const sourceDirectorySync = process.platform === 'win32'
+      ? sourceUnlink
+      : requiredEventAfter(events, `fsync:${contextPath}`, sourceUnlink);
+    const indexWrite = requiredEventAfter(events, event => event.startsWith(`write:${indexPath}.tmp.`), sourceDirectorySync);
+    const indexFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${indexPath}.tmp.`), indexWrite);
+    const indexRename = requiredEventAfter(events, `rename:${indexPath}`, indexFileSync);
+    const indexDirectorySync = process.platform === 'win32'
+      ? indexRename
+      : requiredEventAfter(events, `fsync:${contextPath}`, indexRename);
+    const manifestWrite = requiredEventAfter(events, event => event.startsWith(`write:${manifestPath}.tmp.`), indexDirectorySync);
+    const manifestFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${manifestPath}.tmp.`), manifestWrite);
+    const manifestRename = requiredEventAfter(events, `rename:${manifestPath}`, manifestFileSync);
+    const manifestDirectorySync = process.platform === 'win32'
+      ? manifestRename
+      : requiredEventAfter(events, `fsync:${archiveRoot}`, manifestRename);
+    const markerUnlink = requiredEventAfter(events, `unlink:${markerPath}`, manifestDirectorySync);
+    if (process.platform !== 'win32') requiredEventAfter(events, `fsync:${contextPath}`, markerUnlink);
+  });
+
+  it('restores a durable pending marker when marker-removal durability is uncertain', () => {
+    if (process.platform === 'win32') return;
+    setupFeature('uncertain-marker-removal');
+    const created = service.create('uncertain-marker-removal', 'notes', durable('before'));
+    const contextPath = path.join(TEST_DIR, '.hive/features/uncertain-marker-removal/context');
+    const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
+    const descriptorPaths = new Map<number, string>();
+    const originalOpen = fs.openSync;
+    const originalFsync = fs.fsyncSync;
+    const originalUnlink = fs.unlinkSync;
+    const originalRename = fs.renameSync;
+    const events: string[] = [];
+    let markerUnlinked = false;
+    let failed = false;
+    const openSpy = spyOn(fs, 'openSync').mockImplementation(((target, flags, mode) => {
+      const descriptor = originalOpen(target, flags, mode);
+      descriptorPaths.set(descriptor, String(target));
+      return descriptor;
+    }) as typeof fs.openSync);
+    const unlinkSpy = spyOn(fs, 'unlinkSync').mockImplementation((target => {
+      events.push(`unlink:${String(target)}`);
+      if (String(target) === markerPath) markerUnlinked = true;
+      originalUnlink(target);
+    }) as typeof fs.unlinkSync);
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation(((source, destination) => {
+      events.push(`rename:${String(destination)}`);
+      originalRename(source, destination);
+    }) as typeof fs.renameSync);
+    const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((descriptor => {
+      events.push(`fsync:${descriptorPaths.get(descriptor)}`);
+      if (!failed && markerUnlinked && descriptorPaths.get(descriptor) === contextPath) {
+        failed = true;
+        throw new Error('simulated uncertain marker removal');
+      }
+      originalFsync(descriptor);
+    }) as typeof fs.fsyncSync);
+
+    try {
+      expect(() => service.replace(
+        'uncertain-marker-removal', 'notes', durable('after'), created.revision, created.file.contentHash,
+      )).toThrow('uncertain marker removal');
+    } finally {
+      fsyncSpy.mockRestore();
+      renameSpy.mockRestore();
+      unlinkSpy.mockRestore();
+      openSpy.mockRestore();
+    }
+    const contentPath = path.join(contextPath, 'notes.md');
+    const indexPath = path.join(contextPath, 'index.json');
+    const initialMarkerRename = requiredEventAfter(events, `rename:${markerPath}`);
+    const initialMarkerDirectorySync = requiredEventAfter(events, `fsync:${contextPath}`, initialMarkerRename);
+    const forwardContentRename = requiredEventAfter(events, `rename:${contentPath}`, initialMarkerDirectorySync);
+    const forwardContentDirectorySync = requiredEventAfter(events, `fsync:${contextPath}`, forwardContentRename);
+    const forwardIndexRename = requiredEventAfter(events, `rename:${indexPath}`, forwardContentDirectorySync);
+    const forwardIndexDirectorySync = requiredEventAfter(events, `fsync:${contextPath}`, forwardIndexRename);
+    const markerUnlink = requiredEventAfter(events, `unlink:${markerPath}`, forwardIndexDirectorySync);
+    const failedMarkerRemovalSync = requiredEventAfter(events, `fsync:${contextPath}`, markerUnlink);
+    const markerRepublishFileSync = requiredEventAfter(events, event => event.startsWith(`fsync:${markerPath}.tmp.`), failedMarkerRemovalSync);
+    const markerRepublish = requiredEventAfter(events, `rename:${markerPath}`, markerRepublishFileSync);
+    const markerRepublishDirectorySync = requiredEventAfter(events, `fsync:${contextPath}`, markerRepublish);
+    const rollbackContentRename = requiredEventAfter(events, `rename:${contentPath}`, markerRepublishDirectorySync);
+    const rollbackContentDirectorySync = requiredEventAfter(events, `fsync:${contextPath}`, rollbackContentRename);
+    const rollbackIndexRename = requiredEventAfter(events, `rename:${indexPath}`, rollbackContentDirectorySync);
+    requiredEventAfter(events, `fsync:${contextPath}`, rollbackIndexRename);
+    expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe(durable('before'));
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(() => service.readSummary('uncertain-marker-removal')).toThrow('reconcile');
+  });
+
+  it('fully rolls back archive directories created before a directory flush failure', () => {
+    if (process.platform === 'win32') return;
+    setupFeature('archive-directory-rollback');
+    const created = service.create('archive-directory-rollback', 'notes', durable('before'));
+    const featurePath = path.join(TEST_DIR, '.hive/features/archive-directory-rollback');
+    const contextPath = path.join(featurePath, 'context');
+    const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
+    const descriptorPaths = new Map<number, string>();
+    const originalOpen = fs.openSync;
+    const originalFsync = fs.fsyncSync;
+    let failed = false;
+    const openSpy = spyOn(fs, 'openSync').mockImplementation(((target, flags, mode) => {
+      const descriptor = originalOpen(target, flags, mode);
+      descriptorPaths.set(descriptor, String(target));
+      return descriptor;
+    }) as typeof fs.openSync);
+    const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((descriptor => {
+      if (!failed && fs.existsSync(markerPath) && descriptorPaths.get(descriptor) === featurePath) {
+        failed = true;
+        throw new Error('simulated archive parent flush failure');
+      }
+      originalFsync(descriptor);
+    }) as typeof fs.fsyncSync);
+
+    try {
+      expect(() => service.archiveSelected(
+        'archive-directory-rollback', ['notes'], 'rollback directory', created.revision, { notes: created.file.contentHash },
+      )).toThrow('archive parent flush failure');
+    } finally {
+      fsyncSpy.mockRestore();
+      openSpy.mockRestore();
+    }
+    expect(service.read('archive-directory-rollback', 'notes')).toBe(durable('before'));
+    expect(fs.existsSync(path.join(featurePath, 'archive'))).toBe(false);
+    expect(fs.existsSync(markerPath)).toBe(false);
   });
 
   it('paginates complete durable catalogs and invalidates cursors on index-only classification drift', () => {
@@ -514,12 +960,26 @@ describe('ContextService managed context', () => {
     let cursor: string | undefined;
     do {
       const page = service.readCatalog('catalog', { cursor, limit: 2 });
+      expect(page.hasMore).toBe(!page.complete);
       names.push(...page.files.map(file => file.name));
       cursor = page.nextCursor;
       if (!cursor) expect(page.complete).toBe(true);
     } while (cursor);
     expect(names).toEqual(['note-0', 'note-1', 'note-2', 'note-3', 'note-4', 'note-5', 'note-6']);
-    expect(service.readCatalog('catalog', { query: 'DESCRIPTION 6', limit: 1 }).files.map(file => file.name)).toEqual(['note-6']);
+    expect(service.readCatalog('catalog', { query: 'DESCRIPTION 6', limit: 1 })).toMatchObject({
+      files: [{ name: 'note-6' }],
+      searchedFields: ['name', 'description', 'read_when'],
+      hasMore: false,
+    });
+    const ownerOnly = service.create(
+      { type: 'project' },
+      'owner-only',
+      '---\ndescription: ordinary\nread_when: ordinary\nowner: unique-owner-search-value\nreview_after: 2026-09-30\n---\n\nbody',
+    );
+    expect(ownerOnly.file.owner).toBe('unique-owner-search-value');
+    expect(service.readCatalog({ type: 'project' }, { query: 'unique-owner-search-value' })).toMatchObject({
+      files: [], searchedFields: ['name', 'description', 'read_when'], complete: true, hasMore: false,
+    });
 
     const first = service.readCatalog('catalog', { limit: 1 });
     const indexPath = path.join(TEST_DIR, '.hive/features/catalog/context/index.json');
@@ -540,6 +1000,7 @@ describe('ContextService managed context', () => {
     expect(first.totalFiles).toBe(14);
     expect(first.files.map(file => file.name)).toEqual(['note-00', 'note-01', 'note-02', 'note-03', 'note-04']);
     expect(first.complete).toBe(false);
+    expect(first.hasMore).toBe(true);
     expect(first.durable.fileCount).toBe(12);
     expect(first.durable.governanceIssues).toBe(0);
     expect(first.durable.chars).toBeNull();
@@ -552,6 +1013,7 @@ describe('ContextService managed context', () => {
       expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(16 * 1024);
       names.push(...page.files.map(file => file.name));
       cursor = page.nextCursor;
+      expect(page.hasMore).toBe(!page.complete);
       if (!cursor) expect(page.complete).toBe(true);
     }
     expect(names).toEqual([
@@ -661,22 +1123,22 @@ describe('ContextService managed context', () => {
       expectedHash ||= read.file.contentHash!;
       expect(read.file.contentHash).toBe(expectedHash);
       if (read.complete) break;
-      expect(read.nextOffset).toBeGreaterThan(offset);
-      offset = read.nextOffset!;
+      expect(read.range.endByte).toBeGreaterThan(offset);
+      expect(read.range.startByte).toBe(offset);
+      offset = read.range.endByte;
     } while (true);
     expect(reconstructed).toBe(content);
     expect(expectedHash).toBe(createHash('sha256').update(Buffer.from(content)).digest('hex'));
 
     service.create('chunks', 'empty', '', { kind: 'evidence' });
-    expect(service.readContent('chunks', 'empty')).toMatchObject({ complete: true, range: { start: 0, end: 0, totalBytes: 0 }, file: { content: '' } });
+    expect(service.readContent('chunks', 'empty')).toMatchObject({ complete: true, range: { startByte: 0, endByte: 0, totalBytes: 0 }, file: { content: '' } });
 
     const template = service.readContent('chunks', 'raw', { maxBytes: 1024 })!;
     const zeroProgressEnvelope = {
       ...template,
       file: { ...template.file, content: '' },
-      range: { start: 0, end: 0, totalBytes: Buffer.byteLength(content) },
+      range: { startByte: 0, endByte: 0, totalBytes: Buffer.byteLength(content) },
       complete: false,
-      nextOffset: 0,
     };
     const envelopeOnlyBudget = Buffer.byteLength(JSON.stringify(zeroProgressEnvelope));
     expect(() => service.readContent('chunks', 'raw', { maxBytes: envelopeOnlyBudget })).toThrow('response envelope');
@@ -718,8 +1180,13 @@ describe('ContextService managed context', () => {
     const summary = service.readSummary({ type: 'project' });
     expect(summary.durable).toMatchObject({ fileCount: 9, fileCap: 32, chars: null, overLimit: false });
     expect(summary.durable.warnings.join('\n')).not.toContain('9 files exceeds');
-    service.create({ type: 'project' }, 'review-due', projectDurable('stale', '2026-09-01'));
-    expect(service.readSummary({ type: 'project' }).durable.warnings.join('\n')).toContain('re-review and replace');
+    const datedService = new ContextService(PROJECT_ROOT, () => new Date('2026-09-14T12:00:00.000Z'));
+    datedService.create({ type: 'project' }, 'review-due-today', projectDurable('due', '2026-09-14'));
+    datedService.create({ type: 'project' }, 'review-due-future', projectDurable('fresh', '2026-09-15'));
+    const governance = datedService.readSummary({ type: 'project' }).durable;
+    expect(governance.governanceIssues).toBe(1);
+    expect(governance.warnings.join('\n')).toContain('review-due-today');
+    expect(governance.warnings.join('\n')).not.toContain('review-due-future');
     expect(service.readSummary({ type: 'project' }, { scanChars: true }).durable.charsMeasurement).toBe('current');
   });
 

@@ -2,6 +2,9 @@ import { isAlias, parseDocument, visit } from 'yaml';
 import type { ContextMetadata } from '../types.js';
 
 export const CONTEXT_FRONTMATTER_MAX_BYTES = 8 * 1024;
+export const CONTEXT_DESCRIPTION_MAX_CODE_POINTS = 512;
+export const CONTEXT_READ_WHEN_MAX_CODE_POINTS = 512;
+export const CONTEXT_OWNER_MAX_CODE_POINTS = 128;
 
 const RECOGNIZED_KEYS = new Set(['description', 'read_when', 'owner', 'review_after']);
 
@@ -74,17 +77,31 @@ export function parseContextMetadata(source: Buffer): ContextMetadata {
     }
     const record = value as Record<string, unknown>;
     const warnings: string[] = [];
+    const limits: Record<string, number | undefined> = {
+      description: CONTEXT_DESCRIPTION_MAX_CODE_POINTS,
+      read_when: CONTEXT_READ_WHEN_MAX_CODE_POINTS,
+      owner: CONTEXT_OWNER_MAX_CODE_POINTS,
+      review_after: undefined,
+    };
     for (const key of RECOGNIZED_KEYS) {
       if (record[key] !== undefined && (typeof record[key] !== 'string' || !record[key].trim())) {
         warnings.push(`Metadata field ${key} must be a nonblank string.`);
+      } else if (typeof record[key] === 'string' && limits[key] !== undefined
+        && [...record[key].trim()].length > limits[key]!) {
+        warnings.push(`Metadata field ${key} exceeds ${limits[key]} Unicode code points.`);
       }
     }
-    const stringValue = (key: string): string | undefined => typeof record[key] === 'string' && record[key].trim()
-      ? record[key].trim()
+    const stringValue = (key: string): string | undefined => {
+      if (typeof record[key] !== 'string' || !record[key].trim()) return undefined;
+      const result = record[key].trim();
+      return limits[key] === undefined || [...result].length <= limits[key]! ? result : undefined;
+    };
+    const candidateReviewAfter = stringValue('review_after');
+    const reviewAfter = candidateReviewAfter && /^\d{4}-\d{2}-\d{2}$/.test(candidateReviewAfter)
+      && new Date(`${candidateReviewAfter}T00:00:00.000Z`).toISOString().slice(0, 10) === candidateReviewAfter
+      ? candidateReviewAfter
       : undefined;
-    const reviewAfter = stringValue('review_after');
-    if (reviewAfter && (!/^\d{4}-\d{2}-\d{2}$/.test(reviewAfter)
-      || new Date(`${reviewAfter}T00:00:00.000Z`).toISOString().slice(0, 10) !== reviewAfter)) {
+    if (candidateReviewAfter && !reviewAfter) {
       warnings.push('Metadata field review_after must use YYYY-MM-DD.');
     }
     return {

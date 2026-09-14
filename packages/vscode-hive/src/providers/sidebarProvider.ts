@@ -643,7 +643,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
   private isOverdue(scope: ContextScope, file: { reviewAfter?: string }): boolean {
     if (scope.type !== 'project' || !file.reviewAfter) return false
-    return file.reviewAfter < todayIsoDate()
+    return file.reviewAfter <= todayIsoDate()
   }
 
   private reviewCommentCountFor(scope: ContextScope, name: string): number {
