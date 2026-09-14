@@ -7,6 +7,7 @@ describe('buildAdhocWorkerLaunchPayloads', () => {
     subagent_type: 'forager-worker',
     description: 'Ad-hoc: run-1',
     prompt: 'do work',
+    launchId: 'launch-1',
   };
 
   it('returns suppressed when autoSpawnWorker is false', () => {
@@ -28,7 +29,12 @@ describe('buildAdhocWorkerLaunchPayloads', () => {
       shouldAutoSpawnWorker: true,
     });
     expect(result.launchMode).toBe('blocking_task_call');
-    expect(result.taskToolCall).toEqual(base);
+    expect(result.taskToolCall).toEqual({
+      subagent_type: base.subagent_type,
+      description: base.description,
+      prompt: base.prompt,
+      hive_launch_id: base.launchId,
+    });
     expect(result.backgroundTaskCall).toBeUndefined();
     expect(result.sessionPolicy).toEqual(HIVE_SESSION_POLICY);
     expect(result.taskToolCall).not.toHaveProperty('task_id');
@@ -41,8 +47,14 @@ describe('buildAdhocWorkerLaunchPayloads', () => {
       shouldAutoSpawnWorker: true,
     });
     expect(result.launchMode).toBe('blocking_task_call');
-    expect(result.taskToolCall).toEqual(base);
-    expect(result.backgroundTaskCall).toEqual({ ...base, background: true });
+    const taskToolCall = {
+      subagent_type: base.subagent_type,
+      description: base.description,
+      prompt: base.prompt,
+      hive_launch_id: base.launchId,
+    };
+    expect(result.taskToolCall).toEqual(taskToolCall);
+    expect(result.backgroundTaskCall).toEqual({ ...taskToolCall, background: true });
     expect(result.sessionPolicy).toEqual(HIVE_SESSION_POLICY);
     expect(result.taskToolCall).not.toHaveProperty('task_id');
     expect(result.backgroundTaskCall).not.toHaveProperty('task_id');

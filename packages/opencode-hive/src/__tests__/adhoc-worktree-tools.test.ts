@@ -93,13 +93,32 @@ function expectWorktreeResponseShape(result: {
   expect(typeof result.nextAction).toBe('string');
 }
 
-async function loadHooks(directory: string) {
+async function loadHooks(directory: string, terminalSessionIDs?: Set<string>) {
+  const client = {
+    ...(OPENCODE_CLIENT as any),
+    session: {
+      ...(OPENCODE_CLIENT as any).session,
+      get: async ({ path: inputPath }: { path: { id: string } }) => ({
+        data: { id: inputPath.id, parentID: undefined },
+      }),
+      ...(terminalSessionIDs ? {
+        status: async () => ({
+          data: Object.fromEntries([...terminalSessionIDs].map(sessionID => [sessionID, { type: 'idle' }])),
+        }),
+        messages: async ({ path: inputPath }: { path: { id: string } }) => ({
+          data: terminalSessionIDs.has(inputPath.id)
+            ? [{ info: { role: 'assistant', time: { completed: Date.now() } }, parts: [] }]
+            : [],
+        }),
+      } : {}),
+    },
+  } as PluginInput['client'];
   const ctx: PluginInput = {
     directory,
     worktree: directory,
     serverUrl: new URL('http://localhost:1'),
     project: createProject(directory),
-    client: OPENCODE_CLIENT,
+    client,
     $: createStubShell(),
   };
   return plugin(ctx);
@@ -128,8 +147,9 @@ describe('ad-hoc worktree plugin tools', () => {
     }
   });
 
-  it('registers all four ad-hoc tool names in HIVE_TOOL_NAMES', () => {
+  it('registers all five ad-hoc tool names in HIVE_TOOL_NAMES', () => {
     expect(HIVE_TOOL_NAMES).toContain('hive_adhoc_worktree_create');
+    expect(HIVE_TOOL_NAMES).toContain('hive_adhoc_worktree_start');
     expect(HIVE_TOOL_NAMES).toContain('hive_adhoc_worktree_commit');
     expect(HIVE_TOOL_NAMES).toContain('hive_adhoc_merge');
     expect(HIVE_TOOL_NAMES).toContain('hive_adhoc_cleanup');
@@ -214,6 +234,8 @@ describe('ad-hoc worktree plugin tools', () => {
           task_id?: string;
         };
         launchMode?: string;
+        launchId?: string;
+        expiresAt?: string;
         sessionPolicy?: typeof HIVE_SESSION_POLICY;
       }>(raw);
 
@@ -229,11 +251,14 @@ describe('ad-hoc worktree plugin tools', () => {
         repoIds: [],
       });
       expect(result.launchMode).toBe('blocking_task_call');
+      expect(result.launchId).toEqual(expect.any(String));
+      expect(result.expiresAt).toEqual(expect.any(String));
       expect(result.sessionPolicy).toEqual(HIVE_SESSION_POLICY);
       expect(result.taskToolCall).toEqual({
         subagent_type: 'forager-worker',
         description: `Ad-hoc: ${result.runId}`,
         prompt: expect.stringContaining(`Workspace: ${result.workspacePath}`),
+        hive_launch_id: result.launchId,
       });
       expect(result.taskToolCall?.background).toBeUndefined();
       expect(result.taskToolCall).not.toHaveProperty('task_id');
@@ -242,6 +267,7 @@ describe('ad-hoc worktree plugin tools', () => {
         subagent_type: 'forager-worker',
         description: `Ad-hoc: ${result.runId}`,
         prompt: result.taskToolCall?.prompt,
+        hive_launch_id: result.launchId,
       });
       expect(result.backgroundTaskCall).not.toHaveProperty('task_id');
       expect(result.backgroundTaskCall?.prompt).toContain(`Run ID: ${result.runId}`);
@@ -320,6 +346,7 @@ describe('ad-hoc worktree plugin tools', () => {
         prompt?: string;
         background?: boolean;
         task_id?: string;
+        hive_launch_id?: string;
       };
       backgroundTaskCall?: unknown;
       backgroundScope?: unknown;
@@ -346,10 +373,11 @@ describe('ad-hoc worktree plugin tools', () => {
       },
     ]);
     expect(result.sessionPolicy).toEqual(HIVE_SESSION_POLICY);
-    expect(result.taskToolCall).toEqual({
+      expect(result.taskToolCall).toEqual({
       subagent_type: 'forager-worker',
       description: `Ad-hoc: ${result.runId}`,
       prompt: expect.stringContaining(`Workspace: ${result.workspacePath}`),
+      hive_launch_id: expect.any(String),
     });
     expect(result.taskToolCall?.background).toBeUndefined();
     expect(result.taskToolCall).not.toHaveProperty('task_id');
@@ -526,6 +554,58 @@ describe('ad-hoc worktree plugin tools', () => {
       }
     }
   });
+
+  it('starts and retries a setup-only ad-hoc run with fresh canonical launch authority', async () => {
+    initGitRoot(testRoot);
+    const terminalSessionIDs = new Set<string>();
+    const hooks = await loadHooks(testRoot, terminalSessionIDs);
+    const parent = 'sess_adhoc_reusable_start';
+    const toolContext = createToolContext(parent);
+    const setup = parseToolJson<{ runId: string; workspacePath: string }>(
+      await hooks.tool!.hive_adhoc_worktree_create.execute(
+        { runId: 'reusable-run', autoSpawnWorker: false },
+        toolContext,
+      ),
+    );
+
+    const first = parseToolJson<{
+      launchId: string;
+      taskToolCall: { subagent_type: string; prompt: string; hive_launch_id: string };
+    }>(await hooks.tool!.hive_adhoc_worktree_start.execute({
+      runId: setup.runId,
+      workerInstructions: 'Implement the first bounded change.',
+    }, toolContext));
+    expect(first.taskToolCall.prompt).toContain('Implement the first bounded change.');
+    expect(first.taskToolCall.hive_launch_id).toBe(first.launchId);
+
+    const dispatch = { args: { ...first.taskToolCall, prompt: 'caller edit' } };
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'reusable-first' }, dispatch);
+    expect(dispatch.args.prompt).toContain('Implement the first bounded change.');
+    expect(dispatch.args).not.toHaveProperty('hive_launch_id');
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: 'reusable-child', parentID: parent } } } } as any);
+    await hooks.event?.({ event: { type: 'message.part.updated', properties: { part: {
+      type: 'tool', tool: 'task', sessionID: parent, callID: 'reusable-first',
+      state: { input: dispatch.args, metadata: { sessionId: 'reusable-child' } },
+    } } } } as any);
+    await hooks['chat.message']?.({ sessionID: 'reusable-child', agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    terminalSessionIDs.add('reusable-child');
+    await hooks.event?.({ event: { type: 'session.status', properties: { sessionID: 'reusable-child', status: { type: 'idle' } } } } as any);
+
+    const retry = parseToolJson<{
+      launchId: string;
+      workspacePath: string;
+      taskToolCall: { prompt: string; hive_launch_id: string };
+    }>(await hooks.tool!.hive_adhoc_worktree_start.execute({
+      runId: setup.runId,
+      workerInstructions: 'Implement the retry with different instructions.',
+    }, toolContext));
+    expect(retry.workspacePath).toBe(setup.workspacePath);
+    expect(retry.launchId).not.toBe(first.launchId);
+    expect(retry.taskToolCall.hive_launch_id).toBe(retry.launchId);
+    expect(retry.taskToolCall.prompt).toContain('Implement the retry with different instructions.');
+  }, 30_000);
 
   it.each([
     { autoSpawnWorker: undefined as boolean | undefined, label: 'omitted' },

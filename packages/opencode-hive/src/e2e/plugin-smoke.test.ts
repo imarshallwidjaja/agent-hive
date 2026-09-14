@@ -6,6 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import type { PluginInput } from "@opencode-ai/plugin";
 import { createOpencodeClient } from "@opencode-ai/sdk";
+import { Schema } from 'effect';
 import plugin from "../index";
 import { QUEEN_BEE_PROMPT } from "../agents/hive";
 import { ARCHITECT_BEE_PROMPT } from "../agents/architect";
@@ -17,7 +18,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService, SessionService, WorktreeService, AdhocWorktreeService } from 'hive-core';
+import { BackgroundJobService, ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, FeatureService, SessionService, WorktreeService, AdhocWorktreeService } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 const ROOT_SESSION_CLIENT = {
@@ -54,7 +55,7 @@ const REMOVED_PROJECTED_TODO_FIELD = ['todo', 'Projection'].join('');
 const REMOVED_TODO_REFRESH_HINT = ['Refresh hive_status() before syncing OpenCode ', 'todos.'].join('');
 const LEGACY_IDLE_CHILD_REPLAY = ['child-session', ' idle'].join('');
 
-const TEST_ROOT_BASE = "/tmp/hive-e2e-plugin";
+const TEST_ROOT_BASE = `/tmp/hive-e2e-plugin-${process.pid}`;
 const TEST_PROCESS_CWD = process.cwd();
 const FIRST_TASK = "01-first-task";
 const TEST_COMMIT_MESSAGE = 'test: record task implementation\n\nRecord verified task work for the integration test.';
@@ -309,16 +310,30 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
         prompt: 'Implement without preparing a Hive worktree',
         ...(background ? { background: true } : {}),
       },
-    })).rejects.toThrow(/launch_binding_error[\s\S]*hive_worktree_start[\s\S]*autoSpawnWorker:false/i);
+    })).rejects.toThrow(/launch_binding_error[\s\S]*non-empty hive_launch_id/i);
 
     if (!background) {
       await expect(hooks['tool.execute.before']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
       }, {
-        args: { subagent_type: 'forager-worker', description: 'Missing call ID', prompt: 'Do work' },
+        args: { subagent_type: 'forager-worker', description: 'Missing call ID', prompt: 'Do work', hive_launch_id: randomUUID() },
       })).rejects.toThrow(/launch_binding_error[\s\S]*call ID/);
     }
+  });
+
+  it('rejects hive_launch_id on an incompatible ordinary task target', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'incompatible-launch-id');
+    await expect(hooks['tool.execute.before']?.({
+      tool: 'task', sessionID: toolContext.sessionID, callID: 'ordinary-scout',
+    }, {
+      args: {
+        subagent_type: 'scout-researcher',
+        description: 'Inspect code',
+        prompt: 'Read only',
+        hive_launch_id: randomUUID(),
+      },
+    })).rejects.toThrow(/hive_launch_id is valid only for a Forager-derived task target/);
   });
 
   it('binds an authenticated ad-hoc overlay by claimed identity despite caller prose edits', async () => {
@@ -347,7 +362,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     expect(workspaceOnly.taskToolCall).toBeUndefined();
     await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'workspace-only-call' }, {
       args: { subagent_type: 'forager-worker', description: 'Workspace only', prompt: 'No launch intent exists' },
-    })).rejects.toThrow(/launch_binding_error[\s\S]*autoSpawnWorker:false/);
+    })).rejects.toThrow(/launch_binding_error[\s\S]*non-empty hive_launch_id/);
 
     const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
       runId: 'claimed-adhoc',
@@ -733,7 +748,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     expect(new SessionService(testRoot).getGlobal(deniedChild)?.adHocRunId).toBeUndefined();
   }, 30_000);
 
-  it('retires only a superseded task claim rejected before its after-hook', async () => {
+  it('fences a task re-preparation while its prior claimed writer is unresolved', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const parent = 'superseded-child-first-parent';
     const rejectedChild = 'superseded-child-first-rejected';
@@ -772,44 +787,13 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
       expectedAgent: 'forager-worker',
     });
 
-    const replacementLaunch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({
+    await expect(hooks.tool!.hive_worktree_start.execute({
       feature: 'superseded-child-first', task: FIRST_TASK,
-    }, toolContext) as string);
-    await expect(hooks['chat.message']?.({ sessionID: rejectedChild, agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    } as any)).rejects.toThrow(/assignment_recovery_error/);
-    await hooks['tool.execute.after']?.(
-      {
-        tool: 'task',
-        sessionID: parent,
-        callID: 'superseded-child-first-rejected-call',
-        args: rejectedLaunch.backgroundTaskCall,
-      },
-      { title: 'task', output: 'running', metadata: { sessionId: rejectedChild } },
-    );
-
-    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'superseded-child-first-replacement-call' }, {
-      args: { ...replacementLaunch.backgroundTaskCall },
-    });
-    await observeNativeTaskChild(hooks, {
-      parentSessionID: parent,
-      callID: 'superseded-child-first-replacement-call',
-      childSessionID: replacementChild,
-      expectedAgent: 'forager-worker',
-    });
-    await hooks['chat.message']?.({ sessionID: replacementChild, agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    } as any);
-    expect(new SessionService(testRoot).getGlobal(replacementChild)).toMatchObject({
-      parentSessionId: parent,
-      featureName: 'superseded-child-first',
-      taskFolder: FIRST_TASK,
-      sessionKind: 'task-worker',
-    });
-    expect(new SessionService(testRoot).getGlobal(rejectedChild)?.workerAssignment).toBeUndefined();
+    }, toolContext)).rejects.toThrow(/writer_fence_error[\s\S]*prior claimed launch/);
+    expect(new SessionService(testRoot).getGlobal(replacementChild)).toBeUndefined();
   }, 30_000);
 
-  it('deletes only the matching launch state and permits a fresh dispatch on its call ID', async () => {
+  it('archives only the matching parent launch without releasing its writer call', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const parent = 'deleted-correlation-parent';
     const otherParent = 'deleted-correlation-other-parent';
@@ -871,12 +855,16 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     const replacementLaunch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
       runId: 'deleted-correlation-replacement-run', workerInstructions: 'Implement the replacement bounded change.',
     }, toolContext) as string);
-    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, {
+    await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID }, {
+      args: { ...replacementLaunch.backgroundTaskCall },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*already claimed/);
+    const replacementCallID = 'deleted-correlation-replacement-call';
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: replacementCallID }, {
       args: { ...replacementLaunch.backgroundTaskCall },
     });
     await observeNativeTaskChild(hooks, {
       parentSessionID: parent,
-      callID,
+      callID: replacementCallID,
       childSessionID: replacementChild,
       expectedAgent: 'forager-worker',
     });
@@ -1062,7 +1050,7 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
 
     await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'concurrent-call-c' }, {
       args: { ...launch.backgroundTaskCall },
-    })).rejects.toThrow(/launch_binding_error[\s\S]*persisted forager launch/);
+    })).rejects.toThrow(/launch_binding_error[\s\S]*already claimed/);
   }, 30_000);
 
   it('preserves an ad-hoc launch prepared while another claim awaits worktree validation', async () => {
@@ -1173,10 +1161,16 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const parent = 'superseded-adhoc-parent';
     const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
-    await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'superseded-run', workerInstructions: 'Implement one bounded change.' }, toolContext);
+    const stale = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'superseded-run', workerInstructions: 'Implement the stale bounded change.' }, toolContext) as string);
     const relaunch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'superseded-run', workerInstructions: 'Implement one bounded change.' }, toolContext) as string);
     const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
     expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toHaveLength(1);
+    await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'stale-superseded-adhoc' }, {
+      args: { ...stale.backgroundTaskCall },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*unknown or superseded/);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
+      expect.objectContaining({ launchId: relaunch.launchId, disposition: 'prepared' }),
+    ]);
 
     await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'superseded-adhoc-dispatch' }, {
       args: { ...relaunch.backgroundTaskCall },
@@ -1184,6 +1178,204 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
       expect.objectContaining({ disposition: 'claimed', callId: 'superseded-adhoc-dispatch' }),
     ]);
+  }, 30_000);
+
+  it.each([false, true])('serializes same-run claims across parents with background available=%s', async (background) => {
+    if (background) process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    else delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    const parent = 'race-parent';
+    const other = 'race-other';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    await hooks['chat.message']?.({ sessionID: other, agent: 'hive-master' }, { message: { agent: 'hive-master' }, parts: [] } as any);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'race-run' }, toolContext) as string);
+    const second = JSON.parse(await hooks.tool!.hive_adhoc_worktree_start.execute({ runId: 'race-run' }, createToolContext(other)) as string);
+    const unrelated = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'race-unrelated' }, createToolContext(other)) as string);
+    const outputs = [{ args: { ...launch.taskToolCall, prompt: 'caller text' } }, { args: { ...(background ? second.backgroundTaskCall : second.taskToolCall), prompt: 'caller text' } }];
+    const results = await Promise.allSettled(outputs.map((output, i) => hooks['tool.execute.before']!({ tool: 'task', sessionID: i ? other : parent, callID: `race-${i}` }, output)));
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    const loser = results.findIndex(result => result.status === 'rejected');
+    expect(outputs[loser]!.args.prompt).toBe('caller text');
+    expect(outputs[loser]!.args.hive_launch_id).toBe(loser ? second.launchId : launch.launchId);
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: other, callID: 'race-unrelated' }, { args: { ...unrelated.taskToolCall } });
+  }, 30_000);
+
+  it('uses fresh native evidence after lifecycle hints and prior closed turns', async () => {
+    const parent = 'fresh-evidence-parent';
+    const child = 'fresh-evidence-child';
+    let status = 'busy';
+    let toolStatus = 'running';
+    const runtimeClient = { ...(ROOT_SESSION_CLIENT as any), session: { ...(ROOT_SESSION_CLIENT as any).session,
+      get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      status: async () => ({ data: { [child]: { type: status } } }),
+      messages: async () => ({ data: [{ info: { role: 'assistant', time: { completed: 1 } }, parts: [{ type: 'tool', state: { status: toolStatus } }] }] }),
+    } } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'fresh-evidence-run' }, toolContext) as string);
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: parent, callID: 'fresh-evidence-call' }, { args: { ...launch.taskToolCall } });
+    await observeNativeTaskChild(hooks, { parentSessionID: parent, callID: 'fresh-evidence-call', childSessionID: child, expectedAgent: 'forager-worker' });
+    await hooks['chat.message']!({ sessionID: child, agent: 'forager-worker' }, { message: { agent: 'forager-worker' }, parts: [] } as any);
+    const retry = async () => JSON.parse(await hooks.tool!.hive_adhoc_worktree_start.execute({ runId: 'fresh-evidence-run' }, toolContext) as string);
+    for (const type of ['session.error', 'session.idle', 'session.status', 'session.deleted']) {
+      await hooks.event!({ event: { type, properties: { sessionID: child, info: { id: child }, status: { type: 'idle' } } } } as any);
+      status = 'retry';
+      expect((await retry()).success).toBe(false);
+      status = 'idle';
+      for (toolStatus of ['pending', 'running']) expect((await retry()).success).toBe(false);
+    }
+    toolStatus = 'completed';
+    expect(await retry()).toMatchObject({ success: true });
+    status = 'busy';
+    expect((await retry()).success).toBe(false);
+  }, 30_000);
+
+  it('recovers a late child only through the exact parent task part and fresh terminal evidence', async () => {
+    const parent = 'late-exact-parent';
+    const child = 'late-exact-child';
+    let parts: any[] = [];
+    let status = 'busy';
+    const runtimeClient = { ...(ROOT_SESSION_CLIENT as any), session: { ...(ROOT_SESSION_CLIENT as any).session,
+      get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      status: async () => ({ data: { [child]: { type: status } } }),
+      messages: async ({ path: input }: any) => ({ data: input.id === parent ? [{ info: { role: 'assistant' }, parts }] : [{ info: { role: 'assistant', time: { completed: 1 } }, parts: [] }] }),
+    } } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'late-exact-run' }, toolContext) as string);
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: parent, callID: 'late-exact-call' }, { args: { ...launch.taskToolCall } });
+    const clock = spyOn(Date, 'now').mockReturnValue(Date.now() + 6 * 60 * 1000);
+    try {
+      const retry = async () => JSON.parse(await hooks.tool!.hive_adhoc_worktree_start.execute({ runId: 'late-exact-run' }, toolContext) as string);
+      expect((await retry()).success).toBe(false);
+      const part = { type: 'tool', tool: 'task', sessionID: parent, callID: 'wrong-call', state: { input: { subagent_type: 'forager-worker' }, metadata: { sessionId: child } } };
+      parts = [part];
+      expect((await retry()).success).toBe(false);
+      part.callID = 'late-exact-call';
+      expect((await retry()).success).toBe(false);
+      expect(new SessionService(testRoot).getGlobal(child)?.adHocRunId).toBe('late-exact-run');
+      status = 'idle';
+      expect(await retry()).toMatchObject({ success: true });
+    } finally { clock.mockRestore(); }
+  }, 30_000);
+
+  it('keeps a near-expiry claim valid for its independent binding window', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'near-expiry-parent';
+    const child = 'near-expiry-child';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: { ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const startedAt = Date.now();
+    const clock = spyOn(Date, 'now').mockReturnValue(startedAt);
+    try {
+      const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+        runId: 'near-expiry-run', workerInstructions: 'Implement one bounded change.',
+      }, toolContext) as string);
+      clock.mockReturnValue(startedAt + 5 * 60 * 1000 - 1);
+      await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'near-expiry-call' }, {
+        args: { ...launch.backgroundTaskCall },
+      });
+      clock.mockReturnValue(startedAt + 5 * 60 * 1000 + 1000);
+      await observeNativeTaskChild(hooks, {
+        parentSessionID: parent,
+        callID: 'near-expiry-call',
+        childSessionID: child,
+        expectedAgent: 'forager-worker',
+      });
+      await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
+      await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+        message: { agent: 'forager-worker' }, parts: [],
+      } as any);
+      expect(new SessionService(testRoot).getGlobal(child)?.adHocRunId).toBe('near-expiry-run');
+    } finally {
+      clock.mockRestore();
+    }
+  }, 30_000);
+
+  it('does not let archived background bookkeeping unlock an unresolved writer', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'archived-writer-parent';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'archived-writer-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'archived-writer-call' }, {
+      args: { ...launch.backgroundTaskCall },
+    });
+    new BackgroundJobService(testRoot).archiveClaimedLaunch(
+      launch.launchId,
+      parent,
+      'ignored',
+      'Bookkeeping archived without native cancellation.',
+    );
+
+    const retry = JSON.parse(await hooks.tool!.hive_adhoc_worktree_start.execute({
+      runId: 'archived-writer-run', workerInstructions: 'Unsafe retry.',
+    }, toolContext) as string);
+    expect(retry.success).toBe(false);
+    expect(retry.error).toContain('writer_fence_error');
+    expect(retry.error).toContain('prior claimed launch');
+  }, 30_000);
+
+  it('blocks an active bound writer before mutation and permits retry after confirmed cancellation', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'cancelled-writer-parent';
+    const child = 'cancelled-writer-child';
+    let childStatus: 'busy' | 'idle' = 'busy';
+    const runtimeClient = {
+      ...(ROOT_SESSION_CLIENT as any),
+      session: {
+        ...(ROOT_SESSION_CLIENT as any).session,
+        get: async ({ path: input }: any) => ({ data: { id: input.id, parentID: input.id === child ? parent : undefined } }),
+        status: async () => ({ data: { [child]: { type: childStatus } } }),
+        messages: async ({ path: input }: any) => ({ data: input.id === child && childStatus === 'idle'
+          ? [{ info: { role: 'assistant', time: { completed: Date.now() } }, parts: [] }]
+          : [] }),
+        abort: async () => {
+          childStatus = 'idle';
+          return { data: true };
+        },
+      },
+    } as PluginInput['client'];
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'cancelled-writer-run', workerInstructions: 'Implement one bounded change.',
+    }, toolContext) as string);
+    const dispatch = { args: { ...launch.backgroundTaskCall } };
+    await hooks['tool.execute.before']?.({ tool: 'task', sessionID: parent, callID: 'cancelled-writer-call' }, dispatch);
+    await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
+    await observeNativeTaskChild(hooks, {
+      parentSessionID: parent,
+      callID: 'cancelled-writer-call',
+      childSessionID: child,
+      expectedAgent: 'forager-worker',
+    });
+    await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
+    } as any);
+    await hooks['tool.execute.after']?.(
+      { tool: 'task', sessionID: parent, callID: 'cancelled-writer-call', args: dispatch.args },
+      { title: 'task', output: `task_id: ${child}`, metadata: { sessionId: child } },
+    );
+
+    const blocked = JSON.parse(await hooks.tool!.hive_adhoc_worktree_start.execute({
+      runId: 'cancelled-writer-run', workerInstructions: 'Unsafe concurrent retry.',
+    }, toolContext) as string);
+    expect(blocked.success).toBe(false);
+    expect(blocked.error).toContain(`native session '${child}' is active`);
+
+    const cancelled = JSON.parse(await hooks.tool!.hive_background_cancel.execute({
+      identifier: launch.launchId,
+      reason: 'Test confirms exact native cancellation before retry.',
+    }, toolContext) as string);
+    expect(cancelled.runtimeCancelled).toBe(true);
+    const retry = JSON.parse(await hooks.tool!.hive_adhoc_worktree_start.execute({
+      runId: 'cancelled-writer-run', workerInstructions: 'Safe retry after cancellation.',
+    }, toolContext) as string);
+    expect(retry).toMatchObject({ success: true });
+    expect(retry.launchId).not.toBe(launch.launchId);
   }, 30_000);
 
   it('prunes unused preparations at initialization while preserving unresolved claimed execution', async () => {
@@ -1215,7 +1407,31 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toHaveLength(1);
   }, 30_000);
 
-  it('invalidates ambiguous reservations so exactly one fresh launch can be dispatched', async () => {
+  it('replaces a prior-runtime prepared record only for the same ad-hoc target', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'restart-preparation-parent';
+    const initial = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    const old = JSON.parse(await initial.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'restart-preparation-run', workerInstructions: 'Old preparation.',
+    }, initial.toolContext) as string);
+    const unrelated = JSON.parse(await initial.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'restart-unrelated-run', workerInstructions: 'Unrelated preparation.',
+    }, initial.toolContext) as string);
+
+    const fresh = await createHooksForTest(testRoot, parent, testRoot, ROOT_SESSION_CLIENT);
+    const replacement = JSON.parse(await fresh.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'restart-preparation-run', workerInstructions: 'Fresh preparation.',
+    }, fresh.toolContext) as string);
+    const pending = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8')).pendingLaunches;
+    expect(pending.map((entry: any) => entry.launchId)).toEqual(expect.arrayContaining([
+      unrelated.launchId,
+      replacement.launchId,
+    ]));
+    expect(pending.map((entry: any) => entry.launchId)).not.toContain(old.launchId);
+    expect(pending).toHaveLength(2);
+  }, 30_000);
+
+  it('rejects an unknown launch ID without consuming independently prepared launches', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'ambiguous-recovery-parent', testRoot, ROOT_SESSION_CLIENT);
     for (const feature of ['ambiguous-recovery-a', 'ambiguous-recovery-b', 'ambiguous-recovery-c']) {
@@ -1227,14 +1443,22 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
       await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
       await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
     }
-    await hooks.tool!.hive_worktree_start.execute({ feature: 'ambiguous-recovery-a', task: FIRST_TASK }, toolContext);
-    await hooks.tool!.hive_worktree_start.execute({ feature: 'ambiguous-recovery-b', task: FIRST_TASK }, toolContext);
+    const launchA = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature: 'ambiguous-recovery-a', task: FIRST_TASK }, toolContext) as string);
+    const launchB = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature: 'ambiguous-recovery-b', task: FIRST_TASK }, toolContext) as string);
     const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+    const beforeUnknown = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
+    beforeUnknown.pendingLaunches[0].createdAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    fs.writeFileSync(boardPath, JSON.stringify(beforeUnknown));
 
     await expect(hooks['tool.execute.before']?.({ tool: 'task', sessionID: toolContext.sessionID, callID: 'ambiguous-recovery-call' }, {
-      args: { subagent_type: 'forager-worker', description: 'Ambiguous', prompt: 'Ambiguous dispatch' },
-    })).rejects.toThrow(/launch_binding_error[\s\S]*Multiple fresh/);
-    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(0);
+      args: { subagent_type: 'forager-worker', description: 'Unknown', prompt: 'Unknown dispatch', hive_launch_id: randomUUID() },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*unknown or superseded/);
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches ?? []).toHaveLength(2);
+
+    await Promise.all([
+      hooks['tool.execute.before']?.({ tool: 'task', sessionID: toolContext.sessionID, callID: 'recovery-a' }, { args: { ...launchA.taskToolCall } }),
+      hooks['tool.execute.before']?.({ tool: 'task', sessionID: toolContext.sessionID, callID: 'recovery-b' }, { args: { ...launchB.taskToolCall } }),
+    ]);
 
     const launchC = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature: 'ambiguous-recovery-c', task: FIRST_TASK }, toolContext) as string);
     await hooks['tool.execute.before']?.({ tool: 'task', sessionID: toolContext.sessionID, callID: 'recovery-dispatch' }, {
@@ -2625,6 +2849,7 @@ Do it
       );
       const raw = await worktreeHooks.tool!.hive_status.execute({}, worktreeContext);
       const result = JSON.parse(raw as string) as {
+        launchId?: string;
         reason?: string;
         candidates?: string[];
         error?: string;
@@ -2915,6 +3140,7 @@ Do it
         subagent_type: "forager-worker",
         description: "Hive: 01-first-task",
         prompt: result.taskToolCall?.prompt,
+        hive_launch_id: result.launchId,
       });
       expect(result.taskToolCall).toBeDefined();
       expect(result.taskToolCall).not.toHaveProperty("task_id");
@@ -2977,11 +3203,7 @@ Do it
         backgroundTaskCall?: unknown;
         instructions?: string;
       };
-      const taskArgs = {
-        subagent_type: result.taskToolCall!.subagent_type,
-        description: result.taskToolCall!.description,
-        prompt: result.taskToolCall!.prompt,
-      };
+      const taskArgs = { ...result.taskToolCall! };
 
       expect(result.taskToolCall).toMatchObject({
         subagent_type: "forager-worker",
@@ -3054,7 +3276,7 @@ Do it
     }
   }, 30_000);
 
-  it("rejects ambiguous task launch reservations under one parent", async () => {
+  it("selects two task launch reservations by ID under one parent", async () => {
     const { hooks, toolContext } = await createHooksForTest(
       testRoot,
       "sess_same_folder_parent",
@@ -3086,11 +3308,21 @@ Do it
       toolContext,
     ) as string);
 
-    await expect(hooks["tool.execute.before"]?.(
-      { tool: "task", sessionID: toolContext.sessionID, callID: 'ambiguous-launch', args: { ...launchB.taskToolCall } },
-      { args: { ...launchB.taskToolCall } },
-    )).rejects.toThrow(/launch_binding_error[\s\S]*Multiple fresh/);
+    const dispatchB = { args: { ...launchB.taskToolCall, prompt: 'edited B' } };
+    const dispatchA = { args: { ...launchA.taskToolCall, description: 'edited A' } };
+    await Promise.all([
+      hooks["tool.execute.before"]?.(
+        { tool: "task", sessionID: toolContext.sessionID, callID: 'selected-launch-b', args: dispatchB.args },
+        dispatchB,
+      ),
+      hooks["tool.execute.before"]?.(
+        { tool: "task", sessionID: toolContext.sessionID, callID: 'selected-launch-a', args: dispatchA.args },
+        dispatchA,
+      ),
+    ]);
     expect(launchA.taskToolCall.prompt).not.toBe(launchB.taskToolCall.prompt);
+    expect(dispatchA.args.prompt).toContain('same-folder-a');
+    expect(dispatchB.args.prompt).toContain('same-folder-b');
   }, 30_000);
 
   it('retrieves later-page live knowledge without revising the verified assignment or weakening child authority', async () => {
@@ -3098,6 +3330,7 @@ Do it
     const rejectedChild = 'catalog-rejected-child';
     const child = 'catalog-child';
     const feature = 'catalog-lifecycle';
+    let rejectedTerminal = false;
     const runtimeClient = {
       ...(ROOT_SESSION_CLIENT as any),
       session: { ...(ROOT_SESSION_CLIENT as any).session,
@@ -3105,6 +3338,10 @@ Do it
           id: input.id,
           parentID: input.id === rejectedChild || input.id === child ? parent : undefined,
         } }),
+        status: async () => ({ data: rejectedTerminal ? { [rejectedChild]: { type: 'idle' } } : {} }),
+        messages: async ({ path: input }: any) => ({ data: input.id === rejectedChild && rejectedTerminal
+          ? [{ info: { role: 'assistant', time: { completed: Date.now() } }, parts: [] }]
+          : [] }),
       },
     } as PluginInput['client'];
     const { hooks, toolContext } = await createHooksForTest(testRoot, parent, testRoot, runtimeClient);
@@ -3163,9 +3400,11 @@ Do it
     await hooks['tool.execute.after']!({ tool: 'task', sessionID: parent, callID: 'catalog-launch', args: dispatch.args }, {
       title: 'task', output: '', metadata: { sessionId: rejectedChild },
     });
-    await expect(hooks['chat.message']!({ sessionID: rejectedChild, agent: 'forager-worker' }, {
+    await hooks['chat.message']!({ sessionID: rejectedChild, agent: 'forager-worker' }, {
       message: { agent: 'forager-worker' }, parts: [],
-    } as any)).rejects.toThrow(/launch_binding_error/);
+    } as any);
+    rejectedTerminal = true;
+    await hooks.event?.({ event: { type: 'session.status', properties: { sessionID: rejectedChild, status: { type: 'idle' } } } } as any);
 
     const replacementLaunch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({ feature, task: FIRST_TASK }, toolContext) as string);
     artifact = path.join(testRoot, replacementLaunch.taskToolCall.prompt.replace('Follow instructions in @', ''));
@@ -3449,6 +3688,7 @@ Do it
 
     try {
       let failSessionLookup = false;
+      let featureTaskTerminal = false;
       const retryableSessionClient = {
         ...(ROOT_SESSION_CLIENT as any),
         session: {
@@ -3465,6 +3705,12 @@ Do it
               },
             };
           },
+          status: async () => ({ data: featureTaskTerminal ? { 'feature-task-child': { type: 'idle' } } : {} }),
+          messages: async ({ path: inputPath }: { path: { id: string } }) => ({
+            data: inputPath.id === 'feature-task-child' && featureTaskTerminal
+              ? [{ info: { role: 'assistant', time: { completed: Date.now() } }, parts: [] }]
+              : [],
+          }),
         },
       } as PluginInput['client'];
       const { hooks, toolContext } = await createHooksForTest(
@@ -3580,7 +3826,7 @@ Do it
         tool: 'task',
         sessionID: toolContext.sessionID,
         callID: 'second-before-child',
-      }, { args: { ...launch.backgroundTaskCall } })).rejects.toThrow(/launch_binding_error[\s\S]*binding is still in progress/);
+      }, { args: { ...launch.backgroundTaskCall } })).rejects.toThrow(/launch_binding_error[\s\S]*already claimed/);
       expect(mutatedDispatch.args.prompt).toBe(canonicalAssignment);
       expect(mutatedDispatch.args.prompt).not.toContain('Caller-written text');
       expect(JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8')).pendingLaunches).toEqual([
@@ -3683,6 +3929,12 @@ Do it
       })).rejects.toThrow(/launch_binding_error/);
       expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession.sessionId).toBe('feature-task-child');
 
+      await hooks.event?.({ event: {
+        type: 'session.status',
+        properties: { sessionID: 'feature-task-child', status: { type: 'idle' } },
+      } } as any);
+      featureTaskTerminal = true;
+
       const replacementRaw = await hooks.tool!.hive_worktree_start.execute(
         { feature: 'no-worker-session', task: FIRST_TASK },
         toolContext,
@@ -3712,18 +3964,14 @@ Do it
         args: { ...delayed.taskToolCall },
       });
 
-      const replacementRaw2 = await hooks.tool!.hive_worktree_start.execute(
+      await expect(hooks.tool!.hive_worktree_start.execute(
         { feature: 'no-worker-session', task: FIRST_TASK },
         toolContext,
-      );
-      const replacement = JSON.parse(replacementRaw2 as string) as {
-        taskToolCall: { description: string; prompt: string; subagent_type: string };
-      };
+      )).rejects.toThrow(/writer_fence_error[\s\S]*awaiting exact native child correlation/);
       expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8'))).toMatchObject({
-        workerAttempt: 3,
-        idempotencyKey: 'hive-no-worker-session-01-first-task-3',
+        workerAttempt: 2,
+        idempotencyKey: 'hive-no-worker-session-01-first-task-2',
       });
-      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
 
       await hooks['tool.execute.after']?.({
         tool: 'task',
@@ -3739,44 +3987,26 @@ Do it
         type: 'session.created',
         properties: { info: { id: 'late-second-child', parentID: toolContext.sessionID } },
       } } as any);
-      await expect(hooks['chat.message']?.({ sessionID: 'late-second-child', agent: 'forager-worker' }, {
+      await hooks['chat.message']?.({ sessionID: 'late-second-child', agent: 'forager-worker' }, {
         message: { agent: 'forager-worker' }, parts: [],
-      } as any)).rejects.toThrow('assignment_recovery_error');
-      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
+      } as any);
+      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession.sessionId).toBe('late-second-child');
 
-      await hooks['tool.execute.before']?.({
+      await expect(hooks['tool.execute.before']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
         callID: 'wrong-agent-worker',
       }, {
-        args: { ...replacement.taskToolCall, subagent_type: 'scout-researcher' },
-      });
-      await hooks['tool.execute.after']?.({
-        tool: 'task',
-        sessionID: toolContext.sessionID,
-        callID: 'wrong-agent-worker',
-        args: { ...replacement.taskToolCall, subagent_type: 'scout-researcher' },
-      }, {
-        title: 'task',
-        output: 'wrong agent',
-        metadata: { sessionId: 'wrong-agent-child' },
-      });
-      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
+        args: { ...delayed.taskToolCall, subagent_type: 'scout-researcher' },
+      })).rejects.toThrow(/hive_launch_id is valid only for a Forager-derived task target/);
 
-      await hooks['tool.execute.before']?.({
+      await expect(hooks['tool.execute.before']?.({
         tool: 'task',
         sessionID: toolContext.sessionID,
         callID: 'replacement-worker',
       }, {
-        args: { ...replacement.taskToolCall },
-      });
-      await hooks['tool.execute.after']?.({
-        tool: 'task',
-        sessionID: toolContext.sessionID,
-        callID: 'replacement-worker',
-        args: { ...replacement.taskToolCall },
-      }, undefined);
-      expect(JSON.parse(fs.readFileSync(statusPath, 'utf-8')).workerSession).toBeUndefined();
+        args: { ...delayed.taskToolCall },
+      })).rejects.toThrow(/launch_binding_error[\s\S]*(already claimed|unknown or superseded)/);
     } finally {
       if (previousBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
@@ -8052,9 +8282,24 @@ Original plan task four content must stay isolated from any append-only manual f
       'experimental.chat.system.transform',
       'experimental.chat.messages.transform',
       'command.execute.before',
+      'tool.definition',
       'tool.execute.before',
       'tool.execute.after',
     ]);
+  });
+
+  it('extends the native task definition without replacing existing fields', async () => {
+    const { hooks } = await createHooksForTest(testRoot, 'task-definition-extension');
+    const prompt = Schema.String;
+    const output = { parameters: Schema.Struct({ prompt }) };
+    await hooks['tool.definition']?.({ toolID: 'task' } as any, output as any);
+    expect((output.parameters as any).fields.prompt).toBe(prompt);
+    expect((output.parameters as any).fields.hive_launch_id).toBeDefined();
+
+    const ordinary = { parameters: Schema.Struct({ value: Schema.String }) };
+    const before = ordinary.parameters;
+    await hooks['tool.definition']?.({ toolID: 'read' } as any, ordinary as any);
+    expect(ordinary.parameters).toBe(before);
   });
 });
 

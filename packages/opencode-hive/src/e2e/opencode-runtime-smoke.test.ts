@@ -152,6 +152,30 @@ type StubProviderServer = {
   getRequests: () => ChatCompletionRequestBody[];
 };
 
+type ShippingLaunchScenario =
+  | 'adhoc-blocking'
+  | 'adhoc-background'
+  | 'feature-blocking'
+  | 'feature-background'
+  | 'invalid-id';
+
+type ShippingLaunchEvidence = {
+  launchId?: string;
+  preparedCall?: Record<string, unknown>;
+  childRequests: number;
+  childToolResult?: unknown;
+  taskSchemaProperties?: string[];
+  backgroundChildWaiting: boolean;
+  backgroundChildReleased: boolean;
+};
+
+type ShippingLaunchProviderServer = {
+  baseUrl: string;
+  close: () => Promise<void>;
+  evidence: (scenario: ShippingLaunchScenario) => ShippingLaunchEvidence;
+  releaseBackgroundChild: (scenario: ShippingLaunchScenario) => void;
+};
+
 function jsonResponse(body: unknown): string {
   return JSON.stringify(body);
 }
@@ -346,6 +370,275 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
   };
 }
 
+function toolCallNames(messages: ChatCompletionRequestMessage[]): string[] {
+  return messages.flatMap((message) => Array.isArray(message.tool_calls)
+    ? message.tool_calls.flatMap((call) => isRecord(call) && isRecord(call.function)
+      && typeof call.function.name === 'string' ? [call.function.name] : [])
+    : []);
+}
+
+function readToolResult(messages: ChatCompletionRequestMessage[], callID: string): unknown {
+  const message = [...messages].reverse().find((candidate) => (
+    candidate.role === 'tool' && candidate.tool_call_id === callID
+  ));
+  if (!message) return undefined;
+  if (typeof message.content === 'string') {
+    try {
+      return JSON.parse(message.content);
+    } catch {
+      return message.content;
+    }
+  }
+  return message.content;
+}
+
+function sendStreamingToolCall(
+  res: http.ServerResponse,
+  callID: string,
+  name: string,
+  args: Record<string, unknown>,
+): void {
+  res.end([
+    `data: ${jsonResponse({
+      id: `chatcmpl-${callID}`,
+      object: 'chat.completion.chunk',
+      created: 1,
+      model: RUNTIME_MODEL_ID,
+      choices: [{
+        index: 0,
+        delta: {
+          role: 'assistant',
+          tool_calls: [{
+            index: 0,
+            id: callID,
+            type: 'function',
+            function: { name, arguments: JSON.stringify(args) },
+          }],
+        },
+        finish_reason: null,
+      }],
+    })}\n\n`,
+    `data: ${jsonResponse({
+      id: `chatcmpl-${callID}`,
+      object: 'chat.completion.chunk',
+      created: 1,
+      model: RUNTIME_MODEL_ID,
+      choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+    })}\n\n`,
+    'data: [DONE]\n\n',
+  ].join(''));
+}
+
+function sendStreamingFinal(res: http.ServerResponse, content: string): void {
+  res.end([
+    `data: ${jsonResponse({
+      id: 'chatcmpl-shipping-final',
+      object: 'chat.completion.chunk',
+      created: 2,
+      model: RUNTIME_MODEL_ID,
+      choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }],
+    })}\n\n`,
+    `data: ${jsonResponse({
+      id: 'chatcmpl-shipping-final',
+      object: 'chat.completion.chunk',
+      created: 2,
+      model: RUNTIME_MODEL_ID,
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    })}\n\n`,
+    'data: [DONE]\n\n',
+  ].join(''));
+}
+
+async function startShippingLaunchProviderServer(): Promise<ShippingLaunchProviderServer> {
+  const port = await getFreePort();
+  const evidenceByScenario = new Map<ShippingLaunchScenario, ShippingLaunchEvidence>();
+  const backgroundReleases = new Map<ShippingLaunchScenario, () => void>();
+  let activeScenario: Exclude<ShippingLaunchScenario, 'invalid-id'> | undefined;
+
+  const evidence = (scenario: ShippingLaunchScenario): ShippingLaunchEvidence => {
+    const existing = evidenceByScenario.get(scenario);
+    if (existing) return existing;
+    const created: ShippingLaunchEvidence = {
+      childRequests: 0,
+      backgroundChildWaiting: false,
+      backgroundChildReleased: false,
+    };
+    evidenceByScenario.set(scenario, created);
+    return created;
+  };
+
+  const server = http.createServer(async (req, res) => {
+    if (!req.url) {
+      res.writeHead(404).end();
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(jsonResponse({ object: 'list', data: [{ id: RUNTIME_MODEL_ID, object: 'model' }] }));
+      return;
+    }
+    if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(jsonResponse({ error: 'not found' }));
+      return;
+    }
+
+    const body = (await readJsonBody(req)) as ChatCompletionRequestBody;
+    const messages = Array.isArray(body.messages) ? body.messages as ChatCompletionRequestMessage[] : [];
+    const serialized = JSON.stringify(messages);
+    const tools = Array.isArray(body.tools) ? body.tools : [];
+    const availableToolNames = tools.flatMap((entry) => isRecord(entry) && isRecord(entry.function)
+      && typeof entry.function.name === 'string' ? [entry.function.name] : []);
+    const markerScenario = (['adhoc-blocking', 'adhoc-background', 'feature-blocking', 'feature-background', 'invalid-id'] as const)
+      .find(candidate => serialized.includes(`SHIPPING_${candidate.toUpperCase().replaceAll('-', '_')}`));
+    const scenario = markerScenario ?? (availableToolNames.includes('hive_context_read') ? activeScenario : undefined);
+    if (!scenario || body.stream !== true) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(jsonResponse({ error: 'unknown shipping launch scenario or non-streaming request' }));
+      return;
+    }
+
+    res.writeHead(200, {
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'content-type': 'text/event-stream',
+    });
+    const scenarioEvidence = evidence(scenario);
+    const names = toolCallNames(messages);
+    const taskDefinition = tools.find((entry) => isRecord(entry) && isRecord(entry.function)
+      && entry.function.name === 'task');
+    const taskFunction = isRecord(taskDefinition) && isRecord(taskDefinition.function)
+      ? taskDefinition.function
+      : undefined;
+    const taskParameters = isRecord(taskFunction?.parameters) ? taskFunction.parameters : undefined;
+    const taskProperties = isRecord(taskParameters?.properties) ? taskParameters.properties : undefined;
+    if (taskProperties) scenarioEvidence.taskSchemaProperties = Object.keys(taskProperties);
+    const isChild = scenario !== 'invalid-id'
+      && activeScenario === scenario
+      && markerScenario === undefined
+      && availableToolNames.includes('hive_context_read');
+
+    if (isChild) {
+      scenarioEvidence.childRequests += 1;
+      if (scenario.endsWith('background') && !scenarioEvidence.backgroundChildReleased) {
+        scenarioEvidence.backgroundChildWaiting = true;
+        await new Promise<void>((resolve) => backgroundReleases.set(scenario, resolve));
+      }
+      const childCallID = `call_${scenario}_context_read`;
+      if (!names.includes('hive_context_read')) {
+        sendStreamingToolCall(res, childCallID, 'hive_context_read', scenario.startsWith('feature')
+          ? { feature: `runtime-${scenario}`, view: 'catalog' }
+          : { scope: 'project', view: 'catalog' });
+        return;
+      }
+      scenarioEvidence.childToolResult = readToolResult(messages, childCallID);
+      activeScenario = undefined;
+      sendStreamingFinal(res, `SHIPPING_CHILD_COMPLETE_${scenario}`);
+      return;
+    }
+
+    if (scenario === 'invalid-id') {
+      if (!names.includes('task')) {
+        sendStreamingToolCall(res, 'call_invalid_task', 'task', {
+          description: 'Invalid prepared launch probe',
+          prompt: 'SHIPPING_INVALID_ID child must never spawn.',
+          subagent_type: 'forager-worker',
+          background: false,
+          hive_launch_id: 'shipping-invalid-launch-id',
+        });
+        return;
+      }
+      sendStreamingFinal(res, 'SHIPPING_INVALID_ID_REJECTED');
+      return;
+    }
+
+    const feature = `runtime-${scenario}`;
+    const workerMarker = `SHIPPING_WORKER_${scenario.toUpperCase().replaceAll('-', '_')}`;
+    if (scenario.startsWith('feature')) {
+      if (!names.includes('hive_feature_create')) {
+        sendStreamingToolCall(res, `call_${scenario}_feature_create`, 'hive_feature_create', { name: feature });
+        return;
+      }
+      if (!names.includes('hive_plan_write')) {
+        sendStreamingToolCall(res, `call_${scenario}_plan_write`, 'hive_plan_write', {
+          feature,
+          content: `# Runtime launch\n\n## Discovery\n\n**Q: Is this isolated runtime fixture ready?**\nA: Yes.\n\n**Research:** The fixture repository has one committed README and no external dependencies.\n\n## Non-Goals\n\n- No production file changes.\n\n## Ghost Diffs\n\n- Direct child creation was rejected because the launch must come from Hive preparation.\n\n## Tasks\n\n### 1. Runtime Task\n${workerMarker}`,
+        });
+        return;
+      }
+      if (!names.includes('hive_plan_approve')) {
+        sendStreamingToolCall(res, `call_${scenario}_plan_approve`, 'hive_plan_approve', { feature });
+        return;
+      }
+      if (!names.includes('hive_tasks_sync')) {
+        sendStreamingToolCall(res, `call_${scenario}_tasks_sync`, 'hive_tasks_sync', { feature });
+        return;
+      }
+      if (!names.includes('hive_worktree_start')) {
+        sendStreamingToolCall(res, `call_${scenario}_prepare`, 'hive_worktree_start', {
+          feature,
+          task: '01-runtime-task',
+        });
+        return;
+      }
+    } else if (!names.includes('hive_adhoc_worktree_create')) {
+      sendStreamingToolCall(res, `call_${scenario}_prepare`, 'hive_adhoc_worktree_create', {
+        runId: `runtime-${scenario}`,
+        workerInstructions: workerMarker,
+      });
+      return;
+    }
+
+    if (!names.includes('task')) {
+      const preparation = readToolResult(messages, `call_${scenario}_prepare`);
+      if (!isRecord(preparation) || typeof preparation.launchId !== 'string') {
+        res.end(`data: ${jsonResponse({ error: 'shipping preparation omitted launchId' })}\n\ndata: [DONE]\n\n`);
+        return;
+      }
+      const callKey = scenario.endsWith('background') ? 'backgroundTaskCall' : 'taskToolCall';
+      const preparedCall = isRecord(preparation[callKey]) ? preparation[callKey] : undefined;
+      if (!preparedCall) {
+        res.end(`data: ${jsonResponse({ error: `shipping preparation omitted ${callKey}` })}\n\ndata: [DONE]\n\n`);
+        return;
+      }
+      const dispatchedCall = {
+        ...preparedCall,
+        prompt: `CALLER_TAMPERED_${scenario}`,
+      };
+      scenarioEvidence.launchId = preparation.launchId;
+      scenarioEvidence.preparedCall = preparedCall;
+      activeScenario = scenario;
+      sendStreamingToolCall(res, `call_${scenario}_task`, 'task', dispatchedCall);
+      return;
+    }
+
+    sendStreamingFinal(res, `SHIPPING_PARENT_COMPLETE_${scenario}`);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve());
+  });
+
+  return {
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    evidence,
+    releaseBackgroundChild: (scenario) => {
+      evidence(scenario).backgroundChildReleased = true;
+      backgroundReleases.get(scenario)?.();
+      backgroundReleases.delete(scenario);
+    },
+    close: async () => {
+      for (const scenario of backgroundReleases.keys()) {
+        evidence(scenario).backgroundChildReleased = true;
+        backgroundReleases.get(scenario)?.();
+      }
+      backgroundReleases.clear();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    },
+  };
+}
+
 describe('e2e: OpenCode runtime capability smoke', () => {
   it.skipIf(OPENCODE_RUNTIME_VERSION === null)('loads Hive tools and validates a synthetic-plugin native task capability', async () => {
     const tmpBase = "/tmp/hive-e2e-runtime";
@@ -370,14 +663,7 @@ const runtimeTaskBefore = new Map<string, { callID: string; sessionID: string }>
 const runtimeTaskCorrelationFile = ${JSON.stringify(correlationFile)}
 
 export const HivePlugin = hive
-export const RuntimeLargeSnapshotPlugin = async () => ({
-  config: async (config: any) => {
-    config.agent ??= {}
-    config.agent['scout-researcher'] = {
-      ...config.agent['scout-researcher'],
-      model: '${RUNTIME_PROVIDER_ID}/${RUNTIME_MODEL_ID}',
-    }
-  },
+export const ARuntimeLargeSnapshotPlugin = async () => ({
   'tool.definition': async (input: any, output: any) => {
     if (input.toolID !== 'task') return
     if (!output.parameters?.fields) throw new Error('Native task parameters are not an Effect Struct')
@@ -445,6 +731,15 @@ export const RuntimeLargeSnapshotPlugin = async () => ({
         }, null, 2)
       },
     }),
+  },
+})
+export const ZRuntimeModelPlugin = async () => ({
+  config: async (config: any) => {
+    config.agent ??= {}
+    config.agent['scout-researcher'] = {
+      ...config.agent['scout-researcher'],
+      model: '${RUNTIME_PROVIDER_ID}/${RUNTIME_MODEL_ID}',
+    }
   },
 })
 `;
@@ -928,6 +1223,296 @@ export const RuntimeLargeSnapshotPlugin = async () => ({
       safeRm(tmpBase);
     }
   }, 150000);
+
+  it.skipIf(OPENCODE_RUNTIME_VERSION === null)('binds shipping Hive preparations to real blocking and background Forager children', async () => {
+    const tmpBase = `/tmp/hive-e2e-runtime-shipping-${process.pid}`;
+    safeRm(tmpBase);
+    fs.mkdirSync(tmpBase, { recursive: true });
+    const projectDir = fs.mkdtempSync(path.join(tmpBase, 'project-'));
+    fs.mkdirSync(path.join(projectDir, '.opencode', 'plugin'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.gitignore'), '.hive/\n');
+    fs.writeFileSync(path.join(projectDir, 'README.md'), 'shipping runtime fixture\n');
+    for (const args of [
+      ['init', '-b', 'main'],
+      ['config', 'user.email', 'runtime@example.com'],
+      ['config', 'user.name', 'Runtime Test'],
+      ['add', '.gitignore', 'README.md'],
+      ['commit', '-m', 'test: initialize runtime fixture'],
+    ]) {
+      const result = spawnSync('git', args, { cwd: projectDir, encoding: 'utf8' });
+      if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+    }
+
+    const hivePluginEntry = pickHivePluginEntry();
+    const pluginFile = path.join(projectDir, '.opencode', 'plugin', 'hive.ts');
+    fs.writeFileSync(pluginFile, `import hive from ${JSON.stringify(hivePluginEntry)}
+
+export const HivePlugin = hive
+export const ZRuntimeModelPlugin = async () => ({
+  config: async (config: any) => {
+    config.agent ??= {}
+    for (const agent of ['hive-builder', 'forager-worker']) {
+      config.agent[agent] = {
+        ...config.agent[agent],
+        model: '${RUNTIME_PROVIDER_ID}/${RUNTIME_MODEL_ID}',
+      }
+    }
+  },
+})
+`);
+
+    const previousCwd = process.cwd();
+    const previousHome = process.env.HOME;
+    const previousConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    const previousDisableDefault = process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS;
+    const previousBackground = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    process.chdir(projectDir);
+    process.env.HOME = tmpBase;
+    process.env.OPENCODE_CONFIG_DIR = path.join(projectDir, '.opencode');
+    process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = 'true';
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+
+    const providerServer = await startShippingLaunchProviderServer();
+    const port = await getFreePort();
+    const config: OpencodeConfig = {
+      plugin: [],
+      provider: {
+        [RUNTIME_PROVIDER_ID]: {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Shipping launch runtime stub provider',
+          options: { apiKey: 'runtime-stub-key', baseURL: providerServer.baseUrl },
+          models: { [RUNTIME_MODEL_ID]: { name: 'Runtime stub model', tool_call: true } },
+        },
+      },
+    };
+    let server: Awaited<ReturnType<typeof createOpencodeServer>> | null = null;
+    const eventAbort = new AbortController();
+
+    try {
+      server = await createOpencodeServer({ hostname: '127.0.0.1', port, timeout: 20000, config });
+      const client = createOpencodeClient({ baseUrl: server.url, responseStyle: 'data', throwOnError: true });
+      const runtimeSession = client.session as unknown as {
+        create(input: unknown): Promise<unknown>;
+        get(input: unknown): Promise<unknown>;
+        messages(input: unknown): Promise<unknown>;
+        status(input: unknown): Promise<unknown>;
+      };
+      const permissionTask = (async () => {
+        try {
+          const sse = await client.event.subscribe({
+            query: { directory: projectDir },
+            signal: eventAbort.signal,
+          });
+          for await (const evt of sse.stream) {
+            if (!isRecord(evt) || evt.type !== 'permission.updated' || !isRecord(evt.properties)) continue;
+            const sessionID = typeof evt.properties.sessionID === 'string' ? evt.properties.sessionID : undefined;
+            const permissionID = typeof evt.properties.id === 'string' ? evt.properties.id : undefined;
+            if (!sessionID || !permissionID) continue;
+            await client.postSessionIdPermissionsPermissionId({
+              path: { id: sessionID, permissionID },
+              body: { response: 'once' },
+              query: { directory: projectDir },
+            });
+          }
+        } catch (error) {
+          if (!isAbortError(error)) throw error;
+        }
+      })();
+
+      const waitFor = async (predicate: () => boolean | Promise<boolean>, label: string, timeoutMs = 15000): Promise<void> => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          if (await predicate()) return;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        throw new Error(`Timed out waiting for ${label}`);
+      };
+      const scenarioTools = (scenario: ShippingLaunchScenario): Record<string, boolean> => scenario.startsWith('adhoc')
+        ? { hive_adhoc_worktree_create: true, task: true }
+        : scenario.startsWith('feature')
+          ? {
+              hive_feature_create: true,
+              hive_plan_write: true,
+              hive_plan_approve: true,
+              hive_tasks_sync: true,
+              hive_worktree_start: true,
+              task: true,
+            }
+          : { task: true };
+      const runScenario = async (scenario: ShippingLaunchScenario): Promise<{
+        parentID: string;
+        childID?: string;
+        taskPart: Record<string, unknown>;
+        taskState: Record<string, unknown>;
+      }> => {
+        const marker = `SHIPPING_${scenario.toUpperCase().replaceAll('-', '_')}`;
+        const parent = await runtimeSession.create({
+          body: { title: `shipping ${scenario}` },
+          query: { directory: projectDir },
+        });
+        const parentID = isRecord(parent) && typeof parent.id === 'string' ? parent.id : undefined;
+        if (!parentID) throw new Error(`Runtime omitted parent session ID for ${scenario}`);
+        const promptAbort = new AbortController();
+        const promptTimer = setTimeout(() => promptAbort.abort(), 120000);
+        const emergencyRelease = scenario.endsWith('background')
+          ? setTimeout(() => providerServer.releaseBackgroundChild(scenario), 30000)
+          : undefined;
+        try {
+          await client.session.prompt({
+            path: { id: parentID },
+            query: { directory: projectDir },
+            signal: promptAbort.signal,
+            body: {
+              agent: 'hive-builder',
+              model: { providerID: RUNTIME_PROVIDER_ID, modelID: RUNTIME_MODEL_ID },
+              system: `Execute ${marker} exactly as directed by the provider.`,
+              tools: scenarioTools(scenario),
+              parts: [{ type: 'text', text: marker }],
+            } as any,
+          });
+        } finally {
+          clearTimeout(promptTimer);
+          if (emergencyRelease) clearTimeout(emergencyRelease);
+        }
+
+        const parentMessages = await runtimeSession.messages({
+          path: { id: parentID },
+          query: { directory: projectDir },
+        });
+        const parts = Array.isArray(parentMessages)
+          ? parentMessages.flatMap(message => isRecord(message) && Array.isArray(message.parts) ? message.parts : [])
+          : [];
+        const taskPart = [...parts].reverse().find(part => isRecord(part) && part.type === 'tool' && part.tool === 'task');
+        if (!isRecord(taskPart) || !isRecord(taskPart.state)) {
+          const toolStates = parts.filter(part => isRecord(part) && part.type === 'tool').map(part => ({
+            tool: (part as Record<string, unknown>).tool,
+            state: (part as Record<string, unknown>).state,
+          }));
+          throw new Error(`Runtime omitted task tool state for ${scenario}: ${JSON.stringify(toolStates)}`);
+        }
+        const taskState = taskPart.state;
+        const metadata = isRecord(taskState.metadata) ? taskState.metadata : undefined;
+        return {
+          parentID,
+          childID: typeof metadata?.sessionId === 'string' ? metadata.sessionId : undefined,
+          taskPart,
+          taskState,
+        };
+      };
+
+      for (const scenario of ['adhoc-blocking', 'feature-blocking', 'adhoc-background', 'feature-background'] as const) {
+        const result = await runScenario(scenario);
+        const scenarioEvidence = providerServer.evidence(scenario);
+        expect(scenarioEvidence.taskSchemaProperties).toEqual(expect.arrayContaining([
+          'description', 'prompt', 'subagent_type', 'hive_launch_id',
+        ]));
+        expect(scenarioEvidence.launchId).toEqual(expect.any(String));
+        expect(result.taskPart.sessionID).toBe(result.parentID);
+        expect(result.taskPart.callID).toBe(`call_${scenario}_task`);
+        if (result.taskState.status !== 'completed') {
+          throw new Error(`${scenario} native task failed: ${JSON.stringify(result.taskState)}`);
+        }
+        expect(result.taskState.status).toBe('completed');
+        expect(result.childID).toEqual(expect.any(String));
+        expect(isRecord(result.taskState.input)).toBe(true);
+        if (!isRecord(result.taskState.input) || !result.childID) throw new Error(`Incomplete task state for ${scenario}`);
+        const nativeInput = result.taskState.input;
+        expect(nativeInput.description).toBe(scenarioEvidence.preparedCall?.description);
+        expect(nativeInput.subagent_type).toBe(scenarioEvidence.preparedCall?.subagent_type);
+        expect(nativeInput.background).toBe(scenarioEvidence.preparedCall?.background);
+        if (scenario.endsWith('background')) expect(nativeInput.background).toBe(true);
+        expect(nativeInput).not.toHaveProperty('hive_launch_id');
+        expect(String(nativeInput.prompt)).not.toContain(`CALLER_TAMPERED_${scenario}`);
+        if (scenario.startsWith('adhoc')) {
+          expect(nativeInput.prompt).toBe(scenarioEvidence.preparedCall?.prompt);
+          expect(String(nativeInput.prompt).match(/You are an ad-hoc implementation worker\./g)).toHaveLength(1);
+          expect(String(nativeInput.prompt).match(new RegExp(`SHIPPING_WORKER_${scenario.toUpperCase().replaceAll('-', '_')}`, 'g'))).toHaveLength(1);
+        } else {
+          expect(String(nativeInput.prompt)).toContain('# Hive Worker Assignment');
+          expect(String(nativeInput.prompt)).toContain(`| Feature | runtime-${scenario} |`);
+          expect(String(nativeInput.prompt)).toContain('| Task | 01-runtime-task |');
+        }
+        expect(await runtimeSession.get({
+          path: { id: result.childID },
+          query: { directory: projectDir },
+        })).toMatchObject({ id: result.childID, parentID: result.parentID });
+
+        if (scenario.endsWith('background')) {
+          expect(scenarioEvidence.backgroundChildWaiting).toBe(true);
+          expect(scenarioEvidence.backgroundChildReleased).toBe(false);
+          const beforeRelease = await runtimeSession.messages({
+            path: { id: result.childID },
+            query: { directory: projectDir },
+          });
+          expect(Array.isArray(beforeRelease) && beforeRelease.some(message => isRecord(message)
+            && isRecord(message.info) && message.info.role === 'assistant'
+            && isRecord(message.info.time) && typeof message.info.time.completed === 'number')).toBe(false);
+          providerServer.releaseBackgroundChild(scenario);
+        }
+
+        await waitFor(async () => {
+          const childMessages = await runtimeSession.messages({
+            path: { id: result.childID! },
+            query: { directory: projectDir },
+          });
+          return Array.isArray(childMessages) && childMessages.some(message => isRecord(message)
+            && isRecord(message.info) && message.info.role === 'assistant'
+            && isRecord(message.info.time) && typeof message.info.time.completed === 'number');
+        }, `${scenario} child completion`, 30000);
+        await waitFor(() => scenarioEvidence.childToolResult !== undefined, `${scenario} governed tool result`);
+        const childToolResult = scenarioEvidence.childToolResult;
+        expect(isRecord(childToolResult) ? childToolResult.success : undefined).toBe(true);
+        expect(scenarioEvidence.childRequests).toBeGreaterThanOrEqual(2);
+
+        const sessions = JSON.parse(fs.readFileSync(path.join(projectDir, '.hive', 'sessions.json'), 'utf8')) as {
+          sessions: Array<Record<string, unknown>>;
+        };
+        const bound = sessions.sessions.find(session => session.sessionId === result.childID);
+        expect(bound).toMatchObject({ parentSessionId: result.parentID, sessionKind: 'task-worker' });
+        if (scenario.startsWith('adhoc')) {
+          expect(bound?.adHocRunId).toBe(`runtime-${scenario}`);
+        } else {
+          expect(bound?.featureName).toBe(`runtime-${scenario}`);
+          expect(bound?.workerAssignment).toMatchObject({
+            featureName: `runtime-${scenario}`,
+            taskFolder: '01-runtime-task',
+          });
+        }
+      }
+
+      const sessionsBeforeInvalid = JSON.parse(fs.readFileSync(path.join(projectDir, '.hive', 'sessions.json'), 'utf8')).sessions.length;
+      const invalid = await runScenario('invalid-id');
+      expect(invalid.childID).toBeUndefined();
+      expect(invalid.taskState.status).toBe('error');
+      expect(JSON.stringify(invalid.taskState.error)).toContain('launch_binding_error');
+      expect(providerServer.evidence('invalid-id').childRequests).toBe(0);
+      const sessionsAfterInvalid = JSON.parse(fs.readFileSync(path.join(projectDir, '.hive', 'sessions.json'), 'utf8')).sessions.length;
+      expect(sessionsAfterInvalid).toBe(sessionsBeforeInvalid + 1);
+
+      eventAbort.abort();
+      await permissionTask.catch(() => undefined);
+      console.info(JSON.stringify({
+        probe: 'shipping Hive prepared-worker launch lifecycle',
+        opencodeVersion: OPENCODE_RUNTIME_VERSION,
+        modes: ['adhoc-blocking', 'feature-blocking', 'adhoc-background', 'feature-background'],
+        invalidIdRejectedBeforeChild: true,
+      }));
+    } finally {
+      eventAbort.abort();
+      await providerServer.close();
+      await server?.close();
+      process.chdir(previousCwd);
+      if (previousConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+      else process.env.OPENCODE_CONFIG_DIR = previousConfigDir;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousDisableDefault === undefined) delete process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS;
+      else process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = previousDisableDefault;
+      if (previousBackground === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackground;
+      safeRm(tmpBase);
+    }
+  }, 300000);
 });
 
 const TEST_ROOT_BASE_LOOP = "/tmp/hive-e2e-loop-mitigation";

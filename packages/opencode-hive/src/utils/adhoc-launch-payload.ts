@@ -4,6 +4,7 @@ export type HiveTaskToolCallPayload = {
   subagent_type: string;
   description: string;
   prompt: string;
+  hive_launch_id: string;
 };
 
 export type HiveBackgroundTaskCallPayload = HiveTaskToolCallPayload & {
@@ -16,6 +17,7 @@ export function buildAdhocWorkerLaunchPayloads(params: {
   subagent_type: string;
   description: string;
   prompt: string;
+  launchId: string;
   backgroundEnabled: boolean;
   shouldAutoSpawnWorker: boolean;
 }): {
@@ -32,6 +34,7 @@ export function buildAdhocWorkerLaunchPayloads(params: {
     subagent_type: params.subagent_type,
     description: params.description,
     prompt: params.prompt,
+    hive_launch_id: params.launchId,
   };
 
   const taskToolCall = base;

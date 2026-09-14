@@ -17,8 +17,8 @@ const expectReservedNameToFail = (name: string): void => {
 };
 
 describe('agent_hive schema customAgents contract', () => {
-  it('requires the verified OpenCode command hook runtime', () => {
-    expect(packageJson.peerDependencies?.['@opencode-ai/plugin']).toBe('>=1.14.48');
+  it('requires the verified OpenCode task-definition hook runtime', () => {
+    expect(packageJson.peerDependencies?.['@opencode-ai/plugin']).toBe('>=1.18.30');
   });
 
   it('defines customAgents map and custom agent schema', () => {

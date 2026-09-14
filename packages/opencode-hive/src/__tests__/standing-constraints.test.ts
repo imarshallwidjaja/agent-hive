@@ -535,7 +535,7 @@ Do it
   });
 
   describe('background correlation', () => {
-    it('matches the pending launch against the pre-injection prompt snapshot', async () => {
+    it('matches the pending launch against the canonical prompt containing constraints once', async () => {
       process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
       initGitRoot(testRoot);
       const hooks = await loadHooks(testRoot);
@@ -550,7 +550,7 @@ Do it
 
       const created = parseToolJson<{
         runId?: string;
-        backgroundTaskCall?: { description?: string; prompt?: string; subagent_type?: string };
+        backgroundTaskCall?: { description?: string; prompt?: string; subagent_type?: string; hive_launch_id?: string };
       }>(await hooks.tool!.hive_adhoc_worktree_create.execute(
         { label: 'constraint-run', autoSpawnWorker: true },
         toolContext,
@@ -568,6 +568,7 @@ Do it
         subagent_type: created.backgroundTaskCall!.subagent_type,
         description: created.backgroundTaskCall!.description,
         prompt: expectedPrompt,
+        hive_launch_id: created.backgroundTaskCall!.hive_launch_id,
       };
       const output = { args: launchArgs };
       await hooks['tool.execute.before']?.(
@@ -575,8 +576,8 @@ Do it
         output as never,
       );
 
-      // The register is injected for the model, after the adapter snapshot.
-      expect(output.args.prompt).toBe(`${expectedPrompt}\n\n${CONSTRAINTS_BLOCK}`);
+      expect(output.args.prompt).toBe(expectedPrompt);
+      expect(String(output.args.prompt).split(CONSTRAINTS_BLOCK)).toHaveLength(2);
 
       await hooks.event?.({ event: {
         type: 'session.created',

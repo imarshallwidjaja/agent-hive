@@ -39,6 +39,7 @@ export const HIVE_TOOL_NAMES = [
   'hive_worktree_discard',
   'hive_merge',
   'hive_adhoc_worktree_create',
+  'hive_adhoc_worktree_start',
   'hive_adhoc_worktree_commit',
   'hive_adhoc_merge',
   'hive_adhoc_cleanup',
@@ -73,6 +74,7 @@ export const SUPPORTED_PLUGIN_HOOKS = [
   'experimental.chat.system.transform',
   'experimental.chat.messages.transform',
   'command.execute.before',
+  'tool.definition',
   'tool.execute.before',
   'tool.execute.after',
 ] as const;
