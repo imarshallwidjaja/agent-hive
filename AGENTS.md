@@ -23,7 +23,7 @@ bun run release:check     # Install, build, and test release artifacts
 
 Release note: the active release path publishes `oc-arkive` to npm and attaches `vscode-arkive.vsix` to the GitHub Release. Prepare root/hive-core/opencode/vscode package version bumps, changelog entries, and `docs/releases/vX.Y.Z.md` manually before running the GitHub `workflow_dispatch` rehearsal and tagging. Set the OpenCode package's `devDependencies.hive-core` and the VS Code package's `dependencies.hive-core` to the same exact version, regenerate both root lockfiles, and rerun the release artifact checks for exact pins, local workspace linking, and packed dependency isolation; a stale pin can resolve `hive-core` from the registry instead. The pushed `vX.Y.Z` tag must point at a commit whose root package version is `X.Y.Z` and whose matching release-note file exists. If a tagged release partially fails, rerun the same workflow in tag-backed recovery mode and enable only the unfinished `oc-arkive` npm publish and/or GitHub Release target.
 
-Worktree dependency note: worktrees are lightweight checkouts without project dependencies. Workers do best-effort verification using ast-grep. Full build and test verification (`bun run build` + `bun run test`) runs on the canonical checkout after merge. A worktree build updates only that worktree's ignored `packages/opencode-hive/dist/index.js`; rebuild the canonical checkout before saying a restart will load plugin source changes.
+Worktrees start without installed dependencies. When running worktree verification, install dependencies there and confirm that `hive-core` resolves inside that worktree; build core before running OpenCode checks. A passing test against the canonical checkout’s `hive-core` does not verify worktree changes. If local verification is unavailable, report the limitation. Run full build and test verification on the canonical checkout after merge. A worktree build updates only its own plugin bundle; rebuild the canonical checkout before saying a restart will load plugin changes.
 
 A root build can refresh tracked `packages/vscode-hive/dist/extension.js` after `hive-core` changes even though `dist/` is ignored. Inspect and commit deterministic bundle changes with `git add -u -- packages/vscode-hive/dist/extension.js`; do not discard them as unrelated.
 
@@ -109,6 +109,7 @@ packages/
 - Place tests next to source files or in `__tests__/` directories
 - Use descriptive test names
 - Some `packages/opencode-hive` suites mutate the process cwd and temporary Git state. If a concurrent run fails in a worktree or lifecycle test, rerun the owning file and then `bun test --max-concurrency=1`; report the concurrent failure separately, and change production code only if isolated or serialized execution also fails.
+- Run `packages/opencode-hive/src/e2e/opencode-runtime-smoke.test.ts` in only one process at a time across worktrees. Some fixtures use fixed `/tmp` paths, so separate Bun processes can delete each other’s fixtures; `--max-concurrency=1` does not coordinate separate processes.
 
 ## Commit Messages
 
