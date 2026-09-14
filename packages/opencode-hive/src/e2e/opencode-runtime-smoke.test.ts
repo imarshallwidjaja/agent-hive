@@ -30,12 +30,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error
-    ? error.name === 'AbortError'
-    : isRecord(error) && error.name === 'AbortError';
-}
-
 async function getFreePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = createServer();
@@ -793,16 +787,18 @@ export const ZRuntimeModelPlugin = async () => ({
       throwOnError: true,
     });
 
-    const abortController = new AbortController();
+    const permissionTasks: Promise<void>[] = [];
+    let permissionApproversStopped = false;
+    let permissionApproversStopTask: Promise<void> | undefined;
 
-    async function approvePermissions(sessionID: string) {
-      try {
-        const sse = await client.event.subscribe({
-          query: { directory: projectDir },
-          signal: abortController.signal,
-        });
+    async function approvePermissions(sessionID: string): Promise<void> {
+      const sse = await client.event.subscribe({
+        query: { directory: projectDir },
+      });
 
+      const task = (async () => {
         for await (const evt of sse.stream) {
+          if (permissionApproversStopped) break;
           if (!evt || typeof evt !== "object") continue;
           const maybeType = (evt as { type?: unknown }).type;
           if (maybeType !== "permission.updated") continue;
@@ -820,14 +816,26 @@ export const ZRuntimeModelPlugin = async () => ({
             query: { directory: projectDir },
           });
         }
-      } catch (error) {
-        if (isAbortError(error)) {
-          return;
-        }
-        throw error;
-      }
+      })();
+      void task.catch(() => undefined);
+      permissionTasks.push(task);
     }
 
+    function stopPermissionApprovers(): Promise<void> {
+      permissionApproversStopTask ??= (async () => {
+        permissionApproversStopped = true;
+        if (permissionTasks.length === 0) return;
+
+        await client.session.create({
+          body: { title: 'runtime permission stream shutdown' },
+          query: { directory: projectDir },
+        });
+        await Promise.all(permissionTasks);
+      })();
+      return permissionApproversStopTask;
+    }
+
+    let primaryError: unknown;
     try {
       const runtimeSuccess = {
         serverStarted: true,
@@ -893,7 +901,7 @@ export const ZRuntimeModelPlugin = async () => ({
       await expect(runtimeSession.get({ path: { id: probeID }, query: { directory: projectDir } })).rejects.toThrow();
       await expect(runtimeSession.messages({ path: { id: probeID }, query: { directory: projectDir } })).rejects.toThrow();
 
-      const permissionTask = approvePermissions(sessionID);
+      await approvePermissions(sessionID);
 
       // Prevent CI hangs: bound the prompt request time.
       const promptAbort = new AbortController();
@@ -1015,7 +1023,7 @@ export const ZRuntimeModelPlugin = async () => ({
         : null;
       expect(largeSessionID).not.toBeNull();
       if (!largeSessionID) return;
-      const largePermissionTask = approvePermissions(largeSessionID);
+      await approvePermissions(largeSessionID);
       const largePromptAbort = new AbortController();
       const largePromptTimer = setTimeout(() => largePromptAbort.abort(), 120000);
       try {
@@ -1070,7 +1078,7 @@ export const ZRuntimeModelPlugin = async () => ({
       })) as unknown;
       const decoyID = isRecord(decoy) && typeof decoy.id === 'string' ? decoy.id : null;
       expect(decoyID).not.toBeNull();
-      const taskPermissionTask = approvePermissions(taskParentID);
+      await approvePermissions(taskParentID);
       const taskPromptAbort = new AbortController();
       const taskPromptTimer = setTimeout(() => taskPromptAbort.abort(), 120000);
       try {
@@ -1185,19 +1193,22 @@ export const ZRuntimeModelPlugin = async () => ({
         productionHiveSelectorExercised: false,
       }));
 
-      abortController.abort();
-      await permissionTask.catch(() => undefined);
-      await largePermissionTask.catch(() => undefined);
-      await taskPermissionTask.catch(() => undefined);
-
       expect(runtimeSuccess).toEqual({
         serverStarted: true,
         toolsLoaded: true,
         promptCompleted: true,
         promptReachedProvider: true,
       });
+    } catch (error) {
+      primaryError = error;
+      throw error;
     } finally {
-      abortController.abort();
+      let permissionApproverError: unknown;
+      try {
+        await stopPermissionApprovers();
+      } catch (error) {
+        permissionApproverError = error;
+      }
       await server?.close();
       await providerServer.close();
       process.chdir(previousCwd);
@@ -1221,6 +1232,9 @@ export const ZRuntimeModelPlugin = async () => ({
       }
 
       safeRm(tmpBase);
+      if (primaryError === undefined && permissionApproverError !== undefined) {
+        throw permissionApproverError;
+      }
     }
   }, 150000);
 
@@ -1286,7 +1300,8 @@ export const ZRuntimeModelPlugin = async () => ({
       },
     };
     let server: Awaited<ReturnType<typeof createOpencodeServer>> | null = null;
-    const eventAbort = new AbortController();
+    let stopPermissionApprovers: (() => Promise<void>) | undefined;
+    let primaryError: unknown;
 
     try {
       server = await createOpencodeServer({ hostname: '127.0.0.1', port, timeout: 20000, config });
@@ -1297,27 +1312,37 @@ export const ZRuntimeModelPlugin = async () => ({
         messages(input: unknown): Promise<unknown>;
         status(input: unknown): Promise<unknown>;
       };
+      let permissionApproversStopped = false;
+      let permissionApproversStopTask: Promise<void> | undefined;
+      const sse = await client.event.subscribe({
+        query: { directory: projectDir },
+      });
       const permissionTask = (async () => {
-        try {
-          const sse = await client.event.subscribe({
+        for await (const evt of sse.stream) {
+          if (permissionApproversStopped) break;
+          if (!isRecord(evt) || evt.type !== 'permission.updated' || !isRecord(evt.properties)) continue;
+          const sessionID = typeof evt.properties.sessionID === 'string' ? evt.properties.sessionID : undefined;
+          const permissionID = typeof evt.properties.id === 'string' ? evt.properties.id : undefined;
+          if (!sessionID || !permissionID) continue;
+          await client.postSessionIdPermissionsPermissionId({
+            path: { id: sessionID, permissionID },
+            body: { response: 'once' },
             query: { directory: projectDir },
-            signal: eventAbort.signal,
           });
-          for await (const evt of sse.stream) {
-            if (!isRecord(evt) || evt.type !== 'permission.updated' || !isRecord(evt.properties)) continue;
-            const sessionID = typeof evt.properties.sessionID === 'string' ? evt.properties.sessionID : undefined;
-            const permissionID = typeof evt.properties.id === 'string' ? evt.properties.id : undefined;
-            if (!sessionID || !permissionID) continue;
-            await client.postSessionIdPermissionsPermissionId({
-              path: { id: sessionID, permissionID },
-              body: { response: 'once' },
-              query: { directory: projectDir },
-            });
-          }
-        } catch (error) {
-          if (!isAbortError(error)) throw error;
         }
       })();
+      void permissionTask.catch(() => undefined);
+      stopPermissionApprovers = () => {
+        permissionApproversStopTask ??= (async () => {
+          permissionApproversStopped = true;
+          await runtimeSession.create({
+            body: { title: 'shipping permission stream shutdown' },
+            query: { directory: projectDir },
+          });
+          await permissionTask;
+        })();
+        return permissionApproversStopTask;
+      };
 
       const waitFor = async (predicate: () => boolean | Promise<boolean>, label: string, timeoutMs = 15000): Promise<void> => {
         const deadline = Date.now() + timeoutMs;
@@ -1489,16 +1514,22 @@ export const ZRuntimeModelPlugin = async () => ({
       const sessionsAfterInvalid = JSON.parse(fs.readFileSync(path.join(projectDir, '.hive', 'sessions.json'), 'utf8')).sessions.length;
       expect(sessionsAfterInvalid).toBe(sessionsBeforeInvalid + 1);
 
-      eventAbort.abort();
-      await permissionTask.catch(() => undefined);
       console.info(JSON.stringify({
         probe: 'shipping Hive prepared-worker launch lifecycle',
         opencodeVersion: OPENCODE_RUNTIME_VERSION,
         modes: ['adhoc-blocking', 'feature-blocking', 'adhoc-background', 'feature-background'],
         invalidIdRejectedBeforeChild: true,
       }));
+    } catch (error) {
+      primaryError = error;
+      throw error;
     } finally {
-      eventAbort.abort();
+      let permissionApproverError: unknown;
+      try {
+        await stopPermissionApprovers?.();
+      } catch (error) {
+        permissionApproverError = error;
+      }
       await providerServer.close();
       await server?.close();
       process.chdir(previousCwd);
@@ -1511,6 +1542,9 @@ export const ZRuntimeModelPlugin = async () => ({
       if (previousBackground === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
       else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackground;
       safeRm(tmpBase);
+      if (primaryError === undefined && permissionApproverError !== undefined) {
+        throw permissionApproverError;
+      }
     }
   }, 300000);
 });
