@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
+import matter from 'gray-matter';
 import { BUILTIN_SKILLS } from './registry.generated.js';
+import { resolvePackagedSkillsDir } from './native-materializer.js';
 
 function readRepoFile(relativePath: string): string {
   return readFileSync(path.resolve(import.meta.dir, '../../../../', relativePath), 'utf8');
@@ -745,6 +747,32 @@ describe('skill content', () => {
       }
 
       expect(entry.description).not.toContain('Agent Hive workflow skill');
+    }
+  });
+
+  it('parses every bundled skill frontmatter cleanly with gray-matter without fallback sanitization', () => {
+    const skillsDir = resolvePackagedSkillsDir();
+    const entries = readdirSync(skillsDir, { withFileTypes: true });
+    const skillFiles = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(skillsDir, entry.name, 'SKILL.md'))
+      .filter((filePath) => existsSync(filePath));
+
+    expect(skillFiles.length).toBe(BUILTIN_SKILLS.length);
+
+    for (const filePath of skillFiles) {
+      const content = readFileSync(filePath, 'utf8');
+      let parsed: matter.GrayMatterFile<string> | undefined;
+
+      expect(() => {
+        parsed = matter(content);
+      }).not.toThrow();
+
+      expect(parsed).toBeDefined();
+      expect(typeof parsed!.data?.name).toBe('string');
+      expect(parsed!.data.name.trim().length).toBeGreaterThan(0);
+      expect(typeof parsed!.data?.description).toBe('string');
+      expect(parsed!.data.description.trim().length).toBeGreaterThan(0);
     }
   });
 });

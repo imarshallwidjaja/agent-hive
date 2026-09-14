@@ -1,6 +1,6 @@
 ---
 name: ast-grep
-description: Use ast-grep MCP tools for syntax-aware structural search, AST inspection, rule testing, and structural verification. Triggers: code-shape queries, structural invariants, pattern debugging, AST inspection, and multi-file syntax matching.
+description: "Use ast-grep MCP tools for syntax-aware structural search, AST inspection, rule testing, and structural verification. Triggers: code-shape queries, structural invariants, pattern debugging, AST inspection, and multi-file syntax matching."
 ---
 
 # ast-grep MCP Workflow
