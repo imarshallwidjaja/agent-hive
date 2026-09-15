@@ -2372,16 +2372,30 @@ describe('Per-agent tool filtering', () => {
     return opencodeConfig.agent ?? {};
   }
 
-  it('forager has hive_worktree_commit allowed and hive_merge disabled', async () => {
+  it('forager has feature and ad-hoc handoff tools allowed while integration stays disabled', async () => {
     const agents = await buildConfig('unified');
     expect(agents['forager-worker']?.prompt).toBeUndefined();
     const foragerTools = agents['forager-worker']?.tools;
     expect(foragerTools).toBeTruthy();
     expect(foragerTools!['hive_worktree_commit']).toBeUndefined();
+    expect(foragerTools!['hive_adhoc_worktree_commit']).toBeUndefined();
     expect(foragerTools!['hive_merge']).toBe(false);
     expect(foragerTools!['hive_tasks_sync']).toBe(false);
-    expect(foragerTools!['hive_worktree_create']).toBe(false);
-    expect(foragerTools!['hive_worktree_start']).toBe(false);
+    expect(foragerTools!['hive_worktree_create']).toBeUndefined();
+    expect(foragerTools!['hive_worktree_start']).toBeUndefined();
+  });
+
+  it('configured Forager derivatives inherit both authenticated handoff tools', async () => {
+    const agents = await buildConfig('unified', {
+      'configured-forager': {
+        baseAgent: 'forager-worker',
+        description: 'Configured implementation worker',
+      },
+    });
+    const tools = agents['configured-forager']?.tools;
+    expect(tools?.['hive_worktree_commit']).toBeUndefined();
+    expect(tools?.['hive_adhoc_worktree_commit']).toBeUndefined();
+    expect(tools?.['hive_adhoc_merge']).toBe(false);
   });
 
   it('forager tool list keeps its worktree tools and universal metadata inspection tools', async () => {

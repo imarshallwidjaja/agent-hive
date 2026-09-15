@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
-import { AdhocWorktreeService, ExecutionAttemptService, SessionService } from 'hive-core';
+import { AdhocWorktreeService, ConfigService, ExecutionAttemptService, SessionService } from 'hive-core';
 import plugin from '../index.js';
 
 const TEST_ROOT_BASE = `/tmp/hive-e2e-plugin-${process.pid}`;
@@ -126,6 +126,18 @@ async function bindChild(
   } } } } as any);
   await hooks['chat.message']?.({ sessionID: childSessionID, agent }, {
     message: { agent }, parts: [],
+  } as any);
+}
+
+function configureForagerDerivative() {
+  return spyOn(ConfigService.prototype, 'get').mockReturnValue({
+    agents: {},
+    customAgents: {
+      'configured-forager': {
+        baseAgent: 'forager-worker',
+        description: 'Configured implementation worker',
+      },
+    },
   } as any);
 }
 
@@ -320,6 +332,34 @@ describe('managed execution attachment', () => {
     });
   });
 
+  it('rejects a stopped feature-task handoff before Git or report mutation', async () => {
+    const { hooks, context, parents } = await harness(root, 'primary');
+    await seedFeature(hooks, context, 'feature-a');
+    const prepared = await prepareTask(hooks, context, 'feature-a');
+    const args = { subagent_type: 'forager-worker', description: 'Stop before handoff', prompt: 'Do it.', background: false };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: 'primary', callID: 'call-stopped-feature' }, { args });
+    await bindChild(hooks, parents, 'primary', 'call-stopped-feature', 'child-stopped-feature');
+    const attempts = new ExecutionAttemptService(root);
+    attempts.observeBlockingStop({
+      originatingPrimarySession: 'primary',
+      nativeCallId: 'call-stopped-feature',
+      outputDefined: true,
+    });
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'stopped-feature.txt'), 'must remain uncommitted\n');
+    const headBefore = execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim();
+
+    const denied = JSON.parse(await hooks.tool!.hive_worktree_commit.execute({
+      feature: 'feature-a', task: '01-first-task', status: 'completed',
+      summary: 'This stopped handoff must be rejected. Test intentionally not run.',
+      message: 'test: reject stopped handoff\n\nThis commit must never be created.',
+    }, { ...context, sessionID: 'child-stopped-feature', agent: 'forager-worker' }) as string);
+
+    expect(denied).toMatchObject({ ok: false, terminal: false, reason: 'workspace_conflict_denied', mutation: 'none' });
+    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
+    expect(attempts.getAttempt(prepared.attemptId)).toMatchObject({ phase: 'stopped' });
+    expect(() => attempts.assertWorkspacesIdle(prepared.placement.workspaceIdentities)).toThrow(/claimed/i);
+  });
+
   it('finalizes a background feature handoff before merge', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const { hooks, context, parents } = await harness(root, 'primary');
@@ -360,36 +400,43 @@ describe('managed execution attachment', () => {
   });
 
   it('records an ad-hoc commit disposition and releases it after blocking stop evidence', async () => {
-    const { hooks, context, parents } = await harness(root, 'primary');
-    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
-      scope: { kind: 'adhoc', runId: 'adhoc-bridge' }, placement: { kind: 'worktree' },
-    }, context) as string);
-    const args = { subagent_type: 'forager-worker', description: 'Ad-hoc change', prompt: 'Do it.', background: false };
-    await hooks['tool.execute.before']!({ tool: 'task', sessionID: 'primary', callID: 'call-adhoc' }, { args });
-    await bindChild(hooks, parents, 'primary', 'call-adhoc', 'child-adhoc');
-    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'adhoc-result.txt'), 'ad-hoc result\n');
-    const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
-      runId: 'adhoc-bridge', workspacePath: prepared.placement.workspacePath, branch: prepared.placement.branch,
-      message: 'feat: add ad-hoc result\n\nRecord the ad-hoc bridge disposition before native stop.',
-    }, { ...context, sessionID: 'child-adhoc', agent: 'forager-worker' }) as string);
-    expect(committed.success).toBe(true);
+    const configured = configureForagerDerivative();
+    try {
+      const { hooks, context, parents } = await harness(root, 'primary');
+      const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+        scope: { kind: 'adhoc', runId: 'adhoc-bridge' }, placement: { kind: 'worktree' },
+      }, context) as string);
+      const args = { subagent_type: 'configured-forager', description: 'Ad-hoc change', prompt: 'Do it.', background: false };
+      await hooks['tool.execute.before']!({ tool: 'task', sessionID: 'primary', callID: 'call-adhoc' }, { args });
+      await bindChild(hooks, parents, 'primary', 'call-adhoc', 'child-adhoc', 'configured-forager');
+      fs.writeFileSync(path.join(prepared.placement.workspacePath, 'adhoc-result.txt'), 'ad-hoc result\n');
+      const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
+        runId: 'adhoc-bridge', workspacePath: prepared.placement.workspacePath, branch: prepared.placement.branch,
+        message: 'feat: add ad-hoc result\n\nRecord the ad-hoc bridge disposition before native stop.',
+      }, { ...context, sessionID: 'child-adhoc', agent: 'configured-forager' }) as string);
+      expect(committed.success).toBe(true);
 
-    await hooks['tool.execute.after']!({ tool: 'task', sessionID: 'primary', callID: 'call-adhoc', args } as any, {
-      title: '', output: 'Ad-hoc handoff recorded.', metadata: { sessionId: 'child-adhoc' },
-    });
-    expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)).toMatchObject({
-      phase: 'finalized', handoffOutcome: 'completed', observedOutcome: 'completed',
-    });
+      await hooks['tool.execute.after']!({ tool: 'task', sessionID: 'primary', callID: 'call-adhoc', args } as any, {
+        title: '', output: 'Ad-hoc handoff recorded.', metadata: { sessionId: 'child-adhoc' },
+      });
+      expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)).toMatchObject({
+        phase: 'finalized', handoffOutcome: 'completed', observedOutcome: 'completed',
+      });
 
-    const merged = JSON.parse(await hooks.tool!.hive_adhoc_merge.execute({
-      runId: 'adhoc-bridge', strategy: 'squash',
-      message: 'feat: merge ad-hoc result\n\nIntegrate the authenticated ad-hoc worker handoff.',
-    }, context) as string);
-    expect(merged.success).toBe(true);
-    expect(fs.readFileSync(path.join(root, 'adhoc-result.txt'), 'utf8')).toBe('ad-hoc result\n');
+      const merged = JSON.parse(await hooks.tool!.hive_adhoc_merge.execute({
+        runId: 'adhoc-bridge', strategy: 'squash',
+        message: 'feat: merge ad-hoc result\n\nIntegrate the authenticated ad-hoc worker handoff.',
+      }, context) as string);
+      expect(merged.success).toBe(true);
+      expect(fs.readFileSync(path.join(root, 'adhoc-result.txt'), 'utf8')).toBe('ad-hoc result\n');
+    } finally {
+      configured.mockRestore();
+    }
   });
 
   it('preserves partial and failed ad-hoc commit dispositions through native completion', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const configured = configureForagerDerivative();
     const commit = spyOn(AdhocWorktreeService.prototype, 'commit')
       .mockResolvedValueOnce({
         committed: true, sha: 'partial-sha', message: 'partial commit', partial: true, error: 'second repository failed',
@@ -408,26 +455,43 @@ describe('managed execution attachment', () => {
         const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
           scope: { kind: 'adhoc', runId }, placement: { kind: 'worktree' },
         }, context) as string);
-        const args = { subagent_type: 'forager-worker', description: `${outcome} commit`, prompt: 'Do it.', background: false };
+        const background = outcome === 'partial';
+        const args = { subagent_type: 'configured-forager', description: `${outcome} commit`, prompt: 'Do it.', background };
         await hooks['tool.execute.before']!({ tool: 'task', sessionID: 'primary', callID }, { args });
-        await bindChild(hooks, parents, 'primary', callID, childID);
+        await bindChild(hooks, parents, 'primary', callID, childID, 'configured-forager');
+        if (background) {
+          await hooks['tool.execute.after']!({ tool: 'task', sessionID: 'primary', callID, args } as any, {
+            title: '', output: `task_id: ${childID}`, metadata: { sessionId: childID },
+          });
+        }
 
         const result = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
           runId, workspacePath: prepared.placement.workspacePath, branch: prepared.placement.branch,
           message: `test: ${outcome} ad-hoc commit\n\nExercise durable ${outcome} bridge disposition.`,
-        }, { ...context, sessionID: childID, agent: 'forager-worker' }) as string);
+        }, { ...context, sessionID: childID, agent: 'configured-forager' }) as string);
         expect(result.success).toBe(false);
         expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)?.handoffOutcome).toBe(outcome);
 
-        await hooks['tool.execute.after']!({ tool: 'task', sessionID: 'primary', callID, args } as any, {
-          title: '', output: `${outcome} handoff returned.`, metadata: { sessionId: childID },
-        });
+        if (background) {
+          await hooks['experimental.chat.messages.transform']?.({}, { messages: [{
+            info: { id: `message-${outcome}`, sessionID: 'primary', role: 'user', time: { created: Date.now() } },
+            parts: [{
+              id: `part-${outcome}`, sessionID: 'primary', messageID: `message-${outcome}`, type: 'text', synthetic: true,
+              text: `<task id="${childID}" state="completed"><summary>Done</summary><task_result>${outcome} handoff returned.</task_result></task>`,
+            }],
+          }] } as any);
+        } else {
+          await hooks['tool.execute.after']!({ tool: 'task', sessionID: 'primary', callID, args } as any, {
+            title: '', output: `${outcome} handoff returned.`, metadata: { sessionId: childID },
+          });
+        }
         expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)).toMatchObject({
           phase: 'finalized', handoffOutcome: outcome, observedOutcome: outcome,
         });
       }
     } finally {
       commit.mockRestore();
+      configured.mockRestore();
     }
   });
 

@@ -112,6 +112,34 @@ describe('background job adapter observation', () => {
     expect(terminal).toEqual([]);
   });
 
+  it('emits authenticated stop once when notification follows a terminal task_status sample', async () => {
+    const { adapter, service, sessions, terminal } = harness();
+    sessions.set('parent', session('parent'));
+    await register(adapter, 'parent', 'call-a', 'task-a');
+    await adapter['tool.execute.before']({ tool: 'task_status', sessionID: 'parent', callID: 'status-a' }, {
+      args: { task_id: 'task-a' },
+    });
+    await adapter['tool.execute.after']({ tool: 'task_status', sessionID: 'parent', callID: 'status-a' }, {
+      output: JSON.stringify({ task_id: 'task-a', status: 'completed', result: 'Sampled complete.' }),
+    });
+    const notification = messages(
+      'parent',
+      '<task id="task-a" state="completed"><summary>Done</summary><task_result>Complete.</task_result></task>',
+      { synthetic: true },
+    );
+
+    await adapter['experimental.chat.messages.transform']({}, notification);
+    await adapter['experimental.chat.messages.transform']({}, notification);
+
+    expect(service.resolve('task-a')?.runtimeState).toBe('completed');
+    expect(terminal).toEqual([{
+      taskId: 'task-a',
+      callId: 'call-a',
+      parentSessionId: 'parent',
+      state: 'completed',
+    }]);
+  });
+
   it('emits stop evidence only from a correlated structured completion notification', async () => {
     const { adapter, sessions, terminal } = harness();
     sessions.set('parent', session('parent'));

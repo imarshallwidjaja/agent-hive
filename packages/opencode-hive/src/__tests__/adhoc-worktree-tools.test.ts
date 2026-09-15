@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
-import { ExecutionAttemptService } from 'hive-core';
+import { AdhocWorktreeService, ExecutionAttemptService } from 'hive-core';
 import plugin from '../index.js';
 
 const TEST_ROOT = `/tmp/opencode-hive-execution-prepare-${process.pid}`;
@@ -113,7 +113,8 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(secondResult.success).toBe(true);
   });
 
-  it('refuses a second outstanding arm for the same parent', async () => {
+  it('refuses a second outstanding arm before creating its worktree resources', async () => {
+    initGit(TEST_ROOT);
     const liveDirectory = path.join(TEST_ROOT, 'live');
     fs.mkdirSync(liveDirectory);
     const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-one-arm');
@@ -122,10 +123,23 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       placement: { kind: 'in_place', directory: liveDirectory },
     }, context);
 
+    const branchesBefore = execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' });
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: TEST_ROOT, encoding: 'utf8' });
+
     await expect(hooks.tool!.hive_execution_prepare.execute({
       scope: { kind: 'adhoc', runId: 'second' },
-      placement: { kind: 'in_place', directory: liveDirectory },
+      placement: { kind: 'worktree' },
     }, context)).rejects.toThrow(/already has an armed execution/i);
+
+    const adhocWorktrees = new AdhocWorktreeService({
+      baseDir: TEST_ROOT,
+      hiveDir: path.join(TEST_ROOT, '.hive'),
+      repositoryResolver: { resolveRepositories: () => [] },
+    });
+    expect(await adhocWorktrees.get('second')).toBeNull();
+    expect(execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' })).toBe(branchesBefore);
+    expect(execSync('git worktree list --porcelain', { cwd: TEST_ROOT, encoding: 'utf8' })).toBe(worktreesBefore);
+    expect(new ExecutionAttemptService(TEST_ROOT).listAttempts()).toHaveLength(1);
   });
 
   it('denies another primary access to the same armed scope', async () => {
@@ -231,6 +245,45 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       message: 'test: commit after stopped finalization\n\nConfirm finalization releases the stopped workspace fence.',
     }, childContext) as string);
     expect(committed.success).toBe(true);
+  });
+
+  it('allows an attached ad-hoc handoff only from the exact bound child and placement', async () => {
+    initGit(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-attached-child');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'attached-child' },
+      placement: { kind: 'worktree' },
+    }, context) as string);
+    const args = { subagent_type: 'forager-worker', description: 'Commit from bound child', prompt: 'Do it.', background: false };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-attached-child' }, { args });
+    const attempts = new ExecutionAttemptService(TEST_ROOT);
+    attempts.bindNativeChild({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-attached-child',
+      nativeChildSessionId: 'child-attached',
+    });
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'attached.txt'), 'attached\n');
+    const headBefore = execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim();
+    const handoff = {
+      runId: 'attached-child',
+      workspacePath: prepared.placement.workspacePath,
+      branch: prepared.placement.branch,
+      message: 'test: authenticate ad-hoc handoff\n\nCommit only from the exact attached child.',
+    };
+
+    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute(
+      handoff,
+      { ...context, sessionID: 'other-child', agent: 'forager-worker' },
+    ) as string);
+    expect(denied).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
+    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
+
+    const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute(
+      handoff,
+      { ...context, sessionID: 'child-attached', agent: 'forager-worker' },
+    ) as string);
+    expect(committed.success).toBe(true);
+    expect(attempts.getAttempt(prepared.attemptId)).toMatchObject({ phase: 'attached', handoffOutcome: 'completed' });
   });
 
   it('attaches the unchanged native shape and appends truthful in-place scope', async () => {

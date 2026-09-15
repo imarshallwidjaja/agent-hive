@@ -233,7 +233,7 @@ describe('background task lifecycle hook support', () => {
             subagent_type: 'forager-worker',
           },
         } as never,
-      )).rejects.toThrow(/launch_binding_error[\s\S]*hive_worktree_start/);
+      )).rejects.toThrow(/launch_binding_error[\s\S]*hive_execution_prepare/);
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
       if (originalBackgroundEnv === undefined) {

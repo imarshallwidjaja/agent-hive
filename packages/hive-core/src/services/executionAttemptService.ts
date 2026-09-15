@@ -326,9 +326,10 @@ export class ExecutionAttemptService {
   recordHandoff(attemptId: string, extras: FinalizeExecutionAttemptInput): ExecutionAttempt {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
-    if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
-    if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
-    if (extras.outcome) attempt.handoffOutcome = extras.outcome;
+      if (attempt.phase !== 'attached') throw new Error(`Execution attempt ${attempt.id} is not attached`);
+      if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
+      if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
+      if (extras.outcome) attempt.handoffOutcome = extras.outcome;
       attempt.updatedAt = new Date().toISOString();
       return structuredClone(attempt);
     });

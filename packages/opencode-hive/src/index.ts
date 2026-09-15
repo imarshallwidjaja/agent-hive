@@ -2860,7 +2860,15 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         spec: `.hive/features/${resolveFeatureDirectoryName(directory, feature)}/tasks/${input.scope.task}/spec.md`,
         context: `.hive/features/${resolveFeatureDirectoryName(directory, feature)}/context/`,
       };
-      if (input.placement.kind === 'worktree') {
+      const parentArm = executionAttemptService.armedForParent(parentSessionID);
+      if (parentArm && (parentArm.kind !== 'task'
+        || parentArm.featureName !== feature
+        || parentArm.taskFolder !== input.scope.task)) {
+        throw new Error(`Primary session '${parentSessionID}' already has an armed execution`);
+      }
+      if (parentArm) {
+        placement = parentArm.placement;
+      } else if (input.placement.kind === 'worktree') {
         const worktree = await worktreeService.create(feature, input.scope.task);
         const workspacePath = fs.realpathSync(worktree.workspacePath ?? worktree.path);
         placement = {
@@ -2879,7 +2887,13 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       const target = adhocWorktreeService.resolveCreateTarget({ runId: blankToUndefined(input.scope.runId) });
       scope = { kind: 'adhoc', runId: target.runId };
       references = { projectContext: '.hive/context/' };
-      if (input.placement.kind === 'worktree') {
+      const parentArm = executionAttemptService.armedForParent(parentSessionID);
+      if (parentArm && (parentArm.kind !== 'adhoc' || parentArm.runId !== target.runId)) {
+        throw new Error(`Primary session '${parentSessionID}' already has an armed execution`);
+      }
+      if (parentArm) {
+        placement = parentArm.placement;
+      } else if (input.placement.kind === 'worktree') {
         const existing = await adhocWorktreeService.get(target.runId);
         const info = existing ?? await adhocWorktreeService.create({
           runId: target.runId,
@@ -5732,10 +5746,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             && attempt.taskFolder === task);
           const workerAttempt = unsettledTaskAttempts.find(attempt =>
             attempt.native?.childSessionId === committingSessionID);
-          const originatingAttempt = unsettledTaskAttempts.find(attempt =>
-            attempt.originatingPrimarySession === committingSessionID
-            && executionAttemptService.isCurrentTaskAttempt(feature, task, attempt.id));
-          const liveAttempt = workerAttempt ?? originatingAttempt;
+          const liveAttempt = workerAttempt;
           if (!liveAttempt) {
             return respond({
               ok: false,
@@ -5749,10 +5760,7 @@ NEXT: Ask your first clarifying question about this feature.`;
               nextAction: 'Return to the authenticated parent and create a fresh worker launch for this exact task.',
             });
           }
-          const workerAuthorized = workerAttempt !== undefined;
-          const originatingPrimaryAuthorized = originatingAttempt !== undefined
-            && originatingAttempt.phase === 'armed';
-          if (!workerAuthorized && !originatingPrimaryAuthorized) {
+          if (liveAttempt.phase !== 'attached') {
             return respond({
               ok: false,
               terminal: false,
@@ -5763,8 +5771,8 @@ NEXT: Ask your first clarifying question about this feature.`;
               task,
               taskState: taskInfo.status,
               attemptId: liveAttempt.id,
-              message: 'The originating primary cannot commit while a dispatched worker holds this worktree.',
-              nextAction: 'Wait for the bound worker to commit, or inspect hive_status.unfinishedAttempts.',
+              message: 'Feature-task handoff mutation requires the exact bound child while its execution is attached.',
+              nextAction: 'Return to the authenticated parent; stopped execution claims remain quarantined until finalization.',
             });
           }
           const attemptIsCurrent = executionAttemptService.isCurrentTaskAttempt(feature, task, liveAttempt.id);
@@ -6412,7 +6420,22 @@ NEXT: Ask your first clarifying question about this feature.`;
             const commitTarget = adhocWritableTarget(info);
             const liveAttempt = currentUnsettledAdhocAttempt(runId);
             const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
-            if (liveAttempt && isAuthorizedAdhocCommitSession(liveAttempt, committingSessionID)) {
+            if (liveAttempt) {
+              const placementMatches = liveAttempt.placement.kind === 'worktree'
+                && path.resolve(liveAttempt.placement.workspacePath) === path.resolve(workspacePath)
+                && liveAttempt.placement.branch === info.branch;
+              if (!isAuthorizedAdhocCommitSession(liveAttempt, committingSessionID) || !placementMatches) {
+                return respond({
+                  success: false,
+                  reason: 'workspace_conflict_denied',
+                  mutation: 'none',
+                  runId,
+                  attemptId: liveAttempt.id,
+                  phase: liveAttempt.phase,
+                  error: 'Ad-hoc handoff mutation requires the exact bound child and attached worktree placement.',
+                  nextAction: 'Return to the authenticated parent; the execution claim remains quarantined until finalization.',
+                });
+              }
               commitTarget.checkSourceClaim = false;
             }
             const result: AdhocCommitResult = await withWritableOperation(commitTarget,
@@ -7556,7 +7579,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
         temperature: foragerUserConfig.temperature ?? 0.3,
         mode: 'subagent' as const,
         description: builtInRoutingDescriptions['forager-worker'],
-        tools: agentTools(['hive_plan_read', 'hive_worktree_commit', 'hive_context_read', 'hive_context_write', 'hive_context_append']),
+        tools: agentTools(['hive_plan_read', 'hive_worktree_commit', 'hive_adhoc_worktree_commit', 'hive_context_read', 'hive_context_write', 'hive_context_append']),
         permission: {
           task: "deny",
           delegate: "deny",

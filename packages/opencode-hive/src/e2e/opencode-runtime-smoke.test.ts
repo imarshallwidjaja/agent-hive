@@ -4,6 +4,7 @@ import * as path from "path";
 import { spawnSync } from 'node:child_process';
 import { createServer } from "net";
 import * as http from 'http';
+import { ExecutionAttemptService } from 'hive-core';
 import {
   createOpencodeClient,
   createOpencodeServer,
@@ -1600,6 +1601,15 @@ describe("e2e: Forager compaction loop mitigation (in-process)", () => {
     const { execSync } = await import("child_process");
     const { createOpencodeClient: mkClient } = await import("@opencode-ai/sdk");
     const OPENCODE_CLIENT = mkClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
+    const runtimeClient = {
+      ...(OPENCODE_CLIENT as any),
+      session: {
+        ...(OPENCODE_CLIENT as any).session,
+        get: async ({ path: inputPath }: { path: { id: string } }) => ({
+          data: { id: inputPath.id, parentID: undefined, time: { created: Date.now(), updated: Date.now() } },
+        }),
+      },
+    } as PluginInput['client'];
 
     execSync("git init", { cwd: testRoot });
     execSync('git config user.email "test@example.com"', { cwd: testRoot });
@@ -1614,13 +1624,17 @@ describe("e2e: Forager compaction loop mitigation (in-process)", () => {
       worktree: testRoot,
       serverUrl: new URL("http://localhost:1"),
       project: { id: "test", worktree: testRoot, time: { created: Date.now() } },
-      client: OPENCODE_CLIENT,
+      client: runtimeClient,
       $: createStubShellForLoop(),
     };
     const hooks = await plugin(ctx);
-    const toolContext = { sessionID: "sess_compaction_loop", messageID: "msg_test", agent: "forager-worker", abort: new AbortController().signal };
+    const parentContext = { sessionID: "sess_compaction_parent", messageID: "msg_parent", agent: "hive-master", abort: new AbortController().signal };
+    const workerContext = { sessionID: "sess_compaction_loop", messageID: "msg_worker", agent: "forager-worker", abort: new AbortController().signal };
+    await hooks['chat.message']?.({ sessionID: parentContext.sessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
 
-    await hooks.tool!.hive_feature_create.execute({ name: "compaction-test-feature" }, toolContext);
+    await hooks.tool!.hive_feature_create.execute({ name: "compaction-test-feature" }, parentContext);
 
     const plan = `# Compaction Test Feature
 
@@ -1634,19 +1648,29 @@ A: Yes, this is a regression test for the compaction loop mitigation. Validates 
 ### 1. Compaction Task
 Test compaction resume flow.
 `;
-    await hooks.tool!.hive_plan_write.execute({ content: plan, feature: "compaction-test-feature" }, toolContext);
-    await hooks.tool!.hive_plan_approve.execute({ feature: "compaction-test-feature" }, toolContext);
-    await hooks.tool!.hive_tasks_sync.execute({ feature: "compaction-test-feature" }, toolContext);
+    await hooks.tool!.hive_plan_write.execute({ content: plan, feature: "compaction-test-feature" }, parentContext);
+    await hooks.tool!.hive_plan_approve.execute({ feature: "compaction-test-feature" }, parentContext);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: "compaction-test-feature" }, parentContext);
 
     const worktreeRaw = await hooks.tool!.hive_execution_prepare.execute(
       {
         scope: { kind: 'task', feature: "compaction-test-feature", task: "01-compaction-task" },
         placement: { kind: 'worktree' },
       },
-      toolContext,
+      parentContext,
     );
-    const worktreeResult = JSON.parse(worktreeRaw as string) as { placement?: { kind: string; workspacePath?: string } };
+    const worktreeResult = JSON.parse(worktreeRaw as string) as { attemptId: string; placement?: { kind: string; workspacePath?: string } };
     expect(worktreeResult.placement?.workspacePath).toBeDefined();
+
+    const taskArgs = { subagent_type: 'forager-worker', description: 'Resume compacted task', prompt: 'Continue the task.', background: false };
+    await hooks['tool.execute.before']!({
+      tool: 'task', sessionID: parentContext.sessionID, callID: 'call-compaction-worker',
+    }, { args: taskArgs });
+    new ExecutionAttemptService(testRoot).bindNativeChild({
+      originatingPrimarySession: parentContext.sessionID,
+      nativeCallId: 'call-compaction-worker',
+      nativeChildSessionId: workerContext.sessionID,
+    });
 
     const worktreePath = worktreeResult.placement!.workspacePath!;
     fs.writeFileSync(path.join(worktreePath, "change.txt"), "compaction resume test\n");
@@ -1659,7 +1683,7 @@ Test compaction resume flow.
         summary: "Compaction resume test complete. Tests pass (bun test).",
         message: "test: record compaction resume flow\n\nRecord the verified compaction resume behavior.",
       },
-      toolContext,
+      workerContext,
     );
     const commitResult = JSON.parse(commitRaw as string) as { ok: boolean; terminal: boolean; status: string };
 

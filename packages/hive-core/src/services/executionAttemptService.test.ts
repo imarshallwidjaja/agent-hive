@@ -292,6 +292,37 @@ describe('ExecutionAttemptService armed native attachment', () => {
     }
   });
 
+  it('rejects handoff mutation after native stop while retaining the worktree claim', () => {
+    const identity = worktree('stopped-handoff');
+    const attempt = service.arm({
+      kind: 'task',
+      featureName: 'feature-a',
+      taskFolder: '01-task',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    }).attempt;
+    service.attachNext({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-a',
+      selectedAgent: 'forager-worker',
+      background: false,
+    });
+    service.bindNativeChild({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-a',
+      nativeChildSessionId: 'child-a',
+    });
+    service.observeBlockingStop({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-a',
+      outputDefined: true,
+    });
+
+    expect(() => service.recordHandoff(attempt.id, { outcome: 'completed' })).toThrow(/not attached/i);
+    expect(service.getAttempt(attempt.id)).toMatchObject({ phase: 'stopped' });
+    expect(() => service.assertWorkspacesIdle([identity])).toThrow(/claimed/i);
+  });
+
   it('requires exact structured background identity', () => {
     const attempt = service.arm({
       kind: 'adhoc',

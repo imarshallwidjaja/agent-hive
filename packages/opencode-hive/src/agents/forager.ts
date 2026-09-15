@@ -66,6 +66,8 @@ Diagnosis-only means report evidence, hypotheses tested and untested, a supporte
 
 For an ad-hoc or other standalone assignment without a supplied Hive feature/task, follow that assignment's completion protocol. For a managed feature task, follow that assignment's completion protocol; a valid no-change completion may use the existing zero-diff path without creating an empty commit.
 
+For an attached ad-hoc worktree assignment, report its Git handoff with \`hive_adhoc_worktree_commit\` using the exact run ID, workspace path, and branch from the execution scope. That handoff is available only to the exact attached child; it does not authorize merge or cleanup.
+
 ## Plan = READ ONLY
 
 Do not modify the plan file.

@@ -80,6 +80,7 @@ export function classifyRuntimeEpochStaleJobs(input: {
 
 export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions) {
   const toolArgsByCall = new Map<string, Record<string, unknown>>();
+  const observedCompletionNotifications = new Set<string>();
   const parseLifecycleEvent = options.parseLifecycleEvent ?? parseTaskLifecycleEvent;
   const warn = options.warn ?? ((message: string) => console.warn(message));
 
@@ -290,7 +291,9 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         }
 
         const job = options.service.resolve(parsed.task_id);
-        if (!job || isTerminalRuntimeState(job.runtimeState) || !isNotificationForJob(job, part.sessionID ?? parentSessionId)) {
+        const notificationParent = part.sessionID ?? parentSessionId;
+        const notificationKey = `${notificationParent ?? ''}\u0000${parsed.task_id}\u0000${job?.callId ?? ''}`;
+        if (!job || observedCompletionNotifications.has(notificationKey) || !isNotificationForJob(job, notificationParent)) {
           continue;
         }
 
@@ -305,10 +308,11 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
             lastStatusError: parsed.error?.message,
             statusUncertain: parsed.timedOut,
           });
+          observedCompletionNotifications.add(notificationKey);
           options.onNativeBackgroundTerminal?.({
             taskId: parsed.task_id,
             callId: job.callId,
-            parentSessionId: part.sessionID ?? parentSessionId ?? '',
+            parentSessionId: notificationParent ?? '',
             state,
           });
         } catch (error) {
