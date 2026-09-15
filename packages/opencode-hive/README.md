@@ -559,6 +559,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `verification` | Fresh evidence before completion or verification claims |
 | `verification-before-completion` | Deprecated wrapper; use `verification` completion gate mode |
 | `verification-reviewer` | Deprecated wrapper; use `verification` report mode |
+| `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |
 | `writing-plans` | Turn requirements into an implementation plan |
 
 #### Available MCPs

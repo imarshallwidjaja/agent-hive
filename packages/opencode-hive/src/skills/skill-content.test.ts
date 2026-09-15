@@ -641,12 +641,30 @@ describe('skill content', () => {
     expect(template).toContain('Name the current choice');
     expect(template).toContain('Do not record rejected alternatives');
     expect(template).toContain('Do not invent build commands');
+    expect(template).toContain('writing-for-agents');
     expect(template).not.toContain('packages/hive-core');
     expect(template).not.toContain('Keep total under 500 lines');
     expect(template).not.toContain('Gotchas section exists and is populated');
     expect(template).not.toContain('Build/test commands are first');
     expect(template).not.toContain('Missing build/test commands');
     expect(template).not.toContain('Auth lives in `/lib/auth`');
+  });
+
+  it('bundles writing-for-agents as universal reference for agent-consumed documents', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-for-agents');
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toContain('skills, subagent prompts, instructions, and pointer architecture');
+
+    const template = skill!.template;
+    expect(template).toContain('Reference for writing any document an agent consumes');
+    expect(template).toContain('Context pointers');
+    expect(template).toContain('The two loads');
+    expect(template).toContain('Information hierarchy');
+    expect(template).toContain('Steps and completion criteria');
+    expect(template).toContain('Leading words');
+    expect(template).toContain('SKILL-MECHANICS.md');
+    expect(template).toContain('Pruning');
   });
 
   it('bundles context-engineering as on-demand untrusted-knowledge retrieval guidance', () => {
@@ -752,6 +770,16 @@ describe('skill content', () => {
 
       expect(entry.description).not.toContain('Agent Hive workflow skill');
     }
+  });
+
+  it('ships writing-for-agents with its companion files and license', () => {
+    const skillsDir = resolvePackagedSkillsDir();
+    const writingSkillDir = path.join(skillsDir, 'writing-for-agents');
+
+    expect(existsSync(path.join(writingSkillDir, 'SKILL.md'))).toBe(true);
+    expect(existsSync(path.join(writingSkillDir, 'SKILL-MECHANICS.md'))).toBe(true);
+    expect(existsSync(path.join(writingSkillDir, 'LICENSE'))).toBe(true);
+    expect(existsSync(path.join(writingSkillDir, 'UPSTREAM.md'))).toBe(true);
   });
 
   it('parses every bundled skill frontmatter cleanly with gray-matter without fallback sanitization', () => {
