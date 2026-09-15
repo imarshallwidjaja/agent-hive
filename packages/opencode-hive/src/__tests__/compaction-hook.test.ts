@@ -574,12 +574,14 @@ describe('compaction replay on supported hooks', () => {
     expect(sessions.getGlobal('nested-copy')).toEqual(before);
   });
 
-  test('delegated helper retains ordinary and merge tools while managed context and dispatch stay denied', async () => {
+  test('compaction cannot grant an unadmitted helper ordinary or merge authority', async () => {
     const sessionID = 'sess-replay';
     await hooks.event({ event: { type: 'session.created', properties: { info: { id: sessionID, parentID: 'parent' } } } });
     await hooks['chat.message']({ sessionID, agent: 'hive-helper' }, { message: { agent: 'hive-helper' }, parts: [] });
+    await hooks.event({ event: { type: 'session.compacted', properties: { sessionID } } });
+    await hooks['experimental.chat.messages.transform']({}, buildCompactionTransformOutput(sessionID, testRoot));
     for (const tool of ['read', 'bash', 'hive_status', 'hive_merge']) {
-      await hooks['tool.execute.before']({ sessionID, tool }, { args: {} });
+      await expect(hooks['tool.execute.before']({ sessionID, tool }, { args: {} })).rejects.toThrow(/context_authorization_denied/);
     }
     const result = JSON.parse(await hooks.tool.hive_context_read.execute({ scope: 'project' }, { sessionID, agent: 'hive-helper' }));
     expect(result.reason).toBe('context_authorization_denied');
@@ -593,10 +595,13 @@ describe('compaction replay on supported hooks', () => {
     await hooks.event({ event: { type: 'session.created', properties: { info: { id: sessionID, metadata: { agentHive: { originSessionId: 'primary-source' } } } } } });
     await hooks['chat.message']({ sessionID, agent: 'hive-master' }, { message: { agent: 'hive-master' }, parts: [] });
     for (const tool of ['read', 'bash', 'glob']) {
-      await hooks['tool.execute.before']({ sessionID, tool }, { args: {} });
+      await hooks['tool.execute.before']({ sessionID, tool, callID: `fork-${tool}` }, { args: {} });
+      await hooks['tool.execute.after']({ sessionID, tool, callID: `fork-${tool}`, args: {} }, { title: tool, output: '', metadata: {} });
     }
     for (const tool of ['task', 'hive_merge', 'hive_feature_create', 'hive_constraints_add']) {
-      await hooks['tool.execute.before']({ sessionID, tool }, { args: { subagent_type: 'scout-researcher' } });
+      const callID = `fork-${tool}`;
+      await hooks['tool.execute.before']({ sessionID, tool, callID }, { args: { subagent_type: 'scout-researcher' } });
+      await hooks['tool.execute.after']({ sessionID, tool, callID, args: {} }, { title: tool, output: '', metadata: {} });
     }
     const result = JSON.parse(await hooks.tool.hive_context_read.execute({ scope: 'project' }, { sessionID, agent: 'hive-master' }));
     expect(result.reason).not.toBe('context_authorization_denied');

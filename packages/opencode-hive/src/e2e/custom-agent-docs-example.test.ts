@@ -38,7 +38,7 @@ const publishedExample = {
 
 const builtInBaseDescriptions = {
   'scout-researcher': 'Retrieves bounded internal or external code, context, and data evidence without owning diagnosis, tradeoffs, or solution selection.',
-  'forager-worker': 'Implements and verifies changes in an isolated worktree; diagnosis-only assignments remain report-only.',
+  'forager-worker': 'Implements and verifies delegated work in its assigned workspace; diagnosis-only assignments remain report-only.',
   'plan-reviewer': 'Default for ordinary plan review covering worker readiness, references, dependencies, and executable verification.',
   'code-reviewer': 'Default for ordinary implementation review covering correctness, tests, risk, scope creep, YAGNI, and dead code.',
   'simplicity-reviewer': 'Default for ordinary post-implementation simplicity review covering unnecessary abstractions, duplication, dead code, and safe deletion.',

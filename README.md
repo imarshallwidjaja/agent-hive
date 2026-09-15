@@ -14,8 +14,10 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ## Requirements
 
+Forager execution can also use the exact active canonical checkout or a genuine non-Git directory through `hive_existing_workspace_start`. Linked worktrees and managed aliases require their own lifecycle. Rare native `general` calls require `hive_capability_reason`; helper and general calls hold tracked workspace ownership until exact child termination. See the [Operator Guide](docs/OPERATOR-GUIDE.md) for admission and recovery rules.
+
 - [OpenCode](https://opencode.ai) `>= 1.18.30` (peer dependency of `oc-arkive`; required for native `tool.definition` and `hive_launch_id`)
-- A project whose work resolves to one or more git repositories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
+- Worktree workflows require a project whose work resolves to one or more git repositories. Existing-workspace execution also supports genuine non-Git directories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
 - Optional: [VS Code](https://code.visualstudio.com/) for sidebar plan review via `vscode-arkive`
 
 ## Quick start
@@ -81,7 +83,7 @@ are in both modes.
 | `hive-master` | Hybrid planner and orchestrator. Unified-mode default. |
 | `hive-builder` | Ad-hoc orchestrator. No feature or task DAG. |
 | `scout-researcher` | Retrieves bounded source evidence; does not own diagnosis, tradeoffs, or solution selection. |
-| `forager-worker` | Implements in isolated worktrees; diagnosis-only assignments are report-only. Never delegates. |
+| `forager-worker` | Implements in the workspace selected by its prepared assignment; diagnosis-only assignments are report-only. Never delegates. |
 | `plan-reviewer` | Checks whether a plan is worker-executable. |
 | `code-reviewer` | Checks an implementation against the task or plan. |
 | `simplicity-reviewer` | Deletion-biased cleanup of a completed diff. |

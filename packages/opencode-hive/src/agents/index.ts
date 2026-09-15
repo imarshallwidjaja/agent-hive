@@ -6,7 +6,7 @@
  * - Architect (Planner): Plans features, interviews, writes plans
  * - Swarm (Orchestrator): Delegates, spawns workers, verifies, merges
  * - Scout (Research/Collector): Explores codebase and external docs
- * - Forager (Worker/Coder): Executes tasks in isolation
+ * - Forager (Worker/Coder): Executes delegated work in its assigned workspace
  * - Plan Reviewer: Reviews plan readiness
  * - Code Reviewer: Reviews implementation changes
  * - Simplicity Reviewer: Reviews implementation changes for deletion-biased cleanup
@@ -38,7 +38,7 @@ export { vulnerabilityReviewerAgent, VULNERABILITY_REVIEWER_PROMPT } from './vul
  * - architect: Discovery/planning (requirements, plan writing)
  * - swarm: Orchestration (delegates, verifies, merges)
  * - scout: Research/collection (codebase + external docs/data)
- * - forager: Worker/coder (executes tasks in worktrees)
+ * - forager: Worker/coder (executes in the workspace selected by its assignment)
  * - plan-reviewer: Reviews plan readiness
  * - code-reviewer: Reviews implementation changes
  * - simplicity-reviewer: Reviews implementation changes for deletion-biased cleanup
@@ -70,7 +70,7 @@ export const hiveAgents = {
   },
   forager: {
     name: 'Forager (Worker/Coder)',
-    description: 'Executes tasks directly in isolated worktrees. Never delegates.',
+    description: 'Executes delegated work directly in its assigned workspace. Never delegates.',
     mode: 'subagent' as const,
   },
   'hive-helper': {

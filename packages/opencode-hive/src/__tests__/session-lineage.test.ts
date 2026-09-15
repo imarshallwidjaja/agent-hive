@@ -102,7 +102,9 @@ describe('session origin stamp and lineage tracking', () => {
     await hooks['chat.message']!({ sessionID: 'backup', agent: 'hive-master' } as any, { message: { agent: 'hive-master' }, parts: [] } as any);
     await hooks['tool.execute.before']!({ sessionID: 'backup', tool: 'read' } as any, { args: {} });
     for (const tool of ['task', 'hive_feature_create']) {
-      await hooks['tool.execute.before']!({ sessionID: 'backup', tool } as any, { args: {} });
+      const input = { sessionID: 'backup', tool, callID: `backup-${tool}` };
+      await hooks['tool.execute.before']!(input, { args: { subagent_type: 'scout-researcher' } });
+      await hooks['tool.execute.after']!({ ...input, args: {} }, { title: tool, output: '', metadata: {} });
     }
     sessionStore.child = { id: 'child', parentID: 'origin' };
     await hooks['chat.message']!({ sessionID: 'child', agent: 'architect-planner' } as any, { message: { agent: 'architect-planner' }, parts: [] } as any);
@@ -129,7 +131,7 @@ describe('session origin stamp and lineage tracking', () => {
   it('keeps non-Hive child tools without granting Hive authority or injecting catalogs', async () => {
     const hooks = await loadTestHooks(testRoot);
     sessionStore.child = { id: 'child', parentID: 'parent' };
-    await hooks['chat.message']!({ sessionID: 'child', agent: 'general' } as any, { message: { agent: 'general' }, parts: [] } as any);
+    await hooks['chat.message']!({ sessionID: 'child', agent: 'custom-assistant' } as any, { message: { agent: 'custom-assistant' }, parts: [] } as any);
     await hooks['tool.execute.before']!({ sessionID: 'child', tool: 'read' } as any, { args: {} });
     const output = { system: [] as string[] };
     await hooks['experimental.chat.system.transform']!({ sessionID: 'child' } as any, output);
@@ -144,7 +146,9 @@ describe('session origin stamp and lineage tracking', () => {
       await hooks.event!({ event: { type: 'session.created', properties: { info: { id: sessionID } } } } as any);
       await hooks['chat.message']!({ sessionID, agent: 'hive-master' } as any, { message: { agent: 'hive-master' }, parts: [] } as any);
       for (const tool of ['read', 'task', 'hive_feature_create']) {
-        await hooks['tool.execute.before']!({ sessionID, tool } as any, { args: {} });
+        const input = { sessionID, tool, callID: `${sessionID}-${tool}` };
+        await hooks['tool.execute.before']!(input, { args: { subagent_type: 'scout-researcher' } });
+        await hooks['tool.execute.after']!({ ...input, args: {} }, { title: tool, output: '', metadata: {} });
       }
     }
   });

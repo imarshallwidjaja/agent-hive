@@ -48,6 +48,11 @@ export interface AdhocCreateOptions {
   repoIds?: string[];
 }
 
+export interface AdhocCreateTarget {
+  runId: string;
+  workspacePath: string;
+}
+
 export interface AdhocWorktreeRepoInfo {
   path: string;
   branch: string;
@@ -703,6 +708,12 @@ export class AdhocWorktreeService {
     const slug = label ? this.slugify(label) : '';
     const id = slug ? `${ts}-${slug}-${rand}` : `${ts}-${rand}`;
     return id;
+  }
+
+  resolveCreateTarget(options: Pick<AdhocCreateOptions, 'runId' | 'label'> = {}): AdhocCreateTarget {
+    const runId = options.runId ?? this.generateRunId(options.label);
+    this.assertSafeRunId(runId);
+    return { runId, workspacePath: this.getWorktreePath(runId) };
   }
 
   async create(options: AdhocCreateOptions = {}): Promise<AdhocWorktreeInfo> {

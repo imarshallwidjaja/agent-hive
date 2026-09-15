@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import { getFeaturePath, getGlobalSessionsPath, ensureDir, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
-import type { SessionInfo, SessionsJson, StandingConstraintEntry, WorkerAssignmentDescriptor } from '../types.js';
+import type { NativeTaskLease, SessionInfo, SessionsJson, StandingConstraintEntry, WorkerAssignmentDescriptor } from '../types.js';
 import { WORKER_ASSIGNMENT_FORMAT } from '../types.js';
 
 export const STANDING_CONSTRAINTS_MAX_CHARS = 8000;
@@ -38,6 +38,11 @@ function hasWorkerAssignment(session: Partial<SessionInfo>): boolean {
     throw new SessionContinuityError('invalid_worker_assignment', 'invalid immutable worker assignment');
   }
   return true;
+}
+
+function hasExistingWorkspaceAssignment(session: Partial<SessionInfo>): boolean {
+  return session.executionWorkspacePath !== undefined
+    && session.workerAssignment === undefined && session.adHocRunId === undefined;
 }
 
 export interface StandingConstraintRegister {
@@ -81,6 +86,48 @@ const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
 export class SessionService {
   constructor(private projectRoot: string) {}
 
+  listNativeTaskLeases(): NativeTaskLease[] {
+    return this.getGlobalSessions().nativeTaskLeases ?? [];
+  }
+
+  admitNativeTaskLease(lease: NativeTaskLease): void {
+    if (!lease.parentSessionId.trim() || !lease.callId.trim() || !lease.agent.trim() || !lease.runtimeId.trim()
+      || !path.isAbsolute(lease.projectRoot) || !lease.resourcePaths.length
+      || lease.resourcePaths.some(resource => !path.isAbsolute(resource)) || lease.childSessionId || lease.terminal
+      || (lease.capabilityReason !== undefined && !lease.capabilityReason.trim())
+      || (lease.foragerLaunchId !== undefined && (!lease.foragerLaunchId.trim() || lease.capabilityReason !== undefined))) {
+      throw new Error('Invalid native task lease');
+    }
+    this.updateGlobalSessions(data => {
+      const leases = data.nativeTaskLeases ??= [];
+      if (leases.some(item => item.parentSessionId === lease.parentSessionId && item.callId === lease.callId)) {
+        throw new Error('Native task call already admitted');
+      }
+      leases.push(structuredClone(lease));
+    });
+  }
+
+  bindNativeTaskLease(parentSessionId: string, callId: string, childSessionId: string, agent: string): void {
+    this.updateGlobalSessions(data => {
+      const leases = data.nativeTaskLeases ?? [];
+      const lease = leases.find(item => item.parentSessionId === parentSessionId && item.callId === callId);
+      if (!lease || lease.agent !== agent || !childSessionId.trim()
+        || (lease.childSessionId && lease.childSessionId !== childSessionId)
+        || leases.some(item => item !== lease && item.childSessionId === childSessionId)) {
+        throw new Error('Contradictory native task child association');
+      }
+      lease.childSessionId = childSessionId;
+    });
+  }
+
+  finishNativeTaskLease(parentSessionId: string, callId: string, childSessionId: string): void {
+    this.updateGlobalSessions(data => {
+      const lease = data.nativeTaskLeases?.find(item => item.parentSessionId === parentSessionId && item.callId === callId);
+      if (!lease || lease.childSessionId !== childSessionId) throw new Error('Native task terminal identity mismatch');
+      lease.terminal = true;
+    });
+  }
+
   private applySessionPatch(target: SessionInfo, patch?: Partial<SessionInfo>): void {
     const targetHasAssignment = hasWorkerAssignment(target);
     if (!patch) {
@@ -93,10 +140,12 @@ export class SessionService {
       throw new Error('assignment_recovery_error: immutable duplicate source cannot change');
     }
     hasWorkerAssignment(rest);
-    if (targetHasAssignment || Object.prototype.hasOwnProperty.call(target, 'adHocRunId')) {
+    if (targetHasAssignment
+      || Object.prototype.hasOwnProperty.call(target, 'adHocRunId')
+      || Object.prototype.hasOwnProperty.call(target, 'executionWorkspacePath')) {
       const identityFields: Array<keyof SessionInfo> = [
         'workerAssignment', 'assignmentSourceSessionId', 'duplicatedFromSessionId', 'adHocRunId', 'projectRoot',
-        'featureName', 'taskFolder', 'parentSessionId', 'sessionKind', 'agent', 'baseAgent',
+        'featureName', 'taskFolder', 'parentSessionId', 'sessionKind', 'agent', 'baseAgent', 'executionWorkspacePath',
       ];
       for (const key of identityFields) {
         if (!Object.prototype.hasOwnProperty.call(rest, key) || rest[key] === undefined) continue;
@@ -196,6 +245,9 @@ export class SessionService {
       if (Object.prototype.hasOwnProperty.call(current, 'adHocRunId') && current.featureName !== featureName) {
         throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot acquire another feature binding');
       }
+      if (hasExistingWorkspaceAssignment(current)) {
+        throw new Error('assignment_recovery_error: an immutable existing-workspace assignment cannot acquire a feature binding');
+      }
 
       current.featureName = featureName;
       current.lastActiveAt = now;
@@ -228,6 +280,9 @@ export class SessionService {
       if (Object.prototype.hasOwnProperty.call(current, 'adHocRunId')) {
         throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot become a task assignment');
       }
+      if (hasExistingWorkspaceAssignment(current)) {
+        throw new Error('assignment_recovery_error: an immutable existing-workspace assignment cannot become a task assignment');
+      }
       if (current.parentSessionId && current.parentSessionId !== parentSessionId) {
         throw new Error('assignment_recovery_error: parent session mismatch');
       }
@@ -251,7 +306,9 @@ export class SessionService {
     return this.updateGlobalSessions((data) => {
       const source = data.sessions.find(candidate => candidate.sessionId === sourceSessionId);
       if (!source) throw new SessionContinuityError('missing_origin', 'missing generic duplicate source');
-      if (hasWorkerAssignment(source) || sessionId === sourceSessionId) {
+      if (hasWorkerAssignment(source)
+        || Object.prototype.hasOwnProperty.call(source, 'executionWorkspacePath')
+        || sessionId === sourceSessionId) {
         throw new SessionContinuityError('invalid_origin', 'invalid immutable generic duplicate origin');
       }
       const current = this.getOrCreateGlobalSession(data, sessionId);
@@ -263,6 +320,7 @@ export class SessionService {
       };
       if (current.parentSessionId !== undefined || current.workerAssignment !== undefined
         || current.taskFolder !== undefined || current.workerPromptPath !== undefined || current.adHocRunId !== undefined
+        || current.executionWorkspacePath !== undefined
         || current.assignmentSourceSessionId !== undefined
         || Object.entries(identity).some(([key, value]) =>
           current[key as keyof SessionInfo] !== undefined && current[key as keyof SessionInfo] !== value)) {
@@ -287,6 +345,9 @@ export class SessionService {
       if (recipient && Object.prototype.hasOwnProperty.call(recipient, 'adHocRunId')) {
         throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot become a task assignment');
       }
+      if (recipient && hasExistingWorkspaceAssignment(recipient)) {
+        throw new Error('assignment_recovery_error: an immutable existing-workspace assignment cannot become a task assignment');
+      }
       const currentHasAssignment = recipient ? hasWorkerAssignment(recipient) : false;
       const source = data.sessions.find(candidate => candidate.sessionId === sourceSessionId);
       if (!source || !hasWorkerAssignment(source)) return undefined;
@@ -296,6 +357,7 @@ export class SessionService {
       while (ancestor) {
         if (visited.has(ancestor.sessionId) || visited.size > 32
           || Object.prototype.hasOwnProperty.call(ancestor, 'adHocRunId')
+          || hasExistingWorkspaceAssignment(ancestor)
           || !hasWorkerAssignment(ancestor)
           || !workerAssignmentsEqual(ancestor.workerAssignment, source.workerAssignment!)) {
           throw new Error('assignment_recovery_error: invalid immutable duplicate provenance');
@@ -340,6 +402,7 @@ export class SessionService {
         featureName: source.featureName,
         taskFolder: source.taskFolder,
         workerAssignment: { ...source.workerAssignment! },
+        executionWorkspacePath: source.executionWorkspacePath,
         assignmentSourceSessionId: canonicalSourceId,
         duplicatedFromSessionId: sourceSessionId,
         standingConstraints: source.standingConstraints,

@@ -35,6 +35,30 @@ describe('SessionService', () => {
     cleanup();
   });
 
+  it('persists immutable native call associations independently of session origin copies', () => {
+    const lease = { parentSessionId: 'parent', callId: 'call', agent: 'general', projectRoot: PROJECT_ROOT,
+      resourcePaths: [PROJECT_ROOT], runtimeId: 'runtime', capabilityReason: 'Specialist capability' };
+    service.admitNativeTaskLease(lease);
+    expect(() => service.admitNativeTaskLease({ ...lease, agent: 'hive-helper' })).toThrow(/already admitted/);
+    expect(new SessionService(PROJECT_ROOT).listNativeTaskLeases()).toEqual([lease]);
+    service.bindNativeTaskLease('parent', 'call', 'child', 'general');
+    expect(() => service.bindNativeTaskLease('parent', 'call', 'other', 'general')).toThrow(/Contradictory/);
+    expect(() => service.bindNativeTaskLease('parent', 'call', 'child', 'hive-helper')).toThrow(/Contradictory/);
+    service.trackGlobal('parent', { sessionKind: 'primary' });
+    service.copySessionOrigin('copy', 'parent');
+    expect(new SessionService(PROJECT_ROOT).listNativeTaskLeases()).toHaveLength(1);
+    expect(() => service.finishNativeTaskLease('parent', 'call', 'other')).toThrow(/identity mismatch/);
+    service.finishNativeTaskLease('parent', 'call', 'child');
+    expect(new SessionService(PROJECT_ROOT).listNativeTaskLeases()[0]).toMatchObject({ childSessionId: 'child', terminal: true });
+    const foragerLease = { parentSessionId: 'parent', callId: 'forager-call', agent: 'forager-worker',
+      projectRoot: PROJECT_ROOT, resourcePaths: [PROJECT_ROOT], runtimeId: 'runtime', foragerLaunchId: 'prepared-launch' };
+    expect(() => service.admitNativeTaskLease({ ...foragerLease, foragerLaunchId: ' ' })).toThrow(/Invalid/);
+    expect(() => service.admitNativeTaskLease({ ...foragerLease, capabilityReason: 'Cannot grant native capability authority' })).toThrow(/Invalid/);
+    service.admitNativeTaskLease(foragerLease);
+    expect(new SessionService(PROJECT_ROOT).listNativeTaskLeases()[1]).toEqual(foragerLease);
+    expect(() => service.bindNativeTaskLease('parent', 'forager-call', 'child', 'forager-worker')).toThrow(/Contradictory/);
+  });
+
   describe('generic origin copy', () => {
     for (const malformed of [null, false, '', 0, {}, [], { format: 'hive-worker-assignment/v1' }]) {
       for (const target of ['source', 'recipient']) {
@@ -529,6 +553,39 @@ describe('SessionService', () => {
       }
       expect(() => service.bindFeature('adhoc', 'other-feature')).toThrow(/immutable/);
       expect(service.getGlobal('adhoc')).toEqual(bound);
+    });
+    it('keeps existing-workspace execution identity immutable without granting feature or copy authority', () => {
+      const bound = service.trackGlobal('existing-workspace', {
+        parentSessionId: 'parent',
+        projectRoot: PROJECT_ROOT,
+        executionWorkspacePath: PROJECT_ROOT,
+        agent: 'forager-worker',
+        baseAgent: 'forager-worker',
+        sessionKind: 'task-worker',
+      });
+      for (const patch of [
+        { executionWorkspacePath: '/other' },
+        { projectRoot: '/relocated' },
+        { parentSessionId: 'other' },
+        { sessionKind: 'subagent' as const },
+      ]) {
+        expect(() => service.trackGlobal('existing-workspace', patch)).toThrow(/immutable/);
+      }
+      expect(() => service.bindFeature('existing-workspace', 'other-feature')).toThrow(/immutable/);
+      expect(() => service.copySessionOrigin('copy', 'existing-workspace')).toThrow(/invalid immutable generic duplicate origin/);
+      expect(() => service.bindWorkerAssignment('existing-workspace', 'parent', validAssignment)).toThrow(/existing-workspace assignment/);
+      expect(service.getGlobal('existing-workspace')).toEqual(bound);
+    });
+    it('preserves task continuity and same-feature binding with an execution resource marker', () => {
+      service.bindWorkerAssignment('source', 'parent', validAssignment, {
+        executionWorkspacePath: PROJECT_ROOT,
+        agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker',
+      });
+      expect(service.bindFeature('source', validAssignment.featureName).workerAssignment).toEqual(validAssignment);
+      expect(service.copyWorkerAssignment('copy', 'source')?.executionWorkspacePath).toBe(PROJECT_ROOT);
+      expect(service.copyWorkerAssignment('copy', 'source')?.workerAssignment).toEqual(validAssignment);
+      expect(service.copyWorkerAssignment('fork', 'copy')?.assignmentSourceSessionId).toBe('source');
+      expect(service.bindFeature('fork', validAssignment.featureName).workerAssignment).toEqual(validAssignment);
     });
     it('persists canonical immutable provenance and mirrors it as a projection', () => {
       setupFeature('feature-assignment');

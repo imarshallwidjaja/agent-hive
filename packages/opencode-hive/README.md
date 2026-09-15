@@ -294,6 +294,10 @@ Use ad-hoc orchestration when you need isolation, delegation, verification, and 
 
 The ad-hoc orchestrator uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. `hive_adhoc_worktree_create` creates the workspace and, unless `autoSpawnWorker: false`, prepares the first Forager launch. `hive_adhoc_worktree_start({ runId, workerInstructions })` prepares a fresh attempt on that run. Gate-closed sessions return blocking `taskToolCall`; gate-open sessions also return `backgroundTaskCall` (same `hive_launch_id`, plus `background: true`). Spread the returned call object so `hive_launch_id` is preserved; do not invent one. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only worktrees. Reuse the existing worktree on retry; do not discard failed work by default. See `docs/HIVE-TOOLS.md` for the full tool contracts.
 
+Forager is an execution role. `hive_existing_workspace_start({ workspacePath, workerInstructions })` prepares its immutable launch in the exact active canonical Git checkout or a genuine non-Git directory. Preparation, claim, and authority resolution validate real paths and Git metadata. Inactive paths, linked worktrees, managed aliases, and malformed metadata are denied. This placement grants no automatic commit/merge/reset/cleanup or managed-context authority; the parent inspects effects and dirty state.
+
+Use native `general` only for a rare capability exception, with a specific nonblank `hive_capability_reason` and no `hive_launch_id`. The reason appears in the description and durable admission record, then is stripped before native dispatch. It declares a need without proving a capability gap or granting Hive authority. General has ordinary tools only and cannot delegate or ask questions. Native helpers retain bounded operational permissions. Both reserve the active root before dispatch and retain ownership through background return, errors, missing callbacks, deletion, and restart until exact child terminal evidence. Helpers can operate under their own authenticated reservation while other overlapping writers remain fenced.
+
 ### Background Orchestration
 
 With the env gate unset (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), Hive keeps normal blocking `task()` wait mode. Background board tools report `background_tools_disabled`, and no background appendix is injected into primary prompts.
@@ -682,7 +686,7 @@ The same seven built-in bases allow an optional routing-description override und
 | Configurable base | Canonical default description |
 |-------------------|-------------------------------|
 | `scout-researcher` | Retrieves bounded internal or external code, context, and data evidence without owning diagnosis, tradeoffs, or solution selection. |
-| `forager-worker` | Implements and verifies changes in an isolated worktree; diagnosis-only assignments remain report-only. |
+| `forager-worker` | Implements and verifies delegated work in its assigned workspace; diagnosis-only assignments remain report-only. |
 | `plan-reviewer` | Default for ordinary plan review covering worker readiness, references, dependencies, and executable verification. |
 | `code-reviewer` | Default for ordinary implementation review covering correctness, tests, risk, scope creep, YAGNI, and dead code. |
 | `simplicity-reviewer` | Default for ordinary post-implementation simplicity review covering unnecessary abstractions, duplication, dead code, and safe deletion. |

@@ -76,7 +76,11 @@ function withPackedPackage(packageRoot, inspect) {
 
   try {
     const stdout = runPackageCommand(packageRoot, 'npm', ['pack', '--json', '--pack-destination', temporaryRoot]);
-    const [packResult] = JSON.parse(stdout);
+    const packed = JSON.parse(stdout);
+    // npm 12 keys pack results by package name; older npm returns an array.
+    const results = Array.isArray(packed) ? packed : Object.values(packed);
+    assert.equal(results.length, 1, 'Expected exactly one packed package');
+    const [packResult] = results;
     const tarballPath = path.join(temporaryRoot, packResult.filename);
     execFileSync('tar', ['-xzf', tarballPath, '-C', extractedRoot]);
     return inspect(path.join(extractedRoot, 'package'), new Set(packResult.files.map((file) => file.path)));

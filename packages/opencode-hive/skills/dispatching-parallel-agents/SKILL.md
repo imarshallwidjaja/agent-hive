@@ -94,7 +94,11 @@ const blocking = JSON.parse(await hive_worktree_start({ task: "03-fix-cleanup-te
 await task({ ...blocking.taskToolCall })
 ```
 
-Independent Forager targets may be prepared and dispatched under one parent. The preparation response includes `launchId`; nested `taskToolCall.hive_launch_id` and `backgroundTaskCall.hive_launch_id` carry that same selector. Spread the nested call object; do not invent a `hive_launch_id`. The same feature task or ad-hoc run stays serial: a known active/pending tool or uncertain native identity fences that resource. Unrelated targets may continue. Unused preparation expires after five minutes. Claimed uncertain execution is not stopped by expiry, restart, or archive. If exact native evidence cannot establish that the old execution stopped, preserve the original worktree. For safely separable work, use a fresh isolated workspace or a new ad-hoc run. Do not copy mutable progress while the old worker may still be running. A normal recoverable retry reuses the original worktree after native terminal evidence. This includes diagnosis-only Foragers; non-feature diagnosis uses spawning-enabled `hive_adhoc_worktree_create` or `hive_adhoc_worktree_start` on an existing run. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch and omit `hive_launch_id`. Inspect `launchId` and unresolved claims on `hive_background_status`; `hive_status` is not that surface.
+Independent Forager targets may be prepared and dispatched under one parent. Use `hive_worktree_start` for managed tasks, `hive_existing_workspace_start` for the exact active non-managed workspace, or the ad-hoc tools for isolated non-feature work. Preserve the returned `hive_launch_id`; do not invent one. Equality, aliases, and ancestor/descendant path overlap share one writer fence even when logical IDs differ. Active and uncertain reservations block conflicting preparation, dispatch, and lifecycle mutation. Treat installs, builds, formatters, generators, and tests as mutations. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch and omit `hive_launch_id`.
+
+Use Forager-derived workers for delegated execution. A rare `general` capability exception requires a specific nonblank `hive_capability_reason` on native `task()` and no `hive_launch_id`. The reason declares the need without proving a capability gap. General receives ordinary tools only, no Hive authority, recursion, or questions. Native helpers retain bounded permissions. Both reserve the active root before dispatch; background return, errors, missing callbacks, deletion, and restart do not release ownership without exact child terminal evidence. An authenticated helper can operate under its own reservation while other overlapping writers remain fenced. Unknown targets remain denied. Hive's bounded Architect planning lane remains available, with project admission and mutation-tool leases. Existing placement supports only the exact active canonical checkout or genuine non-Git directory; real paths and Git metadata are revalidated at preparation, claim, and authority resolution. Try existing-workspace preparation before an independently authorized primary considers direct fallback for `unsupported_workspace_placement`. Conflict, authority, and internal failures never permit fallback. Existing-workspace workers verify, inspect effects and dirty state, and report without automatic commit, merge, reset, or cleanup. Worktree integration follows its authorized lifecycle.
+
+Recover native binding from exact parent/call metadata only; never guess the latest child or infer ownership from prose. Preserve the workspace while a writer may still be live, and never copy its mutable progress. Retry managed task or ad-hoc work in the same worktree only after exact terminal or confirmed-cancelled evidence. Archive, restart, and preparation expiry do not release uncertain execution. See `background-delegation` for board recovery.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
 
 ```typescript
@@ -110,7 +114,9 @@ When agents return:
 - Read each summary
 - Verify fixes don't conflict
 - Run full test suite
-- Integrate all changes with `hive_merge`
+- For managed task worktrees, integrate accepted changes with `hive_merge`.
+- For ad-hoc worktrees, use the authorized `hive_adhoc_worktree_commit` and `hive_adhoc_merge` lifecycle.
+- For existing-workspace execution, inspect effects and dirty state, then report; do not automatically commit, merge, reset, or clean up.
 
 ## Agent Prompt Structure
 

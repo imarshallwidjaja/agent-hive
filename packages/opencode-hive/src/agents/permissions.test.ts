@@ -1768,7 +1768,7 @@ describe('Agent permissions', () => {
     }
   });
 
-  it.each(['general', 'custom-assistant'])('admits ordinary tools for non-Hive children without injecting authority context (%s)', async (agent) => {
+  it.each(['general', 'custom-assistant'])('requires admission for general while preserving unrelated non-Hive children (%s)', async (agent) => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-non-hive-child-'));
     createGitRepository(repository);
     try {
@@ -1784,7 +1784,9 @@ describe('Agent permissions', () => {
       await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: sessionID, parentID: 'parent' } } } } as any);
       await hooks['chat.message']?.({ sessionID, agent }, { message: { agent }, parts: [] } as any);
       for (const tool of ['read', 'bash', 'glob']) {
-        await hooks['tool.execute.before']?.({ tool, sessionID, callID: tool }, { args: {} } as any);
+        const invocation = hooks['tool.execute.before']?.({ tool, sessionID, callID: tool }, { args: {} } as any);
+        if (agent === 'general') await expect(invocation).rejects.toThrow(/no corroborated admitted task call/);
+        else await invocation;
       }
       const output = { messages: [{ info: { id: 'message', sessionID, role: 'user' }, parts: [{ type: 'text', text: 'Continue' }] }] };
       const before = JSON.stringify(output);
@@ -7263,6 +7265,7 @@ describe('Per-agent tool filtering', () => {
       await expect(taskHook({ tool: 'bash', sessionID: 'untracked-dash-session', callID: 'unexpected-primary' }, {
         args: { command: 'echo runtime-owned' },
       })).resolves.toBeUndefined();
+      await hooks['tool.execute.after']?.({ tool: 'bash', sessionID: 'untracked-dash-session', callID: 'unexpected-primary', args: {} }, { title: '', output: '', metadata: {} });
       await (hooks as any)['command.execute.before']({
         command: 'dash-review',
         sessionID: 'untracked-dash-session',
@@ -9296,6 +9299,7 @@ describe('Per-agent tool filtering', () => {
     const tools = builder!.tools!;
     expect(tools).toBeTruthy();
     // Allowed (entries absent = allowed)
+    expect(tools['hive_existing_workspace_start']).toBeUndefined();
     expect(tools['hive_adhoc_worktree_create']).toBeUndefined();
     expect(tools['hive_adhoc_worktree_commit']).toBeUndefined();
     expect(tools['hive_adhoc_merge']).toBeUndefined();
@@ -9333,6 +9337,7 @@ describe('Per-agent tool filtering', () => {
     const agents = await buildConfig('unified');
     const helperTools = agents['hive-helper']?.tools;
     expect(helperTools).toBeTruthy();
+    expect(helperTools!['hive_existing_workspace_start']).toBe(false);
     expect(helperTools!['hive_adhoc_worktree_create']).toBe(false);
     expect(helperTools!['hive_adhoc_worktree_commit']).toBe(false);
     expect(helperTools!['hive_adhoc_merge']).toBe(false);

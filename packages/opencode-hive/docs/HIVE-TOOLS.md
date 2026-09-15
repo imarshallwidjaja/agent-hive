@@ -1,6 +1,6 @@
 # Hive Tools Inventory
 
-## Standard Hive Tools (37 total)
+## Standard Hive Tools (38 total)
 
 ### Feature Management (2 tools)
 | Tool | Purpose |
@@ -131,13 +131,30 @@ Task-backed worktree, ad-hoc worktree, and merge results carry the same recovery
 - `promptMeta`, `payloadMeta`, `budgetApplied`, `warnings`: size and budget observability
 - In gate-open sessions, `hive_worktree_start` can also return a `backgroundTaskCall` for independent work that can run while useful foreground work continues. The pending background board entry is created only after the parent actually launches the native background `task({ background: true, ... })`; blocking `hive_worktree_start` remains the correct path when the next meaningful step depends on the worker result.
 - The preparation response includes `launchId`. Nested `taskToolCall.hive_launch_id` and `backgroundTaskCall.hive_launch_id` carry that same selector. Spread the nested call object into `task()`; do not pass `launchId` as a `task()` argument. Runtime strips `hive_launch_id` and injects the canonical prepared prompt. Editing a prepared Forager dispatch prompt cannot update its instructions. `launchId` is checked against the authenticated parent, runtime, and target; it is not a credential. Do not invent a `hive_launch_id`.
-- Every Forager lane, including diagnosis-only work, needs a prepared launch. Persist or supply feature Forager context through supported prep inputs before Hive generates the immutable assignment. Non-feature diagnosis uses spawning-enabled `hive_adhoc_worktree_create` or `hive_adhoc_worktree_start` on an existing run, with full instructions in `workerInstructions`. Independent targets may be prepared and dispatched under one parent. The same feature task or ad-hoc run stays serial: a known active/pending tool or uncertain native identity fences that resource before a new assignment. Unrelated targets may continue. Unused preparation expires after five minutes; plugin restart invalidates unused preparation. Claimed uncertain execution is not stopped by expiry, restart, or archive. Recover missing binding from exact parent/call metadata only; do not guess the latest child or infer ownership from prose. A native error or idle event alone does not prove stop. Fresh completed or confirmed-cancelled evidence permits retry. There is no automatic unfence or force bypass. If exact native evidence cannot establish that the old execution stopped, preserve the original worktree. For safely separable work, use a fresh isolated workspace or a new ad-hoc run. Archive, restart, and unused-preparation expiry do not free the original resource. Do not copy mutable progress while the old worker may still be running. A normal recoverable retry reuses the original worktree after native terminal evidence. Ordinary Scout, advisor, and reviewer packets still go in `task.prompt` and omit `hive_launch_id`.
+- Every Forager lane, including diagnosis-only work, needs a prepared launch. Use `hive_worktree_start` for managed tasks, `hive_existing_workspace_start` for the exact active canonical checkout or genuine non-Git directory, and the ad-hoc worktree tools for isolated non-feature work. Preparation, claim, and authority resolution validate real paths and Git metadata; linked worktrees, managed aliases, and malformed metadata are denied. Runtime binds immutable instructions to the authenticated parent, native call, child, selected Forager-derived agent, and normalized execution resource. Equality, path aliases, and ancestor/descendant overlap share one writer fence even when logical IDs differ. Unused preparation expires after five minutes; claimed uncertain execution remains fenced until exact terminal or confirmed-cancelled evidence. Existing-workspace placement grants no automatic lifecycle or managed-context authority. Ordinary Scout, advisor, and reviewer packets still go in `task.prompt` and omit `hive_launch_id`.
+- Native `general` is a rare capability exception requiring a specific nonblank `hive_capability_reason` and no `hive_launch_id`. Other targets must omit the reason. Runtime records the reason in the description and durable parent/call admission before stripping it from native arguments. The declaration does not prove a capability gap. General has ordinary tools only, no Hive authority, recursion, or questions. Helper calls retain bounded operational permissions. Both reserve the runtime-derived active root before dispatch; background return, parent errors, missing callbacks, deletion, and restart retain ownership until exact child terminal evidence. Helpers may operate under their own authenticated reservation while every other overlapping writer remains fenced.
 - Every native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches.
 - Do not pass `task_id` to `task()`. Returned task IDs are observe-only handles for background management and read-only runtime-visible session inspection with `hive_task_trace`; they are not inputs for session continuation. Recovery context belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
 - The `question` tool is reserved for primary sessions. Subagents return required operator clarification as an exact terminal-response question for their parent orchestrator.
 - A blocked feature continuation starts a new worker session in the same worktree with the operator decision. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
 - One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
 - `hive_worktree_start` and `hive_worktree_create` preflight failures report the shared recovery fields instead of launch payloads ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)).
+
+### Existing Workspace (1 tool)
+
+`hive_existing_workspace_start({ workspacePath, workerInstructions })` prepares a Forager-derived launch in the exact active OpenCode workspace without creating a worktree. The path must resolve to the active workspace supplied by OpenCode; existing inactive paths return `unsupported_workspace_placement`, while missing paths return `workspace_preparation_failed`. Hive-managed worktrees return `workspace_authorization_denied` and must continue through their original lifecycle.
+
+Allowed callers are authenticated primary `hive-master`, `swarm-orchestrator`, and `hive-builder` sessions. Child sessions and managed-worktree rebinding are denied.
+
+The response separates `authorizationRoot` from `workspacePath` and returns the standard `launchId`, `taskToolCall`, and optional `backgroundTaskCall`. Git is not required. The worker must preserve existing changes and report effects and remaining dirty state. Hive lifecycle and managed-context tools are denied. The worker must also avoid commit, merge, reset, cleanup, and worktree operations through shell commands; this tool gate does not confine arbitrary shell execution. Existing-workspace completion is verify, inspect, and report, with no automatic integration or cleanup. Primary installs, builds, formatters, generators, and tests count as mutations while the workspace is reserved.
+
+| Failure reason | Recovery |
+| --- | --- |
+| `invalid_arguments` | Supply nonblank workspace path and instructions. |
+| `unsupported_workspace_placement` | The resolved path is not the active workspace. Open that workspace and prepare there. Only this placement failure permits independently authorized direct primary fallback within operator-approved scope. |
+| `workspace_authorization_denied` | Repair authenticated caller or placement identity; never bypass through direct execution. |
+| `workspace_conflict_denied` | Inspect exact native execution and wait for terminal or confirmed-cancelled evidence. No fallback. |
+| `workspace_preparation_failed` | Inspect path-resolution or internal preparation failure. No fallback. |
 
 ### Ad-hoc Worktree (5 tools)
 
@@ -193,7 +210,7 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 - Subagents must not start background tasks or manage the background board.
 - Returned background task IDs are observe-only board handles for status, reconcile, and cancel. Never pass `task_id` to `task()` or treat it as an input for session continuation.
 - Cancellation is not rollback. `hive_background_cancel` does not revert files, branches, worktrees, commits, or task reports; it only records a cancellation request and any confirmed runtime cancellation. Cancel is unavailable without a real native identity.
-- The board persists claimed-launch bookkeeping distinct from real native jobs. `hive_background_status` exposes `launchId` and unresolved claims; `hive_status` is not that surface. Do not invent native task IDs. Exact later callbacks can resolve a claim; otherwise inspect native execution or ignore/reconcile bookkeeping. Reconcile and ignore archive the board row and do not prove the writer stopped. Runtime fences same-resource writer preparation and dispatch while a writer is active or uncertain. Merge and cleanup tools do not reject those operations; the operator or orchestrator MUST treat an active or uncertain writer as blocking merge and cleanup until exact native evidence establishes termination. Archive/ignore does not stop a worker or authorize a replacement writer. TTL sweeps unused preparations only.
+- The board persists claimed-launch bookkeeping distinct from real native jobs. `hive_background_status` exposes `launchId` and unresolved claims; `hive_status` is not that surface. Do not invent native task IDs. Exact later callbacks can resolve a claim; otherwise inspect native execution or ignore/reconcile bookkeeping. Reconcile and ignore archive the board row and do not prove the writer stopped. Runtime fences same-resource writer preparation, dispatch, ad-hoc commit/merge/cleanup, and managed discard/merge while a writer is active or uncertain. Archive/ignore does not stop a worker or authorize a replacement writer. TTL sweeps unused preparations only.
 - If a background lane cannot be resumed safely, use no-resume retry/escalation: start a fresh scoped attempt when the resource is unfenced, ignore the stale bookkeeping with a reason, or escalate the concrete blocker to the operator.
 
 ### Runtime Session Inspection (2 tools)
@@ -490,6 +507,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Plan | 4 | write, patch, read, approve |
 | Task | 3 | sync, create, update |
 | Worktree (task-backed) | 4 | start, create, commit, discard |
+| Existing Workspace | 1 | start |
 | Ad-hoc Worktree | 5 | create, start, commit, merge, cleanup |
 | Background Orchestration | 4 | status, reconcile, batch reconcile, cancel |
 | Runtime Session Inspection | 2 | trace, source-backed content |
@@ -497,7 +515,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Context | 4 | read, write, append, archive |
 | Operator Constraints | 4 | read, add, edit, clear |
 | Status | 1 | status |
-| **Total** | **37** | |
+| **Total** | **38** | |
 
 ## Feature Resolution
 

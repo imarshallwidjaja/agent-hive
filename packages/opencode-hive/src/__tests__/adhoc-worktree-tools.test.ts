@@ -155,6 +155,10 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(HIVE_TOOL_NAMES).toContain('hive_adhoc_cleanup');
   });
 
+  it('registers existing-workspace preparation separately from ad-hoc lifecycle tools', () => {
+    expect(HIVE_TOOL_NAMES).toContain('hive_existing_workspace_start');
+  });
+
   it('does not include opencode-native task_status in HIVE_TOOL_NAMES', () => {
     expect(HIVE_TOOL_NAMES).not.toContain('task_status');
   });

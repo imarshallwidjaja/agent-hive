@@ -471,7 +471,7 @@ export class WorktreeService {
   }
 
   /** Legacy single-repo worktree path. */
-  private getWorktreePath(feature: string, step: string): string {
+  getWorktreePath(feature: string, step: string): string {
     return path.join(this.getWorktreesDir(), feature, step);
   }
 

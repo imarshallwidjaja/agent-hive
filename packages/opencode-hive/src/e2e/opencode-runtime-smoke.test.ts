@@ -237,8 +237,10 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
         ));
         const advertisesHiveLaunchID = isRecord(taskProperties?.hive_launch_id)
           && taskProperties.hive_launch_id.type === 'string';
+        const advertisesCapabilityReason = isRecord(taskProperties?.hive_capability_reason)
+          && taskProperties.hive_capability_reason.type === 'string';
 
-        if (!preservesBaseTaskFields || !advertisesHiveLaunchID) {
+        if (!preservesBaseTaskFields || !advertisesHiveLaunchID || !advertisesCapabilityReason) {
           res.writeHead(400, { 'content-type': 'application/json' });
           res.end(jsonResponse({ error: 'task schema does not preserve base fields and advertise hive_launch_id' }));
           return;
@@ -270,6 +272,7 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
               subagent_type: 'scout-researcher',
               background: false,
               hive_launch_id: 'runtime-launch-contract',
+              hive_capability_reason: 'Runtime schema preservation and stripping probe',
               runtime_unknown_probe: 'survives-model-schema-validation',
             }
           : requestsLargeSnapshot
@@ -674,9 +677,13 @@ export const ARuntimeLargeSnapshotPlugin = async () => ({
     if (typeof input.callID !== 'string' || typeof input.sessionID !== 'string') {
       throw new Error('Native task before-hook omitted callID or sessionID')
     }
+    if (output.args.hive_capability_reason !== 'Runtime schema preservation and stripping probe') {
+      throw new Error('Advertised capability reason did not reach tool.execute.before')
+    }
     runtimeTaskBefore.set(input.callID, { callID: input.callID, sessionID: input.sessionID })
     output.args.prompt += '\\nRUNTIME_BEFORE_HOOK_SAW_LAUNCH_ID'
     delete output.args.hive_launch_id
+    delete output.args.hive_capability_reason
     delete output.args.runtime_unknown_probe
   },
   event: async ({ event }: any) => {
@@ -1126,6 +1133,7 @@ export const ZRuntimeModelPlugin = async () => ({
       expect(nativeTaskInput.prompt).toEqual(expect.stringContaining('NATIVE_TASK_CHILD_FINAL_ONLY'));
       expect(nativeTaskInput.prompt).toEqual(expect.stringContaining('RUNTIME_BEFORE_HOOK_SAW_LAUNCH_ID'));
       expect(nativeTaskInput).not.toHaveProperty('hive_launch_id');
+      expect(nativeTaskInput).not.toHaveProperty('hive_capability_reason');
       expect(nativeTaskInput).not.toHaveProperty('runtime_unknown_probe');
       if (nativeTaskChildID) {
         expect(await runtimeSession.get({
@@ -1156,6 +1164,7 @@ export const ZRuntimeModelPlugin = async () => ({
       expect(taskProperties?.prompt).toBeDefined();
       expect(taskProperties?.subagent_type).toBeDefined();
       expect(taskProperties?.hive_launch_id).toMatchObject({ type: 'string' });
+      expect(taskProperties?.hive_capability_reason).toMatchObject({ type: 'string' });
 
       expect(fs.existsSync(correlationFile)).toBe(true);
       const correlation = JSON.parse(fs.readFileSync(correlationFile, 'utf8')) as unknown;
@@ -1421,7 +1430,7 @@ export const ZRuntimeModelPlugin = async () => ({
         const result = await runScenario(scenario);
         const scenarioEvidence = providerServer.evidence(scenario);
         expect(scenarioEvidence.taskSchemaProperties).toEqual(expect.arrayContaining([
-          'description', 'prompt', 'subagent_type', 'hive_launch_id',
+          'description', 'prompt', 'subagent_type', 'hive_launch_id', 'hive_capability_reason',
         ]));
         expect(scenarioEvidence.launchId).toEqual(expect.any(String));
         expect(result.taskPart.sessionID).toBe(result.parentID);

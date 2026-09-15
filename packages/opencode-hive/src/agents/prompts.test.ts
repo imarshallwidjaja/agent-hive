@@ -421,7 +421,7 @@ describe('Forager verification and tool-scope clarity', () => {
     expect(FORAGER_BEE_PROMPT).toContain('evidence, hypotheses tested and untested');
     expect(FORAGER_BEE_PROMPT).toContain('supported conclusion or unresolved status');
     expect(FORAGER_BEE_PROMPT).toContain('does not authorize fixes, edits, commits, or destructive reproduction');
-    expect(FORAGER_BEE_PROMPT).toContain('standalone direct assignment');
+    expect(FORAGER_BEE_PROMPT).toContain('existing-workspace or other standalone assignment');
     expect(FORAGER_BEE_PROMPT).toContain('return the requested report without calling `hive_worktree_commit`');
     expect(FORAGER_BEE_PROMPT).toContain('managed feature task');
     expect(FORAGER_BEE_PROMPT).toContain('only when the mission authorizes implementation');
@@ -1213,7 +1213,8 @@ describe('Forager (Worker/Coder) prompt', () => {
       'hive_context_write({ name: "learnings", content: "..." })',
     );
     expect(FORAGER_BEE_PROMPT).toContain('For ad-hoc runs, do not call `hive_context_write` unless');
-    expect(FORAGER_BEE_PROMPT).toContain('ad-hoc runs have no separate context persistence');
+    expect(FORAGER_BEE_PROMPT).toContain('For existing-workspace assignments, managed context and Hive lifecycle tools are denied.');
+    expect(FORAGER_BEE_PROMPT).toContain('the runtime grants that scope');
     expect(FORAGER_BEE_PROMPT).toContain('When implementation is authorized and a feature/task worker prompt identifies a Hive feature');
   });
 
@@ -1732,11 +1733,12 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('evidence');
     expect(HIVE_BUILDER_PROMPT).toContain('expected result');
     expect(HIVE_BUILDER_PROMPT).toContain('done criteria');
-    expect(HIVE_BUILDER_PROMPT).toContain('Put ad-hoc Forager instructions in `workerInstructions`');
+    expect(HIVE_BUILDER_PROMPT).toContain('Put Forager instructions in `workerInstructions`');
     expect(HIVE_BUILDER_PROMPT).toContain('Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`');
   });
 
   it('contains explicit ad-hoc tool names', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_existing_workspace_start');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_create');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_start');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_commit');
@@ -1820,14 +1822,8 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       expect(prompt, name).toContain('taskToolCall.hive_launch_id');
       expect(prompt, name).toContain('do not pass `launchId` as a `task()` argument');
       expect(prompt, name).toContain('editing a prepared Forager dispatch prompt cannot update its instructions');
-      expect(prompt, name).toContain('Independent targets may be prepared and dispatched under one parent');
-      expect(prompt, name).toContain('fences that resource');
+      expect(prompt, name).toContain('hive_existing_workspace_start');
       expect(prompt, name).toContain('Unused preparation expires after five minutes');
-      expect(prompt, name).toContain('Claimed uncertain execution is not stopped by expiry, restart, or archive');
-      expect(prompt, name).toContain('exact parent/call metadata');
-      expect(prompt, name).toContain('If exact native evidence cannot establish that the old execution stopped');
-      expect(prompt, name).toContain('preserve the original worktree');
-      expect(prompt, name).toContain('A normal recoverable retry reuses the original worktree');
       expect(prompt, name).not.toContain('binding-in-progress');
       expect(prompt, name).not.toContain('wait for the native correlation event');
       expect(prompt, name).toContain('Ordinary Scout, advisor, and reviewer launches are exempt');
