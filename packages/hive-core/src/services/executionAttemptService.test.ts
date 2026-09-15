@@ -123,6 +123,34 @@ describe('ExecutionAttemptService armed native attachment', () => {
     })).toThrow(/claimed/i);
   });
 
+  it('reuses a same-scope arm only for its originating primary', () => {
+    const identity = worktree('owned-arm');
+    const first = service.arm({
+      kind: 'adhoc',
+      runId: 'owned-arm',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    });
+    const repeated = service.arm({
+      kind: 'adhoc',
+      runId: 'owned-arm',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    });
+
+    expect(repeated).toMatchObject({ existing: true, attempt: { id: first.attempt.id, phase: 'armed' } });
+    expect(() => service.arm({
+      kind: 'adhoc',
+      runId: 'owned-arm',
+      originatingPrimarySession: 'primary-b',
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    })).toThrow(/another primary/i);
+    expect(service.getAttempt(first.attempt.id)).toMatchObject({
+      phase: 'armed',
+      originatingPrimarySession: 'primary-a',
+    });
+  });
+
   it('keeps attached worktrees quarantined until finalization', () => {
     const identity = worktree('quarantined');
     const attempt = service.arm({

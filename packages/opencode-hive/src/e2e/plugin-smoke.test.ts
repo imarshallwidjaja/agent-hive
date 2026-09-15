@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
-import { ExecutionAttemptService, SessionService } from 'hive-core';
+import { AdhocWorktreeService, ExecutionAttemptService, SessionService } from 'hive-core';
 import plugin from '../index.js';
 
 const TEST_ROOT_BASE = `/tmp/hive-e2e-plugin-${process.pid}`;
@@ -287,7 +287,7 @@ describe('managed execution attachment', () => {
     });
   });
 
-  it('preserves an in-place partial task handoff without running Git', async () => {
+  it.each(['completed', 'partial'] as const)('preserves an in-place %s task handoff without Git lifecycle guidance', async (status) => {
     const { hooks, context, parents } = await harness(root, 'primary');
     await seedFeature(hooks, context, 'feature-a');
     const live = path.join(root, 'live');
@@ -300,22 +300,23 @@ describe('managed execution attachment', () => {
     const headBefore = execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
 
     const handoff = JSON.parse(await hooks.tool!.hive_worktree_commit.execute({
-      feature: 'feature-a', task: '01-first-task', status: 'partial', summary: 'Live edit completed partially; verification not run.',
+      feature: 'feature-a', task: '01-first-task', status, summary: `Live edit ${status}; verification not run.`,
     }, { ...context, sessionID: 'child-live', agent: 'forager-worker' }) as string);
     expect(handoff).toMatchObject({
       ok: true,
       terminal: true,
-      status: 'partial',
+      status,
       handoff: { kind: 'report_only', gitOperation: 'not_requested' },
     });
     expect(handoff).not.toHaveProperty('commit');
+    expect(JSON.stringify(handoff)).not.toMatch(/hive_merge|\bmerge\b|\bcleanup\b|\bworktree\b/i);
     expect(execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim()).toBe(headBefore);
 
     await hooks['tool.execute.after']!({ tool: 'task', sessionID: 'primary', callID: 'call-live', args } as any, {
-      title: '', output: 'Partial handoff recorded.', metadata: { sessionId: 'child-live' },
+      title: '', output: `${status} handoff recorded.`, metadata: { sessionId: 'child-live' },
     });
     expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)).toMatchObject({
-      phase: 'finalized', handoffOutcome: 'partial', observedOutcome: 'partial',
+      phase: 'finalized', handoffOutcome: status, observedOutcome: status,
     });
   });
 
@@ -386,6 +387,48 @@ describe('managed execution attachment', () => {
     }, context) as string);
     expect(merged.success).toBe(true);
     expect(fs.readFileSync(path.join(root, 'adhoc-result.txt'), 'utf8')).toBe('ad-hoc result\n');
+  });
+
+  it('preserves partial and failed ad-hoc commit dispositions through native completion', async () => {
+    const commit = spyOn(AdhocWorktreeService.prototype, 'commit')
+      .mockResolvedValueOnce({
+        committed: true, sha: 'partial-sha', message: 'partial commit', partial: true, error: 'second repository failed',
+        phase: 'integration', mutation: 'partial', retryable: false, action: 'manual_recovery',
+      })
+      .mockResolvedValueOnce({
+        committed: false, sha: '', message: 'commit failed', error: 'injected commit failure',
+        phase: 'integration', mutation: 'none', retryable: true, action: 'retry_same_operation',
+      });
+    try {
+      const { hooks, context, parents } = await harness(root, 'primary');
+      for (const outcome of ['partial', 'failed'] as const) {
+        const runId = `adhoc-${outcome}`;
+        const callID = `call-${outcome}`;
+        const childID = `child-${outcome}`;
+        const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+          scope: { kind: 'adhoc', runId }, placement: { kind: 'worktree' },
+        }, context) as string);
+        const args = { subagent_type: 'forager-worker', description: `${outcome} commit`, prompt: 'Do it.', background: false };
+        await hooks['tool.execute.before']!({ tool: 'task', sessionID: 'primary', callID }, { args });
+        await bindChild(hooks, parents, 'primary', callID, childID);
+
+        const result = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
+          runId, workspacePath: prepared.placement.workspacePath, branch: prepared.placement.branch,
+          message: `test: ${outcome} ad-hoc commit\n\nExercise durable ${outcome} bridge disposition.`,
+        }, { ...context, sessionID: childID, agent: 'forager-worker' }) as string);
+        expect(result.success).toBe(false);
+        expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)?.handoffOutcome).toBe(outcome);
+
+        await hooks['tool.execute.after']!({ tool: 'task', sessionID: 'primary', callID, args } as any, {
+          title: '', output: `${outcome} handoff returned.`, metadata: { sessionId: childID },
+        });
+        expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)).toMatchObject({
+          phase: 'finalized', handoffOutcome: outcome, observedOutcome: outcome,
+        });
+      }
+    } finally {
+      commit.mockRestore();
+    }
   });
 
   it('closes an unattached arm on plugin restart and preserves an attached quarantine', async () => {

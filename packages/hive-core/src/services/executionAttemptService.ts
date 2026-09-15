@@ -39,6 +39,13 @@ export interface ArmExecutionAttemptResult {
   existing: boolean;
 }
 
+export class ExecutionScopeConflictError extends Error {
+  constructor(readonly attempt: ExecutionAttempt) {
+    super(`Execution scope is already owned by another primary (${attempt.originatingPrimarySession})`);
+    this.name = 'ExecutionScopeConflictError';
+  }
+}
+
 export interface AttachExecutionAttemptInput {
   originatingPrimarySession: string;
   nativeCallId: string;
@@ -161,7 +168,12 @@ export class ExecutionAttemptService {
       }
 
       const existing = this.currentAttemptForScope(store, input);
-      if (existing) return { attempt: structuredClone(existing), existing: true };
+      if (existing) {
+        if (existing.originatingPrimarySession !== input.originatingPrimarySession) {
+          throw new ExecutionScopeConflictError(structuredClone(existing));
+        }
+        return { attempt: structuredClone(existing), existing: true };
+      }
       if (placement.kind === 'worktree') {
         this.assertWorkspacesIdleInStore(store, placement.workspaceIdentities);
       }

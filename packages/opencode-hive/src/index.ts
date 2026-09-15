@@ -335,6 +335,7 @@ import {
   SessionService,
   SessionContinuityError,
   ExecutionAttemptService,
+  ExecutionScopeConflictError,
   validateAssignmentDescriptorShape,
   workerAssignmentsEqual,
   DEFAULT_COUNCIL_CONFIG,
@@ -1512,7 +1513,6 @@ const plugin: Plugin = async (ctx) => {
 
   const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
   const helperAuthBinds = new Map<string, HelperAuthBind>();
-  const managedPromptAugmentations = new Map<string, { callerPrompt: string; augmentedPrompt: string }>();
   const trustedConstraintAugmentations = new Map<string, string>();
   const finalizeStoppedBridgeAttempt = (attempt: ExecutionAttempt): void => {
     if (attempt.phase !== 'stopped') return;
@@ -2285,26 +2285,6 @@ const plugin: Plugin = async (ctx) => {
     const parentAgent = runtimeSessionAgents.get(sessionID);
     if (classifySession(parentAgent ?? '', customAgentConfigsForClassification).sessionKind !== 'primary') return false;
     if (!callID) throw launchBindingFailure('Managed Forager dispatch requires an exact native call ID.');
-    const launchKey = hiveTaskLaunchKey(sessionID, callID);
-    const existing = executionAttemptService.findByNativeCall(sessionID, callID);
-    if (existing) {
-      if (existing.native?.selectedAgent !== selectedAgent || existing.native.background !== (args?.background === true)) {
-        throw launchBindingFailure('Repeated native task hook metadata contradicts the attached execution.');
-      }
-      if (!adapterOutput.args) throw launchBindingFailure('Managed Forager dispatch arguments are unavailable.');
-      const prompt = typeof args?.prompt === 'string' ? args.prompt : '';
-      const prior = managedPromptAugmentations.get(launchKey);
-      if (prior) {
-        if (prompt !== prior.callerPrompt && prompt !== prior.augmentedPrompt) {
-          throw launchBindingFailure('Repeated native task hook changed the caller-authored prompt.');
-        }
-        adapterOutput.args.prompt = prior.augmentedPrompt;
-      } else {
-        const snapshot = existing.native?.constraintSnapshot ?? captureConstraintSnapshot(sessionID);
-        adapterOutput.args.prompt = appendExecutionPrompt(existing, prompt, snapshot);
-      }
-      return true;
-    }
     const armed = executionAttemptService.armedForParent(sessionID);
     if (!armed) {
       throw launchBindingFailure('Managed Forager dispatch has no armed execution. Call hive_execution_prepare, then issue one unchanged native task call.');
@@ -2323,7 +2303,6 @@ const plugin: Plugin = async (ctx) => {
       background: args?.background === true,
       constraintSnapshot,
     });
-    managedPromptAugmentations.set(launchKey, { callerPrompt: prompt, augmentedPrompt });
     try {
       await backgroundJobAdapter['tool.execute.before']({ tool: 'task', sessionID, callID }, adapterOutput);
     } catch (error) {
@@ -2803,9 +2782,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     executionAttemptService.listAttempts().find(attempt =>
       attempt.kind === 'adhoc' && attempt.runId === runId && attempt.phase !== 'finalized');
   const isAuthorizedAdhocCommitSession = (attempt: ExecutionAttempt, sessionID: string | undefined): boolean =>
-    Boolean(sessionID && (attempt.native?.childSessionId === sessionID
-      || (sessionService.getGlobal(sessionID)?.sessionKind === 'task-worker'
-        && sessionService.getGlobal(sessionID)?.adHocRunId === attempt.runId)));
+    Boolean(sessionID && attempt.phase === 'attached' && attempt.native?.childSessionId === sessionID);
   const releaseUnusedPreparedClaim = (attempt: ExecutionAttempt | undefined): void => {
     if (attempt?.phase !== 'armed') return;
     try { executionAttemptService.closeArmNotStarted(attempt.id); } catch { }
@@ -2845,9 +2822,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
   const executeExecutionPrepare = async (input: ExecutionPrepareInput, toolContext: unknown): Promise<string> => {
     const parentSessionID = (toolContext as ToolContext | undefined)?.sessionID;
     if (!parentSessionID) throw launchBindingFailure('Execution preparation requires an authenticated primary session.');
-    if (executionAttemptService.armedForParent(parentSessionID)) {
-      throw launchBindingFailure('This primary already has an armed execution. Dispatch it or wait for not-started closure before preparing another.');
-    }
     if (!input.scope || !input.placement) {
       return respond({ success: false, reason: 'invalid_argument', error: 'scope and placement are required.' });
     }
@@ -2928,14 +2902,27 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       return respond({ success: false, reason: 'invalid_argument', error: 'scope.kind must be task or adhoc.' });
     }
 
-    const armed = executionAttemptService.arm({
-      kind: scope.kind,
-      originatingPrimarySession: parentSessionID,
-      placement,
-      ...(scope.kind === 'task'
-        ? { featureName: scope.feature, taskFolder: scope.task }
-        : { runId: scope.runId }),
-    });
+    let armed;
+    try {
+      armed = executionAttemptService.arm({
+        kind: scope.kind,
+        originatingPrimarySession: parentSessionID,
+        placement,
+        ...(scope.kind === 'task'
+          ? { featureName: scope.feature, taskFolder: scope.task }
+          : { runId: scope.runId }),
+      });
+    } catch (error) {
+      if (!(error instanceof ExecutionScopeConflictError)) throw error;
+      return respond({
+        success: false,
+        reason: 'workspace_conflict_denied',
+        mutation: 'none',
+        attemptId: error.attempt.id,
+        phase: error.attempt.phase,
+        error: 'The requested scope is owned by another authenticated primary.',
+      });
+    }
     if (armed.attempt.phase !== 'armed') {
       return respond({
         success: false,
@@ -5807,7 +5794,7 @@ NEXT: Ask your first clarifying question about this feature.`;
               task,
               taskState: taskInfo.status,
               message: 'In-place execution records a report only and does not accept a Git commit message.',
-              nextAction: 'Retry hive_worktree_commit without message. The live directory is not staged, committed, merged, or rolled back by Hive.',
+              nextAction: 'Retry hive_worktree_commit without message. Hive will record only the in-place report.',
             });
           }
 
@@ -5819,7 +5806,9 @@ NEXT: Ask your first clarifying question about this feature.`;
             const hasVerificationMention = verificationKeywords.some(kw => summaryLower.includes(kw));
 
             if (!hasVerificationMention) {
-              verificationNote = 'No verification evidence in summary. Orchestrator should run build+test after merge.';
+              verificationNote = reportOnly
+                ? 'No verification evidence in summary. The orchestrator should run the relevant checks against the live directory.'
+                : 'No verification evidence in summary. Orchestrator should run build+test after merge.';
             }
           }
 
@@ -5898,12 +5887,18 @@ NEXT: Ask your first clarifying question about this feature.`;
               summary,
               blocker,
               ...(traceTaskId ? { traceTaskId } : {}),
-              worktreePath: inPlaceDirectory ?? worktree?.path,
+              ...(reportOnly ? { directory: inPlaceDirectory } : { worktreePath: worktree?.path }),
               ...(worktree?.branch ? { branch: worktree.branch } : {}),
-              message: 'Task blocked. Hive Master will ask the user, then arm blocked continuation with hive_execution_prepare(scope.continueFromBlocked: true).',
-              nextAction: traceTaskId
-                ? `The orchestrator should inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before collecting the operator decision, then request fresh worker launch guidance for the existing worktree.`
-                : 'Wait for the orchestrator to inspect the blocker, collect the user decision, and request fresh worker launch guidance for the existing worktree. No traceTaskId is available.',
+              message: reportOnly
+                ? 'Task blocked. Hive Master will collect the operator decision before a fresh in-place execution is prepared.'
+                : 'Task blocked. Hive Master will ask the user, then arm blocked continuation with hive_execution_prepare(scope.continueFromBlocked: true).',
+              nextAction: reportOnly
+                ? traceTaskId
+                  ? `The orchestrator should inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }), collect the operator decision, and prepare a fresh execution for the same live directory after terminal evidence.`
+                  : 'Wait for the orchestrator to inspect the blocker, collect the operator decision, and prepare a fresh execution for the same live directory after terminal evidence.'
+                : traceTaskId
+                  ? `The orchestrator should inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before collecting the operator decision, then request fresh worker launch guidance for the existing worktree.`
+                  : 'Wait for the orchestrator to inspect the blocker, collect the user decision, and request fresh worker launch guidance for the existing worktree. No traceTaskId is available.',
             });
           }
 
@@ -6151,15 +6146,20 @@ NEXT: Ask your first clarifying question about this feature.`;
                   ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
                   ...commitClassification,
                 } }),
-            worktreePath: inPlaceDirectory ?? worktree?.path,
+            ...(reportOnly ? { directory: inPlaceDirectory } : { worktreePath: worktree?.path }),
             ...(worktree?.branch ? { branch: worktree.branch } : {}),
             reportPath,
             reportReference,
             ...(traceTaskId ? { traceTaskId } : {}),
             message: `Task "${task}" ${status}.`,
             ...(attemptIsCurrent ? {} : { currentTaskUnchanged: true, attemptId: liveAttempt.id }),
-            nextAction:
-              status === 'completed'
+            nextAction: reportOnly
+              ? status === 'completed'
+                ? 'The in-place report is recorded. Return this terminal handoff to the primary.'
+                : traceTaskId
+                  ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }), then prepare a fresh execution for the same live directory after terminal evidence. Recovery context goes to the new native call.`
+                  : 'Review the in-place report, then prepare a fresh execution for the same live directory after terminal evidence.'
+              : status === 'completed'
                 ? 'Use hive_merge to integrate changes. Worktree is preserved for review.'
                 : traceTaskId
                   ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before retrying, then use hive_execution_prepare for a fresh native Forager call. Worktree is preserved. Recovery context goes to the NEW task without task_id.`
@@ -6412,10 +6412,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             const commitTarget = adhocWritableTarget(info);
             const liveAttempt = currentUnsettledAdhocAttempt(runId);
             const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
-            if (
-              liveAttempt?.phase !== 'attached'
-              || isAuthorizedAdhocCommitSession(liveAttempt, committingSessionID)
-            ) {
+            if (liveAttempt && isAuthorizedAdhocCommitSession(liveAttempt, committingSessionID)) {
               commitTarget.checkSourceClaim = false;
             }
             const result: AdhocCommitResult = await withWritableOperation(commitTarget,
@@ -6424,8 +6421,10 @@ NEXT: Ask your first clarifying question about this feature.`;
             const hasError = Boolean(result.error) || isPartial;
             const isNoChange = !result.committed && result.message === 'No changes to commit' && !hasError;
             const success = !hasError && (result.committed || isNoChange);
-            if (success && liveAttempt) {
-              executionAttemptService.recordHandoff(liveAttempt.id, { outcome: 'completed' });
+            if (liveAttempt) {
+              executionAttemptService.recordHandoff(liveAttempt.id, {
+                outcome: success ? 'completed' : isPartial ? 'partial' : 'failed',
+              });
             }
             const commitClassification = {
               phase: result.phase,

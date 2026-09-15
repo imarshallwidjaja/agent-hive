@@ -37,4 +37,14 @@ describe('managed prompt blocks', () => {
       placement: { kind: 'in_place', directory: '/tmp/live' },
     })).toContain('without a commit message');
   });
+
+  it('directs ad-hoc in-place workers to a terminal prose handoff', () => {
+    const block = buildExecutionScopeBlock({
+      kind: 'adhoc', runId: 'live-run',
+      placement: { kind: 'in_place', directory: '/tmp/live' },
+    });
+
+    expect(block).toContain('terminal prose handoff');
+    expect(block).not.toContain('task handoff tool');
+  });
 });

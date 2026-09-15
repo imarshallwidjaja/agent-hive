@@ -128,6 +128,111 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     }, context)).rejects.toThrow(/already has an armed execution/i);
   });
 
+  it('denies another primary access to the same armed scope', async () => {
+    const liveDirectory = path.join(TEST_ROOT, 'live');
+    fs.mkdirSync(liveDirectory);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-owner');
+    await hooks['chat.message']?.({ sessionID: 'primary-other', agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
+    const otherContext = { ...context, sessionID: 'primary-other' };
+    const first = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'owned-scope' },
+      placement: { kind: 'in_place', directory: liveDirectory },
+    }, context) as string);
+    const repeated = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'owned-scope' },
+      placement: { kind: 'in_place', directory: liveDirectory },
+    }, context) as string);
+    expect(repeated).toMatchObject({ success: true, existing: true, attemptId: first.attemptId });
+
+    const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'owned-scope' },
+      placement: { kind: 'in_place', directory: liveDirectory },
+    }, otherContext) as string);
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'workspace_conflict_denied',
+      attemptId: first.attemptId,
+      phase: 'armed',
+    });
+  });
+
+  it('fences armed ad-hoc commits and releases the workspace after finalization', async () => {
+    initGit(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-armed');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'armed-fence' },
+      placement: { kind: 'worktree' },
+    }, context) as string);
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'armed.txt'), 'armed\n');
+    const headBefore = execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim();
+
+    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
+      runId: 'armed-fence',
+      workspacePath: prepared.placement.workspacePath,
+      branch: prepared.placement.branch,
+      message: 'test: reject armed mutation\n\nProve that an armed execution retains its writer fence.',
+    }, context) as string);
+    expect(denied).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
+    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
+
+    expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)).toMatchObject({
+      phase: 'finalized',
+      observedOutcome: 'not_started',
+    });
+    const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
+      runId: 'armed-fence',
+      workspacePath: prepared.placement.workspacePath,
+      branch: prepared.placement.branch,
+      message: 'test: commit after finalized arm\n\nConfirm finalization releases the exact workspace fence.',
+    }, context) as string);
+    expect(committed.success).toBe(true);
+  });
+
+  it('fences stopped ad-hoc commits even for the bound child and releases after finalization', async () => {
+    initGit(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-stopped');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'stopped-fence' },
+      placement: { kind: 'worktree' },
+    }, context) as string);
+    const args = { subagent_type: 'forager-worker', description: 'Stop before commit', prompt: 'Do it.', background: false };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-stopped' }, { args });
+    const attempts = new ExecutionAttemptService(TEST_ROOT);
+    attempts.bindNativeChild({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-stopped',
+      nativeChildSessionId: 'child-stopped',
+    });
+    attempts.observeBlockingStop({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-stopped',
+      outputDefined: true,
+    });
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'stopped.txt'), 'stopped\n');
+    const headBefore = execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim();
+    const childContext = { ...context, sessionID: 'child-stopped', agent: 'forager-worker' };
+
+    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
+      runId: 'stopped-fence',
+      workspacePath: prepared.placement.workspacePath,
+      branch: prepared.placement.branch,
+      message: 'test: reject stopped mutation\n\nProve that stop evidence alone does not release the workspace fence.',
+    }, childContext) as string);
+    expect(denied).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
+    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
+
+    attempts.finalize(prepared.attemptId, 'completed');
+    const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
+      runId: 'stopped-fence',
+      workspacePath: prepared.placement.workspacePath,
+      branch: prepared.placement.branch,
+      message: 'test: commit after stopped finalization\n\nConfirm finalization releases the stopped workspace fence.',
+    }, childContext) as string);
+    expect(committed.success).toBe(true);
+  });
+
   it('attaches the unchanged native shape and appends truthful in-place scope', async () => {
     const liveDirectory = path.join(TEST_ROOT, 'live');
     fs.mkdirSync(liveDirectory);
