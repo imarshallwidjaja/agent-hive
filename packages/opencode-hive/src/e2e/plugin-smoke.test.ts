@@ -1248,6 +1248,117 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     });
   }, 30_000);
 
+  it('auto-binds single pending launch when hive_launch_id is omitted, and rejects when ambiguous', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'auto-bind-parent';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent);
+
+    const launch = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'auto-bind-run',
+      workerInstructions: 'Implement auto-bind test.',
+    }, toolContext) as string);
+    expect(launch.taskToolCall?.hive_launch_id).toBeDefined();
+
+    const dispatchArgs: Record<string, unknown> = {
+      subagent_type: 'forager-worker',
+      description: 'Hand-crafted description without launch ID',
+      prompt: 'Hand-crafted prompt without launch ID',
+    };
+    await expect(hooks['tool.execute.before']?.({
+      tool: 'task',
+      sessionID: parent,
+      callID: 'auto-bind-call',
+    }, { args: dispatchArgs })).resolves.toBeUndefined();
+    // hive_launch_id is stripped from dispatchArgs before native execution,
+    // but the background job board reflects the claimed launchId
+    const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
+    expect(JSON.parse(fs.readFileSync(boardPath, 'utf8')).pendingLaunches).toEqual([
+      expect.objectContaining({ disposition: 'claimed', callId: 'auto-bind-call', launchId: launch.launchId }),
+    ]);
+
+    const multiParent = 'multi-prep-parent';
+    const multi = await createHooksForTest(testRoot, multiParent);
+    const firstPrep = JSON.parse(await multi.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'prep-1',
+      workerInstructions: 'First prep',
+    }, multi.toolContext) as string);
+    const secondPrep = JSON.parse(await multi.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'prep-2',
+      workerInstructions: 'Second prep',
+    }, multi.toolContext) as string);
+
+    await expect(multi.hooks['tool.execute.before']?.({
+      tool: 'task',
+      sessionID: multiParent,
+      callID: 'ambiguous-call',
+    }, {
+      args: { subagent_type: 'forager-worker', description: 'Ambiguous', prompt: 'Omitted ID' },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*multiple prepared launches are pending/);
+
+    await expect(multi.hooks['tool.execute.before']?.({
+      tool: 'task', sessionID: multiParent, callID: 'prep-1-call',
+    }, { args: { ...firstPrep.taskToolCall } })).resolves.toBeUndefined();
+    await expect(multi.hooks['tool.execute.before']?.({
+      tool: 'task', sessionID: multiParent, callID: 'prep-2-call',
+    }, { args: { ...secondPrep.taskToolCall } })).resolves.toBeUndefined();
+
+    const blankPrep = JSON.parse(await multi.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'blank-prep', workerInstructions: 'Blank ID test',
+    }, multi.toolContext) as string);
+    await expect(multi.hooks['tool.execute.before']?.({
+      tool: 'task', sessionID: multiParent, callID: 'blank-call',
+    }, {
+      args: { subagent_type: 'forager-worker', description: 'Blank ID', prompt: 'Explicit blank', hive_launch_id: '' },
+    })).rejects.toThrow(/launch_binding_error[\s\S]*non-empty hive_launch_id/);
+    await expect(multi.hooks['tool.execute.before']?.({
+      tool: 'task', sessionID: multiParent, callID: 'blank-real-call',
+    }, { args: { ...blankPrep.taskToolCall } })).resolves.toBeUndefined();
+
+    await multi.hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'expired-omitted', workerInstructions: 'Expired omitted ID test',
+    }, multi.toolContext);
+    const clock = spyOn(Date, 'now').mockReturnValue(Date.now() + 6 * 60 * 1000);
+    try {
+      await expect(multi.hooks['tool.execute.before']?.({
+        tool: 'task', sessionID: multiParent, callID: 'expired-omitted-call',
+      }, {
+        args: { subagent_type: 'forager-worker', description: 'Expired omitted ID', prompt: 'Omitted ID' },
+      })).rejects.toThrow(/launch_binding_error[\s\S]*non-empty hive_launch_id/);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('auto-binds an omitted hive_launch_id for a task-backed launch', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const parent = 'task-auto-bind-parent';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, parent);
+    await seedApprovedFeature(hooks, toolContext, 'task-auto-bind', createSingleTaskPlan(
+      'Task auto-bind', 'Yes, bind the single prepared task launch when the ID is omitted.',
+    ));
+    const launch = JSON.parse(await hooks.tool!.hive_worktree_start.execute({
+      feature: 'task-auto-bind', task: FIRST_TASK,
+    }, toolContext) as string);
+
+    await expect(hooks['tool.execute.before']?.({
+      tool: 'task', sessionID: parent, callID: 'task-auto-bind-call',
+    }, {
+      args: {
+        subagent_type: 'forager-worker',
+        description: 'Task-backed hand-crafted dispatch',
+        prompt: 'Dispatch without the launch ID',
+        background: true,
+      },
+    })).resolves.toBeUndefined();
+
+    const board = JSON.parse(fs.readFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), 'utf8'));
+    expect(board.pendingLaunches).toContainEqual(expect.objectContaining({
+      disposition: 'claimed',
+      callId: 'task-auto-bind-call',
+      launchId: launch.launchId,
+    }));
+  }, 30_000);
+
   it('rejects wrong-parent, expired, and restarted-runtime ad-hoc launch intents', async () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
     const parent = 'intent-parent';

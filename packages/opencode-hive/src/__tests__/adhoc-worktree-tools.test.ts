@@ -388,7 +388,7 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(result.taskToolCall?.prompt).toContain(`Run ID: ${result.runId}`);
     expect(result.backgroundTaskCall).toBeUndefined();
     expect(result.backgroundScope).toBeUndefined();
-    expect(result.nextAction).toContain('launch the returned `taskToolCall`');
+    expect(result.nextAction).toContain('Launch task({ ...taskToolCall })');
     expect(result.instructions).toContain('Default to `forager-worker` if no specialist is a better match.');
     expect(result.instructions).toContain("Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.");
     expect(result.instructions).toContain('Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.');

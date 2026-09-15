@@ -2342,6 +2342,13 @@ const plugin: Plugin = async (ctx) => {
   const claimQueues = new Map<string, Promise<void>>();
   const resourcePreparationQueues: Array<{ resourcePaths: string[]; completed: Promise<void> }> = [];
   const hiveTaskLaunchKey = (sessionID: string, callID: string): string => `${sessionID}\u0000${callID}`;
+  const activePendingLaunchesForSession = (sessionID: string) => {
+    const now = Date.now();
+    return [
+      ...(pendingHiveTaskLaunches.get(sessionID) ?? []).map(intent => ({ kind: 'task' as const, parentSessionID: sessionID, intent })),
+      ...(pendingWorkspaceLaunches.get(sessionID) ?? []).map(intent => ({ kind: 'workspace' as const, parentSessionID: sessionID, intent })),
+    ].filter(entry => entry.intent.expiresAt > now);
+  };
   const launchBindingFailure = (error: string, nextAction?: string): Error => {
     const failure = new Error(contextFailure(
       'launch_binding_error',
@@ -2358,6 +2365,7 @@ const plugin: Plugin = async (ctx) => {
     sessionID: string,
     callID: string | undefined,
     args: Record<string, unknown> | undefined,
+    resolvedLaunchId?: string,
   ): Promise<ForagerLaunchClaimReceipt | undefined> => {
     const selectedAgent = typeof args?.subagent_type === 'string' ? args.subagent_type.trim() : '';
     const suppliedLaunchId = args?.hive_launch_id;
@@ -2369,7 +2377,28 @@ const plugin: Plugin = async (ctx) => {
       }
       return undefined;
     }
-    const launchId = typeof suppliedLaunchId === 'string' ? suppliedLaunchId.trim() : '';
+    let launchId = typeof suppliedLaunchId === 'string' ? suppliedLaunchId.trim() : '';
+    let autoBoundLaunchId = false;
+    if (suppliedLaunchId === undefined) {
+      const activePendingForSession = activePendingLaunchesForSession(sessionID);
+      if (resolvedLaunchId || activePendingForSession.length === 1) {
+        launchId = resolvedLaunchId ?? activePendingForSession[0].intent.launchId;
+        if (args) {
+          args.hive_launch_id = launchId;
+          autoBoundLaunchId = true;
+        }
+      } else if (activePendingForSession.length > 1) {
+        const candidates = activePendingForSession.map(c =>
+          c.kind === 'task' ? `${c.intent.task} (${c.intent.launchId})` : `${c.intent.runId} (${c.intent.launchId})`
+        ).join(', ');
+        throw launchBindingFailure(
+          `Forager dispatch omitted hive_launch_id, but multiple prepared launches are pending for this session: ${candidates}. Supply the intended hive_launch_id in task().`,
+          launchPreparationGuidance,
+        );
+      } else {
+        throw launchBindingFailure('Forager dispatch requires the non-empty hive_launch_id returned by its preparation tool.', launchPreparationGuidance);
+      }
+    }
     if (!launchId) {
       throw launchBindingFailure('Forager dispatch requires the non-empty hive_launch_id returned by its preparation tool.', launchPreparationGuidance);
     }
@@ -2518,6 +2547,7 @@ const plugin: Plugin = async (ctx) => {
           if (hadPrompt) args!.prompt = originalPrompt;
           else delete args!.prompt;
         }
+        if (autoBoundLaunchId && args && args.hive_launch_id === candidate.intent.launchId) delete args.hive_launch_id;
       },
     };
   };
@@ -2530,23 +2560,28 @@ const plugin: Plugin = async (ctx) => {
   ): Promise<void> => {
     const tail = claimQueues.get(sessionID) ?? Promise.resolve();
     const run = tail.then(() => {}, () => {}).then(async () => {
+      const suppliedRaw = args?.hive_launch_id;
+      const suppliedId = typeof suppliedRaw === 'string' ? suppliedRaw.trim() : '';
+      const activePending = activePendingLaunchesForSession(sessionID);
+      const effectiveLaunchId = suppliedId
+        || (suppliedRaw === undefined && activePending.length === 1 ? activePending[0].intent.launchId : undefined);
       const claimAndAdapt = async () => {
-      let claimReceipt: ForagerLaunchClaimReceipt | undefined;
-      try {
-        claimReceipt = await claimForagerLaunch(sessionID, callID, args);
-        await backgroundJobAdapter['tool.execute.before'](
-          { tool: 'task', sessionID, callID },
-          adapterOutput,
-        );
-        claimReceipt?.persistOwnership();
-        if (claimReceipt && adapterOutput.args) delete adapterOutput.args.hive_launch_id;
-      } catch (error) {
-        claimReceipt?.rollback();
-        throw error;
-      }
+        let claimReceipt: ForagerLaunchClaimReceipt | undefined;
+        try {
+          claimReceipt = await claimForagerLaunch(sessionID, callID, args, effectiveLaunchId);
+          await backgroundJobAdapter['tool.execute.before'](
+            { tool: 'task', sessionID, callID },
+            adapterOutput,
+          );
+          claimReceipt?.persistOwnership();
+          if (claimReceipt && adapterOutput.args) delete adapterOutput.args.hive_launch_id;
+        } catch (error) {
+          claimReceipt?.rollback();
+          throw error;
+        }
       };
       const intent = [...(pendingHiveTaskLaunches.get(sessionID) ?? []), ...(pendingWorkspaceLaunches.get(sessionID) ?? [])]
-        .find(candidate => candidate.launchId === args?.hive_launch_id);
+        .find(candidate => candidate.launchId === effectiveLaunchId);
       if (intent) await withLaunchPreparationLock(intent.resourcePaths, claimAndAdapt);
       else await claimAndAdapt();
     });
@@ -4474,7 +4509,7 @@ ${CANDIDATE_SPECIFIC_ROUTING_GUARD}
 
 ${formatEligibleAgentChoices(eligibleAgents)}
 
-The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`; override \`taskToolCall.subagent_type\` and, when used, \`backgroundTaskCall.subagent_type\` when a custom overlay in \`eligibleAgents\` is a closer fit. Preserve the returned \`hive_launch_id\`; Hive uses it to select this exact prepared assignment. Preserve the returned wait mode and fresh terminal session semantics. Prompt and description edits do not alter the selected assignment because Hive restores the canonical prepared prompt before native dispatch.`,
+The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`; override \`taskToolCall.subagent_type\` and, when used, \`backgroundTaskCall.subagent_type\` when a custom overlay in \`eligibleAgents\` is a closer fit. Dispatch via \`task({ ...taskToolCall })\` or \`task({ ...taskToolCall, subagent_type: specialist })\`. Preserve the returned \`hive_launch_id\`; Hive uses it to select this exact prepared assignment. Preserve the returned wait mode and fresh terminal session semantics. Prompt and description edits do not alter the selected assignment because Hive restores the canonical prepared prompt before native dispatch.`,
       } : {}),
       ...(workerLaunchSuppressed ? { workerLaunch: 'suppressed' as const } : {}),
       nextAction: adhocCreateNextAction({
@@ -7303,7 +7338,7 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
       hive_worktree_start: tool({
-        description: 'Create or reuse a worktree for a pending, in-progress, failed, or partial task. Returns fresh-worker launch guidance.',
+        description: 'Create or reuse a worktree for a pending, in-progress, failed, or partial task. Returns fresh-worker launch guidance and taskToolCall. Dispatch via task({ ...taskToolCall }) to preserve hive_launch_id.',
         args: {
           task: tool.schema.string().describe('Task folder name'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
@@ -7314,7 +7349,7 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
       hive_worktree_create: tool({
-        description: 'Prepare blocked-task continuation in the existing worktree. Returns fresh-worker launch guidance with preserved progress and the operator decision.',
+        description: 'Prepare blocked-task continuation in the existing worktree. Returns fresh-worker launch guidance with preserved progress and taskToolCall. Dispatch via task({ ...taskToolCall }) to preserve hive_launch_id.',
         args: {
           task: tool.schema.string().describe('Task folder name'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
@@ -7987,7 +8022,7 @@ NEXT: Ask your first clarifying question about this feature.`;
 
 
       hive_adhoc_worktree_create: tool({
-        description: 'Create a short-lived ad-hoc worktree (no feature/task required). For manifest-backed projects, pass repoIds to create a composite workspace. Set autoSpawnWorker to false for inspection, routing, or setup-only worktrees that should not register a pending background worker launch. Returns structured JSON with workspacePath, branch, runId, and nextAction.',
+        description: 'Create a short-lived ad-hoc worktree (no feature/task required). When autoSpawnWorker is true (default), prepares the initial worker launch and returns taskToolCall; dispatch via task({ ...taskToolCall }) to preserve hive_launch_id. Set autoSpawnWorker to false for inspection, routing, or setup-only worktrees. For manifest-backed projects, pass repoIds to create a composite workspace. Returns structured JSON with workspacePath, branch, runId, and nextAction.',
         args: {
           runId: tool.schema.string().optional().describe('Explicit run identifier. Omit or leave blank to generate a unique safe id.'),
           label: tool.schema.string().optional().describe('Optional slug label folded into the generated runId; ignored when runId is provided. Omit or leave blank for no label.'),
@@ -8090,7 +8125,7 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
       hive_adhoc_worktree_start: tool({
-        description: 'Prepare a fresh Forager-derived worker launch for an existing validated ad-hoc worktree. Reuses the same run and workspace with new immutable in-memory launch authority and worker instructions.',
+        description: 'Prepare a fresh Forager-derived worker launch for an existing validated ad-hoc worktree. Returns { taskToolCall, launchId }. Dispatch exactly one returned call payload via task({ ...taskToolCall }) — or task({ ...taskToolCall, subagent_type: specialist }) — to preserve required hive_launch_id.',
         args: {
           runId: tool.schema.string().describe('Existing ad-hoc run identifier returned from hive_adhoc_worktree_create.'),
           workerInstructions: tool.schema.string().describe('Self-contained instructions for this fresh worker attempt.'),

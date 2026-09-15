@@ -60,7 +60,7 @@ export function adhocCreateNextAction(params: {
     return 'Use this worktree for inspection, routing, or setup. Delegate execution lanes explicitly when needed; call hive_adhoc_worktree_commit only after changes are ready to commit.';
   }
   if (params.hasBackgroundTaskCall) {
-    return 'Launch `taskToolCall` when the next step depends on the worker; use `backgroundTaskCall` only for independent lanes where useful foreground work can continue. Do not write implementation code in Builder unless an allowed direct-edit escape is stated. After the worker completes, reconcile/inspect/verify, then commit, merge, and cleanup the ad-hoc worktree.';
+    return 'Launch task({ ...taskToolCall }) (or backgroundTaskCall for independent lanes) preserving hive_launch_id. Multiple writes in the same worktree must run sequentially. Do not write implementation code in Builder unless an allowed direct-edit escape is stated. After the worker completes, reconcile/inspect/verify, then commit, merge, and cleanup the ad-hoc worktree.';
   }
-  return 'launch the returned `taskToolCall` as a normal blocking task; do not work directly in the ad-hoc worktree. After the worker completes, inspect/verify, then commit, merge, and cleanup the ad-hoc worktree.';
+  return 'Launch task({ ...taskToolCall }) (or task({ ...taskToolCall, subagent_type: specialist }) for an eligible specialist), preserving hive_launch_id. Multiple writes in the same worktree must run sequentially. After the worker completes, inspect/verify, then commit, merge, and cleanup the ad-hoc worktree.';
 }

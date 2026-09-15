@@ -91,6 +91,8 @@ Use \`hive_constraints_add\` for a durable operator directive that should hold f
 
 ### Write-Conflict Guidance
 
+One managed writer per exact registered worktree identity. Parallel writes require disjoint registered worktrees (separate runs). Multiple iterative writes within the same worktree must run strictly sequentially: prepare -> dispatch \`task({ ...taskToolCall })\` -> await completion -> inspect/commit -> prepare fresh attempt with \`hive_adhoc_worktree_start\`.
+
 Default to one active writing/change lane per owned path/module. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers. Do not dispatch two writing workers against the same files or tightly coupled modules unless sequenced. Assign file/path boundaries in worker prompts.
 
 Track each lane's state, owned paths, dependencies, verification status, and whether the result has been recorded. Before merge, cleanup, final reporting, integration, or dispatching any new overlapping writing/change or execution lane, check for unresolved lanes.

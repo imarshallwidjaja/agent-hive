@@ -9,7 +9,13 @@ description: "Agent Hive workflow skill for coordinating independent Hive subage
 
 When you have multiple unrelated failures (different test files, different subsystems, different bugs), investigating them sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Dispatch one fresh subagent session per independent primary goal. Let them work concurrently.
+**Core principle:** Dispatch one fresh subagent session per independent primary goal. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
+
+### Worktree Concurrency & Sequencing
+- **One writer per worktree:** A single worktree has exactly one active writer at a time.
+- **Parallel writes across worktrees:** You can dispatch writing workers in parallel ONLY if each worker runs in its own distinct worktree (distinct feature tasks or distinct ad-hoc `runId`s).
+- **Sequential passes within a worktree:** If multiple tasks or bug fixes target the SAME worktree, sequence them: `prepare` -> `dispatch task({ ...taskToolCall })` -> `wait for completion` -> `inspect/commit` -> `prepare next pass with start`.
+- **Read-only fan-out:** Scouts and reviewers do not write code and can run concurrently anywhere.
 
 When `## Background-First Orchestration` is present, load `background-delegation` for scheduler and wait-mode decisions. This skill covers task independence, scope, and prompt quality; the background skill governs whether each independent lane runs blocking or background.
 

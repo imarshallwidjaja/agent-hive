@@ -98,7 +98,7 @@ The primary agent adds each durable directive verbatim with `hive_constraints_ad
 Hive coordinates cooperative local coding agents. These statements are the current contract:
 
 - Multiple primary sessions in one project are supported through isolated worktrees.
-- The same exact registered workspace may have only one managed writer at a time.
+- The same exact registered workspace may have only one managed writer at a time. Multiple write passes in one worktree run strictly sequentially: prepare -> dispatch -> await completion -> inspect/commit -> prepare a fresh pass.
 - Uncertainty (unobserved or unavailable native execution) quarantines only the affected worktree. Unrelated worktrees may proceed.
 - Cross-process process supervision, exactly-once execution across independent OpenCode processes, automatic crash takeover, and distributed locking are unsupported. Independent OpenCode runtimes sharing a project do not get a complete exclusivity promise.
 - `hive_existing_workspace_start` is unavailable. Isolated worktrees are the managed placement. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement.
