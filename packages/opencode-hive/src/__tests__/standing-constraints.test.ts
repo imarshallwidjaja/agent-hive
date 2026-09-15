@@ -439,7 +439,7 @@ describe('operator standing constraints', () => {
       expect((second.prompt as string).split(STANDING_CONSTRAINTS_HEADING)).toHaveLength(2);
     });
 
-    it('does not append to a Hive worker-prompt file reference', async () => {
+    it('appends to prompt references because generated worker prompts are no longer authoritative', async () => {
       const hooks = await loadHooks(testRoot);
       await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, createToolContext('sess_worker_ref'));
       const prompt = 'Follow instructions in @.hive/features/01_demo/tasks/01-first-task/worker-prompt.md';
@@ -449,7 +449,7 @@ describe('operator standing constraints', () => {
         prompt,
       });
 
-      expect(args.prompt).toBe(prompt);
+      expect(args.prompt).toBe(`${prompt}\n\n${CONSTRAINTS_BLOCK}`);
     });
 
     it('keeps the register scoped to the session that set it', async () => {
@@ -486,134 +486,38 @@ describe('operator standing constraints', () => {
     });
   });
 
-  describe('worker prompt file', () => {
-    it('carries the register into the generated worker prompt and leaves it out when unset', async () => {
-      initGitRoot(testRoot);
-      const hooks = await loadHooks(testRoot);
-      const toolContext = createToolContext('sess_worktree_start');
-      await hooks['chat.message']?.(
-        { sessionID: 'sess_worktree_start', agent: 'hive-master' } as never,
-        { message: {}, parts: [] } as never,
-      );
-
-      const startWorkerPrompt = async (feature: string): Promise<{ launchPrompt: string; workerPrompt: string }> => {
-        const plan = `# ${feature}
-
-## Discovery
-
-**Q: Is this a test?**
-A: Yes, this integration test checks that operator standing constraints reach the generated worker prompt file.
-
-## Tasks
-
-### 1. First Task
-Do it
-`;
-        await hooks.tool!.hive_feature_create.execute({ name: feature }, toolContext);
-        await hooks.tool!.hive_plan_write.execute({ content: plan, feature }, toolContext);
-        await hooks.tool!.hive_plan_approve.execute({ feature }, toolContext);
-        await hooks.tool!.hive_tasks_sync.execute({ feature }, toolContext);
-
-        const started = parseToolJson<{ taskToolCall?: { prompt?: string } }>(
-          await hooks.tool!.hive_worktree_start.execute({ feature, task: '01-first-task' }, toolContext),
-        );
-        const launchPrompt = started.taskToolCall!.prompt!;
-        const workerPromptPath = path.join(testRoot, launchPrompt.replace('Follow instructions in @', ''));
-        return { launchPrompt, workerPrompt: fs.readFileSync(workerPromptPath, 'utf-8') };
-      };
-
-      const unset = await startWorkerPrompt('constraint-unset-feature');
-      expect(unset.workerPrompt).not.toContain(STANDING_CONSTRAINTS_HEADING);
-
-      await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, toolContext);
-      const set = await startWorkerPrompt('constraint-set-feature');
-
-      expect(set.workerPrompt).toContain(CONSTRAINTS_BLOCK);
-
-      expect(set.launchPrompt).toContain('/assignments/attempt-1.md');
-    });
-  });
-
-  describe('background correlation', () => {
-    it('matches the pending launch against the canonical prompt containing constraints once', async () => {
+  describe('managed execution prompt', () => {
+    it('appends the current register and factual scope without replacing the primary prompt', async () => {
       process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
-      initGitRoot(testRoot);
       const hooks = await loadHooks(testRoot);
-      const sessionID = 'sess_background_correlation';
+      const sessionID = 'sess_execution_constraints';
       const toolContext = createToolContext(sessionID);
-
       await hooks['chat.message']?.(
-        { sessionID, agent: 'hive-builder' } as never,
-        { message: {}, parts: [] } as never,
+        { sessionID, agent: 'hive-master' } as never,
+        { message: { agent: 'hive-master' }, parts: [] } as never,
       );
       await hooks.tool!.hive_constraints_add.execute({ constraints: CONSTRAINTS }, toolContext);
-
-      const created = parseToolJson<{
-        runId?: string;
-        backgroundTaskCall?: { description?: string; prompt?: string; subagent_type?: string; hive_launch_id?: string };
-      }>(await hooks.tool!.hive_adhoc_worktree_create.execute(
-        { label: 'constraint-run', autoSpawnWorker: true },
-        toolContext,
-      ));
-
-      const expectedPrompt = created.backgroundTaskCall!.prompt!;
-      const boardPath = path.join(testRoot, '.hive', 'background-jobs.json');
-      const pendingBoard = JSON.parse(fs.readFileSync(boardPath, 'utf-8')) as {
-        pendingLaunches?: Array<{ expectedPrompt?: string }>;
-      };
-      expect(pendingBoard.pendingLaunches?.[0]?.expectedPrompt).toBe(expectedPrompt);
-
+      const liveDirectory = path.join(testRoot, 'live');
+      fs.mkdirSync(liveDirectory);
+      await hooks.tool!.hive_execution_prepare.execute({
+        scope: { kind: 'adhoc', runId: 'constraint-run' },
+        placement: { kind: 'in_place', directory: liveDirectory },
+      }, toolContext);
       const launchArgs: Record<string, unknown> = {
         background: true,
-        subagent_type: created.backgroundTaskCall!.subagent_type,
-        description: created.backgroundTaskCall!.description,
-        prompt: expectedPrompt,
-        hive_launch_id: created.backgroundTaskCall!.hive_launch_id,
+        subagent_type: 'forager-worker',
+        description: 'Apply the change',
+        prompt: 'Primary-authored instructions.',
       };
       const output = { args: launchArgs };
       await hooks['tool.execute.before']?.(
         { tool: 'task', sessionID, callID: 'call_background_launch' } as never,
         output as never,
       );
-
-      expect(output.args.prompt).toBe(expectedPrompt);
-      expect(String(output.args.prompt).split(CONSTRAINTS_BLOCK)).toHaveLength(2);
-
-      await hooks.event?.({ event: {
-        type: 'session.created',
-        properties: { info: { id: 'adhoc-child', parentID: sessionID } },
-      } } as never);
-      await hooks.event?.({ event: { type: 'message.part.updated', properties: { part: {
-        type: 'tool',
-        tool: 'task',
-        sessionID,
-        callID: 'call_background_launch',
-        state: { input: output.args, metadata: { sessionId: 'adhoc-child' } },
-      } } } } as never);
-      await hooks['chat.message']?.(
-        { sessionID: 'adhoc-child', agent: created.backgroundTaskCall!.subagent_type } as never,
-        { message: { agent: created.backgroundTaskCall!.subagent_type }, parts: [] } as never,
-      );
-
-      await hooks['tool.execute.after']?.(
-        { tool: 'task', sessionID, callID: 'call_background_launch' } as never,
-        { title: 'task', output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2', metadata: { sessionId: 'adhoc-child' } } as never,
-      );
-
-      const board = JSON.parse(fs.readFileSync(boardPath, 'utf-8')) as {
-        jobs: Array<{ taskId: string; scopeSource?: string; scope?: { adHocRunId?: string } }>;
-        pendingLaunches?: unknown[];
-      };
-      const job = board.jobs.find((entry) => entry.taskId === 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2');
-      expect(job?.scopeSource).toBe('pending-launch');
-      expect(job?.scope?.adHocRunId).toBe(created.runId);
-      expect(board.pendingLaunches ?? []).toHaveLength(0);
-      expect(new SessionService(testRoot).getGlobal('adhoc-child')).toMatchObject({
-        parentSessionId: sessionID,
-        projectRoot: testRoot,
-        adHocRunId: created.runId,
-        sessionKind: 'task-worker',
-      });
+      expect(String(output.args.prompt)).toContain('Primary-authored instructions.');
+      expect(String(output.args.prompt)).toContain('## Hive execution scope');
+      expect(String(output.args.prompt)).toContain(CONSTRAINTS_BLOCK);
+      expect(String(output.args.prompt).split('<!-- hive-standing-constraints:start -->')).toHaveLength(2);
     });
   });
 });

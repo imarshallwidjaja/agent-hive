@@ -1,529 +1,322 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ExecutionAttemptService } from './executionAttemptService.js';
-import { SessionService } from './sessionService.js';
-import { getExecutionAttemptsPath, getGlobalSessionsPath, readJson } from '../utils/paths.js';
-import * as paths from '../utils/paths.js';
-import type { ExecutionAttemptsJson, NativeTaskLease, TaskStatus } from '../types.js';
+import { getExecutionAttemptsPath, getGlobalSessionsPath } from '../utils/paths.js';
+import type { NativeTaskLease, TaskStatus } from '../types.js';
 
-const TEST_DIR = '/tmp/hive-core-execution-attempt-test-' + process.pid;
+const TEST_DIR = `/tmp/hive-core-execution-attempt-test-${process.pid}`;
 
 function cleanup(): void {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 }
 
-function setupFeature(featureName: string): void {
+function setupTask(featureName: string, taskFolder: string): void {
   const featurePath = path.join(TEST_DIR, '.hive', 'features', featureName);
-  fs.mkdirSync(featurePath, { recursive: true });
+  const taskPath = path.join(featurePath, 'tasks', taskFolder);
+  fs.mkdirSync(taskPath, { recursive: true });
   fs.writeFileSync(
     path.join(featurePath, 'feature.json'),
     JSON.stringify({ name: featureName, status: 'executing', createdAt: new Date().toISOString() }),
   );
-}
-
-function setupTask(featureName: string, taskFolder: string): void {
-  const taskPath = path.join(TEST_DIR, '.hive', 'features', featureName, 'tasks', taskFolder);
-  fs.mkdirSync(taskPath, { recursive: true });
   const status: TaskStatus = { status: 'pending', origin: 'plan', planTitle: taskFolder };
   fs.writeFileSync(path.join(taskPath, 'status.json'), JSON.stringify(status, null, 2));
 }
 
-function workspace(name: string): string {
-  const dir = path.join(TEST_DIR, '.hive', '.worktrees', name, '01-task');
-  fs.mkdirSync(dir, { recursive: true });
-  return fs.realpathSync(dir);
+function worktree(name: string): string {
+  const directory = path.join(TEST_DIR, '.hive', '.worktrees', name, '01-task');
+  fs.mkdirSync(directory, { recursive: true });
+  return fs.realpathSync(directory);
 }
 
-function workerAttempts(featureName: string, taskFolder: string): TaskStatus['workerAttempts'] {
-  const statusPath = path.join(TEST_DIR, '.hive', 'features', featureName, 'tasks', taskFolder, 'status.json');
-  return readJson<TaskStatus>(statusPath)?.workerAttempts;
-}
-
-function backdateAttempt(attemptId: string, minutesAgo: number): void {
-  const filePath = getExecutionAttemptsPath(TEST_DIR);
-  const data = JSON.parse(fs.readFileSync(filePath, 'utf8')) as ExecutionAttemptsJson;
-  const attempt = data.attempts.find(candidate => candidate.id === attemptId);
-  if (!attempt) throw new Error(`missing attempt ${attemptId}`);
-  attempt.createdAt = new Date(Date.now() - minutesAgo * 60 * 1000).toISOString();
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-}
-
-function writeLeases(leases: NativeTaskLease[]): void {
-  const sessionsPath = getGlobalSessionsPath(TEST_DIR);
-  fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
-  const current = readJson<{ sessions?: unknown[]; executionOwnershipVersion?: number }>(sessionsPath) ?? { sessions: [] };
-  fs.writeFileSync(sessionsPath, JSON.stringify({
-    ...current,
-    sessions: current.sessions ?? [],
-    nativeTaskLeases: leases,
-  }, null, 2));
-}
-
-describe('ExecutionAttemptService', () => {
+describe('ExecutionAttemptService armed native attachment', () => {
   let service: ExecutionAttemptService;
 
   beforeEach(() => {
     cleanup();
     fs.mkdirSync(TEST_DIR, { recursive: true });
-    setupFeature('feat-a');
-    setupTask('feat-a', '01-a');
-    setupFeature('feat-b');
-    setupTask('feat-b', '01-b');
-    service = new ExecutionAttemptService(TEST_DIR);
+    setupTask('feature-a', '01-task');
+    setupTask('feature-b', '01-task');
+    service = new ExecutionAttemptService(TEST_DIR, 'runtime-a');
   });
 
-  afterEach(() => {
-    cleanup();
-  });
+  afterEach(cleanup);
 
-  it('allows two prepares for different workspace identities', () => {
-    const first = service.prepare({
+  it('arms one next dispatch per authenticated parent and attaches it exactly once', () => {
+    const armed = service.arm({
       kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
+      featureName: 'feature-a',
+      taskFolder: '01-task',
       originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('a')],
+      placement: { kind: 'worktree', workspaceIdentities: [worktree('feature-a')], workspacePath: worktree('feature-a') },
+    }).attempt;
+
+    expect(armed.phase).toBe('armed');
+    expect(() => service.arm({
+      kind: 'adhoc',
+      runId: 'other',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    })).toThrow(/already has an armed execution/i);
+
+    const attached = service.attachNext({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-a',
+      selectedAgent: 'forager-worker',
+      background: false,
     });
-    const second = service.prepare({
-      kind: 'task',
-      featureName: 'feat-b',
-      taskFolder: '01-b',
+    expect(attached).toMatchObject({
+      id: armed.id,
+      phase: 'attached',
+      native: {
+        parentSessionId: 'primary-a',
+        callId: 'call-a',
+        selectedAgent: 'forager-worker',
+        background: false,
+      },
+    });
+    expect(() => service.attachNext({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-b',
+      selectedAgent: 'forager-worker',
+      background: false,
+    })).toThrow(/no armed execution/i);
+  });
+
+  it('does not treat in-place placement as an exclusive filesystem claim', () => {
+    service.arm({
+      kind: 'adhoc',
+      runId: 'run-a',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    });
+    const second = service.arm({
+      kind: 'adhoc',
+      runId: 'run-b',
       originatingPrimarySession: 'primary-b',
-      workspaceIdentities: [workspace('b')],
+      placement: { kind: 'in_place', directory: TEST_DIR },
     });
-    expect(first.existing).toBe(false);
-    expect(second.existing).toBe(false);
-    expect(first.attempt.id).not.toBe(second.attempt.id);
-    expect(first.attempt.dispatchState).toBe('prepared');
-    expect(second.attempt.dispatchState).toBe('prepared');
+    expect(second.attempt.placement).toEqual({ kind: 'in_place', directory: fs.realpathSync(TEST_DIR) });
+    service.assertWorkspacesIdle([TEST_DIR]);
   });
 
-  it('keeps exactly one active attempt for the same task and returns the existing attempt', () => {
-    const input = {
-      kind: 'task' as const,
-      featureName: 'feat-a',
-      taskFolder: '01-a',
+  it('serializes parent arms across service instances and rejects intersecting worktree claims', () => {
+    const shared = worktree('shared');
+    service.arm({
+      kind: 'adhoc',
+      runId: 'first',
       originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('a')],
-    };
-    const first = service.prepare(input);
-    const second = service.prepare({ ...input, originatingPrimarySession: 'primary-other' });
-    expect(second.existing).toBe(true);
-    expect(second.attempt.id).toBe(first.attempt.id);
-    expect(workerAttempts('feat-a', '01-a')).toEqual([
-      expect.objectContaining({ attempt: 1, state: 'allocated' }),
-    ]);
-  });
-
-  it('rejects a second task identity that claims the same workspace identity', () => {
-    const shared = workspace('shared');
-    service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [shared],
+      placement: { kind: 'worktree', workspaceIdentities: [shared], workspacePath: shared },
     });
-    expect(() => service.prepare({
-      kind: 'task',
-      featureName: 'feat-b',
-      taskFolder: '01-b',
+    const concurrent = new ExecutionAttemptService(TEST_DIR, 'runtime-a');
+    expect(() => concurrent.arm({
+      kind: 'adhoc',
+      runId: 'second',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    })).toThrow(/already has an armed execution/i);
+    expect(() => concurrent.arm({
+      kind: 'adhoc',
+      runId: 'third',
       originatingPrimarySession: 'primary-b',
-      workspaceIdentities: [shared],
-    })).toThrow(/Workspace identity is claimed/);
-    expect(workerAttempts('feat-b', '01-b')).toBeUndefined();
+      placement: { kind: 'worktree', workspaceIdentities: [shared], workspacePath: shared },
+    })).toThrow(/claimed/i);
   });
 
-  it('keeps an unobserved attempt claimed while a different workspace can still be prepared', () => {
-    const first = service.prepare({
+  it('keeps attached worktrees quarantined until finalization', () => {
+    const identity = worktree('quarantined');
+    const attempt = service.arm({
       kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
+      featureName: 'feature-a',
+      taskFolder: '01-task',
       originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('a')],
-    });
-    service.consumeLaunch(first.attempt.launchId!);
-    service.markUnobserved(first.attempt.id);
-    expect(() => service.assertWorkspacesIdle([workspace('a')])).toThrow(/claimed/);
-    const other = service.prepare({
-      kind: 'task',
-      featureName: 'feat-b',
-      taskFolder: '01-b',
-      originatingPrimarySession: 'primary-b',
-      workspaceIdentities: [workspace('b')],
-    });
-    expect(other.existing).toBe(false);
-    expect(service.getAttempt(first.attempt.id)?.observation).toBe('unobserved');
-    expect(service.getAttempt(first.attempt.id)?.dispatchState).toBe('dispatched');
-  });
-
-  it('supersedes onto a fresh workspace while the old workspace stays claimed', () => {
-    const oldWorkspace = workspace('old');
-    const prepared = service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [oldWorkspace],
-    });
-    service.consumeLaunch(prepared.attempt.launchId!);
-    service.markUnobserved(prepared.attempt.id);
-    const replacement = service.supersede(prepared.attempt.id, {
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('fresh')],
-    });
-    expect(replacement.existing).toBe(false);
-    expect(replacement.attempt.id).not.toBe(prepared.attempt.id);
-    expect(replacement.attempt.workspaceIdentities).not.toEqual(prepared.attempt.workspaceIdentities);
-    expect(service.getAttempt(prepared.attempt.id)?.dispatchState).toBe('dispatched');
-    expect(service.getAttempt(prepared.attempt.id)?.supersededBy).toBe(replacement.attempt.id);
-    expect(() => service.assertWorkspacesIdle([oldWorkspace])).toThrow(/claimed/);
-    expect(() => service.assertWorkspacesIdle(replacement.attempt.workspaceIdentities)).toThrow(/claimed/);
-    expect(service.isCurrentTaskAttempt('feat-a', '01-a', prepared.attempt.id)).toBe(false);
-    expect(service.isCurrentTaskAttempt('feat-a', '01-a', replacement.attempt.id)).toBe(true);
-    expect(workerAttempts('feat-a', '01-a')).toHaveLength(2);
-  });
-
-  it('does not move the current-task pointer when a late record arrives on a superseded attempt', () => {
-    const prepared = service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('old')],
-    });
-    service.consumeLaunch(prepared.attempt.launchId!);
-    const replacement = service.supersede(prepared.attempt.id, {
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('fresh')],
-    });
-    const recorded = service.settle(prepared.attempt.id, 'completed', {
-      reportLocator: '.hive/features/feat-a/tasks/01-a/report.md',
-    });
-    expect(recorded.observedOutcome).toBe('completed');
-    expect(service.isCurrentTaskAttempt('feat-a', '01-a', prepared.attempt.id)).toBe(false);
-    expect(service.isCurrentTaskAttempt('feat-a', '01-a', replacement.attempt.id)).toBe(true);
-    const current = service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('ignored')],
-    });
-    expect(current.existing).toBe(true);
-    expect(current.attempt.id).toBe(replacement.attempt.id);
-  });
-
-  it('rejects a placeholder native child and never stores it as a live child id', () => {
-    const prepared = service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('a')],
-    });
-    expect(() => service.bindNativeChild(prepared.attempt.id, 'forager-child')).toThrow(/Placeholder native child/);
-    expect(() => service.bindNativeChild(prepared.attempt.id, '')).toThrow(/Placeholder native child/);
-    expect(service.getAttempt(prepared.attempt.id)?.nativeChildSessionId).toBeUndefined();
-    const bound = service.bindNativeChild(prepared.attempt.id, 'ses_real-child');
-    expect(bound.nativeChildSessionId).toBe('ses_real-child');
-    expect(() => service.bindNativeChild(prepared.attempt.id, 'other-child')).toThrow(/Contradictory native child/);
-  });
-
-  it('releases a live claim when an observed terminal settles so the workspace can be prepared again', () => {
-    const identity = workspace('a');
-    const prepared = service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [identity],
-    });
-    service.consumeLaunch(prepared.attempt.launchId!);
-    service.bindNativeChild(prepared.attempt.id, 'ses_worker');
-    const settled = service.settle(prepared.attempt.id, 'completed');
-    expect(settled.dispatchState).toBe('settled');
-    expect(settled.observation).toBe('observed');
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    }).attempt;
+    service.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+    expect(() => service.assertWorkspacesIdle([identity])).toThrow(/claimed/);
+    service.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
+    expect(service.getAttempt(attempt.id)?.phase).toBe('stopped');
+    expect(() => service.assertWorkspacesIdle([identity])).toThrow(/claimed/);
+    service.finalize(attempt.id, 'completed');
     service.assertWorkspacesIdle([identity]);
-    const next = service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [identity],
-    });
-    expect(next.existing).toBe(false);
-    expect(next.attempt.id).not.toBe(prepared.attempt.id);
   });
 
-  it('expires a prepared attempt and releases its claim, and does not expire a dispatched attempt', () => {
-    const preparedIdentity = workspace('prepared');
-    const dispatchedIdentity = workspace('dispatched');
-    const prepared = service.prepare({
+  it('closes foreign-runtime arms as not started but preserves attached attempts across restart', () => {
+    const unstarted = service.arm({
       kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
+      featureName: 'feature-a',
+      taskFolder: '01-task',
       originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [preparedIdentity],
-    });
-    const dispatched = service.prepare({
+      placement: { kind: 'worktree', workspaceIdentities: [worktree('unstarted')], workspacePath: worktree('unstarted') },
+    }).attempt;
+    const attached = service.arm({
       kind: 'task',
-      featureName: 'feat-b',
-      taskFolder: '01-b',
+      featureName: 'feature-b',
+      taskFolder: '01-task',
       originatingPrimarySession: 'primary-b',
-      workspaceIdentities: [dispatchedIdentity],
-    });
-    service.consumeLaunch(dispatched.attempt.launchId!);
-    backdateAttempt(prepared.attempt.id, 6);
-    backdateAttempt(dispatched.attempt.id, 6);
-    expect(service.listAttempts().find(attempt => attempt.id === prepared.attempt.id)?.dispatchState).toBe('settled');
-    expect(service.getAttempt(prepared.attempt.id)?.observedOutcome).toBe('expired');
-    service.assertWorkspacesIdle([preparedIdentity]);
-    expect(service.getAttempt(dispatched.attempt.id)?.dispatchState).toBe('dispatched');
-    expect(() => service.assertWorkspacesIdle([dispatchedIdentity])).toThrow(/claimed/);
+      placement: { kind: 'worktree', workspaceIdentities: [worktree('attached')], workspacePath: worktree('attached') },
+    }).attempt;
+    service.attachNext({ originatingPrimarySession: 'primary-b', nativeCallId: 'call-b', selectedAgent: 'forager-worker', background: true });
+
+    const restarted = new ExecutionAttemptService(TEST_DIR, 'runtime-b');
+    expect(restarted.getAttempt(unstarted.id)).toMatchObject({ phase: 'finalized', observedOutcome: 'not_started' });
+    expect(restarted.getAttempt(attached.id)?.phase).toBe('attached');
   });
 
-  it('migrates worktree leases into unobserved claims and keeps project-root and placeholder leases as history only', () => {
-    const worktreePath = workspace('migrated');
-    const leases: NativeTaskLease[] = [
-      {
-        parentSessionId: 'primary-1',
-        callId: 'call-wt',
-        agent: 'forager-worker',
-        projectRoot: TEST_DIR,
-        resourcePaths: [worktreePath],
-        runtimeId: 'runtime',
-        foragerLaunchId: 'launch-wt',
-        childSessionId: 'ses_real-child',
-      },
-      {
-        parentSessionId: 'primary-1',
-        callId: 'call-root',
-        agent: 'forager-worker',
-        projectRoot: TEST_DIR,
-        resourcePaths: [TEST_DIR],
-        runtimeId: 'runtime',
-        foragerLaunchId: 'launch-root',
-      },
-      {
-        parentSessionId: 'primary-1',
-        callId: 'call-helper',
-        agent: 'hive-helper',
-        projectRoot: TEST_DIR,
-        resourcePaths: [worktreePath],
-        runtimeId: 'runtime',
-        capabilityReason: 'Need helper',
-      },
-      {
-        parentSessionId: 'primary-1',
-        callId: 'call-placeholder',
-        agent: 'forager-worker',
-        projectRoot: TEST_DIR,
-        resourcePaths: [worktreePath],
-        runtimeId: 'runtime',
-        childSessionId: 'forager-child',
-      },
-      {
-        parentSessionId: 'primary-1',
-        callId: 'call-general',
-        agent: 'general',
-        projectRoot: TEST_DIR,
-        resourcePaths: [worktreePath],
-        runtimeId: 'runtime',
-        capabilityReason: 'Specialist capability',
-      },
-    ];
-    writeLeases(leases);
-    service.migrate();
-    const attempts = service.listAttempts().filter(attempt => attempt.nativeCallId === 'call-wt'
-      || attempt.nativeCallId === 'call-root'
-      || attempt.nativeCallId === 'call-helper'
-      || attempt.nativeCallId === 'call-placeholder'
-      || attempt.nativeCallId === 'call-general');
-    expect(attempts).toHaveLength(1);
-    expect(attempts[0]).toMatchObject({
-      dispatchState: 'dispatched',
-      observation: 'unobserved',
-      nativeCallId: 'call-wt',
-      nativeChildSessionId: 'ses_real-child',
-      launchId: 'launch-wt',
+  it('expires only armed attempts and records not-started closure', () => {
+    const armed = service.arm({
+      kind: 'adhoc',
+      runId: 'expiring',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [worktree('expiring')], workspacePath: worktree('expiring') },
+    }).attempt;
+    const storePath = getExecutionAttemptsPath(TEST_DIR);
+    const store = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+    store.attempts[0].expiresAt = new Date(Date.now() - 1).toISOString();
+    fs.writeFileSync(storePath, JSON.stringify(store, null, 2));
+
+    expect(service.getAttempt(armed.id)).toMatchObject({ phase: 'finalized', observedOutcome: 'not_started' });
+  });
+
+  it('rejects stale task generations at attachment without consuming the arm', () => {
+    const armed = service.arm({
+      kind: 'task',
+      featureName: 'feature-a',
+      taskFolder: '01-task',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [worktree('stale')], workspacePath: worktree('stale') },
+    }).attempt;
+    const statusPath = path.join(TEST_DIR, '.hive', 'features', 'feature-a', 'tasks', '01-task', 'status.json');
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+    status.workerAttempt += 1;
+    fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
+
+    expect(() => service.attachNext({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-stale',
+      selectedAgent: 'forager-worker',
+      background: false,
+    })).toThrow(/superseded/i);
+    expect(service.getAttempt(armed.id)?.phase).toBe('armed');
+  });
+
+  it('enriches the exact attached call with one child identity', () => {
+    const attempt = service.arm({
+      kind: 'adhoc',
+      runId: 'child',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    }).attempt;
+    service.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+    const enriched = service.bindNativeChild({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-a',
+      nativeChildSessionId: 'ses-child',
     });
-    expect(attempts[0]!.workspaceIdentities).toEqual([worktreePath]);
-    const store = readJson<ExecutionAttemptsJson>(getExecutionAttemptsPath(TEST_DIR));
-    expect(store?.nativeTaskLeaseHistory).toHaveLength(5);
-    const sessions = JSON.parse(fs.readFileSync(getGlobalSessionsPath(TEST_DIR), 'utf8'));
-    expect(sessions.nativeTaskLeases).toBeUndefined();
-    expect(sessions.executionOwnershipVersion).toBe(2);
+    expect(enriched.native?.childSessionId).toBe('ses-child');
+    expect(service.getAttempt(attempt.id)?.native?.childSessionId).toBe('ses-child');
+    expect(() => service.bindNativeChild({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-a',
+      nativeChildSessionId: 'ses-other',
+    })).toThrow(/contradictory/i);
+  });
+
+  it('accepts defined blocking output but not undefined output as stop evidence', () => {
+    const attempt = service.arm({
+      kind: 'adhoc',
+      runId: 'blocking',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    }).attempt;
+    service.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+    expect(service.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: false })).toBeUndefined();
+    expect(service.getAttempt(attempt.id)?.phase).toBe('attached');
+    expect(service.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true })?.phase).toBe('stopped');
+  });
+
+  it('requires exact structured background identity and ignores cancellation acknowledgement', () => {
+    const attempt = service.arm({
+      kind: 'adhoc',
+      runId: 'background',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    }).attempt;
+    service.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: true });
+    service.bindNativeChild({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', nativeChildSessionId: 'task-a' });
+    expect(service.recordCancellationAcknowledgement(attempt.id)).toBe(false);
+    expect(service.getAttempt(attempt.id)?.phase).toBe('attached');
+    expect(() => service.observeBackgroundStop({
+      originatingPrimarySession: 'primary-other',
+      nativeCallId: 'call-a',
+      nativeTaskId: 'task-a',
+      state: 'completed',
+    })).toThrow(/exact attached execution/i);
+    expect(service.observeBackgroundStop({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-a',
+      nativeTaskId: 'task-a',
+      state: 'completed',
+    }).phase).toBe('stopped');
+  });
+
+  it('migrates legacy prepared attempts closed and dispatched attempts quarantined', () => {
+    cleanup();
+    fs.mkdirSync(path.dirname(getExecutionAttemptsPath(TEST_DIR)), { recursive: true });
+    const preparedPath = worktree('legacy-prepared');
+    const attachedPath = worktree('legacy-dispatched');
+    fs.writeFileSync(getExecutionAttemptsPath(TEST_DIR), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [
+        {
+          id: 'legacy-prepared', kind: 'adhoc', runId: 'prepared', originatingPrimarySession: 'primary-a',
+          workspaceIdentities: [preparedPath], launchId: 'old-launch', dispatchState: 'prepared',
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        },
+        {
+          id: 'legacy-dispatched', kind: 'adhoc', runId: 'dispatched', originatingPrimarySession: 'primary-b',
+          workspaceIdentities: [attachedPath], launchId: 'old-launch-2', dispatchState: 'dispatched',
+          nativeCallId: 'call-b', nativeChildSessionId: 'child-b',
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        },
+      ],
+    }, null, 2));
+
+    const migrated = new ExecutionAttemptService(TEST_DIR, 'runtime-new');
+    expect(migrated.getAttempt('legacy-prepared')).toMatchObject({ phase: 'finalized', observedOutcome: 'not_started' });
+    expect(migrated.getAttempt('legacy-dispatched')).toMatchObject({
+      phase: 'attached',
+      placement: { kind: 'worktree', workspaceIdentities: [attachedPath] },
+      native: { parentSessionId: 'primary-b', callId: 'call-b', childSessionId: 'child-b' },
+    });
+    const persisted = JSON.parse(fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8'));
+    expect(persisted.schemaVersion).toBe(2);
+    expect(JSON.stringify(persisted)).not.toContain('old-launch');
+  });
+
+  it('extracts legacy native leases once and preserves exact live worktree quarantine', () => {
+    const identity = worktree('lease-migration');
+    const lease: NativeTaskLease = {
+      parentSessionId: 'legacy-parent',
+      callId: 'legacy-call',
+      agent: 'forager-worker',
+      projectRoot: TEST_DIR,
+      resourcePaths: [identity],
+      runtimeId: 'legacy-runtime',
+      childSessionId: 'legacy-child',
+    };
+    fs.mkdirSync(path.dirname(getGlobalSessionsPath(TEST_DIR)), { recursive: true });
+    fs.writeFileSync(getGlobalSessionsPath(TEST_DIR), JSON.stringify({ sessions: [], nativeTaskLeases: [lease] }, null, 2));
+
+    const migrated = new ExecutionAttemptService(TEST_DIR, 'runtime-new');
+    expect(migrated.listAttempts().find(attempt => attempt.native?.callId === 'legacy-call')).toMatchObject({
+      phase: 'attached',
+      placement: { kind: 'worktree', workspaceIdentities: [identity] },
+      native: { parentSessionId: 'legacy-parent', childSessionId: 'legacy-child' },
+    });
+    expect(JSON.parse(fs.readFileSync(getGlobalSessionsPath(TEST_DIR), 'utf8')).nativeTaskLeases).toBeUndefined();
     const before = fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8');
-    service.migrate();
+    migrated.migrate();
     expect(fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8')).toBe(before);
-    expect(JSON.parse(fs.readFileSync(getGlobalSessionsPath(TEST_DIR), 'utf8')).nativeTaskLeases).toBeUndefined();
-  });
-
-  it('keeps nativeTaskLeases when the destination write fails and retries without duplicate live claims', () => {
-    const worktreePath = workspace('crash-dest');
-    const lease: NativeTaskLease = {
-      parentSessionId: 'primary-crash',
-      callId: 'call-crash-dest',
-      agent: 'forager-worker',
-      projectRoot: TEST_DIR,
-      resourcePaths: [worktreePath],
-      runtimeId: 'runtime',
-      foragerLaunchId: 'launch-crash-dest',
-      childSessionId: 'ses_crash-dest',
-    };
-    writeLeases([lease]);
-    const originalWriteJsonAtomic = paths.writeJsonAtomic;
-    const destWrite = spyOn(paths, 'writeJsonAtomic').mockImplementation((filePath, data) => {
-      if (path.basename(String(filePath)) === 'execution-attempts.json') {
-        throw new Error('injected dest write failure');
-      }
-      return originalWriteJsonAtomic(filePath, data);
-    });
-    try {
-      expect(() => new ExecutionAttemptService(TEST_DIR)).toThrow(/injected dest write failure/);
-    } finally {
-      destWrite.mockRestore();
-    }
-    const sessions = JSON.parse(fs.readFileSync(getGlobalSessionsPath(TEST_DIR), 'utf8'));
-    expect(sessions.nativeTaskLeases).toEqual([lease]);
-    const retried = new ExecutionAttemptService(TEST_DIR);
-    const live = retried.listAttempts().filter(attempt =>
-      attempt.originatingPrimarySession === 'primary-crash' && attempt.nativeCallId === 'call-crash-dest'
-      && attempt.dispatchState !== 'settled');
-    expect(live).toHaveLength(1);
-    expect(JSON.parse(fs.readFileSync(getGlobalSessionsPath(TEST_DIR), 'utf8')).nativeTaskLeases).toBeUndefined();
-  });
-
-  it('retries source clear after the destination exists without duplicating live claims', () => {
-    const worktreePath = workspace('crash-source');
-    const lease: NativeTaskLease = {
-      parentSessionId: 'primary-crash',
-      callId: 'call-crash-source',
-      agent: 'forager-worker',
-      projectRoot: TEST_DIR,
-      resourcePaths: [worktreePath],
-      runtimeId: 'runtime',
-      foragerLaunchId: 'launch-crash-source',
-      childSessionId: 'ses_crash-source',
-    };
-    writeLeases([lease]);
-    const originalExtract = SessionService.prototype.extractNativeTaskLeases;
-    const extract = spyOn(SessionService.prototype, 'extractNativeTaskLeases').mockImplementation(function (this: SessionService) {
-      if (fs.existsSync(getExecutionAttemptsPath(TEST_DIR))) {
-        throw new Error('injected source clear failure');
-      }
-      return originalExtract.apply(this);
-    });
-    try {
-      expect(() => new ExecutionAttemptService(TEST_DIR)).toThrow(/injected source clear failure/);
-    } finally {
-      extract.mockRestore();
-    }
-    expect(fs.existsSync(getExecutionAttemptsPath(TEST_DIR))).toBe(true);
-    expect(JSON.parse(fs.readFileSync(getGlobalSessionsPath(TEST_DIR), 'utf8')).nativeTaskLeases).toEqual([lease]);
-    const retried = new ExecutionAttemptService(TEST_DIR);
-    retried.migrate();
-    const live = retried.listAttempts().filter(attempt =>
-      attempt.originatingPrimarySession === 'primary-crash' && attempt.nativeCallId === 'call-crash-source'
-      && attempt.dispatchState !== 'settled');
-    expect(live).toHaveLength(1);
-    expect(JSON.parse(fs.readFileSync(getGlobalSessionsPath(TEST_DIR), 'utf8')).nativeTaskLeases).toBeUndefined();
-  });
-
-  it('rejects a claimed workspace in assertWorkspacesIdle and allows an unrelated identity', () => {
-    const claimed = workspace('claimed');
-    service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [claimed],
-    });
-    expect(() => service.assertWorkspacesIdle([claimed])).toThrow(/claimed/);
-    service.assertWorkspacesIdle([workspace('unrelated')]);
-  });
-
-  it('returns an existing ad-hoc run while prepared and rejects reuse after it is unobserved', () => {
-    const identity = workspace('adhoc');
-    const first = service.prepare({
-      kind: 'adhoc',
-      runId: 'run-1',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [identity],
-    });
-    const again = service.prepare({
-      kind: 'adhoc',
-      runId: 'run-1',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [identity],
-    });
-    expect(again.existing).toBe(true);
-    expect(again.attempt.id).toBe(first.attempt.id);
-    service.consumeLaunch(first.attempt.launchId!);
-    service.markUnobserved(first.attempt.id);
-    expect(() => service.prepare({
-      kind: 'adhoc',
-      runId: 'run-1',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('adhoc-fresh')],
-    })).toThrow(/unobserved and cannot be reused/);
-  });
-
-  it('persists attemptSlot and records a published assignment after prepare', () => {
-    const identity = workspace('slotted');
-    const prepared = service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [identity],
-      attemptSlot: 'attempt-2',
-    });
-    expect(prepared.attempt.attemptSlot).toBe('attempt-2');
-    expect(prepared.attempt.assignment?.taskAttempt).toBe(1);
-    const recorded = service.recordAssignment(prepared.attempt.id, {
-      taskAttempt: 1,
-      locator: '.hive/features/feat-a/tasks/01-a/assignments/attempt-1.md',
-      contentHash: 'a'.repeat(64),
-    });
-    expect(recorded.assignment).toEqual({
-      taskAttempt: 1,
-      locator: '.hive/features/feat-a/tasks/01-a/assignments/attempt-1.md',
-      contentHash: 'a'.repeat(64),
-    });
-    const handoff = service.recordHandoff(prepared.attempt.id, {
-      reportLocator: '.hive/features/feat-a/tasks/01-a/report.md',
-    });
-    expect(handoff.reportLocator).toBe('.hive/features/feat-a/tasks/01-a/report.md');
-    expect(handoff.dispatchState).toBe('prepared');
-  });
-
-  it('does not create execution-attempts.json on a clean project', () => {
-    expect(service.listAttempts()).toEqual([]);
-    expect(fs.existsSync(getExecutionAttemptsPath(TEST_DIR))).toBe(false);
-    expect(fs.existsSync(getGlobalSessionsPath(TEST_DIR))).toBe(false);
-  });
-
-  it('restores observation on a dispatched attempt without changing dispatch state', () => {
-    const prepared = service.prepare({
-      kind: 'task',
-      featureName: 'feat-a',
-      taskFolder: '01-a',
-      originatingPrimarySession: 'primary-a',
-      workspaceIdentities: [workspace('observed')],
-    });
-    service.consumeLaunch(prepared.attempt.launchId!);
-    service.markUnobserved(prepared.attempt.id);
-    const restored = service.markObserved(prepared.attempt.id);
-    expect(restored.observation).toBe('observed');
-    expect(restored.dispatchState).toBe('dispatched');
   });
 });

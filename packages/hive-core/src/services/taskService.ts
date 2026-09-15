@@ -870,6 +870,40 @@ export class TaskService {
     }
   }
 
+  /** Associate an authenticated native child with the current armed task generation. */
+  associateExecutionSession(
+    featureName: string,
+    taskFolder: string,
+    taskAttempt: number,
+    workerSession: WorkerSession,
+    lockOptions?: LockOptions,
+  ): TaskStatus {
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
+    if (!fileExists(statusPath)) throw new Error(`Task '${taskFolder}' not found`);
+    const release = acquireLockSync(statusPath, lockOptions);
+    try {
+      const current = readJson<TaskStatus>(statusPath);
+      if (!current || current.workerAttempt !== taskAttempt) {
+        throw new Error(`assignment_recovery_error: task generation ${taskAttempt} is not current`);
+      }
+      if (current.workerSession && current.workerSession.sessionId !== workerSession.sessionId) {
+        throw new Error('assignment_recovery_error: task generation is already associated with another session');
+      }
+      const updated: TaskStatus = {
+        ...current,
+        schemaVersion: TASK_STATUS_SCHEMA_VERSION,
+        workerSession,
+        workerAttempts: current.workerAttempts?.map((candidate) => candidate.attempt === taskAttempt
+          ? { ...candidate, state: 'associated', workerSessionId: workerSession.sessionId }
+          : candidate),
+      };
+      writeJsonAtomic(statusPath, updated);
+      return updated;
+    } finally {
+      release();
+    }
+  }
+
   /**
    * Get raw TaskStatus including all fields (for internal use or debugging).
    */

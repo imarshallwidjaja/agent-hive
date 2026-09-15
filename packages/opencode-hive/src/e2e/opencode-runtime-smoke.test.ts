@@ -17,8 +17,7 @@ const EXPECTED_TOOLS = [
   "hive_plan_write",
   "hive_plan_read",
   "hive_tasks_sync",
-  "hive_worktree_start",
-  "hive_worktree_create",
+  "hive_execution_prepare",
   "hive_task_trace",
   "hive_task_trace_content",
 ] as const;
@@ -154,7 +153,7 @@ type ShippingLaunchScenario =
   | 'invalid-id';
 
 type ShippingLaunchEvidence = {
-  launchId?: string;
+  attemptId?: string;
   preparedCall?: Record<string, unknown>;
   childRequests: number;
   childToolResult?: unknown;
@@ -235,14 +234,12 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
         const preservesBaseTaskFields = ['description', 'prompt', 'subagent_type'].every((field) => (
           isRecord(taskProperties?.[field])
         ));
-        const advertisesHiveLaunchID = isRecord(taskProperties?.hive_launch_id)
-          && taskProperties.hive_launch_id.type === 'string';
-        const advertisesCapabilityReason = isRecord(taskProperties?.hive_capability_reason)
-          && taskProperties.hive_capability_reason.type === 'string';
+        const preservesNativeShape = !Object.hasOwn(taskProperties ?? {}, 'hive_launch_id')
+          && !Object.hasOwn(taskProperties ?? {}, 'hive_capability_reason');
 
-        if (!preservesBaseTaskFields || !advertisesHiveLaunchID || !advertisesCapabilityReason) {
+        if (!preservesBaseTaskFields || !preservesNativeShape) {
           res.writeHead(400, { 'content-type': 'application/json' });
-          res.end(jsonResponse({ error: 'task schema does not preserve base fields and advertise hive_launch_id' }));
+          res.end(jsonResponse({ error: 'task schema does not preserve the unchanged native shape' }));
           return;
         }
       }
@@ -271,9 +268,6 @@ async function startStubProviderServer(): Promise<StubProviderServer> {
               prompt: 'NATIVE_TASK_CHILD_FINAL_ONLY: return a short final response without tools.',
               subagent_type: 'scout-researcher',
               background: false,
-              hive_launch_id: 'runtime-launch-contract',
-              hive_capability_reason: 'Runtime schema preservation and stripping probe',
-              runtime_unknown_probe: 'survives-model-schema-validation',
             }
           : requestsLargeSnapshot
             ? {}
@@ -541,7 +535,6 @@ async function startShippingLaunchProviderServer(): Promise<ShippingLaunchProvid
           prompt: 'SHIPPING_INVALID_ID child must never spawn.',
           subagent_type: 'forager-worker',
           background: false,
-          hive_launch_id: 'shipping-invalid-launch-id',
         });
         return;
       }
@@ -571,38 +564,35 @@ async function startShippingLaunchProviderServer(): Promise<ShippingLaunchProvid
         sendStreamingToolCall(res, `call_${scenario}_tasks_sync`, 'hive_tasks_sync', { feature });
         return;
       }
-      if (!names.includes('hive_worktree_start')) {
-        sendStreamingToolCall(res, `call_${scenario}_prepare`, 'hive_worktree_start', {
-          feature,
-          task: '01-runtime-task',
+      if (!names.includes('hive_execution_prepare')) {
+        sendStreamingToolCall(res, `call_${scenario}_prepare`, 'hive_execution_prepare', {
+          scope: { kind: 'task', feature, task: '01-runtime-task' },
+          placement: { kind: 'worktree' },
         });
         return;
       }
-    } else if (!names.includes('hive_adhoc_worktree_create')) {
-      sendStreamingToolCall(res, `call_${scenario}_prepare`, 'hive_adhoc_worktree_create', {
-        runId: `runtime-${scenario}`,
-        workerInstructions: workerMarker,
+    } else if (!names.includes('hive_execution_prepare')) {
+      sendStreamingToolCall(res, `call_${scenario}_prepare`, 'hive_execution_prepare', {
+        scope: { kind: 'adhoc', runId: `runtime-${scenario}` },
+        placement: { kind: 'worktree' },
       });
       return;
     }
 
     if (!names.includes('task')) {
       const preparation = readToolResult(messages, `call_${scenario}_prepare`);
-      if (!isRecord(preparation) || typeof preparation.launchId !== 'string') {
-        res.end(`data: ${jsonResponse({ error: 'shipping preparation omitted launchId' })}\n\ndata: [DONE]\n\n`);
+      if (!isRecord(preparation) || typeof preparation.attemptId !== 'string') {
+        res.end(`data: ${jsonResponse({ error: 'shipping preparation omitted attemptId' })}\n\ndata: [DONE]\n\n`);
         return;
       }
-      const callKey = scenario.endsWith('background') ? 'backgroundTaskCall' : 'taskToolCall';
-      const preparedCall = isRecord(preparation[callKey]) ? preparation[callKey] : undefined;
-      if (!preparedCall) {
-        res.end(`data: ${jsonResponse({ error: `shipping preparation omitted ${callKey}` })}\n\ndata: [DONE]\n\n`);
-        return;
-      }
-      const dispatchedCall = {
-        ...preparedCall,
-        prompt: `CALLER_TAMPERED_${scenario}`,
+      const preparedCall = {
+        subagent_type: 'forager-worker',
+        description: `Execute ${scenario}`,
+        prompt: workerMarker,
+        background: scenario.endsWith('background'),
       };
-      scenarioEvidence.launchId = preparation.launchId;
+      const dispatchedCall = { ...preparedCall };
+      scenarioEvidence.attemptId = preparation.attemptId;
       scenarioEvidence.preparedCall = preparedCall;
       activeScenario = scenario;
       sendStreamingToolCall(res, `call_${scenario}_task`, 'task', dispatchedCall);
@@ -647,12 +637,10 @@ describe('e2e: OpenCode runtime capability smoke', () => {
 
     const hivePluginEntry = pickHivePluginEntry();
     const pluginRuntimeEntry = import.meta.resolve('@opencode-ai/plugin');
-    const effectRuntimeEntry = import.meta.resolve('effect');
     const pluginFile = path.join(projectDir, ".opencode", "plugin", "hive.ts");
     const correlationFile = path.join(projectDir, 'runtime-task-correlation.json');
     const pluginSource = `import hive from ${JSON.stringify(hivePluginEntry)}
 import { tool } from ${JSON.stringify(pluginRuntimeEntry)}
-import { Schema } from ${JSON.stringify(effectRuntimeEntry)}
 import * as fs from 'node:fs'
 
 const runtimeCorrelatedChildren = new Set<string>()
@@ -661,30 +649,13 @@ const runtimeTaskCorrelationFile = ${JSON.stringify(correlationFile)}
 
 export const HivePlugin = hive
 export const ARuntimeLargeSnapshotPlugin = async () => ({
-  'tool.definition': async (input: any, output: any) => {
-    if (input.toolID !== 'task') return
-    if (!output.parameters?.fields) throw new Error('Native task parameters are not an Effect Struct')
-    output.parameters = Schema.Struct({
-      ...output.parameters.fields,
-      hive_launch_id: Schema.String.annotate({ description: 'Prepared Hive launch identity.' }),
-    })
-  },
   'tool.execute.before': async (input: any, output: any) => {
-    if (input.tool !== 'task' || output.args?.hive_launch_id !== 'runtime-launch-contract') return
-    if (output.args.runtime_unknown_probe !== 'survives-model-schema-validation') {
-      throw new Error('Unadvertised task argument did not reach tool.execute.before')
-    }
+    if (input.tool !== 'task' || !String(output.args?.prompt ?? '').includes('NATIVE_TASK_CHILD_FINAL_ONLY')) return
     if (typeof input.callID !== 'string' || typeof input.sessionID !== 'string') {
       throw new Error('Native task before-hook omitted callID or sessionID')
     }
-    if (output.args.hive_capability_reason !== 'Runtime schema preservation and stripping probe') {
-      throw new Error('Advertised capability reason did not reach tool.execute.before')
-    }
     runtimeTaskBefore.set(input.callID, { callID: input.callID, sessionID: input.sessionID })
-    output.args.prompt += '\\nRUNTIME_BEFORE_HOOK_SAW_LAUNCH_ID'
-    delete output.args.hive_launch_id
-    delete output.args.hive_capability_reason
-    delete output.args.runtime_unknown_probe
+    output.args.prompt += '\\nRUNTIME_BEFORE_HOOK_SAW_NATIVE_TASK'
   },
   event: async ({ event }: any) => {
     if (event.type !== 'message.part.updated') return
@@ -1131,7 +1102,7 @@ export const ZRuntimeModelPlugin = async () => ({
       expect(nativeTaskInput.subagent_type).toBe('scout-researcher');
       expect(nativeTaskInput.background).toBe(false);
       expect(nativeTaskInput.prompt).toEqual(expect.stringContaining('NATIVE_TASK_CHILD_FINAL_ONLY'));
-      expect(nativeTaskInput.prompt).toEqual(expect.stringContaining('RUNTIME_BEFORE_HOOK_SAW_LAUNCH_ID'));
+      expect(nativeTaskInput.prompt).toEqual(expect.stringContaining('RUNTIME_BEFORE_HOOK_SAW_NATIVE_TASK'));
       expect(nativeTaskInput).not.toHaveProperty('hive_launch_id');
       expect(nativeTaskInput).not.toHaveProperty('hive_capability_reason');
       expect(nativeTaskInput).not.toHaveProperty('runtime_unknown_probe');
@@ -1163,8 +1134,8 @@ export const ZRuntimeModelPlugin = async () => ({
       expect(taskProperties?.description).toBeDefined();
       expect(taskProperties?.prompt).toBeDefined();
       expect(taskProperties?.subagent_type).toBeDefined();
-      expect(taskProperties?.hive_launch_id).toMatchObject({ type: 'string' });
-      expect(taskProperties?.hive_capability_reason).toMatchObject({ type: 'string' });
+      expect(taskProperties?.hive_launch_id).toBeUndefined();
+      expect(taskProperties?.hive_capability_reason).toBeUndefined();
 
       expect(fs.existsSync(correlationFile)).toBe(true);
       const correlation = JSON.parse(fs.readFileSync(correlationFile, 'utf8')) as unknown;
@@ -1189,7 +1160,7 @@ export const ZRuntimeModelPlugin = async () => ({
         JSON.stringify(request.messages).includes('RUNTIME_CHILD_CORRELATION_SYNC_PREFIX_SEEN')
       ));
       const childTaskMessages = JSON.stringify(childTaskRequest?.messages);
-      expect(childTaskMessages).toContain('RUNTIME_BEFORE_HOOK_SAW_LAUNCH_ID');
+      expect(childTaskMessages).toContain('RUNTIME_BEFORE_HOOK_SAW_NATIVE_TASK');
       expect(childTaskMessages).toContain('RUNTIME_CHILD_CORRELATION_SYNC_PREFIX_SEEN');
       console.info(JSON.stringify({
         probe: 'synthetic-plugin native task capability',
@@ -1354,14 +1325,14 @@ export const ZRuntimeModelPlugin = async () => ({
         throw new Error(`Timed out waiting for ${label}`);
       };
       const scenarioTools = (scenario: ShippingLaunchScenario): Record<string, boolean> => scenario.startsWith('adhoc')
-        ? { hive_adhoc_worktree_create: true, task: true }
+        ? { hive_execution_prepare: true, task: true }
         : scenario.startsWith('feature')
           ? {
               hive_feature_create: true,
               hive_plan_write: true,
               hive_plan_approve: true,
               hive_tasks_sync: true,
-              hive_worktree_start: true,
+              hive_execution_prepare: true,
               task: true,
             }
           : { task: true };
@@ -1430,9 +1401,11 @@ export const ZRuntimeModelPlugin = async () => ({
         const result = await runScenario(scenario);
         const scenarioEvidence = providerServer.evidence(scenario);
         expect(scenarioEvidence.taskSchemaProperties).toEqual(expect.arrayContaining([
-          'description', 'prompt', 'subagent_type', 'hive_launch_id', 'hive_capability_reason',
+          'description', 'prompt', 'subagent_type',
         ]));
-        expect(scenarioEvidence.launchId).toEqual(expect.any(String));
+        expect(scenarioEvidence.taskSchemaProperties).not.toContain('hive_launch_id');
+        expect(scenarioEvidence.taskSchemaProperties).not.toContain('hive_capability_reason');
+        expect(scenarioEvidence.attemptId).toEqual(expect.any(String));
         expect(result.taskPart.sessionID).toBe(result.parentID);
         expect(result.taskPart.callID).toBe(`call_${scenario}_task`);
         if (result.taskState.status !== 'completed') {
@@ -1448,16 +1421,10 @@ export const ZRuntimeModelPlugin = async () => ({
         expect(nativeInput.background).toBe(scenarioEvidence.preparedCall?.background);
         if (scenario.endsWith('background')) expect(nativeInput.background).toBe(true);
         expect(nativeInput).not.toHaveProperty('hive_launch_id');
-        expect(String(nativeInput.prompt)).not.toContain(`CALLER_TAMPERED_${scenario}`);
-        if (scenario.startsWith('adhoc')) {
-          expect(nativeInput.prompt).toBe(scenarioEvidence.preparedCall?.prompt);
-          expect(String(nativeInput.prompt).match(/You are an ad-hoc implementation worker\./g)).toHaveLength(1);
-          expect(String(nativeInput.prompt).match(new RegExp(`SHIPPING_WORKER_${scenario.toUpperCase().replaceAll('-', '_')}`, 'g'))).toHaveLength(1);
-        } else {
-          expect(String(nativeInput.prompt)).toContain('# Hive Worker Assignment');
-          expect(String(nativeInput.prompt)).toContain(`| Feature | runtime-${scenario} |`);
-          expect(String(nativeInput.prompt)).toContain('| Task | 01-runtime-task |');
-        }
+        expect(String(nativeInput.prompt)).toContain(`SHIPPING_WORKER_${scenario.toUpperCase().replaceAll('-', '_')}`);
+        expect(String(nativeInput.prompt)).toContain('## Hive execution scope');
+        if (scenario.startsWith('feature')) expect(String(nativeInput.prompt)).toContain(`Feature: runtime-${scenario}`);
+        else expect(String(nativeInput.prompt)).toContain(`Ad-hoc run: runtime-${scenario}`);
         expect(await runtimeSession.get({
           path: { id: result.childID },
           query: { directory: projectDir },
@@ -1499,10 +1466,8 @@ export const ZRuntimeModelPlugin = async () => ({
           expect(bound?.adHocRunId).toBe(`runtime-${scenario}`);
         } else {
           expect(bound?.featureName).toBe(`runtime-${scenario}`);
-          expect(bound?.workerAssignment).toMatchObject({
-            featureName: `runtime-${scenario}`,
-            taskFolder: '01-runtime-task',
-          });
+          expect(bound?.taskFolder).toBe('01-runtime-task');
+          expect(bound?.workerAssignment).toBeUndefined();
         }
       }
 
@@ -1673,14 +1638,17 @@ Test compaction resume flow.
     await hooks.tool!.hive_plan_approve.execute({ feature: "compaction-test-feature" }, toolContext);
     await hooks.tool!.hive_tasks_sync.execute({ feature: "compaction-test-feature" }, toolContext);
 
-    const worktreeRaw = await hooks.tool!.hive_worktree_start.execute(
-      { feature: "compaction-test-feature", task: "01-compaction-task" },
+    const worktreeRaw = await hooks.tool!.hive_execution_prepare.execute(
+      {
+        scope: { kind: 'task', feature: "compaction-test-feature", task: "01-compaction-task" },
+        placement: { kind: 'worktree' },
+      },
       toolContext,
     );
-    const worktreeResult = JSON.parse(worktreeRaw as string) as { worktreePath?: string };
-    expect(worktreeResult.worktreePath).toBeDefined();
+    const worktreeResult = JSON.parse(worktreeRaw as string) as { placement?: { kind: string; workspacePath?: string } };
+    expect(worktreeResult.placement?.workspacePath).toBeDefined();
 
-    const worktreePath = worktreeResult.worktreePath!;
+    const worktreePath = worktreeResult.placement!.workspacePath!;
     fs.writeFileSync(path.join(worktreePath, "change.txt"), "compaction resume test\n");
 
     const commitRaw = await hooks.tool!.hive_worktree_commit.execute(

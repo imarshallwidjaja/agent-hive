@@ -352,15 +352,15 @@ export interface SessionsJson {
   executionOwnershipVersion?: 2;
 }
 
-export const EXECUTION_ATTEMPTS_SCHEMA_VERSION = 1;
+export const EXECUTION_ATTEMPTS_SCHEMA_VERSION = 2;
 export const EXECUTION_OWNERSHIP_VERSION = 2;
-export const PREPARED_ATTEMPT_TTL_MS = 5 * 60 * 1000;
+export const ARMED_ATTEMPT_TTL_MS = 5 * 60 * 1000;
 export const PLACEHOLDER_NATIVE_CHILD_ID = 'forager-child';
 
 export type ExecutionAttemptKind = 'task' | 'adhoc';
-export type ExecutionDispatchState = 'prepared' | 'dispatched' | 'settled';
-export type ExecutionObservation = 'observed' | 'unobserved';
+export type ExecutionAttemptPhase = 'armed' | 'attached' | 'stopped' | 'finalized';
 export type ExecutionObservedOutcome =
+  | 'not_started'
   | 'completed'
   | 'failed'
   | 'blocked'
@@ -368,10 +368,36 @@ export type ExecutionObservedOutcome =
   | 'superseded'
   | 'expired';
 
-export interface ExecutionAttemptAssignmentRef {
-  locator?: string;
-  contentHash?: string;
-  taskAttempt: number;
+export type ExecutionPlacement =
+  | {
+      kind: 'worktree';
+      /** Exact registered worktree paths (realpath). Composite workspaces list every repo worktree. */
+      workspaceIdentities: string[];
+      workspacePath: string;
+      attemptSlot?: string;
+      branch?: string;
+      baseCommit?: string;
+    }
+  | {
+      kind: 'in_place';
+      /** Canonical existing directory. In-place placement does not establish an exclusion claim. */
+      directory: string;
+    };
+
+export interface ExecutionNativeAttachment {
+  parentSessionId: string;
+  callId: string;
+  selectedAgent: string;
+  background: boolean;
+  attachedAt: string;
+  childSessionId?: string;
+}
+
+export interface ExecutionStopEvidence {
+  kind: 'blocking_after' | 'background_terminal' | 'tool_error';
+  observedAt: string;
+  state: 'completed' | 'error' | 'cancelled';
+  nativeTaskId?: string;
 }
 
 export interface ExecutionAttempt {
@@ -381,29 +407,26 @@ export interface ExecutionAttempt {
   taskFolder?: string;
   runId?: string;
   originatingPrimarySession: string;
-  assignment?: ExecutionAttemptAssignmentRef;
-  /** Exact registered worktree paths (realpath). Composite workspaces list every repo worktree. */
-  workspaceIdentities: string[];
-  /** Worktree directory/branch slot for supersede retries (`{step}--{slot}`). */
-  attemptSlot?: string;
-  branch?: string;
-  baseCommit?: string;
-  launchId?: string;
-  dispatchState: ExecutionDispatchState;
-  nativeChildSessionId?: string;
-  nativeCallId?: string;
-  observation?: ExecutionObservation;
+  /** Current task generation allocated when the arm is created. */
+  taskAttempt?: number;
+  placement: ExecutionPlacement;
+  phase: ExecutionAttemptPhase;
+  armRuntimeId?: string;
+  expiresAt?: string;
+  native?: ExecutionNativeAttachment;
+  stopEvidence?: ExecutionStopEvidence;
   observedOutcome?: ExecutionObservedOutcome;
   reportLocator?: string;
   reportContentHash?: string;
   supersededBy?: string;
   createdAt: string;
   updatedAt: string;
-  settledAt?: string;
+  stoppedAt?: string;
+  finalizedAt?: string;
 }
 
 export interface ExecutionAttemptsJson {
-  schemaVersion: 1;
+  schemaVersion: 2;
   attempts: ExecutionAttempt[];
   nativeTaskLeaseHistory?: NativeTaskLease[];
   /** Current dispatch pointer per feature/task. Late records on superseded attempts must not move this. */

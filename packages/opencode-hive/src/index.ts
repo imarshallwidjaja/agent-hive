@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { tool, type Plugin } from "@opencode-ai/plugin";
-import { Schema } from 'effect';
 import { prepareNativeHiveSkills } from './skills/native-materializer.js';
 import type { PreparedHiveSkill, PreparedNativeHiveSkills, PreparedNativeSkill } from './skills/native-materializer.js';
 // Bee agents (lean, focused)
@@ -56,10 +55,6 @@ import { buildCustomSubagents } from './agents/custom-agents.js';
 import { createBuiltinMcps } from './mcp/index.js';
 import { BACKGROUND_DELEGATION_SKILL_ID, isBackgroundSubagentsExperimentEnabled, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
 import type { BackgroundDelegationAvailability } from './utils/background-gate.js';
-import {
-  adhocCreateNextAction,
-  buildAdhocWorkerLaunchPayloads,
-} from './utils/adhoc-launch-payload.js';
 import { HIVE_SESSION_POLICY, shouldRejectTaskIdReuse } from './utils/session-policy.js';
 
 const NON_FEATURE_WORKTREE_NAMESPACES = new Set(['adhoc', 'review']);
@@ -409,12 +404,16 @@ import {
   type WorktreeRecoveryAction,
 } from "hive-core";
 import {
+  appendManagedPromptBlock,
+  buildExecutionScopeBlock,
   buildStandingConstraintsBlock,
-  buildWorkerPrompt,
+  EXECUTION_SCOPE_END,
+  EXECUTION_SCOPE_START,
+  STANDING_CONSTRAINTS_END,
   STANDING_CONSTRAINTS_HEADING,
+  STANDING_CONSTRAINTS_START,
 } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
-import { publishWorkerAssignment } from "./utils/prompt-file";
 import { assembleLiveContextCatalogs, isEmptyLiveContextCatalogText, LIVE_CONTEXT_CATALOG_MARKER } from './utils/context-catalog.js';
 import { formatRelativeTime } from "./utils/format";
 import { classifySession, createVariantHook } from "./hooks/variant-hook.js";
@@ -513,54 +512,6 @@ function taskChildSessionID(metadata: unknown): string | undefined {
   const value = (metadata as Record<string, unknown>).sessionId;
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
-
-type HiveTaskLaunchReservation = {
-  workspacePath: string;
-  launchId: string;
-  parentSessionID: string;
-  expiresAt: number;
-  feature: string;
-  task: string;
-  attempt: number;
-  attemptId: string;
-  attemptSlot?: string;
-  idempotencyKey: string;
-  expectedDescription: string;
-  expectedPrompt: string;
-  allowedAgents: string[];
-  selectedAgent: string;
-  bindingExpiresAt: number;
-  bindingUncertain?: boolean;
-  childSessionID?: string;
-  assignment: WorkerAssignmentDescriptor;
-  resourcePaths: string[];
-};
-
-type HiveTaskLaunchIntent = Omit<
-  HiveTaskLaunchReservation,
-  'selectedAgent' | 'bindingExpiresAt' | 'bindingUncertain' | 'childSessionID'
->;
-
-type WorkspaceLaunchIntent = {
-  launchId: string;
-  parentSessionID: string;
-  expiresAt: number;
-  placement: 'adhoc-worktree';
-  runId: string;
-  attemptId: string;
-  projectRoot: string;
-  workspacePath: string;
-  resourcePaths: string[];
-  expectedPrompt: string;
-  allowedAgents: string[];
-};
-
-type WorkspaceLaunchReservation = WorkspaceLaunchIntent & {
-  selectedAgent: string;
-  bindingExpiresAt: number;
-  bindingUncertain?: boolean;
-  childSessionID?: string;
-};
 
 type RuntimeTaskChildBinding = {
   primarySessionID: string;
@@ -693,7 +644,6 @@ type SystemTransformHook = (
   output: { system: string[] },
 ) => Promise<void>;
 
-const RUNTIME_ID = `pid-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const WORKER_LAUNCH_RESERVATION_TTL_MS = 5 * 60 * 1000;
 const REVIEW_ARGUMENT_GUARD_PLACEHOLDER = '$2147483647';
 const MAX_COMPOSITE_SNAPSHOT_REPOSITORIES = 32;
@@ -701,6 +651,7 @@ const VULNERABILITY_DEEP_RESERVATION_TTL_MS = 5 * 60 * 1000;
 
 const plugin: Plugin = async (ctx) => {
   const { directory, client, worktree } = ctx;
+  const runtimeId = `pid-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   const emitConfigWarning = (message: string): void => {
     const prefixedMessage = `[hive:config] ${message}`;
@@ -735,12 +686,7 @@ const plugin: Plugin = async (ctx) => {
   const taskService = new TaskService(directory);
   const configService = new ConfigService(directory);
   const sessionService = new SessionService(directory);
-  const executionAttemptService = new ExecutionAttemptService(directory);
-  for (const attempt of executionAttemptService.listAttempts()) {
-    if (attempt.dispatchState === 'dispatched' && attempt.observation !== 'unobserved') {
-      executionAttemptService.markUnobserved(attempt.id);
-    }
-  }
+  const executionAttemptService = new ExecutionAttemptService(directory, runtimeId);
   const reviewWorkspaceService = new ReviewWorkspaceService({
     projectRoot: directory,
     onSweepError: (runId, error) => {
@@ -1598,27 +1544,23 @@ const plugin: Plugin = async (ctx) => {
   });
 
   const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
-  const claimedLaunchIdsByCall = new Map<string, string>();
   const helperAuthBinds = new Map<string, HelperAuthBind>();
   const settleAttemptFromNativeBackground = (event: {
     taskId: string;
-    launchId?: string;
     callId?: string;
     parentSessionId: string;
     state: 'completed' | 'error' | 'cancelled';
   }): void => {
-    const live = executionAttemptService.listAttempts().filter(attempt => attempt.dispatchState !== 'settled');
-    const match = live.find(attempt =>
-      (event.launchId !== undefined && attempt.launchId === event.launchId)
-      || (event.callId !== undefined && attempt.nativeCallId === event.callId
-        && attempt.originatingPrimarySession === event.parentSessionId)
-      || attempt.nativeChildSessionId === event.taskId);
-    if (!match) return;
-    const outcome = event.state === 'completed' ? 'completed' : event.state === 'cancelled' ? 'cancelled' : 'failed';
+    if (!event.callId) return;
     try {
-      executionAttemptService.settle(match.id, outcome);
+      executionAttemptService.observeBackgroundStop({
+        originatingPrimarySession: event.parentSessionId,
+        nativeCallId: event.callId,
+        nativeTaskId: event.taskId,
+        state: event.state,
+      });
     } catch {
-      // Already settled by a concurrent observer.
+      // Board callbacks are observational; identity mismatch cannot advance execution state.
     }
   };
   // OpenCode global non-Git contexts use '/' as a sentinel; only that exact pair redirects to directory.
@@ -1632,10 +1574,9 @@ const plugin: Plugin = async (ctx) => {
     projectRoot: directory,
     service: backgroundJobService,
     isEnabled: () => isBackgroundSubagentsExperimentEnabled(),
-    runtimeId: RUNTIME_ID,
+    runtimeId,
     getSession: (sessionId) => sessionService.getGlobal(sessionId),
     isPrimaryAgent: (_agentName, session) => session?.sessionKind === 'primary',
-    resolveClaimedLaunchId: (sessionId, callId) => claimedLaunchIdsByCall.get(`${sessionId}\u0000${callId}`),
     onNativeBackgroundTerminal: (event) => {
       settleAttemptFromNativeBackground(event);
     },
@@ -1797,14 +1738,9 @@ const plugin: Plugin = async (ctx) => {
   type SessionAuthority = {
     kind: 'primary' | 'delegated' | 'helper' | 'ordinary-child';
     stored: NonNullable<ReturnType<SessionService['getGlobal']>>;
-    verifiedAssignment?: VerifiedAssignment;
   } | {
     kind: 'denied';
     failure: string;
-  };
-  type VerifiedAssignment = {
-    bytes: Buffer;
-    status: ReturnType<TaskService['getRawStatus']>;
   };
   const contextFailure = (
     reason: string,
@@ -1910,108 +1846,6 @@ const plugin: Plugin = async (ctx) => {
       return 'The runtime workspace or canonical project root could not be resolved.';
     }
   };
-  const readVerifiedAssignment = (assignment: WorkerAssignmentDescriptor): VerifiedAssignment | string => {
-    if (!validateAssignmentDescriptorShape(assignment)) return assignmentRecoveryFailure();
-    try {
-      const canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
-      if (assignment.projectRoot !== canonicalRoot) {
-        return contextFailure('assignment_recovery_error', 'The stored assignment root does not match the authenticated runtime.');
-      }
-      const featuresRoot = path.resolve(canonicalRoot, '.hive', 'features');
-      const featureRoot = path.resolve(featuresRoot, resolveFeatureDirectoryName(canonicalRoot, assignment.featureName));
-      const tasksRoot = path.resolve(featureRoot, 'tasks');
-      const taskRoot = path.resolve(tasksRoot, assignment.taskFolder);
-      const assignmentRoot = path.resolve(taskRoot, 'assignments');
-      const artifactPath = path.resolve(canonicalRoot, assignment.locator);
-      if (artifactPath !== path.join(assignmentRoot, `attempt-${assignment.attempt}.md`)) {
-        return assignmentRecoveryFailure();
-      }
-      if (!pathIsContained(featuresRoot, featureRoot) || featureRoot === featuresRoot
-        || !pathIsContained(tasksRoot, taskRoot) || taskRoot === tasksRoot
-        || !pathIsContained(assignmentRoot, artifactPath)) {
-        return contextFailure('assignment_recovery_error', 'The assignment locator is outside the exact task assignment directory.');
-      }
-      const bytes = fs.readFileSync(artifactPath);
-      if (createHash('sha256').update(bytes).digest('hex') !== assignment.contentHash) {
-        return contextFailure('assignment_recovery_error', 'The immutable assignment artifact hash does not match its descriptor.');
-      }
-      const status = statusToolServices.tasks.getRawStatus(assignment.featureName, assignment.taskFolder);
-      if (!workerAssignmentsEqual(status?.workerAssignment, assignment)) {
-        return contextFailure('assignment_recovery_error', 'The task status does not contain this exact assignment descriptor.');
-      }
-      return { bytes, status };
-    } catch {
-      return contextFailure('assignment_recovery_error', 'The immutable assignment artifact or task association is missing or unreadable.');
-    }
-  };
-  const validateWorkerAssignment = (
-    sessionID: string,
-    stored: ReturnType<SessionService['getGlobal']>,
-    knownIdentity?: StoredSessionIdentity,
-  ): VerifiedAssignment | string | null => {
-    if (!stored) return null;
-    const inspected = knownIdentity ?? inspectStoredSessionIdentity(stored);
-    if (typeof inspected === 'string') return inspected;
-    const assignment = inspected.assignment;
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = fs.realpathSync(runtimeContext.projectRoot);
-    } catch {
-      return contextFailure('assignment_recovery_error', 'The authenticated runtime root is unavailable.');
-    }
-    if (inspected.hasAdHocRun && stored.projectRoot !== canonicalRoot) {
-      return contextFailure('assignment_recovery_error', 'The immutable ad-hoc run root does not match the runtime.');
-    }
-    if (assignment && inspected.hasAdHocRun) {
-      return contextFailure('assignment_recovery_error', 'A session cannot combine immutable task and ad-hoc identities.');
-    }
-    const hasTaskProvenance = assignment !== undefined || inspected.hasTaskFolder
-      || inspected.hasAssignmentSource || inspected.hasDuplicateSource;
-    if (inspected.hasExistingWorkspace && !hasTaskProvenance && !inspected.hasWorkerPrompt) return null;
-    if (!hasTaskProvenance && inspected.hasAdHocRun) return null;
-    if (!hasTaskProvenance && !inspected.hasWorkerPrompt && stored.sessionKind !== 'task-worker') return null;
-    if (!assignment) {
-      return inspected.hasWorkerPrompt
-        ? contextFailure('legacy_assignment_reanchor_required', 'This worker uses a legacy mutable prompt binding. A primary must create a fresh launch and authenticated child session.')
-        : contextFailure('assignment_recovery_error', 'The task worker has no immutable assignment descriptor.');
-    }
-    if (stored.projectRoot !== assignment.projectRoot || stored.featureName !== assignment.featureName
-      || stored.taskFolder !== assignment.taskFolder) {
-      return contextFailure('assignment_recovery_error', 'The session does not match its immutable assignment identity.');
-    }
-    const verified = readVerifiedAssignment(assignment);
-    if (typeof verified === 'string') return verified;
-    const { status } = verified;
-    const expectedSourceSession = stored.assignmentSourceSessionId ?? sessionID;
-    if (status?.workerSession?.sessionId !== expectedSourceSession) {
-      return contextFailure('assignment_recovery_error', 'The assignment session identity does not match the task association.');
-    }
-    if (inspected.hasDuplicateSource !== inspected.hasAssignmentSource) {
-      return contextFailure('assignment_recovery_error', 'The duplicated recipient identity does not match its assignment source.');
-    }
-    if (inspected.hasAssignmentSource) {
-      const visited = new Set([sessionID]);
-      let sourceID = stored.duplicatedFromSessionId;
-      while (sourceID) {
-        if (visited.has(sourceID) || visited.size > 32) return assignmentRecoveryFailure();
-        visited.add(sourceID);
-        const source = sessionService.getGlobal(sourceID);
-        const sourceIdentity = inspectStoredSessionIdentity(source);
-        if (typeof sourceIdentity === 'string') return sourceIdentity;
-        if (!source || sourceIdentity.hasAdHocRun || !workerAssignmentsEqual(sourceIdentity.assignment, assignment)
-          || source.agent !== stored.agent || source.baseAgent !== stored.baseAgent
-          || source.sessionKind !== stored.sessionKind) return assignmentRecoveryFailure();
-        if (sourceID === expectedSourceSession) {
-          if (sourceIdentity.hasAssignmentSource || sourceIdentity.hasDuplicateSource) return assignmentRecoveryFailure();
-          break;
-        }
-        if (source.assignmentSourceSessionId !== expectedSourceSession) return assignmentRecoveryFailure();
-        sourceID = source.duplicatedFromSessionId;
-      }
-      if (!sourceID) return assignmentRecoveryFailure();
-    }
-    return verified;
-  };
   const resolveSessionAuthority = async (
     sessionID: string,
     expectedAgent?: string,
@@ -2106,39 +1940,33 @@ const plugin: Plugin = async (ctx) => {
         return deny(contextFailure('context_authorization_denied', 'A non-primary context recipient requires authenticated child or duplicate provenance.'));
       }
     }
-    const assignmentFailure = validateWorkerAssignment(sessionID, stored, identity);
-    if (typeof assignmentFailure === 'string') return deny(assignmentFailure);
-    if (classification.sessionKind === 'task-worker') {
-      const sourceID = stored.assignmentSourceSessionId ?? sessionID;
-      const source = sourceID === sessionID ? stored : sessionService.getGlobal(sourceID);
-      const liveAttempt = executionAttemptService.listAttempts().find(attempt =>
-        attempt.dispatchState !== 'settled'
-        && (attempt.nativeChildSessionId === sourceID
-          || (attempt.kind === 'task'
-            && source?.workerAssignment
-            && attempt.featureName === source.workerAssignment.featureName
-            && attempt.taskFolder === source.workerAssignment.taskFolder
-            && attempt.assignment?.taskAttempt === source.workerAssignment.attempt)
-          || (attempt.kind === 'adhoc'
-            && source?.adHocRunId === attempt.runId
-            && source?.parentSessionId === attempt.originatingPrimarySession)));
-      if (liveAttempt) {
-        if (liveAttempt.originatingPrimarySession !== source?.parentSessionId) {
-          return deny(contextFailure('context_authorization_denied', 'The Forager recipient has no live execution attempt association.'));
-        }
-        if (liveAttempt.nativeChildSessionId && liveAttempt.nativeChildSessionId !== sourceID) {
-          return deny(contextFailure('context_authorization_denied', 'The Forager recipient has no live execution attempt association.'));
-        }
+    const executionSourceSessionID = stored.assignmentSourceSessionId
+      ?? stored.duplicatedFromSessionId
+      ?? sessionID;
+    const executionAttempt = executionAttemptService.listAttempts().find(attempt =>
+      attempt.phase !== 'finalized' && attempt.native?.childSessionId === executionSourceSessionID);
+    if (executionAttempt) {
+      const workspacePath = executionAttempt.placement.kind === 'worktree'
+        ? executionAttempt.placement.workspacePath
+        : executionAttempt.placement.directory;
+      if (stored.parentSessionId !== executionAttempt.originatingPrimarySession
+        || stored.featureName !== executionAttempt.featureName
+        || stored.taskFolder !== executionAttempt.taskFolder
+        || stored.adHocRunId !== executionAttempt.runId
+        || stored.executionWorkspacePath !== workspacePath
+        || executionAttempt.native?.selectedAgent !== runtimeAgent) {
+        return deny(contextFailure('context_authorization_denied', 'The delegated session does not match its authenticated execution scope.'));
       }
+      return { kind: 'delegated', stored };
+    }
+
+    if (classification.sessionKind === 'task-worker') {
+      return deny(contextFailure('context_authorization_denied', 'The Forager recipient has no live authenticated execution scope.'));
     }
     if (identity.hasExistingWorkspace) {
       return deny(contextFailure('context_authorization_denied', 'Existing-workspace placement is unavailable. Isolated worktrees are the managed placement.'));
     }
-    if (classification.sessionKind === 'task-worker' && identity.assignment === undefined
-      && (!identity.hasAdHocRun || stored.projectRoot !== canonicalRoot)) {
-      return deny(contextFailure('context_authorization_denied', 'The worker has no authenticated task assignment or ad-hoc run binding.'));
-    }
-    return { kind: 'delegated', stored, verifiedAssignment: assignmentFailure ?? undefined };
+    return { kind: 'delegated', stored };
   };
   const managedSessionAuthority = (authority: SessionAuthority): SessionAuthority =>
     authority.kind === 'helper' || authority.kind === 'ordinary-child'
@@ -2330,395 +2158,51 @@ const plugin: Plugin = async (ctx) => {
     sessionService.bindFeature(ctx.sessionID, feature);
   };
 
-  const pendingHiveTaskLaunches = new Map<string, HiveTaskLaunchIntent[]>();
-  const hiveTaskLaunches = new Map<string, HiveTaskLaunchReservation>();
-  const pendingWorkspaceLaunches = new Map<string, WorkspaceLaunchIntent[]>();
-  const adhocLaunches = new Map<string, WorkspaceLaunchReservation>();
-  const claimedChildLaunches = new Map<string, { launchId: string; selectedAgent: string }>();
-  const boundLaunchChildrenByCall = new Map<string, string>();
   const runtimeSessionParents = new Map<string, string>();
   const observedTaskChildren = new Map<string, RuntimeTaskChildBinding>();
   const observedTaskChildrenByCall = new Map<string, string>();
-  const claimQueues = new Map<string, Promise<void>>();
   const resourcePreparationQueues: Array<{ resourcePaths: string[]; completed: Promise<void> }> = [];
   const hiveTaskLaunchKey = (sessionID: string, callID: string): string => `${sessionID}\u0000${callID}`;
-  const activePendingLaunchesForSession = (sessionID: string) => {
-    const now = Date.now();
-    return [
-      ...(pendingHiveTaskLaunches.get(sessionID) ?? []).map(intent => ({ kind: 'task' as const, parentSessionID: sessionID, intent })),
-      ...(pendingWorkspaceLaunches.get(sessionID) ?? []).map(intent => ({ kind: 'workspace' as const, parentSessionID: sessionID, intent })),
-    ].filter(entry => entry.intent.expiresAt > now);
-  };
   const launchBindingFailure = (error: string, nextAction?: string): Error => {
-    const failure = new Error(contextFailure(
-      'launch_binding_error',
-      error,
-      true,
-      nextAction,
-    ));
+    const failure = new Error(contextFailure('launch_binding_error', error, true, nextAction));
     failure.name = 'LaunchBindingError';
     return failure;
   };
-  const launchPreparationGuidance = 'Use hive_worktree_start, hive_adhoc_worktree_create with worker spawning enabled, or hive_adhoc_worktree_start for an existing setup-only run.';
-  type ForagerLaunchClaimReceipt = { persistOwnership(): void; rollback(): void };
-  const claimForagerLaunch = async (
-    sessionID: string,
-    callID: string | undefined,
-    args: Record<string, unknown> | undefined,
-    resolvedLaunchId?: string,
-  ): Promise<ForagerLaunchClaimReceipt | undefined> => {
-    const selectedAgent = typeof args?.subagent_type === 'string' ? args.subagent_type.trim() : '';
-    const suppliedLaunchId = args?.hive_launch_id;
-    const foragerTarget = selectedAgent
-      && classifySession(selectedAgent, customAgentConfigsForClassification).baseAgent === 'forager-worker';
-    if (!foragerTarget) {
-      if (suppliedLaunchId !== undefined) {
-        throw launchBindingFailure('hive_launch_id is valid only for a Forager-derived task target; remove it from ordinary Scout or reviewer dispatches.');
-      }
-      return undefined;
-    }
-    let launchId = typeof suppliedLaunchId === 'string' ? suppliedLaunchId.trim() : '';
-    let autoBoundLaunchId = false;
-    if (suppliedLaunchId === undefined) {
-      const activePendingForSession = activePendingLaunchesForSession(sessionID);
-      if (resolvedLaunchId || activePendingForSession.length === 1) {
-        launchId = resolvedLaunchId ?? activePendingForSession[0].intent.launchId;
-        if (args) {
-          args.hive_launch_id = launchId;
-          autoBoundLaunchId = true;
-        }
-      } else if (activePendingForSession.length > 1) {
-        const candidates = activePendingForSession.map(c =>
-          c.kind === 'task' ? `${c.intent.task} (${c.intent.launchId})` : `${c.intent.runId} (${c.intent.launchId})`
-        ).join(', ');
-        throw launchBindingFailure(
-          `Forager dispatch omitted hive_launch_id, but multiple prepared launches are pending for this session: ${candidates}. Supply the intended hive_launch_id in task().`,
-          launchPreparationGuidance,
-        );
-      } else {
-        throw launchBindingFailure('Forager dispatch requires the non-empty hive_launch_id returned by its preparation tool.', launchPreparationGuidance);
-      }
-    }
-    if (!launchId) {
-      throw launchBindingFailure('Forager dispatch requires the non-empty hive_launch_id returned by its preparation tool.', launchPreparationGuidance);
-    }
-    if (!callID) {
-      throw launchBindingFailure('Forager dispatch requires a runtime call ID. Prepare a fresh launch and retry.', launchPreparationGuidance);
-    }
 
-    const key = hiveTaskLaunchKey(sessionID, callID);
-    if (hiveTaskLaunches.has(key) || adhocLaunches.has(key) || claimedLaunchIdsByCall.has(key) || boundLaunchChildrenByCall.has(key)) {
-      throw launchBindingFailure('This forager dispatch call is already claimed. Prepare a fresh launch and retry.', launchPreparationGuidance);
-    }
-    const now = Date.now();
-    const claimed = [...hiveTaskLaunches.values(), ...adhocLaunches.values()]
-      .find(candidate => candidate.launchId === launchId);
-    if (claimed) {
-      throw launchBindingFailure('This hive_launch_id was already claimed. Repeating a native dispatch is not permitted; prepare a fresh launch for a retry.', launchPreparationGuidance);
-    }
-    const pending = [
-      ...[...pendingHiveTaskLaunches.entries()].flatMap(([parentSessionID, intents]) =>
-        intents.map(intent => ({ kind: 'task' as const, parentSessionID, intent }))),
-      ...[...pendingWorkspaceLaunches.entries()].flatMap(([parentSessionID, intents]) =>
-        intents.map(intent => ({ kind: 'workspace' as const, parentSessionID, intent }))),
-    ];
-    const candidate = pending.find(entry => entry.intent.launchId === launchId);
-    if (!candidate) {
-      const persisted = backgroundJobService.listPendingLaunches({}, { includeArchived: true })
-        .find(entry => entry.launchId === launchId);
-      if (persisted) {
-        throw launchBindingFailure('This hive_launch_id belongs to an earlier plugin runtime or a previously claimed execution. Prepare a fresh launch; persisted background bookkeeping cannot grant authority.', launchPreparationGuidance);
-      }
-      throw launchBindingFailure('The supplied hive_launch_id is unknown or superseded. Dispatch the current payload returned for the intended target.', launchPreparationGuidance);
-    }
-    if (candidate.parentSessionID !== sessionID || candidate.intent.parentSessionID !== sessionID) {
-      throw launchBindingFailure('The supplied hive_launch_id belongs to a different authenticated parent. Prepare the launch from this parent session.');
-    }
-    if (candidate.intent.expiresAt <= now) {
-      if (candidate.kind === 'task') {
-        const remaining = (pendingHiveTaskLaunches.get(sessionID) ?? []).filter(intent => intent.launchId !== launchId);
-        if (remaining.length) pendingHiveTaskLaunches.set(sessionID, remaining);
-        else pendingHiveTaskLaunches.delete(sessionID);
-      } else {
-        const remaining = (pendingWorkspaceLaunches.get(sessionID) ?? []).filter(intent => intent.launchId !== launchId);
-        if (remaining.length) pendingWorkspaceLaunches.set(sessionID, remaining);
-        else pendingWorkspaceLaunches.delete(sessionID);
-      }
-      backgroundJobService.consumePendingLaunch({ launchId, parentSessionId: sessionID });
-      throw launchBindingFailure('The prepared forager launch expired. Prepare a fresh launch and retry.', launchPreparationGuidance);
-    }
-    if (!candidate.intent.allowedAgents.includes(selectedAgent)) {
-      throw launchBindingFailure(`Agent '${selectedAgent}' is not eligible for the prepared forager launch. Choose one of: ${candidate.intent.allowedAgents.join(', ')}.`);
-    }
-    let replacementPrompt: string | undefined;
-    if (candidate.kind === 'task') {
-      const status = taskService.getRawStatus(candidate.intent.feature, candidate.intent.task);
-      const latest = status?.workerAttempts?.at(-1);
-      if (
-        status?.idempotencyKey !== candidate.intent.idempotencyKey
-        || status.workerAttempt !== candidate.intent.attempt
-        || latest?.attempt !== candidate.intent.attempt
-        || latest.idempotencyKey !== candidate.intent.idempotencyKey
-        || latest.assignment?.contentHash !== candidate.intent.assignment.contentHash
-      ) {
-        throw launchBindingFailure('The prepared task attempt was superseded. Run hive_worktree_start again and dispatch that fresh launch.');
-      }
-      const verifiedBytes = readVerifiedAssignment(candidate.intent.assignment);
-      if (typeof verifiedBytes === 'string') throw new Error(verifiedBytes);
-      replacementPrompt = verifiedBytes.bytes.toString('utf8');
-    } else {
-      const worktree = await adhocWorktreeService.get(candidate.intent.runId);
-      const workspacePath = worktree?.workspacePath ?? worktree?.path;
-      if (
-        !worktree
-        || fs.realpathSync(directory) !== candidate.intent.projectRoot
-        || !workspacePath
-        || fs.realpathSync(workspacePath) !== candidate.intent.workspacePath
-      ) {
-        throw launchBindingFailure('The prepared ad-hoc run is no longer valid. Create a fresh ad-hoc launch and retry.');
-      }
-      replacementPrompt = candidate.intent.expectedPrompt;
-    }
-
-    const taskPending = pendingHiveTaskLaunches.get(sessionID) ?? [];
-    const liveWorkspacePending = pendingWorkspaceLaunches.get(sessionID) ?? [];
-    if (
-      candidate.kind === 'workspace'
-      && !liveWorkspacePending.some(intent => intent.launchId === candidate.intent.launchId)
-    ) {
-      throw launchBindingFailure('The prepared workspace launch was superseded during validation. Dispatch the current prepared launch instead.');
-    }
-    const originalIndex = candidate.kind === 'task'
-      ? taskPending.findIndex(intent => intent.launchId === launchId)
-      : liveWorkspacePending.findIndex(intent => intent.launchId === candidate.intent.launchId);
-    const hadPrompt = Object.prototype.hasOwnProperty.call(args!, 'prompt');
-    const originalPrompt = args!.prompt;
-    if (replacementPrompt !== undefined) args!.prompt = replacementPrompt;
-    if (candidate.kind === 'task') {
-      const remaining = taskPending.filter(intent => intent !== candidate.intent);
-      if (remaining.length) pendingHiveTaskLaunches.set(sessionID, remaining);
-      else pendingHiveTaskLaunches.delete(sessionID);
-      hiveTaskLaunches.set(key, {
-        ...candidate.intent,
-        selectedAgent,
-        bindingExpiresAt: now + WORKER_LAUNCH_RESERVATION_TTL_MS,
-      });
-    } else {
-      const remaining = liveWorkspacePending.filter(intent => intent.launchId !== candidate.intent.launchId);
-      if (remaining.length) pendingWorkspaceLaunches.set(sessionID, remaining);
-      else pendingWorkspaceLaunches.delete(sessionID);
-      adhocLaunches.set(key, {
-        ...candidate.intent,
-        selectedAgent,
-        bindingExpiresAt: now + WORKER_LAUNCH_RESERVATION_TTL_MS,
-      });
-    }
-    claimedLaunchIdsByCall.set(key, candidate.intent.launchId);
-    let active = true;
-    return {
-      persistOwnership: () => {
-        executionAttemptService.consumeLaunch(candidate.intent.launchId, callID);
-      },
-      rollback: () => {
-        if (!active) return;
-        active = false;
-        const reservation = candidate.kind === 'task' ? hiveTaskLaunches.get(key) : adhocLaunches.get(key);
-        if (reservation?.launchId !== candidate.intent.launchId) return;
-        if (reservation.childSessionID || reservation.bindingUncertain) return;
-        if (candidate.kind === 'task') {
-          hiveTaskLaunches.delete(key);
-          const pending = pendingHiveTaskLaunches.get(sessionID) ?? [];
-          if (!pending.includes(candidate.intent)) {
-            const restored = [...pending];
-            restored.splice(Math.min(originalIndex, restored.length), 0, candidate.intent);
-            pendingHiveTaskLaunches.set(sessionID, restored);
-          }
-        } else {
-          adhocLaunches.delete(key);
-          const pending = pendingWorkspaceLaunches.get(sessionID) ?? [];
-          if (!pending.includes(candidate.intent)) {
-            const restored = [...pending];
-            restored.splice(Math.min(originalIndex, restored.length), 0, candidate.intent);
-            pendingWorkspaceLaunches.set(sessionID, restored);
-          }
-        }
-        if (claimedLaunchIdsByCall.get(key) === candidate.intent.launchId) claimedLaunchIdsByCall.delete(key);
-        if (replacementPrompt !== undefined && args!.prompt === replacementPrompt) {
-          if (hadPrompt) args!.prompt = originalPrompt;
-          else delete args!.prompt;
-        }
-        if (autoBoundLaunchId && args && args.hive_launch_id === candidate.intent.launchId) delete args.hive_launch_id;
-      },
-    };
-  };
-
-  const enqueueClaimForagerLaunch = (
-    sessionID: string,
-    callID: string | undefined,
-    args: Record<string, unknown> | undefined,
-    adapterOutput: { args?: Record<string, unknown> },
-  ): Promise<void> => {
-    const tail = claimQueues.get(sessionID) ?? Promise.resolve();
-    const run = tail.then(() => {}, () => {}).then(async () => {
-      const suppliedRaw = args?.hive_launch_id;
-      const suppliedId = typeof suppliedRaw === 'string' ? suppliedRaw.trim() : '';
-      const activePending = activePendingLaunchesForSession(sessionID);
-      const effectiveLaunchId = suppliedId
-        || (suppliedRaw === undefined && activePending.length === 1 ? activePending[0].intent.launchId : undefined);
-      const claimAndAdapt = async () => {
-        let claimReceipt: ForagerLaunchClaimReceipt | undefined;
-        try {
-          claimReceipt = await claimForagerLaunch(sessionID, callID, args, effectiveLaunchId);
-          await backgroundJobAdapter['tool.execute.before'](
-            { tool: 'task', sessionID, callID },
-            adapterOutput,
-          );
-          claimReceipt?.persistOwnership();
-          if (claimReceipt && adapterOutput.args) delete adapterOutput.args.hive_launch_id;
-        } catch (error) {
-          claimReceipt?.rollback();
-          throw error;
-        }
-      };
-      const intent = [...(pendingHiveTaskLaunches.get(sessionID) ?? []), ...(pendingWorkspaceLaunches.get(sessionID) ?? [])]
-        .find(candidate => candidate.launchId === effectiveLaunchId);
-      if (intent) await withLaunchPreparationLock(intent.resourcePaths, claimAndAdapt);
-      else await claimAndAdapt();
-    });
-    claimQueues.set(sessionID, run);
-    void run.catch(() => {}).then(() => {
-      if (claimQueues.get(sessionID) === run) claimQueues.delete(sessionID);
-    });
-    return run;
-  };
-
-  const bindTaskChildSession = (
-    parentSessionID: string,
+  const bindExecutionChildSession = (
+    attempt: ExecutionAttempt,
     childSessionID: string,
-    reservation: HiveTaskLaunchReservation,
+    selectedAgent: string,
   ): void => {
-    const verifiedBytes = readVerifiedAssignment(reservation.assignment);
-    if (typeof verifiedBytes === 'string') throw new Error(verifiedBytes);
-    const status = taskService.associateWorkerSession(
-      reservation.feature,
-      reservation.task,
-      {
-        sessionId: childSessionID,
-        agent: reservation.selectedAgent,
-        mode: 'delegate',
-        attempt: reservation.assignment.attempt,
-      },
-      reservation.assignment,
-    );
-    if (status.workerSession?.sessionId !== childSessionID) {
-      throw new Error('assignment_recovery_error: worker attempt is already associated with another session');
-    }
-    const classification = classifySession(reservation.selectedAgent, customAgentConfigsForClassification);
-    const parentConstraints = sessionService.getGlobal(parentSessionID);
-    sessionService.bindWorkerAssignment(childSessionID, parentSessionID, reservation.assignment, {
-      agent: reservation.selectedAgent,
+    const classification = classifySession(selectedAgent, customAgentConfigsForClassification);
+    const parentConstraints = sessionService.getGlobal(attempt.originatingPrimarySession);
+    const workspacePath = attempt.placement.kind === 'worktree'
+      ? attempt.placement.workspacePath
+      : attempt.placement.directory;
+    sessionService.trackGlobal(childSessionID, {
+      parentSessionId: attempt.originatingPrimarySession,
+      projectRoot: fs.realpathSync(directory),
+      ...(attempt.featureName ? { featureName: attempt.featureName } : {}),
+      ...(attempt.taskFolder ? { taskFolder: attempt.taskFolder } : {}),
+      ...(attempt.runId ? { adHocRunId: attempt.runId } : {}),
+      executionWorkspacePath: workspacePath,
+      agent: selectedAgent,
       baseAgent: classification.baseAgent,
       sessionKind: classification.sessionKind,
       standingConstraints: parentConstraints?.standingConstraints,
       standingConstraintEntries: parentConstraints?.standingConstraintEntries,
       standingConstraintsRevision: parentConstraints?.standingConstraintsRevision,
-      executionWorkspacePath: reservation.workspacePath,
     });
+    if (attempt.kind === 'task' && attempt.featureName && attempt.taskFolder && attempt.taskAttempt) {
+      taskService.associateExecutionSession(attempt.featureName, attempt.taskFolder, attempt.taskAttempt, {
+        sessionId: childSessionID,
+        agent: selectedAgent,
+        mode: 'delegate',
+        attempt: attempt.taskAttempt,
+      });
+    }
   };
 
-  const bindWorkspaceChildSession = (
-    parentSessionID: string,
-    childSessionID: string,
-    reservation: WorkspaceLaunchReservation,
-  ): void => {
-    const classification = classifySession(reservation.selectedAgent, customAgentConfigsForClassification);
-    const existing = sessionService.getGlobal(childSessionID);
-    if (existing?.projectRoot && (
-      existing.projectRoot !== reservation.projectRoot
-      || existing.adHocRunId !== reservation.runId
-      || existing.executionWorkspacePath !== reservation.workspacePath
-      || existing.parentSessionId !== parentSessionID
-    )) {
-      throw new Error('assignment_recovery_error: workspace session provenance mismatch');
-    }
-    sessionService.trackGlobal(childSessionID, {
-      parentSessionId: parentSessionID,
-      projectRoot: reservation.projectRoot,
-      ...(reservation.runId ? { adHocRunId: reservation.runId } : {}),
-      executionWorkspacePath: reservation.workspacePath,
-      agent: reservation.selectedAgent,
-      baseAgent: classification.baseAgent,
-      sessionKind: classification.sessionKind,
-    });
-  };
-
-  const bindCorrelatedChild = (binding: {
-    primarySessionID: string;
-    callID: string;
-    childSessionID: string;
-    expectedAgent?: string;
-  }, recoveredExactCall = false): void => {
-    if (!isBindableNativeChildSessionId(binding.childSessionID)) {
-      throw launchBindingFailure('Placeholder native child id is not bindable');
-    }
-    const key = hiveTaskLaunchKey(binding.primarySessionID, binding.callID);
-    const boundChild = boundLaunchChildrenByCall.get(key);
-    if (boundChild) {
-      if (boundChild !== binding.childSessionID) {
-        throw launchBindingFailure('The claimed forager launch is already bound to a different child session.');
-      }
-      return;
-    }
-    const taskReservation = hiveTaskLaunches.get(key);
-    const adhocReservation = adhocLaunches.get(key);
-    if (taskReservation && adhocReservation) {
-      throw launchBindingFailure('A dispatch call cannot claim both task-backed and ad-hoc launch authority.');
-    }
-    const reservation = taskReservation ?? adhocReservation;
-    if (!reservation) {
-      throw launchBindingFailure('No exact claimed launch matches the observed native task call. Prepare one worker and await its binding before preparing another.');
-    }
-    if (!recoveredExactCall && !reservation.childSessionID && reservation.bindingExpiresAt <= Date.now()) {
-      reservation.bindingUncertain = true;
-      throw launchBindingFailure('The claimed forager launch did not bind within five minutes. Its target remains fenced because execution identity is uncertain. Inspect or cancel the native task call before preparing another writer.');
-    }
-    if (reservation.childSessionID && reservation.childSessionID !== binding.childSessionID) {
-      throw launchBindingFailure('The claimed forager launch is already bound to a different child session.');
-    }
-    if (reservation.selectedAgent !== binding.expectedAgent && binding.expectedAgent) {
-      throw launchBindingFailure(`The native task metadata agent '${binding.expectedAgent}' does not match the claimed agent '${reservation.selectedAgent}'.`);
-    }
-    const existingClaim = claimedChildLaunches.get(binding.childSessionID);
-    if (existingClaim && existingClaim.launchId !== reservation.launchId) {
-      throw launchBindingFailure('The child session is already bound to a different forager launch.');
-    }
-    try {
-      executionAttemptService.bindNativeChild(reservation.attemptId, binding.childSessionID);
-    } catch (error) {
-      const attempt = executionAttemptService.getAttempt(reservation.attemptId);
-      if (attempt?.dispatchState !== 'settled') throw error;
-      if (attempt.nativeChildSessionId && attempt.nativeChildSessionId !== binding.childSessionID) throw error;
-    }
-    if (!reservation.childSessionID || reservation.bindingUncertain) {
-      reservation.childSessionID = binding.childSessionID;
-      try {
-        if (taskReservation) {
-          bindTaskChildSession(binding.primarySessionID, binding.childSessionID, taskReservation);
-        } else {
-          bindWorkspaceChildSession(binding.primarySessionID, binding.childSessionID, adhocReservation!);
-        }
-        reservation.bindingUncertain = false;
-      } catch (error) {
-        reservation.bindingUncertain = true;
-        throw error;
-      }
-    }
-    claimedChildLaunches.set(binding.childSessionID, {
-      launchId: reservation.launchId,
-      selectedAgent: reservation.selectedAgent,
-    });
-    boundLaunchChildrenByCall.set(key, binding.childSessionID);
-  };
   const observeTaskChildBinding = (binding: RuntimeTaskChildBinding): void => {
     const key = hiveTaskLaunchKey(binding.primarySessionID, binding.callID);
     const helperBind = helperAuthBinds.get(key);
@@ -2730,142 +2214,107 @@ const plugin: Plugin = async (ctx) => {
         throw launchBindingFailure('The native task metadata agent does not match the helper bind.');
       }
       helperBind.childSessionID = binding.childSessionID;
+      return;
     }
-    if (
-      !hiveTaskLaunches.has(key)
-      && !adhocLaunches.has(key)
-      && !boundLaunchChildrenByCall.has(key)
-      && !helperBind
-    ) return;
+    const attempt = executionAttemptService.findByNativeCall(binding.primarySessionID, binding.callID);
+    if (!attempt) return;
+    if (binding.expectedAgent && attempt.native?.selectedAgent !== binding.expectedAgent) {
+      throw launchBindingFailure('The native task metadata agent does not match the attached execution.');
+    }
     const callChild = observedTaskChildrenByCall.get(key);
     if (callChild && callChild !== binding.childSessionID) {
       throw launchBindingFailure('The native task call reported a contradictory different child session.');
     }
-    const childBinding = observedTaskChildren.get(binding.childSessionID);
-    if (childBinding && (
-      childBinding.primarySessionID !== binding.primarySessionID
-      || childBinding.callID !== binding.callID
-      || (childBinding.expectedAgent && binding.expectedAgent && childBinding.expectedAgent !== binding.expectedAgent)
-    )) {
-      throw launchBindingFailure('The native child session reported contradictory task correlation metadata.');
-    }
-    observedTaskChildrenByCall.set(key, binding.childSessionID);
-    observedTaskChildren.set(binding.childSessionID, {
-      ...binding,
-      expectedAgent: binding.expectedAgent ?? childBinding?.expectedAgent,
+    executionAttemptService.bindNativeChild({
+      originatingPrimarySession: binding.primarySessionID,
+      nativeCallId: binding.callID,
+      nativeChildSessionId: binding.childSessionID,
     });
+    observedTaskChildrenByCall.set(key, binding.childSessionID);
+    observedTaskChildren.set(binding.childSessionID, binding);
   };
-  const releaseLaunchReservation = (key: string): void => {
-    hiveTaskLaunches.delete(key);
-    adhocLaunches.delete(key);
-    claimedLaunchIdsByCall.delete(key);
-  };
-  const recoverClaimedChild = async (
-    key: string,
-    reservation: HiveTaskLaunchReservation | WorkspaceLaunchReservation,
-  ): Promise<void> => {
-    const callID = key.slice(key.indexOf('\u0000') + 1);
-    let bindings: RuntimeTaskChildBinding[];
-    try {
-      const response = await client.session.messages({ path: { id: reservation.parentSessionID }, query: { directory } });
-      if (response.error !== undefined || !Array.isArray(response.data)) return;
-      bindings = response.data.flatMap(message => message.parts ?? [])
-        .map(part => runtimeTaskChildBinding({ type: 'message.part.updated', properties: { part } }))
-        .filter((binding): binding is RuntimeTaskChildBinding => Boolean(binding
-          && binding.primarySessionID === reservation.parentSessionID && binding.callID === callID));
-    } catch {
-      return;
-    }
-    if (!bindings.length) return;
-    for (const binding of bindings) {
-      if (!binding.expectedAgent || binding.expectedAgent !== reservation.selectedAgent) {
-        reservation.bindingUncertain = true;
-        throw launchBindingFailure('Exact native task recovery reported a missing or mismatched agent; execution remains fenced.');
-      }
-      observeTaskChildBinding(binding);
-    }
-    const binding = bindings[0]!;
-    let parentID: string | undefined;
-    try {
-      const response = await client.session.get({ path: { id: binding.childSessionID }, query: { directory } });
-      if (response.error !== undefined) return;
-      parentID = response.data?.parentID;
-    } catch {
-      return;
-    }
-    if (parentID !== reservation.parentSessionID) {
-      reservation.bindingUncertain = true;
-      throw launchBindingFailure('Exact native task recovery could not validate the child runtime parent; execution remains fenced.');
-    }
-    if ((hiveTaskLaunches.get(key) ?? adhocLaunches.get(key)) !== reservation) {
-      throw launchBindingFailure('The claimed launch changed during native recovery. Retry inspection.');
-    }
-    bindCorrelatedChild(binding, true);
-  };
-  const recoverAttemptChild = async (attempt: ExecutionAttempt): Promise<ExecutionAttempt> => {
-    if (attempt.nativeChildSessionId || !attempt.nativeCallId) return attempt;
-    const key = hiveTaskLaunchKey(attempt.originatingPrimarySession, attempt.nativeCallId);
-    const reservation = hiveTaskLaunches.get(key) ?? adhocLaunches.get(key);
-    if (!reservation) return attempt;
-    try {
-      await recoverClaimedChild(key, reservation);
-    } catch {
-      // Exact parent/call recovery failed; the live claim stays fenced.
-    }
-    return executionAttemptService.getAttempt(attempt.id) ?? attempt;
-  };
+
   const bindObservedForagerChild = async (childSessionID: string, observedAgent: string): Promise<void> => {
-    if (!isBindableNativeChildSessionId(childSessionID)) {
-      throw launchBindingFailure('Placeholder native child id is not bindable');
-    }
-    const existingClaim = claimedChildLaunches.get(childSessionID);
-    if (existingClaim) {
-      completeForagerChildBinding(childSessionID, observedAgent);
-      return;
-    }
     if (classifySession(observedAgent, customAgentConfigsForClassification).baseAgent !== 'forager-worker') return;
     const binding = observedTaskChildren.get(childSessionID);
     if (!binding) {
+      const persisted = executionAttemptService.listAttempts().find(attempt =>
+        attempt.phase !== 'finalized' && attempt.native?.childSessionId === childSessionID);
+      if (persisted) {
+        if (persisted.native?.selectedAgent !== observedAgent) {
+          throw launchBindingFailure('The persisted execution agent does not match the observed Forager child.');
+        }
+        const runtimeParent = runtimeSessionParents.get(childSessionID) ?? await getSessionParentID(childSessionID);
+        if (runtimeParent !== persisted.originatingPrimarySession) {
+          throw launchBindingFailure('The persisted execution parent does not match the authenticated child runtime parent.');
+        }
+        bindExecutionChildSession(persisted, childSessionID, observedAgent);
+        return;
+      }
       if (!runtimeTaskChildSessions.has(childSessionID)) return;
-      throw launchBindingFailure('The forager child has no exact native task call correlation. Ownership cannot be guessed. Do not relaunch this child; keep any next launch prepared and reprepare it only if its reservation expires.');
+      throw launchBindingFailure('The Forager child has no exact authenticated native task correlation.');
     }
-    const key = hiveTaskLaunchKey(binding.primarySessionID, binding.callID);
-    const reservation = hiveTaskLaunches.get(key) ?? adhocLaunches.get(key);
-    if (!reservation) {
-      throw launchBindingFailure('The exact native task call has no active forager launch claim. Prepare a fresh launch and retry.', launchPreparationGuidance);
+    const runtimeParent = runtimeSessionParents.get(childSessionID) ?? await getSessionParentID(childSessionID);
+    if (runtimeParent !== binding.primarySessionID) {
+      throw launchBindingFailure('The native task correlation parent does not match the authenticated child runtime parent.');
     }
-    let runtimeParent = runtimeSessionParents.get(childSessionID);
-    if (!runtimeParent) {
-      try {
-        runtimeParent = await getSessionParentID(childSessionID);
-      } catch {
-        throw launchBindingFailure('The forager child runtime parent is unavailable. Wait for child session metadata and retry.', launchPreparationGuidance);
-      }
+    const attempt = executionAttemptService.findByNativeCall(binding.primarySessionID, binding.callID);
+    if (!attempt || attempt.native?.childSessionId !== childSessionID || attempt.native.selectedAgent !== observedAgent) {
+      throw launchBindingFailure('The Forager child does not match the attached execution.');
     }
-    try {
-      if (!runtimeParent || runtimeParent !== binding.primarySessionID) {
-        throw launchBindingFailure('The native task correlation parent does not match the authenticated child runtime parent.');
-      }
-      if (reservation.selectedAgent !== observedAgent) {
-        throw launchBindingFailure(`The child runtime agent '${observedAgent}' does not match the claimed agent '${reservation.selectedAgent}'.`);
-      }
-      if (binding.expectedAgent && binding.expectedAgent !== observedAgent) {
-        throw launchBindingFailure(`The native task metadata agent '${binding.expectedAgent}' does not match the child runtime agent '${observedAgent}'.`);
-      }
-      bindCorrelatedChild(binding);
-    } catch (error) {
-      if (!reservation.bindingUncertain) {
-        releaseLaunchReservation(key);
-      }
-      throw error;
-    }
+    bindExecutionChildSession(attempt, childSessionID, observedAgent);
   };
-  const completeForagerChildBinding = (childSessionID: string, observedAgent: string | undefined): void => {
-    const claim = claimedChildLaunches.get(childSessionID);
-    if (!claim || !observedAgent) return;
-    if (claim.selectedAgent !== observedAgent) {
-      throw launchBindingFailure(`The child runtime agent '${observedAgent}' does not match the claimed agent '${claim.selectedAgent}'.`);
+
+  const appendExecutionPrompt = (attempt: ExecutionAttempt, prompt: string): string => {
+    const scopeBlock = buildExecutionScopeBlock({
+      kind: attempt.kind,
+      featureName: attempt.featureName,
+      taskFolder: attempt.taskFolder,
+      runId: attempt.runId,
+      placement: attempt.placement.kind === 'worktree'
+        ? { kind: 'worktree', workspacePath: attempt.placement.workspacePath }
+        : { kind: 'in_place', directory: attempt.placement.directory },
+    });
+    const withScope = appendManagedPromptBlock(prompt, scopeBlock, EXECUTION_SCOPE_START, EXECUTION_SCOPE_END);
+    return appendManagedPromptBlock(
+      withScope,
+      buildStandingConstraintsBlock(resolveStandingConstraints(attempt.originatingPrimarySession)),
+      STANDING_CONSTRAINTS_START,
+      STANDING_CONSTRAINTS_END,
+    );
+  };
+
+  const attachArmedForager = async (
+    sessionID: string,
+    callID: string | undefined,
+    args: Record<string, unknown> | undefined,
+    adapterOutput: { args?: Record<string, unknown> },
+  ): Promise<boolean> => {
+    const selectedAgent = typeof args?.subagent_type === 'string' ? args.subagent_type.trim() : '';
+    const targetBase = classifySession(selectedAgent, customAgentConfigsForClassification).baseAgent;
+    if (targetBase !== 'forager-worker') return false;
+    const parentAgent = runtimeSessionAgents.get(sessionID);
+    if (classifySession(parentAgent ?? '', customAgentConfigsForClassification).sessionKind !== 'primary') return false;
+    if (!callID) throw launchBindingFailure('Managed Forager dispatch requires an exact native call ID.');
+    const armed = executionAttemptService.armedForParent(sessionID);
+    if (!armed) {
+      throw launchBindingFailure('Managed Forager dispatch has no armed execution. Call hive_execution_prepare, then issue one unchanged native task call.');
     }
+    const prompt = typeof args?.prompt === 'string' ? args.prompt : '';
+    if (!adapterOutput.args) throw launchBindingFailure('Managed Forager dispatch arguments are unavailable.');
+    adapterOutput.args.prompt = appendExecutionPrompt(armed, prompt);
+    const attached = executionAttemptService.attachNext({
+      originatingPrimarySession: sessionID,
+      nativeCallId: callID,
+      selectedAgent,
+      background: args?.background === true,
+    });
+    try {
+      await backgroundJobAdapter['tool.execute.before']({ tool: 'task', sessionID, callID }, adapterOutput);
+    } catch (error) {
+      throw launchBindingFailure(`Native background bookkeeping failed after durable attachment ${attached.id}; execution remains quarantined: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return true;
   };
 
   const resolveStandingConstraints = (sessionID: string | undefined): string | undefined => {
@@ -2965,23 +2414,6 @@ const plugin: Plugin = async (ctx) => {
       directiveRecoveryState: 'available' as const,
       replayDirectivePending: true,
     };
-  };
-
-  const shouldUseWorkerReplay = (session: { sessionKind?: string; workerAssignment?: WorkerAssignmentDescriptor; workerPromptPath?: string } | undefined): boolean => {
-    return !!session?.workerAssignment || (session?.sessionKind === 'task-worker' && !!session.workerPromptPath);
-  };
-
-  const buildWorkerReplayText = (session: NonNullable<ReturnType<SessionService['getGlobal']>>, verified: VerifiedAssignment | undefined): string | null => {
-    if (!session.workerAssignment) {
-      return 'legacy_assignment_reanchor_required: This mutable worker prompt cannot be replayed. Return to an authenticated primary and create a fresh worker launch.';
-    }
-    if (!verified) return null;
-    const assignment = verified.bytes.toString('utf8');
-    return [
-      `Post-compaction recovery: replaying hash-verified immutable assignment attempt ${session.workerAssignment.attempt}.`,
-      '',
-      assignment,
-    ].join('\n');
   };
 
   /**
@@ -3101,7 +2533,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       message: detail,
       ...worktreeOutcomeFields(classification),
       nextAction: options.reuseCreateIdentity
-        ? `${worktreeNextAction(classification.action)} Reuse the exact runId, workspacePath, and branch values returned by hive_adhoc_worktree_create.`
+        ? `${worktreeNextAction(classification.action)} Reuse the exact runId, workspacePath, and branch values returned by hive_execution_prepare.`
         : worktreeNextAction(classification.action),
     });
   };
@@ -3329,1205 +2761,189 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     });
   };
   const unfinishedAttemptsPayload = () => executionAttemptService.listAttempts()
-    .filter(attempt => attempt.dispatchState !== 'settled')
+    .filter(attempt => attempt.phase !== 'finalized')
     .map(attempt => ({
       id: attempt.id,
       kind: attempt.kind,
       featureName: attempt.featureName,
       taskFolder: attempt.taskFolder,
       runId: attempt.runId,
-      workspaces: attempt.workspaceIdentities,
-      dispatchState: attempt.dispatchState,
-      observation: attempt.observation,
+      placement: attempt.placement,
+      phase: attempt.phase,
       originatingPrimarySession: attempt.originatingPrimarySession,
-      attemptSlot: attempt.attemptSlot,
+      attemptSlot: attempt.placement.kind === 'worktree' ? attempt.placement.attemptSlot : undefined,
     }));
   const currentUnsettledTaskAttempt = (feature: string, task: string): ExecutionAttempt | undefined =>
     executionAttemptService.listAttempts().find(attempt =>
       attempt.kind === 'task'
       && attempt.featureName === feature
       && attempt.taskFolder === task
-      && attempt.dispatchState !== 'settled'
+      && attempt.phase !== 'finalized'
       && executionAttemptService.isCurrentTaskAttempt(feature, task, attempt.id));
-  const currentTaskAttemptSlot = (feature: string, task: string): string | undefined =>
-    executionAttemptService.listAttempts().find(attempt =>
-      attempt.kind === 'task'
-      && attempt.featureName === feature
-      && attempt.taskFolder === task
-      && executionAttemptService.isCurrentTaskAttempt(feature, task, attempt.id))?.attemptSlot;
-  const workspaceIdentitiesForWorktree = (worktree: WorktreeInfo): string[] =>
-    worktree.repos
-      ? Object.values(worktree.repos).map(repo => fs.realpathSync(repo.path))
-      : [fs.realpathSync(worktree.workspacePath ?? worktree.path)];
-  const nextAttemptSlot = (): string => `s${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+  const currentTaskAttemptSlot = (feature: string, task: string): string | undefined => {
+    const placement = currentUnsettledTaskAttempt(feature, task)?.placement;
+    return placement?.kind === 'worktree' ? placement.attemptSlot : undefined;
+  };
   const currentUnsettledAdhocAttempt = (runId: string): ExecutionAttempt | undefined =>
     executionAttemptService.listAttempts().find(attempt =>
-      attempt.kind === 'adhoc'
-      && attempt.runId === runId
-      && attempt.dispatchState !== 'settled');
-  const isAuthorizedAdhocCommitSession = (
-    attempt: ExecutionAttempt,
-    sessionID: string | undefined,
-  ): boolean => {
-    if (!sessionID) return false;
-    if (attempt.nativeChildSessionId === sessionID) return true;
-    const session = sessionService.getGlobal(sessionID);
-    return session?.sessionKind === 'task-worker' && session.adHocRunId === attempt.runId;
-  };
+      attempt.kind === 'adhoc' && attempt.runId === runId && attempt.phase !== 'finalized');
+  const isAuthorizedAdhocCommitSession = (attempt: ExecutionAttempt, sessionID: string | undefined): boolean =>
+    Boolean(sessionID && (attempt.native?.childSessionId === sessionID
+      || (sessionService.getGlobal(sessionID)?.sessionKind === 'task-worker'
+        && sessionService.getGlobal(sessionID)?.adHocRunId === attempt.runId)));
   const releaseUnusedPreparedClaim = (attempt: ExecutionAttempt | undefined): void => {
-    if (attempt?.dispatchState !== 'prepared') return;
-    try { executionAttemptService.settle(attempt.id, 'expired'); } catch { /* already settled */ }
+    if (attempt?.phase !== 'armed') return;
+    try { executionAttemptService.closeArmNotStarted(attempt.id); } catch { }
   };
-  const observeNativeTaskTermination = (input: { tool: string; sessionID: string; callID?: string; args?: Record<string, unknown> }, outputDefined: boolean): void => {
-    if (input.tool !== 'task' || !input.callID) return;
-    const key = hiveTaskLaunchKey(input.sessionID, input.callID);
-    const reservation = hiveTaskLaunches.get(key) ?? adhocLaunches.get(key);
-    const attempt = reservation
-      ? executionAttemptService.getAttempt(reservation.attemptId)
-      : executionAttemptService.listAttempts().find(candidate =>
-        candidate.dispatchState !== 'settled'
-        && candidate.nativeCallId === input.callID
-        && candidate.originatingPrimarySession === input.sessionID);
-    if (!attempt || attempt.dispatchState !== 'dispatched') return;
-    const launchedBackground = input.args?.background === true;
-    if (!outputDefined) {
-      try { executionAttemptService.markUnobserved(attempt.id); } catch { /* already observed or settled */ }
-      return;
-    }
-    if (launchedBackground) return;
-    try { executionAttemptService.settle(attempt.id, 'completed'); } catch { /* already settled */ }
-  };
-
-  const buildWorktreeLaunchResponse = async ({
-    feature,
-    task,
-    taskInfo,
-    worktree,
-    executionAttempt,
-    continueFrom,
-    decision,
-    toolContext,
-    existingAttempt = false,
-  }: {
-    feature: string;
-    task: string;
-    taskInfo: NonNullable<ReturnType<typeof taskService.get>>;
-    worktree: WorktreeInfo;
-    executionAttempt: ExecutionAttempt;
-    continueFrom?: 'blocked';
-    decision?: string;
-    toolContext?: unknown;
-    existingAttempt?: boolean;
-  }) => {
-    const projectRoot = fs.realpathSync(directory);
-    const attempt = executionAttempt.assignment?.taskAttempt;
-    if (attempt === undefined || !executionAttempt.launchId) {
-      throw new Error('Execution attempt is missing the allocated taskAttempt or launchId');
-    }
-    const idempotencyKey = `hive-${feature}-${task}-${attempt}`;
-    const previousStatus = taskInfo.status;
-    const previousRawStatus = taskService.getRawStatus(feature, task);
-    const persistedError = previousRawStatus
-      && 'error' in previousRawStatus
-      && typeof previousRawStatus.error === 'string'
-      ? blankToUndefined(previousRawStatus.error)
-      : undefined;
-    const reportPath = getTaskReportPath(directory, feature, task);
-    const reportReferences = {
-      reportReference: taskService.getLatestReportReference(feature, task) ?? reportPath,
-      historyPath: path.join(path.dirname(reportPath), 'reports'),
-    };
-    const previousAttempt = previousStatus === 'failed' || previousStatus === 'partial'
-      ? {
-          status: previousStatus,
-          ...reportReferences,
-          summary: taskInfo.summary?.trim() ? taskInfo.summary : undefined,
-          report: taskInfo.summary?.trim() ? undefined : blankToUndefined(readText(reportPath) ?? undefined),
-          error: persistedError,
-        }
-      : undefined;
-
-    taskService.update(feature, task, {
-      status: 'in_progress',
-      aggregateBranchDiff: undefined,
-      baseCommit: previousRawStatus?.baseCommit ?? worktree.commit,
-    });
-
-    const planResult = planService.read(feature);
-    const allTasks = taskService.list(feature);
-    const rawPreviousTasks = allTasks
-      .filter(t => t.status === 'done' && t.summary)
-      .map(t => ({
-        name: t.folder,
-        summary: t.summary!,
-        aggregateBranchDiff: taskService.getRawStatus(feature, t.folder)?.aggregateBranchDiff,
-      }));
-
-    const taskBudgetResult = applyTaskBudget(rawPreviousTasks, { ...DEFAULT_BUDGET, feature });
-    const previousTasks = taskBudgetResult.tasks;
-
-    const truncationEvents: TruncationEvent[] = [
-      ...taskBudgetResult.truncationEvents,
-    ];
-
-    const droppedTasksHint = taskBudgetResult.droppedTasksHint;
-
-    const taskOrder = parseInt(taskInfo.folder.match(/^(\d+)/)?.[1] || '0', 10);
-    const status = taskService.getRawStatus(feature, task);
-    const dependsOn = status?.dependsOn ?? [];
-
-    let specContent: string;
-    const existingManualSpec = status?.origin === 'manual'
-      ? taskService.readSpec(feature, task)
-      : null;
-
-    if (existingManualSpec) {
-      specContent = buildManualLaunchSpec(existingManualSpec, previousTasks);
-    } else {
-      specContent = taskService.buildSpecContent({
-        featureName: feature,
-        task: {
-          folder: task,
-          name: taskInfo.planTitle ?? taskInfo.name,
-          order: taskOrder,
-          description: undefined,
-        },
-        dependsOn,
-        allTasks: allTasks.map(t => ({
-          folder: t.folder,
-          name: t.name,
-          order: parseInt(t.folder.match(/^(\d+)/)?.[1] || '0', 10),
-        })),
-        planContent: planResult?.content ?? null,
-        completedTasks: previousTasks,
-      });
-
-      taskService.writeSpec(feature, task, specContent);
-    }
-
-    const workspacePath = worktree.workspacePath ?? worktree.path;
-    const repoLaunchInfo = worktree.repos
-      ? Object.fromEntries(
-          Object.entries(worktree.repos).map(([id, info]) => [id, {
-            path: info.path,
-            branch: info.branch,
-            commit: info.commit,
-          }]),
-        )
-      : undefined;
-    const promptRepoInfo = worktree.repos
-      ? Object.fromEntries(
-          Object.entries(worktree.repos).map(([id, info]) => [id, {
-            path: info.path,
-            branch: info.branch,
-          }]),
-        )
-      : undefined;
-
-    const workerPrompt = buildWorkerPrompt({
-      feature,
-      task,
-      taskOrder,
-      worktreePath: workspacePath,
-      branch: worktree.branch,
-      spec: specContent,
-      continueFrom: continueFrom === 'blocked' ? {
-        status: 'blocked',
-        ...reportReferences,
-        previousSummary: blankToUndefined(taskInfo.summary),
-        decision: decision!,
-      } : undefined,
-      previousAttempt,
-      workspacePath: worktree.workspacePath,
-      repos: promptRepoInfo,
-      standingConstraints: resolveStandingConstraints((toolContext as ToolContext)?.sessionID),
-    });
-
-    const defaultAgent = 'forager-worker';
-    const eligibleAgents = buildForagerEligibleAgents(configService);
-    const agent = defaultAgent;
-
-    const previousTasksContent = previousTasks.map(t => `- **${t.name}**: ${t.summary}`).join('\n');
-    const promptMeta = calculatePromptMeta({
-      plan: planResult?.content || '',
-      context: '',
-      previousTasks: previousTasksContent,
-      spec: specContent,
-      workerPrompt,
-    });
-
-    const hiveDir = path.join(directory, '.hive');
-    const publishedAssignment = taskService.getRawStatus(feature, task)?.workerAssignment;
-    const alreadyPublished = publishedAssignment
-      && publishedAssignment.attempt === attempt
-      && publishedAssignment.locator === executionAttempt.assignment?.locator
-      && publishedAssignment.contentHash === executionAttempt.assignment?.contentHash;
-    let assignment: WorkerAssignmentDescriptor;
+  const observeNativeTaskTermination = (
+    input: { tool: string; sessionID: string; callID?: string; args?: Record<string, unknown> },
+    outputDefined: boolean,
+  ): void => {
+    if (input.tool !== 'task' || !input.callID || input.args?.background === true) return;
     try {
-      if (alreadyPublished) {
-        assignment = publishedAssignment;
-      } else {
-        const published = publishWorkerAssignment(feature, task, attempt, workerPrompt, hiveDir);
-        assignment = {
-          format: published.format,
-          projectRoot: fs.realpathSync(directory),
-          featureName: feature,
-          taskFolder: task,
-          attempt,
-          locator: published.locator,
-          contentHash: published.contentHash,
-        };
-        taskService.publishWorkerAssignment(feature, task, idempotencyKey, assignment);
-        executionAttemptService.recordAssignment(executionAttempt.id, {
-          taskAttempt: attempt,
-          locator: assignment.locator,
-          contentHash: assignment.contentHash,
-        });
-      }
-    } catch (error) {
-      if (!alreadyPublished) {
-        try {
-          taskService.failWorkerAssignmentPublication(
-            feature,
-            task,
-            idempotencyKey,
-            attempt,
-            error instanceof Error ? error.message : String(error),
-          );
-        } catch {
-          // Keep the original publication error; the allocated attempt may already have moved.
-        }
-      }
-      throw error;
-    }
-    const relativePromptPath = assignment.locator;
-
-    const PREVIEW_MAX_LENGTH = 200;
-    const workerPromptPreview = workerPrompt.length > PREVIEW_MAX_LENGTH
-      ? workerPrompt.slice(0, PREVIEW_MAX_LENGTH) + '...'
-      : workerPrompt;
-
-    const taskToolPrompt = `Follow instructions in @${relativePromptPath}`;
-    const backgroundEnabled = isBackgroundSubagentsExperimentEnabled();
-
-    bindFeatureSession(feature, toolContext);
-    const parentSessionID = (toolContext as ToolContext)?.sessionID;
-    if (!parentSessionID) throw launchBindingFailure('Worker launch preparation requires an authenticated parent session.');
-    const createdAt = Date.now();
-    const launchId = executionAttempt.launchId;
-    const expiresAt = createdAt + WORKER_LAUNCH_RESERVATION_TTL_MS;
-    const taskToolCall = {
-      subagent_type: agent,
-      description: `Hive: ${task}`,
-      prompt: taskToolPrompt,
-      hive_launch_id: launchId,
-    };
-    const backgroundTaskCall = {
-      ...taskToolCall,
-      background: true as const,
-    };
-    const launchIntent: HiveTaskLaunchIntent = {
-      workspacePath: fs.realpathSync(worktree.workspacePath ?? worktree.path),
-      launchId,
-      parentSessionID,
-      expiresAt,
-      feature,
-      task,
-      attempt,
-      attemptId: executionAttempt.id,
-      attemptSlot: executionAttempt.attemptSlot,
-      idempotencyKey,
-      assignment,
-      expectedDescription: `Hive: ${task}`,
-      expectedPrompt: taskToolPrompt,
-      allowedAgents: eligibleAgents.map(candidate => candidate.name),
-      resourcePaths: worktree.repos
-        ? Object.values(worktree.repos).map(repo => fs.realpathSync(repo.path))
-        : [fs.realpathSync(worktree.workspacePath ?? worktree.path)],
-    };
-    const pending = pendingHiveTaskLaunches.get(parentSessionID) ?? [];
-    const supersededTaskIntents = pending.filter(candidate => candidate.feature === feature && candidate.task === task);
-    pendingHiveTaskLaunches.set(parentSessionID, [
-      ...pending.filter(candidate => candidate.feature !== feature || candidate.task !== task),
-      launchIntent,
-    ]);
-    for (const candidate of supersededTaskIntents) {
-      backgroundJobService.consumePendingLaunch({
-        launchId: candidate.launchId,
-        parentSessionId: parentSessionID,
+      const stopped = executionAttemptService.observeBlockingStop({
+        originatingPrimarySession: input.sessionID,
+        nativeCallId: input.callID,
+        outputDefined,
       });
+      if (stopped?.reportLocator) executionAttemptService.finalize(stopped.id, stopped.observedOutcome ?? 'completed');
+    } catch {
+      // Missing, undefined, or contradictory stop evidence leaves the execution quarantined.
     }
-    if (backgroundEnabled) {
-      for (const stale of backgroundJobService.listPendingLaunches({
-        projectRoot,
-        feature,
-        task,
-      }).filter(candidate => candidate.disposition !== 'claimed')) {
-        backgroundJobService.consumePendingLaunch({
-          launchId: stale.launchId,
-          parentSessionId: stale.parentSessionId,
-        });
+  };
+
+  type ExecutionPrepareInput = {
+    scope: {
+      kind: 'task' | 'adhoc';
+      feature?: string;
+      task?: string;
+      continueFromBlocked?: boolean;
+      runId?: string;
+    };
+    placement: {
+      kind: 'worktree' | 'in_place';
+      repoIds?: string[];
+      directory?: string;
+    };
+  };
+
+  const executeExecutionPrepare = async (input: ExecutionPrepareInput, toolContext: unknown): Promise<string> => {
+    const parentSessionID = (toolContext as ToolContext | undefined)?.sessionID;
+    if (!parentSessionID) throw launchBindingFailure('Execution preparation requires an authenticated primary session.');
+    if (executionAttemptService.armedForParent(parentSessionID)) {
+      throw launchBindingFailure('This primary already has an armed execution. Dispatch it or wait for not-started closure before preparing another.');
+    }
+    if (!input.scope || !input.placement) {
+      return respond({ success: false, reason: 'invalid_argument', error: 'scope and placement are required.' });
+    }
+    if (input.placement.kind !== 'worktree' && input.placement.kind !== 'in_place') {
+      return respond({ success: false, reason: 'invalid_argument', error: 'placement.kind must be worktree or in_place.' });
+    }
+    if (input.placement.kind === 'in_place') {
+      if (!isNonBlankString(input.placement.directory) || !path.isAbsolute(input.placement.directory)) {
+        return respond({ success: false, reason: 'invalid_argument', error: 'in_place placement requires an absolute existing directory.' });
       }
-      backgroundJobService.registerPendingLaunch({
-        launchId: launchIntent.launchId,
-        parentSessionId: parentSessionID,
-        expectedDescription: launchIntent.expectedDescription,
-        expectedPrompt: launchIntent.expectedPrompt,
-        agentName: agent,
-        scope: {
-          projectRoot: fs.realpathSync(directory),
-          parentSessionId: parentSessionID,
-          primaryAgent: (toolContext as ToolContext)?.agent,
-          feature,
-          task,
-        },
-        ownership: {
-          worktreePath: workspacePath,
+    }
+
+    let scope: { kind: 'task'; feature: string; task: string } | { kind: 'adhoc'; runId: string };
+    let placement: ExecutionAttempt['placement'];
+    let references: Record<string, string>;
+
+    if (input.scope.kind === 'task') {
+      if (!isNonBlankString(input.scope.task)) {
+        return respond({ success: false, reason: 'invalid_argument', error: 'Task scope requires task.' });
+      }
+      const feature = resolveFeature(input.scope.feature, toolContext);
+      if (!feature) {
+        const failure = getFeatureResolutionFailure('feature', input.scope.feature);
+        return respond({ success: false, reason: failure.reason, error: failure.error, candidates: failure.candidates });
+      }
+      const taskInfo = taskService.get(feature, input.scope.task);
+      if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature, task: input.scope.task });
+      if (taskInfo.status === 'done') return respond({ success: false, reason: 'task_done', feature, task: input.scope.task });
+      if (taskInfo.status === 'blocked' && input.scope.continueFromBlocked !== true) {
+        return respond({ success: false, reason: 'blocked_resume_required', feature, task: input.scope.task });
+      }
+      const dependency = checkDependencies(feature, input.scope.task);
+      if (!dependency.allowed) return respond({ success: false, reason: 'dependencies_not_done', error: dependency.error });
+      scope = { kind: 'task', feature, task: input.scope.task };
+      references = {
+        spec: `.hive/features/${resolveFeatureDirectoryName(directory, feature)}/tasks/${input.scope.task}/spec.md`,
+        context: `.hive/features/${resolveFeatureDirectoryName(directory, feature)}/context/`,
+      };
+      if (input.placement.kind === 'worktree') {
+        const worktree = await worktreeService.create(feature, input.scope.task);
+        const workspacePath = fs.realpathSync(worktree.workspacePath ?? worktree.path);
+        placement = {
+          kind: 'worktree',
+          workspacePath,
+          workspaceIdentities: worktree.repos
+            ? Object.values(worktree.repos).map(repo => fs.realpathSync(repo.path))
+            : [workspacePath],
           branch: worktree.branch,
-          workerPromptPath: relativePromptPath,
-          repoIds: worktree.repos ? Object.keys(worktree.repos) : [],
-        },
-      });
-    }
-
-    const taskToolInstructions = `## Delegation Required
-
-Choose one of the eligible forager-derived agents below.
-Default to \`${defaultAgent}\` if no specialist is a better match.
-${AUTONOMOUS_ROUTING_GUIDANCE}
-${CANDIDATE_SPECIFIC_ROUTING_GUARD}
-
-${formatEligibleAgentChoices(eligibleAgents)}
-
-Use OpenCode's built-in \`task\` tool with the chosen \`subagent_type\` and the provided ${backgroundEnabled ? '\`backgroundTaskCall.prompt\` value when this worker is an independent lane and safe foreground work can continue. Use the blocking \`taskToolCall.prompt\` value when the next meaningful step depends on the worker and no non-overlapping foreground work exists.' : '\`taskToolCall.prompt\` value.'}
-\`taskToolCall.subagent_type\` is prefilled with the default for convenience; override it when a specialist in \`eligibleAgents\` is a better match.
-
-\`\`\`
-task({
-  subagent_type: "<chosen-agent>",
-  description: "Hive: ${task}",
-  prompt: "${taskToolPrompt}",
-  hive_launch_id: "${launchId}"${backgroundEnabled ? ',\n  background: true' : ''}
-})
-\`\`\`
-
-${backgroundEnabled ? 'Use `backgroundTaskCall` for independent background lanes with useful safe foreground work. Using blocking `task()` is correct when the next meaningful step depends on the worker, or dependency, risk, simplicity, user interaction, or ownership conflict makes waiting the safer path. Keep the same `subagent_type`, `description`, and `prompt` if you use that escape path.\n\n' : ''}
-
-Use the \`@path\` attachment syntax in the prompt to reference the file. Do not inline the file contents.
-
-`;
-
-    const responseBase = {
-      success: true,
-      terminal: false,
-      worktreePath: workspacePath,
-      workspacePath,
-      branch: worktree.branch,
-      mode: 'delegate',
-      worktreeMode: worktree.mode ?? 'legacy',
-      baseCommits: worktree.baseCommits,
-      repos: repoLaunchInfo,
-      agent,
-      defaultAgent,
-      eligibleAgents,
-      delegationRequired: true,
-      launchId,
-      attemptId: executionAttempt.id,
-      existingAttempt,
-      expiresAt: new Date(expiresAt).toISOString(),
-      workerPromptPath: relativePromptPath,
-      workerPromptPreview,
-      taskPromptMode: 'opencode-at-file',
-      taskToolCall,
-      ...(backgroundEnabled ? { backgroundTaskCall } : {}),
-      sessionPolicy: HIVE_SESSION_POLICY,
-      instructions: taskToolInstructions,
-    };
-
-    const jsonPayload = JSON.stringify(responseBase, null, 2);
-    const payloadMeta = calculatePayloadMeta({
-      jsonPayload,
-      promptInlined: false,
-      promptReferencedByFile: true,
-    });
-
-    const sizeWarnings = checkWarnings(promptMeta, payloadMeta);
-    const budgetWarnings = truncationEvents.map(event => ({
-      type: event.type as string,
-      severity: 'info' as const,
-      message: event.message,
-      affected: event.affected,
-      count: event.count,
-    }));
-    const allWarnings = [...sizeWarnings, ...budgetWarnings];
-
-    return respond({
-      ...responseBase,
-      promptMeta,
-      payloadMeta,
-      budgetApplied: {
-        maxTasks: DEFAULT_BUDGET.maxTasks,
-        maxSummaryChars: DEFAULT_BUDGET.maxSummaryChars,
-        tasksIncluded: previousTasks.length,
-        tasksDropped: rawPreviousTasks.length - previousTasks.length,
-        droppedTasksHint,
-      },
-      warnings: allWarnings.length > 0 ? allWarnings : undefined,
-    });
-  };
-
-  const respondWorktreeFeatureResolutionFailure = (task: string, explicitFeature?: string): string => {
-    const failure = getFeatureResolutionFailure('feature', explicitFeature);
-    return respond({
-      success: false,
-      terminal: true,
-      error: failure.error,
-      reason: failure.reason,
-      candidates: failure.candidates,
-      task,
-      hints: [failure.hint],
-    });
-  };
-
-  const respondActiveAttempt = (attempt: ExecutionAttempt, feature: string, task: string) => respond({
-    success: false,
-    terminal: true,
-    reason: 'workspace_conflict_denied',
-    mutation: 'none',
-    feature,
-    task,
-    attemptId: attempt.id,
-    dispatchState: attempt.dispatchState,
-    observation: attempt.observation,
-    error: `Task '${feature}/${task}' already has live execution attempt ${attempt.id}`,
-    nextAction: attempt.observation === 'observed'
-      ? 'Wait for observed native termination.'
-      : 'Wait for observed native termination, or start again to supersede an unobserved attempt onto a fresh worktree slot.',
-  });
-
-  const respondWorktreeCreateFailure = (feature: string, task: string, error: unknown): string | undefined => {
-    const classification = classifyServiceThrow(error);
-    if (!classification) return undefined;
-    return respond({
-      success: false,
-      terminal: true,
-      feature,
-      task,
-      error: error instanceof Error ? error.message : String(error),
-      ...worktreeOutcomeFields(classification),
-      nextAction: worktreeNextAction(classification.action),
-    });
-  };
-
-  const createTaskWorktree = async (
-    feature: string,
-    task: string,
-    attemptSlot?: string,
-  ): Promise<WorktreeInfo | string> => {
-    try {
-      return await worktreeService.create(feature, task, undefined, attemptSlot);
-    } catch (error: unknown) {
-      const failure = respondWorktreeCreateFailure(feature, task, error);
-      if (failure) return failure;
-      throw error;
-    }
-  };
-
-  const prepareTaskWorktreeLaunch = async ({
-    feature,
-    task,
-    taskInfo,
-    worktree,
-    continueFrom,
-    decision,
-    toolContext,
-    parentSessionID,
-    attemptSlot,
-  }: {
-    feature: string;
-    task: string;
-    taskInfo: NonNullable<ReturnType<typeof taskService.get>>;
-    worktree: WorktreeInfo;
-    continueFrom?: 'blocked';
-    decision?: string;
-    toolContext?: unknown;
-    parentSessionID: string;
-    attemptSlot?: string;
-  }): Promise<string> => {
-    let prepared: { attempt: ExecutionAttempt; existing: boolean };
-    try {
-      prepared = executionAttemptService.prepare({
-        kind: 'task',
-        originatingPrimarySession: parentSessionID,
-        workspaceIdentities: workspaceIdentitiesForWorktree(worktree),
-        featureName: feature,
-        taskFolder: task,
-        ...(attemptSlot ? { attemptSlot } : {}),
-        branch: worktree.branch,
-        baseCommit: worktree.commit,
-      });
-    } catch (error) {
-      throw writerFenceFailure({
-        projectRoot: fs.realpathSync(directory),
-        feature,
-        task,
-        resourcePaths: workspaceIdentitiesForWorktree(worktree),
-        label: `feature task '${feature}/${task}'`,
-      }, error instanceof Error ? error.message : String(error));
-    }
-    if (prepared.existing && prepared.attempt.dispatchState !== 'prepared') {
-      return respondActiveAttempt(prepared.attempt, feature, task);
-    }
-    return buildWorktreeLaunchResponse({
-      feature, task, taskInfo, worktree, executionAttempt: prepared.attempt, continueFrom, decision, toolContext,
-      existingAttempt: prepared.existing,
-    });
-  };
-
-  const createAndPrepareTaskWorktreeLaunch = async ({
-    feature,
-    task,
-    taskInfo,
-    continueFrom,
-    decision,
-    toolContext,
-    parentSessionID,
-    attemptSlot,
-  }: {
-    feature: string;
-    task: string;
-    taskInfo: NonNullable<ReturnType<typeof taskService.get>>;
-    continueFrom?: 'blocked';
-    decision?: string;
-    toolContext?: unknown;
-    parentSessionID: string;
-    attemptSlot?: string;
-  }): Promise<string> => {
-    const worktree = await createTaskWorktree(feature, task, attemptSlot);
-    if (typeof worktree === 'string') return worktree;
-    return prepareTaskWorktreeLaunch({
-      feature, task, taskInfo, worktree, continueFrom, decision, toolContext, parentSessionID, attemptSlot,
-    });
-  };
-
-  const supersedeTaskWorktreeLaunch = async ({
-    feature,
-    task,
-    taskInfo,
-    previousAttempt,
-    continueFrom,
-    decision,
-    toolContext,
-  }: {
-    feature: string;
-    task: string;
-    taskInfo: NonNullable<ReturnType<typeof taskService.get>>;
-    previousAttempt: ExecutionAttempt;
-    continueFrom?: 'blocked';
-    decision?: string;
-    toolContext?: unknown;
-  }) => {
-    const parentSessionID = (toolContext as ToolContext)?.sessionID;
-    if (!parentSessionID) throw launchBindingFailure('Worker launch preparation requires an authenticated parent session.');
-    const attemptSlot = nextAttemptSlot();
-    const worktree = await createTaskWorktree(feature, task, attemptSlot);
-    if (typeof worktree === 'string') return worktree;
-    const { attempt } = executionAttemptService.supersede(previousAttempt.id, {
-      kind: 'task',
-      originatingPrimarySession: parentSessionID,
-      workspaceIdentities: workspaceIdentitiesForWorktree(worktree),
-      featureName: feature,
-      taskFolder: task,
-      attemptSlot,
-      branch: worktree.branch,
-      baseCommit: worktree.commit,
-    });
-    return buildWorktreeLaunchResponse({
-      feature, task, taskInfo, worktree, executionAttempt: attempt, continueFrom, decision, toolContext,
-    });
-  };
-
-  const prepareOrReuseTaskWorktreeLaunch = async ({
-    feature,
-    task,
-    taskInfo,
-    continueFrom,
-    decision,
-    toolContext,
-    createIfMissing,
-  }: {
-    feature: string;
-    task: string;
-    taskInfo: NonNullable<ReturnType<typeof taskService.get>>;
-    continueFrom?: 'blocked';
-    decision?: string;
-    toolContext?: unknown;
-    createIfMissing: boolean;
-  }) => {
-    const parentSessionID = (toolContext as ToolContext)?.sessionID;
-    if (!parentSessionID) throw launchBindingFailure('Worker launch preparation requires an authenticated parent session.');
-    const existing = currentUnsettledTaskAttempt(feature, task);
-    if (existing) {
-      const replacePrepared = existing.dispatchState === 'prepared'
-        && (continueFrom === 'blocked'
-          || taskInfo.status === 'failed'
-          || taskInfo.status === 'partial'
-          || taskInfo.status === 'blocked');
-      if (existing.dispatchState === 'prepared' && !replacePrepared) {
-        let worktree = await worktreeService.get(feature, task, existing.attemptSlot);
-        if (!worktree && createIfMissing) {
-          const created = await createTaskWorktree(feature, task, existing.attemptSlot);
-          if (typeof created === 'string') return created;
-          worktree = created;
-        }
-        if (!worktree) {
-          return respond({
-            success: false,
-            terminal: true,
-            feature,
-            task,
-            attemptId: existing.id,
-            error: `Prepared execution attempt ${existing.id} has no registered worktree.`,
-            nextAction: 'Inspect the worktree, then retry hive_worktree_start.',
-          });
-        }
-        return buildWorktreeLaunchResponse({
-          feature, task, taskInfo, worktree, executionAttempt: existing, continueFrom, decision, toolContext,
-          existingAttempt: true,
-        });
-      }
-      if (replacePrepared) {
-        releaseUnusedPreparedClaim(existing);
+          baseCommit: worktree.commit,
+        };
       } else {
-        const recovered = await recoverAttemptChild(existing);
-        if (recovered.nativeChildSessionId) {
-          const state = await nativeExecutionState(recovered.nativeChildSessionId);
-          if (state === 'active') {
-            const live = recovered.observation === 'unobserved'
-              ? executionAttemptService.markObserved(recovered.id)
-              : recovered;
-            return respondActiveAttempt(live, feature, task);
-          }
-          if (state === 'terminal') {
-            try { executionAttemptService.settle(recovered.id, 'completed'); } catch { /* already settled */ }
-          } else {
-            return supersedeTaskWorktreeLaunch({
-              feature, task, taskInfo, previousAttempt: recovered, continueFrom, decision, toolContext,
-            });
-          }
-        } else {
-          return supersedeTaskWorktreeLaunch({
-            feature, task, taskInfo, previousAttempt: recovered, continueFrom, decision, toolContext,
-          });
-        }
+        placement = { kind: 'in_place', directory: fs.realpathSync(input.placement.directory!) };
       }
-    }
-
-    const assertWorkspacesIdle = (resourcePaths: string[], fenceClaimed = false): 'idle' | 'claimed' => {
-      try {
-        executionAttemptService.assertWorkspacesIdle(resourcePaths);
-        return 'idle';
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        if (!detail.includes('claimed by attempt') || fenceClaimed) {
-          throw writerFenceFailure({
-            projectRoot: fs.realpathSync(directory),
-            feature,
-            task,
-            resourcePaths,
-            label: `feature task '${feature}/${task}'`,
-          }, detail);
-        }
-        return 'claimed';
-      }
-    };
-
-    const currentSlot = currentTaskAttemptSlot(feature, task);
-    if (currentSlot) {
-      let slotted: WorktreeInfo | null;
-      try {
-        slotted = await worktreeService.get(feature, task, currentSlot);
-      } catch (error: unknown) {
-        const failure = respondWorktreeCreateFailure(feature, task, error);
-        if (failure) return failure;
-        throw error;
-      }
-      if (slotted) {
-        const slottedIdentities = workspaceIdentitiesForWorktree(slotted);
-        if (assertWorkspacesIdle(slottedIdentities) === 'idle') {
-          return prepareTaskWorktreeLaunch({
-            feature, task, taskInfo, worktree: slotted, continueFrom, decision, toolContext, parentSessionID,
-            attemptSlot: currentSlot,
-          });
-        }
-      }
-    }
-
-    let defaultWorktree: WorktreeInfo | null;
-    try {
-      defaultWorktree = await worktreeService.get(feature, task);
-    } catch (error: unknown) {
-      const failure = respondWorktreeCreateFailure(feature, task, error);
-      if (failure) return failure;
-      throw error;
-    }
-    if (defaultWorktree) {
-      const defaultIdentities = workspaceIdentitiesForWorktree(defaultWorktree);
-      if (assertWorkspacesIdle(defaultIdentities, !createIfMissing) === 'idle') {
-        return prepareTaskWorktreeLaunch({
-          feature, task, taskInfo, worktree: defaultWorktree, continueFrom, decision, toolContext, parentSessionID,
+    } else if (input.scope.kind === 'adhoc') {
+      const target = adhocWorktreeService.resolveCreateTarget({ runId: blankToUndefined(input.scope.runId) });
+      scope = { kind: 'adhoc', runId: target.runId };
+      references = { projectContext: '.hive/context/' };
+      if (input.placement.kind === 'worktree') {
+        const existing = await adhocWorktreeService.get(target.runId);
+        const info = existing ?? await adhocWorktreeService.create({
+          runId: target.runId,
+          repoIds: normalizeOptionalStringList(input.placement.repoIds),
         });
-      }
-      return createAndPrepareTaskWorktreeLaunch({
-        feature, task, taskInfo, continueFrom, decision, toolContext, parentSessionID,
-        attemptSlot: nextAttemptSlot(),
-      });
-    }
-    if (!createIfMissing) {
-      return respond({
-        success: false,
-        terminal: true,
-        error: `Cannot return fresh-worker launch guidance for "${task}": no existing worktree record was found.`,
-        currentStatus: taskInfo.status,
-        hints: [
-          'The worktree may have been removed manually. Use hive_worktree_discard to reset the task to pending, then restart it with hive_worktree_start.',
-          'Use hive_status to inspect the current state of the task and its worktree.',
-        ],
-      });
-    }
-    return createAndPrepareTaskWorktreeLaunch({
-      feature, task, taskInfo, continueFrom, decision, toolContext, parentSessionID,
-    });
-  };
-
-  const executeWorktreeStart = async ({
-    task,
-    feature: explicitFeature,
-    toolContext,
-  }: {
-    task: string;
-    feature?: string;
-    toolContext?: unknown;
-  }) => {
-    const feature = resolveFeature(explicitFeature, toolContext);
-    if (!feature) return respondWorktreeFeatureResolutionFailure(task, explicitFeature);
-
-    const blockedMessage = checkBlocked(feature);
-    if (blockedMessage) {
-      return respond({
-        success: false,
-        terminal: true,
-        error: blockedMessage,
-        reason: 'feature_blocked',
-        feature,
-        task,
-        hints: [
-          'Wait for the human to unblock the feature before retrying.',
-          `If approved, remove .hive/features/${resolveFeatureDirectoryName(directory, feature)}/BLOCKED and retry hive_worktree_start.`,
-        ],
-      });
-    }
-
-    const taskInfo = taskService.get(feature, task);
-    if (!taskInfo) {
-      return respond({
-        success: false,
-        terminal: true,
-        error: `Task "${task}" not found`,
-        reason: 'task_not_found',
-        feature,
-        task,
-        hints: [
-          'Check the task folder name in tasks.json or hive_status output.',
-          'Run hive_tasks_sync if the approved plan has changed and tasks need regeneration.',
-        ],
-      });
-    }
-
-    if (taskInfo.status === 'done') {
-      return respond({
-        success: false,
-        terminal: true,
-        error: `Task "${task}" is already completed (status: done). It cannot be restarted.`,
-        currentStatus: 'done',
-        hints: [
-          'Use hive_merge to integrate the completed task branch if not already merged.',
-          'Use hive_status to see all task states and find the next runnable task.',
-        ],
-      });
-    }
-
-    if (taskInfo.status === 'blocked') {
-      const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
-      return respond({
-        success: false,
-        terminal: true,
-        error: `Task "${task}" is blocked. Use hive_worktree_create with continueFrom: 'blocked' for blocked-task continuation in the existing worktree; it returns fresh-worker launch guidance.`,
-        currentStatus: 'blocked',
-        feature,
-        task,
-        ...(traceTaskId ? { traceTaskId } : {}),
-        hints: [
-          ...(traceTaskId
-            ? [`Before collecting the operator decision or launching a fresh worker, inspect the runtime-visible session trace with hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }). Read errors, changed_files, tool activity, and the latest/final response first.`]
-            : ['No traceTaskId has been persisted for this task. Inspect the blocker details without inventing a child session ID.']),
-          'Ask the user the blocker question, then request fresh-worker launch guidance with hive_worktree_create({ task, continueFrom: "blocked", decision }).',
-          'Use hive_status to inspect blocker details before retrying.',
-        ],
-      });
-    }
-
-    const depCheck = checkDependencies(feature, task);
-    if (!depCheck.allowed) {
-      return respond({
-        success: false,
-        terminal: true,
-        reason: 'dependencies_not_done',
-        feature,
-        task,
-        error: depCheck.error,
-        hints: [
-          'Complete the required dependencies before starting this task.',
-          'Use hive_status to see current task states.',
-        ],
-      });
-    }
-
-    const defaultIdentities = [normalizeResourcePath(worktreeService.getWorktreePath(feature, task))];
-    try {
-      return await withLaunchPreparationLock(defaultIdentities, () => prepareOrReuseTaskWorktreeLaunch({
-        feature,
-        task,
-        taskInfo,
-        toolContext,
-        createIfMissing: true,
-      }));
-    } catch (error) {
-      const fenced = writerFenceResponse(error);
-      if (fenced) return fenced;
-      throw error;
-    }
-  };
-
-  const executeBlockedResume = async ({
-    task,
-    feature: explicitFeature,
-    continueFrom,
-    decision,
-    toolContext,
-  }: {
-    task: string;
-    feature?: string;
-    continueFrom?: 'blocked';
-    decision?: string;
-    toolContext?: unknown;
-  }) => {
-    const feature = resolveFeature(explicitFeature, toolContext);
-    if (!feature) return respondWorktreeFeatureResolutionFailure(task, explicitFeature);
-
-    const blockedMessage = checkBlocked(feature);
-    if (blockedMessage) {
-      return respond({
-        success: false,
-        terminal: true,
-        error: blockedMessage,
-        reason: 'feature_blocked',
-        feature,
-        task,
-        hints: [
-          'Wait for the human to unblock the feature before retrying.',
-          `If approved, remove .hive/features/${resolveFeatureDirectoryName(directory, feature)}/BLOCKED and retry hive_worktree_create.`,
-        ],
-      });
-    }
-
-    const taskInfo = taskService.get(feature, task);
-    if (!taskInfo) {
-      return respond({
-        success: false,
-        terminal: true,
-        error: `Task "${task}" not found`,
-        reason: 'task_not_found',
-        feature,
-        task,
-        hints: [
-          'Check the task folder name in tasks.json or hive_status output.',
-          'Run hive_tasks_sync if the approved plan has changed and tasks need regeneration.',
-        ],
-      });
-    }
-
-    if (taskInfo.status === 'done') {
-      return respond({
-        success: false,
-        terminal: true,
-        error: `Task "${task}" is already completed (status: done). It cannot be restarted.`,
-        currentStatus: 'done',
-        hints: [
-          'Use hive_merge to integrate the completed task branch if not already merged.',
-          'Use hive_status to see all task states and find the next runnable task.',
-        ],
-      });
-    }
-
-    if (continueFrom !== 'blocked') {
-      return respond({
-        success: false,
-        terminal: true,
-        error: 'hive_worktree_create only returns fresh-worker launch guidance for blocked-task continuation in the existing worktree.',
-        reason: 'blocked_resume_required',
-        currentStatus: taskInfo.status,
-        feature,
-        task,
-        hints: [
-          'Use hive_worktree_start({ feature, task }) to get fresh-worker launch guidance for pending, in-progress, failed, or partial tasks.',
-          'Use hive_worktree_create({ task, continueFrom: "blocked", decision }) only after hive_status confirms the task is blocked.',
-        ],
-      });
-    }
-
-    if (taskInfo.status !== 'blocked') {
-      return respond({
-        success: false,
-        terminal: true,
-        reason: 'task_not_blocked',
-        canRetry: false,
-        retryReason: `Task is in ${taskInfo.status} state. Run hive_status() and follow the current status flow instead of requesting blocked-task continuation.`,
-        error: `continueFrom: 'blocked' was specified but task "${task}" is not in blocked state (current status: ${taskInfo.status}).`,
-        currentStatus: taskInfo.status,
-        hints: [
-          'This blocked-task continuation request cannot be retried with the same parameters.',
-          'Use hive_worktree_start({ feature, task }) to return fresh-worker launch guidance for normal starts or re-dispatch.',
-          'Use hive_status to verify the current task status before retrying.',
-        ],
-      });
-    }
-
-    const operatorDecision = blankToUndefined(decision);
-    if (!operatorDecision) {
-      return respond({
-        success: false,
-        terminal: true,
-        reason: 'operator_decision_required',
-        currentStatus: taskInfo.status,
-        feature,
-        task,
-        error: `An operator decision is required before returning fresh worker launch guidance for blocked-task continuation in the existing worktree.`,
-        hints: [
-          'Ask the blocker question and pass the operator answer in decision.',
-          'Retry hive_worktree_create({ task, continueFrom: "blocked", decision }) after the operator answers.',
-        ],
-      });
-    }
-
-    const defaultIdentities = [normalizeResourcePath(worktreeService.getWorktreePath(feature, task))];
-    try {
-      return await withLaunchPreparationLock(defaultIdentities, () => prepareOrReuseTaskWorktreeLaunch({
-        feature,
-        task,
-        taskInfo,
-        continueFrom,
-        decision: operatorDecision,
-        toolContext,
-        createIfMissing: false,
-      }));
-    } catch (error) {
-      const fenced = writerFenceResponse(error);
-      if (fenced) return fenced;
-      throw error;
-    }
-  };
-
-  const prepareAdhocLaunchBody = async (
-    info: AdhocWorktreeInfo,
-    workerInstructions: string | undefined,
-    toolContext: unknown,
-    shouldAutoSpawnWorker: boolean,
-  ): Promise<string> => {
-    const workspacePath = info.workspacePath ?? info.path;
-    const parentSessionId = (toolContext as ToolContext | undefined)?.sessionID;
-    if (shouldAutoSpawnWorker && !parentSessionId) {
-      throw launchBindingFailure('Ad-hoc worker launch preparation requires an authenticated parent session.');
-    }
-    const backgroundEnabled = isBackgroundSubagentsExperimentEnabled();
-    const backgroundScope = backgroundEnabled && parentSessionId
-      ? { adHocRunId: info.runId, projectRoot: fs.realpathSync(directory), parentSessionId }
-      : undefined;
-    const backgroundOwnership = backgroundScope
-      ? { worktreePath: workspacePath, branch: info.branch, repoIds: info.repos ? Object.keys(info.repos) : [] }
-      : undefined;
-    const defaultAgent = 'forager-worker';
-    const eligibleAgents = buildForagerEligibleAgents(configService);
-    const adhocWorkerPrompt = buildAdhocWorkerPrompt({
-      runId: info.runId,
-      workspacePath,
-      branch: info.branch,
-      instructions: blankToUndefined(workerInstructions),
-      standingConstraints: resolveStandingConstraints(parentSessionId),
-    });
-    const description = `Ad-hoc: ${info.runId}`;
-    const createdAt = Date.now();
-    const resourcePaths = info.repos
-      ? Object.values(info.repos).map(repo => fs.realpathSync(repo.path))
-      : [fs.realpathSync(workspacePath)];
-    let launchId = randomUUID();
-    let attemptId: string | undefined;
-    let existingAttempt = false;
-    if (shouldAutoSpawnWorker && parentSessionId) {
-      let existing = currentUnsettledAdhocAttempt(info.runId);
-      if (existing && existing.dispatchState !== 'prepared') {
-        existing = await recoverAttemptChild(existing);
-        if (existing.nativeChildSessionId) {
-          const state = await nativeExecutionState(existing.nativeChildSessionId);
-          if (state === 'terminal') {
-            try { executionAttemptService.settle(existing.id, 'completed'); } catch { /* already settled */ }
-          } else {
-            throw writerFenceFailure({
-              projectRoot: fs.realpathSync(directory),
-              runId: info.runId,
-              resourcePaths,
-              label: `ad-hoc run '${info.runId}'`,
-            }, `Ad-hoc run '${info.runId}' already has live execution attempt ${existing.id}`, existing.nativeChildSessionId);
-          }
-        } else {
-          throw writerFenceFailure({
-            projectRoot: fs.realpathSync(directory),
-            runId: info.runId,
-            resourcePaths,
-            label: `ad-hoc run '${info.runId}'`,
-          }, `Ad-hoc run '${info.runId}' already has live execution attempt ${existing.id}`);
-        }
-      }
-      let prepared;
-      try {
-        prepared = executionAttemptService.prepare({
-          kind: 'adhoc',
-          originatingPrimarySession: parentSessionId,
-          workspaceIdentities: resourcePaths,
-          runId: info.runId,
+        const workspacePath = fs.realpathSync(info.workspacePath ?? info.path);
+        placement = {
+          kind: 'worktree',
+          workspacePath,
+          workspaceIdentities: info.repos
+            ? Object.values(info.repos).map(repo => fs.realpathSync(repo.path))
+            : [workspacePath],
           branch: info.branch,
           baseCommit: info.commit,
-        });
-      } catch (error) {
-        throw writerFenceFailure({
-          projectRoot: fs.realpathSync(directory),
-          runId: info.runId,
-          resourcePaths,
-          label: `ad-hoc run '${info.runId}'`,
-        }, error instanceof Error ? error.message : String(error));
+        };
+      } else {
+        placement = { kind: 'in_place', directory: fs.realpathSync(input.placement.directory!) };
       }
-      if (prepared.existing && prepared.attempt.dispatchState !== 'prepared') {
-        throw writerFenceFailure({
-          projectRoot: fs.realpathSync(directory),
-          runId: info.runId,
-          resourcePaths,
-          label: `ad-hoc run '${info.runId}'`,
-        }, `Ad-hoc run '${info.runId}' already has live execution attempt ${prepared.attempt.id}`);
-      }
-      if (!prepared.attempt.launchId) throw new Error('Ad-hoc execution attempt is missing launchId');
-      launchId = prepared.attempt.launchId;
-      attemptId = prepared.attempt.id;
-      existingAttempt = prepared.existing;
+    } else {
+      return respond({ success: false, reason: 'invalid_argument', error: 'scope.kind must be task or adhoc.' });
     }
-    const expiresAt = createdAt + WORKER_LAUNCH_RESERVATION_TTL_MS;
-    const { taskToolCall, backgroundTaskCall, launchMode, sessionPolicy } = buildAdhocWorkerLaunchPayloads({
-      subagent_type: defaultAgent,
-      description,
-      prompt: adhocWorkerPrompt,
-      launchId,
-      backgroundEnabled: Boolean(backgroundScope),
-      shouldAutoSpawnWorker,
+
+    const armed = executionAttemptService.arm({
+      kind: scope.kind,
+      originatingPrimarySession: parentSessionID,
+      placement,
+      ...(scope.kind === 'task'
+        ? { featureName: scope.feature, taskFolder: scope.task }
+        : { runId: scope.runId }),
     });
-    if (taskToolCall && parentSessionId && attemptId) {
-      const pending = pendingWorkspaceLaunches.get(parentSessionId) ?? [];
-      const supersededAdhocIntents = pending.filter(candidate => candidate.runId === info.runId);
-      pendingWorkspaceLaunches.set(parentSessionId, [
-        ...pending.filter(candidate => candidate.runId !== info.runId),
-        {
-          launchId,
-          parentSessionID: parentSessionId,
-          expiresAt,
-          placement: 'adhoc-worktree',
-          runId: info.runId,
-          attemptId,
-          projectRoot: fs.realpathSync(directory),
-          workspacePath: fs.realpathSync(workspacePath),
-          resourcePaths,
-          expectedPrompt: adhocWorkerPrompt,
-          allowedAgents: eligibleAgents.map(candidate => candidate.name),
-        },
-      ]);
-      for (const candidate of supersededAdhocIntents) {
-        backgroundJobService.consumePendingLaunch({ launchId: candidate.launchId, parentSessionId });
-      }
-    }
-    if (backgroundTaskCall && backgroundScope && backgroundOwnership) {
-      for (const stale of backgroundJobService.listPendingLaunches({
-        projectRoot: backgroundScope.projectRoot,
-        adHocRunId: backgroundScope.adHocRunId,
-      }).filter(candidate => candidate.disposition !== 'claimed')) {
-        backgroundJobService.consumePendingLaunch({
-          launchId: stale.launchId,
-          parentSessionId: stale.parentSessionId,
-        });
-      }
-      backgroundJobService.registerPendingLaunch({
-        launchId,
-        parentSessionId: backgroundScope.parentSessionId,
-        expectedDescription: backgroundTaskCall.description,
-        expectedPrompt: backgroundTaskCall.prompt,
-        agentName: backgroundTaskCall.subagent_type,
-        scope: backgroundScope,
-        ownership: backgroundOwnership,
+    if (armed.attempt.phase !== 'armed') {
+      return respond({
+        success: false,
+        reason: 'workspace_conflict_denied',
+        attemptId: armed.attempt.id,
+        phase: armed.attempt.phase,
+        error: 'The requested scope already has an attached or stopped execution.',
       });
     }
-    const workerLaunchSuppressed = launchMode === 'suppressed';
+    if (scope.kind === 'task') {
+      taskService.update(scope.feature, scope.task, { status: 'in_progress' });
+      bindFeatureSession(scope.feature, toolContext);
+    }
     return respond({
       success: true,
-      runId: info.runId,
-      workspacePath,
-      branch: info.branch,
-      commit: info.commit,
-      mode: info.mode,
-      ...(info.repos ? { repos: info.repos } : {}),
-      ...(info.baseCommits ? { baseCommits: info.baseCommits } : {}),
-      ...(backgroundScope ? { backgroundScope } : {}),
-      ...(backgroundOwnership ? { backgroundOwnership } : {}),
-      launchMode,
-      defaultAgent,
-      eligibleAgents,
-      ...(taskToolCall ? { launchId, expiresAt: new Date(expiresAt).toISOString() } : {}),
-      ...(attemptId ? { attemptId, existingAttempt } : {}),
-      ...(sessionPolicy ? { sessionPolicy } : {}),
-      ...(taskToolCall ? { taskToolCall } : {}),
-      ...(backgroundTaskCall ? { backgroundTaskCall } : {}),
-      ...(taskToolCall ? {
-        instructions: `Choose one of the eligible forager-derived agents below.
-Default to \`${defaultAgent}\` if no specialist is a better match.
-${AUTONOMOUS_ROUTING_GUIDANCE}
-${CANDIDATE_SPECIFIC_ROUTING_GUARD}
-
-${formatEligibleAgentChoices(eligibleAgents)}
-
-The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`; override \`taskToolCall.subagent_type\` and, when used, \`backgroundTaskCall.subagent_type\` when a custom overlay in \`eligibleAgents\` is a closer fit. Dispatch via \`task({ ...taskToolCall })\` or \`task({ ...taskToolCall, subagent_type: specialist })\`. Preserve the returned \`hive_launch_id\`; Hive uses it to select this exact prepared assignment. Preserve the returned wait mode and fresh terminal session semantics. Prompt and description edits do not alter the selected assignment because Hive restores the canonical prepared prompt before native dispatch.`,
-      } : {}),
-      ...(workerLaunchSuppressed ? { workerLaunch: 'suppressed' as const } : {}),
-      nextAction: adhocCreateNextAction({
-        shouldAutoSpawnWorker,
-        hasBackgroundTaskCall: Boolean(backgroundTaskCall),
-      }),
-    });
-  };
-
-  const prepareAdhocLaunch = async (
-    info: AdhocWorktreeInfo,
-    workerInstructions: string | undefined,
-    toolContext: unknown,
-    shouldAutoSpawnWorker = true,
-  ): Promise<string> => {
-    const target = adhocWritableTarget(info);
-    return withLaunchPreparationLock(target.resourcePaths, async () => {
-      return prepareAdhocLaunchBody(info, workerInstructions, toolContext, shouldAutoSpawnWorker);
+      attemptId: armed.attempt.id,
+      scope,
+      placement: armed.attempt.placement,
+      references,
+      phase: armed.attempt.phase,
+      expiresAt: armed.attempt.expiresAt,
+      existing: armed.existing,
+      lifecycle: 'The next unchanged native Forager task call from this parent consumes this arm. The primary owns stop observation and finalization.',
     });
   };
 
@@ -4544,27 +2960,6 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
   };
 
   return {
-    'tool.definition': async (input, output) => {
-      if (input.toolID !== 'task') return;
-      const parameters = output.parameters as typeof output.parameters & {
-        fields?: Record<string, Schema.Top>;
-      };
-      if (!parameters?.fields) {
-        throw new Error('Native task parameters are not an Effect Schema.Struct; hive_launch_id cannot be installed safely.');
-      }
-      output.parameters = Schema.Struct({
-        ...parameters.fields,
-        hive_launch_id: Schema.optional(
-          Schema.String.annotate({
-            description: 'Exact prepared Hive launch identity. Required for Forager-derived targets; omit for ordinary Scouts and reviewers.',
-          }),
-        ),
-        hive_capability_reason: Schema.optional(Schema.String.annotate({
-          description: 'Required only for the rare general target: explain the specific capability needed. This declaration grants no Hive authority and does not prove a capability gap.',
-        })),
-      });
-    },
-
     event: async (input) => {
       const event = input.event as {
         type: string;
@@ -4665,47 +3060,17 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         const sessionID = lifecycleSessionID;
         backgroundJobService.retireParentLaunches(sessionID);
         const parentCallPrefix = `${sessionID}\u0000`;
-        const matchingLaunchKeys = new Set<string>();
-        const matchingChildSessionIDs = new Set([sessionID]);
-        for (const [key, reservation] of [...hiveTaskLaunches.entries(), ...adhocLaunches.entries()]) {
-          if (key.startsWith(parentCallPrefix) || reservation.childSessionID === sessionID) {
-            matchingLaunchKeys.add(key);
-            if (reservation.childSessionID) matchingChildSessionIDs.add(reservation.childSessionID);
-          }
-        }
         for (const [key, childSessionID] of observedTaskChildrenByCall) {
           if (key.startsWith(parentCallPrefix) || childSessionID === sessionID) {
-            matchingLaunchKeys.add(key);
-            matchingChildSessionIDs.add(childSessionID);
+            observedTaskChildrenByCall.delete(key);
           }
         }
-        for (const [key, childSessionID] of boundLaunchChildrenByCall) {
-          if (key.startsWith(parentCallPrefix) || childSessionID === sessionID) {
-            matchingLaunchKeys.add(key);
-            matchingChildSessionIDs.add(childSessionID);
-          }
-        }
-        for (const key of claimedLaunchIdsByCall.keys()) {
-          if (key.startsWith(parentCallPrefix)) matchingLaunchKeys.add(key);
-        }
-        for (const key of matchingLaunchKeys) {
-          // Deletion is not proof that a native writer or its tools stopped.
-          if (hiveTaskLaunches.has(key) || adhocLaunches.has(key)) continue;
-          releaseLaunchReservation(key);
-          boundLaunchChildrenByCall.delete(key);
-          observedTaskChildrenByCall.delete(key);
-        }
-        pendingHiveTaskLaunches.delete(sessionID);
-        pendingWorkspaceLaunches.delete(sessionID);
         for (const hintID of taskTraceInjectedHintIDs) {
           if (hintID.startsWith(parentCallPrefix)) taskTraceInjectedHintIDs.delete(hintID);
         }
         runtimeTaskChildSessions.delete(sessionID);
         runtimeSessionParents.delete(sessionID);
         runtimeSessionAgents.delete(sessionID);
-        for (const childSessionID of matchingChildSessionIDs) {
-          if (![...hiveTaskLaunches.values(), ...adhocLaunches.values()].some(reservation => reservation.childSessionID === childSessionID)) claimedChildLaunches.delete(childSessionID);
-        }
         for (const [childSessionID, binding] of observedTaskChildren) {
           if (childSessionID === sessionID || binding.primarySessionID === sessionID) {
             observedTaskChildren.delete(childSessionID);
@@ -4735,10 +3100,6 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       const directiveReplayPatch = getDirectiveReplayCompactionPatch(existing);
       if (directiveReplayPatch) {
         sessionService.trackGlobal(sessionID, directiveReplayPatch);
-        return;
-      }
-      if (shouldUseWorkerReplay(existing)) {
-        sessionService.trackGlobal(sessionID, { replayDirectivePending: true });
         return;
       }
     },
@@ -4987,37 +3348,6 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       await backgroundJobAdapter['experimental.chat.messages.transform'](_input, output);
       await refreshLiveContextCatalog(sessionID, output.messages, authority);
       if (!refreshed?.replayDirectivePending) {
-        return;
-      }
-
-      if (shouldUseWorkerReplay(refreshed)) {
-        const workerText = buildWorkerReplayText(refreshed, authority.verifiedAssignment);
-        if (!workerText) {
-          sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
-          return;
-        }
-
-        const now = Date.now();
-        output.messages.push({
-          info: {
-            id: `msg_replay_${sessionID}`,
-            sessionID,
-            role: 'user',
-            time: { created: now },
-          },
-          parts: [
-            {
-              id: `prt_replay_${sessionID}`,
-              sessionID,
-              messageID: `msg_replay_${sessionID}`,
-              type: 'text',
-              text: workerText,
-              synthetic: true,
-            },
-          ],
-        });
-
-        sessionService.trackGlobal(sessionID, { replayDirectivePending: false });
         return;
       }
 
@@ -5472,16 +3802,6 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         const launchArgs = output.args as Record<string, unknown> | undefined;
         const targetAgent = String(launchArgs?.subagent_type ?? '');
         const targetBase = classifySession(targetAgent, customAgentConfigsForClassification).baseAgent ?? targetAgent;
-        const capabilityReason = launchArgs?.hive_capability_reason;
-        if (targetAgent === 'general' ? typeof capabilityReason !== 'string' || !capabilityReason.trim() : capabilityReason !== undefined) {
-          throw new Error('workspace_dispatch_denied: general requires a nonblank hive_capability_reason; other targets must omit it.');
-        }
-        if (targetAgent === 'general' && launchArgs?.hive_launch_id !== undefined) {
-          throw new Error('workspace_dispatch_denied: general cannot consume a prepared Forager launch.');
-        }
-        if (targetBase === 'hive-helper' && launchArgs?.hive_launch_id !== undefined) {
-          throw new Error('workspace_dispatch_denied: helper calls must omit prepared Forager launch selectors.');
-        }
         if (observedAgent && classifySession(observedAgent, customAgentConfigsForClassification).sessionKind === 'primary'
           && targetBase !== 'forager-worker' && targetBase !== 'architect-planner' && !isReadOnlyCouncilEligibleBase(targetBase)
           && targetBase !== 'hive-helper' && targetAgent !== 'general'
@@ -5496,14 +3816,10 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
             parentSessionID: input.sessionID,
             callID: input.callID,
             agent: targetAgent,
-            ...(targetAgent === 'general' ? { capabilityReason: (capabilityReason as string).trim() } : {}),
           });
-          if (targetAgent === 'general') {
-            output.args.description = `${String(output.args.description ?? '')} [Capability: ${(capabilityReason as string).trim()}]`;
-            delete output.args.hive_capability_reason;
-          }
         }
-        await enqueueClaimForagerLaunch(input.sessionID, input.callID, launchArgs, output);
+        const attached = await attachArmedForager(input.sessionID, input.callID, launchArgs, output);
+        if (!attached) await backgroundJobAdapter['tool.execute.before'](input, output);
       } else {
         await backgroundJobAdapter['tool.execute.before'](input, output);
       }
@@ -5511,7 +3827,10 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
       // A task-created architect child has its own session and an empty
       // register, so its planning-helper launches fall back one level to the
       // parent's register. Depth is capped at 2 above, so one level is enough.
-      if (input.tool === 'task' && !hiveTaskLaunches.has(hiveTaskLaunchKey(input.sessionID, input.callID))) {
+      const attachedExecution = input.tool === 'task' && input.callID
+        ? executionAttemptService.findByNativeCall(input.sessionID, input.callID)
+        : undefined;
+      if (input.tool === 'task' && !attachedExecution) {
         const constraintsBlock = buildStandingConstraintsBlock(
           resolveStandingConstraints(input.sessionID) ?? resolveStandingConstraints(parentID),
         );
@@ -5519,17 +3838,16 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         const target = typeof output.args?.subagent_type === 'string' ? output.args.subagent_type : '';
         const isReviewLaneTarget = runtimeDashReviewLanes.some((lane) => lane.taskTarget === target)
           || runtimeVulnerabilityReviewLanes.some((lane) => lane.taskTarget === target);
-        const isWorkerPromptReference = prompt.includes('Follow instructions in @')
-          && (prompt.trimEnd().endsWith('worker-prompt.md')
-            || /\/assignments\/attempt-\d+\.md$/.test(prompt.trimEnd()));
-
         if (
           constraintsBlock
           && !isReviewLaneTarget
-          && !isWorkerPromptReference
-          && !prompt.includes(STANDING_CONSTRAINTS_HEADING)
         ) {
-          output.args.prompt = `${prompt}${prompt ? '\n\n' : ''}${constraintsBlock}`;
+          output.args.prompt = appendManagedPromptBlock(
+            prompt,
+            constraintsBlock,
+            STANDING_CONSTRAINTS_START,
+            STANDING_CONSTRAINTS_END,
+          );
         }
       }
 
@@ -5921,7 +4239,7 @@ The returned task call's \`subagent_type\` is prefilled with \`${defaultAgent}\`
         backgroundJobService,
         projectRoot: directory,
         isEnabled: isBackgroundSubagentsExperimentEnabled,
-        currentRuntimeId: RUNTIME_ID,
+        currentRuntimeId: runtimeId,
         cancelRuntimeTask: async (taskId) => {
           const result = await client.session.abort({ path: { id: taskId }, query: { directory } });
           if (result.error) {
@@ -7314,7 +5632,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             }
           }
           const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata as any : undefined);
-          return `Manual task created: ${folder}\nDependencies: [${(dependsOn ?? []).join(', ')}]${repos ? `\nRepos: [${repos.join(', ')}]` : ''}\nReminder: start work with hive_worktree_start to use its worktree, and ensure any subagents work in that worktree too.`;
+          return `Manual task created: ${folder}\nDependencies: [${(dependsOn ?? []).join(', ')}]${repos ? `\nRepos: [${repos.join(', ')}]` : ''}\nReminder: arm work with hive_execution_prepare and dispatch one unchanged native Forager task call.`;
         },
       }),
 
@@ -7337,27 +5655,24 @@ NEXT: Ask your first clarifying question about this feature.`;
         },
       }),
 
-      hive_worktree_start: tool({
-        description: 'Create or reuse a worktree for a pending, in-progress, failed, or partial task. Returns fresh-worker launch guidance and taskToolCall. Dispatch via task({ ...taskToolCall }) to preserve hive_launch_id.',
+      hive_execution_prepare: tool({
+        description: 'Arm exactly one next native Forager dispatch for a task or ad-hoc scope. Returns concise scope, placement, reference, expiry, and lifecycle facts; native task arguments remain unchanged.',
         args: {
-          task: tool.schema.string().describe('Task folder name'),
-          feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
+          scope: tool.schema.object({
+            kind: tool.schema.enum(['task', 'adhoc']),
+            feature: tool.schema.string().optional(),
+            task: tool.schema.string().optional(),
+            continueFromBlocked: tool.schema.boolean().optional(),
+            runId: tool.schema.string().optional(),
+          }),
+          placement: tool.schema.object({
+            kind: tool.schema.enum(['worktree', 'in_place']),
+            repoIds: tool.schema.array(tool.schema.string()).optional(),
+            directory: tool.schema.string().optional(),
+          }),
         },
-        async execute({ task, feature: explicitFeature }, toolContext) {
-          return executeWorktreeStart({ task, feature: explicitFeature, toolContext });
-        },
-      }),
-
-      hive_worktree_create: tool({
-        description: 'Prepare blocked-task continuation in the existing worktree. Returns fresh-worker launch guidance with preserved progress and taskToolCall. Dispatch via task({ ...taskToolCall }) to preserve hive_launch_id.',
-        args: {
-          task: tool.schema.string().describe('Task folder name'),
-          feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
-          continueFrom: tool.schema.enum(['blocked']).optional().describe('Request blocked-task continuation in the existing worktree'),
-          decision: tool.schema.string().optional().describe('Operator answer to include in fresh-worker launch guidance'),
-        },
-        async execute({ task, feature: explicitFeature, continueFrom, decision }, toolContext) {
-          return executeBlockedResume({ task, feature: explicitFeature, continueFrom, decision, toolContext });
+        async execute(input, toolContext) {
+          return executeExecutionPrepare(input as ExecutionPrepareInput, toolContext);
         },
       }),
 
@@ -7411,16 +5726,12 @@ NEXT: Ask your first clarifying question about this feature.`;
           const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
           const committingSession = committingSessionID ? sessionService.getGlobal(committingSessionID) : undefined;
           const unsettledTaskAttempts = executionAttemptService.listAttempts().filter(attempt =>
-            attempt.dispatchState !== 'settled'
+            attempt.phase !== 'finalized'
             && attempt.kind === 'task'
             && attempt.featureName === feature
             && attempt.taskFolder === task);
           const workerAttempt = unsettledTaskAttempts.find(attempt =>
-            attempt.nativeChildSessionId === committingSessionID
-            || (committingSession?.sessionKind === 'task-worker'
-              && committingSession.workerAssignment !== undefined
-              && attempt.assignment?.taskAttempt === committingSession.workerAssignment.attempt
-              && attempt.assignment?.locator === committingSession.workerAssignment.locator));
+            attempt.native?.childSessionId === committingSessionID);
           const originatingAttempt = unsettledTaskAttempts.find(attempt =>
             attempt.originatingPrimarySession === committingSessionID
             && executionAttemptService.isCurrentTaskAttempt(feature, task, attempt.id));
@@ -7440,7 +5751,7 @@ NEXT: Ask your first clarifying question about this feature.`;
           }
           const workerAuthorized = workerAttempt !== undefined;
           const originatingPrimaryAuthorized = originatingAttempt !== undefined
-            && originatingAttempt.dispatchState !== 'dispatched';
+            && originatingAttempt.phase === 'armed';
           if (!workerAuthorized && !originatingPrimaryAuthorized) {
             return respond({
               ok: false,
@@ -7457,7 +5768,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
           }
           const attemptIsCurrent = executionAttemptService.isCurrentTaskAttempt(feature, task, liveAttempt.id);
-          const attemptSlot = liveAttempt.attemptSlot;
+          const attemptSlot = liveAttempt.placement.kind === 'worktree' ? liveAttempt.placement.attemptSlot : undefined;
           if (attemptIsCurrent && taskInfo.status !== 'in_progress' && taskInfo.status !== 'blocked') {
             return respond({
               ok: false,
@@ -7470,25 +5781,6 @@ NEXT: Ask your first clarifying question about this feature.`;
               message: 'Task not in progress',
               nextAction: 'Only in_progress or blocked tasks can be committed. Start/resume the task first.',
             });
-          }
-
-          if (attemptIsCurrent && (committingSession?.sessionKind === 'task-worker' || committingSession?.workerAssignment)) {
-            const bindingFailure = validateWorkerAssignment(committingSessionID!, committingSession);
-            if (typeof bindingFailure === 'string'
-              || committingSession.featureName !== feature
-              || committingSession.taskFolder !== task) {
-              return respond({
-                ok: false,
-                terminal: false,
-                status: 'error',
-                reason: 'assignment_recovery_error',
-                feature,
-                task,
-                taskState: taskInfo.status,
-                message: typeof bindingFailure === 'string' ? bindingFailure : 'The immutable assignment does not match this feature and task.',
-                nextAction: 'Return to the authenticated parent and create a fresh worker launch for this exact task.',
-              });
-            }
           }
 
           // ADVISORY: Track verification status (workers do best-effort)
@@ -7517,7 +5809,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             let reportReference: string;
             if (!attemptIsCurrent) {
               const featureDir = resolveFeatureDirectoryName(directory, feature);
-              reportReference = `.hive/features/${featureDir}/tasks/${task}/assignments/attempt-${liveAttempt.assignment?.taskAttempt ?? 'unknown'}-handoff.md`;
+              reportReference = `.hive/features/${featureDir}/tasks/${task}/assignments/attempt-${liveAttempt.taskAttempt ?? 'unknown'}-handoff.md`;
               reportPath = path.join(directory, reportReference);
               fs.mkdirSync(path.dirname(reportPath), { recursive: true });
               fs.writeFileSync(reportPath, blockedBody);
@@ -7535,6 +5827,10 @@ NEXT: Ask your first clarifying question about this feature.`;
                 blocker: blocker as any,
               } as any);
             }
+            executionAttemptService.recordHandoff(liveAttempt.id, {
+              reportLocator: reportReference,
+              reportContentHash: createHash('sha256').update(blockedBody).digest('hex'),
+            });
 
             let worktree: WorktreeInfo | null;
             try {
@@ -7574,7 +5870,7 @@ NEXT: Ask your first clarifying question about this feature.`;
               ...(traceTaskId ? { traceTaskId } : {}),
               worktreePath: worktree?.path,
               branch: worktree?.branch,
-              message: 'Task blocked. Hive Master will ask the user, then launch a new worker for blocked-task continuation in the existing worktree with hive_worktree_create(continueFrom: "blocked", decision: answer).',
+              message: 'Task blocked. Hive Master will ask the user, then arm blocked continuation with hive_execution_prepare(scope.continueFromBlocked: true).',
               nextAction: traceTaskId
                 ? `The orchestrator should inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before collecting the operator decision, then request fresh worker launch guidance for the existing worktree.`
                 : 'Wait for the orchestrator to inspect the blocker, collect the user decision, and request fresh worker launch guidance for the existing worktree. No traceTaskId is available.',
@@ -7729,7 +6025,7 @@ NEXT: Ask your first clarifying question about this feature.`;
           let reportReference: string;
           if (!attemptIsCurrent) {
             const featureDir = resolveFeatureDirectoryName(directory, feature);
-            reportReference = `.hive/features/${featureDir}/tasks/${task}/assignments/attempt-${liveAttempt.assignment?.taskAttempt ?? 'unknown'}-handoff.md`;
+            reportReference = `.hive/features/${featureDir}/tasks/${task}/assignments/attempt-${liveAttempt.taskAttempt ?? 'unknown'}-handoff.md`;
             reportPath = path.join(directory, reportReference);
             fs.mkdirSync(path.dirname(reportPath), { recursive: true });
             fs.writeFileSync(reportPath, reportBody);
@@ -7749,6 +6045,10 @@ NEXT: Ask your first clarifying question about this feature.`;
               aggregateBranchDiff,
             });
           }
+          executionAttemptService.recordHandoff(liveAttempt.id, {
+            reportLocator: reportReference,
+            reportContentHash: createHash('sha256').update(reportBody).digest('hex'),
+          });
           const finalStatus = attemptIsCurrent
             ? (status === 'completed' ? 'done' : status)
             : taskInfo.status;
@@ -7815,8 +6115,8 @@ NEXT: Ask your first clarifying question about this feature.`;
               status === 'completed'
                 ? 'Use hive_merge to integrate changes. Worktree is preserved for review.'
                 : traceTaskId
-                  ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before retrying, then use hive_worktree_start({ feature, task }) to launch a fresh self-contained worker. Worktree is preserved. Recovery context goes to the NEW task without task_id.`
-                  : 'No traceTaskId is available. Review the task report and worktree, then use hive_worktree_start({ feature, task }) to launch a fresh self-contained worker. Do not invent or pass task_id to task().',
+                  ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before retrying, then use hive_execution_prepare for a fresh native Forager call. Worktree is preserved. Recovery context goes to the NEW task without task_id.`
+                  : 'No traceTaskId is available. Review the task report and worktree, then use hive_execution_prepare for a fresh native Forager call. Do not invent or pass task_id to task().',
           });
         },
       }),
@@ -7866,10 +6166,8 @@ NEXT: Ask your first clarifying question about this feature.`;
 
           try {
             if (!isCurrentDiscard && requested) {
-              const childId = requested.nativeChildSessionId;
-              const childState = childId ? await nativeExecutionState(childId) : undefined;
-              const acknowledged = acknowledgeOrphanedAttempt === true;
-              if (!acknowledged && childState !== 'terminal') {
+              const childId = requested.native?.childSessionId;
+              if (requested.phase === 'attached' || requested.phase === 'stopped') {
                 return respond({
                   ok: false,
                   terminal: true,
@@ -7880,18 +6178,14 @@ NEXT: Ask your first clarifying question about this feature.`;
                   task,
                   attemptId: requested.id,
                   error: childId
-                    ? `Superseded execution attempt ${requested.id} still has active or uncertain native execution.`
-                    : `Superseded execution attempt ${requested.id} has no native child id; pass acknowledgeOrphanedAttempt: true to discard it.`,
-                  nextAction: 'Inspect hive_status.unfinishedAttempts. Pass acknowledgeOrphanedAttempt: true only after accepting that this superseded slot will be removed.',
+                    ? `Superseded execution attempt ${requested.id} remains attached or awaits finalization.`
+                    : `Superseded execution attempt ${requested.id} has no authenticated stop/finalization evidence.`,
+                  nextAction: 'Retain the quarantined worktree until authenticated stop evidence and primary finalization are recorded.',
                 });
               }
-              if (requested.dispatchState !== 'settled') {
-                executionAttemptService.settle(
-                  requested.id,
-                  childState === 'terminal' ? 'completed' : 'cancelled',
-                );
-              }
-              await discardTaskWorktreeSlot(feature, task, requested.attemptSlot, {
+              if (requested.phase === 'armed') executionAttemptService.closeArmNotStarted(requested.id);
+              const requestedSlot = requested.placement.kind === 'worktree' ? requested.placement.attemptSlot : undefined;
+              await discardTaskWorktreeSlot(feature, task, requestedSlot, {
                 resetTaskPending: false,
               });
               return respond({
@@ -8021,154 +6315,12 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
 
-      hive_adhoc_worktree_create: tool({
-        description: 'Create a short-lived ad-hoc worktree (no feature/task required). When autoSpawnWorker is true (default), prepares the initial worker launch and returns taskToolCall; dispatch via task({ ...taskToolCall }) to preserve hive_launch_id. Set autoSpawnWorker to false for inspection, routing, or setup-only worktrees. For manifest-backed projects, pass repoIds to create a composite workspace. Returns structured JSON with workspacePath, branch, runId, and nextAction.',
-        args: {
-          runId: tool.schema.string().optional().describe('Explicit run identifier. Omit or leave blank to generate a unique safe id.'),
-          label: tool.schema.string().optional().describe('Optional slug label folded into the generated runId; ignored when runId is provided. Omit or leave blank for no label.'),
-          baseBranch: tool.schema.string().optional().describe('Optional base ref/commit. Omit or leave blank to use current HEAD.'),
-          repoIds: tool.schema.array(tool.schema.string()).optional().describe('Explicit repo IDs for composite ad-hoc workspaces. Omit or pass an empty array for single-root mode.'),
-          autoSpawnWorker: tool.schema.boolean().optional().describe('When false, create the worktree without registering a pending background worker launch (inspection/routing/setup only). Default true when omitted.'),
-          workerInstructions: tool.schema.string().optional().describe('Self-contained ad-hoc worker handoff instructions. Used as the objective in taskToolCall/backgroundTaskCall.prompt when auto-spawning a worker.'),
-        },
-        async execute({ runId, label, baseBranch, repoIds, autoSpawnWorker, workerInstructions }, toolContext) {
-          // Blank optional strings are treated as omitted; only non-string
-          // values are rejected because those would reach path or Git as-is.
-          const malformedOptional = describeNonStringArguments([
-            { name: 'runId', value: runId },
-            { name: 'label', value: label },
-            { name: 'baseBranch', value: baseBranch },
-            { name: 'workerInstructions', value: workerInstructions },
-          ]);
-          const malformedRepoIds = repoIds !== undefined
-            && (!Array.isArray(repoIds) || !repoIds.every((repoId) => typeof repoId === 'string'));
-          if (malformedOptional.length > 0 || malformedRepoIds) {
-            return invalidAdhocArgumentsResponse('hive_adhoc_worktree_create', [
-              ...malformedOptional,
-              ...(malformedRepoIds ? ['repoIds'] : []),
-            ]);
-          }
-          // A valid Git ref can never begin with a dash, and Git parses options
-          // after positional arguments, so a dash-prefixed value would be read
-          // as an option rather than a revision.
-          if (typeof baseBranch === 'string' && baseBranch.trim().startsWith('-')) {
-            return invalidAdhocArgumentsResponse('hive_adhoc_worktree_create', ['baseBranch']);
-          }
-          if (!hasRepositoryManifest() && !isProjectRootGitRepo()) {
-            return respond({
-              success: false,
-              reason: 'repo_manifest_required',
-              error:
-                `Repository manifest is required: project root is not a git repository (${directory}). ` +
-                'Add .hive/repositories.json before creating ad-hoc worktrees.',
-              nextAction: 'Add a project-local .hive/repositories.json manifest, then retry hive_adhoc_worktree_create.',
-            });
-          }
-          try {
-            const normalizedRepoIds = normalizeOptionalStringList(repoIds);
-            const shouldAutoSpawnWorker = autoSpawnWorker !== false;
-            const createTarget = adhocWorktreeService.resolveCreateTarget({
-              runId: blankToUndefined(runId),
-              label: blankToUndefined(label),
-            });
-            const requestedRunId = createTarget.runId;
-            const createAndPrepare = async (): Promise<string> => {
-              const existing = await adhocWorktreeService.get(requestedRunId);
-              const projectRoot = fs.realpathSync(directory);
-              const resourcePaths = existing
-                ? existing.repos
-                  ? Object.values(existing.repos).map(repo => fs.realpathSync(repo.path))
-                  : [fs.realpathSync(existing.workspacePath ?? existing.path)]
-                : [normalizeResourcePath(createTarget.workspacePath)];
-              if (!currentUnsettledAdhocAttempt(requestedRunId)) {
-                await assertNoWritableExecution({
-                  projectRoot,
-                  runId: requestedRunId,
-                  resourcePaths,
-                  label: `ad-hoc run '${requestedRunId}'`,
-                });
-              }
-              if (existing) {
-                return prepareAdhocLaunchBody(existing, workerInstructions, toolContext, shouldAutoSpawnWorker);
-              }
-              const info: AdhocWorktreeInfo = await adhocWorktreeService.create({
-                runId: requestedRunId,
-                label: blankToUndefined(label),
-                baseBranch: blankToUndefined(baseBranch),
-                repoIds: normalizedRepoIds,
-              });
-              return prepareAdhocLaunchBody(info, workerInstructions, toolContext, shouldAutoSpawnWorker);
-            };
-            return await withLaunchPreparationLock(
-              [normalizeResourcePath(createTarget.workspacePath)],
-              createAndPrepare,
-            );
-          } catch (error: unknown) {
-            const err = error as { message?: string };
-            // A trusted-identity denial must not read as a retryable collision or
-            // Git failure. Unclassified create errors keep the original guidance,
-            // which is correct for collisions and missing repositories.
-            const classification = classifyServiceThrow(error);
-            const fenced = writerFenceResponse(error);
-            if (fenced) return fenced;
-            return respond({
-              success: false,
-              reason: 'adhoc_create_failed',
-              error: err?.message ?? String(error),
-              ...(classification ? worktreeOutcomeFields(classification) : {}),
-              nextAction: classification
-                ? worktreeNextAction(classification.action)
-                : 'Resolve the underlying error (collision, missing repo, git failure) and retry hive_adhoc_worktree_create.',
-            });
-          }
-        },
-      }),
-
-      hive_adhoc_worktree_start: tool({
-        description: 'Prepare a fresh Forager-derived worker launch for an existing validated ad-hoc worktree. Returns { taskToolCall, launchId }. Dispatch exactly one returned call payload via task({ ...taskToolCall }) — or task({ ...taskToolCall, subagent_type: specialist }) — to preserve required hive_launch_id.',
-        args: {
-          runId: tool.schema.string().describe('Existing ad-hoc run identifier returned from hive_adhoc_worktree_create.'),
-          workerInstructions: tool.schema.string().describe('Self-contained instructions for this fresh worker attempt.'),
-        },
-        async execute({ runId, workerInstructions }, toolContext) {
-          try {
-            const normalizedRunId = blankToUndefined(runId);
-            if (!normalizedRunId) throw new Error('runId must not be blank');
-            const info = await adhocWorktreeService.get(normalizedRunId);
-            if (!info) {
-              return respond({
-                success: false,
-                reason: 'adhoc_run_not_found',
-                runId: normalizedRunId,
-                error: `Ad-hoc run "${normalizedRunId}" not found.`,
-                nextAction: 'Create it with hive_adhoc_worktree_create before preparing a worker launch.',
-              });
-            }
-            return await prepareAdhocLaunch(info, workerInstructions, toolContext);
-          } catch (error) {
-            const classification = classifyServiceThrow(error);
-            const fenced = writerFenceResponse(error);
-            if (fenced) return fenced;
-            return respond({
-              success: false,
-              reason: 'adhoc_start_failed',
-              runId,
-              error: error instanceof Error ? error.message : String(error),
-              ...(classification ? worktreeOutcomeFields(classification) : {}),
-              nextAction: classification
-                ? worktreeNextAction(classification.action)
-                : 'Inspect the exact prior native execution if fenced, or resolve the ad-hoc run validation error, then retry hive_adhoc_worktree_start.',
-            });
-          }
-        },
-      }),
-
       hive_adhoc_worktree_commit: tool({
         description: 'Commit changes in an ad-hoc worktree. Returns structured JSON with workspacePath, branch, and nextAction.',
         args: {
-          runId: tool.schema.string().describe('Ad-hoc run identifier returned from hive_adhoc_worktree_create.'),
-          workspacePath: tool.schema.string().describe('Workspace path returned from hive_adhoc_worktree_create.'),
-          branch: tool.schema.string().describe('Branch returned from hive_adhoc_worktree_create.'),
+          runId: tool.schema.string().describe('Ad-hoc run identifier returned from hive_execution_prepare.'),
+          workspacePath: tool.schema.string().describe('Worktree workspace path returned in hive_execution_prepare placement.'),
+          branch: tool.schema.string().describe('Worktree branch returned in hive_execution_prepare placement.'),
           message: tool.schema.string().describe('Git commit message with a non-empty one-line subject, a blank line, and a non-empty descriptive body.'),
         },
         async execute({ runId, workspacePath: expectedWorkspacePath, branch: expectedBranch, message }, toolContext) {
@@ -8195,7 +6347,7 @@ NEXT: Ask your first clarifying question about this feature.`;
                 runId,
                 error: `Ad-hoc run "${runId}" not found.`,
                 ...worktreeOutcomeFields(classification),
-                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.`,
+                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or prepare a new ad-hoc worktree with hive_execution_prepare.`,
               });
             }
             const workspacePath = info.workspacePath ?? info.path;
@@ -8207,14 +6359,14 @@ NEXT: Ask your first clarifying question about this feature.`;
                 workspacePath,
                 branch: info.branch,
                 error: 'Provided workspacePath or branch does not match the ad-hoc run.',
-                nextAction: 'Use the workspacePath and branch returned by hive_adhoc_worktree_create, or create a new ad-hoc worktree.',
+                nextAction: 'Use the workspacePath and branch returned by hive_execution_prepare, or prepare a new ad-hoc worktree.',
               });
             }
             const commitTarget = adhocWritableTarget(info);
             const liveAttempt = currentUnsettledAdhocAttempt(runId);
             const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
             if (
-              liveAttempt?.dispatchState !== 'dispatched'
+              liveAttempt?.phase !== 'attached'
               || isAuthorizedAdhocCommitSession(liveAttempt, committingSessionID)
             ) {
               commitTarget.checkSourceClaim = false;
@@ -8295,7 +6447,7 @@ NEXT: Ask your first clarifying question about this feature.`;
                 runId,
                 error: `Ad-hoc run "${runId}" not found.`,
                 ...worktreeOutcomeFields(classification),
-                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.`,
+                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or prepare a new ad-hoc worktree with hive_execution_prepare.`,
               });
             }
             const workspacePath = info.workspacePath ?? info.path;
@@ -8355,7 +6507,7 @@ NEXT: Ask your first clarifying question about this feature.`;
                 runId,
                 error: `Ad-hoc run "${runId}" not found.`,
                 ...worktreeOutcomeFields(classification),
-                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or create a new ad-hoc worktree with hive_adhoc_worktree_create.`,
+                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or prepare a new ad-hoc worktree with hive_execution_prepare.`,
               });
             }
             const workspacePath = info.workspacePath ?? info.path;
@@ -8963,20 +7115,20 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             const blocked = tasks.find(t => t.status === 'blocked');
             if (blocked) {
               return blocked.traceTaskId
-                ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(blocked.traceTaskId)} }) before collecting the operator decision. Then follow the blocked continuation workflow with hive_worktree_create({ task: ${JSON.stringify(blocked.folder)}, continueFrom: "blocked", decision: "<operator answer>" }).`
-                : `Task ${blocked.folder} is blocked, but no traceTaskId is available. Inspect its blocker details, collect the operator decision, then use hive_worktree_create({ task: ${JSON.stringify(blocked.folder)}, continueFrom: "blocked", decision: "<operator answer>" }).`;
+                ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(blocked.traceTaskId)} }) before collecting the operator decision. Then arm blocked continuation with hive_execution_prepare for task ${blocked.folder}.`
+                : `Task ${blocked.folder} is blocked, but no traceTaskId is available. Inspect its blocker details, collect the operator decision, then arm blocked continuation with hive_execution_prepare.`;
             }
             const failed = tasks.find(t => t.status === 'failed' || t.status === 'partial');
             if (failed) {
               return failed.traceTaskId
-                ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(failed.traceTaskId)} }) before retrying, then launch a NEW worker with hive_worktree_start({ task: ${JSON.stringify(failed.folder)} }); do not pass task_id to task().`
-                : `Task ${failed.folder} needs retry, but no traceTaskId is available. Inspect its report and worktree, then launch a NEW worker with hive_worktree_start({ task: ${JSON.stringify(failed.folder)} }); do not invent task_id.`;
+                ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(failed.traceTaskId)} }) before retrying, then arm a NEW worker with hive_execution_prepare; do not pass task_id to task().`
+                : `Task ${failed.folder} needs retry, but no traceTaskId is available. Inspect its report and worktree, then arm a NEW worker with hive_execution_prepare; do not invent task_id.`;
             }
             if (runnableTasks.length > 1) {
               return `${runnableTasks.length} tasks are ready to start in parallel: ${runnableTasks.join(', ')}`;
             }
             if (runnableTasks.length === 1) {
-              return `Start next task with hive_worktree_start: ${runnableTasks[0]}`;
+              return `Start next task with hive_execution_prepare: ${runnableTasks[0]}`;
             }
             const pending = tasks.find(t => t.status === 'pending');
             if (pending) {
@@ -9218,9 +7370,9 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_plan_approve',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
-          'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_commit', 'hive_worktree_discard',
+          'hive_execution_prepare', 'hive_worktree_commit', 'hive_worktree_discard',
           'hive_merge',
-          'hive_adhoc_worktree_create', 'hive_adhoc_worktree_start', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
+          'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
           'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',
@@ -9300,7 +7452,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
-          'hive_worktree_start', 'hive_worktree_create', 'hive_worktree_discard', 'hive_merge',
+          'hive_execution_prepare', 'hive_worktree_discard', 'hive_merge',
           'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',
           'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
@@ -9499,7 +7651,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
         description: 'Hive Builder - Hive-aware ad-hoc orchestrator with lightweight worktree, delegation, verification, merge, and cleanup flow.',
         tools: agentTools([
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
-          'hive_adhoc_worktree_create', 'hive_adhoc_worktree_start', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
+          'hive_execution_prepare', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
           'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',

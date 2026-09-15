@@ -1,903 +1,197 @@
-import { describe, test, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import { STANDING_CONSTRAINTS_HEADING } from '../utils/worker-prompt.js';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { PluginInput } from '@opencode-ai/plugin';
-import { ContextService, FeatureService, SessionService, TaskService, getFeaturePath } from 'hive-core';
-import type { Message, Part } from '@opencode-ai/sdk';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { createHash } from 'node:crypto';
+import { createOpencodeClient } from '@opencode-ai/sdk';
+import { SessionService } from 'hive-core';
+import plugin from '../index.js';
 
-function createStubShell(): PluginInput['$'] {
-  const fn = ((..._args: unknown[]) => {
-    throw new Error('shell not available in this test');
-  }) as unknown as PluginInput['$'];
-  return Object.assign(fn, {
-    braces(pattern: string) { return [pattern]; },
-    escape(input: string) { return input; },
-    env() { return fn; },
-    cwd() { return fn; },
-    nothrow() { return fn; },
-    throws() { return fn; },
+const TEST_ROOT = `/tmp/hive-compaction-test-${process.pid}`;
+const CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
+
+function shell(): PluginInput['$'] {
+  let value: PluginInput['$'];
+  const fn = (() => { throw new Error('shell unavailable'); }) as unknown as PluginInput['$'];
+  value = Object.assign(fn, {
+    braces: (pattern: string) => [pattern],
+    escape: (input: string) => input,
+    env: () => value,
+    cwd: () => value,
+    nothrow: () => value,
+    throws: () => value,
+  });
+  return value;
+}
+
+async function harness(parents: Map<string, string>) {
+  const base = CLIENT as any;
+  const client = {
+    ...base,
+    session: {
+      ...base.session,
+      get: async ({ path: inputPath }: { path: { id: string } }) => ({
+        data: { id: inputPath.id, parentID: parents.get(inputPath.id), time: { created: Date.now(), updated: Date.now() } },
+      }),
+      update: async () => ({ data: {} }),
+    },
+  } as PluginInput['client'];
+  return plugin({
+    directory: TEST_ROOT,
+    worktree: TEST_ROOT,
+    serverUrl: new URL('http://localhost:1'),
+    project: { id: 'test', worktree: TEST_ROOT, time: { created: Date.now() } },
+    client,
+    $: shell(),
   });
 }
 
-function buildCompactionTransformOutput(sessionID: string, cwd: string) {
-  return {
-    messages: [
-      {
-        info: {
-          id: `msg-summary-${sessionID}`,
-          sessionID,
-          role: 'assistant',
-          time: { created: Date.now() },
-          system: [],
-          modelID: 'm',
-          providerID: 'p',
-          mode: 'compaction',
-          path: { cwd, root: cwd },
-          cost: 0,
-          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-          summary: true,
-        } as Message,
-        parts: [{ id: `prt-summary-${sessionID}`, sessionID, messageID: `msg-summary-${sessionID}`, type: 'text', text: 'Summary text' } as Part],
-      },
-      {
-        info: {
-          id: `msg-continue-${sessionID}`,
-          sessionID,
-          role: 'user',
-          time: { created: Date.now() },
-        } as Message,
-        parts: [{ id: `prt-continue-${sessionID}`, sessionID, messageID: `msg-continue-${sessionID}`, type: 'text', text: 'Continue if you have next steps.', synthetic: true } as Part],
-      },
-    ],
-  };
+function context(sessionID: string, agent: string) {
+  return { sessionID, messageID: 'message', agent, abort: new AbortController().signal };
 }
 
-function buildCatalogPlacementOutput(sessionID: string) {
+function messages(sessionID: string) {
   const now = Date.now();
-  return {
-    messages: [
-      {
-        info: { id: 'msg-real', sessionID, role: 'user', time: { created: now } } as Message,
-        parts: [{ id: 'prt-real', sessionID, messageID: 'msg-real', type: 'text', text: 'Do the bounded task and report evidence.' } as Part],
-      },
-      {
-        info: { id: 'msg-assistant', sessionID, role: 'assistant', time: { created: now } } as Message,
-        parts: [{ id: 'prt-assistant', sessionID, messageID: 'msg-assistant', type: 'text', text: 'Working on it.' } as Part],
-      },
-      {
-        info: { id: 'msg-continue', sessionID, role: 'user', time: { created: now } } as Message,
-        parts: [{ id: 'prt-continue', sessionID, messageID: 'msg-continue', type: 'text', text: 'Continue if you have next steps.', synthetic: true } as Part],
-      },
-    ],
-  };
+  return { messages: [
+    {
+      info: { id: 'summary', sessionID, role: 'assistant', time: { created: now }, summary: true },
+      parts: [{ id: 'summary-part', sessionID, messageID: 'summary', type: 'text', text: 'Compacted summary.' }],
+    },
+    {
+      info: { id: 'continue', sessionID, role: 'user', time: { created: now } },
+      parts: [{ id: 'continue-part', sessionID, messageID: 'continue', type: 'text', text: 'Continue if you have next steps.', synthetic: true }],
+    },
+  ] };
 }
 
-function bindImmutableAssignment(
-  root: string,
-  sessionService: SessionService,
-  sessionID: string,
-  content: string,
-  priorAttempts: string[] = [],
-) {
-  const featureName = 'my-feature';
-  const taskFolder = '01-task';
-  const taskDir = path.join(root, '.hive', 'features', featureName, 'tasks', taskFolder);
-  const assignments = [...priorAttempts, content].map((attemptContent, index) => {
-    const attempt = index + 1;
-    const locator = `.hive/features/${featureName}/tasks/${taskFolder}/assignments/attempt-${attempt}.md`;
-    fs.mkdirSync(path.join(taskDir, 'assignments'), { recursive: true });
-    fs.writeFileSync(path.join(root, locator), attemptContent);
-    return {
-      format: 'hive-worker-assignment/v1' as const,
-      projectRoot: root,
-      featureName,
-      taskFolder,
-      attempt,
-      locator,
-      contentHash: createHash('sha256').update(attemptContent).digest('hex'),
-    };
-  });
-  const assignment = assignments.at(-1)!;
-  fs.writeFileSync(path.join(taskDir, 'status.json'), JSON.stringify({
-    status: 'in_progress',
-    origin: 'plan',
-    workerAttempt: assignment.attempt,
-    workerAssignment: assignment,
-    workerAttempts: assignments.map(entry => ({
-      attempt: entry.attempt,
-      idempotencyKey: `attempt-${entry.attempt}`,
-      state: entry === assignment ? 'associated' : 'published',
-      assignment: entry,
-      ...(entry === assignment ? { workerSessionId: sessionID } : {}),
-    })),
-    workerSession: { sessionId: sessionID, attempt: assignment.attempt },
-  }));
-  sessionService.trackGlobal(sessionID, { parentSessionId: 'parent', agent: 'forager-worker', sessionKind: 'task-worker' });
-  sessionService.bindWorkerAssignment(sessionID, 'parent', assignment);
-  return assignment;
+async function seedFeature(hooks: Awaited<ReturnType<typeof plugin>>, parentContext: ReturnType<typeof context>, feature: string): Promise<void> {
+  const plan = `# ${feature}
+
+## Discovery
+
+**Q: Is compaction recovery ready?**
+A: Yes. The worker retains authenticated execution scope and receives a fresh live context catalog without replaying generated assignment prose.
+
+Interview summary: this fixture exercises feature-scoped context authorization and compaction in one attached worker session.
+
+## Tasks
+
+### 1. First Task
+Implement it.
+`;
+  await hooks.tool!.hive_feature_create.execute({ name: feature }, parentContext);
+  await hooks.tool!.hive_plan_write.execute({ feature, content: plan }, parentContext);
+  await hooks.tool!.hive_plan_approve.execute({ feature }, parentContext);
+  await hooks.tool!.hive_tasks_sync.execute({ feature }, parentContext);
+  await hooks.tool!.hive_context_write.execute({
+    feature,
+    name: 'compaction-scope',
+    content: '---\ndescription: Compaction scope\nread_when: Test compaction\n---\n\nScoped content.',
+  }, parentContext);
 }
 
-describe('compaction replay on supported hooks', () => {
-  let testRoot: string;
-  let originalHome: string | undefined;
-  let hooks: any;
+async function attachWorker(
+  hooks: Awaited<ReturnType<typeof plugin>>,
+  parents: Map<string, string>,
+  parent = 'parent',
+  child = 'child',
+): Promise<void> {
+  const live = path.join(TEST_ROOT, 'live');
+  fs.mkdirSync(live, { recursive: true });
+  await hooks.tool!.hive_execution_prepare.execute({
+    scope: { kind: 'task', feature: 'feature-a', task: '01-first-task' },
+    placement: { kind: 'in_place', directory: live },
+  }, context(parent, 'hive-master'));
+  const args = { subagent_type: 'forager-worker', description: 'Implement', prompt: 'Use the scoped context.' };
+  await hooks['tool.execute.before']!({ tool: 'task', sessionID: parent, callID: 'call-worker' }, { args });
+  parents.set(child, parent);
+  await hooks.event?.({ event: { type: 'session.created', properties: { info: { id: child, parentID: parent } } } } as any);
+  await hooks.event?.({ event: { type: 'message.part.updated', properties: { part: {
+    type: 'tool', tool: 'task', sessionID: parent, callID: 'call-worker',
+    state: { input: args, metadata: { sessionId: child } },
+  } } } } as any);
+  await hooks['chat.message']?.({ sessionID: child, agent: 'forager-worker' }, {
+    message: { agent: 'forager-worker' }, parts: [],
+  } as any);
+}
 
-  beforeEach(async () => {
-    originalHome = process.env.HOME;
-    testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-compaction-test-'));
-    process.env.HOME = testRoot;
-
-    fs.mkdirSync(path.join(testRoot, '.hive'), { recursive: true });
-
-    const { execSync } = await import('child_process');
-    execSync('git init', { cwd: testRoot });
-    execSync('git config user.email "test@example.com"', { cwd: testRoot });
-    execSync('git config user.name "Test"', { cwd: testRoot });
-    fs.writeFileSync(path.join(testRoot, 'README.md'), 'test');
-    execSync('git add README.md', { cwd: testRoot });
-    execSync('git commit -m "init"', { cwd: testRoot });
-
-    const { createOpencodeClient: mkClient } = await import('@opencode-ai/sdk');
-    const client = mkClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
-    (client.session as any).update = async () => ({ data: {} });
-    (client.session as any).get = async ({ path: inputPath }: { path: { id: string } }) => ({
-      data: {
-        id: inputPath.id,
-        parentID: inputPath.id.startsWith('sess-tw-') || ['race-worker', 'sess-replay', 'sess-capture', 'legacy-worker'].includes(inputPath.id)
-          ? 'parent'
-          : undefined,
-      },
-    });
-
-    const { default: pluginFactory } = await import('../index.js');
-    const ctx: PluginInput = {
-      directory: testRoot,
-      worktree: testRoot,
-      serverUrl: new URL('http://localhost:1'),
-      project: { id: 'test', worktree: testRoot, time: { created: Date.now() } },
-      client,
-      $: createStubShell(),
-    };
-    hooks = await pluginFactory(ctx);
+describe('compaction with authenticated execution scope', () => {
+  beforeEach(() => {
+    fs.rmSync(TEST_ROOT, { recursive: true, force: true });
+    fs.mkdirSync(TEST_ROOT, { recursive: true });
+    execSync('git init', { cwd: TEST_ROOT, stdio: 'ignore' });
+    execSync('git config user.email test@example.com', { cwd: TEST_ROOT });
+    execSync('git config user.name Test', { cwd: TEST_ROOT });
+    fs.writeFileSync(path.join(TEST_ROOT, 'README.md'), 'test\n');
+    execSync('git add README.md && git commit -m init', { cwd: TEST_ROOT, stdio: 'ignore' });
   });
 
-  afterEach(() => {
-    if (originalHome !== undefined) {
-      process.env.HOME = originalHome;
-    } else {
-      delete process.env.HOME;
-    }
-    try {
-      fs.rmSync(testRoot, { recursive: true, force: true });
-    } catch (_) {}
-  });
+  afterEach(() => fs.rmSync(TEST_ROOT, { recursive: true, force: true }));
 
-  test('does not register experimental.session.compacting', () => {
+  it('does not register the unsupported experimental compaction hook', async () => {
+    const hooks = await harness(new Map());
     expect(hooks['experimental.session.compacting']).toBeUndefined();
   });
 
-  test('session.compacted marks directive replay pending and messages.transform replays stored directive once', async () => {
-    const sessionService = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'sess-replay', agent: 'scout-researcher' }, {
-      message: { agent: 'scout-researcher' }, parts: [],
-    });
-    sessionService.trackGlobal('sess-replay', {
-      parentSessionId: 'parent',
-      agent: 'scout-researcher',
-      sessionKind: 'subagent',
-      directivePrompt: 'Inspect the LSP errors in trading/pipeline.py and return findings only.',
+  it('preserves primary directive replay independently of worker assignment replay', async () => {
+    const hooks = await harness(new Map());
+    await hooks['chat.message']?.({ sessionID: 'primary', agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [{ type: 'text', text: 'Finish the task.' }],
+    } as any);
+    new SessionService(TEST_ROOT).trackGlobal('primary', {
+      directivePrompt: 'Finish the task.',
+      directiveRecoveryState: 'available',
       replayDirectivePending: false,
+    });
+    await hooks.event?.({ event: { type: 'session.compacted', properties: { sessionID: 'primary' } } } as any);
+    const output = messages('primary');
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+    const text = output.messages.flatMap(message => message.parts).map(part => part.text).join('\n');
+    expect(text).toContain('Finish the task.');
+    expect(text).not.toContain('immutable assignment');
+  });
+
+  it('refreshes the live feature catalog after compaction without replaying generated assignments', async () => {
+    const parents = new Map<string, string>();
+    const hooks = await harness(parents);
+    await hooks['chat.message']?.({ sessionID: 'parent', agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
     } as any);
-
-    await hooks.event?.({
-      event: {
-        type: 'session.compacted',
-        properties: { sessionID: 'sess-replay' },
-      } as any,
-    });
-
-    const marked = sessionService.getGlobal('sess-replay');
-    expect(marked?.replayDirectivePending).toBe(true);
-
-    const output = buildCompactionTransformOutput('sess-replay', testRoot);
+    await seedFeature(hooks, context('parent', 'hive-master'), 'feature-a');
+    await attachWorker(hooks, parents);
+    await hooks.event?.({ event: { type: 'session.compacted', properties: { sessionID: 'child' } } } as any);
+    const output = messages('child');
     await hooks['experimental.chat.messages.transform']?.({}, output as any);
-
-    expect(output.messages).toHaveLength(3);
-    expect(output.messages.flatMap(message => message.parts)
-      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]'))).toBe(false);
-    const replay = output.messages.find(message => message.parts.some(
-      part => (part as any).text?.includes('You are still Scout.'),
-    ))!;
-    expect(replay.info.role).toBe('user');
-    expect((replay.parts[0] as any).text).toContain('You are still Scout.');
-
-    const cleared = sessionService.getGlobal('sess-replay');
-    expect(cleared?.replayDirectivePending).toBe(false);
+    const text = output.messages.flatMap(message => message.parts).map(part => part.text).join('\n');
+    expect(text).toContain('[hive-live-context-catalog/v1]');
+    expect(text).toContain('compaction-scope');
+    expect(text).not.toContain('Post-compaction recovery: replaying');
   });
 
-  test('directive replay carries the operator standing constraints register', async () => {
-    const sessionService = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'sess-replay-constraints', agent: 'hive-master' }, {
+  it('retains execution-scoped context authorization across plugin restart and compaction', async () => {
+    const parents = new Map<string, string>();
+    const first = await harness(parents);
+    await first['chat.message']?.({ sessionID: 'parent', agent: 'hive-master' }, {
       message: { agent: 'hive-master' }, parts: [],
-    });
-    sessionService.trackGlobal('sess-replay-constraints', {
-      agent: 'hive-master',
-      sessionKind: 'primary',
-      directivePrompt: 'Finish the parser task and report verification evidence.',
-      replayDirectivePending: false,
     } as any);
-    const obsolete = sessionService.addStandingConstraint('sess-replay-constraints', 'Use obsolete wording.');
-    const withTemporary = sessionService.addStandingConstraint('sess-replay-constraints', 'Remove this temporary constraint.');
-    const current = sessionService.editStandingConstraint(
-      'sess-replay-constraints',
-      obsolete.entries[0]!.id,
-      withTemporary.revision,
-      'Follow stop-slop. Humanise the writing. Write like Ivan.',
-    );
-    sessionService.editStandingConstraint(
-      'sess-replay-constraints',
-      withTemporary.entries[1]!.id,
-      current.revision,
-      null,
-    );
-    expect(sessionService.readStandingConstraints('sess-replay-constraints').constraints)
-      .toBe('Follow stop-slop. Humanise the writing. Write like Ivan.');
-    await hooks.event?.({
-      event: { type: 'session.compacted', properties: { sessionID: 'sess-replay-constraints' } } as any,
-    });
+    await seedFeature(first, context('parent', 'hive-master'), 'feature-a');
+    await attachWorker(first, parents);
 
-    const output = buildCompactionTransformOutput('sess-replay-constraints', testRoot);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-
-    const replayText = output.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.includes('You are still Hive.'))!;
-    expect(replayText).toContain('You are still Hive.');
-    expect(replayText).toContain('Finish the parser task and report verification evidence.');
-    expect(replayText).toContain(STANDING_CONSTRAINTS_HEADING);
-    expect(replayText).toContain('Follow stop-slop. Humanise the writing. Write like Ivan.');
-    expect(replayText).not.toContain('Use obsolete wording.');
-    expect(replayText).not.toContain('Remove this temporary constraint.');
-    expect(replayText.indexOf(STANDING_CONSTRAINTS_HEADING))
-      .toBeGreaterThan(replayText.indexOf('Finish the parser task and report verification evidence.'));
-  });
-
-  test('directive replay omits the constraints block when no register is set', async () => {
-    const sessionService = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'sess-replay-no-constraints', agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    sessionService.trackGlobal('sess-replay-no-constraints', {
-      agent: 'hive-master',
-      sessionKind: 'primary',
-      directivePrompt: 'Finish the parser task and report verification evidence.',
-      replayDirectivePending: true,
+    const restarted = await harness(parents);
+    await restarted.event?.({ event: { type: 'session.updated', properties: { info: { id: 'child', parentID: 'parent' } } } } as any);
+    await restarted['chat.message']?.({ sessionID: 'child', agent: 'forager-worker' }, {
+      message: { agent: 'forager-worker' }, parts: [],
     } as any);
-
-    const output = buildCompactionTransformOutput('sess-replay-no-constraints', testRoot);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-
-    const replayText = output.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.includes('You are still Hive.'))!;
-    expect(replayText).toContain('You are still Hive.');
-    expect(replayText).not.toContain(STANDING_CONSTRAINTS_HEADING);
-  });
-
-  test('session.compacted marks replay pending for task-worker sessions with bounded recovery metadata', async () => {
-    const sessionService = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'sess-tw-replay', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    bindImmutableAssignment(testRoot, sessionService, 'sess-tw-replay', '# Worker assignment');
-    sessionService.trackGlobal('sess-tw-replay', {
-      agent: 'forager-worker',
-      sessionKind: 'task-worker',
-      featureName: 'my-feature',
-      taskFolder: '01-task',
-      workerPromptPath: '.hive/features/my-feature/tasks/01-task/worker-prompt.md',
-      replayDirectivePending: false,
-    } as any);
-
-    await hooks.event?.({
-      event: {
-        type: 'session.compacted',
-        properties: { sessionID: 'sess-tw-replay' },
-      } as any,
-    });
-
-    const marked = sessionService.getGlobal('sess-tw-replay');
-    expect(marked?.replayDirectivePending).toBe(true);
-  });
-
-  test('messages.transform appends worker replay after compaction for task-worker sessions', async () => {
-    const sessionService = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'sess-tw-bounded', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    const assignment = bindImmutableAssignment(testRoot, sessionService, 'sess-tw-bounded', '# Immutable assignment\n\nContinue exact task.');
-    sessionService.trackGlobal('sess-tw-bounded', { replayDirectivePending: true });
-
-    const output = buildCompactionTransformOutput('sess-tw-bounded', testRoot);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-
-    const replayText = output.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.includes('Post-compaction recovery'))!;
-    expect(replayText).toContain('Post-compaction recovery');
-    expect(replayText).toContain('# Immutable assignment');
-    expect(replayText).toContain(`attempt ${assignment.attempt}`);
-    expect(replayText).not.toContain('@.hive/features');
-    expect(replayText).not.toContain(['checkpoint', '.json'].join(''));
-    expect(replayText).not.toContain('status.json');
-    expect(replayText).not.toContain('spec.md');
-
-    const cleared = sessionService.getGlobal('sess-tw-bounded');
-    expect(cleared?.replayDirectivePending).toBe(false);
-  });
-
-  test('replays the exact current immutable attempt and rejects a mismatched artifact hash', async () => {
-    const sessionService = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'sess-tw-attempt-2', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    const assignment = bindImmutableAssignment(
-      testRoot,
-      sessionService,
-      'sess-tw-attempt-2',
-      '# Attempt two assignment\n\nSECOND_ATTEMPT_EXACT_BYTES\n',
-      ['# Attempt one assignment\n\nFIRST_ATTEMPT_ONLY\n'],
-    );
-
-    await hooks.event?.({
-      event: { type: 'session.compacted', properties: { sessionID: 'sess-tw-attempt-2' } } as any,
-    });
-    const output = buildCompactionTransformOutput('sess-tw-attempt-2', testRoot);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-
-    const replayText = output.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.includes('Post-compaction recovery'))!;
-    expect(replayText).toContain(`attempt ${assignment.attempt}`);
-    expect(replayText).toContain('SECOND_ATTEMPT_EXACT_BYTES');
-    expect(replayText).not.toContain('FIRST_ATTEMPT_ONLY');
-
-    fs.writeFileSync(path.join(testRoot, assignment.locator), '# Tampered attempt two assignment\n');
-    await hooks.event?.({
-      event: { type: 'session.compacted', properties: { sessionID: 'sess-tw-attempt-2' } } as any,
-    });
-    const rejected = buildCompactionTransformOutput('sess-tw-attempt-2', testRoot);
-    await hooks['experimental.chat.messages.transform']?.({}, rejected as any);
-
-    const rejectedText = rejected.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.includes('assignment_recovery_error'))!;
-    expect(rejectedText).toContain('assignment_recovery_error');
-    expect(rejectedText).toContain('hash does not match');
-    expect(rejectedText).not.toContain('SECOND_ATTEMPT_EXACT_BYTES');
-  });
-
-  test('legacy mixed prompts fail reanchor without reading or replaying their bodies', async () => {
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'legacy-worker', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    const legacy = path.join(testRoot, 'worker-prompt.md');
-    fs.writeFileSync(legacy, 'MANDATORY OLD TASK\nSTALE SUPPORTING BODY');
-    sessions.trackGlobal('legacy-worker', { agent: 'forager-worker', sessionKind: 'task-worker', parentSessionId: 'parent', workerPromptPath: legacy, replayDirectivePending: true });
-    const read = spyOn(fs, 'readFileSync');
-    try {
-      const output = buildCompactionTransformOutput('legacy-worker', testRoot);
-      await hooks['experimental.chat.messages.transform']({}, output);
-      const text = output.messages.flatMap(message => message.parts).map(part => (part as any).text).join('\n');
-      expect(text).toContain('legacy_assignment_reanchor_required');
-      expect(text).not.toContain('STALE SUPPORTING BODY');
-      expect(read.mock.calls.some(call => call[0] === legacy)).toBe(false);
-    } finally { read.mockRestore(); }
-  });
-
-  test('compaction reconstructs live context for a polluted authenticated primary', async () => {
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'polluted-primary', agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    await hooks.tool.hive_context_write.execute({
-      scope: 'project',
-      name: 'polluted-note',
-      content: '---\ndescription: Polluted primary fixture\nread_when: Always.\nowner: platform\nreview_after: 2027-01-01\n---\n\nfact',
-    }, { sessionID: 'polluted-primary', agent: 'hive-master' });
-    sessions.trackGlobal('polluted-primary', {
-      taskFolder: '01-stale-task',
-      workerPromptPath: '.hive/features/old/tasks/01-stale-task/worker-prompt.md',
-    });
-
-    await hooks.event({
-      event: { type: 'session.compacted', properties: { sessionID: 'polluted-primary' } },
-    });
-    const output = buildCompactionTransformOutput('polluted-primary', testRoot);
-    await hooks['experimental.chat.messages.transform']({}, output);
-
-    const catalogText = output.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.startsWith('[hive-live-context-catalog/v1]'))!;
-    expect(catalogText).toContain('"status":"available"');
-    expect(catalogText).not.toContain('legacy_assignment_reanchor_required');
-    expect(sessions.getGlobal('polluted-primary')).toMatchObject({
-      taskFolder: '01-stale-task',
-      workerPromptPath: '.hive/features/old/tasks/01-stale-task/worker-prompt.md',
-    });
-  });
-
-  test.each([
-    ['null worker assignment', { workerAssignment: null }],
-    ['empty ad-hoc run', { adHocRunId: '' }],
-    ['false assignment source', { assignmentSourceSessionId: false }],
-    ['null duplicate source', { duplicatedFromSessionId: null }],
-    ['empty stored parent', { parentSessionId: '' }],
-  ])('compaction rejects isolated malformed provenance: %s', async (_label, malformed) => {
-    const sessionID = 'malformed-primary';
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    const registry = path.join(testRoot, '.hive/sessions.json');
-    const data = JSON.parse(fs.readFileSync(registry, 'utf8'));
-    Object.assign(data.sessions.find((session: any) => session.sessionId === sessionID), malformed);
-    fs.writeFileSync(registry, JSON.stringify(data));
-
-    await hooks.event({
-      event: { type: 'session.compacted', properties: { sessionID } },
-    });
-    const output = buildCompactionTransformOutput(sessionID, testRoot);
-    await hooks['experimental.chat.messages.transform']({}, output);
-
-    const catalogText = output.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.startsWith('[hive-live-context-catalog/v1]'))!;
-    expect(catalogText).toContain('assignment_recovery_error');
-    expect(catalogText).not.toContain('"status":"available"');
-  });
-
-  test('compaction does not recover a polluted stored primary after restart without runtime agent observation', async () => {
-    const sessionID = 'unobserved-polluted-primary';
-    const sessions = new SessionService(testRoot);
-    sessions.trackGlobal(sessionID, {
-      agent: 'hive-master',
-      baseAgent: 'hive-master',
-      sessionKind: 'primary',
-      taskFolder: '01-stale-task',
-      workerPromptPath: '.hive/features/old/tasks/01-stale-task/worker-prompt.md',
-    });
-
-    await hooks.event({
-      event: { type: 'session.compacted', properties: { sessionID } },
-    });
-    const output = buildCompactionTransformOutput(sessionID, testRoot);
-    await hooks['experimental.chat.messages.transform']({}, output);
-
-    const catalogText = output.messages.flatMap(message => message.parts)
-      .map(part => (part as any).text as string)
-      .find(text => text?.startsWith('[hive-live-context-catalog/v1]'))!;
-    expect(catalogText).toContain('context_authorization_denied');
-    expect(catalogText).toContain('runtime agent identity is unavailable');
-    expect(catalogText).not.toContain('"status":"available"');
-  });
-
-  test('private review recipients and descendants refresh with zero live storage reads', async () => {
-    const sessions = new SessionService(testRoot);
-    sessions.trackGlobal('private-review', { agent: '__hive_dash_review_primary', sessionKind: 'primary' });
-    sessions.trackGlobal('private-descendant', { agent: 'scout-researcher', sessionKind: 'subagent', parentSessionId: 'private-review' });
-    const catalog = spyOn(ContextService.prototype, 'readCatalog');
-    const content = spyOn(ContextService.prototype, 'readContent');
-    try {
-      for (const sessionID of ['private-review', 'private-descendant']) {
-        const output = buildCompactionTransformOutput(sessionID, testRoot);
-        await hooks['experimental.chat.messages.transform']({}, output);
-        expect(output.messages.flatMap(message => message.parts).some(part => (part as any).text?.includes('[hive-live-context-catalog/v1]'))).toBe(false);
-      }
-      expect(catalog).not.toHaveBeenCalled();
-      expect(content).not.toHaveBeenCalled();
-    } finally { catalog.mockRestore(); content.mockRestore(); }
-  });
-
-  test('denied reconstruction does not capture or replay directives or assignments', async () => {
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'denied-worker', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    bindImmutableAssignment(testRoot, sessions, 'denied-worker', '# PRIVATE ASSIGNMENT');
-    sessions.trackGlobal('denied-worker', { replayDirectivePending: true });
-    // Runtime observation can disagree with immutable storage after a rejected transition.
-    await expect(hooks['chat.message']({ sessionID: 'denied-worker', agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    })).rejects.toThrow();
-    const before = sessions.getGlobal('denied-worker');
-    const output = buildCompactionTransformOutput('denied-worker', testRoot);
-    await hooks['experimental.chat.messages.transform']({}, output);
-    expect(sessions.getGlobal('denied-worker')).toEqual(before);
-    const text = output.messages.flatMap(message => message.parts).map(part => (part as any).text).join('\n');
-    expect(text).toContain('context_authorization_denied');
-    expect(text).not.toContain('PRIVATE ASSIGNMENT');
-
-    await hooks['chat.message']({ sessionID: 'denied-primary', agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    sessions.trackGlobal('denied-primary', { parentSessionId: 'contradiction', directivePrompt: 'OLD', replayDirectivePending: true });
-    const primaryBefore = sessions.getGlobal('denied-primary');
-    await hooks.event({ event: { type: 'session.compacted', properties: { sessionID: 'denied-primary' } } });
-    const primaryOutput = buildCompactionTransformOutput('denied-primary', testRoot);
-    (primaryOutput.messages[1].parts[0] as any).synthetic = false;
-    (primaryOutput.messages[1].parts[0] as any).text = 'NEW DIRECTIVE';
-    await hooks['experimental.chat.messages.transform']({}, primaryOutput);
-    expect(sessions.getGlobal('denied-primary')).toEqual(primaryBefore);
-  });
-
-  test('contradictory observed agents leave persisted and runtime identity unchanged', async () => {
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'agent-conflict', agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    const before = sessions.getGlobal('agent-conflict');
-    await expect(hooks['chat.message']({ sessionID: 'agent-conflict', agent: 'forager-worker' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    })).rejects.toThrow(/context_authorization_denied/);
-    expect(sessions.getGlobal('agent-conflict')).toEqual(before);
-    await hooks['tool.execute.before']({ sessionID: 'agent-conflict', tool: 'read' }, { args: {} });
-  });
-
-  test.each([
-    ['hive-master', 'hive-master'],
-    ['hive-master', undefined],
-    [undefined, 'hive-master'],
-  ])('matching or one-sided agent observation authorizes the primary (%s, %s)', async (inputAgent, messageAgent) => {
-    await hooks['chat.message']({ sessionID: 'observed-primary', agent: inputAgent }, {
-      message: { agent: messageAgent }, parts: [],
-    });
-    expect(new SessionService(testRoot).getGlobal('observed-primary')).toMatchObject({
-      agent: 'hive-master', baseAgent: 'hive-master', sessionKind: 'primary',
-    });
-    await hooks['tool.execute.before']({ sessionID: 'observed-primary', tool: 'read' }, { args: {} });
-  });
-
-  test('stored feature traversal is denied before feature lookup', async () => {
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'feature-traversal', agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    sessions.trackGlobal('feature-traversal', { featureName: '../../outside' });
-    const get = spyOn(FeatureService.prototype, 'get');
-    try {
-      const output = buildCompactionTransformOutput('feature-traversal', testRoot);
-      await hooks['experimental.chat.messages.transform']({}, output);
-      expect(get).not.toHaveBeenCalled();
-      expect(JSON.stringify(output)).toContain('assignment_recovery_error');
-    } finally { get.mockRestore(); }
-  });
-
-  test('duplicate chains preserve canonical ownership and conflicting events roll back', async () => {
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'original', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    bindImmutableAssignment(testRoot, sessions, 'original', '# Canonical assignment');
-    sessions.trackGlobal('original', { standingConstraints: 'Keep this constraint' });
-    const duplicate = async (id: string, source: string) => hooks.event({ event: {
-      type: 'session.created', properties: { info: { id, metadata: { agentHive: { originSessionId: source } } } },
-    } });
-    await duplicate('copy', 'original');
-    await duplicate('nested-copy', 'copy');
-    expect(sessions.getGlobal('nested-copy')).toMatchObject({
-      assignmentSourceSessionId: 'original', duplicatedFromSessionId: 'copy', standingConstraints: 'Keep this constraint',
-    });
-    await hooks['chat.message']({ sessionID: 'nested-copy', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    await hooks['tool.execute.before']({ sessionID: 'nested-copy', tool: 'read' }, { args: {} });
-    const before = sessions.getGlobal('nested-copy');
-    await expect(duplicate('nested-copy', 'original')).rejects.toThrow(/immutable/);
-    expect(sessions.getGlobal('nested-copy')).toEqual(before);
-  });
-
-  test('compaction cannot grant an unadmitted helper ordinary or merge authority', async () => {
-    const sessionID = 'sess-replay';
-    await hooks.event({ event: { type: 'session.created', properties: { info: { id: sessionID, parentID: 'parent' } } } });
-    await hooks['chat.message']({ sessionID, agent: 'hive-helper' }, { message: { agent: 'hive-helper' }, parts: [] });
-    await hooks.event({ event: { type: 'session.compacted', properties: { sessionID } } });
-    await hooks['experimental.chat.messages.transform']({}, buildCompactionTransformOutput(sessionID, testRoot));
-    for (const tool of ['read', 'bash', 'hive_status', 'hive_merge']) {
-      await expect(hooks['tool.execute.before']({ sessionID, tool }, { args: {} })).rejects.toThrow(/context_authorization_denied/);
-    }
-    const result = JSON.parse(await hooks.tool.hive_context_read.execute({ scope: 'project' }, { sessionID, agent: 'hive-helper' }));
-    expect(result.reason).toBe('context_authorization_denied');
-    await expect(hooks['tool.execute.before']({ sessionID, tool: 'task' }, { args: { subagent_type: 'scout-researcher' } })).rejects.toThrow();
-  });
-
-  test('runtime authenticated primary fork retains full primary authority', async () => {
-    await hooks['chat.message']({ sessionID: 'primary-source', agent: 'hive-master' }, { message: { agent: 'hive-master' }, parts: [] });
-    new SessionService(testRoot).trackGlobal('primary-source', { taskFolder: 'stale', workerPromptPath: '/stale' });
-    const sessionID = 'primary-fork';
-    await hooks.event({ event: { type: 'session.created', properties: { info: { id: sessionID, metadata: { agentHive: { originSessionId: 'primary-source' } } } } } });
-    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, { message: { agent: 'hive-master' }, parts: [] });
-    for (const tool of ['read', 'bash', 'glob']) {
-      await hooks['tool.execute.before']({ sessionID, tool, callID: `fork-${tool}` }, { args: {} });
-      await hooks['tool.execute.after']({ sessionID, tool, callID: `fork-${tool}`, args: {} }, { title: tool, output: '', metadata: {} });
-    }
-    for (const tool of ['task', 'hive_merge', 'hive_feature_create', 'hive_constraints_add']) {
-      const callID = `fork-${tool}`;
-      await hooks['tool.execute.before']({ sessionID, tool, callID }, { args: { subagent_type: 'scout-researcher' } });
-      await hooks['tool.execute.after']({ sessionID, tool, callID, args: {} }, { title: tool, output: '', metadata: {} });
-    }
-    const result = JSON.parse(await hooks.tool.hive_context_read.execute({ scope: 'project' }, { sessionID, agent: 'hive-master' }));
-    expect(result.reason).not.toBe('context_authorization_denied');
-    const features = new FeatureService(testRoot);
-    features.create('fork-read');
-    const featurePath = getFeaturePath(testRoot, 'fork-read');
-    fs.writeFileSync(path.join(featurePath, 'plan.md'), '# Read-only plan');
-    const sessions = new SessionService(testRoot);
-    sessions.bindFeature('primary-source', 'fork-read');
-    for (const tool of ['hive_status', 'hive_plan_read', 'hive_repositories_status', 'hive_repositories_discover']) {
-      await hooks['tool.execute.before']({ sessionID, tool }, { args: { feature: 'fork-read' } });
-      const value = await hooks.tool[tool].execute({ feature: 'fork-read' }, { sessionID, agent: 'hive-master' });
-      expect(value).not.toMatch(/Error:|context_authorization_denied/);
-    }
-  });
-
-  test('generic duplicate event uses conflict-safe origin copy', async () => {
-    const sessions = new SessionService(testRoot);
-    sessions.trackGlobal('source', { sessionKind: 'primary', featureName: 'source-feature' });
-    sessions.trackGlobal('recipient', { parentSessionId: 'parent' });
-    const registry = path.join(testRoot, '.hive/sessions.json');
-    const before = fs.readFileSync(registry, 'utf8');
-    await expect(hooks.event({ event: { type: 'session.created', properties: { info: { id: 'recipient', metadata: { agentHive: { originSessionId: 'source' } } } } } })).rejects.toThrow(/immutable/);
-    expect(fs.readFileSync(registry, 'utf8')).toBe(before);
-  });
-
-  test.each([null, false, {}, { format: 'hive-worker-assignment/v1' }, 'malformed'])('malformed assignment continuity warns and continues without recipient state (%j)', async (malformed) => {
-    const sessions = new SessionService(testRoot);
-    sessions.trackGlobal('source', { sessionKind: 'primary' });
-    const registry = path.join(testRoot, '.hive/sessions.json');
-    const data = JSON.parse(fs.readFileSync(registry, 'utf8'));
-    data.sessions[0].workerAssignment = malformed;
-    fs.writeFileSync(registry, JSON.stringify(data));
-    const before = fs.readFileSync(registry);
-    const warning = spyOn(console, 'warn').mockImplementation(() => {});
-    const generic = spyOn(SessionService.prototype, 'copySessionOrigin');
-    const worker = spyOn(SessionService.prototype, 'copyWorkerAssignment');
-    try {
-      await hooks.event({ event: { type: 'session.created', properties: { info: { id: 'recipient', metadata: { agentHive: { originSessionId: 'source' } } } } } });
-      expect(warning).toHaveBeenCalledWith(expect.stringContaining('Optional origin continuity unavailable (invalid_worker_assignment)'));
-      expect(worker).toHaveBeenCalledTimes(1);
-      expect(generic).not.toHaveBeenCalled();
-      expect(sessions.getGlobal('recipient')).toBeUndefined();
-      expect(fs.readFileSync(registry)).toEqual(before);
-    } finally {
-      warning.mockRestore(); generic.mockRestore(); worker.mockRestore();
-    }
-  });
-
-  test.each(['generic', 'worker'])('unexpected %s copy errors propagate from session creation', async (kind) => {
-    const sessions = new SessionService(testRoot);
-    if (kind === 'worker') bindImmutableAssignment(testRoot, sessions, 'source', '# Assignment');
-    else sessions.trackGlobal('source', { sessionKind: 'primary' });
-    const error = new Error('unexpected copy failure');
-    const copy = spyOn(SessionService.prototype, kind === 'worker' ? 'copyWorkerAssignment' : 'copySessionOrigin').mockImplementation(() => { throw error; });
-    try {
-      await expect(hooks.event({ event: { type: 'session.created', properties: { info: { id: 'recipient', metadata: { agentHive: { originSessionId: 'source' } } } } } })).rejects.toThrow(error);
-      expect(sessions.getGlobal('recipient')).toBeUndefined();
-    } finally { copy.mockRestore(); }
-  });
-
-  test.each([
-    { agent: 'hive-master', baseAgent: 'hive-master', sessionKind: 'primary' as const },
-    { agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker' as const, parentSessionId: 'old-parent' },
-  ])('duplicate event rejects preexisting recipient identity without changing constraints (%j)', async (identity) => {
-    const sessions = new SessionService(testRoot);
-    bindImmutableAssignment(testRoot, sessions, 'source', '# Assignment');
-    sessions.trackGlobal('recipient', identity);
-    sessions.addStandingConstraint('recipient', 'Retain this register');
-    const before = sessions.getGlobal('recipient');
-    await expect(hooks.event({ event: { type: 'session.created', properties: { info: { id: 'recipient', metadata: { agentHive: { originSessionId: 'source' } } } } } })).rejects.toThrow(/immutable/);
-    expect(sessions.getGlobal('recipient')).toEqual(before);
-  });
-
-  test('no-parent duplicate rejects stored parent provenance before ordinary tool admission', async () => {
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'source', agent: 'forager-worker' }, { message: { agent: 'forager-worker' }, parts: [] });
-    bindImmutableAssignment(testRoot, sessions, 'source', '# Assignment');
-    sessions.copyWorkerAssignment('hybrid', 'source');
-    // Simulate a hybrid record persisted by an older writer.
-    const registry = path.join(testRoot, '.hive', 'sessions.json');
-    const data = JSON.parse(fs.readFileSync(registry, 'utf8'));
-    data.sessions.find((session: any) => session.sessionId === 'hybrid').parentSessionId = 'old-parent';
-    fs.writeFileSync(registry, JSON.stringify(data));
-    await hooks['chat.message']({ sessionID: 'hybrid', agent: 'forager-worker' }, { message: { agent: 'forager-worker' }, parts: [] });
-    await expect(hooks['tool.execute.before']({ sessionID: 'hybrid', tool: 'read' }, { args: {} })).rejects.toThrow(/context_authorization_denied/);
-  });
-
-  test('conflicting repeated duplicate events preserve the entire recipient', async () => {
-    const sessions = new SessionService(testRoot);
-    const assignment = bindImmutableAssignment(testRoot, sessions, 'source-a', '# Assignment');
-    sessions.bindWorkerAssignment('source-b', 'parent', { ...assignment, attempt: 2, locator: assignment.locator.replace('attempt-1.md', 'attempt-2.md') }, {
-      agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker', standingConstraints: 'Other constraints',
-    });
-    const duplicate = (source: string) => hooks.event({ event: {
-      type: 'session.created', properties: { info: { id: 'recipient', metadata: { agentHive: { originSessionId: source } } } },
-    } });
-    await duplicate('source-a');
-    const before = sessions.getGlobal('recipient');
-    await expect(duplicate('source-b')).rejects.toThrow(/immutable/);
-    expect(sessions.getGlobal('recipient')).toEqual(before);
-  });
-
-  test('worker replay consumes the same bytes that passed hash validation', async () => {
-    const sessions = new SessionService(testRoot);
-    await hooks['chat.message']({ sessionID: 'race-worker', agent: 'forager-worker' }, {
-      message: { agent: 'forager-worker' }, parts: [],
-    });
-    const assignment = bindImmutableAssignment(testRoot, sessions, 'race-worker', '# Verified original');
-    sessions.trackGlobal('race-worker', { replayDirectivePending: true });
-    const artifact = path.join(testRoot, assignment.locator);
-    const status = spyOn(TaskService.prototype, 'getRawStatus');
-    const read = fs.readFileSync;
-    let artifactReads = 0;
-    const spy = spyOn(fs, 'readFileSync').mockImplementation(((file: any, ...args: any[]) => {
-      const bytes = (read as any)(file, ...args);
-      if (file === artifact && ++artifactReads === 1) fs.writeFileSync(artifact, '# UNVERIFIED REPLAY');
-      return bytes;
-    }) as any);
-    try {
-      const output = buildCompactionTransformOutput('race-worker', testRoot);
-      await hooks['experimental.chat.messages.transform']({}, output);
-      const text = output.messages.flatMap(message => message.parts).map(part => (part as any).text).join('\n');
-      expect(text).not.toContain('UNVERIFIED REPLAY');
-      expect(text).toContain('Post-compaction recovery: replaying hash-verified immutable assignment');
-      expect(text).toContain('# Verified original');
-      expect(artifactReads).toBe(1);
-      expect(status).toHaveBeenCalledTimes(1);
-    } finally {
-      spy.mockRestore();
-      status.mockRestore();
-    }
-  });
-
-  test.each(['user', 'assistant'])('catalog refresh preserves a real %s marker-prefixed message', async (role) => {
-    const sessions = new SessionService(testRoot);
-    sessions.trackGlobal('marker-user', { agent: 'hive-master', sessionKind: 'primary' });
-    const original = {
-      info: { id: 'real-message', sessionID: 'marker-user', role, time: { created: Date.now() } },
-      parts: [{ id: 'real-part', sessionID: 'marker-user', messageID: 'real-message', type: 'text', text: '[hive-live-context-catalog/v1]\nQuoted by a person.' }],
-    };
-    const output = { messages: [original] };
-    await hooks['experimental.chat.messages.transform']({}, output);
-    expect(output.messages).toContainEqual(original);
-  });
-
-
-  test('messages.transform captures initial non-synthetic user directive for later recovery', async () => {
-    await hooks['chat.message']({ sessionID: 'sess-capture', agent: 'scout-researcher' }, {
-      message: { agent: 'scout-researcher' }, parts: [],
-    });
-    new SessionService(testRoot).trackGlobal('sess-capture', { parentSessionId: 'parent' });
-    const output = {
-      messages: [
-        {
-          info: {
-            id: 'msg-user',
-            sessionID: 'sess-capture',
-            role: 'user',
-            time: { created: Date.now() },
-          } as Message,
-          parts: [
-            {
-              id: 'prt-user',
-              sessionID: 'sess-capture',
-              messageID: 'msg-user',
-              type: 'text',
-              text: 'Investigate why the compacted scout forgot its role and return findings only.',
-            } as Part,
-          ],
-        },
-      ],
-    };
-
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-
-    const sessionService = new SessionService(testRoot);
-    const session = sessionService.getGlobal('sess-capture');
-    expect(session?.directivePrompt).toBe('Investigate why the compacted scout forgot its role and return findings only.');
-  });
-
-  test('empty live catalog is omitted entirely', async () => {
-    const sessionID = 'empty-catalog-session';
-    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    const output = buildCatalogPlacementOutput(sessionID);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-    expect(output.messages.flatMap(message => message.parts)
-      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]'))).toBe(false);
-    expect(output.messages).toHaveLength(3);
-  });
-
-  test('non-empty catalog sits right after the first real user message and never last', async () => {
-    const sessionID = 'placed-catalog-session';
-    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    await hooks.tool.hive_context_write.execute({
-      scope: 'project',
-      name: 'placement-note',
-      content: '---\ndescription: Placement fixture\nread_when: Always.\nowner: platform\nreview_after: 2027-01-01\n---\n\nfact',
-    }, { sessionID, agent: 'hive-master' });
-    const output = buildCatalogPlacementOutput(sessionID);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-    expect(output.messages).toHaveLength(4);
-    const catalogIndex = output.messages.findIndex(message => message.parts
-      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')));
-    expect(catalogIndex).toBe(1);
-    expect(output.messages.at(-1)!.info.id).toBe('msg-continue');
-    const catalog = output.messages[catalogIndex]!;
-    expect(catalog.info.role).toBe('user');
-    expect(catalog.parts.every(part => (part as any).synthetic === true)).toBe(true);
-  });
-
-  test('catalog without a real user message stays before the trailing synthetic cue', async () => {
-    const sessionID = 'cue-catalog-session';
-    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    await hooks.tool.hive_context_write.execute({
-      scope: 'project',
-      name: 'cue-note',
-      content: '---\ndescription: Cue placement fixture\nread_when: Always.\nowner: platform\nreview_after: 2027-01-01\n---\n\nfact',
-    }, { sessionID, agent: 'hive-master' });
-    const output = buildCompactionTransformOutput(sessionID, testRoot);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-    expect(output.messages).toHaveLength(3);
-    expect(output.messages[1]!.parts.some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]'))).toBe(true);
-    expect(output.messages.at(-1)!.info.id).toBe(`msg-continue-${sessionID}`);
-  });
-
-  test('catalog refresh replaces the stale message rather than duplicating', async () => {
-    const sessionID = 'refresh-catalog-session';
-    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    await hooks.tool.hive_context_write.execute({
-      scope: 'project',
-      name: 'refresh-note',
-      content: '---\ndescription: Refresh fixture\nread_when: Always.\nowner: platform\nreview_after: 2027-01-01\n---\n\nfact',
-    }, { sessionID, agent: 'hive-master' });
-    const output = buildCatalogPlacementOutput(sessionID);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-    const catalogMessages = output.messages.filter(message => message.parts
-      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')));
-    expect(catalogMessages).toHaveLength(1);
-    expect(output.messages.findIndex(message => message.parts
-      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')))).toBe(1);
-    expect(output.messages).toHaveLength(4);
-  });
-
-  test('all-unavailable catalog is still injected after the first real message', async () => {
-    const sessionID = 'unavailable-catalog-session';
-    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    });
-    const indexPath = path.join(testRoot, '.hive', 'context', 'index.json');
-    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-    fs.writeFileSync(indexPath, '{broken');
-    const output = buildCatalogPlacementOutput(sessionID);
-    await hooks['experimental.chat.messages.transform']?.({}, output as any);
-    const catalogMessages = output.messages.filter(message => message.parts
-      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')));
-    expect(catalogMessages).toHaveLength(1);
-    expect(output.messages.findIndex(message => message.parts
-      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')))).toBe(1);
-    const text = catalogMessages[0]!.parts.map(part => (part as any).text).join('\n');
-    expect(text).toContain('context_index_invalid');
+    await restarted.event?.({ event: { type: 'session.compacted', properties: { sessionID: 'child' } } } as any);
+    const allowed = JSON.parse(await restarted.tool!.hive_context_read.execute(
+      { name: 'compaction-scope' },
+      context('child', 'forager-worker'),
+    ) as string);
+    expect(allowed.success).toBe(true);
+    const denied = JSON.parse(await restarted.tool!.hive_context_read.execute(
+      { feature: 'other-feature', name: 'compaction-scope' },
+      context('child', 'forager-worker'),
+    ) as string);
+    expect(denied.reason).toBe('context_binding_mismatch');
   });
 });

@@ -1,10 +1,4 @@
-/**
- * Canonical execution ownership for managed writers.
- *
- * Live claims are unsettled ExecutionAttempt rows in `.hive/execution-attempts.json`.
- * NativeTaskLease values are diagnostic history only. Mixed old lease-based plugins
- * after this cutover are unsupported.
- */
+/** Durable execution ownership for managed Forager dispatches. */
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
@@ -18,42 +12,93 @@ import {
 } from '../utils/paths.js';
 import type {
   ExecutionAttempt,
-  ExecutionAttemptAssignmentRef,
   ExecutionAttemptsJson,
   ExecutionObservedOutcome,
+  ExecutionPlacement,
   NativeTaskLease,
 } from '../types.js';
 import {
+  ARMED_ATTEMPT_TTL_MS,
   EXECUTION_ATTEMPTS_SCHEMA_VERSION,
   PLACEHOLDER_NATIVE_CHILD_ID,
-  PREPARED_ATTEMPT_TTL_MS,
 } from '../types.js';
 import { SessionService } from './sessionService.js';
 import { TaskService } from './taskService.js';
 
-export interface PrepareExecutionAttemptInput {
+export interface ArmExecutionAttemptInput {
   kind: ExecutionAttempt['kind'];
   originatingPrimarySession: string;
-  workspaceIdentities: string[];
+  placement: ExecutionPlacement;
   featureName?: string;
   taskFolder?: string;
   runId?: string;
-  assignment?: ExecutionAttemptAssignmentRef;
-  attemptSlot?: string;
-  branch?: string;
-  baseCommit?: string;
-  launchId?: string;
-  nativeCallId?: string;
 }
 
-export interface PrepareExecutionAttemptResult {
+export interface ArmExecutionAttemptResult {
   attempt: ExecutionAttempt;
   existing: boolean;
 }
 
-export interface SettleExecutionAttemptInput {
+export interface AttachExecutionAttemptInput {
+  originatingPrimarySession: string;
+  nativeCallId: string;
+  selectedAgent: string;
+  background: boolean;
+}
+
+export interface BindNativeChildInput {
+  originatingPrimarySession: string;
+  nativeCallId: string;
+  nativeChildSessionId: string;
+}
+
+export interface ObserveBlockingStopInput {
+  originatingPrimarySession: string;
+  nativeCallId: string;
+  outputDefined: boolean;
+}
+
+export interface ObserveBackgroundStopInput {
+  originatingPrimarySession: string;
+  nativeCallId: string;
+  nativeTaskId: string;
+  state: 'completed' | 'error' | 'cancelled';
+}
+
+export interface FinalizeExecutionAttemptInput {
   reportLocator?: string;
   reportContentHash?: string;
+}
+
+interface LegacyExecutionAttempt {
+  id: string;
+  kind: 'task' | 'adhoc';
+  featureName?: string;
+  taskFolder?: string;
+  runId?: string;
+  originatingPrimarySession: string;
+  assignment?: { taskAttempt: number };
+  workspaceIdentities?: string[];
+  attemptSlot?: string;
+  branch?: string;
+  baseCommit?: string;
+  dispatchState: 'prepared' | 'dispatched' | 'settled';
+  nativeChildSessionId?: string;
+  nativeCallId?: string;
+  observedOutcome?: ExecutionObservedOutcome | 'expired';
+  reportLocator?: string;
+  reportContentHash?: string;
+  supersededBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  settledAt?: string;
+}
+
+interface LegacyExecutionAttemptsJson {
+  schemaVersion: 1;
+  attempts: LegacyExecutionAttempt[];
+  nativeTaskLeaseHistory?: NativeTaskLease[];
+  currentTaskAttempts?: Record<string, string>;
 }
 
 function taskPointerKey(featureName: string, taskFolder: string): string {
@@ -70,9 +115,7 @@ function isPlaceholderNativeChildId(value: string | undefined): boolean {
 }
 
 function isCapabilityLease(lease: NativeTaskLease): boolean {
-  return lease.capabilityReason !== undefined
-    || lease.agent === 'hive-helper'
-    || lease.agent === 'general';
+  return lease.capabilityReason !== undefined || lease.agent === 'hive-helper' || lease.agent === 'general';
 }
 
 function identitiesIntersect(left: string[], right: string[]): boolean {
@@ -84,7 +127,10 @@ export class ExecutionAttemptService {
   private readonly taskService: TaskService;
   private readonly sessionService: SessionService;
 
-  constructor(private readonly projectRoot: string) {
+  constructor(
+    private readonly projectRoot: string,
+    private readonly runtimeId = `execution-runtime-${randomUUID()}`,
+  ) {
     this.taskService = new TaskService(projectRoot);
     this.sessionService = new SessionService(projectRoot);
     this.migrate();
@@ -96,157 +142,153 @@ export class ExecutionAttemptService {
     if (extracted.length === 0 && !fileExists(filePath)) return;
     this.withStore(store => {
       this.mergeMigratedLeases(store, extracted);
+      this.closeForeignRuntimeArms(store);
     });
     this.sessionService.extractNativeTaskLeases();
   }
 
-  prepare(input: PrepareExecutionAttemptInput): PrepareExecutionAttemptResult {
-    this.assertPrepareShape(input);
-    const workspaceIdentities = this.canonicalizeWorkspaceIdentities(input.workspaceIdentities);
+  arm(input: ArmExecutionAttemptInput): ArmExecutionAttemptResult {
+    this.assertArmShape(input);
+    const placement = this.canonicalizePlacement(input.placement);
     return this.withStore(store => {
-      if (input.kind === 'task') {
-        const existing = this.currentUnsettledTaskAttempt(store, input.featureName!, input.taskFolder!);
-        if (existing) return { attempt: structuredClone(existing), existing: true };
-      } else {
-        const existing = this.unsettledAdhocAttempt(store, input.runId!);
-        if (existing) {
-          if (existing.observation === 'unobserved') {
-            throw new Error(`Ad-hoc run '${input.runId}' is unobserved and cannot be reused`);
-          }
-          return { attempt: structuredClone(existing), existing: true };
-        }
+      const parentArm = store.attempts.find(attempt =>
+        attempt.originatingPrimarySession === input.originatingPrimarySession && attempt.phase === 'armed');
+      if (parentArm) {
+        if (this.sameScope(parentArm, input)) return { attempt: structuredClone(parentArm), existing: true };
+        throw new Error(`Primary session '${input.originatingPrimarySession}' already has an armed execution`);
       }
 
-      this.assertWorkspacesIdleInStore(store, workspaceIdentities);
-      const now = new Date().toISOString();
-      const attempt = this.createAttemptRecord(store, input, workspaceIdentities, now);
-      store.attempts.push(attempt);
-      if (attempt.kind === 'task') {
-        this.setCurrentTaskAttempt(store, attempt.featureName!, attempt.taskFolder!, attempt.id);
+      const existing = this.currentAttemptForScope(store, input);
+      if (existing) return { attempt: structuredClone(existing), existing: true };
+      if (placement.kind === 'worktree') {
+        this.assertWorkspacesIdleInStore(store, placement.workspaceIdentities);
       }
+      const now = new Date().toISOString();
+      const attempt: ExecutionAttempt = {
+        id: randomUUID(),
+        kind: input.kind,
+        originatingPrimarySession: this.requireToken(input.originatingPrimarySession, 'originatingPrimarySession'),
+        placement,
+        phase: 'armed',
+        armRuntimeId: this.runtimeId,
+        expiresAt: new Date(Date.now() + ARMED_ATTEMPT_TTL_MS).toISOString(),
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (input.kind === 'task') {
+        const allocation = this.taskService.allocateWorkerAttempt(input.featureName!, input.taskFolder!);
+        attempt.featureName = input.featureName;
+        attempt.taskFolder = input.taskFolder;
+        attempt.taskAttempt = allocation.attempt;
+        this.setCurrentTaskAttempt(store, input.featureName!, input.taskFolder!, attempt.id);
+      } else {
+        attempt.runId = input.runId;
+      }
+      store.attempts.push(attempt);
       return { attempt: structuredClone(attempt), existing: false };
     });
   }
 
-  supersede(supersededAttemptId: string, input: PrepareExecutionAttemptInput): PrepareExecutionAttemptResult {
-    this.assertPrepareShape(input);
-    if (input.kind !== 'task') {
-      throw new Error('Only task attempts can be superseded');
-    }
-    const workspaceIdentities = this.canonicalizeWorkspaceIdentities(input.workspaceIdentities);
+  attachNext(input: AttachExecutionAttemptInput): ExecutionAttempt {
+    const parent = this.requireToken(input.originatingPrimarySession, 'originatingPrimarySession');
+    const callId = this.requireToken(input.nativeCallId, 'nativeCallId');
+    const selectedAgent = this.requireToken(input.selectedAgent, 'selectedAgent');
     return this.withStore(store => {
-      const oldAttempt = this.requireAttempt(store, supersededAttemptId);
-      if (oldAttempt.kind !== 'task' || oldAttempt.featureName !== input.featureName
-        || oldAttempt.taskFolder !== input.taskFolder) {
-        throw new Error(`Attempt ${supersededAttemptId} is not the current task identity for ${input.featureName}/${input.taskFolder}`);
+      const arms = store.attempts.filter(attempt => attempt.originatingPrimarySession === parent && attempt.phase === 'armed');
+      if (arms.length !== 1) throw new Error(`Primary session '${parent}' has no armed execution`);
+      const attempt = arms[0]!;
+      if (store.attempts.some(candidate => candidate.native?.parentSessionId === parent && candidate.native.callId === callId)) {
+        throw new Error(`Native call '${callId}' is already attached`);
       }
-      if (oldAttempt.dispatchState === 'settled') {
-        throw new Error(`Attempt ${supersededAttemptId} is already settled`);
-      }
-      if (!this.isCurrentTaskAttemptInStore(store, input.featureName!, input.taskFolder!, oldAttempt.id)) {
-        throw new Error(`Attempt ${supersededAttemptId} is not the current task attempt`);
-      }
-      this.assertWorkspacesIdleInStore(store, workspaceIdentities);
+      this.assertCurrentTaskGeneration(store, attempt);
       const now = new Date().toISOString();
-      const replacement = this.createAttemptRecord(store, input, workspaceIdentities, now);
-      oldAttempt.supersededBy = replacement.id;
-      oldAttempt.updatedAt = now;
-      store.attempts.push(replacement);
-      this.setCurrentTaskAttempt(store, replacement.featureName!, replacement.taskFolder!, replacement.id);
-      return { attempt: structuredClone(replacement), existing: false };
-    });
-  }
-
-  consumeLaunch(launchId: string, nativeCallId?: string): ExecutionAttempt {
-    const normalized = this.requireToken(launchId, 'launchId');
-    const callId = nativeCallId === undefined ? undefined : this.requireToken(nativeCallId, 'nativeCallId');
-    return this.withStore(store => {
-      const matches = store.attempts.filter(attempt => attempt.launchId === normalized);
-      if (matches.length !== 1) throw new Error(`Launch id '${normalized}' is not a unique prepared attempt`);
-      const attempt = matches[0]!;
-      if (attempt.dispatchState !== 'prepared') {
-        throw new Error(`Launch id '${normalized}' already consumed`);
-      }
-      if (callId && attempt.nativeCallId && attempt.nativeCallId !== callId) {
-        throw new Error(`Contradictory native call id for attempt ${attempt.id}`);
-      }
-      attempt.dispatchState = 'dispatched';
-      if (callId) attempt.nativeCallId = callId;
-      attempt.updatedAt = new Date().toISOString();
+      attempt.phase = 'attached';
+      attempt.native = {
+        parentSessionId: parent,
+        callId,
+        selectedAgent,
+        background: input.background,
+        attachedAt: now,
+      };
+      delete attempt.armRuntimeId;
+      delete attempt.expiresAt;
+      attempt.updatedAt = now;
       return structuredClone(attempt);
     });
   }
 
-  bindNativeChild(attemptId: string, nativeChildSessionId: string): ExecutionAttempt {
-    if (isPlaceholderNativeChildId(nativeChildSessionId)
-      || nativeChildSessionId !== nativeChildSessionId.trim()) {
+  bindNativeChild(input: BindNativeChildInput): ExecutionAttempt {
+    if (isPlaceholderNativeChildId(input.nativeChildSessionId)
+      || input.nativeChildSessionId !== input.nativeChildSessionId.trim()) {
       throw new Error('Placeholder native child id is not bindable');
     }
-    const childId = this.requireToken(nativeChildSessionId, 'nativeChildSessionId');
+    const childId = this.requireToken(input.nativeChildSessionId, 'nativeChildSessionId');
     return this.withStore(store => {
-      const attempt = this.requireAttempt(store, attemptId);
-      if (attempt.dispatchState === 'settled') {
-        throw new Error(`Execution attempt ${attemptId} is already settled`);
-      }
-      const owner = store.attempts.find(candidate => candidate.nativeChildSessionId === childId);
-      if (owner && owner.id !== attempt.id) {
+      const attempt = this.requireAttachedCall(store, input.originatingPrimarySession, input.nativeCallId);
+      const owner = store.attempts.find(candidate => candidate.native?.childSessionId === childId);
+      if (owner && owner.id !== attempt.id) throw new Error('Contradictory native child session');
+      if (attempt.native!.childSessionId && attempt.native!.childSessionId !== childId) {
         throw new Error('Contradictory native child session');
       }
-      if (attempt.nativeChildSessionId && attempt.nativeChildSessionId !== childId) {
-        throw new Error('Contradictory native child session');
-      }
-      attempt.nativeChildSessionId = childId;
+      attempt.native!.childSessionId = childId;
       attempt.updatedAt = new Date().toISOString();
       return structuredClone(attempt);
     });
   }
 
-  markUnobserved(attemptId: string): ExecutionAttempt {
+  observeBlockingStop(input: ObserveBlockingStopInput): ExecutionAttempt | undefined {
+    if (!input.outputDefined) return undefined;
+    return this.withStore(store => {
+      const attempt = this.requireAttachedCall(store, input.originatingPrimarySession, input.nativeCallId);
+      if (attempt.native!.background) throw new Error('Background execution requires structured background terminal evidence');
+      return this.stopAttempt(attempt, 'blocking_after', 'completed');
+    });
+  }
+
+  observeBackgroundStop(input: ObserveBackgroundStopInput): ExecutionAttempt {
+    return this.withStore(store => {
+      const attempt = this.requireAttachedCall(store, input.originatingPrimarySession, input.nativeCallId);
+      if (!attempt.native!.background || attempt.native!.childSessionId !== input.nativeTaskId) {
+        throw new Error('Background terminal evidence does not match the exact attached execution');
+      }
+      return this.stopAttempt(attempt, 'background_terminal', input.state, input.nativeTaskId);
+    });
+  }
+
+  recordCancellationAcknowledgement(_attemptId: string): false {
+    return false;
+  }
+
+  closeArmNotStarted(attemptId: string): ExecutionAttempt {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
-      if (attempt.dispatchState !== 'dispatched') {
-        throw new Error(`Only dispatched attempts can be marked unobserved (${attemptId})`);
-      }
-      attempt.observation = 'unobserved';
-      attempt.updatedAt = new Date().toISOString();
+      if (attempt.phase !== 'armed') throw new Error(`Execution attempt ${attemptId} is not armed`);
+      this.finalizeRecord(attempt, 'not_started');
       return structuredClone(attempt);
     });
   }
 
-  markObserved(attemptId: string): ExecutionAttempt {
-    return this.withStore(store => {
-      const attempt = this.requireAttempt(store, attemptId);
-      if (attempt.dispatchState !== 'dispatched') {
-        throw new Error(`Only dispatched attempts can be marked observed (${attemptId})`);
-      }
-      attempt.observation = 'observed';
-      attempt.updatedAt = new Date().toISOString();
-      return structuredClone(attempt);
-    });
-  }
-
-  settle(
+  finalize(
     attemptId: string,
     outcome: ExecutionObservedOutcome,
-    extras: SettleExecutionAttemptInput = {},
+    extras: FinalizeExecutionAttemptInput = {},
   ): ExecutionAttempt {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
-      this.settleAttemptRecord(attempt, outcome, extras);
+      if (attempt.phase === 'finalized') return structuredClone(attempt);
+      if (attempt.phase !== 'stopped') throw new Error(`Execution attempt ${attempt.id} has not stopped`);
+      this.finalizeRecord(attempt, outcome, extras);
       return structuredClone(attempt);
     });
   }
 
   isCurrentTaskAttempt(featureName: string, taskFolder: string, attemptId: string): boolean {
-    const store = this.readStore();
-    return this.isCurrentTaskAttemptInStore(store, featureName, taskFolder, attemptId);
+    return this.isCurrentTaskAttemptInStore(this.readStore(), featureName, taskFolder, attemptId);
   }
 
   assertWorkspacesIdle(workspaceIdentities: string[]): void {
     const identities = this.canonicalizeWorkspaceIdentities(workspaceIdentities);
-    this.withStore(store => {
-      this.assertWorkspacesIdleInStore(store, identities);
-    });
+    this.withStore(store => this.assertWorkspacesIdleInStore(store, identities));
   }
 
   getAttempt(attemptId: string): ExecutionAttempt | undefined {
@@ -254,33 +296,23 @@ export class ExecutionAttemptService {
     return attempt ? structuredClone(attempt) : undefined;
   }
 
+  findByNativeCall(parentSessionId: string, callId: string): ExecutionAttempt | undefined {
+    const attempt = this.readStore().attempts.find(candidate =>
+      candidate.native?.parentSessionId === parentSessionId && candidate.native.callId === callId);
+    return attempt ? structuredClone(attempt) : undefined;
+  }
+
+  armedForParent(parentSessionId: string): ExecutionAttempt | undefined {
+    const attempt = this.readStore().attempts.find(candidate =>
+      candidate.originatingPrimarySession === parentSessionId && candidate.phase === 'armed');
+    return attempt ? structuredClone(attempt) : undefined;
+  }
+
   listAttempts(): ExecutionAttempt[] {
     return structuredClone(this.readStore().attempts);
   }
 
-  recordAssignment(attemptId: string, assignment: ExecutionAttemptAssignmentRef): ExecutionAttempt {
-    return this.withStore(store => {
-      const attempt = this.requireAttempt(store, attemptId);
-      if (attempt.kind !== 'task') {
-        throw new Error(`Execution attempt ${attemptId} is not a task attempt`);
-      }
-      if (attempt.assignment && attempt.assignment.taskAttempt !== assignment.taskAttempt) {
-        throw new Error('Assignment taskAttempt does not match the allocated worker attempt');
-      }
-      const next: ExecutionAttemptAssignmentRef = {
-        taskAttempt: assignment.taskAttempt,
-      };
-      const locator = assignment.locator ?? attempt.assignment?.locator;
-      const contentHash = assignment.contentHash ?? attempt.assignment?.contentHash;
-      if (locator) next.locator = locator;
-      if (contentHash) next.contentHash = contentHash;
-      attempt.assignment = next;
-      attempt.updatedAt = new Date().toISOString();
-      return structuredClone(attempt);
-    });
-  }
-
-  recordHandoff(attemptId: string, extras: SettleExecutionAttemptInput): ExecutionAttempt {
+  recordHandoff(attemptId: string, extras: FinalizeExecutionAttemptInput): ExecutionAttempt {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
       if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
@@ -288,6 +320,38 @@ export class ExecutionAttemptService {
       attempt.updatedAt = new Date().toISOString();
       return structuredClone(attempt);
     });
+  }
+
+  private stopAttempt(
+    attempt: ExecutionAttempt,
+    kind: 'blocking_after' | 'background_terminal' | 'tool_error',
+    state: 'completed' | 'error' | 'cancelled',
+    nativeTaskId?: string,
+  ): ExecutionAttempt {
+    if (attempt.phase === 'stopped' || attempt.phase === 'finalized') return structuredClone(attempt);
+    if (attempt.phase !== 'attached') throw new Error(`Execution attempt ${attempt.id} is not attached`);
+    const now = new Date().toISOString();
+    attempt.phase = 'stopped';
+    attempt.stopEvidence = { kind, state, observedAt: now, ...(nativeTaskId ? { nativeTaskId } : {}) };
+    attempt.stoppedAt = now;
+    attempt.updatedAt = now;
+    return structuredClone(attempt);
+  }
+
+  private finalizeRecord(
+    attempt: ExecutionAttempt,
+    outcome: ExecutionObservedOutcome,
+    extras: FinalizeExecutionAttemptInput = {},
+  ): void {
+    const now = new Date().toISOString();
+    attempt.phase = 'finalized';
+    attempt.observedOutcome = outcome;
+    attempt.finalizedAt = now;
+    attempt.updatedAt = now;
+    delete attempt.armRuntimeId;
+    delete attempt.expiresAt;
+    if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
+    if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
   }
 
   private hasPersistableState(store: ExecutionAttemptsJson): boolean {
@@ -303,11 +367,9 @@ export class ExecutionAttemptService {
     const release = acquireLockSync(filePath);
     try {
       const store = this.readStoreUnlocked();
-      this.expirePreparedInStore(store);
+      this.expireArmsInStore(store);
       const result = mutator(store);
-      if (existed || this.hasPersistableState(store)) {
-        writeJsonAtomic(filePath, store);
-      }
+      if (existed || this.hasPersistableState(store)) writeJsonAtomic(filePath, store);
       return result;
     } finally {
       release();
@@ -316,14 +378,11 @@ export class ExecutionAttemptService {
 
   private readStore(): ExecutionAttemptsJson {
     const filePath = getExecutionAttemptsPath(this.projectRoot);
-    if (!fileExists(filePath)) {
-      return { schemaVersion: EXECUTION_ATTEMPTS_SCHEMA_VERSION, attempts: [] };
-    }
+    if (!fileExists(filePath)) return { schemaVersion: EXECUTION_ATTEMPTS_SCHEMA_VERSION, attempts: [] };
     const release = acquireLockSync(filePath);
     try {
       const store = this.readStoreUnlocked();
-      if (!this.expirePreparedInStore(store)) return store;
-      writeJsonAtomic(filePath, store);
+      if (this.expireArmsInStore(store)) writeJsonAtomic(filePath, store);
       return store;
     } finally {
       release();
@@ -331,75 +390,94 @@ export class ExecutionAttemptService {
   }
 
   private readStoreUnlocked(): ExecutionAttemptsJson {
-    const loaded = readJson<ExecutionAttemptsJson>(getExecutionAttemptsPath(this.projectRoot));
+    const loaded = readJson<ExecutionAttemptsJson | LegacyExecutionAttemptsJson>(getExecutionAttemptsPath(this.projectRoot));
     if (!loaded) return { schemaVersion: EXECUTION_ATTEMPTS_SCHEMA_VERSION, attempts: [] };
+    if (loaded.schemaVersion === 1) return this.migrateLegacyStore(loaded);
     if (loaded.schemaVersion !== EXECUTION_ATTEMPTS_SCHEMA_VERSION) {
-      throw new Error(`Unsupported execution-attempts schemaVersion ${String(loaded.schemaVersion)}`);
+      throw new Error(`Unsupported execution-attempts schemaVersion ${String((loaded as { schemaVersion: unknown }).schemaVersion)}`);
     }
     loaded.attempts ??= [];
     return loaded;
   }
 
-  private expirePreparedInStore(store: ExecutionAttemptsJson, nowMs = Date.now()): boolean {
-    let expired = false;
-    for (const attempt of store.attempts) {
-      if (attempt.dispatchState !== 'prepared') continue;
-      if (nowMs - Date.parse(attempt.createdAt) < PREPARED_ATTEMPT_TTL_MS) continue;
-      this.settleAttemptRecord(attempt, 'expired');
-      expired = true;
-    }
-    return expired;
-  }
-
-  private createAttemptRecord(
-    store: ExecutionAttemptsJson,
-    input: PrepareExecutionAttemptInput,
-    workspaceIdentities: string[],
-    now: string,
-  ): ExecutionAttempt {
-    const launchId = input.launchId === undefined
-      ? randomUUID()
-      : this.requireToken(input.launchId, 'launchId');
-    if (store.attempts.some(attempt => attempt.launchId === launchId)) {
-      throw new Error(`Launch id '${launchId}' already consumed`);
-    }
-    const assignment = input.kind === 'task' ? this.allocateTaskAssignment(input) : undefined;
-    const attempt: ExecutionAttempt = {
-      id: randomUUID(),
-      kind: input.kind,
-      originatingPrimarySession: this.requireToken(input.originatingPrimarySession, 'originatingPrimarySession'),
-      workspaceIdentities,
-      launchId,
-      dispatchState: 'prepared',
-      createdAt: now,
-      updatedAt: now,
+  private migrateLegacyStore(legacy: LegacyExecutionAttemptsJson): ExecutionAttemptsJson {
+    const attempts = legacy.attempts.map(old => {
+      const now = new Date().toISOString();
+      const workspaceIdentities = this.canonicalizeWorkspaceIdentities(old.workspaceIdentities ?? []);
+      const placement: ExecutionPlacement = {
+        kind: 'worktree',
+        workspaceIdentities,
+        workspacePath: workspaceIdentities[0]!,
+        ...(old.attemptSlot ? { attemptSlot: old.attemptSlot } : {}),
+        ...(old.branch ? { branch: old.branch } : {}),
+        ...(old.baseCommit ? { baseCommit: old.baseCommit } : {}),
+      };
+      const phase = old.dispatchState === 'prepared'
+        ? 'finalized'
+        : old.dispatchState === 'dispatched' ? 'attached' : 'finalized';
+      const attempt: ExecutionAttempt = {
+        id: old.id,
+        kind: old.kind,
+        originatingPrimarySession: old.originatingPrimarySession,
+        placement,
+        phase,
+        createdAt: old.createdAt,
+        updatedAt: now,
+      };
+      if (old.featureName) attempt.featureName = old.featureName;
+      if (old.taskFolder) attempt.taskFolder = old.taskFolder;
+      if (old.runId) attempt.runId = old.runId;
+      if (old.assignment?.taskAttempt) attempt.taskAttempt = old.assignment.taskAttempt;
+      if (old.dispatchState === 'prepared') {
+        attempt.observedOutcome = 'not_started';
+        attempt.finalizedAt = now;
+      } else if (old.dispatchState === 'dispatched') {
+        attempt.native = {
+          parentSessionId: old.originatingPrimarySession,
+          callId: old.nativeCallId ?? `legacy-unobserved-${old.id}`,
+          selectedAgent: 'forager-worker',
+          background: false,
+          attachedAt: old.updatedAt,
+          ...(!isPlaceholderNativeChildId(old.nativeChildSessionId) && old.nativeChildSessionId
+            ? { childSessionId: old.nativeChildSessionId }
+            : {}),
+        };
+      } else {
+        attempt.observedOutcome = old.observedOutcome === 'expired' ? 'not_started' : old.observedOutcome;
+        attempt.finalizedAt = old.settledAt ?? now;
+      }
+      if (old.reportLocator) attempt.reportLocator = old.reportLocator;
+      if (old.reportContentHash) attempt.reportContentHash = old.reportContentHash;
+      if (old.supersededBy) attempt.supersededBy = old.supersededBy;
+      return attempt;
+    });
+    return {
+      schemaVersion: EXECUTION_ATTEMPTS_SCHEMA_VERSION,
+      attempts,
+      ...(legacy.nativeTaskLeaseHistory ? { nativeTaskLeaseHistory: legacy.nativeTaskLeaseHistory } : {}),
+      ...(legacy.currentTaskAttempts ? { currentTaskAttempts: legacy.currentTaskAttempts } : {}),
     };
-    if (input.kind === 'task') {
-      attempt.featureName = input.featureName;
-      attempt.taskFolder = input.taskFolder;
-      attempt.assignment = assignment;
-    } else {
-      attempt.runId = input.runId;
-    }
-    if (input.attemptSlot) attempt.attemptSlot = this.requireToken(input.attemptSlot, 'attemptSlot');
-    if (input.branch) attempt.branch = input.branch;
-    if (input.baseCommit) attempt.baseCommit = input.baseCommit;
-    if (input.nativeCallId) attempt.nativeCallId = this.requireToken(input.nativeCallId, 'nativeCallId');
-    return attempt;
   }
 
-  private allocateTaskAssignment(input: PrepareExecutionAttemptInput): ExecutionAttemptAssignmentRef {
-    const allocation = this.taskService.allocateWorkerAttempt(input.featureName!, input.taskFolder!);
-    if (input.assignment && input.assignment.taskAttempt !== allocation.attempt) {
-      throw new Error('Assignment taskAttempt does not match the allocated worker attempt');
+  private expireArmsInStore(store: ExecutionAttemptsJson, nowMs = Date.now()): boolean {
+    let changed = false;
+    for (const attempt of store.attempts) {
+      if (attempt.phase !== 'armed' || !attempt.expiresAt || Date.parse(attempt.expiresAt) > nowMs) continue;
+      this.finalizeRecord(attempt, 'not_started');
+      changed = true;
     }
-    const assignment: ExecutionAttemptAssignmentRef = { taskAttempt: allocation.attempt };
-    if (input.assignment?.locator) assignment.locator = input.assignment.locator;
-    if (input.assignment?.contentHash) assignment.contentHash = input.assignment.contentHash;
-    return assignment;
+    return changed;
   }
 
-  private assertPrepareShape(input: PrepareExecutionAttemptInput): void {
+  private closeForeignRuntimeArms(store: ExecutionAttemptsJson): void {
+    for (const attempt of store.attempts) {
+      if (attempt.phase === 'armed' && attempt.armRuntimeId !== this.runtimeId) {
+        this.finalizeRecord(attempt, 'not_started');
+      }
+    }
+  }
+
+  private assertArmShape(input: ArmExecutionAttemptInput): void {
     this.requireToken(input.originatingPrimarySession, 'originatingPrimarySession');
     if (input.kind === 'task') {
       this.requireToken(input.featureName, 'featureName');
@@ -411,17 +489,31 @@ export class ExecutionAttemptService {
     }
   }
 
+  private canonicalizePlacement(placement: ExecutionPlacement): ExecutionPlacement {
+    if (placement.kind === 'in_place') {
+      const directory = this.canonicalizeExistingDirectory(placement.directory);
+      return { kind: 'in_place', directory };
+    }
+    const workspaceIdentities = this.canonicalizeWorkspaceIdentities(placement.workspaceIdentities);
+    const workspacePath = this.canonicalizeExistingDirectory(placement.workspacePath);
+    return {
+      kind: 'worktree',
+      workspaceIdentities,
+      workspacePath,
+      ...(placement.attemptSlot ? { attemptSlot: this.requireToken(placement.attemptSlot, 'attemptSlot') } : {}),
+      ...(placement.branch ? { branch: placement.branch } : {}),
+      ...(placement.baseCommit ? { baseCommit: placement.baseCommit } : {}),
+    };
+  }
+
   private canonicalizeWorkspaceIdentities(identities: string[]): string[] {
     if (!identities.length) throw new Error('workspaceIdentities must not be empty');
-    const canonical = [...new Set(identities.map(identity => this.canonicalizeWorkspaceIdentity(identity)))];
-    if (!canonical.length) throw new Error('workspaceIdentities must not be empty');
-    return canonical;
+    return [...new Set(identities.map(identity => this.canonicalizeWorkspaceIdentity(identity)))];
   }
 
   private canonicalizeWorkspaceIdentity(identity: string): string {
-    if (!identity.trim()) throw new Error('Workspace identity must be a non-empty path');
-    if (!path.isAbsolute(identity)) {
-      throw new Error(`Workspace identity must be an absolute path: ${identity}`);
+    if (!identity.trim() || !path.isAbsolute(identity)) {
+      throw new Error(`Workspace identity must be an absolute non-empty path: ${identity}`);
     }
     try {
       return fs.realpathSync(identity);
@@ -430,23 +522,44 @@ export class ExecutionAttemptService {
     }
   }
 
-  private currentUnsettledTaskAttempt(
-    store: ExecutionAttemptsJson,
-    featureName: string,
-    taskFolder: string,
-  ): ExecutionAttempt | undefined {
-    const id = store.currentTaskAttempts?.[taskPointerKey(featureName, taskFolder)];
-    if (!id) return undefined;
-    const attempt = store.attempts.find(candidate => candidate.id === id);
-    if (!attempt || attempt.dispatchState === 'settled') return undefined;
-    return attempt;
+  private canonicalizeExistingDirectory(directory: string): string {
+    if (!directory.trim() || !path.isAbsolute(directory)) {
+      throw new Error(`Placement directory must be an absolute non-empty path: ${directory}`);
+    }
+    const canonical = fs.realpathSync(directory);
+    if (!fs.statSync(canonical).isDirectory()) throw new Error(`Placement is not a directory: ${directory}`);
+    return canonical;
   }
 
-  private unsettledAdhocAttempt(store: ExecutionAttemptsJson, runId: string): ExecutionAttempt | undefined {
+  private currentAttemptForScope(
+    store: ExecutionAttemptsJson,
+    input: ArmExecutionAttemptInput,
+  ): ExecutionAttempt | undefined {
+    if (input.kind === 'task') {
+      const id = store.currentTaskAttempts?.[taskPointerKey(input.featureName!, input.taskFolder!)];
+      const attempt = id ? store.attempts.find(candidate => candidate.id === id) : undefined;
+      return attempt?.phase === 'finalized' ? undefined : attempt;
+    }
     return store.attempts.find(attempt =>
-      attempt.kind === 'adhoc'
-      && attempt.runId === runId
-      && attempt.dispatchState !== 'settled');
+      attempt.kind === 'adhoc' && attempt.runId === input.runId && attempt.phase !== 'finalized');
+  }
+
+  private sameScope(attempt: ExecutionAttempt, input: ArmExecutionAttemptInput): boolean {
+    return attempt.kind === input.kind
+      && (attempt.kind === 'task'
+        ? attempt.featureName === input.featureName && attempt.taskFolder === input.taskFolder
+        : attempt.runId === input.runId);
+  }
+
+  private assertCurrentTaskGeneration(store: ExecutionAttemptsJson, attempt: ExecutionAttempt): void {
+    if (attempt.kind !== 'task') return;
+    if (!this.isCurrentTaskAttemptInStore(store, attempt.featureName!, attempt.taskFolder!, attempt.id)) {
+      throw new Error(`Armed task attempt ${attempt.id} was superseded`);
+    }
+    const status = this.taskService.getRawStatus(attempt.featureName!, attempt.taskFolder!);
+    if (!status || status.workerAttempt !== attempt.taskAttempt) {
+      throw new Error(`Armed task attempt ${attempt.id} was superseded by a newer task generation`);
+    }
   }
 
   private setCurrentTaskAttempt(
@@ -472,11 +585,27 @@ export class ExecutionAttemptService {
 
   private assertWorkspacesIdleInStore(store: ExecutionAttemptsJson, identities: string[]): void {
     for (const attempt of store.attempts) {
-      if (attempt.dispatchState === 'settled') continue;
-      if (!identitiesIntersect(attempt.workspaceIdentities, identities)) continue;
-      const claimed = identities.find(identity => attempt.workspaceIdentities.includes(identity));
+      if (attempt.phase === 'finalized' || attempt.placement.kind !== 'worktree') continue;
+      if (!identitiesIntersect(attempt.placement.workspaceIdentities, identities)) continue;
+      const claimed = identities.find(identity => attempt.placement.kind === 'worktree'
+        && attempt.placement.workspaceIdentities.includes(identity));
       throw new Error(`Workspace identity is claimed by attempt ${attempt.id}: ${claimed}`);
     }
+  }
+
+  private requireAttachedCall(
+    store: ExecutionAttemptsJson,
+    parentSessionId: string,
+    callId: string,
+  ): ExecutionAttempt {
+    const parent = this.requireToken(parentSessionId, 'originatingPrimarySession');
+    const call = this.requireToken(callId, 'nativeCallId');
+    const attempt = store.attempts.find(candidate =>
+      candidate.native?.parentSessionId === parent && candidate.native.callId === call);
+    if (!attempt || (attempt.phase !== 'attached' && attempt.phase !== 'stopped' && attempt.phase !== 'finalized')) {
+      throw new Error('No exact attached execution matches the authenticated parent and call');
+    }
+    return attempt;
   }
 
   private requireAttempt(store: ExecutionAttemptsJson, attemptId: string): ExecutionAttempt {
@@ -485,45 +614,23 @@ export class ExecutionAttemptService {
     return attempt;
   }
 
-  private settleAttemptRecord(
-    attempt: ExecutionAttempt,
-    outcome: ExecutionObservedOutcome,
-    extras: SettleExecutionAttemptInput = {},
-  ): void {
-    if (attempt.dispatchState === 'settled') {
-      throw new Error(`Execution attempt ${attempt.id} is already settled`);
-    }
-    const now = new Date().toISOString();
-    attempt.dispatchState = 'settled';
-    attempt.observedOutcome = outcome;
-    attempt.settledAt = now;
-    attempt.updatedAt = now;
-    if (outcome === 'completed' || outcome === 'failed' || outcome === 'blocked' || outcome === 'cancelled') {
-      attempt.observation = 'observed';
-    }
-    if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
-    if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
-  }
-
   private mergeMigratedLeases(store: ExecutionAttemptsJson, extracted: NativeTaskLease[]): void {
     if (extracted.length === 0) return;
     const history = store.nativeTaskLeaseHistory ?? [];
     const seen = new Set(history.map(leaseHistoryKey));
     for (const lease of extracted) {
       const key = leaseHistoryKey(lease);
-      if (seen.has(key)) continue;
-      history.push(structuredClone(lease));
-      seen.add(key);
+      if (!seen.has(key)) {
+        history.push(structuredClone(lease));
+        seen.add(key);
+      }
     }
     store.nativeTaskLeaseHistory = history;
 
     for (const lease of extracted) {
       if (!this.shouldCreateLiveClaim(lease)) continue;
-      if (store.attempts.some(attempt =>
-        attempt.originatingPrimarySession === lease.parentSessionId
-        && attempt.nativeCallId === lease.callId)) {
-        continue;
-      }
+      if (store.attempts.some(attempt => attempt.native?.parentSessionId === lease.parentSessionId
+        && attempt.native.callId === lease.callId)) continue;
       const now = new Date().toISOString();
       const identities = this.canonicalizeWorkspaceIdentities(lease.resourcePaths);
       const inferred = this.inferAttemptIdentity(identities);
@@ -531,10 +638,18 @@ export class ExecutionAttemptService {
         id: randomUUID(),
         kind: inferred.kind,
         originatingPrimarySession: lease.parentSessionId,
-        workspaceIdentities: identities,
-        dispatchState: 'dispatched',
-        observation: 'unobserved',
-        nativeCallId: lease.callId,
+        placement: { kind: 'worktree', workspaceIdentities: identities, workspacePath: identities[0]! },
+        phase: 'attached',
+        native: {
+          parentSessionId: lease.parentSessionId,
+          callId: lease.callId,
+          selectedAgent: lease.agent,
+          background: false,
+          attachedAt: now,
+          ...(lease.childSessionId && !isPlaceholderNativeChildId(lease.childSessionId)
+            ? { childSessionId: lease.childSessionId }
+            : {}),
+        },
         createdAt: now,
         updatedAt: now,
       };
@@ -543,10 +658,6 @@ export class ExecutionAttemptService {
         attempt.taskFolder = inferred.taskFolder;
       } else {
         attempt.runId = inferred.runId;
-      }
-      if (lease.foragerLaunchId?.trim()) attempt.launchId = lease.foragerLaunchId.trim();
-      if (lease.childSessionId && !isPlaceholderNativeChildId(lease.childSessionId)) {
-        attempt.nativeChildSessionId = lease.childSessionId;
       }
       store.attempts.push(attempt);
       if (attempt.kind === 'task' && attempt.featureName && attempt.taskFolder
@@ -557,11 +668,8 @@ export class ExecutionAttemptService {
   }
 
   private shouldCreateLiveClaim(lease: NativeTaskLease): boolean {
-    if (lease.terminal || isCapabilityLease(lease) || isPlaceholderNativeChildId(lease.childSessionId)) {
-      return false;
-    }
-    if (!lease.resourcePaths.length) return false;
-    return lease.resourcePaths.every(resource => this.isExactWorktreeResource(resource));
+    if (lease.terminal || isCapabilityLease(lease) || isPlaceholderNativeChildId(lease.childSessionId)) return false;
+    return lease.resourcePaths.length > 0 && lease.resourcePaths.every(resource => this.isExactWorktreeResource(resource));
   }
 
   private isExactWorktreeResource(resourcePath: string): boolean {
@@ -569,14 +677,11 @@ export class ExecutionAttemptService {
     const resolved = this.canonicalizeWorkspaceIdentity(resourcePath);
     const projectRoot = this.canonicalizeExistingOrResolved(this.projectRoot);
     if (resolved === projectRoot) return false;
-    const worktreesRoot = this.canonicalizeExistingOrResolved(
-      path.join(this.projectRoot, '.hive', '.worktrees'),
-    );
+    const worktreesRoot = this.canonicalizeExistingOrResolved(path.join(this.projectRoot, '.hive', '.worktrees'));
     const relative = path.relative(worktreesRoot, resolved);
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return false;
     const parts = relative.split(path.sep).filter(Boolean);
-    if (parts.length === 2) return true;
-    return parts.length === 4 && parts[2] === 'repos';
+    return parts.length === 2 || (parts.length === 4 && parts[2] === 'repos');
   }
 
   private inferAttemptIdentity(identities: string[]): {
@@ -585,18 +690,16 @@ export class ExecutionAttemptService {
     taskFolder?: string;
     runId?: string;
   } {
-    const worktreesRoot = this.canonicalizeExistingOrResolved(
-      path.join(this.projectRoot, '.hive', '.worktrees'),
-    );
-    const relative = path.relative(worktreesRoot, identities[0]!);
-    const parts = relative.split(path.sep).filter(Boolean);
-    if (parts[0] === 'adhoc' && parts[1]) {
-      return { kind: 'adhoc', runId: parts[1] };
-    }
+    const worktreesRoot = this.canonicalizeExistingOrResolved(path.join(this.projectRoot, '.hive', '.worktrees'));
+    const parts = path.relative(worktreesRoot, identities[0]!).split(path.sep).filter(Boolean);
+    if (parts[0] === 'adhoc' && parts[1]) return { kind: 'adhoc', runId: parts[1] };
     const directoryName = parts[1] ?? '';
     const separator = directoryName.lastIndexOf('--');
-    const taskFolder = separator > 0 ? directoryName.slice(0, separator) : directoryName;
-    return { kind: 'task', featureName: parts[0], taskFolder };
+    return {
+      kind: 'task',
+      featureName: parts[0],
+      taskFolder: separator > 0 ? directoryName.slice(0, separator) : directoryName,
+    };
   }
 
   private canonicalizeExistingOrResolved(value: string): string {
@@ -608,9 +711,7 @@ export class ExecutionAttemptService {
   }
 
   private requireToken(value: string | undefined, field: string): string {
-    if (!value || value.trim().length === 0 || value !== value.trim()) {
-      throw new Error(`Invalid ${field}`);
-    }
+    if (!value || value.trim().length === 0 || value !== value.trim()) throw new Error(`Invalid ${field}`);
     return value;
   }
 }

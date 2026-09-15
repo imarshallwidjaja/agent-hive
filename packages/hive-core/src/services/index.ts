@@ -5,9 +5,13 @@ export type { SyncOptions } from './taskService.js';
 export { SubtaskService } from './subtaskService.js';
 export { ExecutionAttemptService } from './executionAttemptService.js';
 export type {
-  PrepareExecutionAttemptInput,
-  PrepareExecutionAttemptResult,
-  SettleExecutionAttemptInput,
+  ArmExecutionAttemptInput,
+  ArmExecutionAttemptResult,
+  AttachExecutionAttemptInput,
+  BindNativeChildInput,
+  ObserveBlockingStopInput,
+  ObserveBackgroundStopInput,
+  FinalizeExecutionAttemptInput,
 } from './executionAttemptService.js';
 export { WorktreeService, createWorktreeService } from './worktreeService.js';
 export type {

@@ -1,5 +1,4 @@
 import type {
-  BackgroundPendingLaunch,
   BackgroundJobRecord,
   BackgroundJobRuntimeState,
   BackgroundJobScope,
@@ -40,12 +39,10 @@ export interface BackgroundJobAdapterOptions {
   getSession?: (sessionId: string) => SessionInfo | undefined;
   isPrimaryAgent?: (agentName: string | undefined, session: SessionInfo | undefined) => boolean;
   resolvePromptScope?: (input: unknown, session: SessionInfo | undefined) => BackgroundJobScope;
-  resolveClaimedLaunchId?: (sessionId: string, callId: string) => string | undefined;
   parseLifecycleEvent?: (input: unknown, output: unknown, context?: TaskLifecycleContext) => ParsedTaskLifecycleEvent | undefined;
   warn?: (message: string) => void;
   onNativeBackgroundTerminal?: (event: {
     taskId: string;
-    launchId?: string;
     callId?: string;
     parentSessionId: string;
     state: 'completed' | 'error' | 'cancelled';
@@ -96,22 +93,6 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         const stagedArgs = { ...output.args };
         if (input.tool === 'task' && stagedArgs.background === undefined) stagedArgs.background = false;
         const key = toolCallKey(input.sessionID, input.callID);
-        const launchId = input.tool === 'task'
-          ? options.resolveClaimedLaunchId?.(input.sessionID, input.callID)
-          : undefined;
-        let claimedPending: BackgroundPendingLaunch | undefined;
-        if (launchId) {
-          claimedPending = options.service.claimPendingLaunch({
-            launchId,
-            parentSessionId: input.sessionID,
-            callId: input.callID,
-            runtimeId: options.runtimeId,
-            background: stagedArgs.background === true,
-          });
-          if (!claimedPending) {
-            throw new Error('launch_binding_error: claimed launch bookkeeping is missing or already consumed');
-          }
-        }
         toolArgsByCall.set(key, stagedArgs);
       }
     },
@@ -127,18 +108,9 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         context = resolveLifecycleContext(input);
         const event = parseLifecycleEvent(input, output, context?.lifecycle);
         if (event) {
-          await handleLifecycleEvent(event, context?.pendingLaunch);
-        } else if (context?.pendingLaunch) {
-          options.service.finishClaimedLaunch(context.pendingLaunch.launchId, context.pendingLaunch.parentSessionId, context.pendingLaunch.callId!, context.lifecycle.args?.background === false ? undefined : 'Native identity unavailable: launch output was missing or could not be parsed. Execution may still be running.');
+          await handleLifecycleEvent(event);
         }
       } catch (error) {
-        if (context?.pendingLaunch) {
-          try {
-            options.service.finishClaimedLaunch(context.pendingLaunch.launchId, context.pendingLaunch.parentSessionId, context.pendingLaunch.callId!, `Native registration failed: ${error instanceof Error ? error.message : String(error)}`);
-          } catch (storageError) {
-            warn(`[hive:background] claimed launch ${context.pendingLaunch.launchId} remains unresolved; failed to persist registration error: ${String(storageError)}`);
-          }
-        }
         throw error;
       } finally {
         clearLifecycleContext(input);
@@ -176,13 +148,11 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         .listScoped({ projectRoot: options.projectRoot })
         .filter(job => isJobVisibleInPrompt(job, scope, sessionID))
         .filter(job => shouldShowJobInPrompt(job, sessionID));
-      const unresolved = options.service.listPendingLaunches({ projectRoot: options.projectRoot, parentSessionId: sessionID })
-        .filter(pending => pending.disposition === 'claimed' && isJobVisibleInPrompt({ scope: pending.scope } as BackgroundJobRecord, scope, sessionID));
-      if (jobs.length === 0 && unresolved.length === 0) {
+      if (jobs.length === 0) {
         return;
       }
 
-      const board = [formatPromptBoard(jobs), ...unresolved.map(pending => `- launch ${pending.launchId}, parent ${pending.parentSessionId}, call ${pending.callId}: registration unresolved. Native identity unavailable; execution may still be running. Scope: ${JSON.stringify(pending.scope)}. Ownership: ${JSON.stringify(pending.ownership)}. Inspect native execution or archive bookkeeping with hive_background_reconcile(identifier: launchId, decision: ignored, summary: reason). Archiving does not stop execution or authorize a replacement writer.`)].join('\n');
+      const board = formatPromptBoard(jobs);
       if (targetMessage.parts.some(part => part.text?.includes('## Background Job Board'))) {
         return;
       }
@@ -214,7 +184,6 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
 
   function resolveLifecycleContext(input: unknown): {
     lifecycle: TaskLifecycleContext;
-    pendingLaunch?: BackgroundPendingLaunch;
   } | undefined {
     if (!input || typeof input !== 'object') {
       return undefined;
@@ -223,18 +192,12 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     const record = input as { tool?: string; sessionID?: string; callID?: string; args?: Record<string, unknown> };
     const key = record.sessionID && record.callID ? toolCallKey(record.sessionID, record.callID) : undefined;
     const args = (key ? toolArgsByCall.get(key) : undefined) ?? record.args;
-    const pendingLaunch = record.tool === 'task' && record.sessionID && record.callID
-      ? options.service.findClaimedLaunch(record.sessionID, record.callID)
-      : undefined;
-    if (pendingLaunch && args?.background !== undefined && pendingLaunch.background !== undefined && args.background !== pendingLaunch.background) throw new Error('launch_binding_error: contradictory dispatch mode');
-
     const session = record.sessionID ? options.getSession?.(record.sessionID) : undefined;
     return {
       lifecycle: {
-        args: pendingLaunch ? { subagent_type: pendingLaunch.agentName, ...args, background: pendingLaunch.background } : args,
+        args,
         agentName: typeof session?.agent === 'string' ? session.agent : undefined,
       },
-      pendingLaunch,
     };
   }
 
@@ -252,14 +215,9 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     toolArgsByCall.delete(key);
   }
 
-  async function handleLifecycleEvent(
-    event: ParsedTaskLifecycleEvent,
-    pendingLaunch?: BackgroundPendingLaunch,
-  ): Promise<void> {
+  async function handleLifecycleEvent(event: ParsedTaskLifecycleEvent): Promise<void> {
     if (event.tool === 'task') {
-      if (pendingLaunch && (pendingLaunch.parentSessionId !== event.parentSessionId || pendingLaunch.callId !== event.callId)) throw new Error('launch_binding_error: lifecycle parent/call contradiction');
       if (event.args.background !== true) {
-        if (pendingLaunch && event.args.background === false) options.service.finishClaimedLaunch(pendingLaunch.launchId, pendingLaunch.parentSessionId, pendingLaunch.callId!);
         return;
       }
 
@@ -269,27 +227,23 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         if (existingCalls.length > 1) throw new Error('launch_binding_error: ambiguous native callback');
         const existingCall = existingCalls[0];
         if (existingCall) {
-          const activePendingLaunch = pendingLaunch && !pendingLaunch.archivedAt ? pendingLaunch : undefined;
-          if (existingCall.taskId !== event.taskId || (activePendingLaunch && existingCall.launchId !== activePendingLaunch.launchId)) throw new Error('launch_binding_error: contradictory native callback');
+          if (existingCall.taskId !== event.taskId) throw new Error('launch_binding_error: contradictory native callback');
           return;
         }
-        const scopeSource = pendingLaunch ? 'pending-launch' : 'native-fallback';
         options.service.registerLaunch({
           taskId: event.taskId,
           sessionId: event.taskId,
-          launchId: pendingLaunch?.launchId,
           callId: event.callId,
-          agentName: event.args.subagent_type ?? pendingLaunch?.agentName ?? 'unknown',
+          agentName: event.args.subagent_type ?? 'unknown',
           description: event.args.description,
           runtimeId: options.runtimeId,
-          scopeSource,
-          scope: pendingLaunch?.scope ?? {
+          scopeSource: 'native-fallback',
+          scope: {
             projectRoot: options.projectRoot,
             parentSessionId: event.parentSessionId,
             primaryAgent: event.agentName,
             feature: parentSession?.featureName,
           },
-          ownership: pendingLaunch?.ownership,
         });
       }
       return;
@@ -310,13 +264,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
           lastStatusError: status.error?.message,
           statusUncertain: status.timedOut,
         });
-        options.onNativeBackgroundTerminal?.({
-          taskId: event.taskId,
-          launchId: statusJob.launchId,
-          callId: statusJob.callId,
-          parentSessionId: event.parentSessionId,
-          state,
-        });
+        // A task_status sample updates the observational board but is not native stop evidence.
       } else {
         options.service.updateRuntimeState(event.taskId, state, {
           resultSummary: status.result,
@@ -356,7 +304,6 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
           });
           options.onNativeBackgroundTerminal?.({
             taskId: parsed.task_id,
-            launchId: job.launchId,
             callId: job.callId,
             parentSessionId: part.sessionID ?? parentSessionId ?? '',
             state,
