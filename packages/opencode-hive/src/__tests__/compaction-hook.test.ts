@@ -55,6 +55,26 @@ function buildCompactionTransformOutput(sessionID: string, cwd: string) {
   };
 }
 
+function buildCatalogPlacementOutput(sessionID: string) {
+  const now = Date.now();
+  return {
+    messages: [
+      {
+        info: { id: 'msg-real', sessionID, role: 'user', time: { created: now } } as Message,
+        parts: [{ id: 'prt-real', sessionID, messageID: 'msg-real', type: 'text', text: 'Do the bounded task and report evidence.' } as Part],
+      },
+      {
+        info: { id: 'msg-assistant', sessionID, role: 'assistant', time: { created: now } } as Message,
+        parts: [{ id: 'prt-assistant', sessionID, messageID: 'msg-assistant', type: 'text', text: 'Working on it.' } as Part],
+      },
+      {
+        info: { id: 'msg-continue', sessionID, role: 'user', time: { created: now } } as Message,
+        parts: [{ id: 'prt-continue', sessionID, messageID: 'msg-continue', type: 'text', text: 'Continue if you have next steps.', synthetic: true } as Part],
+      },
+    ],
+  };
+}
+
 function bindImmutableAssignment(
   root: string,
   sessionService: SessionService,
@@ -185,7 +205,9 @@ describe('compaction replay on supported hooks', () => {
     const output = buildCompactionTransformOutput('sess-replay', testRoot);
     await hooks['experimental.chat.messages.transform']?.({}, output as any);
 
-    expect(output.messages).toHaveLength(4);
+    expect(output.messages).toHaveLength(3);
+    expect(output.messages.flatMap(message => message.parts)
+      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]'))).toBe(false);
     const replay = output.messages.find(message => message.parts.some(
       part => (part as any).text?.includes('You are still Scout.'),
     ))!;
@@ -382,6 +404,11 @@ describe('compaction replay on supported hooks', () => {
     await hooks['chat.message']({ sessionID: 'polluted-primary', agent: 'hive-master' }, {
       message: { agent: 'hive-master' }, parts: [],
     });
+    await hooks.tool.hive_context_write.execute({
+      scope: 'project',
+      name: 'polluted-note',
+      content: '---\ndescription: Polluted primary fixture\nread_when: Always.\nowner: platform\nreview_after: 2027-01-01\n---\n\nfact',
+    }, { sessionID: 'polluted-primary', agent: 'hive-master' });
     sessions.trackGlobal('polluted-primary', {
       taskFolder: '01-stale-task',
       workerPromptPath: '.hive/features/old/tasks/01-stale-task/worker-prompt.md',
@@ -781,5 +808,96 @@ describe('compaction replay on supported hooks', () => {
     const sessionService = new SessionService(testRoot);
     const session = sessionService.getGlobal('sess-capture');
     expect(session?.directivePrompt).toBe('Investigate why the compacted scout forgot its role and return findings only.');
+  });
+
+  test('empty live catalog is omitted entirely', async () => {
+    const sessionID = 'empty-catalog-session';
+    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    });
+    const output = buildCatalogPlacementOutput(sessionID);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+    expect(output.messages.flatMap(message => message.parts)
+      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]'))).toBe(false);
+    expect(output.messages).toHaveLength(3);
+  });
+
+  test('non-empty catalog sits right after the first real user message and never last', async () => {
+    const sessionID = 'placed-catalog-session';
+    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    });
+    await hooks.tool.hive_context_write.execute({
+      scope: 'project',
+      name: 'placement-note',
+      content: '---\ndescription: Placement fixture\nread_when: Always.\nowner: platform\nreview_after: 2027-01-01\n---\n\nfact',
+    }, { sessionID, agent: 'hive-master' });
+    const output = buildCatalogPlacementOutput(sessionID);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+    expect(output.messages).toHaveLength(4);
+    const catalogIndex = output.messages.findIndex(message => message.parts
+      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')));
+    expect(catalogIndex).toBe(1);
+    expect(output.messages.at(-1)!.info.id).toBe('msg-continue');
+    const catalog = output.messages[catalogIndex]!;
+    expect(catalog.info.role).toBe('user');
+    expect(catalog.parts.every(part => (part as any).synthetic === true)).toBe(true);
+  });
+
+  test('catalog without a real user message stays before the trailing synthetic cue', async () => {
+    const sessionID = 'cue-catalog-session';
+    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    });
+    await hooks.tool.hive_context_write.execute({
+      scope: 'project',
+      name: 'cue-note',
+      content: '---\ndescription: Cue placement fixture\nread_when: Always.\nowner: platform\nreview_after: 2027-01-01\n---\n\nfact',
+    }, { sessionID, agent: 'hive-master' });
+    const output = buildCompactionTransformOutput(sessionID, testRoot);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+    expect(output.messages).toHaveLength(3);
+    expect(output.messages[1]!.parts.some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]'))).toBe(true);
+    expect(output.messages.at(-1)!.info.id).toBe(`msg-continue-${sessionID}`);
+  });
+
+  test('catalog refresh replaces the stale message rather than duplicating', async () => {
+    const sessionID = 'refresh-catalog-session';
+    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    });
+    await hooks.tool.hive_context_write.execute({
+      scope: 'project',
+      name: 'refresh-note',
+      content: '---\ndescription: Refresh fixture\nread_when: Always.\nowner: platform\nreview_after: 2027-01-01\n---\n\nfact',
+    }, { sessionID, agent: 'hive-master' });
+    const output = buildCatalogPlacementOutput(sessionID);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+    const catalogMessages = output.messages.filter(message => message.parts
+      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')));
+    expect(catalogMessages).toHaveLength(1);
+    expect(output.messages.findIndex(message => message.parts
+      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')))).toBe(1);
+    expect(output.messages).toHaveLength(4);
+  });
+
+  test('all-unavailable catalog is still injected after the first real message', async () => {
+    const sessionID = 'unavailable-catalog-session';
+    await hooks['chat.message']({ sessionID, agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    });
+    const indexPath = path.join(testRoot, '.hive', 'context', 'index.json');
+    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+    fs.writeFileSync(indexPath, '{broken');
+    const output = buildCatalogPlacementOutput(sessionID);
+    await hooks['experimental.chat.messages.transform']?.({}, output as any);
+    const catalogMessages = output.messages.filter(message => message.parts
+      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')));
+    expect(catalogMessages).toHaveLength(1);
+    expect(output.messages.findIndex(message => message.parts
+      .some(part => (part as any).text?.startsWith('[hive-live-context-catalog/v1]')))).toBe(1);
+    const text = catalogMessages[0]!.parts.map(part => (part as any).text).join('\n');
+    expect(text).toContain('context_index_invalid');
   });
 });

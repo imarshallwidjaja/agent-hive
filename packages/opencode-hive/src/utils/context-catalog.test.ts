@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { assembleLiveContextCatalogs, LIVE_CONTEXT_CATALOG_MARKER } from './context-catalog.js';
+import { assembleLiveContextCatalogs, isEmptyLiveContextCatalogText, LIVE_CONTEXT_CATALOG_MARKER } from './context-catalog.js';
 
 describe('assembleLiveContextCatalogs', () => {
   it('delivers both scopes within the shared byte budget without bodies', () => {
@@ -76,5 +76,81 @@ describe('assembleLiveContextCatalogs', () => {
       scope: { type: 'feature', featureName: 'feature' },
       status: 'available',
     });
+  });
+
+  it('labels the envelope as inventory-only backup wording', () => {
+    const result = assembleLiveContextCatalogs({
+      readCatalog(scope) {
+        return { scope, revision: 1, snapshot: 'snapshot', files: [], complete: true, diagnostics: [] } as any;
+      },
+    }, [{ type: 'project' }]);
+    expect(result.text).toContain('inventory only; do not acknowledge');
+    expect(result.text).toContain('do not treat it as a user request');
+  });
+
+  it('detects an all-available zero-file payload as empty', () => {
+    const empty = assembleLiveContextCatalogs({
+      readCatalog(scope) {
+        return { scope, revision: 1, snapshot: 'snapshot', files: [], complete: true, diagnostics: [] } as any;
+      },
+    }, [{ type: 'project' }, { type: 'feature', featureName: 'feature' }]);
+    expect(isEmptyLiveContextCatalogText(empty.text)).toBe(true);
+  });
+
+  it('treats non-empty and unavailable envelopes as non-empty', () => {
+    const withFile = assembleLiveContextCatalogs({
+      readCatalog(scope) {
+        return {
+          scope,
+          revision: 1,
+          snapshot: 'snapshot',
+          files: [{
+            name: 'note',
+            updatedAt: '2026-09-13T00:00:00.000Z',
+            role: 'durable',
+            includeInExecution: true,
+            includeInNetwork: true,
+            description: 'Metadata only',
+          }],
+          complete: true,
+          diagnostics: [],
+        } as any;
+      },
+    }, [{ type: 'project' }]);
+    expect(isEmptyLiveContextCatalogText(withFile.text)).toBe(false);
+
+    const unavailable = assembleLiveContextCatalogs({
+      readCatalog() {
+        throw Object.assign(new Error('repair index'), { reason: 'context_index_invalid' });
+      },
+    }, [{ type: 'project' }]);
+    expect(isEmptyLiveContextCatalogText(unavailable.text)).toBe(false);
+
+    const mixed = assembleLiveContextCatalogs({
+      readCatalog(scope) {
+        if (scope.type === 'project') {
+          return { scope, revision: 1, snapshot: 'snapshot', files: [], complete: true, diagnostics: [] } as any;
+        }
+        return {
+          scope,
+          revision: 1,
+          snapshot: 'snapshot',
+          files: [{
+            name: 'feature-note',
+            updatedAt: '2026-09-13T00:00:00.000Z',
+            role: 'durable',
+            includeInExecution: true,
+            includeInNetwork: true,
+            description: 'Metadata only',
+          }],
+          complete: true,
+          diagnostics: [],
+        } as any;
+      },
+    }, [{ type: 'project' }, { type: 'feature', featureName: 'feature' }]);
+    expect(isEmptyLiveContextCatalogText(mixed.text)).toBe(false);
+
+    expect(isEmptyLiveContextCatalogText(`${LIVE_CONTEXT_CATALOG_MARKER}\nnot-json`)).toBe(false);
+    expect(isEmptyLiveContextCatalogText('plain text')).toBe(false);
   });
 });

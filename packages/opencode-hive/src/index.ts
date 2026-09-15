@@ -430,7 +430,7 @@ import {
 } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
 import { publishWorkerAssignment } from "./utils/prompt-file";
-import { assembleLiveContextCatalogs, LIVE_CONTEXT_CATALOG_MARKER } from './utils/context-catalog.js';
+import { assembleLiveContextCatalogs, isEmptyLiveContextCatalogText, LIVE_CONTEXT_CATALOG_MARKER } from './utils/context-catalog.js';
 import { formatRelativeTime } from "./utils/format";
 import { classifySession, createVariantHook } from "./hooks/variant-hook.js";
 import { HIVE_SYSTEM_PROMPT, SUBAGENT_CLARIFICATION_PROMPT, shouldExecuteHook } from "./hooks/system-hook.js";
@@ -2270,9 +2270,8 @@ const plugin: Plugin = async (ctx) => {
     const stored = sessionService.getGlobal(sessionID);
     if (!stored?.agent) return;
     if (isPrivateContextRecipient({ sessionID, agent: stored.agent })) return;
-    if (authority.kind === 'denied') {
-      const text = `${LIVE_CONTEXT_CATALOG_MARKER}\n${authority.failure}`;
-      messages.push({
+    const insertLiveContextCatalog = (text: string): void => {
+      const entry: ReplayMessageEntry = {
         info: { id: `msg_context_catalog_${sessionID}`, sessionID, role: 'user', time: { created: Date.now() } },
         parts: [{
           id: `prt_context_catalog_${sessionID}`,
@@ -2282,7 +2281,27 @@ const plugin: Plugin = async (ctx) => {
           text,
           synthetic: true,
         }],
-      });
+      };
+      const firstRealIndex = messages.findIndex(message =>
+        message.info.sessionID === sessionID && message.info.role === 'user'
+        && message.parts.some(part => part.synthetic !== true));
+      if (firstRealIndex >= 0) {
+        messages.splice(firstRealIndex + 1, 0, entry);
+        return;
+      }
+      let insertAt = messages.length;
+      while (insertAt > 0) {
+        const candidate = messages[insertAt - 1]!;
+        if (candidate.info.sessionID !== sessionID) break;
+        if (!(candidate.info.role === 'user' && candidate.parts.length > 0
+          && candidate.parts.every(part => part.synthetic === true))) break;
+        insertAt -= 1;
+      }
+      messages.splice(insertAt, 0, entry);
+    };
+    if (authority.kind === 'denied') {
+      const text = `${LIVE_CONTEXT_CATALOG_MARKER}\n${authority.failure}`;
+      insertLiveContextCatalog(text);
       return;
     }
     const scopes: Array<{ type: 'project' } | { type: 'feature'; featureName: string }> = [{ type: 'project' }];
@@ -2290,17 +2309,8 @@ const plugin: Plugin = async (ctx) => {
       scopes.push({ type: 'feature', featureName: authority.stored.featureName });
     }
     const catalog = assembleLiveContextCatalogs(contextToolScope.contexts, scopes);
-    messages.push({
-      info: { id: `msg_context_catalog_${sessionID}`, sessionID, role: 'user', time: { created: Date.now() } },
-      parts: [{
-        id: `prt_context_catalog_${sessionID}`,
-        sessionID,
-        messageID: `msg_context_catalog_${sessionID}`,
-        type: 'text',
-        text: catalog.text,
-        synthetic: true,
-      }],
-    });
+    if (isEmptyLiveContextCatalogText(catalog.text)) return;
+    insertLiveContextCatalog(catalog.text);
   };
 
   const bindContextFeature = (sessionID: string | undefined, feature: string): void => {
