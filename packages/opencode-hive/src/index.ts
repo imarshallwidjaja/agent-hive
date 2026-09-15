@@ -141,35 +141,6 @@ function linkDeniedMergeCleanupBlock(): MergeCleanupBlock {
   return buildNotRequestedMergeCleanupBlock();
 }
 
-function buildAdhocWorkerPrompt(params: {
-  runId: string;
-  workspacePath: string;
-  branch: string;
-  instructions?: string;
-  standingConstraints?: string;
-}): string {
-  const objective = params.instructions
-    ? params.instructions
-    : 'No worker instructions were supplied. If the request is not visible/self-contained, report blocked without editing.';
-
-  const constraintsBlock = buildStandingConstraintsBlock(params.standingConstraints);
-  return `You are an ad-hoc implementation worker.
-
-Workspace: ${params.workspacePath}
-Run ID: ${params.runId}
-Branch: ${params.branch}
-
-Objective / Worker Instructions:
-${objective}
-
-Rules:
-- Work only inside the workspace above.
-- You own implementation in this worktree.
-- You must not call task-backed Hive commit/merge tools and must not use Hive feature/task-backed lifecycle tools.
-- You must not commit, merge, or cleanup; the caller owns ad-hoc commit, merge, and cleanup.
-- Return changed files, verification commands and observed results, and any blockers or residual risks.${constraintsBlock ? `\n\n${constraintsBlock}` : ''}`;
-}
-
 function validateDiscoverySection(content: string): string | null {
   const discoveryMatch = content.match(/^##\s+Discovery\s*$/im);
   if (!discoveryMatch) {
@@ -407,11 +378,7 @@ import {
   appendManagedPromptBlock,
   buildExecutionScopeBlock,
   buildStandingConstraintsBlock,
-  EXECUTION_SCOPE_END,
-  EXECUTION_SCOPE_START,
-  STANDING_CONSTRAINTS_END,
   STANDING_CONSTRAINTS_HEADING,
-  STANDING_CONSTRAINTS_START,
 } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
 import { assembleLiveContextCatalogs, isEmptyLiveContextCatalogText, LIVE_CONTEXT_CATALOG_MARKER } from './utils/context-catalog.js';
@@ -1545,6 +1512,15 @@ const plugin: Plugin = async (ctx) => {
 
   const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
   const helperAuthBinds = new Map<string, HelperAuthBind>();
+  const managedPromptAugmentations = new Map<string, { callerPrompt: string; augmentedPrompt: string }>();
+  const trustedConstraintAugmentations = new Map<string, string>();
+  const finalizeStoppedBridgeAttempt = (attempt: ExecutionAttempt): void => {
+    if (attempt.phase !== 'stopped') return;
+    const fallbackOutcome = attempt.stopEvidence?.state === 'cancelled'
+      ? 'cancelled'
+      : attempt.stopEvidence?.state === 'error' ? 'failed' : 'completed';
+    executionAttemptService.finalize(attempt.id, attempt.handoffOutcome ?? fallbackOutcome);
+  };
   const settleAttemptFromNativeBackground = (event: {
     taskId: string;
     callId?: string;
@@ -1553,12 +1529,13 @@ const plugin: Plugin = async (ctx) => {
   }): void => {
     if (!event.callId) return;
     try {
-      executionAttemptService.observeBackgroundStop({
+      const stopped = executionAttemptService.observeBackgroundStop({
         originatingPrimarySession: event.parentSessionId,
         nativeCallId: event.callId,
         nativeTaskId: event.taskId,
         state: event.state,
       });
+      finalizeStoppedBridgeAttempt(stopped);
     } catch {
       // Board callbacks are observational; identity mismatch cannot advance execution state.
     }
@@ -2175,7 +2152,7 @@ const plugin: Plugin = async (ctx) => {
     selectedAgent: string,
   ): void => {
     const classification = classifySession(selectedAgent, customAgentConfigsForClassification);
-    const parentConstraints = sessionService.getGlobal(attempt.originatingPrimarySession);
+    const constraintSnapshot = attempt.native?.constraintSnapshot;
     const workspacePath = attempt.placement.kind === 'worktree'
       ? attempt.placement.workspacePath
       : attempt.placement.directory;
@@ -2189,9 +2166,9 @@ const plugin: Plugin = async (ctx) => {
       agent: selectedAgent,
       baseAgent: classification.baseAgent,
       sessionKind: classification.sessionKind,
-      standingConstraints: parentConstraints?.standingConstraints,
-      standingConstraintEntries: parentConstraints?.standingConstraintEntries,
-      standingConstraintsRevision: parentConstraints?.standingConstraintsRevision,
+      standingConstraints: constraintSnapshot?.constraints,
+      standingConstraintEntries: constraintSnapshot?.entries,
+      standingConstraintsRevision: constraintSnapshot?.revision,
     });
     if (attempt.kind === 'task' && attempt.featureName && attempt.taskFolder && attempt.taskAttempt) {
       taskService.associateExecutionSession(attempt.featureName, attempt.taskFolder, attempt.taskAttempt, {
@@ -2265,7 +2242,21 @@ const plugin: Plugin = async (ctx) => {
     bindExecutionChildSession(attempt, childSessionID, observedAgent);
   };
 
-  const appendExecutionPrompt = (attempt: ExecutionAttempt, prompt: string): string => {
+  const captureConstraintSnapshot = (sourceSessionId: string): NonNullable<NonNullable<ExecutionAttempt['native']>['constraintSnapshot']> => {
+    const source = sessionService.getGlobal(sourceSessionId);
+    return {
+      sourceSessionId,
+      ...(source?.standingConstraints !== undefined ? { constraints: source.standingConstraints } : {}),
+      ...(source?.standingConstraintEntries ? { entries: source.standingConstraintEntries.map(entry => ({ ...entry })) } : {}),
+      ...(source?.standingConstraintsRevision !== undefined ? { revision: source.standingConstraintsRevision } : {}),
+    };
+  };
+
+  const appendExecutionPrompt = (
+    attempt: ExecutionAttempt,
+    prompt: string,
+    constraintSnapshot: NonNullable<NonNullable<ExecutionAttempt['native']>['constraintSnapshot']>,
+  ): string => {
     const scopeBlock = buildExecutionScopeBlock({
       kind: attempt.kind,
       featureName: attempt.featureName,
@@ -2275,12 +2266,10 @@ const plugin: Plugin = async (ctx) => {
         ? { kind: 'worktree', workspacePath: attempt.placement.workspacePath }
         : { kind: 'in_place', directory: attempt.placement.directory },
     });
-    const withScope = appendManagedPromptBlock(prompt, scopeBlock, EXECUTION_SCOPE_START, EXECUTION_SCOPE_END);
+    const withScope = appendManagedPromptBlock(prompt, scopeBlock);
     return appendManagedPromptBlock(
       withScope,
-      buildStandingConstraintsBlock(resolveStandingConstraints(attempt.originatingPrimarySession)),
-      STANDING_CONSTRAINTS_START,
-      STANDING_CONSTRAINTS_END,
+      buildStandingConstraintsBlock(constraintSnapshot.constraints),
     );
   };
 
@@ -2296,19 +2285,45 @@ const plugin: Plugin = async (ctx) => {
     const parentAgent = runtimeSessionAgents.get(sessionID);
     if (classifySession(parentAgent ?? '', customAgentConfigsForClassification).sessionKind !== 'primary') return false;
     if (!callID) throw launchBindingFailure('Managed Forager dispatch requires an exact native call ID.');
+    const launchKey = hiveTaskLaunchKey(sessionID, callID);
+    const existing = executionAttemptService.findByNativeCall(sessionID, callID);
+    if (existing) {
+      if (existing.native?.selectedAgent !== selectedAgent || existing.native.background !== (args?.background === true)) {
+        throw launchBindingFailure('Repeated native task hook metadata contradicts the attached execution.');
+      }
+      if (!adapterOutput.args) throw launchBindingFailure('Managed Forager dispatch arguments are unavailable.');
+      const prompt = typeof args?.prompt === 'string' ? args.prompt : '';
+      const prior = managedPromptAugmentations.get(launchKey);
+      if (prior) {
+        if (prompt !== prior.callerPrompt && prompt !== prior.augmentedPrompt) {
+          throw launchBindingFailure('Repeated native task hook changed the caller-authored prompt.');
+        }
+        adapterOutput.args.prompt = prior.augmentedPrompt;
+      } else {
+        const snapshot = existing.native?.constraintSnapshot ?? captureConstraintSnapshot(sessionID);
+        adapterOutput.args.prompt = appendExecutionPrompt(existing, prompt, snapshot);
+      }
+      return true;
+    }
     const armed = executionAttemptService.armedForParent(sessionID);
     if (!armed) {
       throw launchBindingFailure('Managed Forager dispatch has no armed execution. Call hive_execution_prepare, then issue one unchanged native task call.');
     }
     const prompt = typeof args?.prompt === 'string' ? args.prompt : '';
     if (!adapterOutput.args) throw launchBindingFailure('Managed Forager dispatch arguments are unavailable.');
-    adapterOutput.args.prompt = appendExecutionPrompt(armed, prompt);
+    const constraintSnapshot = captureConstraintSnapshot(sessionID);
+    const augmentedPrompt = appendExecutionPrompt(armed, prompt, constraintSnapshot);
+    adapterOutput.args.prompt = augmentedPrompt;
+    const constraintBlock = buildStandingConstraintsBlock(constraintSnapshot.constraints);
+    if (constraintBlock) trustedConstraintAugmentations.set(augmentedPrompt, constraintBlock);
     const attached = executionAttemptService.attachNext({
       originatingPrimarySession: sessionID,
       nativeCallId: callID,
       selectedAgent,
       background: args?.background === true,
+      constraintSnapshot,
     });
+    managedPromptAugmentations.set(launchKey, { callerPrompt: prompt, augmentedPrompt });
     try {
       await backgroundJobAdapter['tool.execute.before']({ tool: 'task', sessionID, callID }, adapterOutput);
     } catch (error) {
@@ -2806,7 +2821,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         nativeCallId: input.callID,
         outputDefined,
       });
-      if (stopped?.reportLocator) executionAttemptService.finalize(stopped.id, stopped.observedOutcome ?? 'completed');
+      if (stopped) finalizeStoppedBridgeAttempt(stopped);
     } catch {
       // Missing, undefined, or contradictory stop evidence leaves the execution quarantined.
     }
@@ -3841,13 +3856,11 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         if (
           constraintsBlock
           && !isReviewLaneTarget
+          && trustedConstraintAugmentations.get(prompt) !== constraintsBlock
         ) {
-          output.args.prompt = appendManagedPromptBlock(
-            prompt,
-            constraintsBlock,
-            STANDING_CONSTRAINTS_START,
-            STANDING_CONSTRAINTS_END,
-          );
+          const augmentedPrompt = appendManagedPromptBlock(prompt, constraintsBlock);
+          output.args.prompt = augmentedPrompt;
+          trustedConstraintAugmentations.set(augmentedPrompt, constraintsBlock);
         }
       }
 
@@ -5769,6 +5782,8 @@ NEXT: Ask your first clarifying question about this feature.`;
           }
           const attemptIsCurrent = executionAttemptService.isCurrentTaskAttempt(feature, task, liveAttempt.id);
           const attemptSlot = liveAttempt.placement.kind === 'worktree' ? liveAttempt.placement.attemptSlot : undefined;
+          const inPlaceDirectory = liveAttempt.placement.kind === 'in_place' ? liveAttempt.placement.directory : undefined;
+          const reportOnly = inPlaceDirectory !== undefined;
           if (attemptIsCurrent && taskInfo.status !== 'in_progress' && taskInfo.status !== 'blocked') {
             return respond({
               ok: false,
@@ -5780,6 +5795,19 @@ NEXT: Ask your first clarifying question about this feature.`;
               taskState: taskInfo.status,
               message: 'Task not in progress',
               nextAction: 'Only in_progress or blocked tasks can be committed. Start/resume the task first.',
+            });
+          }
+          if (reportOnly && message?.trim()) {
+            return respond({
+              ok: false,
+              terminal: false,
+              status: 'error',
+              reason: 'in_place_message_not_allowed',
+              feature,
+              task,
+              taskState: taskInfo.status,
+              message: 'In-place execution records a report only and does not accept a Git commit message.',
+              nextAction: 'Retry hive_worktree_commit without message. The live directory is not staged, committed, merged, or rolled back by Hive.',
             });
           }
 
@@ -5816,6 +5844,7 @@ NEXT: Ask your first clarifying question about this feature.`;
               executionAttemptService.recordHandoff(liveAttempt.id, {
                 reportLocator: reportReference,
                 reportContentHash: createHash('sha256').update(blockedBody).digest('hex'),
+                outcome: 'blocked',
               });
             } else {
               const written = taskService.writeReportWithReference(feature, task, blockedBody);
@@ -5830,11 +5859,12 @@ NEXT: Ask your first clarifying question about this feature.`;
             executionAttemptService.recordHandoff(liveAttempt.id, {
               reportLocator: reportReference,
               reportContentHash: createHash('sha256').update(blockedBody).digest('hex'),
+              outcome: 'blocked',
             });
 
-            let worktree: WorktreeInfo | null;
+            let worktree: WorktreeInfo | null = null;
             try {
-              worktree = await worktreeService.get(feature, task, attemptSlot);
+              if (!reportOnly) worktree = await worktreeService.get(feature, task, attemptSlot);
             } catch (error: unknown) {
               const classification = classifyServiceThrow(error);
               if (!classification) throw error;
@@ -5868,8 +5898,8 @@ NEXT: Ask your first clarifying question about this feature.`;
               summary,
               blocker,
               ...(traceTaskId ? { traceTaskId } : {}),
-              worktreePath: worktree?.path,
-              branch: worktree?.branch,
+              worktreePath: inPlaceDirectory ?? worktree?.path,
+              ...(worktree?.branch ? { branch: worktree.branch } : {}),
               message: 'Task blocked. Hive Master will ask the user, then arm blocked continuation with hive_execution_prepare(scope.continueFromBlocked: true).',
               nextAction: traceTaskId
                 ? `The orchestrator should inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before collecting the operator decision, then request fresh worker launch guidance for the existing worktree.`
@@ -5880,7 +5910,17 @@ NEXT: Ask your first clarifying question about this feature.`;
           // For failed/partial, still commit what we have
           let commitResult: CommitResult;
           try {
-            commitResult = await worktreeService.commitChanges(feature, task, message, attemptSlot);
+            commitResult = reportOnly
+              ? {
+                  committed: false,
+                  sha: '',
+                  message: 'In-place report-only handoff',
+                  phase: 'preflight',
+                  mutation: 'none',
+                  retryable: false,
+                  action: 'none',
+                }
+              : await worktreeService.commitChanges(feature, task, message, attemptSlot);
           } catch (error: unknown) {
             const classification = classifyServiceThrow(error);
             if (!classification) throw error;
@@ -5936,7 +5976,7 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
           }
 
-          if (commitResult.error || (!commitResult.committed && commitResult.message !== 'No changes to commit')) {
+          if (!reportOnly && (commitResult.error || (!commitResult.committed && commitResult.message !== 'No changes to commit'))) {
             return respond({
               ok: false,
               terminal: false,
@@ -5960,9 +6000,9 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
           }
 
-          let diff: Awaited<ReturnType<WorktreeService['getDiff']>>;
+          let diff: Awaited<ReturnType<WorktreeService['getDiff']>> | undefined;
           try {
-            diff = await worktreeService.getDiff(feature, task, undefined, attemptSlot);
+            if (!reportOnly) diff = await worktreeService.getDiff(feature, task, undefined, attemptSlot);
           } catch (error: unknown) {
             const classification = classifyServiceThrow(error);
             if (!classification) throw error;
@@ -5987,7 +6027,9 @@ NEXT: Ask your first clarifying question about this feature.`;
             `**Feature:** ${feature}`,
             `**Recorded:** ${new Date().toISOString()}`,
             `**Worker-reported outcome:** ${status}`,
-            `**${commitResult.committed ? 'Created commit' : 'Observed HEAD (no new commit)'}:** ${commitResult.sha || 'none'}`,
+            reportOnly
+              ? '**Git operation:** not requested (in-place placement)'
+              : `**${commitResult.committed ? 'Created commit' : 'Observed HEAD (no new commit)'}:** ${commitResult.sha || 'none'}`,
             '',
             '---',
             '',
@@ -6032,30 +6074,31 @@ NEXT: Ask your first clarifying question about this feature.`;
             executionAttemptService.recordHandoff(liveAttempt.id, {
               reportLocator: reportReference,
               reportContentHash: createHash('sha256').update(reportBody).digest('hex'),
+              outcome: status,
             });
           } else {
             const written = taskService.writeReportWithReference(feature, task, reportBody);
             reportPath = written.reportPath;
             reportReference = written.reportReference;
-            const aggregateBranchDiff = buildAggregateBranchDiff(diff, reportReference);
             const finalStatus = status === 'completed' ? 'done' : status;
             taskService.update(feature, task, {
               status: finalStatus as any,
               summary,
-              aggregateBranchDiff,
+              ...(diff ? { aggregateBranchDiff: buildAggregateBranchDiff(diff, reportReference) } : {}),
             });
           }
           executionAttemptService.recordHandoff(liveAttempt.id, {
             reportLocator: reportReference,
             reportContentHash: createHash('sha256').update(reportBody).digest('hex'),
+            outcome: status,
           });
           const finalStatus = attemptIsCurrent
             ? (status === 'completed' ? 'done' : status)
             : taskInfo.status;
 
-          let worktree: WorktreeInfo | null;
+          let worktree: WorktreeInfo | null = null;
           try {
-            worktree = await worktreeService.get(feature, task, attemptSlot);
+            if (!reportOnly) worktree = await worktreeService.get(feature, task, attemptSlot);
           } catch (error: unknown) {
             const classification = classifyServiceThrow(error);
             if (!classification) throw error;
@@ -6068,15 +6111,17 @@ NEXT: Ask your first clarifying question about this feature.`;
               taskState: finalStatus,
               summary,
               ...(verificationNote && { verificationNote }),
-              commit: {
-                committed: commitResult.committed,
-                sha: commitResult.sha,
-                message: commitResult.message,
-                ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
-                ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
-                ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
-                ...commitClassification,
-              },
+              ...(reportOnly
+                ? { handoff: { kind: 'report_only', gitOperation: 'not_requested' } }
+                : { commit: {
+                    committed: commitResult.committed,
+                    sha: commitResult.sha,
+                    message: commitResult.message,
+                    ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
+                    ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
+                    ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
+                    ...commitClassification,
+                  } }),
               reportPath,
               reportReference,
               error: error instanceof Error ? error.message : String(error),
@@ -6095,17 +6140,19 @@ NEXT: Ask your first clarifying question about this feature.`;
             taskState: finalStatus,
             summary,
             ...(verificationNote && { verificationNote }),
-            commit: {
-              committed: commitResult.committed,
-              sha: commitResult.sha,
-              message: commitResult.message,
-              ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
-              ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
-              ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
-              ...commitClassification,
-            },
-            worktreePath: worktree?.path,
-            branch: worktree?.branch,
+            ...(reportOnly
+              ? { handoff: { kind: 'report_only', gitOperation: 'not_requested' } }
+              : { commit: {
+                  committed: commitResult.committed,
+                  sha: commitResult.sha,
+                  message: commitResult.message,
+                  ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
+                  ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
+                  ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
+                  ...commitClassification,
+                } }),
+            worktreePath: inPlaceDirectory ?? worktree?.path,
+            ...(worktree?.branch ? { branch: worktree.branch } : {}),
             reportPath,
             reportReference,
             ...(traceTaskId ? { traceTaskId } : {}),
@@ -6377,6 +6424,9 @@ NEXT: Ask your first clarifying question about this feature.`;
             const hasError = Boolean(result.error) || isPartial;
             const isNoChange = !result.committed && result.message === 'No changes to commit' && !hasError;
             const success = !hasError && (result.committed || isNoChange);
+            if (success && liveAttempt) {
+              executionAttemptService.recordHandoff(liveAttempt.id, { outcome: 'completed' });
+            }
             const commitClassification = {
               phase: result.phase,
               ...(result.reasonCode !== undefined ? { reasonCode: result.reasonCode } : {}),

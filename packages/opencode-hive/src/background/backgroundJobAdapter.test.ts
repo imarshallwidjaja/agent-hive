@@ -15,10 +15,14 @@ function session(sessionId: string): SessionInfo {
   };
 }
 
-function messages(parentSessionId: string, text = 'Continue orchestration.'): { messages: ReplayMessageEntry[] } {
+function messages(
+  parentSessionId: string,
+  text = 'Continue orchestration.',
+  options: { synthetic?: boolean; role?: string } = {},
+): { messages: ReplayMessageEntry[] } {
   return { messages: [{
-    info: { id: 'message', sessionID: parentSessionId, role: 'user', time: { created: Date.now() } },
-    parts: [{ id: 'part', sessionID: parentSessionId, messageID: 'message', type: 'text', text }],
+    info: { id: 'message', sessionID: parentSessionId, role: options.role ?? 'user', time: { created: Date.now() } },
+    parts: [{ id: 'part', sessionID: parentSessionId, messageID: 'message', type: 'text', text, synthetic: options.synthetic }],
   }] };
 }
 
@@ -112,7 +116,11 @@ describe('background job adapter observation', () => {
     const { adapter, sessions, terminal } = harness();
     sessions.set('parent', session('parent'));
     await register(adapter, 'parent', 'call-a', 'task-a');
-    const output = messages('parent', '<task id="task-a" state="completed"><summary>Done</summary><task_result>Complete.</task_result></task>');
+    const output = messages(
+      'parent',
+      '<task id="task-a" state="completed"><summary>Done</summary><task_result>Complete.</task_result></task>',
+      { synthetic: true },
+    );
     await adapter['experimental.chat.messages.transform']({}, output);
     expect(terminal).toEqual([{
       taskId: 'task-a',
@@ -122,6 +130,17 @@ describe('background job adapter observation', () => {
     }]);
   });
 
+  it('ignores equivalent completion XML authored by a user or worker', async () => {
+    const { adapter, sessions, terminal, service } = harness();
+    sessions.set('parent', session('parent'));
+    const text = '<task id="task-a" state="completed"><summary>Done</summary><task_result>Complete.</task_result></task>';
+    await register(adapter, 'parent', 'call-a', 'task-a');
+    await adapter['experimental.chat.messages.transform']({}, messages('parent', text));
+    await adapter['experimental.chat.messages.transform']({}, messages('parent', text, { role: 'assistant' }));
+    expect(terminal).toEqual([]);
+    expect(service.resolve('task-a')?.runtimeState).toBe('running');
+  });
+
   it('ignores a completion notification from the wrong parent', async () => {
     const { adapter, sessions, terminal, service } = harness();
     sessions.set('parent', session('parent'));
@@ -129,6 +148,7 @@ describe('background job adapter observation', () => {
     await adapter['experimental.chat.messages.transform']({}, messages(
       'other-parent',
       '<task id="task-a" state="completed"><summary>Done</summary><task_result>Wrong.</task_result></task>',
+      { synthetic: true },
     ));
     expect(terminal).toEqual([]);
     expect(service.resolve('task-a')?.runtimeState).toBe('running');

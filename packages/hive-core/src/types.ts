@@ -363,6 +363,7 @@ export type ExecutionObservedOutcome =
   | 'not_started'
   | 'completed'
   | 'failed'
+  | 'partial'
   | 'blocked'
   | 'cancelled'
   | 'superseded'
@@ -391,6 +392,12 @@ export interface ExecutionNativeAttachment {
   background: boolean;
   attachedAt: string;
   childSessionId?: string;
+  constraintSnapshot?: {
+    sourceSessionId: string;
+    constraints?: string;
+    entries?: StandingConstraintEntry[];
+    revision?: number;
+  };
 }
 
 export interface ExecutionStopEvidence {
@@ -418,6 +425,7 @@ export interface ExecutionAttempt {
   observedOutcome?: ExecutionObservedOutcome;
   reportLocator?: string;
   reportContentHash?: string;
+  handoffOutcome?: ExecutionObservedOutcome;
   supersededBy?: string;
   createdAt: string;
   updatedAt: string;

@@ -235,7 +235,36 @@ describe('ExecutionAttemptService armed native attachment', () => {
     expect(service.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true })?.phase).toBe('stopped');
   });
 
-  it('requires exact structured background identity and ignores cancellation acknowledgement', () => {
+  it('persists blocked, failed, and partial bridge dispositions through finalization', () => {
+    for (const outcome of ['blocked', 'failed', 'partial'] as const) {
+      const attempt = service.arm({
+        kind: 'adhoc',
+        runId: `handoff-${outcome}`,
+        originatingPrimarySession: `primary-${outcome}`,
+        placement: { kind: 'in_place', directory: TEST_DIR },
+      }).attempt;
+      service.attachNext({
+        originatingPrimarySession: `primary-${outcome}`,
+        nativeCallId: `call-${outcome}`,
+        selectedAgent: 'forager-worker',
+        background: false,
+      });
+      service.recordHandoff(attempt.id, { outcome });
+      const stopped = service.observeBlockingStop({
+        originatingPrimarySession: `primary-${outcome}`,
+        nativeCallId: `call-${outcome}`,
+        outputDefined: true,
+      })!;
+      service.finalize(stopped.id, stopped.handoffOutcome!);
+      expect(service.getAttempt(attempt.id)).toMatchObject({
+        phase: 'finalized',
+        handoffOutcome: outcome,
+        observedOutcome: outcome,
+      });
+    }
+  });
+
+  it('requires exact structured background identity', () => {
     const attempt = service.arm({
       kind: 'adhoc',
       runId: 'background',
@@ -244,7 +273,6 @@ describe('ExecutionAttemptService armed native attachment', () => {
     }).attempt;
     service.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: true });
     service.bindNativeChild({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', nativeChildSessionId: 'task-a' });
-    expect(service.recordCancellationAcknowledgement(attempt.id)).toBe(false);
     expect(service.getAttempt(attempt.id)?.phase).toBe('attached');
     expect(() => service.observeBackgroundStop({
       originatingPrimarySession: 'primary-other',
@@ -318,5 +346,40 @@ describe('ExecutionAttemptService armed native attachment', () => {
     const before = fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8');
     migrated.migrate();
     expect(fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8')).toBe(before);
+  });
+
+  it('enriches a migrated composite attempt from its matching custom Forager lease', () => {
+    cleanup();
+    fs.mkdirSync(path.dirname(getExecutionAttemptsPath(TEST_DIR)), { recursive: true });
+    const workspaceRoot = path.join(TEST_DIR, '.hive', '.worktrees', 'feature-a', '01-task');
+    const api = path.join(workspaceRoot, 'repos', 'api');
+    const web = path.join(workspaceRoot, 'repos', 'web');
+    fs.mkdirSync(api, { recursive: true });
+    fs.mkdirSync(web, { recursive: true });
+    const now = new Date().toISOString();
+    fs.writeFileSync(getExecutionAttemptsPath(TEST_DIR), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [{
+        id: 'legacy-composite', kind: 'task', featureName: 'feature-a', taskFolder: '01-task',
+        originatingPrimarySession: 'legacy-parent', workspaceIdentities: [api, web],
+        dispatchState: 'dispatched', nativeCallId: 'legacy-call', createdAt: now, updatedAt: now,
+      }],
+    }, null, 2));
+    const lease: NativeTaskLease = {
+      parentSessionId: 'legacy-parent', callId: 'legacy-call', agent: 'custom-forager',
+      projectRoot: TEST_DIR, resourcePaths: [api, web], runtimeId: 'legacy-runtime', childSessionId: 'legacy-child',
+    };
+    fs.writeFileSync(getGlobalSessionsPath(TEST_DIR), JSON.stringify({ sessions: [], nativeTaskLeases: [lease] }, null, 2));
+
+    const migrated = new ExecutionAttemptService(TEST_DIR, 'runtime-new').getAttempt('legacy-composite');
+    expect(migrated).toMatchObject({
+      phase: 'attached',
+      placement: {
+        kind: 'worktree',
+        workspaceIdentities: [fs.realpathSync(api), fs.realpathSync(web)],
+        workspacePath: fs.realpathSync(workspaceRoot),
+      },
+      native: { selectedAgent: 'custom-forager', childSessionId: 'legacy-child' },
+    });
   });
 });

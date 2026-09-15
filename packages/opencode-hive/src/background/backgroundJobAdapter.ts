@@ -281,6 +281,9 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     for (const message of messages) {
       const parentSessionId = message.info.sessionID;
       for (const part of message.parts) {
+        // OpenCode marks runtime-generated completion notifications synthetic.
+        // User and worker text is never stop evidence, even when it copies the native XML envelope.
+        if (message.info.role !== 'user' || part.synthetic !== true) continue;
         const parsed = part.text ? parseTaskCompletionNotification(part.text) : undefined;
         if (!parsed) {
           continue;

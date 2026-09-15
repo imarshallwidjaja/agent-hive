@@ -44,6 +44,7 @@ export interface AttachExecutionAttemptInput {
   nativeCallId: string;
   selectedAgent: string;
   background: boolean;
+  constraintSnapshot?: NonNullable<ExecutionAttempt['native']>['constraintSnapshot'];
 }
 
 export interface BindNativeChildInput {
@@ -68,6 +69,7 @@ export interface ObserveBackgroundStopInput {
 export interface FinalizeExecutionAttemptInput {
   reportLocator?: string;
   reportContentHash?: string;
+  outcome?: ExecutionObservedOutcome;
 }
 
 interface LegacyExecutionAttempt {
@@ -209,6 +211,7 @@ export class ExecutionAttemptService {
         selectedAgent,
         background: input.background,
         attachedAt: now,
+        ...(input.constraintSnapshot ? { constraintSnapshot: structuredClone(input.constraintSnapshot) } : {}),
       };
       delete attempt.armRuntimeId;
       delete attempt.expiresAt;
@@ -253,10 +256,6 @@ export class ExecutionAttemptService {
       }
       return this.stopAttempt(attempt, 'background_terminal', input.state, input.nativeTaskId);
     });
-  }
-
-  recordCancellationAcknowledgement(_attemptId: string): false {
-    return false;
   }
 
   closeArmNotStarted(attemptId: string): ExecutionAttempt {
@@ -315,8 +314,9 @@ export class ExecutionAttemptService {
   recordHandoff(attemptId: string, extras: FinalizeExecutionAttemptInput): ExecutionAttempt {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
-      if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
-      if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
+    if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
+    if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
+    if (extras.outcome) attempt.handoffOutcome = extras.outcome;
       attempt.updatedAt = new Date().toISOString();
       return structuredClone(attempt);
     });
@@ -350,8 +350,9 @@ export class ExecutionAttemptService {
     attempt.updatedAt = now;
     delete attempt.armRuntimeId;
     delete attempt.expiresAt;
-    if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
-    if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
+      if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
+      if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
+      if (extras.outcome) attempt.handoffOutcome = extras.outcome;
   }
 
   private hasPersistableState(store: ExecutionAttemptsJson): boolean {
@@ -407,7 +408,7 @@ export class ExecutionAttemptService {
       const placement: ExecutionPlacement = {
         kind: 'worktree',
         workspaceIdentities,
-        workspacePath: workspaceIdentities[0]!,
+        workspacePath: this.workspacePathForIdentities(workspaceIdentities),
         ...(old.attemptSlot ? { attemptSlot: old.attemptSlot } : {}),
         ...(old.branch ? { branch: old.branch } : {}),
         ...(old.baseCommit ? { baseCommit: old.baseCommit } : {}),
@@ -628,9 +629,22 @@ export class ExecutionAttemptService {
     store.nativeTaskLeaseHistory = history;
 
     for (const lease of extracted) {
+      const matching = store.attempts.find(attempt => attempt.native?.parentSessionId === lease.parentSessionId
+        && attempt.native.callId === lease.callId);
+      if (matching) {
+        if (matching.phase === 'attached' && matching.native) {
+          matching.native.selectedAgent = lease.agent;
+          if (lease.childSessionId && !isPlaceholderNativeChildId(lease.childSessionId)) {
+            matching.native.childSessionId ??= lease.childSessionId;
+          }
+          if (matching.placement.kind === 'worktree') {
+            matching.placement.workspacePath = this.workspacePathForIdentities(matching.placement.workspaceIdentities);
+          }
+          matching.updatedAt = new Date().toISOString();
+        }
+        continue;
+      }
       if (!this.shouldCreateLiveClaim(lease)) continue;
-      if (store.attempts.some(attempt => attempt.native?.parentSessionId === lease.parentSessionId
-        && attempt.native.callId === lease.callId)) continue;
       const now = new Date().toISOString();
       const identities = this.canonicalizeWorkspaceIdentities(lease.resourcePaths);
       const inferred = this.inferAttemptIdentity(identities);
@@ -638,7 +652,7 @@ export class ExecutionAttemptService {
         id: randomUUID(),
         kind: inferred.kind,
         originatingPrimarySession: lease.parentSessionId,
-        placement: { kind: 'worktree', workspaceIdentities: identities, workspacePath: identities[0]! },
+        placement: { kind: 'worktree', workspaceIdentities: identities, workspacePath: this.workspacePathForIdentities(identities) },
         phase: 'attached',
         native: {
           parentSessionId: lease.parentSessionId,
@@ -700,6 +714,12 @@ export class ExecutionAttemptService {
       featureName: parts[0],
       taskFolder: separator > 0 ? directoryName.slice(0, separator) : directoryName,
     };
+  }
+
+  private workspacePathForIdentities(identities: string[]): string {
+    const first = identities[0]!;
+    const parent = path.dirname(first);
+    return path.basename(parent) === 'repos' ? path.dirname(parent) : first;
   }
 
   private canonicalizeExistingOrResolved(value: string): string {
