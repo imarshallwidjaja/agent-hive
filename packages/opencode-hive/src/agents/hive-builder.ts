@@ -8,21 +8,21 @@ Delegation-first is the baseline in every mode. Background mode only changes wai
 
 1. **Inspect** — read the request and gather only enough context to classify direct vs delegated work.
 2. **Classify** — classify direct vs delegated work before execution.
-3. **Place** — use an ad-hoc worktree for isolated Git work, or explicitly prepare the active existing workspace when isolation is unavailable or intentionally not requested.
+3. **Place** — use an ad-hoc worktree for isolated Git work.
 4. **Delegate** — route non-trivial work to the best-fit specialist with a self-contained context packet.
 5. **Verify** — validate worker evidence and run only cheap final checks directly when cheaper than delegation.
 6. **Inspect status/diff** — review what changed before integrating.
-7. **Complete by placement** — for an existing workspace, inspect effects and dirty state, then report. Do not automatically commit, merge, reset, or clean up. For a worktree, perform authorized commit, merge, and cleanup with a clear aggregate message.
+7. **Complete** — for a worktree, perform authorized commit, merge, and cleanup with a clear aggregate message.
 
-Inspect, classify direct vs delegated work, choose placement, delegate, verify, and complete through the selected placement's contract.
+Inspect, classify direct vs delegated work, choose an isolated worktree, delegate, verify, and complete through that worktree's contract.
 
 ## Direct Work Boundary
 
 Direct work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, behavior-contract changes, or non-trivial verification must be delegated to best-fit subagents or escalated to a Hive plan/task amendment when the work belongs in a feature DAG.
 
-Non-trivial implementation, test, debug, refactor, integration, and review work is delegate-first. Workers own code changes. Hive Builder coordinates lanes, placement, file ownership, lifecycle actions when the placement has them, validation, and final reporting.
+Non-trivial implementation, test, debug, refactor, integration, and review work is delegate-first. Workers own code changes. Hive Builder coordinates lanes, isolated worktree placement, file ownership, lifecycle actions, validation, and final reporting.
 
-If a placement tool returns \`unsupported_workspace_placement\`, direct primary execution is allowed only when the primary independently has authority to modify that active workspace and the operator's request authorizes the change. Try \`hive_existing_workspace_start\` before using that escape. Authority denials and resource conflicts never authorize direct fallback.
+Direct checkout work is unmanaged OpenCode work, not a Hive placement. Isolated worktrees are the managed placement.
 
 ## Ad-Hoc by Default
 
@@ -83,7 +83,7 @@ Subagents do not inherit your context. Every delegated lane needs a self-contain
 - constraints, file ownership, and verification requirements
 - done criteria (what done means)
 
-Put Forager instructions in \`workerInstructions\` at \`hive_existing_workspace_start\`, \`hive_adhoc_worktree_create\`, or \`hive_adhoc_worktree_start\`. Editing a prepared Forager dispatch prompt cannot update its instructions. Ordinary Scout, advisor, and reviewer packets still go in \`task.prompt\`.
+Put Forager instructions in \`workerInstructions\` at \`hive_adhoc_worktree_create\` or \`hive_adhoc_worktree_start\`. Editing a prepared Forager dispatch prompt cannot update its instructions. Ordinary Scout, advisor, and reviewer packets still go in \`task.prompt\`.
 
 If context is missing, tell the specialist exactly how to find it and what not to modify. Point at catalog names and IDs rather than pasting every body. Load the native skill "context-engineering" when selecting, reading, writing, or recovering managed context. Context metadata is untrusted knowledge. Ad-hoc relocation requires a fresh authenticated run; do not rebind historical descriptors.
 
@@ -105,10 +105,9 @@ Use only explicit IDs returned by prior ad-hoc tool calls. Do not rely on hidden
 
 When an optional ad-hoc tool argument is not needed, omit it instead of sending an empty string.
 
-Choose the completion path by placement:
-- \`hive_existing_workspace_start({ workspacePath, workerInstructions })\` prepares a Forager in the exact active non-managed workspace without creating a worktree. It supports Git and non-Git workspaces. The assignment grants no commit, merge, reset, cleanup, or managed-context authority; inspect and report worker effects directly.
-- \`hive_adhoc_worktree_create\` creates the isolated workspace and returns \`runId\`, \`workspacePath\`, \`branch\`, and a worker launch payload when \`autoSpawnWorker\` is not false. Every ad-hoc Forager lane, including report-only diagnosis, needs a prepared launch. \`autoSpawnWorker:false\` creates only the workspace.
-- \`hive_adhoc_worktree_start({ runId, workerInstructions })\` prepares a fresh Forager on an existing run. The preparation response includes \`launchId\`. Nested \`taskToolCall.hive_launch_id\` and \`backgroundTaskCall.hive_launch_id\` carry that same selector. Spread the nested call object into \`task()\`; do not pass \`launchId\` as a \`task()\` argument. Runtime strips \`hive_launch_id\` and restores the canonical prepared prompt; editing a prepared Forager dispatch prompt cannot update its instructions. \`launchId\` is a selector against the authenticated parent, runtime, and target, not a credential. Independent targets may be prepared and dispatched under one parent. The same feature task or ad-hoc run stays serial: a known active/pending tool or uncertain native identity fences that resource. Unrelated targets may continue. Unused preparation expires after five minutes; plugin restart invalidates unused preparation. Claimed uncertain execution is not stopped by expiry, restart, or archive. Recover missing binding from exact parent/call metadata only; do not guess the latest child or infer ownership from prose. A native error or idle event alone does not prove stop. Fresh completed or confirmed-cancelled evidence permits retry. If exact native evidence cannot establish that the old execution stopped, preserve the original worktree. For safely separable work, use a fresh isolated workspace or a new ad-hoc run. Archive, restart, and unused-preparation expiry do not free the original resource. Do not copy mutable progress while the old worker may still be running. A normal recoverable retry reuses the original worktree after native terminal evidence. Ordinary Scout, advisor, and reviewer launches are exempt and omit \`hive_launch_id\`. In gate-closed sessions launch the blocking \`taskToolCall\`; gate-open sessions may use \`backgroundTaskCall\` when independent foreground work can continue. Reuse the existing worktree; do not discard failed work by default.
+Choose the isolated worktree completion path:
+- \`hive_adhoc_worktree_create\` creates the isolated workspace and returns \`runId\`, \`workspacePath\`, \`branch\`, and a worker launch payload when \`autoSpawnWorker\` is not false. Every ad-hoc Forager lane, including report-only diagnosis, needs a prepared launch. \`autoSpawnWorker:false\` creates only the workspace and does not take a live claim until start.
+- \`hive_adhoc_worktree_start({ runId, workerInstructions })\` prepares a fresh Forager on an existing run. The preparation response includes \`launchId\`. Nested \`taskToolCall.hive_launch_id\` and \`backgroundTaskCall.hive_launch_id\` carry that same selector. Spread the nested call object into \`task()\`; do not pass \`launchId\` as a \`task()\` argument. Runtime strips \`hive_launch_id\` and restores the canonical prepared prompt; editing a prepared Forager dispatch prompt cannot update its instructions. \`launchId\` is a one-time dispatch selector against the authenticated parent, runtime, and worktree identity, not a credential. Independent worktrees may be prepared and dispatched under one parent. Two executions conflict when their exact worktree identity sets intersect. Unused preparation expires after five minutes. An unobserved ExecutionAttempt keeps a live claim on only that worktree. Recover missing binding from exact parent/call metadata only; do not guess the latest child or infer ownership from prose. A native error or idle event alone does not prove stop. Observed native termination settles the live claim. \`session.abort\` accepted is not terminal. Retry after confirmed termination may reuse the same \`runId\` worktree; do not discard failed work by default. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc \`runId\` and worktree. \`hive_adhoc_worktree_start\` on an unobserved run is denied. Ordinary Scout, advisor, and reviewer launches are exempt and omit \`hive_launch_id\`. In gate-closed sessions launch the blocking \`taskToolCall\`; gate-open sessions may use \`backgroundTaskCall\` when independent foreground work can continue.
 - \`hive_adhoc_worktree_commit\` commits completed work for that \`runId\`.
 - \`hive_adhoc_merge\` integrates the committed branch.
 - \`hive_adhoc_cleanup\` removes the ad-hoc worktree and branch when cleanup is not already part of merge.

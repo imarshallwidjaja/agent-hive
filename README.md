@@ -14,10 +14,10 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ## Requirements
 
-Forager execution can also use the exact active canonical checkout or a genuine non-Git directory through `hive_existing_workspace_start`. Linked worktrees and managed aliases require their own lifecycle. Rare native `general` calls require `hive_capability_reason`; helper and general calls hold tracked workspace ownership until exact child termination. See the [Operator Guide](docs/OPERATOR-GUIDE.md) for admission and recovery rules.
+Managed Forager execution uses isolated git worktrees. `hive_existing_workspace_start` is unavailable. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement. See the [Operator Guide](docs/OPERATOR-GUIDE.md#execution-ownership) for admission, live claims, and recovery.
 
 - [OpenCode](https://opencode.ai) `>= 1.18.30` (peer dependency of `oc-arkive`; required for native `tool.definition` and `hive_launch_id`)
-- Worktree workflows require a project whose work resolves to one or more git repositories. Existing-workspace execution also supports genuine non-Git directories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
+- Worktree workflows require a project whose work resolves to one or more git repositories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
 - Optional: [VS Code](https://code.visualstudio.com/) for sidebar plan review via `vscode-arkive`
 
 ## Quick start

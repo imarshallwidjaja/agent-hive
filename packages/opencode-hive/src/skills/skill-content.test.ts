@@ -455,6 +455,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain(
       'hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })',
     );
+    expect(skill!.template).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(skill!.template).toContain('cannot reuse that run');
   });
 
   it('finishes executing-plans through verification and Hive merge instead of a generic finish menu', () => {
@@ -490,16 +492,13 @@ describe('skill content', () => {
 
     expect(skill).toBeDefined();
     expect(skill!.template).toContain('task({');
-    expect(skill!.template).toContain('Independent Forager targets may be prepared and dispatched under one parent');
+    expect(skill!.template).toContain('Independent Forager worktrees may be prepared and dispatched under one parent');
     expect(skill!.template).toContain('Gate-open only: use backgroundTaskCall');
     expect(skill!.template).toContain('hive_launch_id');
-    expect(skill!.template).toContain('hive_existing_workspace_start');
+    expect(skill!.template).not.toContain('hive_existing_workspace_start');
     expect(skill!.template).toContain('For managed task worktrees, integrate accepted changes with `hive_merge`');
     expect(skill!.template).toContain('For ad-hoc worktrees, use the authorized `hive_adhoc_worktree_commit` and `hive_adhoc_merge` lifecycle');
-    expect(skill!.template).toContain('For existing-workspace execution, inspect effects and dirty state, then report');
-    expect(skill!.template).not.toContain('Integrate all changes with `hive_merge`');
-    expect(skill!.template).toContain('Recover native binding from exact parent/call metadata only');
-    expect(skill!.template).toContain('aliases, and ancestor/descendant path overlap share one writer fence');
+    expect(skill!.template).toContain('exact worktree identity sets intersect');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
     expect(skill!.template).toContain('Blocking alternative, including every gate-closed session');
     expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch');
@@ -511,6 +510,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain(
       'hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })',
     );
+    expect(skill!.template).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(skill!.template).toContain('cannot reuse that run');
   });
 
   it('does not keep stale synchronous-exploration wording in delegation skills', () => {
@@ -550,7 +551,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Orchestrator owns final confidence');
     expect(skill!.template).toContain('terminal-unreconciled');
     expect(skill!.template).toContain('Reconcile and ignore are bookkeeping only');
-    expect(skill!.template).toContain('Runtime fences same-resource preparation, dispatch, ad-hoc commit/merge/cleanup, and managed discard/merge');
+    expect(skill!.template).toContain('A live claim blocks preparation, dispatch, ad-hoc commit/merge/cleanup, and managed discard/merge of that exact worktree identity');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
     expect(skill!.template).toContain('`hive_status` is not that surface');
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns.');
@@ -560,10 +561,12 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Every Forager lane, including report-only diagnosis');
     expect(skill!.template).toContain('hive_launch_id');
     expect(skill!.template).toContain('hive_adhoc_worktree_start');
-    expect(skill!.template).toContain('hive_existing_workspace_start');
-    expect(skill!.template).toContain('exact active non-managed workspace');
+    expect(skill!.template).not.toContain('hive_existing_workspace_start');
+    expect(skill!.template).toContain('Isolated worktrees are the managed placement');
     expect(skill!.template).toContain('Unused preparation expires after five minutes');
-    expect(skill!.template).toContain('claimed uncertain execution remains fenced until exact terminal or confirmed-cancelled evidence');
+    expect(skill!.template).toContain('an unobserved ExecutionAttempt keeps a live claim on only that worktree');
+    expect(skill!.template).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(skill!.template).toContain('cannot reuse that run');
     expect(skill!.template).not.toContain('binding-in-progress');
     expect(skill!.template).not.toContain('wait for the native correlation event');
     expect(skill!.template).toContain('Gate-closed Forager launch (blocking wait mode)');

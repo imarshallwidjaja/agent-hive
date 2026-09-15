@@ -175,6 +175,60 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await service.get("test-feature", "01-test-task")).not.toBeNull();
   });
 
+  it("places a slotted attempt at a distinct path and branch without changing the default location", async () => {
+    const { repoPath } = await createTempRepo();
+    const service = new WorktreeService({
+      baseDir: repoPath,
+      hiveDir: path.join(repoPath, ".hive"),
+    });
+    const feature = "test-feature";
+    const task = "01-test-task";
+
+    expect(service.getWorktreePath(feature, task)).toBe(path.join(repoPath, ".hive", ".worktrees", feature, task));
+    expect(service.getWorktreePath(feature, task, "retry")).toBe(
+      path.join(repoPath, ".hive", ".worktrees", feature, `${task}--retry`),
+    );
+
+    const defaultWorktree = await service.create(feature, task);
+    const slotted = await service.create(feature, task, undefined, "retry");
+
+    expect(defaultWorktree.path).toBe(service.getWorktreePath(feature, task));
+    expect(defaultWorktree.branch).toBe("hive/test-feature/01-test-task");
+    expect(slotted.path).toBe(service.getWorktreePath(feature, task, "retry"));
+    expect(slotted.branch).toBe("hive/test-feature/01-test-task-retry");
+    expect(await service.get(feature, task)).toMatchObject({ path: defaultWorktree.path, branch: defaultWorktree.branch });
+    expect(await service.get(feature, task, "retry")).toMatchObject({ path: slotted.path, branch: slotted.branch });
+    expect(slotted.path).not.toBe(defaultWorktree.path);
+  });
+
+  it("commits, diffs, and removes a slotted worktree without touching the default worktree", async () => {
+    const { repoPath } = await createTempRepo();
+    const service = new WorktreeService({
+      baseDir: repoPath,
+      hiveDir: path.join(repoPath, ".hive"),
+    });
+    const feature = "test-feature";
+    const task = "01-test-task";
+    const defaultWorktree = await service.create(feature, task);
+    const slotted = await service.create(feature, task, undefined, "retry");
+    await fs.writeFile(path.join(slotted.path, "slotted.txt"), "slotted\n", "utf-8");
+    await fs.writeFile(path.join(defaultWorktree.path, "default.txt"), "default\n", "utf-8");
+
+    expect(await service.hasUncommittedChanges(feature, task, "retry")).toBe(true);
+    expect(await service.hasUncommittedChanges(feature, task)).toBe(true);
+
+    const commit = await service.commitChanges(feature, task, testCommitMessage("feat: slotted work"), "retry");
+    expect(commit.committed).toBe(true);
+    expect(await service.hasUncommittedChanges(feature, task, "retry")).toBe(false);
+    expect(await service.hasUncommittedChanges(feature, task)).toBe(true);
+    expect(await fs.readFile(path.join(defaultWorktree.path, "default.txt"), "utf-8")).toBe("default\n");
+
+    const removed = await service.remove(feature, task, false, {}, "retry");
+    expect(removed.worktreeRemoved).toBe(true);
+    expect(await service.get(feature, task, "retry")).toBeNull();
+    expect(await service.get(feature, task)).not.toBeNull();
+  });
+
   it("uses a custom commit message verbatim, including body text", async () => {
     const fixture = await createFixture();
     await fs.writeFile(path.join(fixture.worktreePath, "custom-commit.txt"), "custom\n", "utf-8");

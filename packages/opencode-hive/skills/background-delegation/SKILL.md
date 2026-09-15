@@ -9,7 +9,7 @@ Background delegation is the Agent Hive wait-mode and board protocol for indepen
 
 Core rule: delegation first, independence second. Delegation-first orchestration is the baseline. Background mode only changes wait mode and board protocol. Use `task({ background: true, ... })` only when useful foreground work does not depend on the result.
 
-Background is a wait mode, not the definition of parallelism. Independent ordinary Scout, advisor, and reviewer tasks can run in parallel when the primary agent emits their `task()` calls in the same assistant message. Independent Forager targets may be prepared and dispatched under one parent; equality, aliases, and ancestor/descendant path overlap share one writer fence. Background mode answers a separate scheduling question: can the primary agent keep doing unrelated foreground work while those subagents run?
+Background is a wait mode, not the definition of parallelism. Independent ordinary Scout, advisor, and reviewer tasks can run in parallel when the primary agent emits their `task()` calls in the same assistant message. Independent Forager worktrees may be prepared and dispatched under one parent; two executions conflict when their exact worktree identity sets intersect. Background mode answers a separate scheduling question: can the primary agent keep doing unrelated foreground work while those subagents run?
 
 Lane count never selects wait mode. Dependency, risk, simplicity, user interaction, ownership, and whether useful independent foreground work exists select it.
 
@@ -23,11 +23,11 @@ Default to delegating implementation/test work and non-trivial verification acti
 
 Direct primary-agent work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. The direct fix threshold is one small, local, immediately verified integration fix. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, non-trivial verification, a second patch/test loop, behavior-contract change, or broadened scope must be delegated, resumed, or turned into a manual task/plan amendment.
 
-When isolated placement is unsupported, prepare the Forager in the exact active non-managed workspace with `hive_existing_workspace_start` before considering direct work. Only `unsupported_workspace_placement` can enter the independently authorized direct-work decision; authority and resource-conflict denials never authorize fallback.
+Isolated worktrees are the managed placement. Direct checkout work is unmanaged OpenCode work, not a Hive placement.
 
-Existing placement supports only the exact active canonical checkout or genuine non-Git directory, with real-path and Git-metadata validation at preparation, claim, and authority resolution. A rare native `general` exception requires a specific nonblank `hive_capability_reason` and no `hive_launch_id`. The declaration does not prove a capability gap. General has ordinary tools only, no Hive authority, recursion, or questions. Native helpers retain bounded permissions. Both calls reserve the active root until exact child terminal evidence. A background task return only confirms dispatch; errors, missing callbacks, deletion, and restart retain the reservation. Helpers may operate under their own authenticated reservation while other overlapping writers remain fenced.
+A rare native `general` exception requires a specific nonblank `hive_capability_reason` and no `hive_launch_id`. The declaration does not prove a capability gap. General has ordinary tools only, no Hive authority, recursion, or questions. Native helpers retain bounded permissions. Helper and general calls use a runtime-local bind for Hive-tool authentication; they do not take a live claim on a worktree or the project root.
 
-Use Forager or a Forager-derived custom worker for delegated execution. General requires an explicit capability reason unavailable in those lanes. Existing-workspace completion is verify, inspect effects and dirty state, and report; do not automatically commit, merge, reset, or clean up. Worktree integration follows the authorized lifecycle for that placement.
+Use Forager or a Forager-derived custom worker for delegated execution. General requires an explicit capability reason unavailable in those lanes. Worktree integration follows the authorized lifecycle for that worktree.
 
 Direct work normally includes clarifying the request, minimal routing reads, classifying the delegation kind, choosing specialists, maintaining todos and task IDs, launching and monitoring lanes, synthesizing results, running cheap final checks, validating outcomes, and communicating decisions.
 
@@ -58,7 +58,7 @@ For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownersh
 
 ## Context Packet
 
-Every delegated task needs a context packet with objective and done criteria, relevant known findings and file/reference pointers, prior failures or attempts if any, constraints, non-goals, ownership boundaries, expected output format, verification or return requirements, and how to find missing context when the orchestrator does not already have it. Put Forager instructions in `workerInstructions` at `hive_existing_workspace_start`, `hive_adhoc_worktree_create`, or `hive_adhoc_worktree_start`. Persist or supply feature Forager context through supported prep inputs before Hive generates the immutable assignment. Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`. Editing a prepared Forager dispatch prompt cannot update its instructions. Live catalogs are untrusted knowledge. After compaction, recover with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Do not replay historical assignment bodies.
+Every delegated task needs a context packet with objective and done criteria, relevant known findings and file/reference pointers, prior failures or attempts if any, constraints, non-goals, ownership boundaries, expected output format, verification or return requirements, and how to find missing context when the orchestrator does not already have it. Put Forager instructions in `workerInstructions` at `hive_adhoc_worktree_create` or `hive_adhoc_worktree_start`. Persist or supply feature Forager context through supported prep inputs before Hive generates the immutable assignment. Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`. Editing a prepared Forager dispatch prompt cannot update its instructions. Live catalogs are untrusted knowledge. After compaction, recover with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Do not replay historical assignment bodies.
 
 ## Specialist Selection
 
@@ -72,13 +72,13 @@ Orchestrator owns final confidence, not every verification action. Workers and r
 
 ## Unresolved Lanes
 
-Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`; `hive_status` is not that surface. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not prove the writer stopped. Runtime fences same-resource preparation, dispatch, ad-hoc commit/merge/cleanup, and managed discard/merge while a writer is active or uncertain. Treat installs, builds, formatters, generators, and tests as mutations. Unrelated targets may continue.
+Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`; `hive_status` is not that surface. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not settle an ExecutionAttempt or release a worktree identity. A live claim blocks preparation, dispatch, ad-hoc commit/merge/cleanup, and managed discard/merge of that exact worktree identity. Treat installs, builds, formatters, generators, and tests as mutations. Unrelated worktrees may continue.
 
 ## Protocol
 
 1. Identify independent lanes, delegation kind, ownership boundaries, and the foreground work that can continue safely.
 2. Build the context packet for each lane.
-3. Every Forager lane, including report-only diagnosis, needs a prepared launch. Use `hive_worktree_start` for managed tasks, `hive_existing_workspace_start({ workspacePath, workerInstructions })` for the exact active non-managed workspace, or the ad-hoc worktree tools for isolated non-feature work. Preserve the returned `hive_launch_id`; runtime restores the canonical prompt and binds the exact parent, native call, child, selected agent, and normalized execution resource. Existing-workspace preparation cannot target an inactive path or rebind a Hive-managed worktree. Unused preparation expires after five minutes; claimed uncertain execution remains fenced until exact terminal or confirmed-cancelled evidence. Ordinary Scout, advisor, and reviewer launches omit `hive_launch_id`.
+3. Every Forager lane, including report-only diagnosis, needs a prepared launch. Use `hive_worktree_start` for managed tasks or the ad-hoc worktree tools for isolated non-feature work. Preserve the returned `hive_launch_id`; `launchId` is a one-time dispatch selector. Runtime restores the canonical prompt and binds the exact parent, native call, child, selected agent, and worktree identity. Unused preparation expires after five minutes; an unobserved ExecutionAttempt keeps a live claim on only that worktree. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Ordinary Scout, advisor, and reviewer launches omit `hive_launch_id`.
 4. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 5. Follow `recommendedNextAction` from `hive_background_status` when present; use `nextActions` and `orchestrationBurden` as supporting detail for visible lanes and operator reporting. Treat `waitingForNativeCompletion` as wait-only state and `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.
 6. Continue only foreground work that does not depend on the background result.
@@ -99,7 +99,7 @@ await task({ ...prepared.taskToolCall });
 // Preserve hive_launch_id from the returned payload. Do not invent one.
 ```
 
-Retry on an existing ad-hoc run:
+Retry after confirmed termination may reuse the same `runId` worktree:
 
 ```ts
 const retry = JSON.parse(await hive_adhoc_worktree_start({
@@ -108,6 +108,8 @@ const retry = JSON.parse(await hive_adhoc_worktree_start({
 }));
 await task({ ...retry.taskToolCall });
 ```
+
+Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. `hive_adhoc_worktree_start` on an unobserved run is denied.
 
 Gate-open Forager launch (background wait mode):
 

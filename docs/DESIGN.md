@@ -38,6 +38,24 @@ packages/
 └── vscode-hive/          <- VS Code extension (viewer-first plan/overview review, status, limited archive)
 ```
 
+### Execution ownership
+
+Hive admits one managed writer per exact registered worktree identity. Multiple primary sessions in one project may run concurrently on independent worktrees. Two executions conflict when their exact registered worktree identity sets intersect. A composite claim covers the explicit registered worktree set. Generic ancestor or descendant filesystem containment is not the conflict model, so the project root does not overlap every worktree merely because it is an ancestor path. Declared file ownership is not a concurrency guarantee.
+
+An **ExecutionAttempt** is the dispatch and recovery record (`prepared` -> `dispatched` -> `settled`). Persist attempt history in `.hive/execution-attempts.json`. A **live claim** maps exact workspace identity to the active attempt ID. Persisted history is not proof that an execution is still alive. After restart, unsettled attempts become **unobserved** and only those workspaces are quarantined.
+
+When native execution is unobserved or unavailable, only the affected worktree is quarantined; unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
+
+An **integration lock** is operation-scoped: source worktree, destination checkout, and composite repositories. Two integrations into the same destination checkout serialize. Integration while unrelated worktrees are active is allowed when source and destination do not conflict. Integration is refused while the source worktree has an active writer. Context, plan, and constraint mutations keep revision and hash conflict handling.
+
+`hive_existing_workspace_start` is unavailable. Isolated worktrees are the managed placement. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement. The native `general` or helper exception is not a replacement placement.
+
+The background board is observational bookkeeping. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace. `launchId` is a one-time dispatch selector. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation. `NativeTaskLease` values are diagnostic history after one-shot migration onto `nativeTaskLeaseHistory`; they are not scheduling authority.
+
+Cancellation is owner-scoped. Another primary must not automatically terminate another primary's child. Cancel acknowledgement is not proof of termination; live claims remain until termination is observed. Cleanup and archival never imply execution cancellation. Worker-side `hive_worktree_commit` remains for managed feature tasks and is authorized by the live attempt association.
+
+Cross-process process supervision, exactly-once execution across independent OpenCode processes, automatic crash takeover, and distributed locking are unsupported. Independent OpenCode runtimes sharing a project do not get a complete exclusivity promise. Review-workspace claim and cleanup remain a separate security boundary.
+
 ## Data Flow
 
 1. User creates feature via `hive_feature_create`
@@ -182,7 +200,7 @@ Contains execution results:
 
 Each task executes in an isolated workspace under `.hive/.worktrees/{feature}/{task}/`. In legacy mode that path is a single git worktree. In manifest-backed mode that path is a composite workspace, with one git worktree per declared repo under `repos/<repoId>/`.
 
-Agents edit only the task workspace. `hive_worktree_commit` collects the task diff, and `hive_worktree_discard` removes the workspace without applying changes.
+Agents edit only the task workspace. `hive_worktree_commit` collects the task diff and is authorized by the live attempt association. `hive_worktree_discard` removes the workspace without applying changes, and is refused while that worktree has a live or unobserved claim.
 
 ### Multi-Repo Composite Workspaces
 

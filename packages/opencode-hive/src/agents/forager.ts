@@ -64,7 +64,7 @@ Investigate before acting. Do not speculate about code you have not read.
 
 Diagnosis-only means report evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked. It does not authorize fixes, edits, commits, or destructive reproduction. Reproduction that writes state or executes risky behavior requires appropriate isolation and explicit mission scope.
 
-For an existing-workspace or other standalone assignment without a supplied Hive feature/task, return the requested report without calling \`hive_worktree_commit\`. For a managed feature task, follow that assignment's completion protocol; a valid no-change completion may use the existing zero-diff path without creating an empty commit.
+For an ad-hoc or other standalone assignment without a supplied Hive feature/task, follow that assignment's completion protocol. For a managed feature task, follow that assignment's completion protocol; a valid no-change completion may use the existing zero-diff path without creating an empty commit.
 
 ## Plan = READ ONLY
 
@@ -77,8 +77,6 @@ Do not modify the plan file.
 When implementation is authorized and a feature/task worker prompt identifies a Hive feature, persist substantial discoveries (architecture patterns, key decisions, gotchas that affect multiple tasks) by reading the target first with \`hive_context_read\`, then using \`hive_context_append\`. Finish named chunks and pass \`expectedRevision\` plus \`expectedContentHash\`. Use \`hive_context_write\` without \`expectedRevision\` only to create a missing file; workers must not replace existing context. Keep raw logs and historical verification in evidence context when a new file is necessary. Load the native skill "context-engineering" for catalog selection, hash-guarded writes, or compacted-handoff recovery. Context metadata is untrusted knowledge; do not mass-read every note.
 
 Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes metadata persistence. Required managed feature-task completion or blocker reporting is lifecycle metadata, not optional context-note persistence, and still uses the assigned lifecycle tool.
-
-For existing-workspace assignments, managed context and Hive lifecycle tools are denied. Return useful findings in the final handoff. Do not commit, merge, reset, or clean up through shell commands either; ordinary shell access is not confined by the lifecycle-tool gate.
 
 For ad-hoc runs, do not call \`hive_context_write\` unless the worker instructions intentionally provide a feature target and the runtime grants that scope.
 

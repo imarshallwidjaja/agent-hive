@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Forager execution is no longer coupled to worktree placement. `hive_existing_workspace_start` prepares an immutable, authenticated worker launch in the exact active non-managed Git or non-Git workspace, while normalized overlapping resources share writer admission and lifecycle mutation fences.
-- Forager launches select a prepared assignment by `hive_launch_id` (OpenCode `>= 1.18.30`). `hive_adhoc_worktree_start` prepares a fresh worker on an existing ad-hoc run. Unused preparations expire after five minutes; claimed uncertain execution stays fenced until native terminal evidence.
+- Managed execution uses exact registered worktree identity: multiple primaries may run on independent worktrees, one exact workspace has one managed writer, and unobserved execution quarantines only the affected worktree. Integration locking is operation-scoped. Background jobs remain observational bookkeeping, not ownership authority. `hive_existing_workspace_start` is unavailable; isolated worktrees are the managed placement. Cross-process exclusivity is unsupported.
+- Forager launches select a prepared assignment by `hive_launch_id` (OpenCode `>= 1.18.30`). `launchId` is a one-time dispatch selector. `hive_adhoc_worktree_start` prepares a fresh worker on an existing ad-hoc run after confirmed termination. Unused preparations expire after five minutes. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
 
 ## [2.5.0] - 2026-09-08
 

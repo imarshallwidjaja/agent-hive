@@ -421,8 +421,7 @@ describe('Forager verification and tool-scope clarity', () => {
     expect(FORAGER_BEE_PROMPT).toContain('evidence, hypotheses tested and untested');
     expect(FORAGER_BEE_PROMPT).toContain('supported conclusion or unresolved status');
     expect(FORAGER_BEE_PROMPT).toContain('does not authorize fixes, edits, commits, or destructive reproduction');
-    expect(FORAGER_BEE_PROMPT).toContain('existing-workspace or other standalone assignment');
-    expect(FORAGER_BEE_PROMPT).toContain('return the requested report without calling `hive_worktree_commit`');
+    expect(FORAGER_BEE_PROMPT).toContain('ad-hoc or other standalone assignment');
     expect(FORAGER_BEE_PROMPT).toContain('managed feature task');
     expect(FORAGER_BEE_PROMPT).toContain('only when the mission authorizes implementation');
     expect(FORAGER_BEE_PROMPT).toContain('Never revert unrelated or user changes');
@@ -1213,7 +1212,7 @@ describe('Forager (Worker/Coder) prompt', () => {
       'hive_context_write({ name: "learnings", content: "..." })',
     );
     expect(FORAGER_BEE_PROMPT).toContain('For ad-hoc runs, do not call `hive_context_write` unless');
-    expect(FORAGER_BEE_PROMPT).toContain('For existing-workspace assignments, managed context and Hive lifecycle tools are denied.');
+    expect(FORAGER_BEE_PROMPT).not.toContain('For existing-workspace assignments, managed context and Hive lifecycle tools are denied.');
     expect(FORAGER_BEE_PROMPT).toContain('the runtime grants that scope');
     expect(FORAGER_BEE_PROMPT).toContain('When implementation is authorized and a feature/task worker prompt identifies a Hive feature');
   });
@@ -1493,7 +1492,10 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('Background Orchestration');
       expect(hiveToolsContent).toContain('native completion notifications');
       expect(hiveToolsContent).toContain('Cancellation is not rollback');
-      expect(hiveToolsContent).toContain('no-resume retry/escalation');
+      expect(hiveToolsContent).toContain('retry after confirmed termination may reuse');
+      expect(hiveToolsContent).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+      expect(hiveToolsContent).toContain('cannot reuse that run');
+      expect(hiveToolsContent).toContain('Cross-process exclusivity is unsupported');
       expect(hiveToolsContent).not.toContain('task_status');
     });
 
@@ -1738,7 +1740,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
   });
 
   it('contains explicit ad-hoc tool names', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('hive_existing_workspace_start');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_existing_workspace_start');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_create');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_start');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_commit');
@@ -1822,14 +1824,23 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       expect(prompt, name).toContain('taskToolCall.hive_launch_id');
       expect(prompt, name).toContain('do not pass `launchId` as a `task()` argument');
       expect(prompt, name).toContain('editing a prepared Forager dispatch prompt cannot update its instructions');
-      expect(prompt, name).toContain('hive_existing_workspace_start');
+      expect(prompt, name).not.toContain('hive_existing_workspace_start');
       expect(prompt, name).toContain('Unused preparation expires after five minutes');
+      expect(prompt, name).not.toContain('plugin restart invalidates unused preparation');
       expect(prompt, name).not.toContain('binding-in-progress');
       expect(prompt, name).not.toContain('wait for the native correlation event');
       expect(prompt, name).toContain('Ordinary Scout, advisor, and reviewer launches are exempt');
       expect(prompt, name).toContain('taskToolCall');
       expect(prompt, name).toContain('backgroundTaskCall');
+      expect(prompt, name).toContain('one-time dispatch selector');
     }
+    expect(QUEEN_BEE_PROMPT).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(QUEEN_BEE_PROMPT).toContain('cannot reuse that run');
+    expect(SWARM_BEE_PROMPT).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(SWARM_BEE_PROMPT).toContain('cannot reuse that run');
+    expect(HIVE_BUILDER_PROMPT).toContain('Retry after confirmed termination may reuse the same `runId` worktree');
+    expect(HIVE_BUILDER_PROMPT).toContain('cannot reuse that run');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('supersede onto a fresh `attemptSlot` worktree');
     expect(QUEEN_BEE_PROMPT).toContain('creates or reuses the worktree and prepares a Forager; dispatch the returned payload later');
     expect(QUEEN_BEE_PROMPT).toContain('Creates or reuses the worktree and prepares a Forager; dispatch later');
     expect(QUEEN_BEE_PROMPT).not.toContain('creates worktree + Forager');

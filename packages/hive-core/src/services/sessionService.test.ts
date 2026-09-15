@@ -35,28 +35,84 @@ describe('SessionService', () => {
     cleanup();
   });
 
-  it('persists immutable native call associations independently of session origin copies', () => {
-    const lease = { parentSessionId: 'parent', callId: 'call', agent: 'general', projectRoot: PROJECT_ROOT,
-      resourcePaths: [PROJECT_ROOT], runtimeId: 'runtime', capabilityReason: 'Specialist capability' };
-    service.admitNativeTaskLease(lease);
-    expect(() => service.admitNativeTaskLease({ ...lease, agent: 'hive-helper' })).toThrow(/already admitted/);
-    expect(new SessionService(PROJECT_ROOT).listNativeTaskLeases()).toEqual([lease]);
-    service.bindNativeTaskLease('parent', 'call', 'child', 'general');
-    expect(() => service.bindNativeTaskLease('parent', 'call', 'other', 'general')).toThrow(/Contradictory/);
-    expect(() => service.bindNativeTaskLease('parent', 'call', 'child', 'hive-helper')).toThrow(/Contradictory/);
+  it('peeks leftover native task leases without writing sessions.json', () => {
+    const lease = {
+      parentSessionId: 'parent',
+      callId: 'call',
+      agent: 'general',
+      projectRoot: PROJECT_ROOT,
+      resourcePaths: [PROJECT_ROOT],
+      runtimeId: 'runtime',
+      capabilityReason: 'Specialist capability',
+    };
+    const sessionsPath = getGlobalSessionsPath(PROJECT_ROOT);
+    fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
+    fs.writeFileSync(sessionsPath, JSON.stringify({ sessions: [], nativeTaskLeases: [lease] }, null, 2));
+    const before = fs.readFileSync(sessionsPath);
+
+    const peeked = service.peekNativeTaskLeases();
+    expect(peeked).toEqual([lease]);
+    peeked[0]!.callId = 'mutated';
+    expect(fs.readFileSync(sessionsPath)).toEqual(before);
+    expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).nativeTaskLeases).toEqual([lease]);
+  });
+
+  it('does not create sessions.json when peeking leases from a clean project', () => {
+    expect(service.peekNativeTaskLeases()).toEqual([]);
+    expect(fs.existsSync(getGlobalSessionsPath(PROJECT_ROOT))).toBe(false);
+  });
+
+  it('peeks an empty list when ownership is already version 2 and leases are absent', () => {
+    const sessionsPath = getGlobalSessionsPath(PROJECT_ROOT);
+    fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
+    fs.writeFileSync(sessionsPath, JSON.stringify({
+      sessions: [],
+      executionOwnershipVersion: 2,
+    }, null, 2));
+    const before = fs.readFileSync(sessionsPath);
+    expect(service.peekNativeTaskLeases()).toEqual([]);
+    expect(fs.readFileSync(sessionsPath)).toEqual(before);
+  });
+
+  it('extracts leftover native task leases once and clears them from sessions.json', () => {
+    const lease = {
+      parentSessionId: 'parent',
+      callId: 'call',
+      agent: 'general',
+      projectRoot: PROJECT_ROOT,
+      resourcePaths: [PROJECT_ROOT],
+      runtimeId: 'runtime',
+      capabilityReason: 'Specialist capability',
+    };
+    const foragerLease = {
+      parentSessionId: 'parent',
+      callId: 'forager-call',
+      agent: 'forager-worker',
+      projectRoot: PROJECT_ROOT,
+      resourcePaths: [PROJECT_ROOT],
+      runtimeId: 'runtime',
+      foragerLaunchId: 'prepared-launch',
+    };
+    const sessionsPath = getGlobalSessionsPath(PROJECT_ROOT);
+    fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
+    fs.writeFileSync(sessionsPath, JSON.stringify({ sessions: [], nativeTaskLeases: [lease, foragerLease] }, null, 2));
+
+    expect(service.extractNativeTaskLeases()).toEqual([lease, foragerLease]);
+    const stored = JSON.parse(fs.readFileSync(sessionsPath, 'utf8'));
+    expect(stored.nativeTaskLeases).toBeUndefined();
+    expect(stored.executionOwnershipVersion).toBe(2);
+    expect(service.extractNativeTaskLeases()).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).nativeTaskLeases).toBeUndefined();
+
     service.trackGlobal('parent', { sessionKind: 'primary' });
     service.copySessionOrigin('copy', 'parent');
-    expect(new SessionService(PROJECT_ROOT).listNativeTaskLeases()).toHaveLength(1);
-    expect(() => service.finishNativeTaskLease('parent', 'call', 'other')).toThrow(/identity mismatch/);
-    service.finishNativeTaskLease('parent', 'call', 'child');
-    expect(new SessionService(PROJECT_ROOT).listNativeTaskLeases()[0]).toMatchObject({ childSessionId: 'child', terminal: true });
-    const foragerLease = { parentSessionId: 'parent', callId: 'forager-call', agent: 'forager-worker',
-      projectRoot: PROJECT_ROOT, resourcePaths: [PROJECT_ROOT], runtimeId: 'runtime', foragerLaunchId: 'prepared-launch' };
-    expect(() => service.admitNativeTaskLease({ ...foragerLease, foragerLaunchId: ' ' })).toThrow(/Invalid/);
-    expect(() => service.admitNativeTaskLease({ ...foragerLease, capabilityReason: 'Cannot grant native capability authority' })).toThrow(/Invalid/);
-    service.admitNativeTaskLease(foragerLease);
-    expect(new SessionService(PROJECT_ROOT).listNativeTaskLeases()[1]).toEqual(foragerLease);
-    expect(() => service.bindNativeTaskLease('parent', 'forager-call', 'child', 'forager-worker')).toThrow(/Contradictory/);
+    expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).nativeTaskLeases).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).executionOwnershipVersion).toBe(2);
+  });
+
+  it('does not create sessions.json when extracting leases from a clean project', () => {
+    expect(service.extractNativeTaskLeases()).toEqual([]);
+    expect(fs.existsSync(getGlobalSessionsPath(PROJECT_ROOT))).toBe(false);
   });
 
   describe('generic origin copy', () => {
@@ -554,7 +610,7 @@ describe('SessionService', () => {
       expect(() => service.bindFeature('adhoc', 'other-feature')).toThrow(/immutable/);
       expect(service.getGlobal('adhoc')).toEqual(bound);
     });
-    it('keeps existing-workspace execution identity immutable without granting feature or copy authority', () => {
+    it('keeps leftover persisted existing-workspace identity immutable without granting feature or copy authority', () => {
       const bound = service.trackGlobal('existing-workspace', {
         parentSessionId: 'parent',
         projectRoot: PROJECT_ROOT,

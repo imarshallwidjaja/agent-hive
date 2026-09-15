@@ -31,6 +31,10 @@ export function getGlobalSessionsPath(projectRoot: string): string {
   return path.join(getHivePath(projectRoot), 'sessions.json');
 }
 
+export function getExecutionAttemptsPath(projectRoot: string): string {
+  return path.join(getHivePath(projectRoot), 'execution-attempts.json');
+}
+
 export function getProjectContextPath(projectRoot: string): string {
   return path.join(getHivePath(projectRoot), CONTEXT_DIR);
 }

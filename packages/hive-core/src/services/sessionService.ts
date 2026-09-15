@@ -1,8 +1,8 @@
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
-import { getFeaturePath, getGlobalSessionsPath, ensureDir, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
+import { getFeaturePath, getGlobalSessionsPath, ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
 import type { NativeTaskLease, SessionInfo, SessionsJson, StandingConstraintEntry, WorkerAssignmentDescriptor } from '../types.js';
-import { WORKER_ASSIGNMENT_FORMAT } from '../types.js';
+import { EXECUTION_OWNERSHIP_VERSION, WORKER_ASSIGNMENT_FORMAT } from '../types.js';
 
 export const STANDING_CONSTRAINTS_MAX_CHARS = 8000;
 export const LEGACY_STANDING_CONSTRAINT_ID = 'legacy';
@@ -86,45 +86,34 @@ const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
 export class SessionService {
   constructor(private projectRoot: string) {}
 
-  listNativeTaskLeases(): NativeTaskLease[] {
-    return this.getGlobalSessions().nativeTaskLeases ?? [];
+  /**
+   * Read leftover NativeTaskLease records without writing sessions.json.
+   * Does not create the file when it is missing.
+   */
+  peekNativeTaskLeases(): NativeTaskLease[] {
+    const globalPath = getGlobalSessionsPath(this.projectRoot);
+    if (!fileExists(globalPath)) return [];
+    const current = readJson<SessionsJson>(globalPath) || { sessions: [] };
+    return structuredClone(current.nativeTaskLeases ?? []);
   }
 
-  admitNativeTaskLease(lease: NativeTaskLease): void {
-    if (!lease.parentSessionId.trim() || !lease.callId.trim() || !lease.agent.trim() || !lease.runtimeId.trim()
-      || !path.isAbsolute(lease.projectRoot) || !lease.resourcePaths.length
-      || lease.resourcePaths.some(resource => !path.isAbsolute(resource)) || lease.childSessionId || lease.terminal
-      || (lease.capabilityReason !== undefined && !lease.capabilityReason.trim())
-      || (lease.foragerLaunchId !== undefined && (!lease.foragerLaunchId.trim() || lease.capabilityReason !== undefined))) {
-      throw new Error('Invalid native task lease');
+  /**
+   * One-shot cutover helper for ExecutionAttemptService.migrate().
+   * Returns leftover NativeTaskLease records and clears them from sessions.json.
+   */
+  extractNativeTaskLeases(): NativeTaskLease[] {
+    const globalPath = getGlobalSessionsPath(this.projectRoot);
+    if (!fileExists(globalPath)) return [];
+    const current = readJson<SessionsJson>(globalPath) || { sessions: [] };
+    if (current.nativeTaskLeases === undefined && current.executionOwnershipVersion === EXECUTION_OWNERSHIP_VERSION) {
+      return [];
     }
-    this.updateGlobalSessions(data => {
-      const leases = data.nativeTaskLeases ??= [];
-      if (leases.some(item => item.parentSessionId === lease.parentSessionId && item.callId === lease.callId)) {
-        throw new Error('Native task call already admitted');
-      }
-      leases.push(structuredClone(lease));
-    });
-  }
-
-  bindNativeTaskLease(parentSessionId: string, callId: string, childSessionId: string, agent: string): void {
-    this.updateGlobalSessions(data => {
+    return this.updateGlobalSessions(data => {
       const leases = data.nativeTaskLeases ?? [];
-      const lease = leases.find(item => item.parentSessionId === parentSessionId && item.callId === callId);
-      if (!lease || lease.agent !== agent || !childSessionId.trim()
-        || (lease.childSessionId && lease.childSessionId !== childSessionId)
-        || leases.some(item => item !== lease && item.childSessionId === childSessionId)) {
-        throw new Error('Contradictory native task child association');
-      }
-      lease.childSessionId = childSessionId;
-    });
-  }
-
-  finishNativeTaskLease(parentSessionId: string, callId: string, childSessionId: string): void {
-    this.updateGlobalSessions(data => {
-      const lease = data.nativeTaskLeases?.find(item => item.parentSessionId === parentSessionId && item.callId === callId);
-      if (!lease || lease.childSessionId !== childSessionId) throw new Error('Native task terminal identity mismatch');
-      lease.terminal = true;
+      const copy = structuredClone(leases);
+      delete data.nativeTaskLeases;
+      data.executionOwnershipVersion = EXECUTION_OWNERSHIP_VERSION;
+      return copy;
     });
   }
 

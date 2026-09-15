@@ -1785,7 +1785,9 @@ describe('Agent permissions', () => {
       await hooks['chat.message']?.({ sessionID, agent }, { message: { agent }, parts: [] } as any);
       for (const tool of ['read', 'bash', 'glob']) {
         const invocation = hooks['tool.execute.before']?.({ tool, sessionID, callID: tool }, { args: {} } as any);
-        if (agent === 'general') await expect(invocation).rejects.toThrow(/no corroborated admitted task call/);
+        if (agent === 'general') {
+          await expect(invocation).rejects.toThrow(/no corroborated admitted task call|runtime-local helper bind/);
+        }
         else await invocation;
       }
       const output = { messages: [{ info: { id: 'message', sessionID, role: 'user' }, parts: [{ type: 'text', text: 'Continue' }] }] };
@@ -2156,7 +2158,7 @@ describe('Agent permissions', () => {
       'hive-child': 'root',
       'swarm-child': 'root',
       'builder-child': 'root',
-      'forager-child': 'root',
+      'forager-resume-child': 'root',
     };
     const repoRoot = createPermissionRoot();
     const hooks = await plugin({
@@ -2181,7 +2183,7 @@ describe('Agent permissions', () => {
       ['hive-child', 'hive-master'],
       ['swarm-child', 'swarm-orchestrator'],
       ['builder-child', 'hive-builder'],
-      ['forager-child', 'forager-worker'],
+      ['forager-resume-child', 'forager-worker'],
     ] as const) {
       const parentID = sessions[sessionID];
       if (parentID !== undefined) {
@@ -2234,7 +2236,7 @@ describe('Agent permissions', () => {
 
     const resumedChildSystem = { system: ['base'] };
     await (hooks['experimental.chat.system.transform'] as any)?.(
-      { sessionID: 'forager-child', agent: 'forager-worker' },
+      { sessionID: 'forager-resume-child', agent: 'forager-worker' },
       resumedChildSystem,
     );
     expect(resumedChildSystem.system.join('\n')).toContain('return the exact clarification question in your terminal response');
@@ -4292,13 +4294,17 @@ describe('Per-agent tool filtering', () => {
       });
       expect(createWorkspace).not.toHaveBeenCalled();
       expect(readFileSync(provider.countFile, 'utf8')).toBe('xx');
-      expect({
+      const after = {
         head: gitAt(repository, ['rev-parse', 'HEAD']),
-        status: gitAt(repository, statusArgs),
+        status: gitAt(repository, statusArgs)
+          .split('\n')
+          .filter(line => line && !line.endsWith('.hive/execution-attempts.json'))
+          .join('\n'),
         fetchHead: existsSync(path.join(repository, '.git', 'FETCH_HEAD'))
           ? readFileSync(path.join(repository, '.git', 'FETCH_HEAD'), 'utf8')
           : null,
-      }).toEqual({
+      };
+      expect(after).toEqual({
         ...before,
         status: [
           '?? .hive/moving-provider-bin/gh',
@@ -9337,7 +9343,7 @@ describe('Per-agent tool filtering', () => {
     const agents = await buildConfig('unified');
     const helperTools = agents['hive-helper']?.tools;
     expect(helperTools).toBeTruthy();
-    expect(helperTools!['hive_existing_workspace_start']).toBe(false);
+    expect(helperTools!['hive_existing_workspace_start']).toBeUndefined();
     expect(helperTools!['hive_adhoc_worktree_create']).toBe(false);
     expect(helperTools!['hive_adhoc_worktree_commit']).toBe(false);
     expect(helperTools!['hive_adhoc_merge']).toBe(false);

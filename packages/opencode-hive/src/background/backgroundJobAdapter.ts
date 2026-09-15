@@ -43,6 +43,13 @@ export interface BackgroundJobAdapterOptions {
   resolveClaimedLaunchId?: (sessionId: string, callId: string) => string | undefined;
   parseLifecycleEvent?: (input: unknown, output: unknown, context?: TaskLifecycleContext) => ParsedTaskLifecycleEvent | undefined;
   warn?: (message: string) => void;
+  onNativeBackgroundTerminal?: (event: {
+    taskId: string;
+    launchId?: string;
+    callId?: string;
+    parentSessionId: string;
+    state: 'completed' | 'error' | 'cancelled';
+  }) => void;
 }
 
 export function classifyRuntimeEpochStaleJobs(input: {
@@ -303,6 +310,13 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
           lastStatusError: status.error?.message,
           statusUncertain: status.timedOut,
         });
+        options.onNativeBackgroundTerminal?.({
+          taskId: event.taskId,
+          launchId: statusJob.launchId,
+          callId: statusJob.callId,
+          parentSessionId: event.parentSessionId,
+          state,
+        });
       } else {
         options.service.updateRuntimeState(event.taskId, state, {
           resultSummary: status.result,
@@ -339,6 +353,13 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
             resultSummary: parsed.result,
             lastStatusError: parsed.error?.message,
             statusUncertain: parsed.timedOut,
+          });
+          options.onNativeBackgroundTerminal?.({
+            taskId: parsed.task_id,
+            launchId: job.launchId,
+            callId: job.callId,
+            parentSessionId: part.sessionID ?? parentSessionId ?? '',
+            state,
           });
         } catch (error) {
           warn(`[hive:background] failed to update background task ${parsed.task_id} from completion notification: ${error instanceof Error ? error.message : String(error)}`);

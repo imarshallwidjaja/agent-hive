@@ -470,22 +470,52 @@ export class WorktreeService {
     return path.join(this.config.hiveDir, ".worktrees");
   }
 
-  /** Legacy single-repo worktree path. */
-  getWorktreePath(feature: string, step: string): string {
-    return path.join(this.getWorktreesDir(), feature, step);
+  private normalizeAttemptSlot(attemptSlot?: string): string | undefined {
+    if (attemptSlot === undefined) return undefined;
+    if (!attemptSlot.trim() || attemptSlot !== attemptSlot.trim()
+      || attemptSlot.includes('--') || attemptSlot.includes('/') || attemptSlot.includes('\\')
+      || attemptSlot.includes('\0') || attemptSlot.includes('..')
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(attemptSlot)) {
+      throw new Error(`Invalid worktree attemptSlot: ${JSON.stringify(attemptSlot)}`);
+    }
+    return attemptSlot;
+  }
+
+  private worktreeDirectoryName(step: string, attemptSlot?: string): string {
+    const slot = this.normalizeAttemptSlot(attemptSlot);
+    return slot ? `${step}--${slot}` : step;
+  }
+
+  private worktreeBranchStep(step: string, attemptSlot?: string): string {
+    const slot = this.normalizeAttemptSlot(attemptSlot);
+    return slot ? `${step}-${slot}` : step;
+  }
+
+  private parseWorktreeStepDirectory(directoryName: string): { step: string; attemptSlot?: string } {
+    const separator = directoryName.lastIndexOf('--');
+    if (separator <= 0 || separator + 2 >= directoryName.length) return { step: directoryName };
+    return {
+      step: directoryName.slice(0, separator),
+      attemptSlot: directoryName.slice(separator + 2),
+    };
+  }
+
+  /** Legacy single-repo worktree path. Optional attemptSlot uses `{step}--{slot}`. */
+  getWorktreePath(feature: string, step: string, attemptSlot?: string): string {
+    return path.join(this.getWorktreesDir(), feature, this.worktreeDirectoryName(step, attemptSlot));
   }
 
   /** Composite workspace root for a (feature, task). Shares disk location with legacy path. */
-  private getCompositeRoot(feature: string, step: string): string {
-    return path.join(this.getWorktreesDir(), feature, step);
+  private getCompositeRoot(feature: string, step: string, attemptSlot?: string): string {
+    return path.join(this.getWorktreesDir(), feature, this.worktreeDirectoryName(step, attemptSlot));
   }
 
-  private getRepoWorktreePath(feature: string, step: string, repoId: string): string {
-    return path.join(this.getCompositeRoot(feature, step), 'repos', repoId);
+  private getRepoWorktreePath(feature: string, step: string, repoId: string, attemptSlot?: string): string {
+    return path.join(this.getCompositeRoot(feature, step, attemptSlot), 'repos', repoId);
   }
 
-  private getWorkspaceManifestPath(feature: string, step: string): string {
-    return path.join(this.getCompositeRoot(feature, step), 'workspace.json');
+  private getWorkspaceManifestPath(feature: string, step: string, attemptSlot?: string): string {
+    return path.join(this.getCompositeRoot(feature, step, attemptSlot), 'workspace.json');
   }
 
   private async getStepStatusPath(feature: string, step: string): Promise<string> {
@@ -501,17 +531,17 @@ export class WorktreeService {
     return path.join(featurePath, "execution", step, "status.json");
   }
 
-  private getLegacyBranchName(feature: string, step: string): string {
-    return `hive/${feature}/${step}`;
+  private getLegacyBranchName(feature: string, step: string, attemptSlot?: string): string {
+    return `hive/${feature}/${this.worktreeBranchStep(step, attemptSlot)}`;
   }
 
-  private getRepoBranchName(repoId: string, feature: string, step: string): string {
-    return `hive/${repoId}/${feature}/${step}`;
+  private getRepoBranchName(repoId: string, feature: string, step: string, attemptSlot?: string): string {
+    return `hive/${repoId}/${feature}/${this.worktreeBranchStep(step, attemptSlot)}`;
   }
 
   /** Back-compat alias used by tests/consumers expecting the single-branch form. */
-  private getBranchName(feature: string, step: string): string {
-    return this.getLegacyBranchName(feature, step);
+  private getBranchName(feature: string, step: string, attemptSlot?: string): string {
+    return this.getLegacyBranchName(feature, step, attemptSlot);
   }
 
   private resolveRepositories(): ResolvedRepository[] | undefined {
@@ -564,25 +594,25 @@ export class WorktreeService {
     return { repos, repoIds };
   }
 
-  async create(feature: string, step: string, baseBranch?: string): Promise<WorktreeInfo> {
+  async create(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<WorktreeInfo> {
     const composite = await this.isCompositeTask(feature, step);
     if (composite) {
-      return this.createComposite(feature, step, composite.repos, composite.repoIds, baseBranch);
+      return this.createComposite(feature, step, composite.repos, composite.repoIds, baseBranch, attemptSlot);
     }
-    return this.createLegacy(feature, step, baseBranch);
+    return this.createLegacy(feature, step, baseBranch, attemptSlot);
   }
 
-  private async createLegacy(feature: string, step: string, baseBranch?: string): Promise<WorktreeInfo> {
-    const worktreePath = this.getWorktreePath(feature, step);
+  private async createLegacy(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<WorktreeInfo> {
+    const worktreePath = this.getWorktreePath(feature, step, attemptSlot);
     await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
-    const branchName = this.getLegacyBranchName(feature, step);
+    const branchName = this.getLegacyBranchName(feature, step, attemptSlot);
     const git = this.getGit();
 
     await fs.mkdir(path.dirname(worktreePath), { recursive: true });
 
     const base = baseBranch || (await git.revparse(["HEAD"])).trim();
 
-    const existing = await this.get(feature, step);
+    const existing = await this.get(feature, step, attemptSlot);
     if (existing) {
       return existing;
     }
@@ -617,10 +647,11 @@ export class WorktreeService {
     repos: ResolvedRepository[],
     repoIds: string[],
     baseBranch?: string,
+    attemptSlot?: string,
   ): Promise<WorktreeInfo> {
     // Existing composite workspace -> return aggregate info
-    const existing = await this.readWorkspaceManifest(feature, step)
-      ? await this.get(feature, step)
+    const existing = await this.readWorkspaceManifest(feature, step, attemptSlot)
+      ? await this.get(feature, step, attemptSlot)
       : null;
     if (existing) {
       return existing;
@@ -636,7 +667,7 @@ export class WorktreeService {
     }
 
     // Preflight: no existing composite root, and no branch collisions in any target repo
-    const compositeRoot = this.getCompositeRoot(feature, step);
+    const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
     let compositeRootExists = false;
     try {
       await fs.access(compositeRoot);
@@ -653,7 +684,7 @@ export class WorktreeService {
 
     for (const repoId of repoIds) {
       const repo = byId.get(repoId)!;
-      const branchName = this.getRepoBranchName(repoId, feature, step);
+      const branchName = this.getRepoBranchName(repoId, feature, step, attemptSlot);
       const repoGit = this.getGit(repo.path);
       try {
         const branches = await repoGit.branch();
@@ -679,8 +710,8 @@ export class WorktreeService {
     try {
       for (const repoId of repoIds) {
         const repo = byId.get(repoId)!;
-        const repoWtPath = this.getRepoWorktreePath(feature, step, repoId);
-        const branchName = this.getRepoBranchName(repoId, feature, step);
+        const repoWtPath = this.getRepoWorktreePath(feature, step, repoId, attemptSlot);
+        const branchName = this.getRepoBranchName(repoId, feature, step, attemptSlot);
         const repoGit = this.getGit(repo.path);
         const base = baseBranch || (await repoGit.revparse(["HEAD"])).trim();
 
@@ -722,7 +753,7 @@ export class WorktreeService {
         createdAt: new Date().toISOString(),
       };
       await fs.writeFile(
-        this.getWorkspaceManifestPath(feature, step),
+        this.getWorkspaceManifestPath(feature, step, attemptSlot),
         JSON.stringify(manifest, null, 2),
         'utf-8',
       );
@@ -747,9 +778,9 @@ export class WorktreeService {
       // Rollback created per-repo worktrees and branches
       for (const created of createdRepos) {
         try {
-          await created.git.raw(["worktree", "remove", this.getRepoWorktreePath(feature, step, created.repoId), "--force"]);
+          await created.git.raw(["worktree", "remove", this.getRepoWorktreePath(feature, step, created.repoId, attemptSlot), "--force"]);
         } catch {
-          await fs.rm(this.getRepoWorktreePath(feature, step, created.repoId), { recursive: true, force: true }).catch(() => {});
+          await fs.rm(this.getRepoWorktreePath(feature, step, created.repoId, attemptSlot), { recursive: true, force: true }).catch(() => {});
         }
         try {
           await created.git.raw(["worktree", "prune"]);
@@ -789,17 +820,17 @@ export class WorktreeService {
     await fs.writeFile(statusPath, JSON.stringify(current, null, 2), 'utf-8');
   }
 
-  private async readWorkspaceManifest(feature: string, step: string): Promise<WorkspaceManifest | null> {
-    const manifestPath = this.getWorkspaceManifestPath(feature, step);
+  private async readWorkspaceManifest(feature: string, step: string, attemptSlot?: string): Promise<WorkspaceManifest | null> {
+    const manifestPath = this.getWorkspaceManifestPath(feature, step, attemptSlot);
     await this.assertNoSymlinkComponents(path.parse(manifestPath).root, manifestPath, true);
-    const manifest = await readCompositeWorkspaceManifest(this.getCompositeRoot(feature, step));
+    const manifest = await readCompositeWorkspaceManifest(this.getCompositeRoot(feature, step, attemptSlot));
     return manifest?.mode === 'composite' ? manifest : null;
   }
 
-  async get(feature: string, step: string): Promise<WorktreeInfo | null> {
-    const manifest = await this.readWorkspaceManifest(feature, step);
+  async get(feature: string, step: string, attemptSlot?: string): Promise<WorktreeInfo | null> {
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
-      const compositeRoot = this.getCompositeRoot(feature, step);
+      const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
       const repos: Record<string, WorktreeRepoInfo> = {};
       const baseCommits: Record<string, string> = { ...manifest.baseCommits };
       const repoIds = Object.keys(manifest.repos);
@@ -828,8 +859,8 @@ export class WorktreeService {
     }
 
     // Legacy single-repo worktree
-    const worktreePath = this.getWorktreePath(feature, step);
-    const branchName = this.getLegacyBranchName(feature, step);
+    const worktreePath = this.getWorktreePath(feature, step, attemptSlot);
+    const branchName = this.getLegacyBranchName(feature, step, attemptSlot);
     try {
       await fs.access(worktreePath);
     } catch (error) {
@@ -849,21 +880,22 @@ export class WorktreeService {
     };
   }
 
-  async getDiff(feature: string, step: string, baseCommit?: string): Promise<DiffResult> {
-    await this.get(feature, step);
-    const manifest = await this.readWorkspaceManifest(feature, step);
+  async getDiff(feature: string, step: string, baseCommit?: string, attemptSlot?: string): Promise<DiffResult> {
+    await this.get(feature, step, attemptSlot);
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
-      return this.getCompositeDiff(feature, step, manifest);
+      return this.getCompositeDiff(feature, step, manifest, attemptSlot);
     }
-    return this.getLegacyDiff(feature, step, baseCommit);
+    return this.getLegacyDiff(feature, step, baseCommit, attemptSlot);
   }
 
   private async getCompositeDiff(
     feature: string,
     step: string,
     manifest: WorkspaceManifest,
+    attemptSlot?: string,
   ): Promise<DiffResult> {
-    const compositeRoot = this.getCompositeRoot(feature, step);
+    const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
     const repoIds = Object.keys(manifest.repos).sort();
     const repos: Record<string, RepoDiffResult> = {};
     const aggregatedFiles: string[] = [];
@@ -956,7 +988,7 @@ export class WorktreeService {
     }
   }
 
-  private async getLegacyDiff(feature: string, step: string, baseCommit?: string): Promise<DiffResult> {
+  private async getLegacyDiff(feature: string, step: string, baseCommit?: string, attemptSlot?: string): Promise<DiffResult> {
     const statusPath = await this.getStepStatusPath(feature, step);
 
     let base = baseCommit;
@@ -967,12 +999,12 @@ export class WorktreeService {
       } catch {}
     }
 
-    return this.diffOneRepo(this.getWorktreePath(feature, step), base);
+    return this.diffOneRepo(this.getWorktreePath(feature, step, attemptSlot), base);
   }
 
-  async exportPatch(feature: string, step: string, baseBranch?: string): Promise<string> {
-    await this.get(feature, step);
-    const worktreePath = this.getWorktreePath(feature, step);
+  async exportPatch(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<string> {
+    await this.get(feature, step, attemptSlot);
+    const worktreePath = this.getWorktreePath(feature, step, attemptSlot);
     const patchPath = path.join(worktreePath, "..", `${step}.patch`);
     const base = baseBranch || "HEAD~1";
     const worktreeGit = this.getGit(worktreePath);
@@ -983,8 +1015,8 @@ export class WorktreeService {
     return patchPath;
   }
 
-  async applyDiff(feature: string, step: string, baseBranch?: string): Promise<ApplyResult> {
-    const { hasDiff, diffContent, filesChanged } = await this.getDiff(feature, step, baseBranch);
+  async applyDiff(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<ApplyResult> {
+    const { hasDiff, diffContent, filesChanged } = await this.getDiff(feature, step, baseBranch, attemptSlot);
 
     if (!hasDiff) {
       return { success: true, filesAffected: [] };
@@ -1072,13 +1104,14 @@ export class WorktreeService {
     step: string,
     deleteBranch = false,
     options: RemoveOptions = {},
+    attemptSlot?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
-    await this.get(feature, step);
-    const manifest = await this.readWorkspaceManifest(feature, step);
+    await this.get(feature, step, attemptSlot);
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
-      return this.removeComposite(feature, step, manifest, deleteBranch, options);
+      return this.removeComposite(feature, step, manifest, deleteBranch, options, attemptSlot);
     }
-    return this.removeLegacy(feature, step, deleteBranch, options);
+    return this.removeLegacy(feature, step, deleteBranch, options, attemptSlot);
   }
 
   private async removeLegacy(
@@ -1086,9 +1119,10 @@ export class WorktreeService {
     step: string,
     deleteBranch: boolean,
     options: RemoveOptions = {},
+    attemptSlot?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
-    const worktreePath = this.getWorktreePath(feature, step);
-    const branchName = this.getLegacyBranchName(feature, step);
+    const worktreePath = this.getWorktreePath(feature, step, attemptSlot);
+    const branchName = this.getLegacyBranchName(feature, step, attemptSlot);
     const git = this.getGit();
 
     if (deleteBranch) {
@@ -1112,8 +1146,9 @@ export class WorktreeService {
     manifest: WorkspaceManifest,
     deleteBranch: boolean,
     options: RemoveOptions = {},
+    attemptSlot?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
-    const compositeRoot = this.getCompositeRoot(feature, step);
+    const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
     const reposById = this.trustedRepositoriesForManifest(manifest);
 
     const perRepo: Array<{ repoId: string; cleanup: WorktreeCleanupOutcome }> = [];
@@ -1126,6 +1161,7 @@ export class WorktreeService {
         repositoryPath,
         deleteBranch,
         options,
+        attemptSlot,
       );
       perRepo.push({ repoId, cleanup: perRepoResult });
     }
@@ -1195,8 +1231,9 @@ export class WorktreeService {
         throw error;
       });
 
-      for (const step of steps) {
-        const info = await this.get(feat, step);
+      for (const entry of steps) {
+        const { step, attemptSlot } = this.parseWorktreeStepDirectory(entry);
+        const info = await this.get(feat, step, attemptSlot);
         if (info) {
           results.push(info);
         }
@@ -1221,14 +1258,15 @@ export class WorktreeService {
 
       const steps = await fs.readdir(featurePath).catch(() => []);
 
-      for (const step of steps) {
-        const worktreePath = path.join(featurePath, step);
+      for (const entry of steps) {
+        const { step, attemptSlot } = this.parseWorktreeStepDirectory(entry);
+        const worktreePath = path.join(featurePath, entry);
         const stepStat = await fs.lstat(worktreePath).catch(() => null);
 
         if (stepStat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${worktreePath})`);
         if (!stepStat?.isDirectory()) continue;
 
-        const manifest = await this.readWorkspaceManifest(feat, step);
+        const manifest = await this.readWorkspaceManifest(feat, step, attemptSlot);
         if (manifest) {
           const trustedById = this.trustedRepositoriesForManifest(manifest);
           // Composite: stale if any per-repo worktree fails revparse
@@ -1252,7 +1290,7 @@ export class WorktreeService {
             }
           }
           if (stale) {
-            await this.removeComposite(feat, step, manifest, false);
+            await this.removeComposite(feat, step, manifest, false, {}, attemptSlot);
             removed.push(worktreePath);
           }
           continue;
@@ -1263,7 +1301,7 @@ export class WorktreeService {
           const worktreeGit = this.getGit(worktreePath);
           await worktreeGit.revparse(["HEAD"]);
         } catch {
-          await this.removeLegacy(feat, step, false);
+          await this.removeLegacy(feat, step, false, {}, attemptSlot);
           removed.push(worktreePath);
         }
       }
@@ -1339,13 +1377,13 @@ export class WorktreeService {
     }
   }
 
-  async commitChanges(feature: string, step: string, message?: string): Promise<CommitResult> {
-    await this.get(feature, step);
-    const manifest = await this.readWorkspaceManifest(feature, step);
+  async commitChanges(feature: string, step: string, message?: string, attemptSlot?: string): Promise<CommitResult> {
+    await this.get(feature, step, attemptSlot);
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
-      return this.commitComposite(feature, step, manifest, message);
+      return this.commitComposite(feature, step, manifest, message, attemptSlot);
     }
-    return this.commitLegacy(feature, step, message);
+    return this.commitLegacy(feature, step, message, attemptSlot);
   }
 
   private async commitComposite(
@@ -1353,8 +1391,9 @@ export class WorktreeService {
     step: string,
     manifest: WorkspaceManifest,
     message?: string,
+    attemptSlot?: string,
   ): Promise<CommitResult> {
-    const compositeRoot = this.getCompositeRoot(feature, step);
+    const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
     const repoIds = Object.keys(manifest.repos).sort();
     const repos: Record<string, RepoCommitResult> = {};
     let anyCommitted = false;
@@ -1489,8 +1528,8 @@ export class WorktreeService {
     }
   }
 
-  private async commitLegacy(feature: string, step: string, message?: string): Promise<CommitResult> {
-    return aggregateFromRepoCommit(await this.commitOneRepo(this.getWorktreePath(feature, step), message));
+  private async commitLegacy(feature: string, step: string, message?: string, attemptSlot?: string): Promise<CommitResult> {
+    return aggregateFromRepoCommit(await this.commitOneRepo(this.getWorktreePath(feature, step, attemptSlot), message));
   }
 
   async merge(
@@ -1499,6 +1538,7 @@ export class WorktreeService {
     strategy: "merge" | "squash" | "rebase" = "squash",
     message?: string,
     options: MergeOptions = {},
+    attemptSlot?: string,
   ): Promise<MergeResult> {
     const cleanupMode = options.cleanup ?? 'none';
     const preserveConflicts = options.preserveConflicts ?? false;
@@ -1509,7 +1549,7 @@ export class WorktreeService {
 
     let registered: WorktreeInfo | null;
     try {
-      registered = await this.get(feature, step);
+      registered = await this.get(feature, step, attemptSlot);
     } catch (error) {
       // Only typed identity denials map to a fresh run. An untyped lookup
       // failure (transient filesystem or Git error) is inspectable state, not
@@ -1530,15 +1570,15 @@ export class WorktreeService {
         { partial: false },
       );
     }
-    const manifest = await this.readWorkspaceManifest(feature, step);
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
       return this.mergeComposite(feature, step, manifest, strategy, message, {
         cleanup: cleanupMode,
         preserveConflicts,
-      });
+      }, attemptSlot);
     }
 
-    const branchName = this.getLegacyBranchName(feature, step);
+    const branchName = this.getLegacyBranchName(feature, step, attemptSlot);
     const repoResult = await this.mergeOneRepo({
       git: this.getGit(),
       branchName,
@@ -1546,7 +1586,7 @@ export class WorktreeService {
       message,
       preserveConflicts,
       cleanupMode,
-      cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch, { allowUnmergedCommits: true }),
+      cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch, { allowUnmergedCommits: true }, attemptSlot),
     });
     return {
       success: repoResult.success,
@@ -1577,6 +1617,7 @@ export class WorktreeService {
     strategy: "merge" | "squash" | "rebase",
     message: string | undefined,
     options: { cleanup: 'none' | 'worktree' | 'worktree+branch'; preserveConflicts: boolean },
+    attemptSlot?: string,
   ): Promise<MergeResult> {
     const repoIds = Object.keys(manifest.repos).sort();
     const trustedById = this.trustedRepositoriesForManifest(manifest);
@@ -1736,12 +1777,13 @@ export class WorktreeService {
           repoRoot,
           deleteBranch,
           { allowUnmergedCommits: true },
+          attemptSlot,
         );
         repos[repoId].cleanup = toMergeCleanupBlock(repoCleanup);
         perRepo.push({ repoId, cleanup: repoCleanup });
       }
       // Tear down the composite root after per-repo cleanup.
-      const compositeRoot = this.getCompositeRoot(feature, step);
+      const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
       let rootFailure: { cause: string } | undefined;
       try {
         await fs.rm(compositeRoot, { recursive: true, force: true });
@@ -1826,8 +1868,9 @@ export class WorktreeService {
     repositoryPath: string,
     deleteBranch: boolean,
     options: RemoveOptions = {},
+    attemptSlot?: string,
   ): Promise<WorktreeCleanupOutcome> {
-    const compositeRoot = this.getCompositeRoot(feature, step);
+    const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
     const repoWtPath = path.join(compositeRoot, entry.path);
     const repoGit = this.getGit(repositoryPath);
 
@@ -2156,11 +2199,11 @@ export class WorktreeService {
       .filter(Boolean);
   }
 
-  async hasUncommittedChanges(feature: string, step: string): Promise<boolean> {
-    await this.get(feature, step);
-    const manifest = await this.readWorkspaceManifest(feature, step);
+  async hasUncommittedChanges(feature: string, step: string, attemptSlot?: string): Promise<boolean> {
+    await this.get(feature, step, attemptSlot);
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
-      const compositeRoot = this.getCompositeRoot(feature, step);
+      const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
       for (const [, entry] of Object.entries(manifest.repos)) {
         const repoWt = path.join(compositeRoot, entry.path);
         try {
@@ -2181,7 +2224,7 @@ export class WorktreeService {
       return false;
     }
 
-    const worktreePath = this.getWorktreePath(feature, step);
+    const worktreePath = this.getWorktreePath(feature, step, attemptSlot);
 
     try {
       const worktreeGit = this.getGit(worktreePath);

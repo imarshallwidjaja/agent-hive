@@ -6,7 +6,8 @@
 .hive/
 ├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
 ├── sessions.json              # Optional top-level session index (when used)
-├── background-jobs.json       # Background board state (tool-owned, env-gated)
+├── execution-attempts.json    # ExecutionAttempt history (dispatch/recovery; not liveness proof)
+├── background-jobs.json       # Background board (observational bookkeeping, not an ownership registry)
 ├── context/                    # Project-wide managed knowledge
 │   ├── index.json              # Schema-v1 operational index
 │   └── {name}.md               # Raw Markdown with discovery frontmatter
@@ -43,6 +44,20 @@
 Runtime Agent Hive configuration is **not** stored under `.hive/`. It lives only at `~/.config/opencode/agent_hive.json`. Project-local `agent_hive.json` / `agent-hive.json` files are ignored.
 
 Single-repo projects use the git root directly; multi-repo topology, when needed, is stored in this manifest.
+
+## Execution attempts and live claims
+
+`.hive/execution-attempts.json` stores **ExecutionAttempt** history. An ExecutionAttempt is the dispatch and recovery record for a managed feature-task or ad-hoc launch. Its lifecycle is `prepared` -> `dispatched` -> `settled`. A record holds the attempt id, task or ad-hoc run identity, originating primary session, immutable assignment reference, exact workspace identity, optional `attemptSlot` for feature-task worktrees, branch and base commit where applicable, dispatch state, optional native child session ID, observed outcome, and report or result references.
+
+A **live claim** maps exact workspace identity to the active attempt ID. Composite claims cover the explicit registered worktree set. Two executions conflict when those identity sets intersect. One exact registered workspace may have only one managed writer at a time.
+
+Persisted history is not proof that an execution is still alive. After restart, unsettled attempts become **unobserved** and only those workspaces are quarantined. Unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
+
+Feature-task retries record an optional `attemptSlot`. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
+
+`.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It is not an ownership registry. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace.
+
+One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory` on `.hive/execution-attempts.json`. Exact worktree-path, non-placeholder, non-capability leases become unobserved dispatched ExecutionAttempt claims once. This is not an ongoing second admission API. After migration, `sessions.json` does not keep `nativeTaskLeases` as a live sibling.
 
 ## Prompt Files
 
@@ -334,7 +349,9 @@ Task `status.json` keeps append-only `workerAttempts` records for allocated, pub
 
 Every catalog delivery and compaction replay revalidates the current runtime root and descriptor. Root relocation, legacy prompt shape, or any exact identity/hash mismatch fails explicitly. Recovery creates a fresh attempt and child at the newly trusted root; it never edits old session or assignment records in place.
 
-Once an assignment or ad-hoc run is bound, ordinary session patches cannot change its descriptor, root, task, feature, parent, or agent classification. Assignment identity requires validation even if persisted classification disagrees. Dispatch and compaction consume the exact bytes returned by hash validation; replay never reopens the artifact after validating it.
+Once an assignment or ad-hoc run is bound, ordinary session patches cannot change its descriptor, root, task, feature, parent, or agent classification. Assignment identity requires validation even if persisted classification disagrees. Dispatch and compaction consume the exact bytes returned by hash validation; replay never reopens the artifact after validating it. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation.
+
+One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory`. Exact worktree-path, non-placeholder, non-capability leases become unobserved dispatched ExecutionAttempt claims once. This is not an ongoing second admission API. Live claims live with ExecutionAttempt records, not with a lease array on `sessions.json`.
 
 ## Migration from Legacy
 

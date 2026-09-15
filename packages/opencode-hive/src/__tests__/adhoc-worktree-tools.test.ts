@@ -103,7 +103,7 @@ async function loadHooks(directory: string, terminalSessionIDs?: Set<string>) {
       }),
       ...(terminalSessionIDs ? {
         status: async () => ({
-          data: Object.fromEntries([...terminalSessionIDs].map(sessionID => [sessionID, { type: 'idle' }])),
+          data: Object.fromEntries([...terminalSessionIDs].map(sessionID => [sessionID, { type: 'closed' }])),
         }),
         messages: async ({ path: inputPath }: { path: { id: string } }) => ({
           data: terminalSessionIDs.has(inputPath.id)
@@ -155,8 +155,8 @@ describe('ad-hoc worktree plugin tools', () => {
     expect(HIVE_TOOL_NAMES).toContain('hive_adhoc_cleanup');
   });
 
-  it('registers existing-workspace preparation separately from ad-hoc lifecycle tools', () => {
-    expect(HIVE_TOOL_NAMES).toContain('hive_existing_workspace_start');
+  it('does not register existing-workspace preparation as a Hive tool', () => {
+    expect(HIVE_TOOL_NAMES).not.toContain('hive_existing_workspace_start');
   });
 
   it('does not include opencode-native task_status in HIVE_TOOL_NAMES', () => {

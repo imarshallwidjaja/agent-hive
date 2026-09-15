@@ -38,7 +38,6 @@ export const HIVE_TOOL_NAMES = [
   'hive_worktree_commit',
   'hive_worktree_discard',
   'hive_merge',
-  'hive_existing_workspace_start',
   'hive_adhoc_worktree_create',
   'hive_adhoc_worktree_start',
   'hive_adhoc_worktree_commit',

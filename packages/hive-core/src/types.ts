@@ -348,6 +348,66 @@ export interface SessionsJson {
   master?: string;
   sessions: SessionInfo[];
   nativeTaskLeases?: NativeTaskLease[];
+  /** Set to 2 after NativeTaskLease values are extracted into execution-attempts history. */
+  executionOwnershipVersion?: 2;
+}
+
+export const EXECUTION_ATTEMPTS_SCHEMA_VERSION = 1;
+export const EXECUTION_OWNERSHIP_VERSION = 2;
+export const PREPARED_ATTEMPT_TTL_MS = 5 * 60 * 1000;
+export const PLACEHOLDER_NATIVE_CHILD_ID = 'forager-child';
+
+export type ExecutionAttemptKind = 'task' | 'adhoc';
+export type ExecutionDispatchState = 'prepared' | 'dispatched' | 'settled';
+export type ExecutionObservation = 'observed' | 'unobserved';
+export type ExecutionObservedOutcome =
+  | 'completed'
+  | 'failed'
+  | 'blocked'
+  | 'cancelled'
+  | 'superseded'
+  | 'expired';
+
+export interface ExecutionAttemptAssignmentRef {
+  locator?: string;
+  contentHash?: string;
+  taskAttempt: number;
+}
+
+export interface ExecutionAttempt {
+  id: string;
+  kind: ExecutionAttemptKind;
+  featureName?: string;
+  taskFolder?: string;
+  runId?: string;
+  originatingPrimarySession: string;
+  assignment?: ExecutionAttemptAssignmentRef;
+  /** Exact registered worktree paths (realpath). Composite workspaces list every repo worktree. */
+  workspaceIdentities: string[];
+  /** Worktree directory/branch slot for supersede retries (`{step}--{slot}`). */
+  attemptSlot?: string;
+  branch?: string;
+  baseCommit?: string;
+  launchId?: string;
+  dispatchState: ExecutionDispatchState;
+  nativeChildSessionId?: string;
+  nativeCallId?: string;
+  observation?: ExecutionObservation;
+  observedOutcome?: ExecutionObservedOutcome;
+  reportLocator?: string;
+  reportContentHash?: string;
+  supersededBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  settledAt?: string;
+}
+
+export interface ExecutionAttemptsJson {
+  schemaVersion: 1;
+  attempts: ExecutionAttempt[];
+  nativeTaskLeaseHistory?: NativeTaskLease[];
+  /** Current dispatch pointer per feature/task. Late records on superseded attempts must not move this. */
+  currentTaskAttempts?: Record<string, string>;
 }
 
 export type BackgroundJobRuntimeState = 'running' | 'completed' | 'error' | 'cancelled' | 'unknown';
