@@ -19,15 +19,19 @@ When you have multiple unrelated failures (different test files, different subsy
 
 When `## Background-First Orchestration` is present, load `background-delegation` for scheduler and wait-mode decisions. This skill covers task independence, scope, and prompt quality; the background skill governs whether each independent lane runs blocking or background.
 
-## Prerequisite: Check Runnable Tasks
+## Workflow Mode
 
-Before dispatching, use `hive_status()` to get the **runnable** list — tasks whose dependencies are all satisfied.
+In feature-task mode, use the prerequisites below. In Hive Builder or unified Hive ad-hoc mode, load `orchestrating-ad-hoc-work`; that skill owns decomposition, the lane inventory, dependency waves, resource ownership, and integration order. This skill retains only common fan-out mechanics, the fresh-session contract, and one-writer/worktree rules.
+
+## Feature-Task Prerequisite: Check Runnable Tasks
+
+In feature-task mode, before dispatching, use `hive_status()` to get the **runnable** list — tasks whose dependencies are all satisfied.
 
 **Only dispatch tasks that are runnable.** Never start tasks with unmet dependencies.
 
 Only `done` satisfies dependencies (not `blocked`, `failed`, `partial`, `cancelled`).
 
-**Ask the operator first:**
+**Feature-task operator choice:**
 - Use `question()`: "These tasks are runnable and independent: [list]. Execute in parallel?"
 - Record the decision with `hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })`
 - Proceed only after operator approval
@@ -74,6 +78,8 @@ Group failures by what's broken:
 
 Each domain is independent - fixing tool approval doesn't affect abort tests.
 
+In ad-hoc mode, do not use this step to define lane boundaries. Consume the ready wave from `orchestrating-ad-hoc-work`.
+
 ### 2. Create Focused Agent Tasks
 
 Each agent gets:
@@ -84,9 +90,11 @@ Each agent gets:
 
 Each native `task()` launch has one primary goal and one terminal handoff. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body. Never pass `task_id` to `task()` or send a follow-up prompt to a completed, failed, or blocked session. Returned task IDs are observe-only board handles for status, reconcile, and cancel.
 
-One implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
+In feature-task mode, one implementation assignment normally maps to one numbered task; an independently verifiable new deliverable requires a DAG amendment or append-only manual task. In ad-hoc mode, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
 ### 3. Dispatch in Parallel
+
+The example below is feature-task mode. In ad-hoc mode, consume the ready wave and prepared runs from `orchestrating-ad-hoc-work`.
 
 ```typescript
 // Gate-open only: use backgroundTaskCall when independent foreground work can continue.
@@ -100,7 +108,7 @@ const blocking = JSON.parse(await hive_worktree_start({ task: "03-fix-cleanup-te
 await task({ ...blocking.taskToolCall })
 ```
 
-Independent Forager worktrees may be prepared and dispatched under one parent. Use `hive_worktree_start` for managed tasks or the ad-hoc tools for isolated non-feature work. Preserve the returned `hive_launch_id`; do not invent one. `launchId` is a one-time dispatch selector. Two executions conflict when their exact worktree identity sets intersect. A live claim blocks conflicting preparation, dispatch, and lifecycle mutation of that worktree identity. Treat installs, builds, formatters, generators, and tests as mutations. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch and omit `hive_launch_id`.
+Independent Forager worktrees may be prepared and dispatched under one parent. Use `hive_worktree_start` for managed tasks or the ad-hoc tools for isolated non-feature work. Preserve the returned `hive_launch_id`; do not invent one. `launchId` is a one-time dispatch selector. Two executions conflict when their exact worktree identity sets intersect. A live claim blocks conflicting preparation, dispatch, and lifecycle mutation of that worktree identity. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch and omit `hive_launch_id`.
 
 Use Forager-derived workers for delegated execution. A rare `general` capability exception requires a specific nonblank `hive_capability_reason` on native `task()` and no `hive_launch_id`. The reason declares the need without proving a capability gap. General receives ordinary tools only, no Hive authority, recursion, or questions. Native helpers retain bounded permissions. Helper and general calls use a runtime-local bind for Hive-tool authentication; they do not take a live claim on a worktree or the project root. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Isolated worktrees are the managed placement. Direct checkout work is unmanaged OpenCode work, not a Hive placement. Worktree integration follows its authorized lifecycle.
 
@@ -119,9 +127,8 @@ Choose the best-fit available descriptor for the requested output. Scout is for 
 When agents return:
 - Read each summary
 - Verify fixes don't conflict
-- Run full test suite
-- For managed task worktrees, integrate accepted changes with `hive_merge`.
-- For ad-hoc worktrees, use the authorized `hive_adhoc_worktree_commit` and `hive_adhoc_merge` lifecycle.
+- In feature-task mode, follow the feature workflow's verification and `hive_merge` lifecycle.
+- In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`, which owns review gates, deterministic integration, full integrated-batch verification, and the authorized `hive_adhoc_worktree_commit` / `hive_adhoc_merge` lifecycle.
 
 ## Agent Prompt Structure
 
@@ -206,13 +213,9 @@ Agent 3 → Fix tool-approval-race-conditions.test.ts
 3. **Independence** - Agents don't interfere with each other
 4. **Speed** - 3 problems solved in time of 1
 
-## Verification
+## Verification by Mode
 
-After agents return:
-1. **Review each summary** - Understand what changed
-2. **Check for conflicts** - Did agents edit same code?
-3. **Run full suite** - Verify all fixes work together
-4. **Spot check** - Agents can make systematic errors
+In feature-task mode, follow the feature workflow's review, merge, and final-verification gates, including its full-suite policy. In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`; it owns per-lane gates and one integrated canonical verification after the accepted batch is merged.
 
 ## Real-World Impact
 

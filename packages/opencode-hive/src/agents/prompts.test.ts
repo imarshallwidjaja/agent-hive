@@ -615,6 +615,17 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Read-only exploration is allowed');
     });
 
+    it('routes qualifying unified ad-hoc work through the orchestration skill before preparation', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('load `orchestrating-ad-hoc-work`');
+      expect(QUEEN_BEE_PROMPT).toContain('multiple independently verifiable outcomes');
+      expect(QUEEN_BEE_PROMPT).toContain('dependency waves');
+      expect(QUEEN_BEE_PROMPT).toContain('shared write/runtime resources');
+      expect(QUEEN_BEE_PROMPT).toContain('possible background execution');
+      expect(QUEEN_BEE_PROMPT).toContain('more than one worker attempt or turn');
+      expect(QUEEN_BEE_PROMPT).toContain('before any ad-hoc worktree preparation');
+      expect(QUEEN_BEE_PROMPT).toContain('or delegated dispatch');
+    });
+
     it('does NOT contain the old planning iron law "Don\'t execute - plan only"', () => {
       expect(QUEEN_BEE_PROMPT).not.toContain("- Don't execute - plan only");
     });
@@ -1517,6 +1528,13 @@ describe('README.md documentation', () => {
       expect(vscodeReadmeContent).toContain('Tracked Repositories');
       expect(vscodeReadmeContent).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, reconcile jobs, or ignore jobs');
     });
+
+    it('routes ad-hoc review fixes to the active mode primary', () => {
+      expect(operatorGuideContent).toContain('give any fix instruction to the active ad-hoc primary');
+      expect(operatorGuideContent).toContain('`hive-builder` in dedicated mode or `hive-master` in unified mode');
+      expect(operatorGuideContent).not.toContain('give any fix instruction to `hive-builder`');
+      expect(operatorGuideContent).not.toContain('ask the feature orchestrator or `hive-builder` later');
+    });
   });
 
   describe('hive-helper runtime docs alignment', () => {
@@ -1700,15 +1718,34 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('not planner-first');
   });
 
-  it('contains default lifecycle: classify, isolate, delegate, verify, commit, merge, cleanup', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('classify direct vs delegated work');
+  it('contains the classify/decompose and ready-lane placement lifecycle', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Classify/decompose');
+    expect(HIVE_BUILDER_PROMPT).toContain('Place ready lanes');
+    expect(HIVE_BUILDER_PROMPT).toContain('classify or decompose the work');
+    expect(HIVE_BUILDER_PROMPT).toContain('place only ready lanes');
     expect(HIVE_BUILDER_PROMPT).toContain('inspect');
-    expect(HIVE_BUILDER_PROMPT).toContain('isolate');
     expect(HIVE_BUILDER_PROMPT).toContain('delegate');
     expect(HIVE_BUILDER_PROMPT).toContain('verify');
     expect(HIVE_BUILDER_PROMPT).toContain('commit');
     expect(HIVE_BUILDER_PROMPT).toContain('merge');
     expect(HIVE_BUILDER_PROMPT).toContain('cleanup');
+  });
+
+  it('conditionally loads ad-hoc orchestration before preparing execution worktrees', () => {
+    const triggerIndex = HIVE_BUILDER_PROMPT.indexOf('load `orchestrating-ad-hoc-work`');
+    const preparationIndex = HIVE_BUILDER_PROMPT.indexOf('hive_adhoc_worktree_create');
+
+    expect(triggerIndex).toBeGreaterThanOrEqual(0);
+    expect(triggerIndex).toBeLessThan(preparationIndex);
+    expect(HIVE_BUILDER_PROMPT).toContain('multiple independently verifiable outcomes');
+    expect(HIVE_BUILDER_PROMPT).toContain('dependency waves');
+    expect(HIVE_BUILDER_PROMPT).toContain('shared write/runtime resources');
+    expect(HIVE_BUILDER_PROMPT).toContain('may use background execution');
+    expect(HIVE_BUILDER_PROMPT).toContain('more than one worker attempt or turn');
+    expect(HIVE_BUILDER_PROMPT).toContain('load `orchestrating-ad-hoc-work`');
+    expect(HIVE_BUILDER_PROMPT).toContain('before any ad-hoc worktree preparation');
+    expect(HIVE_BUILDER_PROMPT).toContain('or delegated dispatch');
+    expect(HIVE_BUILDER_PROMPT).toContain('one coherent lane is correct');
   });
 
   it('contains verification before integration and forbids claiming checks passed without output', () => {
@@ -1724,10 +1761,11 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('by default');
   });
 
-  it('says escalation is advisory only and rejected escalation must continue ad-hoc', () => {
+  it('continues after rejected escalation only when material questions are resolved', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('question()');
     expect(HIVE_BUILDER_PROMPT).toContain('advisory');
-    expect(HIVE_BUILDER_PROMPT).toContain('continue ad-hoc');
+    expect(HIVE_BUILDER_PROMPT).toContain('continue ad-hoc only when material scope, contracts, and risks are otherwise resolved');
+    expect(HIVE_BUILDER_PROMPT).toContain('ask that concrete blocking question and do not prepare workers');
   });
 
   it('contains synthesis-before-delegation wording', () => {
@@ -1857,6 +1895,9 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_tasks_sync({ refreshPending: true })');
     expect(HIVE_BUILDER_PROMPT).not.toContain('Depends on:');
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_worktree_start(task)');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('plan.md');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('tasks.json');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('operator approval');
   });
 
   it('does NOT contain stale background wrappers', () => {

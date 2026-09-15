@@ -53,7 +53,7 @@ Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"ag
 7. **Merge** - `hive_merge` integrates completed task branches
 8. **Complete feature** - `hive_feature_complete` when done
 
-Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Ad-hoc work uses `hive_adhoc_*`; `hive-master` can coordinate it in unified mode, while dedicated mode uses `hive-builder`. `architect-planner` is planning-only and does not route ad-hoc work. Operator-facing seats, when to pick each workflow, and the human loops are in the [Operator Guide](../../docs/OPERATOR-GUIDE.md).
+Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Hive Builder or unified `hive-master` loads `orchestrating-ad-hoc-work` before requests with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. Parallel writers use distinct ad-hoc worktrees, but fixed-path fixtures, ports, databases, containers, generated outputs, and external mutable resources still require explicit ownership or sequencing. Ad-hoc work uses `hive_adhoc_*`; `architect-planner` is planning-only. Operator-facing seats and loops are in the [Operator Guide](../../docs/OPERATOR-GUIDE.md).
 
 ### Operator Commands
 
@@ -293,6 +293,10 @@ When a task branch has no net tracked changes to integrate, `hive_merge` reports
 Use ad-hoc orchestration when you need isolation, delegation, verification, and merge without a feature, plan, or task record. Dedicated mode uses `hive-builder`; unified mode can use `hive-master`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#ad-hoc-lifecycle-hive-builder).
 
 The ad-hoc orchestrator uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. `hive_adhoc_worktree_create` creates the workspace and, unless `autoSpawnWorker: false`, prepares the first Forager launch. `hive_adhoc_worktree_start({ runId, workerInstructions })` prepares a fresh attempt on that run. Gate-closed sessions return blocking `taskToolCall`; gate-open sessions also return `backgroundTaskCall` (same `hive_launch_id`, plus `background: true`). Spread the returned call object so `hive_launch_id` is preserved; do not invent one. `launchId` is a one-time dispatch selector. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only worktrees. Retry after confirmed termination may reuse the same `runId` worktree; do not discard failed work by default. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. `hive_adhoc_worktree_start` on an unobserved run is denied (`unobserved and cannot be reused` / `workspace_conflict_denied`). See `docs/HIVE-TOOLS.md` for the full tool contracts.
+
+Session state or `todowrite` is sufficient only for a single-lane, single-dispatch blocking job expected to finish in one turn. Every multi-lane, dependency-wave, background, expected multi-attempt, or otherwise multi-turn batch creates one project-scoped `kind: "evidence"` ledger before its first delegated dispatch, named `adhoc-lanes-<purpose>-<UTC timestamp>` with a filename-safe compact current UTC value. Record the exact name in session/todowrite and compaction handoffs. No worktree is needed to create the ledger or run a read-only first wave. Evidence ledgers are absent from durable-only catalog results, so recovery uses `hive_context_read({ scope: "project", view: "summary" })`, then a named hash-guarded read reconciled against runtime tool results, observed native state, and background board state when applicable. Append transitions. Archive only after every lane closes and the full integrated canonical verification result is recorded and passing. Failed final verification, failed cleanup, or uncertain execution leaves exact identifiers, evidence, and the next recovery action in the unarchived ledger.
+
+Feature escalation is advisory. If the operator rejects it, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. Ask any remaining concrete blocking question before preparing workers.
 
 Forager is an execution role. Isolated worktrees are the managed placement (`hive_worktree_start` for feature tasks, `hive_adhoc_*` for non-feature work). `hive_existing_workspace_start` is unavailable. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement.
 
@@ -553,6 +557,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `dispatching-parallel-agents` | Coordinate independent subagent work |
 | `docker-mastery` | Dockerfiles, containers, and sandbox debugging |
 | `executing-plans` | Execute an approved plan with review checkpoints |
+| `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
@@ -588,6 +593,8 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 **URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload guidance for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be advertised in guidance; partially scanned URL skills are not advertised.
 
 `background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are env-gated and compact. Delegation-first orchestration lives in the base primary prompts; when the env flag is set, primary agent prompts add background wait-mode and board protocol guidance and point to the skill for the full protocol. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
+
+`orchestrating-ad-hoc-work` is loaded conditionally by Hive Builder or unified `hive-master` when a request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. It is not a default `autoLoadSkills` entry and may retain one coherent lane after decomposition. Content tests establish bundling and routing only; they do not establish first-attempt model reliability.
 
 **Example:**
 

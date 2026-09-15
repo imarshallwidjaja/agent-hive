@@ -61,7 +61,7 @@ When custom research-derived subagents are configured, choose one only when its 
 Quick pattern:
 ```
 task({
-  subagent_name: "<chosen-researcher>",
+  subagent_type: "<chosen-researcher>",
   prompt: "Find all API routes in src/ and summarize patterns",
   description: "Explore API patterns"
 })

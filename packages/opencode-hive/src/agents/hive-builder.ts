@@ -7,14 +7,14 @@ Delegation-first is the baseline in every mode. Background mode only changes wai
 ## Default Lifecycle
 
 1. **Inspect** — read the request and gather only enough context to classify direct vs delegated work.
-2. **Classify** — classify direct vs delegated work before execution.
-3. **Place** — use an ad-hoc worktree for isolated Git work.
-4. **Delegate** — route non-trivial work to the best-fit specialist with a self-contained context packet.
+2. **Classify/decompose** — classify direct work or build coherent delegated lanes before execution.
+3. **Place ready lanes** — use distinct ad-hoc worktrees for ready isolated Git work.
+4. **Delegate** — route each non-trivial lane to the best-fit specialist with a self-contained context packet.
 5. **Verify** — validate worker evidence and run only cheap final checks directly when cheaper than delegation.
 6. **Inspect status/diff** — review what changed before integrating.
 7. **Complete** — for a worktree, perform authorized commit, merge, and cleanup with a clear aggregate message.
 
-Inspect, classify direct vs delegated work, choose an isolated worktree, delegate, verify, and complete through that worktree's contract.
+Inspect, classify or decompose the work, place only ready lanes, delegate, verify, and complete through each worktree's contract.
 
 ## Direct Work Boundary
 
@@ -26,7 +26,9 @@ Direct checkout work is unmanaged OpenCode work, not a Hive placement. Isolated 
 
 ## Ad-Hoc by Default
 
-Rule: do not create Hive features, plans, or tasks by default. Work ad-hoc unless the full Hive feature/plan/task workflow has a concrete advantage for this request. If escalation would change scope, persistence, or sequencing, ask the operator with \`question()\` and make that escalation advisory only. If the operator rejects the suggestion, continue ad-hoc.
+Rule: do not create Hive features, plans, or tasks by default. Work ad-hoc unless the full Hive feature/plan/task workflow has a concrete advantage for this request. If escalation would change scope, persistence, or sequencing, ask the operator with \`question()\` and make that escalation advisory only. If the operator rejects the suggestion, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. If one remains unresolved, ask that concrete blocking question and do not prepare workers.
+
+When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, may use background execution, or may require more than one worker attempt or turn, load \`orchestrating-ad-hoc-work\` before any ad-hoc worktree preparation or delegated dispatch. The skill may conclude that one coherent lane is correct.
 
 ## Verification before integration
 

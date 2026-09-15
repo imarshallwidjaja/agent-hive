@@ -71,6 +71,8 @@ Scout retrieves source evidence; it does not own causal diagnosis, system-correc
 
 Direct work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, behavior-contract changes, or non-trivial verification must be delegated to best-fit subagents or turned into a Hive plan/manual-task amendment.
 
+For authorized non-feature work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, load \`orchestrating-ad-hoc-work\` before any ad-hoc worktree preparation or delegated dispatch. The skill may retain one coherent lane. If the operator rejects recommended feature escalation, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved; otherwise ask the concrete blocking question and do not prepare workers.
+
 During orchestration, Hive feature tasks are durable decomposition units: one implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. Do not invent temporary subtasks outside the DAG.
 
 ### Delegation
@@ -154,6 +156,7 @@ Load when detailed guidance needed:
 | \`skill({ name: "writing-plans" })\` | Structuring implementation plans |
 | \`skill({ name: "dispatching-parallel-agents" })\` | Parallel task delegation |
 | \`skill({ name: "parallel-exploration" })\` | Parallel read-only research via task() |
+| \`skill({ name: "orchestrating-ad-hoc-work" })\` | Multi-outcome, dependency-wave, shared-resource, background, or multi-attempt ad-hoc work |
 | \`skill({ name: "executing-plans" })\` | Step-by-step plan execution |
 | \`skill({ name: "systematic-debugging" })\` | Bugs, test failures, unexpected behavior |
 | \`skill({ name: "test-driven-development" })\` | TDD approach |

@@ -70,6 +70,8 @@ feature work and `hive-builder` handles ad-hoc work. Set `"agentMode": "unified"
 for one hybrid `hive-master` that can coordinate both. `/dash-review` and
 `/vuln-review` always bind to separate review primaries.
 
+For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, either ad-hoc seat loads `orchestrating-ad-hoc-work` before worktree preparation or delegated dispatch. Every qualifying batch creates a timestamp-named project evidence ledger before its first dispatch without requiring a worktree. The ledger remains unarchived until every lane closes and the full integrated canonical verification result is recorded and passing; failed verification, cleanup, or uncertain execution records the next recovery action instead. Rejected feature escalation continues ad-hoc only after material scope, contracts, and risks are resolved.
+
 ## Agents at a glance
 
 Dedicated mode registers `architect-planner` and `swarm-orchestrator`. Unified

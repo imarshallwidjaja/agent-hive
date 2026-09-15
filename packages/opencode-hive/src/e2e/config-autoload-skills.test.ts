@@ -404,16 +404,23 @@ describe('config hook autoLoadSkills guidance', () => {
     const scoutGuidance = getAutoLoadSkillsGuidance(scoutPrompt);
     const foragerGuidance = getAutoLoadSkillsGuidance(foragerPrompt);
     const parallelExplorationSkill = requireBuiltinSkill('parallel-exploration');
+    const adHocOrchestrationSkill = requireBuiltinSkill('orchestrating-ad-hoc-work');
     const tddSkill = requireBuiltinSkill('test-driven-development');
     const verificationSkill = requireBuiltinSkill('verification');
 
     expect(hiveMasterPrompt).toContain('## Configured Auto-Load Skills');
+    expect(hiveMasterPrompt).toContain('load `orchestrating-ad-hoc-work`');
+    expect(hiveMasterPrompt).toContain('before any ad-hoc worktree preparation');
     expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
     expect(builderGuidance).toContain(skillToolCall('verification'));
     expect(builderGuidance).not.toContain(skillToolCall('dispatching-parallel-agents'));
+    expect(builderGuidance).not.toContain(skillToolCall('orchestrating-ad-hoc-work'));
     expect(builderGuidance).toContain(skillToolCall('parallel-exploration'));
+    expect(builderPrompt).toContain('load `orchestrating-ad-hoc-work`');
+    expect(builderPrompt).toContain('before any ad-hoc worktree preparation');
     expect(builderPrompt).not.toContain(parallelExplorationSkill.template);
+    expect(builderPrompt).not.toContain(adHocOrchestrationSkill.template);
     expect(builderPrompt).not.toContain('hive_worktree_start');
     expect(builderPrompt).not.toContain('hive_tasks_sync');
     expect(builderPrompt).not.toContain('runnable tasks');
@@ -431,6 +438,7 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(skillPaths[0]).toContain(HIVE_GENERATED_SEGMENT);
     expect(fs.existsSync(skillPaths[0])).toBe(true);
     expect(fs.existsSync(path.join(skillPaths[0], 'parallel-exploration', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(skillPaths[0], 'orchestrating-ad-hoc-work', 'SKILL.md'))).toBe(true);
     expect(skillPaths).not.toContain(PACKAGED_SKILLS_DIR);
   });
 

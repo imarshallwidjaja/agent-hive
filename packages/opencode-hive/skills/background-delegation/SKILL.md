@@ -17,11 +17,13 @@ Default: When `## Background-First Orchestration` is present, background-delegat
 
 Gate-closed sessions use normal blocking `task()` wait mode. Do not simulate background orchestration from this skill alone.
 
+For Hive Builder or unified Hive ad-hoc work, `orchestrating-ad-hoc-work` supplies the already-defined lanes and owns lane-level recovery and integration. This skill owns background observation, reconciliation, cancellation, and wait-mode protocol, then returns those outcomes to the ad-hoc workflow.
+
 ## Direct Work Boundary
 
 Default to delegating implementation/test work and non-trivial verification actions. The primary agent is the scheduler, not the default implementer.
 
-Direct primary-agent work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. The direct fix threshold is one small, local, immediately verified integration fix. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, non-trivial verification, a second patch/test loop, behavior-contract change, or broadened scope must be delegated, resumed, or turned into a manual task/plan amendment.
+Direct primary-agent work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. The direct fix threshold is one small, local, immediately verified integration fix. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, non-trivial verification, a second patch/test loop, behavior-contract change, or broadened scope must be delegated or resumed. In feature-task mode, independently verifiable new work requires a manual task or plan amendment.
 
 Isolated worktrees are the managed placement. Direct checkout work is unmanaged OpenCode work, not a Hive placement.
 
@@ -31,16 +33,16 @@ Use Forager or a Forager-derived custom worker for delegated execution. General 
 
 Direct work normally includes clarifying the request, minimal routing reads, classifying the delegation kind, choosing specialists, maintaining todos and task IDs, launching and monitoring lanes, synthesizing results, running cheap final checks, validating outcomes, and communicating decisions.
 
-## Final Verification Gates
+## Feature-Task Final Verification Gates
 
-Keep pure final verification outside `## Tasks` in `## Final Verification` when no tracked artifacts are written. Treat that section as a non-branching plan gate, not a worktree-backed task. If verification writes tracked artifacts, model it as a normal numbered task and list those files.
+In feature-task mode, keep pure final verification outside `## Tasks` in `## Final Verification` when no tracked artifacts are written. Treat that section as a non-branching plan gate, not a worktree-backed task. If verification writes tracked artifacts, model it as a normal numbered task and list those files. In ad-hoc mode, return verification state to `orchestrating-ad-hoc-work`; no feature plan or task artifact is required.
 
 ## Delegation Kind Reference
 
 - Exploratory/read-only: small targeted tasks, light management, and independent background fan-out when safe.
 - Review: small targeted read-only review tasks and light management; verdicts can gate downstream decisions.
-- Writing/change: managed tasks with ownership boundaries, dependencies, expected outputs, verification obligations, and an integration path.
-- Execution: highest-management tasks with lifecycle/state, merge or cleanup handling, verification routing, and outcome reporting.
+- Writing/change: managed lanes with the owning workflow's boundaries, dependencies, expected outputs, verification obligations, and integration path.
+- Execution: highest-management lanes with lifecycle/state, merge or cleanup handling, verification routing, and outcome reporting.
 
 Prefer targeted background tasks over broad ambiguous tasks, especially for exploratory/read-only and review work.
 
@@ -52,9 +54,9 @@ Each native `task()` launch has one primary goal, starts one fresh subagent sess
 
 Never pass `task_id` to `task()`. Returned task IDs are observe-only board handles for `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`; they are not session-resume inputs. Do not send a follow-up prompt to a completed, failed, or blocked session.
 
-For a blocked feature task, `hive_worktree_create({ task, continueFrom: "blocked", decision })` launches a new worker session in the same worktree after the operator provides the decision. For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
+In feature-task mode, a blocked task uses `hive_worktree_create({ task, continueFrom: "blocked", decision })` to launch a new worker session in the same worktree after the operator provides the decision. For failed or retry work in either mode, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
 
-For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
+For ad-hoc work, consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here.
 
 ## Context Packet
 
@@ -76,8 +78,8 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 
 ## Protocol
 
-1. Identify independent lanes, delegation kind, ownership boundaries, and the foreground work that can continue safely.
-2. Build the context packet for each lane.
+1. Consume the owning workflow's ready lanes, delegation kinds, ownership boundaries, and safe independent foreground work.
+2. Build the context packet for each supplied lane without changing its boundary.
 3. Every Forager lane, including report-only diagnosis, needs a prepared launch. Use `hive_worktree_start` for managed tasks or the ad-hoc worktree tools for isolated non-feature work. Preserve the returned `hive_launch_id`; `launchId` is a one-time dispatch selector. Runtime restores the canonical prompt and binds the exact parent, native call, child, selected agent, and worktree identity. Unused preparation expires after five minutes; an unobserved ExecutionAttempt keeps a live claim on only that worktree. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Ordinary Scout, advisor, and reviewer launches omit `hive_launch_id`.
 4. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 5. Follow `recommendedNextAction` from `hive_background_status` when present; use `nextActions` and `orchestrationBurden` as supporting detail for visible lanes and operator reporting. Treat `waitingForNativeCompletion` as wait-only state and `pendingLaunches` with `jobs: []` as a launch-registration warning, not proof that no background work exists.

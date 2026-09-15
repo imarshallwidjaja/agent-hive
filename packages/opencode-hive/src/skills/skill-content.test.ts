@@ -418,6 +418,131 @@ describe('skill content', () => {
     expect(skill!.template).toContain('expected output');
   });
 
+  it('registers planless ad-hoc orchestration for both primary modes', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work');
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toMatch(/^Use when /);
+    expect(skill!.description).toMatch(/Hive Builder.*unified Hive primary/);
+    expect(skill!.description).toContain('background execution');
+    expect(skill!.description).toContain('expected multiple worker attempts or turns');
+    expect(skill!.template).toContain('An **ad-hoc primary** is Hive Builder or a unified Hive primary');
+    expect(skill!.template).toMatch(/multiple independently verifiable outcomes.*dependency waves.*shared write\/runtime resources/s);
+    expect(skill!.template).toContain('may use background execution');
+    expect(skill!.template).toContain('may require more than one worker attempt or turn');
+    expect(skill!.template).toContain('Decomposition may retain one coherent lane');
+    expect(skill!.template).not.toMatch(/hive_(?:feature|plan|tasks|worktree)_/);
+    expect(skill!.template).not.toContain('plan.md');
+    expect(skill!.template).not.toContain('tasks.json');
+  });
+
+  it('defines outcome-first ownership and safe worktree placement', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
+    const outcomeIndex = template.indexOf('Identify coherent, independently verifiable outcomes');
+    const handoffIndex = template.indexOf('Name each concrete predecessor output');
+    const ownershipIndex = template.indexOf('Assign one owner');
+    const dependencyIndex = template.indexOf('Add dependency edges');
+
+    expect(outcomeIndex).toBeLessThan(handoffIndex);
+    expect(handoffIndex).toBeLessThan(ownershipIndex);
+    expect(ownershipIndex).toBeLessThan(dependencyIndex);
+    for (const resource of ['generated outputs', 'external mutable resources', 'fixed-path test fixtures', 'ports', 'databases', 'containers']) {
+      expect(template).toContain(resource);
+    }
+    expect(template).toContain('Distinct worktrees do not isolate these resources');
+    expect(template).toContain('Parallel writers require distinct ad-hoc `runId`s and worktrees');
+    expect(template).toContain('Writes and fix passes within one run remain sequential');
+    expect(template).toContain('emit all independent launches in the same assistant message');
+    expect(template).toContain('Blocking is a wait mode, not serial scheduling');
+  });
+
+  it('creates a timestamp-named evidence ledger before the first dispatch without requiring a worktree', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
+    const writeIndex = template.indexOf('hive_context_write({ scope: "project", name: ledgerName, kind: "evidence", content: ledger })');
+    const dispatchIndex = template.indexOf('Only after creation succeeds may the primary prepare a worktree or issue any delegated `task()` dispatch');
+
+    expect(template).toContain('only for a genuinely single-lane, single-dispatch blocking job');
+    expect(template).toContain('Every multi-lane, dependency-wave, background, expected multi-attempt, or otherwise multi-turn ad-hoc batch');
+    expect(template).toContain('`adhoc-lanes-<purpose>-<UTC timestamp>`');
+    expect(template).toContain('filename-safe compact current UTC value');
+    expect(template).toContain('Record the exact generated `ledgerName` in session state or `todowrite` and every compaction handoff');
+    expect(writeIndex).toBeGreaterThanOrEqual(0);
+    expect(writeIndex).toBeLessThan(dispatchIndex);
+    expect(template).toContain('A read-only first wave does not need an artificial worktree');
+  });
+
+  it('uses executable hash-guarded append and archive transitions', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
+
+    expect(template).toContain('current = hive_context_read({ scope: "project", name: ledgerName })');
+    expect(template).toContain('hive_context_append({');
+    expect(template).toContain('content: update');
+    expect(template).toContain('expectedRevision: current.revision');
+    expect(template).toContain('expectedContentHash: current.file.contentHash');
+    expect(template).toContain('hive_context_archive({');
+    expect(template).toContain('names: [ledgerName]');
+    expect(template).toContain('reason: "Ad-hoc batch closed"');
+    expect(template).toContain('expectedContentHashes: { [ledgerName]: current.file.contentHash }');
+    expect(template).toContain('hive_context_read({ scope: "project", view: "summary" })');
+    expect(template).toContain('Project summary can expose evidence names while durable-only `view: "catalog"` cannot');
+  });
+
+  it('records configured review gates and integrated verification before archival', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
+    const finalVerificationIndex = template.indexOf('full integrated canonical verification result is recorded and passing');
+    const archiveIndex = template.indexOf('hive_context_archive({');
+
+    expect(template).toContain('**Runtime authority** means runtime tool results plus observed native state');
+    expect(template).toContain("Lane changes receive the reviews required by the active primary's configured review policy");
+    expect(template).toContain('this skill adds no separate reviewer-approval gate');
+    expect(template).toContain('Required review and lane verification each gate merge');
+    expect(template).toContain('full integrated canonical verification result is recorded and passing');
+    expect(finalVerificationIndex).toBeGreaterThanOrEqual(0);
+    expect(finalVerificationIndex).toBeLessThan(archiveIndex);
+    expect(template).toContain('If final verification fails, cleanup fails, or execution remains uncertain');
+    expect(template).toContain('exact identifiers, evidence, and the next recovery action');
+    expect(template).toContain('Archive only after the full batch closure contract passes');
+  });
+
+  it('keeps the expanded ad-hoc trigger reachable from operator and agent documentation', () => {
+    for (const content of [
+      readRepoFile('AGENTS.md'),
+      readRepoFile('README.md'),
+      readRepoFile('docs/OPERATOR-GUIDE.md'),
+      readRepoFile('packages/opencode-hive/README.md'),
+    ]) {
+      expect(content).toContain('orchestrating-ad-hoc-work');
+      expect(content).toMatch(/background execution/);
+      expect(content).toMatch(/more than one worker attempt or turn/);
+    }
+  });
+
+  it('keeps escalation advisory without bypassing material questions', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
+
+    expect(template).toContain('Escalation is advisory');
+    expect(template).toContain('continue ad-hoc only when material scope, contracts, and risks are otherwise resolved');
+    expect(template).toContain('ask that concrete blocking question and do not prepare workers');
+    expect(template).toContain('Routine decomposition needs no approval question');
+  });
+
+  it('keeps shared delegation skills mode-scoped without redefining ad-hoc lanes', () => {
+    const dispatch = BUILTIN_SKILLS.find((entry) => entry.name === 'dispatching-parallel-agents')!.template;
+    const exploration = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration')!.template;
+    const background = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation')!.template;
+
+    expect(dispatch).toContain('In Hive Builder or unified Hive ad-hoc mode, load `orchestrating-ad-hoc-work`');
+    expect(dispatch).toContain('In feature-task mode, before dispatching, use `hive_status()`');
+    expect(dispatch).toContain('In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`');
+    expect(dispatch).toContain('In feature-task mode, follow the feature workflow\'s review, merge, and final-verification gates');
+    expect(dispatch).toContain('In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`');
+    expect(exploration).toContain('Hive Builder or unified Hive ad-hoc mode loads `orchestrating-ad-hoc-work`');
+    expect(background).toContain('`orchestrating-ad-hoc-work` supplies the already-defined lanes');
+    expect(background).toContain('owns background observation, reconciliation, cancellation, and wait-mode protocol');
+    expect(background).toContain('return verification state to `orchestrating-ad-hoc-work`; no feature plan or task artifact is required');
+    expect(background).toContain('consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here');
+  });
+
   it('removes numeric fan-out policy from Scout and background delegation skills', () => {
     const numericFanOutPolicy =
       /three Scouts|up to\s+\d+\s+lanes?|\b\d+\s+tasks?\b(?=[^\n]{0,80}(?:fan-out|parallel|dispatch))|\b2-4\b|\b5\+/i;
@@ -496,8 +621,9 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Gate-open only: use backgroundTaskCall');
     expect(skill!.template).toContain('hive_launch_id');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
-    expect(skill!.template).toContain('For managed task worktrees, integrate accepted changes with `hive_merge`');
-    expect(skill!.template).toContain('For ad-hoc worktrees, use the authorized `hive_adhoc_worktree_commit` and `hive_adhoc_merge` lifecycle');
+    expect(skill!.template).toContain('In feature-task mode, follow the feature workflow\'s verification and `hive_merge` lifecycle');
+    expect(skill!.template).toContain('In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`');
+    expect(skill!.template).toContain('authorized `hive_adhoc_worktree_commit` / `hive_adhoc_merge` lifecycle');
     expect(skill!.template).toContain('exact worktree identity sets intersect');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
     expect(skill!.template).toContain('Blocking alternative, including every gate-closed session');
@@ -600,10 +726,10 @@ describe('skill content', () => {
     );
     expect(skill!.template).not.toContain('Treat unresolved lanes as blockers.');
     expect(skill!.template).toContain('tightly coupled code, tests, docs, and multiple files');
-    expect(skill!.template).toContain('disjoint path ownership or sequence overlapping writers');
+    expect(skill!.template).toContain('consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here');
     expect(skill!.template).toContain('second patch/test loop');
     expect(skill!.template).toContain('behavior-contract change');
-    expect(skill!.template).toContain('manual task/plan amendment');
+    expect(skill!.template).toContain('manual task or plan amendment');
     expect(skill!.template).toContain('do not edit `.hive/background-jobs.json` directly');
     expect(skill!.template).toContain('archived by the tool and hidden from normal status');
     expect(skill!.template).toContain('Forgotten terminal jobs');
@@ -782,7 +908,7 @@ describe('skill content', () => {
     expect(existsSync(path.join(writingSkillDir, 'UPSTREAM.md'))).toBe(true);
   });
 
-  it('parses every bundled skill frontmatter cleanly with gray-matter without fallback sanitization', () => {
+  it('keeps generated registry entries equal to parsed bundled skill sources', () => {
     const skillsDir = resolvePackagedSkillsDir();
     const entries = readdirSync(skillsDir, { withFileTypes: true });
     const skillFiles = entries
@@ -805,6 +931,13 @@ describe('skill content', () => {
       expect(parsed!.data.name.trim().length).toBeGreaterThan(0);
       expect(typeof parsed!.data?.description).toBe('string');
       expect(parsed!.data.description.trim().length).toBeGreaterThan(0);
+
+      const registered = BUILTIN_SKILLS.find((entry) => entry.name === parsed!.data.name);
+      expect(registered).toEqual({
+        name: parsed!.data.name,
+        description: parsed!.data.description,
+        template: parsed!.content.trim(),
+      });
     }
   });
 });

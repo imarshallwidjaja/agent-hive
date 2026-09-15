@@ -15,7 +15,7 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 **Safe in Planning mode:** This is read-only exploration. It is OK to use during exploratory research even when there is no feature, no plan, and no approved tasks.
 
-**This skill is for read-only research.** For parallel implementation work, use \`skill({ name: "dispatching-parallel-agents" })\` with \`hive_worktree_start\`.
+**This skill is for read-only research.** For parallel implementation, feature-task mode follows the feature workflow with `hive_worktree_start` and `dispatching-parallel-agents`; Hive Builder or unified Hive ad-hoc mode loads `orchestrating-ad-hoc-work` for decomposition, placement, and integration.
 
 Select Scouts by the retrieval output needed, not by whether the overall request is read-only. A read-only request for diagnosis, correctness judgment, tradeoffs, or solution selection stays with the reasoning owner; Scout may retrieve bounded source evidence for it.
 
@@ -32,7 +32,7 @@ Select Scouts by the retrieval output needed, not by whether the overall request
 - Investigation requires shared state or context between questions
 - It's a focused question that the primary agent can answer with a bounded direct lookup
 - Questions are dependent (answer A materially changes what to ask for B)
-- Work involves file edits (use Hive tasks / Forager instead)
+- Work involves file edits (use the feature workflow or Hive Builder's `orchestrating-ad-hoc-work` route instead)
 
 **Important:** Do not treat "this is exploratory" as a reason to avoid delegation. This skill is specifically for exploratory research when fan-out makes it faster and cleaner.
 

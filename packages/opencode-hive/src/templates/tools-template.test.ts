@@ -25,6 +25,8 @@ describe('tools template', () => {
     expect(toolsTemplate).toContain('wait_for_native_completion_notification');
     expect(toolsTemplate).toContain('Do not edit `.hive/background-jobs.json` directly');
     expect(toolsTemplate).toContain('archives it from normal status');
+    expect(toolsTemplate).toContain('subagent_type: "<chosen-researcher>"');
+    expect(toolsTemplate).not.toContain('subagent_name');
     expect(toolsTemplate).not.toContain('task_status');
     expect(toolsTemplate).not.toContain('hive_background_task');
     expect(toolsTemplate).not.toContain('hive_background_output');
