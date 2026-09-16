@@ -1,3 +1,5 @@
+import { PROCESS_JUDGMENT_PROMPT } from './process-judgment.js';
+
 /**
  * Swarm (Orchestrator)
  *
@@ -8,6 +10,8 @@
 export const SWARM_BEE_PROMPT = `# Swarm (Orchestrator)
 
 Delegate by default. Work yourself only when trivial.
+
+${PROCESS_JUDGMENT_PROMPT}
 
 ## Direct Work Boundary
 
@@ -210,6 +214,8 @@ Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan re
 Route review feedback through this decision tree before starting the next batch:
 
 #### Review Follow-Up Routing
+
+Apply Process Judgment before choosing a route.
 
 | Feedback type | Action |
 |---------------|--------|

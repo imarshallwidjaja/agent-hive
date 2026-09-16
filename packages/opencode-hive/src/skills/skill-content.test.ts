@@ -214,6 +214,7 @@ describe('skill content', () => {
     expect(template).toContain('owning layer');
     expect(template).toContain('canonical suite');
     expect(template).toContain('must not plan a later test-cleanup pass');
+    expect(template).toContain('Apply Process Judgment before adding scope or blockers.');
   });
 
   it('chooses coherent task boundaries before dependencies without parallel quotas', () => {

@@ -19,9 +19,20 @@ import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { STANDING_CONSTRAINTS_HEADING } from '../utils/worker-prompt';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
+import { PROCESS_JUDGMENT_PROMPT } from './process-judgment';
 
 function countOccurrences(content: string, needle: string): number {
   return content.split(needle).length - 1;
+}
+
+function sectionBetween(prompt: string, startHeading: string, endHeading: string): string {
+  const start = prompt.indexOf(`${startHeading}\n`);
+  const end = prompt.indexOf(endHeading, start + startHeading.length);
+  return start >= 0 && end >= 0 ? prompt.slice(start, end) : '';
+}
+
+function tableRow(section: string, label: string): string {
+  return section.split('\n').find((line) => line.startsWith(`| ${label} |`)) ?? '';
 }
 
 describe('Engineering judgment prompt reach', () => {
@@ -90,6 +101,118 @@ describe('Engineering judgment prompt reach', () => {
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain(
       'Fold or delete weaker tests that repeat an invariant already owned by the canonical suite',
     );
+  });
+});
+
+describe('Process judgment prompt reach', () => {
+  const primaryPrompts = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Architect', ARCHITECT_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+    ['Hive Builder', HIVE_BUILDER_PROMPT],
+  ] as const;
+
+  const reviewerPrompts = [
+    ['Plan Reviewer', PLAN_REVIEWER_PROMPT],
+    ['Code Reviewer', CODE_REVIEWER_PROMPT],
+    ['Simplicity Reviewer', SIMPLICITY_REVIEWER_PROMPT],
+    ['Approach Advisor', APPROACH_ADVISOR_PROMPT],
+    ['Dash Reviewer', DASH_REVIEWER_PROMPT],
+    ['Vulnerability Review Primary', VULNERABILITY_REVIEW_PRIMARY_PROMPT],
+    ['Vulnerability Reviewer', VULNERABILITY_REVIEWER_PROMPT],
+  ] as const;
+
+  it('includes the canonical fragment exactly once in planning and orchestration roles', () => {
+    for (const [name, prompt] of primaryPrompts) {
+      expect(countOccurrences(prompt, PROCESS_JUDGMENT_PROMPT), name).toBe(1);
+    }
+  });
+
+  it('keeps the fragment out of specialist reviewer contracts', () => {
+    for (const [name, prompt] of reviewerPrompts) {
+      expect(prompt, name).not.toContain(PROCESS_JUDGMENT_PROMPT);
+    }
+  });
+
+  it('defines concise input classification and process reassessment', () => {
+    expect(PROCESS_JUDGMENT_PROMPT.split('\n').length).toBeLessThanOrEqual(12);
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('operator requirements');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('applicable project constraints');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('specialist advice or findings');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('agent-chosen procedure');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('deterministic safety gates');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('role contracts');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('phase routing');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('direct-work and delegation boundaries');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain("specialist's output contract");
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('churn or delay without reducing a named risk');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('never waive those boundaries');
+  });
+
+  it('anchors role-specific planning and review decisions', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain('Advice, comparison, explanation, and retrieval requests remain conversation-scoped');
+    expect(ARCHITECT_BEE_PROMPT).toContain('For implementation requests, "Do X" means "create plan for X"');
+    expect(ARCHITECT_BEE_PROMPT).not.toContain('PLANNER, NOT IMPLEMENTER. "Do X" means');
+    expect(ARCHITECT_BEE_PROMPT).toContain('| Trivial implementation | Single file, <10 lines | Quick assessment | Create a concise plan; never implement |');
+    expect(ARCHITECT_BEE_PROMPT).toContain('| Retrieval | Source facts, code/context tracing, external data | Retrieve bounded evidence | Return findings without creating planning state |');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Complete the requested advice, comparison, explanation, or retrieval');
+    expect(ARCHITECT_BEE_PROMPT).toContain('During planning, NEVER end with:');
+    expect(ARCHITECT_BEE_PROMPT).not.toContain('Create draft on first exchange');
+    expect(ARCHITECT_BEE_PROMPT).not.toContain('Self-Clearance Check (After Every Exchange)');
+    const phaseStart = QUEEN_BEE_PROMPT.indexOf('## Phase Detection (First Action)');
+    const intentStart = QUEEN_BEE_PROMPT.indexOf('### Intent Classification');
+    const boundaryStart = QUEEN_BEE_PROMPT.indexOf('### Direct Work Boundary');
+    const intentSection = sectionBetween(
+      QUEEN_BEE_PROMPT,
+      '### Intent Classification',
+      '### Canonical Delegation Threshold',
+    );
+    const boundarySection = sectionBetween(QUEEN_BEE_PROMPT, '### Direct Work Boundary', '### Delegation');
+
+    expect(phaseStart).toBeGreaterThanOrEqual(0);
+    expect(phaseStart).toBeLessThan(intentStart);
+    expect(intentStart).toBeLessThan(boundaryStart);
+    expect(QUEEN_BEE_PROMPT.slice(phaseStart, intentStart)).toContain(
+      'A featureless implementation request such as "build X" or "implement X" enters Planning and creates the feature and plan before execution.',
+    );
+    expect(QUEEN_BEE_PROMPT.slice(phaseStart, intentStart)).toContain(
+      'The Direct Work Boundary applies only after routing',
+    );
+    expect(tableRow(intentSection, 'Trivial')).toMatch(
+      /After phase routing.*Direct Work Boundary.*featureless implementation enters Planning first/,
+    );
+    expect(tableRow(intentSection, 'Simple')).toMatch(
+      /After phase routing.*Direct Work Boundary.*featureless implementation enters Planning first/,
+    );
+    expect(tableRow(intentSection, '"Quick change"')).toMatch(/only after phase routing/);
+    expect(boundarySection).toMatch(
+      /After phase routing.*Authorized non-feature\/ad-hoc work remains eligible without feature state.*Feature implementation can use this boundary only after an approved plan has selected the work; it never selects or bypasses feature planning\./,
+    );
+    expect(QUEEN_BEE_PROMPT).toContain('| No feature + plan or implementation requested | Planning | Create feature and plan; use Planning section |');
+    expect(QUEEN_BEE_PROMPT).toContain('| User requests execution of an approved plan | Orchestration | Use Orchestration section |');
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('Apply Process Judgment before choosing a route.');
+    }
+  });
+
+  it('keeps Hive turn termination in one scoped section', () => {
+    expect(QUEEN_BEE_PROMPT.match(/^#{2,3} .*Termination$/gm)).toEqual(['### Turn Termination']);
+    const terminationSection = sectionBetween(QUEEN_BEE_PROMPT, '### Turn Termination', '**User Input:**');
+
+    expect(terminationSection).toContain(
+      'Conversation-scoped advice, comparison, explanation, and retrieval may end with the completed answer or findings.',
+    );
+    expect(terminationSection).toContain(
+      'Planning and orchestration turns must end with a concrete next action',
+    );
+    expect(terminationSection).toContain('explicit wait for background work');
+    expect(terminationSection).toContain('`question()` call');
+    expect(QUEEN_BEE_PROMPT).not.toContain('### Anti-Patterns');
+    expect(QUEEN_BEE_PROMPT).not.toContain('Valid endings:');
+    expect(QUEEN_BEE_PROMPT).not.toContain('NEVER end with:');
   });
 });
 
@@ -746,13 +869,13 @@ describe('Hive (Hybrid) prompt', () => {
   describe('turn termination and hard blocks', () => {
     it('defines turn termination rules', () => {
       expect(QUEEN_BEE_PROMPT).toContain('### Turn Termination');
-      expect(QUEEN_BEE_PROMPT).toContain('Valid endings');
-      expect(QUEEN_BEE_PROMPT).toContain('NEVER end with');
+      expect(QUEEN_BEE_PROMPT).not.toContain('Valid endings');
+      expect(QUEEN_BEE_PROMPT).toContain('Planning and orchestration turns must end with a concrete next action');
     });
 
-    it('separates hard blocks from anti-patterns', () => {
+    it('keeps hard blocks separate from turn termination', () => {
       expect(QUEEN_BEE_PROMPT).toContain('### Hard Blocks');
-      expect(QUEEN_BEE_PROMPT).toContain('### Anti-Patterns');
+      expect(QUEEN_BEE_PROMPT).not.toContain('### Anti-Patterns');
     });
   });
 
@@ -1949,7 +2072,6 @@ describe('Primary orchestration direct-work boundaries', () => {
       ['Swarm', SWARM_BEE_PROMPT],
       ['Hive Builder', HIVE_BUILDER_PROMPT],
     ] as const) {
-      expect(prompt, name).toContain('Direct work is allowed only for coordination/setup');
       expect(prompt, name).toContain('exactly one bounded read');
       expect(prompt, name).toContain('exactly one bounded write/patch');
       expect(prompt, name).toContain('one cheap final check');

@@ -13,6 +13,7 @@ During planning, implementation files remain read-only; Hive planning state may 
 
 ## Planning Standard
 
+- Apply Process Judgment before adding scope or blockers.
 - Cite repository evidence as `file:line` references and explain why each reference matters.
 - State requested behavior and call-site contracts, including inputs, outputs, errors, side effects, and caller-visible risk policy where relevant.
 - Identify ownership boundaries and the design knowledge each affected module should own or hide.
