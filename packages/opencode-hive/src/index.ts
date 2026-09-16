@@ -2828,26 +2828,46 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       return respond({ success: false, reason: 'invalid_argument', error: 'scope.kind must be task or adhoc.' });
     }
 
-    let existingAttempt: ExecutionAttempt | undefined;
-    try {
-      existingAttempt = executionAttemptService.preflightArm({
+    let preparationResourcePaths: string[];
+    if (input.placement.kind === 'in_place') {
+      preparationResourcePaths = [fs.realpathSync(input.placement.directory!)];
+    } else if (scope.kind === 'task') {
+      const existing = await worktreeService.get(scope.feature, scope.task);
+      preparationResourcePaths = existing?.repos
+        ? Object.values(existing.repos).map(repo => normalizeResourcePath(repo.path))
+        : [existing
+          ? normalizeResourcePath(existing.workspacePath ?? existing.path)
+          : normalizeResourcePath(worktreeService.getWorktreePath(scope.feature, scope.task))];
+    } else {
+      const existing = await adhocWorktreeService.get(scope.runId);
+      preparationResourcePaths = existing?.repos
+        ? Object.values(existing.repos).map(repo => normalizeResourcePath(repo.path))
+        : [existing
+          ? normalizeResourcePath(existing.workspacePath ?? existing.path)
+          : normalizeResourcePath(adhocWorktreeService.resolveCreateTarget({ runId: scope.runId }).workspacePath)];
+    }
+
+    return withLaunchPreparationLock(preparationResourcePaths, async () => {
+      let existingAttempt: ExecutionAttempt | undefined;
+      try {
+        existingAttempt = executionAttemptService.preflightArm({
         kind: scope.kind,
         originatingPrimarySession: parentSessionID,
         ...(scope.kind === 'task'
           ? { featureName: scope.feature, taskFolder: scope.task }
           : { runId: scope.runId }),
-      });
-    } catch (error) {
-      if (!(error instanceof ExecutionScopeConflictError)) throw error;
-      return respond({
-        success: false,
-        reason: 'workspace_conflict_denied',
-        mutation: 'none',
-        attemptId: error.attempt.id,
-        phase: error.attempt.phase,
-        error: 'The requested scope is owned by another authenticated primary.',
-      });
-    }
+        });
+      } catch (error) {
+        if (!(error instanceof ExecutionScopeConflictError)) throw error;
+        return respond({
+          success: false,
+          reason: 'workspace_conflict_denied',
+          mutation: 'none',
+          attemptId: error.attempt.id,
+          phase: error.attempt.phase,
+          error: 'The requested scope is owned by another authenticated primary.',
+        });
+      }
 
     if (existingAttempt) {
       const requestedKindMatches = existingAttempt.placement.kind === input.placement.kind;
@@ -2986,16 +3006,17 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       taskService.update(scope.feature, scope.task, { status: 'in_progress' });
       bindFeatureSession(scope.feature, toolContext);
     }
-    return respond({
-      success: true,
-      attemptId: armed.attempt.id,
-      scope,
-      placement: armed.attempt.placement,
-      references,
-      phase: armed.attempt.phase,
-      expiresAt: armed.attempt.expiresAt,
-      existing: armed.existing,
-      lifecycle: 'The next unchanged native Forager task call from this parent consumes this arm. The primary owns stop observation and finalization.',
+      return respond({
+        success: true,
+        attemptId: armed.attempt.id,
+        scope,
+        placement: armed.attempt.placement,
+        references,
+        phase: armed.attempt.phase,
+        expiresAt: armed.attempt.expiresAt,
+        existing: armed.existing,
+        lifecycle: 'The next unchanged native Forager task call from this parent consumes this arm. The primary owns stop observation and finalization.',
+      });
     });
   };
 

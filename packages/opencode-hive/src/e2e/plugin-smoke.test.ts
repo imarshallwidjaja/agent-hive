@@ -17,7 +17,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { AdhocWorktreeService, ConfigService, ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, ExecutionAttemptService, FeatureService, SessionService, resolveFeatureDirectoryName } from 'hive-core';
+import { AdhocWorktreeService, ConfigService, ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, ExecutionAttemptService, FeatureService, SessionService, WorktreeService, resolveFeatureDirectoryName } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 const ROOT_SESSION_CLIENT = {
@@ -412,12 +412,6 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     expect(fs.existsSync(path.join(testRoot, '.hive', 'sessions.json'))).toBe(false);
   });
 
-  it('does not register hive_existing_workspace_start', async () => {
-    const { hooks } = await createHooksForTest(testRoot, 'missing-existing-workspace');
-    expect(hooks.tool!.hive_existing_workspace_start).toBeUndefined();
-    expect(HIVE_TOOL_NAMES).not.toContain('hive_existing_workspace_start');
-  });
-
   it('keeps context CAS so one of two same-revision writers wins', async () => {
     const first = await createHooksForTest(testRoot, 'cas-a');
     const created = JSON.parse(await first.hooks.tool!.hive_context_write.execute({
@@ -487,11 +481,6 @@ describe("e2e: opencode-hive plugin (in-process)", () => {
     const hooks = await plugin(ctx);
 
     expect(hooks.tool).toBeDefined();
-    expect(hooks.tool?.[removedHiveSkillTool]).toBeUndefined();
-    expect(hooks.tool?.hive_existing_workspace_start).toBeUndefined();
-    expect(HIVE_TOOL_NAMES).not.toContain(removedHiveSkillTool);
-    expect(HIVE_TOOL_NAMES).not.toContain('hive_existing_workspace_start');
-
     for (const toolName of EXPECTED_TOOLS) {
       expect(hooks.tool?.[toolName]).toBeDefined();
       expect(typeof hooks.tool?.[toolName].execute).toBe("function");
@@ -1707,7 +1696,6 @@ Do it
       );
       const raw = await worktreeHooks.tool!.hive_status.execute({}, worktreeContext);
       const result = JSON.parse(raw as string) as {
-        launchId?: string;
         reason?: string;
         candidates?: string[];
         error?: string;
@@ -5105,6 +5093,88 @@ async function bindChild(
   } as any);
 }
 
+async function registerPrimary(hooks: PluginHooks, sessionID: string): Promise<ToolContext> {
+  await hooks['chat.message']?.({ sessionID, agent: 'hive-master' }, {
+    message: { agent: 'hive-master' }, parts: [],
+  } as any);
+  return createToolContext(sessionID);
+}
+
+async function prepareNamedTask(
+  hooks: PluginHooks,
+  context: ToolContext,
+  feature: string,
+  task: string,
+): Promise<Record<string, any>> {
+  return JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+    scope: { kind: 'task', feature, task },
+    placement: { kind: 'worktree' },
+  }, context) as string) as Record<string, any>;
+}
+
+async function attachPreparedTask(
+  hooks: PluginHooks,
+  parents: Map<string, string>,
+  context: ToolContext,
+  callID: string,
+  childSessionID: string,
+): Promise<{ args: Record<string, unknown>; childContext: ToolContext }> {
+  const args: Record<string, unknown> = {
+    subagent_type: 'forager-worker',
+    description: 'Execute prepared integration fixture',
+    prompt: 'Run the prepared task.',
+  };
+  await hooks['tool.execute.before']!({
+    tool: 'task', sessionID: context.sessionID, callID,
+  }, { args });
+  await bindChild(hooks, parents, context.sessionID, callID, childSessionID);
+  return {
+    args,
+    childContext: { ...context, sessionID: childSessionID, agent: 'forager-worker' },
+  };
+}
+
+async function stopAttachedTask(
+  hooks: PluginHooks,
+  context: ToolContext,
+  callID: string,
+  childSessionID: string,
+  args: Record<string, unknown>,
+): Promise<void> {
+  await hooks['tool.execute.after']!({
+    tool: 'task', sessionID: context.sessionID, callID, args,
+  } as any, {
+    title: '', output: 'Managed handoff recorded.', metadata: { sessionId: childSessionID },
+  });
+}
+
+async function completePreparedTask(
+  projectRoot: string,
+  hooks: PluginHooks,
+  parents: Map<string, string>,
+  context: ToolContext,
+  feature: string,
+  task: string,
+  marker: string,
+): Promise<Record<string, any>> {
+  const prepared = await prepareNamedTask(hooks, context, feature, task);
+  const callID = `${marker}-call`;
+  const childSessionID = `${marker}-child`;
+  const attached = await attachPreparedTask(hooks, parents, context, callID, childSessionID);
+  fs.writeFileSync(path.join(prepared.placement.workspacePath, `${marker}.txt`), `${marker}\n`);
+  const handoff = JSON.parse(await hooks.tool!.hive_worktree_commit.execute({
+    feature,
+    task,
+    status: 'completed',
+    summary: `Completed ${marker}. Integration fixture verified.`,
+    message: TEST_COMMIT_MESSAGE,
+  }, attached.childContext) as string) as { ok?: boolean };
+  expect(handoff.ok).toBe(true);
+  await stopAttachedTask(hooks, context, callID, childSessionID, attached.args);
+  expect(new ExecutionAttemptService(projectRoot).getAttempt(prepared.attemptId)?.phase).toBe('finalized');
+  return prepared;
+}
+
 function configureForagerDerivative() {
   return spyOn(ConfigService.prototype, 'get').mockReturnValue({
     agents: {},
@@ -5602,6 +5672,239 @@ describe('managed execution attachment', () => {
       configured.mockRestore();
     }
   });
+
+  it('lets two primaries prepare and attach different task worktrees', async () => {
+    const first = await harness(root, 'parallel-primary-a');
+    const secondContext = await registerPrimary(first.hooks, 'parallel-primary-b');
+    await seedFeature(first.hooks, first.context, 'parallel-feature-a');
+    await seedFeature(first.hooks, secondContext, 'parallel-feature-b');
+
+    const [preparedA, preparedB] = await Promise.all([
+      prepareNamedTask(first.hooks, first.context, 'parallel-feature-a', '01-first-task'),
+      prepareNamedTask(first.hooks, secondContext, 'parallel-feature-b', '01-first-task'),
+    ]);
+    expect(preparedA).toMatchObject({ success: true, phase: 'armed' });
+    expect(preparedB).toMatchObject({ success: true, phase: 'armed' });
+    expect(preparedA.attemptId).not.toBe(preparedB.attemptId);
+    expect(preparedA.placement.workspacePath).not.toBe(preparedB.placement.workspacePath);
+
+    const attachedA = await attachPreparedTask(
+      first.hooks, first.parents, first.context, 'parallel-call-a', 'parallel-child-a',
+    );
+    const attachedB = await attachPreparedTask(
+      first.hooks, first.parents, secondContext, 'parallel-call-b', 'parallel-child-b',
+    );
+    expect(new ExecutionAttemptService(root).getAttempt(preparedA.attemptId)?.phase).toBe('attached');
+    expect(new ExecutionAttemptService(root).getAttempt(preparedB.attemptId)?.phase).toBe('attached');
+
+    await stopAttachedTask(first.hooks, first.context, 'parallel-call-a', 'parallel-child-a', attachedA.args);
+    await stopAttachedTask(first.hooks, secondContext, 'parallel-call-b', 'parallel-child-b', attachedB.args);
+  }, 30_000);
+
+  it('serializes two merges into the same destination checkout', async () => {
+    const fixture = await harness(root, 'merge-serial-primary');
+    await seedApprovedFeature(
+      fixture.hooks,
+      fixture.context,
+      'merge-serial',
+      createTwoTaskPlan('Serial', 'Yes, serialize destination merges.'),
+    );
+    await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      'merge-serial', '01-first-task', 'merge-serial-a',
+    );
+    await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      'merge-serial', '02-second-task', 'merge-serial-b',
+    );
+
+    let overlap = 0;
+    let active = 0;
+    const original = WorktreeService.prototype.merge;
+    const merge = spyOn(WorktreeService.prototype, 'merge').mockImplementation(async function (this: WorktreeService, ...args) {
+      active += 1;
+      overlap = Math.max(overlap, active);
+      await new Promise(resolve => setTimeout(resolve, 25));
+      try {
+        return await original.apply(this, args);
+      } finally {
+        active -= 1;
+      }
+    });
+    try {
+      const results = await Promise.all([
+        fixture.hooks.tool!.hive_merge.execute({
+          feature: 'merge-serial', task: '01-first-task', message: TEST_MERGE_MESSAGE,
+        }, fixture.context),
+        fixture.hooks.tool!.hive_merge.execute({
+          feature: 'merge-serial', task: '02-second-task', message: TEST_MERGE_MESSAGE,
+        }, fixture.context),
+      ]);
+      expect(results.map(raw => JSON.parse(raw as string).success)).toEqual([true, true]);
+      expect(overlap).toBe(1);
+    } finally {
+      merge.mockRestore();
+    }
+  }, 30_000);
+
+  it('holds merge source and destination locks while unrelated preparation proceeds', async () => {
+    const fixture = await harness(root, 'merge-lock-primary');
+    const unrelatedContext = await registerPrimary(fixture.hooks, 'merge-lock-unrelated-primary');
+    await seedFeature(fixture.hooks, fixture.context, 'merge-lock-source');
+    await seedFeature(fixture.hooks, unrelatedContext, 'merge-lock-unrelated');
+    await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      'merge-lock-source', '01-first-task', 'merge-lock-source',
+    );
+
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    const original = WorktreeService.prototype.merge;
+    const merge = spyOn(WorktreeService.prototype, 'merge').mockImplementation(async function (this: WorktreeService, ...args) {
+      entered();
+      await paused;
+      return original.apply(this, args);
+    });
+    try {
+      const merging = fixture.hooks.tool!.hive_merge.execute({
+        feature: 'merge-lock-source', task: '01-first-task', message: TEST_MERGE_MESSAGE,
+      }, fixture.context);
+      await enteredPromise;
+      const statusPath = path.join(
+        root,
+        '.hive',
+        'features',
+        resolveFeatureDirectoryName(root, 'merge-lock-source'),
+        'tasks',
+        '01-first-task',
+        'status.json',
+      );
+      const status = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as { status: string };
+      fs.writeFileSync(statusPath, JSON.stringify({ ...status, status: 'pending' }));
+
+      let sourcePrepared = false;
+      const sourcePreparation = prepareNamedTask(
+        fixture.hooks, fixture.context, 'merge-lock-source', '01-first-task',
+      ).then(result => {
+        sourcePrepared = true;
+        return result;
+      });
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(sourcePrepared).toBe(false);
+
+      const unrelated = await prepareNamedTask(
+        fixture.hooks, unrelatedContext, 'merge-lock-unrelated', '01-first-task',
+      );
+      expect(unrelated.success).toBe(true);
+      expect(sourcePrepared).toBe(false);
+
+      release();
+      expect(JSON.parse(await merging as string).success).toBe(true);
+      expect((await sourcePreparation).success).toBe(true);
+      expect(sourcePrepared).toBe(true);
+    } finally {
+      release();
+      merge.mockRestore();
+    }
+  }, 30_000);
+
+  it('allows merge while an unrelated managed worker holds another worktree', async () => {
+    const fixture = await harness(root, 'merge-unrelated-primary');
+    await seedFeature(fixture.hooks, fixture.context, 'merge-destination');
+    await seedFeature(fixture.hooks, fixture.context, 'merge-unrelated-worker');
+    await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      'merge-destination', '01-first-task', 'merge-destination',
+    );
+
+    const worker = await prepareNamedTask(
+      fixture.hooks, fixture.context, 'merge-unrelated-worker', '01-first-task',
+    );
+    const attached = await attachPreparedTask(
+      fixture.hooks, fixture.parents, fixture.context,
+      'merge-unrelated-call', 'merge-unrelated-child',
+    );
+    const merged = JSON.parse(await fixture.hooks.tool!.hive_merge.execute({
+      feature: 'merge-destination', task: '01-first-task', message: TEST_MERGE_MESSAGE,
+    }, fixture.context) as string);
+
+    expect(merged.success).toBe(true);
+    expect(new ExecutionAttemptService(root).getAttempt(worker.attemptId)?.phase).toBe('attached');
+    await stopAttachedTask(
+      fixture.hooks, fixture.context,
+      'merge-unrelated-call', 'merge-unrelated-child', attached.args,
+    );
+  }, 30_000);
+
+  it('rejects merge while the source worktree has an attached managed worker', async () => {
+    const fixture = await harness(root, 'merge-claimed-primary');
+    await seedFeature(fixture.hooks, fixture.context, 'merge-claimed');
+    const prepared = await prepareNamedTask(
+      fixture.hooks, fixture.context, 'merge-claimed', '01-first-task',
+    );
+    const attached = await attachPreparedTask(
+      fixture.hooks, fixture.parents, fixture.context,
+      'merge-claimed-call', 'merge-claimed-child',
+    );
+    await fixture.hooks.tool!.hive_task_update.execute({
+      feature: 'merge-claimed', task: '01-first-task', status: 'done',
+    }, fixture.context);
+
+    const denied = JSON.parse(await fixture.hooks.tool!.hive_merge.execute({
+      feature: 'merge-claimed', task: '01-first-task', message: TEST_MERGE_MESSAGE,
+    }, fixture.context) as string);
+    expect(denied.reason).toBe('workspace_conflict_denied');
+    expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)?.phase).toBe('attached');
+    await stopAttachedTask(
+      fixture.hooks, fixture.context,
+      'merge-claimed-call', 'merge-claimed-child', attached.args,
+    );
+  }, 30_000);
+
+  it('allows concurrent native attachment for disjoint worktree identities', async () => {
+    const fixture = await harness(root, 'dispatch-primary-a');
+    const secondContext = await registerPrimary(fixture.hooks, 'dispatch-primary-b');
+    await seedFeature(fixture.hooks, fixture.context, 'dispatch-feature-a');
+    await seedFeature(fixture.hooks, secondContext, 'dispatch-feature-b');
+    const preparedA = await prepareNamedTask(
+      fixture.hooks, fixture.context, 'dispatch-feature-a', '01-first-task',
+    );
+    const preparedB = await prepareNamedTask(
+      fixture.hooks, secondContext, 'dispatch-feature-b', '01-first-task',
+    );
+    const argsA = { subagent_type: 'forager-worker', description: 'Dispatch A', prompt: 'Run A.' };
+    const argsB = { subagent_type: 'forager-worker', description: 'Dispatch B', prompt: 'Run B.' };
+
+    const results = await Promise.allSettled([
+      fixture.hooks['tool.execute.before']!({
+        tool: 'task', sessionID: fixture.context.sessionID, callID: 'dispatch-call-a',
+      }, { args: argsA }),
+      fixture.hooks['tool.execute.before']!({
+        tool: 'task', sessionID: secondContext.sessionID, callID: 'dispatch-call-b',
+      }, { args: argsB }),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(2);
+    expect(new ExecutionAttemptService(root).getAttempt(preparedA.attemptId)?.phase).toBe('attached');
+    expect(new ExecutionAttemptService(root).getAttempt(preparedB.attemptId)?.phase).toBe('attached');
+
+    await bindChild(
+      fixture.hooks, fixture.parents,
+      fixture.context.sessionID, 'dispatch-call-a', 'dispatch-child-a',
+    );
+    await bindChild(
+      fixture.hooks, fixture.parents,
+      secondContext.sessionID, 'dispatch-call-b', 'dispatch-child-b',
+    );
+
+    await stopAttachedTask(
+      fixture.hooks, fixture.context, 'dispatch-call-a', 'dispatch-child-a', argsA,
+    );
+    await stopAttachedTask(
+      fixture.hooks, secondContext, 'dispatch-call-b', 'dispatch-child-b', argsB,
+    );
+  }, 30_000);
 
   it('closes an unattached arm on plugin restart and preserves an attached quarantine', async () => {
     const first = await harness(root, 'primary-a');

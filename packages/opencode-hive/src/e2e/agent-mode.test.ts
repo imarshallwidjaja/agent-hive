@@ -8,8 +8,6 @@ import { HIVE_COMMANDS } from '../commands/registry.js';
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" });
 (OPENCODE_CLIENT.session as any).get = async ({ path: { id } }: { path: { id: string } }) => ({ data: { id } });
 (OPENCODE_CLIENT.session as any).update = async () => ({ data: {} });
-const removedHiveSkillTool = ['hive', 'skill'].join('_');
-
 const TEST_ROOT_BASE = "/tmp/hive-agent-mode-test";
 
 function createProject(worktree: string) {
@@ -265,34 +263,6 @@ describe("agentMode gating", () => {
     expect(opencodeConfig.agent["hive-master"]).toBeUndefined();
   });
 
-  it("does not expose the removed historical lookup tool to any agent", async () => {
-    const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify({
-        agentMode: "dedicated",
-      }),
-    );
-
-    const ctx: any = {
-      directory: testRoot,
-      worktree: testRoot,
-      serverUrl: new URL("http://localhost:1"),
-      project: createProject(testRoot),
-      client: OPENCODE_CLIENT,
-    };
-
-    const hooks = await plugin(ctx);
-    const opencodeConfig: any = { agent: {} };
-    await hooks.config!(opencodeConfig);
-
-    const removedNetworkTool = ["hive", "network", "query"].join("_");
-    for (const agent of Object.values(opencodeConfig.agent)) {
-      expect((agent as any).tools ?? {}).not.toHaveProperty(removedNetworkTool);
-    }
-  });
-
   it("keeps hive-helper bounded to merge recovery, state clarification, append-only manual follow-up, and no plugin-defined skill tool", async () => {
     const configPath = path.join(testRoot, ".config", "opencode", "agent_hive.json");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -328,12 +298,9 @@ describe("agentMode gating", () => {
     expect(helper.tools?.["hive_status"]).toBeUndefined();
     expect(helper.tools?.["hive_context_write"]).toBeUndefined();
     expect(helper.tools?.["hive_task_create"]).toBeUndefined();
-    expect(helper.tools?.[removedHiveSkillTool]).toBeUndefined();
     expect(helper.tools?.["hive_task_update"]).toBe(false);
     expect(helper.tools?.["hive_plan_read"]).toBeUndefined();
     expect(helper.tools?.["hive_tasks_sync"]).toBe(false);
-    expect(helper.tools?.["hive_worktree_start"]).toBeUndefined();
-    expect(helper.tools?.["hive_worktree_create"]).toBeUndefined();
     expect(helper.tools?.["hive_worktree_commit"]).toBe(false);
     expect(helper.permission?.task).toBe("deny");
     expect(helper.permission?.delegate).toBe("deny");

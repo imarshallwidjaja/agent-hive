@@ -427,6 +427,27 @@ describe('operator standing constraints', () => {
       expect(args.prompt).toBe(`${nextPrefix}${previousSuffix}`);
     });
 
+    it('normalizes an exact carried suffix after plugin restart', async () => {
+      const firstHooks = await loadHooks(testRoot);
+      await firstHooks.tool!.hive_constraints_add.execute(
+        { constraints: CONSTRAINTS },
+        createToolContext('sess_restarted_ordinary'),
+      );
+      const firstArgs = await runTaskHook(firstHooks, 'sess_restarted_ordinary', {
+        subagent_type: 'scout-researcher',
+        prompt: 'Do the restart-safe task.',
+      });
+
+      const restartedHooks = await loadHooks(testRoot);
+      const replayedArgs = await runTaskHook(restartedHooks, 'sess_restarted_ordinary', {
+        subagent_type: 'scout-researcher',
+        prompt: firstArgs.prompt,
+      });
+
+      expect(replayedArgs.prompt).toBe(firstArgs.prompt);
+      expect(String(replayedArgs.prompt).split(STANDING_CONSTRAINTS_START)).toHaveLength(2);
+    });
+
     it('keeps a stale carried suffix and appends the current register once', async () => {
       const hooks = await loadHooks(testRoot);
       const toolContext = createToolContext('sess_stale_register');
