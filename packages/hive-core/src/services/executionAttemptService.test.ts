@@ -151,6 +151,28 @@ describe('ExecutionAttemptService armed native attachment', () => {
     });
   });
 
+  it('preflights same-scope ownership without creating another attempt', () => {
+    const first = service.arm({
+      kind: 'adhoc',
+      runId: 'owned-preflight',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    }).attempt;
+    const before = fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8');
+
+    expect(service.preflightArm({
+      kind: 'adhoc',
+      runId: 'owned-preflight',
+      originatingPrimarySession: 'primary-a',
+    })).toMatchObject({ id: first.id, phase: 'armed' });
+    expect(() => service.preflightArm({
+      kind: 'adhoc',
+      runId: 'owned-preflight',
+      originatingPrimarySession: 'primary-b',
+    })).toThrow(/another primary/i);
+    expect(fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8')).toBe(before);
+  });
+
   it('keeps attached worktrees quarantined until finalization', () => {
     const identity = worktree('quarantined');
     const attempt = service.arm({

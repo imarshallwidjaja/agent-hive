@@ -177,6 +177,36 @@ describe('managed execution attachment', () => {
     expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)?.phase).toBe('attached');
   });
 
+  it('denies another primary before creating Git resources for the same feature task', async () => {
+    const owner = await harness(root, 'primary-owner');
+    await seedFeature(owner.hooks, owner.context, 'feature-a');
+    const live = path.join(root, 'live-owner');
+    fs.mkdirSync(live);
+    const prepared = await prepareTask(owner.hooks, owner.context, 'feature-a', { kind: 'in_place', directory: live });
+    const branchesBefore = execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' });
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+    const attemptsPath = path.join(root, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+    const taskWorktreePath = path.join(root, '.hive', '.worktrees', 'feature-a', '01-first-task');
+    await owner.hooks['chat.message']?.({ sessionID: 'primary-other', agent: 'hive-master' }, {
+      message: { agent: 'hive-master' }, parts: [],
+    } as any);
+
+    const denied = await prepareTask(owner.hooks, { ...owner.context, sessionID: 'primary-other' }, 'feature-a');
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'workspace_conflict_denied',
+      mutation: 'none',
+      attemptId: prepared.attemptId,
+      phase: 'armed',
+    });
+    expect(execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' })).toBe(branchesBefore);
+    expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(worktreesBefore);
+    expect(fs.existsSync(taskWorktreePath)).toBe(false);
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+  });
+
   it('does not consume an arm for a non-Forager call and rejects a second Forager call', async () => {
     const { hooks, context } = await harness(root, 'primary');
     await seedFeature(hooks, context, 'feature-a');

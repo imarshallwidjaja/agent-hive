@@ -34,6 +34,8 @@ export interface ArmExecutionAttemptInput {
   runId?: string;
 }
 
+export type PreflightExecutionAttemptInput = Omit<ArmExecutionAttemptInput, 'placement'>;
+
 export interface ArmExecutionAttemptResult {
   attempt: ExecutionAttempt;
   existing: boolean;
@@ -201,6 +203,24 @@ export class ExecutionAttemptService {
       store.attempts.push(attempt);
       return { attempt: structuredClone(attempt), existing: false };
     });
+  }
+
+  preflightArm(input: PreflightExecutionAttemptInput): ExecutionAttempt | undefined {
+    this.assertArmShape(input);
+    const store = this.readStore();
+    const parentArm = store.attempts.find(attempt =>
+      attempt.originatingPrimarySession === input.originatingPrimarySession && attempt.phase === 'armed');
+    if (parentArm) {
+      if (this.sameScope(parentArm, input)) return structuredClone(parentArm);
+      throw new Error(`Primary session '${input.originatingPrimarySession}' already has an armed execution`);
+    }
+
+    const existing = this.currentAttemptForScope(store, input);
+    if (!existing) return undefined;
+    if (existing.originatingPrimarySession !== input.originatingPrimarySession) {
+      throw new ExecutionScopeConflictError(structuredClone(existing));
+    }
+    return structuredClone(existing);
   }
 
   attachNext(input: AttachExecutionAttemptInput): ExecutionAttempt {
@@ -491,7 +511,7 @@ export class ExecutionAttemptService {
     }
   }
 
-  private assertArmShape(input: ArmExecutionAttemptInput): void {
+  private assertArmShape(input: PreflightExecutionAttemptInput): void {
     this.requireToken(input.originatingPrimarySession, 'originatingPrimarySession');
     if (input.kind === 'task') {
       this.requireToken(input.featureName, 'featureName');
@@ -547,7 +567,7 @@ export class ExecutionAttemptService {
 
   private currentAttemptForScope(
     store: ExecutionAttemptsJson,
-    input: ArmExecutionAttemptInput,
+    input: PreflightExecutionAttemptInput,
   ): ExecutionAttempt | undefined {
     if (input.kind === 'task') {
       const id = store.currentTaskAttempts?.[taskPointerKey(input.featureName!, input.taskFolder!)];
@@ -558,7 +578,7 @@ export class ExecutionAttemptService {
       attempt.kind === 'adhoc' && attempt.runId === input.runId && attempt.phase !== 'finalized');
   }
 
-  private sameScope(attempt: ExecutionAttempt, input: ArmExecutionAttemptInput): boolean {
+  private sameScope(attempt: ExecutionAttempt, input: PreflightExecutionAttemptInput): boolean {
     return attempt.kind === input.kind
       && (attempt.kind === 'task'
         ? attempt.featureName === input.featureName && attempt.taskFolder === input.taskFolder

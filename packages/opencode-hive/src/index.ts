@@ -2837,6 +2837,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     let scope: { kind: 'task'; feature: string; task: string } | { kind: 'adhoc'; runId: string };
     let placement: ExecutionAttempt['placement'];
     let references: Record<string, string>;
+    let cleanupCreatedPlacement: (() => Promise<'complete' | 'partial' | 'failed' | 'not_requested'>) | undefined;
 
     if (input.scope.kind === 'task') {
       if (!isNonBlankString(input.scope.task)) {
@@ -2860,60 +2861,80 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         spec: `.hive/features/${resolveFeatureDirectoryName(directory, feature)}/tasks/${input.scope.task}/spec.md`,
         context: `.hive/features/${resolveFeatureDirectoryName(directory, feature)}/context/`,
       };
-      const parentArm = executionAttemptService.armedForParent(parentSessionID);
-      if (parentArm && (parentArm.kind !== 'task'
-        || parentArm.featureName !== feature
-        || parentArm.taskFolder !== input.scope.task)) {
-        throw new Error(`Primary session '${parentSessionID}' already has an armed execution`);
-      }
-      if (parentArm) {
-        placement = parentArm.placement;
-      } else if (input.placement.kind === 'worktree') {
-        const worktree = await worktreeService.create(feature, input.scope.task);
-        const workspacePath = fs.realpathSync(worktree.workspacePath ?? worktree.path);
-        placement = {
-          kind: 'worktree',
-          workspacePath,
-          workspaceIdentities: worktree.repos
-            ? Object.values(worktree.repos).map(repo => fs.realpathSync(repo.path))
-            : [workspacePath],
-          branch: worktree.branch,
-          baseCommit: worktree.commit,
-        };
-      } else {
-        placement = { kind: 'in_place', directory: fs.realpathSync(input.placement.directory!) };
-      }
     } else if (input.scope.kind === 'adhoc') {
       const target = adhocWorktreeService.resolveCreateTarget({ runId: blankToUndefined(input.scope.runId) });
       scope = { kind: 'adhoc', runId: target.runId };
       references = { projectContext: '.hive/context/' };
-      const parentArm = executionAttemptService.armedForParent(parentSessionID);
-      if (parentArm && (parentArm.kind !== 'adhoc' || parentArm.runId !== target.runId)) {
-        throw new Error(`Primary session '${parentSessionID}' already has an armed execution`);
-      }
-      if (parentArm) {
-        placement = parentArm.placement;
-      } else if (input.placement.kind === 'worktree') {
-        const existing = await adhocWorktreeService.get(target.runId);
-        const info = existing ?? await adhocWorktreeService.create({
-          runId: target.runId,
-          repoIds: normalizeOptionalStringList(input.placement.repoIds),
-        });
-        const workspacePath = fs.realpathSync(info.workspacePath ?? info.path);
-        placement = {
-          kind: 'worktree',
-          workspacePath,
-          workspaceIdentities: info.repos
-            ? Object.values(info.repos).map(repo => fs.realpathSync(repo.path))
-            : [workspacePath],
-          branch: info.branch,
-          baseCommit: info.commit,
-        };
-      } else {
-        placement = { kind: 'in_place', directory: fs.realpathSync(input.placement.directory!) };
-      }
     } else {
       return respond({ success: false, reason: 'invalid_argument', error: 'scope.kind must be task or adhoc.' });
+    }
+
+    let existingAttempt: ExecutionAttempt | undefined;
+    try {
+      existingAttempt = executionAttemptService.preflightArm({
+        kind: scope.kind,
+        originatingPrimarySession: parentSessionID,
+        ...(scope.kind === 'task'
+          ? { featureName: scope.feature, taskFolder: scope.task }
+          : { runId: scope.runId }),
+      });
+    } catch (error) {
+      if (!(error instanceof ExecutionScopeConflictError)) throw error;
+      return respond({
+        success: false,
+        reason: 'workspace_conflict_denied',
+        mutation: 'none',
+        attemptId: error.attempt.id,
+        phase: error.attempt.phase,
+        error: 'The requested scope is owned by another authenticated primary.',
+      });
+    }
+
+    if (existingAttempt) {
+      placement = existingAttempt.placement;
+    } else if (input.placement.kind === 'worktree' && scope.kind === 'task') {
+      const { feature, task } = scope;
+      const existing = await worktreeService.get(feature, task);
+      const worktree = existing ?? await worktreeService.create(feature, task);
+      const workspacePath = fs.realpathSync(worktree.workspacePath ?? worktree.path);
+      placement = {
+        kind: 'worktree',
+        workspacePath,
+        workspaceIdentities: worktree.repos
+          ? Object.values(worktree.repos).map(repo => fs.realpathSync(repo.path))
+          : [workspacePath],
+        branch: worktree.branch,
+        baseCommit: worktree.commit,
+      };
+      if (!existing) {
+        cleanupCreatedPlacement = async () => {
+          return (await worktreeService.remove(feature, task, true)).cleanup.outcome;
+        };
+      }
+    } else if (input.placement.kind === 'worktree' && scope.kind === 'adhoc') {
+      const { runId } = scope;
+      const existing = await adhocWorktreeService.get(runId);
+      const info = existing ?? await adhocWorktreeService.create({
+        runId,
+        repoIds: normalizeOptionalStringList(input.placement.repoIds),
+      });
+      const workspacePath = fs.realpathSync(info.workspacePath ?? info.path);
+      placement = {
+        kind: 'worktree',
+        workspacePath,
+        workspaceIdentities: info.repos
+          ? Object.values(info.repos).map(repo => fs.realpathSync(repo.path))
+          : [workspacePath],
+        branch: info.branch,
+        baseCommit: info.commit,
+      };
+      if (!existing) {
+        cleanupCreatedPlacement = async () => {
+          return (await adhocWorktreeService.cleanup(runId, true)).cleanup.outcome;
+        };
+      }
+    } else {
+      placement = { kind: 'in_place', directory: fs.realpathSync(input.placement.directory!) };
     }
 
     let armed;
@@ -2927,6 +2948,17 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           : { runId: scope.runId }),
       });
     } catch (error) {
+      if (cleanupCreatedPlacement && placement.kind === 'worktree') {
+        try {
+          executionAttemptService.assertWorkspacesIdle(placement.workspaceIdentities);
+          const cleanupOutcome = await cleanupCreatedPlacement();
+          if (cleanupOutcome !== 'complete') {
+            throw new Error(`Rejected execution placement cleanup was ${cleanupOutcome}`);
+          }
+        } catch (cleanupError) {
+          if (!(cleanupError instanceof Error) || !/claimed by attempt/.test(cleanupError.message)) throw cleanupError;
+        }
+      }
       if (!(error instanceof ExecutionScopeConflictError)) throw error;
       return respond({
         success: false,
