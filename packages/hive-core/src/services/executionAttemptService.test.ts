@@ -173,6 +173,45 @@ describe('ExecutionAttemptService armed native attachment', () => {
     expect(fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8')).toBe(before);
   });
 
+  it('serializes cleanup reservation with execution admission', () => {
+    const identity = worktree('cleanup-reservation');
+    const reservation = service.reserveWorkspaceCleanup([identity]);
+    expect(reservation.reserved).toBe(true);
+    if (!reservation.reserved) throw new Error('Expected cleanup reservation');
+
+    const concurrent = new ExecutionAttemptService(TEST_DIR, 'runtime-a');
+    expect(() => concurrent.arm({
+      kind: 'adhoc',
+      runId: 'blocked-by-cleanup',
+      originatingPrimarySession: 'primary-b',
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    })).toThrow(/reserved for cleanup/i);
+
+    service.releaseWorkspaceCleanup(reservation.reservation.id);
+    expect(concurrent.arm({
+      kind: 'adhoc',
+      runId: 'accepted-after-cleanup',
+      originatingPrimarySession: 'primary-b',
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    }).attempt.phase).toBe('armed');
+  });
+
+  it('preserves accepted workspace identities after their attempt finalizes', () => {
+    const identity = worktree('finalized-winner');
+    const winner = service.arm({
+      kind: 'adhoc',
+      runId: 'finalized-winner',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    }).attempt;
+    service.closeArmNotStarted(winner.id);
+
+    expect(service.reserveWorkspaceCleanup([identity])).toEqual({
+      reserved: false,
+      claimedAttempt: expect.objectContaining({ id: winner.id, phase: 'finalized' }),
+    });
+  });
+
   it('keeps attached worktrees quarantined until finalization', () => {
     const identity = worktree('quarantined');
     const attempt = service.arm({

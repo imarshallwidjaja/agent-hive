@@ -228,17 +228,24 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     }
   });
 
-  it('does not remove a newly created placement claimed by the winning arm', async () => {
+  it('preserves a winning ad-hoc placement when the winner finalizes before loser cleanup', async () => {
     initGit(TEST_ROOT);
     const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-claimed-loser');
     const originalArm = ExecutionAttemptService.prototype.arm;
+    const originalReserve = ExecutionAttemptService.prototype.reserveWorkspaceCleanup;
     let injected = false;
+    let winnerId: string | undefined;
     const arm = spyOn(ExecutionAttemptService.prototype, 'arm').mockImplementation(function (input) {
       if (!injected && input.originatingPrimarySession === 'primary-claimed-loser') {
         injected = true;
-        originalArm.call(this, { ...input, originatingPrimarySession: 'primary-claimed-winner' });
+        winnerId = originalArm.call(this, { ...input, originatingPrimarySession: 'primary-claimed-winner' }).attempt.id;
       }
       return originalArm.call(this, input);
+    });
+    const reserve = spyOn(ExecutionAttemptService.prototype, 'reserveWorkspaceCleanup').mockImplementation(function (identities) {
+      if (!winnerId) throw new Error('Expected injected winner');
+      this.closeArmNotStarted(winnerId);
+      return originalReserve.call(this, identities);
     });
     try {
       const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
@@ -256,9 +263,11 @@ describe('hive_execution_prepare ad-hoc placement', () => {
         id: denied.attemptId,
         originatingPrimarySession: 'primary-claimed-winner',
         placement: { kind: 'worktree' },
-        phase: 'armed',
+        phase: 'finalized',
+        observedOutcome: 'not_started',
       });
     } finally {
+      reserve.mockRestore();
       arm.mockRestore();
     }
   });

@@ -16,6 +16,7 @@ import type {
   ExecutionObservedOutcome,
   ExecutionPlacement,
   NativeTaskLease,
+  WorkspaceCleanupReservation,
 } from '../types.js';
 import {
   ARMED_ATTEMPT_TTL_MS,
@@ -40,6 +41,10 @@ export interface ArmExecutionAttemptResult {
   attempt: ExecutionAttempt;
   existing: boolean;
 }
+
+export type WorkspaceCleanupReservationResult =
+  | { reserved: true; reservation: WorkspaceCleanupReservation }
+  | { reserved: false; claimedAttempt: ExecutionAttempt };
 
 export class ExecutionScopeConflictError extends Error {
   constructor(readonly attempt: ExecutionAttempt) {
@@ -154,6 +159,7 @@ export class ExecutionAttemptService {
     this.withStore(store => {
       this.mergeMigratedLeases(store, extracted);
       this.closeForeignRuntimeArms(store);
+      this.closeForeignRuntimeCleanupReservations(store);
     });
     this.sessionService.extractNativeTaskLeases();
   }
@@ -322,6 +328,32 @@ export class ExecutionAttemptService {
     this.withStore(store => this.assertWorkspacesIdleInStore(store, identities));
   }
 
+  reserveWorkspaceCleanup(workspaceIdentities: string[]): WorkspaceCleanupReservationResult {
+    const identities = this.canonicalizeWorkspaceIdentities(workspaceIdentities);
+    return this.withStore(store => {
+      const claimedAttempt = store.attempts.find(attempt => attempt.placement.kind === 'worktree'
+        && identitiesIntersect(attempt.placement.workspaceIdentities, identities));
+      if (claimedAttempt) {
+        return { reserved: false, claimedAttempt: structuredClone(claimedAttempt) };
+      }
+      this.assertCleanupNotReserved(store, identities);
+      const reservation: WorkspaceCleanupReservation = {
+        id: randomUUID(),
+        workspaceIdentities: identities,
+        runtimeId: this.runtimeId,
+      };
+      (store.cleanupReservations ??= []).push(reservation);
+      return { reserved: true, reservation: structuredClone(reservation) };
+    });
+  }
+
+  releaseWorkspaceCleanup(reservationId: string): void {
+    this.withStore(store => {
+      store.cleanupReservations = store.cleanupReservations?.filter(reservation => reservation.id !== reservationId);
+      if (store.cleanupReservations?.length === 0) delete store.cleanupReservations;
+    });
+  }
+
   getAttempt(attemptId: string): ExecutionAttempt | undefined {
     const attempt = this.readStore().attempts.find(candidate => candidate.id === attemptId);
     return attempt ? structuredClone(attempt) : undefined;
@@ -390,6 +422,7 @@ export class ExecutionAttemptService {
 
   private hasPersistableState(store: ExecutionAttemptsJson): boolean {
     return store.attempts.length > 0
+      || (store.cleanupReservations?.length ?? 0) > 0
       || (store.nativeTaskLeaseHistory?.length ?? 0) > 0
       || Object.keys(store.currentTaskAttempts ?? {}).length > 0;
   }
@@ -431,6 +464,7 @@ export class ExecutionAttemptService {
       throw new Error(`Unsupported execution-attempts schemaVersion ${String((loaded as { schemaVersion: unknown }).schemaVersion)}`);
     }
     loaded.attempts ??= [];
+    if (loaded.cleanupReservations?.length === 0) delete loaded.cleanupReservations;
     return loaded;
   }
 
@@ -509,6 +543,11 @@ export class ExecutionAttemptService {
         this.finalizeRecord(attempt, 'not_started');
       }
     }
+  }
+
+  private closeForeignRuntimeCleanupReservations(store: ExecutionAttemptsJson): void {
+    store.cleanupReservations = store.cleanupReservations?.filter(reservation => reservation.runtimeId === this.runtimeId);
+    if (store.cleanupReservations?.length === 0) delete store.cleanupReservations;
   }
 
   private assertArmShape(input: PreflightExecutionAttemptInput): void {
@@ -618,6 +657,7 @@ export class ExecutionAttemptService {
   }
 
   private assertWorkspacesIdleInStore(store: ExecutionAttemptsJson, identities: string[]): void {
+    this.assertCleanupNotReserved(store, identities);
     for (const attempt of store.attempts) {
       if (attempt.phase === 'finalized' || attempt.placement.kind !== 'worktree') continue;
       if (!identitiesIntersect(attempt.placement.workspaceIdentities, identities)) continue;
@@ -625,6 +665,12 @@ export class ExecutionAttemptService {
         && attempt.placement.workspaceIdentities.includes(identity));
       throw new Error(`Workspace identity is claimed by attempt ${attempt.id}: ${claimed}`);
     }
+  }
+
+  private assertCleanupNotReserved(store: ExecutionAttemptsJson, identities: string[]): void {
+    const reservation = store.cleanupReservations?.find(candidate =>
+      identitiesIntersect(candidate.workspaceIdentities, identities));
+    if (reservation) throw new Error(`Workspace identity is reserved for cleanup ${reservation.id}`);
   }
 
   private requireAttachedCall(

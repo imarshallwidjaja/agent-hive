@@ -64,7 +64,7 @@ describe('background job adapter observation', () => {
 
   afterEach(() => fs.rmSync(TEST_DIR, { recursive: true, force: true }));
 
-  it('registers a native background task without pending-launch authority', async () => {
+  it('registers a native background task from its native identity', async () => {
     const { adapter, service, sessions } = harness();
     sessions.set('parent', session('parent'));
     await register(adapter, 'parent', 'call-a', 'task-a');
@@ -75,7 +75,6 @@ describe('background job adapter observation', () => {
       scopeSource: 'native-fallback',
       scope: { parentSessionId: 'parent' },
     });
-    expect(service.listPendingLaunches({}, { includeArchived: true })).toEqual([]);
   });
 
   it('does not register blocking task returns on the background board', async () => {
@@ -95,7 +94,6 @@ describe('background job adapter observation', () => {
       await adapter['tool.execute.after']({ tool: 'task', sessionID: 'parent', callID }, output);
     }
     expect(service.listScoped({}, { includeArchived: true })).toEqual([]);
-    expect(service.listPendingLaunches({}, { includeArchived: true })).toEqual([]);
   });
 
   it('updates task_status board state without emitting authenticated stop evidence', async () => {

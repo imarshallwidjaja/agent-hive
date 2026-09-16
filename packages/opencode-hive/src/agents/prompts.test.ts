@@ -294,7 +294,7 @@ describe('Fresh-session delegation contract', () => {
       ['Hive', QUEEN_BEE_PROMPT],
       ['Swarm', SWARM_BEE_PROMPT],
     ] as const) {
-      expect(prompt, name).toContain('new worker session in the same worktree');
+      expect(prompt, name).toContain('new unchanged native Forager call in the same worktree');
     }
   });
 
@@ -684,9 +684,9 @@ describe('Hive (Hybrid) prompt', () => {
 
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
       expect(QUEEN_BEE_PROMPT).toContain('If status is not `blocked`');
-      expect(QUEEN_BEE_PROMPT).toContain('do not use `continueFrom: "blocked"`');
+      expect(QUEEN_BEE_PROMPT).toContain('omit `continueFromBlocked`');
       expect(QUEEN_BEE_PROMPT).toContain('only for normal starts (`pending` / `in_progress`)');
-      expect(QUEEN_BEE_PROMPT).toContain('hive_worktree_start({ feature, task })');
+      expect(QUEEN_BEE_PROMPT).toContain('hive_execution_prepare');
     });
 
     it('documents plan-reviewer routing by closest task fit', () => {
@@ -996,7 +996,7 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('hive_repositories_status');
       expect(SWARM_BEE_PROMPT).toContain('hive_repositories_discover');
       expect(SWARM_BEE_PROMPT).toContain('hive_repositories_update');
-      expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_worktree_start');
+      expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_execution_prepare');
     });
 
     it('conditions context consolidation and stale-state checks on observable pressure and task state', () => {
@@ -1011,8 +1011,7 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('uses returned launch coordinates verbatim and tags task-specific durable writes', () => {
-      expect(SWARM_BEE_PROMPT).toContain('launch payload path, branch, or commit values');
-      expect(SWARM_BEE_PROMPT).toContain('use those values verbatim');
+      expect(SWARM_BEE_PROMPT).toContain('placement path, branch, and commit values returned by `hive_execution_prepare` verbatim');
       expect(SWARM_BEE_PROMPT).toContain('never concatenate fields in prose');
       expect(SWARM_BEE_PROMPT).toContain('set its `task` metadata');
     });
@@ -1065,9 +1064,9 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
       expect(SWARM_BEE_PROMPT).toContain('If status is not `blocked`');
-      expect(SWARM_BEE_PROMPT).toContain('do not use `continueFrom: "blocked"`');
+      expect(SWARM_BEE_PROMPT).toContain('omit `continueFromBlocked`');
       expect(SWARM_BEE_PROMPT).toContain('only for normal starts (`pending` / `in_progress`)');
-      expect(SWARM_BEE_PROMPT).toContain('hive_worktree_start({ feature, task })');
+      expect(SWARM_BEE_PROMPT).toContain('hive_execution_prepare');
     });
 
     it('includes task() guidance for research fan-out', () => {
@@ -1733,7 +1732,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
 
   it('conditionally loads ad-hoc orchestration before preparing execution worktrees', () => {
     const triggerIndex = HIVE_BUILDER_PROMPT.indexOf('load `orchestrating-ad-hoc-work`');
-    const preparationIndex = HIVE_BUILDER_PROMPT.indexOf('hive_adhoc_worktree_create');
+    const preparationIndex = HIVE_BUILDER_PROMPT.indexOf('hive_execution_prepare');
 
     expect(triggerIndex).toBeGreaterThanOrEqual(0);
     expect(triggerIndex).toBeLessThan(preparationIndex);
@@ -1773,14 +1772,13 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('evidence');
     expect(HIVE_BUILDER_PROMPT).toContain('expected result');
     expect(HIVE_BUILDER_PROMPT).toContain('done criteria');
-    expect(HIVE_BUILDER_PROMPT).toContain('Put Forager instructions in `workerInstructions`');
-    expect(HIVE_BUILDER_PROMPT).toContain('Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`');
+    expect(HIVE_BUILDER_PROMPT).toContain('complete Forager context packet directly in the unchanged native `task.prompt`');
+    expect(HIVE_BUILDER_PROMPT).toContain('Ordinary Scout, advisor, and reviewer packets also go in `task.prompt`');
   });
 
-  it('contains explicit ad-hoc tool names', () => {
+  it('uses the execution preparation surface with explicit ad-hoc completion tools', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_existing_workspace_start');
-    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_create');
-    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_start');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_execution_prepare');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_commit');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_merge');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_cleanup');
@@ -1849,28 +1847,29 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     );
   });
 
-  it('documents the explicit Forager launch selector without hidden-state polling', () => {
+  it('documents armed native Forager attachment without removed launch authority', () => {
+    const removed = [
+      'launchId',
+      'hive_launch_id',
+      'taskToolCall',
+      'backgroundTaskCall',
+      'workerInstructions',
+      'hive_worktree_start',
+      'hive_worktree_create',
+      'hive_adhoc_worktree_create',
+      'hive_adhoc_worktree_start',
+    ];
     for (const [name, prompt] of [
       ['Hive', QUEEN_BEE_PROMPT],
       ['Swarm', SWARM_BEE_PROMPT],
       ['Hive Builder', HIVE_BUILDER_PROMPT],
     ] as const) {
       expect(prompt, name).toContain('including report-only diagnosis');
-      expect(prompt, name).toContain('hive_launch_id');
-      expect(prompt, name).toContain('launchId');
-      expect(prompt, name).toContain('The preparation response includes `launchId`');
-      expect(prompt, name).toContain('taskToolCall.hive_launch_id');
-      expect(prompt, name).toContain('do not pass `launchId` as a `task()` argument');
-      expect(prompt, name).toContain('editing a prepared Forager dispatch prompt cannot update its instructions');
+      expect(prompt, name).toContain('hive_execution_prepare');
+      expect(prompt, name).toContain('unchanged native');
+      expect(prompt, name).toContain('Unused arms expire after five minutes');
       expect(prompt, name).not.toContain('hive_existing_workspace_start');
-      expect(prompt, name).toContain('Unused preparation expires after five minutes');
-      expect(prompt, name).not.toContain('plugin restart invalidates unused preparation');
-      expect(prompt, name).not.toContain('binding-in-progress');
-      expect(prompt, name).not.toContain('wait for the native correlation event');
-      expect(prompt, name).toContain('Ordinary Scout, advisor, and reviewer launches are exempt');
-      expect(prompt, name).toContain('taskToolCall');
-      expect(prompt, name).toContain('backgroundTaskCall');
-      expect(prompt, name).toContain('one-time dispatch selector');
+      for (const symbol of removed) expect(prompt, `${name}: ${symbol}`).not.toContain(symbol);
     }
     expect(QUEEN_BEE_PROMPT).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
     expect(QUEEN_BEE_PROMPT).toContain('cannot reuse that run');
@@ -1879,10 +1878,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('Retry after confirmed termination may reuse the same `runId` worktree');
     expect(HIVE_BUILDER_PROMPT).toContain('cannot reuse that run');
     expect(HIVE_BUILDER_PROMPT).not.toContain('supersede onto a fresh `attemptSlot` worktree');
-    expect(QUEEN_BEE_PROMPT).toContain('creates or reuses the worktree and prepares a Forager; dispatch the returned payload later');
-    expect(QUEEN_BEE_PROMPT).toContain('Creates or reuses the worktree and prepares a Forager; dispatch later');
-    expect(QUEEN_BEE_PROMPT).not.toContain('creates worktree + Forager');
-    expect(QUEEN_BEE_PROMPT).not.toContain('Creates worktree + Forager');
+    expect(QUEEN_BEE_PROMPT).toContain('then dispatch one unchanged native Forager `task()` call');
   });
 
   it('limits recursive task use to one architect planning-helper level', () => {

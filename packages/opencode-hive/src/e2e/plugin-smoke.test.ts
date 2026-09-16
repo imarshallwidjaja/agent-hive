@@ -207,6 +207,44 @@ describe('managed execution attachment', () => {
     expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
   });
 
+  it('preserves a winning feature placement when the winner finalizes before loser cleanup', async () => {
+    const loser = await harness(root, 'primary-race-loser');
+    await seedFeature(loser.hooks, loser.context, 'feature-a');
+    const originalArm = ExecutionAttemptService.prototype.arm;
+    const originalReserve = ExecutionAttemptService.prototype.reserveWorkspaceCleanup;
+    let winnerId: string | undefined;
+    const arm = spyOn(ExecutionAttemptService.prototype, 'arm').mockImplementation(function (input) {
+      if (!winnerId && input.originatingPrimarySession === 'primary-race-loser') {
+        winnerId = originalArm.call(this, { ...input, originatingPrimarySession: 'primary-race-winner' }).attempt.id;
+      }
+      return originalArm.call(this, input);
+    });
+    const reserve = spyOn(ExecutionAttemptService.prototype, 'reserveWorkspaceCleanup').mockImplementation(function (identities) {
+      if (!winnerId) throw new Error('Expected injected winner');
+      this.closeArmNotStarted(winnerId);
+      return originalReserve.call(this, identities);
+    });
+
+    try {
+      const denied = await prepareTask(loser.hooks, loser.context, 'feature-a');
+      const worktreePath = path.join(root, '.hive', '.worktrees', 'feature-a', '01-first-task');
+
+      expect(denied).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
+      expect(execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' })).toContain('hive/feature-a/01-first-task');
+      expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toContain(worktreePath);
+      expect(fs.existsSync(worktreePath)).toBe(true);
+      expect(new ExecutionAttemptService(root).getAttempt(denied.attemptId)).toMatchObject({
+        id: winnerId,
+        phase: 'finalized',
+        observedOutcome: 'not_started',
+        placement: { kind: 'worktree', workspacePath: fs.realpathSync(worktreePath) },
+      });
+    } finally {
+      reserve.mockRestore();
+      arm.mockRestore();
+    }
+  });
+
   it('does not consume an arm for a non-Forager call and rejects a second Forager call', async () => {
     const { hooks, context } = await harness(root, 'primary');
     await seedFeature(hooks, context, 'feature-a');

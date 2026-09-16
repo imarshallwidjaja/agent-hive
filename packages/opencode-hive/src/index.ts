@@ -612,7 +612,6 @@ type SystemTransformHook = (
   output: { system: string[] },
 ) => Promise<void>;
 
-const WORKER_LAUNCH_RESERVATION_TTL_MS = 5 * 60 * 1000;
 const REVIEW_ARGUMENT_GUARD_PLACEHOLDER = '$2147483647';
 const MAX_COMPOSITE_SNAPSHOT_REPOSITORIES = 32;
 const VULNERABILITY_DEEP_RESERVATION_TTL_MS = 5 * 60 * 1000;
@@ -674,11 +673,6 @@ const plugin: Plugin = async (ctx) => {
     console.warn(`[hive:dash-review] stale review evidence cleanup failed: ${(error as Error).message}`);
   });
   const backgroundJobService = new BackgroundJobService(directory);
-  try {
-    backgroundJobService.sweepExpiredPendingLaunches(WORKER_LAUNCH_RESERVATION_TTL_MS);
-  } catch (error) {
-    console.warn(`[hive:background] stale pending launch cleanup failed: ${(error as Error).message}`);
-  }
   const taskTraceEphemeralSessionIDs = new Set<string>();
   const taskTraceInjectedHintIDs = new Set<string>();
   const taskTraceConfig = configService.get().taskTraceSummarizer ?? { temperature: 0 };
@@ -2949,14 +2943,16 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       });
     } catch (error) {
       if (cleanupCreatedPlacement && placement.kind === 'worktree') {
-        try {
-          executionAttemptService.assertWorkspacesIdle(placement.workspaceIdentities);
-          const cleanupOutcome = await cleanupCreatedPlacement();
-          if (cleanupOutcome !== 'complete') {
-            throw new Error(`Rejected execution placement cleanup was ${cleanupOutcome}`);
+        const cleanupReservation = executionAttemptService.reserveWorkspaceCleanup(placement.workspaceIdentities);
+        if (cleanupReservation.reserved) {
+          try {
+            const cleanupOutcome = await cleanupCreatedPlacement();
+            if (cleanupOutcome !== 'complete') {
+              throw new Error(`Rejected execution placement cleanup was ${cleanupOutcome}`);
+            }
+          } finally {
+            executionAttemptService.releaseWorkspaceCleanup(cleanupReservation.reservation.id);
           }
-        } catch (cleanupError) {
-          if (!(cleanupError instanceof Error) || !/claimed by attempt/.test(cleanupError.message)) throw cleanupError;
         }
       }
       if (!(error instanceof ExecutionScopeConflictError)) throw error;
@@ -3106,7 +3102,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       }
       if (event.type === 'session.deleted' && lifecycleSessionID) {
         const sessionID = lifecycleSessionID;
-        backgroundJobService.retireParentLaunches(sessionID);
         const parentCallPrefix = `${sessionID}\u0000`;
         for (const [key, childSessionID] of observedTaskChildrenByCall) {
           if (key.startsWith(parentCallPrefix) || childSessionID === sessionID) {

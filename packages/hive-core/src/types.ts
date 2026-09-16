@@ -436,9 +436,16 @@ export interface ExecutionAttempt {
 export interface ExecutionAttemptsJson {
   schemaVersion: 2;
   attempts: ExecutionAttempt[];
+  cleanupReservations?: WorkspaceCleanupReservation[];
   nativeTaskLeaseHistory?: NativeTaskLease[];
   /** Current dispatch pointer per feature/task. Late records on superseded attempts must not move this. */
   currentTaskAttempts?: Record<string, string>;
+}
+
+export interface WorkspaceCleanupReservation {
+  id: string;
+  workspaceIdentities: string[];
+  runtimeId: string;
 }
 
 export type BackgroundJobRuntimeState = 'running' | 'completed' | 'error' | 'cancelled' | 'unknown';
@@ -461,30 +468,9 @@ export interface BackgroundJobOwnership {
   repoIds?: string[];
 }
 
-export interface BackgroundPendingLaunch {
-  launchId: string;
-  parentSessionId: string;
-  disposition?: 'prepared' | 'claimed';
-  background?: boolean;
-  callId?: string;
-  claimedAt?: string;
-  runtimeId?: string;
-  registrationError?: string;
-  archivedAt?: string;
-  archiveReason?: 'ignored' | 'reconciled';
-  reconciliationSummary?: string;
-  expectedDescription?: string;
-  expectedPrompt?: string;
-  agentName: string;
-  scope?: BackgroundJobScope;
-  ownership?: BackgroundJobOwnership;
-  createdAt: string;
-}
-
 export interface BackgroundJobRecord {
   taskId: string;
   sessionId: string;
-  launchId?: string;
   callId?: string;
   agentName: string;
   customAgentBase?: string;
@@ -493,7 +479,7 @@ export interface BackgroundJobRecord {
   createdAt: string;
   updatedAt: string;
   runtimeState: BackgroundJobRuntimeState;
-  scopeSource?: 'pending-launch' | 'native-fallback' | 'retry';
+  scopeSource?: 'native-fallback' | 'retry';
   runtimeId?: string;
   terminalUnreconciled?: boolean;
   statusUncertain?: boolean;
@@ -528,7 +514,6 @@ export function isBackgroundJobArchived(job: { archivedAt?: string; ignoredAt?: 
 export interface BackgroundJobsJson {
   schemaVersion: 1;
   jobs: BackgroundJobRecord[];
-  pendingLaunches?: BackgroundPendingLaunch[];
   updatedAt?: string;
 }
 

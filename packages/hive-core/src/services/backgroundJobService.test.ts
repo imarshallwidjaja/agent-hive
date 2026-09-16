@@ -1,31 +1,30 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { BackgroundJobService } from './backgroundJobService.js';
 import type { BackgroundJobsJson } from '../types.js';
+import { BackgroundJobService } from './backgroundJobService.js';
 
-const TEST_DIR = '/tmp/hive-core-backgroundjobservice-test-' + process.pid;
+const TEST_DIR = `/tmp/hive-core-backgroundjobservice-test-${process.pid}`;
 const BOARD_PATH = path.join(TEST_DIR, '.hive', 'background-jobs.json');
 
 function cleanup(): void {
-  if (fs.existsSync(TEST_DIR)) {
-    fs.rmSync(TEST_DIR, { recursive: true });
-  }
+  fs.rmSync(TEST_DIR, { recursive: true, force: true });
 }
 
 function readBoard(): BackgroundJobsJson {
-  return JSON.parse(fs.readFileSync(BOARD_PATH, 'utf-8')) as BackgroundJobsJson;
+  return JSON.parse(fs.readFileSync(BOARD_PATH, 'utf8')) as BackgroundJobsJson;
 }
 
-function registerJob(service: BackgroundJobService, taskId = 'task-1', sessionId = 'sess-1') {
+function registerJob(service: BackgroundJobService, taskId = 'task-1', sessionId = 'session-1') {
   return service.registerLaunch({
     taskId,
     sessionId,
-    launchId: taskId === 'task-1' ? 'launch-1' : `launch-${taskId}`,
+    callId: `call-${taskId}`,
     agentName: 'forager-worker',
-    scopeSource: 'pending-launch',
+    scopeSource: 'native-fallback',
     description: 'Implement the worker task',
     objective: 'Add the service contract',
+    runtimeId: 'runtime-a',
     scope: {
       projectRoot: TEST_DIR,
       parentSessionId: 'parent-1',
@@ -36,7 +35,6 @@ function registerJob(service: BackgroundJobService, taskId = 'task-1', sessionId
     ownership: {
       worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'feature-a', '01-task'),
       branch: 'hive/feature-a/01-task',
-      workerPromptPath: '.hive/features/feature-a/tasks/01-task/worker-prompt.md',
       files: ['packages/hive-core/src/services/backgroundJobService.ts'],
       repoIds: ['root'],
     },
@@ -52,632 +50,228 @@ describe('BackgroundJobService', () => {
     service = new BackgroundJobService(TEST_DIR);
   });
 
-  afterEach(() => {
-    cleanup();
-  });
+  afterEach(cleanup);
 
-  it('creates .hive/background-jobs.json on first launch registration', () => {
-    const record = registerJob(service);
-
-    expect(fs.existsSync(BOARD_PATH)).toBe(true);
-    const board = readBoard();
-    expect(board.schemaVersion).toBe(1);
-    expect(board.jobs).toHaveLength(1);
-    expect(board.jobs[0]).toMatchObject({
-      taskId: record.taskId,
-      sessionId: 'sess-1',
-      launchId: 'launch-1',
-      agentName: 'forager-worker',
-      runtimeState: 'running',
-      scopeSource: 'pending-launch',
-      scope: {
-        projectRoot: TEST_DIR,
-        parentSessionId: 'parent-1',
-        primaryAgent: 'hive-master',
-        feature: 'feature-a',
-        task: '01-task',
-      },
-    });
-  });
-
-  it('sweeps safely before a background board exists', () => {
-    expect(service.sweepExpiredPendingLaunches(5 * 60 * 1000)).toEqual([]);
-    expect(fs.existsSync(BOARD_PATH)).toBe(false);
-  });
-
-  it('generates aliases scoped to the parent session without collisions', () => {
-    const first = registerJob(service, 'task-1', 'sess-1');
-    const second = registerJob(service, 'task-2', 'sess-2');
+  it('registers native jobs and generates parent-scoped aliases', () => {
+    const first = registerJob(service);
+    const second = registerJob(service, 'task-2', 'session-2');
     const otherParent = service.registerLaunch({
       taskId: 'task-3',
-      sessionId: 'sess-3',
+      sessionId: 'session-3',
       agentName: 'scout-researcher',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-2', primaryAgent: 'hive-master' },
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-2' },
     });
 
     expect(first.alias).toBe('parent-1:job-1');
     expect(second.alias).toBe('parent-1:job-2');
     expect(otherParent.alias).toBe('parent-2:job-1');
-    expect(new Set([first.alias, second.alias, otherParent.alias]).size).toBe(3);
+    expect(readBoard().jobs[0]).toMatchObject({
+      taskId: 'task-1',
+      sessionId: 'session-1',
+      callId: 'call-task-1',
+      runtimeState: 'running',
+      scopeSource: 'native-fallback',
+    });
   });
 
-  it('consumes the selected pending launch by identity while leaving another launch untouched', () => {
-    service.registerPendingLaunch({
-      launchId: 'launch-no-prompt',
-      parentSessionId: 'parent-1',
-      agentName: 'unknown',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-1' },
-    });
-    const exact = service.registerPendingLaunch({
-      launchId: 'launch-exact',
-      parentSessionId: 'parent-1',
-      expectedDescription: 'Hive: 01-task',
-      expectedPrompt: 'Follow instructions in @worker-prompt.md',
+  it('discards legacy pending launch data without turning it into authority', () => {
+    fs.mkdirSync(path.dirname(BOARD_PATH), { recursive: true });
+    fs.writeFileSync(BOARD_PATH, JSON.stringify({
+      schemaVersion: 1,
+      jobs: [],
+      pendingLaunches: [{
+        launchId: 'legacy-launch',
+        parentSessionId: 'parent-1',
+        disposition: 'claimed',
+        callId: 'legacy-call',
+      }],
+    }));
+
+    const record = service.registerLaunch({
+      taskId: 'native-task',
+      sessionId: 'native-session',
+      callId: 'legacy-call',
       agentName: 'forager-worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' },
     });
 
-    const consumed = service.consumePendingLaunch({
-      launchId: 'launch-exact',
-      parentSessionId: 'parent-1',
-    });
-
-    expect(consumed).toMatchObject({
-      parentSessionId: exact.parentSessionId,
-      expectedDescription: exact.expectedDescription,
-      expectedPrompt: exact.expectedPrompt,
-      agentName: exact.agentName,
-      scope: exact.scope,
-    });
-    expect(readBoard().pendingLaunches).toHaveLength(1);
-    expect(readBoard().pendingLaunches?.[0].scope?.adHocRunId).toBe('adhoc-1');
+    expect(record.taskId).toBe('native-task');
+    expect(readBoard()).toEqual(expect.objectContaining({ schemaVersion: 1, jobs: [expect.any(Object)] }));
+    expect(JSON.stringify(readBoard())).not.toContain('pendingLaunches');
+    expect(service.resolve('legacy-launch')).toBeUndefined();
   });
 
-  it('consumes a claimed pending launch once by identity regardless of model-facing prose', () => {
-    const pending = service.registerPendingLaunch({
-      launchId: 'launch-1',
-      parentSessionId: 'parent-1',
-      expectedDescription: 'Hive: 01-task',
-      expectedPrompt: 'Follow instructions in @worker-prompt.md',
+  it('correlates one native call idempotently and rejects contradictory identity', () => {
+    const input = {
+      taskId: 'native-task',
+      sessionId: 'native-session',
+      callId: 'native-call',
       agentName: 'forager-worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
-      ownership: { worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'feature-a', '01-task') },
-    });
-
-    const consumed = service.consumePendingLaunch({
-      launchId: 'launch-1',
-      parentSessionId: 'parent-1',
-    });
-
-    expect(consumed).toEqual(pending);
-    expect(readBoard().pendingLaunches).toBeUndefined();
-    expect(service.consumePendingLaunch({ launchId: 'launch-1', parentSessionId: 'parent-1' })).toBeUndefined();
-  });
-
-  it('does not consume a pending launch with the wrong claimed identity', () => {
-    service.registerPendingLaunch({
-      launchId: 'launch-a',
-      parentSessionId: 'parent-1',
-      expectedDescription: 'Hive: 01-task',
-      expectedPrompt: 'Follow instructions in @worker-prompt-a.md',
-      agentName: 'forager-worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
-    });
-
-    const consumed = service.consumePendingLaunch({
-      launchId: 'launch-b',
-      parentSessionId: 'parent-1',
-    });
-
-    expect(consumed).toBeUndefined();
-    expect(readBoard().pendingLaunches).toHaveLength(1);
-  });
-
-  it('sweeps expired pending launches by createdAt age and keeps fresh entries', () => {
-    service.registerPendingLaunch({
-      launchId: 'stale-launch',
-      parentSessionId: 'parent-1',
-      agentName: 'forager-worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-stale' },
-    });
-    service.registerPendingLaunch({
-      launchId: 'fresh-launch',
-      parentSessionId: 'parent-1',
-      agentName: 'forager-worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-fresh' },
-    });
-    const board = readBoard();
-    board.pendingLaunches![0].createdAt = new Date(Date.now() - 6 * 60 * 1000).toISOString();
-    fs.writeFileSync(BOARD_PATH, JSON.stringify(board));
-
-    const swept = service.sweepExpiredPendingLaunches(5 * 60 * 1000);
-    expect(swept.map(pending => pending.launchId)).toEqual(['stale-launch']);
-    expect(readBoard().pendingLaunches?.map(pending => pending.launchId)).toEqual(['fresh-launch']);
-    expect(service.sweepExpiredPendingLaunches(5 * 60 * 1000)).toEqual([]);
-  });
-
-  it('consumes an ad-hoc pending launch by identity without feature or task metadata', () => {
-    const expectedPrompt = 'Work in /tmp/adhoc-1 for ad-hoc run adhoc-1.';
-    const pending = service.registerPendingLaunch({
-      launchId: 'adhoc-launch-1',
-      parentSessionId: 'parent-1',
-      expectedPrompt,
-      agentName: 'unknown',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', adHocRunId: 'adhoc-1' },
-      ownership: { worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'adhoc', 'adhoc-1') },
-    });
-
-    service.registerPendingLaunch({
-      launchId: 'adhoc-launch-2',
-      parentSessionId: 'parent-2',
-      agentName: 'unknown',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-2', adHocRunId: 'adhoc-2' },
-    });
-
-    const consumed = service.consumePendingLaunch({
-      launchId: 'adhoc-launch-1',
-      parentSessionId: 'parent-1',
-    });
-
-    expect(consumed).toEqual(pending);
-    expect(readBoard().pendingLaunches).toHaveLength(1);
-    expect(readBoard().pendingLaunches?.[0].parentSessionId).toBe('parent-2');
-  });
-
-  it('retains claimed provenance across restart/sweep and resolves exact identity atomically', () => {
-    service.registerPendingLaunch({
-      launchId: 'launch-missing-output',
-      parentSessionId: 'parent-1',
-      agentName: 'forager-worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a', task: '01-task' },
-      ownership: { branch: 'hive/feature-a/01-task' },
-    });
-    service.claimPendingLaunch({ launchId: 'launch-missing-output', parentSessionId: 'parent-1', callId: 'call-1' });
-    service = new BackgroundJobService(TEST_DIR);
-    expect(service.sweepExpiredPendingLaunches(0)).toEqual([]);
-    expect(service.listScoped()).toEqual([]);
-    expect(() => service.consumePendingLaunch({ launchId: 'launch-missing-output', parentSessionId: 'parent-1' })).toThrow('claimed');
-    const input = { taskId: 'ses-native', sessionId: 'ses-native', launchId: 'launch-missing-output', callId: 'call-1', agentName: 'forager-worker', scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' } };
-    expect(() => service.registerLaunch({ ...input, callId: 'wrong' })).toThrow('launch_binding_error');
-    expect(service.findClaimedLaunch('parent-1', 'call-1')?.ownership?.branch).toBe('hive/feature-a/01-task');
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' },
+    };
     const record = service.registerLaunch(input);
+
     expect(service.registerLaunch(input)).toEqual(record);
-    expect(service.resolve('launch-missing-output')).toEqual(record);
-    expect(service.listPendingLaunches()).toEqual([]);
-    expect(service.listScoped()).toHaveLength(1);
-    expect(record.ownership?.branch).toBe('hive/feature-a/01-task');
-    expect(() => service.registerLaunch({ ...input, taskId: 'different' })).toThrow('launch_binding_error');
+    expect(() => service.registerLaunch({ ...input, taskId: 'other-task' })).toThrow('contradictory native identity');
+    expect(service.resolve(record.taskId)).toEqual(record);
+    expect(service.resolve(record.sessionId)).toEqual(record);
+    expect(service.resolve(record.alias)).toEqual(record);
+  });
+
+  it('keeps the first terminal result and reconciles observational bookkeeping', () => {
+    registerJob(service);
+    const terminal = service.markTerminal('task-1', 'completed', { resultSummary: 'done' });
+    const conflicting = service.markTerminal('task-1', 'error', { lastStatusError: 'late error' });
+
+    expect(conflicting).toMatchObject({
+      runtimeState: 'completed',
+      resultSummary: 'done',
+      terminalUnreconciled: true,
+    });
+    expect(conflicting.runtimeCompletedAt).toBe(terminal.runtimeCompletedAt);
+
+    const reconciled = service.markReconciled('task-1', {
+      reconciledBy: 'parent-1',
+      reconciliationSummary: 'Consumed final result.',
+    });
+    expect(reconciled).toMatchObject({
+      runtimeState: 'completed',
+      terminalUnreconciled: false,
+      archiveReason: 'reconciled',
+    });
+    expect(service.listScoped()).toEqual([]);
+    expect(service.listScoped({}, { includeArchived: true })).toHaveLength(1);
+  });
+
+  it('marks prompt notification and acknowledgment without reconciling the result', () => {
+    registerJob(service);
+    service.markTerminal('task-1', 'completed');
+
+    const notified = service.markPromptNotified(['task-1'], 'parent-1');
+    expect(notified[0]).toMatchObject({
+      terminalUnreconciled: true,
+      promptNotifiedInSessionId: 'parent-1',
+      promptBoardInjectionCount: 1,
+    });
+    const acknowledged = service.markPromptAcknowledgedForSession('parent-1');
+    expect(acknowledged[0]).toMatchObject({
+      terminalUnreconciled: true,
+      promptBoardInjectionCount: 1,
+    });
+    expect(acknowledged[0].promptAcknowledgedAt).toBeDefined();
+  });
+
+  it('marks active jobs from another runtime stale without changing runtime state', () => {
+    registerJob(service);
+
+    const stale = service.markRuntimeEpochStale('task-1', 'runtime-b', 'runtime changed');
+    expect(stale).toMatchObject({
+      runtimeState: 'running',
+      statusUncertain: true,
+      lastStatusError: 'runtime changed',
+    });
+    expect(stale?.staleAt).toBeDefined();
+    expect(service.markRuntimeEpochStale('task-1', 'runtime-b', 'again')).toBeUndefined();
+  });
+
+  it('records retries as new native jobs linked to the original task', () => {
+    registerJob(service);
+    service.markTerminal('task-1', 'error');
+
+    const retry = service.recordRetry('task-1', {
+      taskId: 'task-2',
+      sessionId: 'session-2',
+      callId: 'call-task-2',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' },
+    });
+
+    expect(retry).toMatchObject({ retryOf: 'task-1', scopeSource: 'retry' });
+    expect(service.resolve('task-1')?.supersedes).toBe('task-2');
+  });
+
+  it('formats only native job records for prompts', () => {
+    expect(service.formatForPrompt()).toBe('No background jobs are currently visible for this scope.');
+    registerJob(service);
+    expect(service.formatForPrompt({ parentSessionId: 'parent-1' })).toContain('parent-1:job-1 running forager-worker');
   });
 
   it('updates last-known runtime state idempotently', () => {
     registerJob(service);
 
-    const first = service.updateRuntimeState('task-1', 'running', { statusUncertain: true, lastStatusError: 'task_status timed out' });
-    const second = service.updateRuntimeState('task-1', 'running', { statusUncertain: true, lastStatusError: 'task_status timed out' });
+    const first = service.updateRuntimeState('task-1', 'running', {
+      statusUncertain: true,
+      lastStatusError: 'status timed out',
+    });
+    const second = service.updateRuntimeState('task-1', 'running', {
+      statusUncertain: true,
+      lastStatusError: 'status timed out',
+    });
 
     expect(second.updatedAt).toBe(first.updatedAt);
-    expect(second.runtimeState).toBe('running');
-    expect(second.statusUncertain).toBe(true);
-    expect(readBoard().jobs).toHaveLength(1);
+    expect(second).toMatchObject({ runtimeState: 'running', statusUncertain: true });
   });
 
-  it('archives unresolved bookkeeping without losing exact late correlation or permitting redispatch', () => {
-    const scope = { projectRoot: TEST_DIR, parentSessionId: 'parent-1' };
-    service.registerPendingLaunch({ launchId: 'archived-claim', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
-    service.claimPendingLaunch({ launchId: 'archived-claim', parentSessionId: 'parent-1', callId: 'call-archive' });
-    expect(() => service.archiveClaimedLaunch('archived-claim', 'parent-2', 'ignored', 'reason')).toThrow('launch_binding_error');
-    expect(() => service.archiveClaimedLaunch('archived-claim', 'parent-1', 'ignored', ' ')).toThrow('reason');
-    service.archiveClaimedLaunch('archived-claim', 'parent-1', 'reconciled', 'Tracked native inspection elsewhere');
-    expect(service.listPendingLaunches()).toEqual([]);
-    expect(() => service.registerPendingLaunch({ launchId: 'archived-claim', parentSessionId: 'parent-1', agentName: 'forager-worker', scope })).toThrow('claimed');
-    const job = service.registerLaunch({ taskId: 'ses-archived', sessionId: 'ses-archived', launchId: 'archived-claim', callId: 'call-archive', agentName: 'forager-worker', scope });
-    expect(job.runtimeState).toBe('running');
-    expect(job.archiveReason).toBe('reconciled');
-    expect(service.listScoped()).toEqual([]);
-    expect(service.resolve('archived-claim')?.taskId).toBe('ses-archived');
-  });
-
-  it('prefers a unique active claim over archived history and rejects same-state ambiguity', () => {
-    const scope = { projectRoot: TEST_DIR, parentSessionId: 'parent-1' };
-    service.registerPendingLaunch({ launchId: 'archived-1', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
-    service.claimPendingLaunch({ launchId: 'archived-1', parentSessionId: 'parent-1', callId: 'reused-call' });
-    service.archiveClaimedLaunch('archived-1', 'parent-1', 'reconciled', 'First launch was inspected');
-    service.registerPendingLaunch({ launchId: 'active', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
-    service.claimPendingLaunch({ launchId: 'active', parentSessionId: 'parent-1', callId: 'reused-call' });
-
-    expect(service.findClaimedLaunch('parent-1', 'reused-call')).toMatchObject({
-      launchId: 'active',
-      archivedAt: undefined,
-    });
-
-    service.finishClaimedLaunch('active', 'parent-1', 'reused-call');
-    expect(service.findClaimedLaunch('parent-1', 'reused-call')).toMatchObject({
-      launchId: 'archived-1',
-      archiveReason: 'reconciled',
-      reconciliationSummary: 'First launch was inspected',
-    });
-
-    service.registerPendingLaunch({ launchId: 'archived-2', parentSessionId: 'parent-1', agentName: 'forager-worker', scope });
-    service.claimPendingLaunch({ launchId: 'archived-2', parentSessionId: 'parent-1', callId: 'reused-call' });
-    service.archiveClaimedLaunch('archived-2', 'parent-1', 'ignored', 'Second launch was intentionally ignored');
-    expect(() => service.findClaimedLaunch('parent-1', 'reused-call')).toThrow('ambiguous claimed call');
-
-    const board = readBoard();
-    for (const pending of board.pendingLaunches ?? []) pending.archivedAt = undefined;
-    fs.writeFileSync(BOARD_PATH, JSON.stringify(board));
-    expect(() => service.findClaimedLaunch('parent-1', 'reused-call')).toThrow('ambiguous claimed call');
-  });
-
-  it('retires only one parent launch state and retains its archived claim history', () => {
-    const oldArchiveTime = new Date(Date.now() - 60_000).toISOString();
-    const archived = Array.from({ length: 100 }, (_, index) => ({
-      launchId: `old-${index}`,
-      parentSessionId: 'parent-1',
-      disposition: 'claimed' as const,
-      callId: `old-call-${index}`,
-      claimedAt: oldArchiveTime,
-      archivedAt: oldArchiveTime,
-      archiveReason: 'ignored' as const,
-      reconciliationSummary: 'Previously retired',
-      agentName: 'forager-worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' },
-      createdAt: oldArchiveTime,
-    }));
-    fs.mkdirSync(path.dirname(BOARD_PATH), { recursive: true });
-    fs.writeFileSync(BOARD_PATH, JSON.stringify({
-      schemaVersion: 1,
-      jobs: [],
-      pendingLaunches: [
-        ...archived,
-        { launchId: 'prepared', parentSessionId: 'parent-1', disposition: 'prepared', agentName: 'forager-worker', createdAt: oldArchiveTime },
-        { launchId: 'active', parentSessionId: 'parent-1', disposition: 'claimed', callId: 'reused-call', agentName: 'forager-worker', createdAt: oldArchiveTime },
-        { launchId: 'foreign', parentSessionId: 'parent-2', disposition: 'claimed', callId: 'foreign-call', agentName: 'forager-worker', createdAt: oldArchiveTime },
-      ],
-    }));
-
-    service.retireParentLaunches('parent-1');
-
-    const retained = service.listPendingLaunches({}, { includeArchived: true });
-    const parentHistory = retained.filter(pending => pending.parentSessionId === 'parent-1');
-    expect(parentHistory).toHaveLength(101);
-    expect(parentHistory.some(pending => pending.launchId === 'old-0')).toBe(true);
-    expect(parentHistory.find(pending => pending.launchId === 'active')).toMatchObject({
-      archivedAt: expect.any(String),
-      archiveReason: 'ignored',
-      reconciliationSummary: expect.stringContaining('without changing native execution state'),
-    });
-    expect(retained.find(pending => pending.launchId === 'prepared')).toBeUndefined();
-    expect(retained.find(pending => pending.launchId === 'foreign')?.archivedAt).toBeUndefined();
-
-    service.registerPendingLaunch({ launchId: 'replacement', parentSessionId: 'parent-1', agentName: 'forager-worker' });
-    expect(service.claimPendingLaunch({ launchId: 'replacement', parentSessionId: 'parent-1', callId: 'reused-call' })).toMatchObject({
-      disposition: 'claimed',
-      callId: 'reused-call',
-    });
-  });
-
-  it('marks terminal runtime states unreconciled without changing the terminal runtime result during reconciliation', () => {
+  it('allows matching terminal updates to fill missing diagnostics', () => {
     registerJob(service);
-
-    const terminal = service.markTerminal('task-1', 'completed', { resultSummary: 'worker finished cleanly' });
-    expect(terminal.runtimeState).toBe('completed');
-    expect(terminal.terminalUnreconciled).toBe(true);
-    expect(terminal.resultSummary).toBe('worker finished cleanly');
-
-    const reconciled = service.markReconciled('task-1', {
-      reconciledBy: 'parent-1',
-      reconciliationSummary: 'Task report and status were updated.',
-    });
-    expect(reconciled.runtimeState).toBe('completed');
-    expect(reconciled.resultSummary).toBe('worker finished cleanly');
-    expect(reconciled.terminalUnreconciled).toBe(false);
-    expect(reconciled.reconciledAt).toBeDefined();
-    expect(reconciled.reconciledBy).toBe('parent-1');
-    expect(reconciled.reconciliationSummary).toBe('Task report and status were updated.');
-    expect(reconciled.archivedAt).toBeDefined();
-    expect(reconciled.archiveReason).toBe('reconciled');
-
-    const lateStatus = service.markTerminal('task-1', 'completed', { resultSummary: 'worker finished cleanly' });
-    expect(lateStatus.terminalUnreconciled).toBe(false);
-    expect(lateStatus.reconciledAt).toBe(reconciled.reconciledAt);
-    expect(lateStatus.archivedAt).toBe(reconciled.archivedAt);
-  });
-
-  it('keeps the first terminal runtime state and completion time when late updates conflict', () => {
-    registerJob(service);
-
-    const terminal = service.markTerminal('task-1', 'completed', { resultSummary: 'done' });
-    const lateActive = service.updateRuntimeState('task-1', 'running', { statusUncertain: true });
-    const conflictingTerminal = service.markTerminal('task-1', 'error', { lastStatusError: 'late error' });
-
-    expect(lateActive.runtimeState).toBe('completed');
-    expect(conflictingTerminal.runtimeState).toBe('completed');
-    expect(conflictingTerminal.runtimeCompletedAt).toBe(terminal.runtimeCompletedAt);
-    expect(conflictingTerminal.resultSummary).toBe('done');
-    expect(conflictingTerminal.lastStatusError).toBeUndefined();
-  });
-
-  it('allows identical terminal updates to fill missing diagnostics without changing completion time', () => {
-    registerJob(service);
-
     const terminal = service.markTerminal('task-1', 'error');
     const enriched = service.markTerminal('task-1', 'error', {
       resultSummary: 'worker failed',
       lastStatusError: 'provider disconnected',
     });
 
-    expect(enriched.runtimeState).toBe('error');
     expect(enriched.runtimeCompletedAt).toBe(terminal.runtimeCompletedAt);
-    expect(enriched.resultSummary).toBe('worker failed');
-    expect(enriched.lastStatusError).toBe('provider disconnected');
+    expect(enriched).toMatchObject({ resultSummary: 'worker failed', lastStatusError: 'provider disconnected' });
   });
 
-  it('hides archived reconciled jobs from active scoped lists while preserving history', () => {
-    registerJob(service, 'terminal-task', 'terminal-session');
-    service.markTerminal('terminal-task', 'completed', { resultSummary: 'done' });
-
-    const reconciled = service.markReconciled('terminal-task', {
-      reconciledBy: 'parent-1',
-      reconciliationSummary: 'Consumed final result.',
-    });
-
-    expect(reconciled.archivedAt).toBeDefined();
-    expect(service.listScoped({ projectRoot: TEST_DIR, feature: 'feature-a' }).map(job => job.taskId)).toEqual([]);
-    expect(service.listScoped({ projectRoot: TEST_DIR, feature: 'feature-a' }, { includeArchived: true }).map(job => job.taskId)).toEqual(['terminal-task']);
-    expect(service.resolve('terminal-task')?.archiveReason).toBe('reconciled');
-  });
-
-  it('does not mark archived jobs terminal-unreconciled when runtime state arrives later', () => {
-    registerJob(service, 'archived-late-terminal', 'archived-late-terminal-session');
-    let board = readBoard();
-    const record = board.jobs.find(job => job.taskId === 'archived-late-terminal')!;
-    record.archivedAt = new Date().toISOString();
-    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
-
-    const terminal = service.markTerminal('archived-late-terminal', 'completed', { resultSummary: 'late result' });
-
-    expect(terminal.runtimeState).toBe('completed');
-    expect(terminal.resultSummary).toBe('late result');
-    expect(terminal.terminalUnreconciled).toBeUndefined();
-    expect(terminal.archivedAt).toBeDefined();
-  });
-
-  it('marks prompt notification and acknowledgment separately from reconciliation', () => {
-    registerJob(service, 'task-terminal', 'sess-terminal');
-    registerJob(service, 'task-running', 'sess-running');
-    service.markTerminal('task-terminal', 'completed', { resultSummary: 'done' });
-
-    const notified = service.markPromptNotified(['task-terminal', 'task-running'], 'parent-1');
-    expect(notified.map(job => job.taskId)).toEqual(['task-terminal']);
-    expect(notified[0].promptNotifiedAt).toBeDefined();
-    expect(notified[0].promptNotifiedInSessionId).toBe('parent-1');
-    expect(notified[0].promptBoardInjectionCount).toBe(1);
-    expect(notified[0].terminalUnreconciled).toBe(true);
-    expect(service.resolve('task-running')?.promptNotifiedAt).toBeUndefined();
-    const notifiedUpdatedAt = notified[0].updatedAt;
-    expect(service.markPromptNotified(['task-terminal'], 'parent-1')).toEqual([]);
-    expect(service.resolve('task-terminal')?.updatedAt).toBe(notifiedUpdatedAt);
-    expect(service.resolve('task-terminal')?.promptBoardInjectionCount).toBe(1);
-
-    const acknowledged = service.markPromptAcknowledgedForSession('parent-1');
-    expect(acknowledged.map(job => job.taskId)).toEqual(['task-terminal']);
-    expect(acknowledged[0].promptAcknowledgedAt).toBeDefined();
-    expect(acknowledged[0].terminalUnreconciled).toBe(true);
-    expect(acknowledged[0].reconciledAt).toBeUndefined();
-    expect(acknowledged[0].promptBoardInjectionCount).toBe(1);
-    const acknowledgedUpdatedAt = acknowledged[0].updatedAt;
+  it('does not create a board when prompt acknowledgment has no matching job', () => {
     expect(service.markPromptAcknowledgedForSession('parent-1')).toEqual([]);
-    expect(service.resolve('task-terminal')?.updatedAt).toBe(acknowledgedUpdatedAt);
-  });
-
-  it('does not create or rewrite the board when prompt acknowledgment has no matching terminal job', () => {
-    const acknowledged = service.markPromptAcknowledgedForSession('parent-1');
-
-    expect(acknowledged).toEqual([]);
     expect(fs.existsSync(BOARD_PATH)).toBe(false);
   });
 
-  it('ignores stale terminal jobs without pretending they completed successfully', () => {
-    registerJob(service);
-    service.markTerminal('task-1', 'error', { resultSummary: 'worker failed' });
-    service.markStale('task-1');
+  it('keeps cancellation requests distinct from confirmed runtime cancellation', () => {
+    const registered = registerJob(service);
+    const requested = service.markCancelRequested('task-1', 'No longer needed');
 
-    const ignored = service.markIgnored('task-1', 'orphaned worker already surfaced elsewhere');
-
-    expect(ignored.runtimeState).toBe('error');
-    expect(ignored.resultSummary).toBe('worker failed');
-    expect(ignored.terminalUnreconciled).toBe(false);
-    expect(ignored.ignoredAt).toBeDefined();
-    expect(ignored.ignoreReason).toBe('orphaned worker already surfaced elsewhere');
-    expect(ignored.staleAt).toBeDefined();
-    expect(ignored.archivedAt).toBeDefined();
-    expect(ignored.archiveReason).toBe('ignored');
-  });
-
-  it('marks active foreign-runtime jobs stale without mutating runtime state', () => {
-    service.registerLaunch({
-      taskId: 'foreign-runtime-task',
-      sessionId: 'foreign-runtime-session',
-      agentName: 'forager-worker',
-      runtimeId: 'old-runtime',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-master' },
-    });
-
-    const stale = service.markRuntimeEpochStale('foreign-runtime-task', 'current-runtime', 'runtime changed');
-
-    expect(stale).toMatchObject({
-      taskId: 'foreign-runtime-task',
+    expect(requested).toMatchObject({
       runtimeState: 'running',
-      statusUncertain: true,
-      lastStatusError: 'runtime changed',
+      cancelReason: 'No longer needed',
+      ownership: registered.ownership,
     });
-    expect(stale?.staleAt).toBeDefined();
-  });
-
-  it('does not mark terminal foreign-runtime jobs stale or downgrade their runtime state', () => {
-    service.registerLaunch({
-      taskId: 'terminal-runtime-task',
-      sessionId: 'terminal-runtime-session',
-      agentName: 'forager-worker',
-      runtimeId: 'old-runtime',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-master' },
-    });
-    service.markTerminal('terminal-runtime-task', 'completed', { resultSummary: 'worker finished' });
-
-    const stale = service.markRuntimeEpochStale('terminal-runtime-task', 'current-runtime', 'runtime changed');
-    const job = service.resolve('terminal-runtime-task');
-
-    expect(stale).toBeUndefined();
-    expect(job).toMatchObject({
-      runtimeState: 'completed',
-      resultSummary: 'worker finished',
+    const cancelled = service.markRuntimeCancelled('task-1', { resultSummary: 'Runtime confirmed cancellation' });
+    expect(cancelled).toMatchObject({
+      runtimeState: 'cancelled',
       terminalUnreconciled: true,
+      resultSummary: 'Runtime confirmed cancellation',
     });
-    expect(job?.staleAt).toBeUndefined();
-    expect(job?.statusUncertain).toBeUndefined();
   });
 
-  it('keeps cancellation requests distinct from runtime cancellation and preserves ownership metadata', () => {
+  it('filters board visibility by scope', () => {
     registerJob(service);
-
-    const requested = service.markCancelRequested('task-1', 'operator requested stop');
-    expect(requested.runtimeState).toBe('running');
-    expect(requested.cancelRequestedAt).toBeDefined();
-    expect(requested.cancelReason).toBe('operator requested stop');
-    expect(requested.ownership?.worktreePath).toContain('.hive/.worktrees/feature-a/01-task');
-
-    const cancelled = service.markRuntimeCancelled('task-1', { resultSummary: 'runtime acknowledged cancellation' });
-    expect(cancelled.runtimeState).toBe('cancelled');
-    expect(cancelled.terminalUnreconciled).toBe(true);
-    expect(cancelled.cancelRequestedAt).toBe(requested.cancelRequestedAt);
-    expect(cancelled.cancelReason).toBe('operator requested stop');
-    expect(cancelled.ownership).toEqual(requested.ownership);
-  });
-
-  it('scopes stale/orphan detection and board visibility instead of filtering globally', () => {
-    registerJob(service, 'feature-task', 'sess-feature');
     service.registerLaunch({
-      taskId: 'adhoc-task',
-      sessionId: 'sess-adhoc',
-      agentName: 'hive-builder',
-      scope: {
-        projectRoot: TEST_DIR,
-        parentSessionId: 'parent-1',
-        primaryAgent: 'hive-builder',
-        adHocRunId: 'adhoc-1',
-      },
-    });
-    service.markStale('adhoc-task');
-
-    expect(service.listScoped({ projectRoot: TEST_DIR, feature: 'feature-a' }).map(job => job.taskId)).toEqual(['feature-task']);
-    expect(service.listScoped({ projectRoot: TEST_DIR, adHocRunId: 'adhoc-1' }).map(job => job.taskId)).toEqual(['adhoc-task']);
-    expect(service.listScoped({ projectRoot: '/different/root' })).toEqual([]);
-    expect(service.listScoped({ projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-master' }).map(job => job.taskId)).toEqual(['feature-task']);
-  });
-
-  it('creates retry records that supersede originals without reusing the session as resume', () => {
-    registerJob(service);
-    service.markTerminal('task-1', 'error', { resultSummary: 'first worker failed' });
-
-    const retry = service.recordRetry('task-1', {
-      taskId: 'task-1-retry',
-      sessionId: 'sess-retry',
+      taskId: 'task-2',
+      sessionId: 'session-2',
       agentName: 'forager-worker',
-      description: 'Retry failed worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1', primaryAgent: 'hive-master', feature: 'feature-a', task: '01-task' },
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-2', feature: 'feature-b' },
     });
-    const original = service.resolve('task-1');
 
-    expect(retry.retryOf).toBe('task-1');
-    expect(retry.sessionId).toBe('sess-retry');
-    expect(retry.runtimeState).toBe('running');
-    expect(original?.supersedes).toBe('task-1-retry');
-    expect(original?.sessionId).toBe('sess-1');
+    expect(service.listScoped({ parentSessionId: 'parent-1' }).map(job => job.taskId)).toEqual(['task-1']);
+    expect(service.listScoped({ parentSessionId: 'parent-2' }).map(job => job.taskId)).toEqual(['task-2']);
   });
 
-  it('resolves records by task id, session id, or alias and formats scoped board entries for prompts', () => {
-    const job = registerJob(service);
-    service.markCancelRequested('task-1', 'need to stop');
+  it('archives ignored jobs without changing their runtime result', () => {
+    registerJob(service);
+    service.updateRuntimeState('task-1', 'unknown', { statusUncertain: true });
+    const ignored = service.markIgnored('task-1', 'Superseded elsewhere');
 
-    expect(service.resolve('task-1')?.taskId).toBe('task-1');
-    expect(service.resolve('sess-1')?.taskId).toBe('task-1');
-    expect(service.resolve(job.alias)?.taskId).toBe('task-1');
-
-    const prompt = service.formatForPrompt({ projectRoot: TEST_DIR, parentSessionId: 'parent-1', feature: 'feature-a' });
-    expect(prompt).toContain('parent-1:job-1');
-    expect(prompt).toContain('running');
-    expect(prompt).toContain('cancel requested: need to stop');
-    expect(prompt).toContain('feature-a');
-  });
-
-  it('markIgnored archives running jobs without mutating runtime state', () => {
-    registerJob(service, 'running-task', 'sess-running');
-
-    const archived = service.markIgnored('running-task', 'Operator archived stale lane');
-
-    expect(archived.runtimeState).toBe('running');
-    expect(archived.terminalUnreconciled).toBe(false);
-    expect(archived.ignoredAt).toBeDefined();
-    expect(archived.ignoreReason).toBe('Operator archived stale lane');
-    expect(archived.archivedAt).toBeDefined();
-    expect(archived.archiveReason).toBe('ignored');
-
-    const fetched = service.resolve('running-task')!;
-    expect(fetched.runtimeState).toBe('running');
-    expect(fetched.ignoredAt).toBeDefined();
-  });
-
-  it('markIgnored archives unknown/stale jobs using ignored fields', () => {
-    registerJob(service, 'unknown-task', 'sess-unknown');
-    service.updateRuntimeState('unknown-task', 'unknown');
-    service.markStale('unknown-task');
-
-    const archived = service.markIgnored('unknown-task', 'Stale unknown job, operator archived');
-
-    expect(archived.runtimeState).toBe('unknown');
-    expect(archived.staleAt).toBeDefined();
-    expect(archived.ignoredAt).toBeDefined();
-    expect(archived.ignoreReason).toBe('Stale unknown job, operator archived');
-    expect(archived.archivedAt).toBeDefined();
-    expect(archived.archiveReason).toBe('ignored');
-  });
-
-  it('markIgnored throws for missing jobs', () => {
-    expect(() => service.markIgnored('nonexistent', 'gone')).toThrow('Background job not found');
-  });
-
-  it('hides ignored-only records (no archivedAt) from default listScoped and status', () => {
-    registerJob(service, 'ignored-no-archive', 'sess-ignored-no-archive');
-    const board = readBoard();
-    const record = board.jobs.find(j => j.taskId === 'ignored-no-archive')!;
-    record.ignoredAt = new Date().toISOString();
-    record.reconciledAt = new Date().toISOString();
-    record.terminalUnreconciled = false;
-    delete (record as any).archivedAt;
-    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
-
-    const all = service.listScoped({ projectRoot: TEST_DIR }).map(job => job.taskId);
-    expect(all).not.toContain('ignored-no-archive');
-    expect(all.length).toBe(0);
-
-    const includeArchived = service.listScoped({ projectRoot: TEST_DIR }, { includeArchived: true }).map(job => job.taskId);
-    expect(includeArchived).toContain('ignored-no-archive');
-  });
-
-  it('hides reconciled-only records (no archivedAt) from default listScoped and status', () => {
-    registerJob(service, 'reconciled-no-archive', 'sess-reconciled-no-archive');
-    const board = readBoard();
-    const record = board.jobs.find(j => j.taskId === 'reconciled-no-archive')!;
-    record.reconciledAt = new Date().toISOString();
-    record.terminalUnreconciled = false;
-    delete (record as any).archivedAt;
-    fs.writeFileSync(BOARD_PATH, JSON.stringify(board, null, 2));
-
-    const all = service.listScoped({ projectRoot: TEST_DIR }).map(job => job.taskId);
-    expect(all).not.toContain('reconciled-no-archive');
-    expect(all.length).toBe(0);
-
-    const includeArchived = service.listScoped({ projectRoot: TEST_DIR }, { includeArchived: true }).map(job => job.taskId);
-    expect(includeArchived).toContain('reconciled-no-archive');
+    expect(ignored).toMatchObject({
+      runtimeState: 'unknown',
+      ignoreReason: 'Superseded elsewhere',
+      archiveReason: 'ignored',
+      terminalUnreconciled: false,
+    });
+    expect(service.listScoped()).toEqual([]);
+    expect(service.listScoped({}, { includeArchived: true })).toHaveLength(1);
+    expect(() => service.markIgnored('missing', 'reason')).toThrow('Background job not found');
   });
 });
