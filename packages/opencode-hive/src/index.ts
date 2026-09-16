@@ -71,11 +71,20 @@ function blankToUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function normalizeStringList(values: string[]): string[] {
+  return [...new Set(values.map(value => value.trim()).filter(Boolean))].sort();
+}
+
 function normalizeOptionalStringList(values: string[] | undefined): string[] | undefined {
-  const normalized = values
-    ?.map((value) => value.trim())
-    .filter(Boolean);
+  const normalized = values ? normalizeStringList(values) : undefined;
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function sameNormalizedStringList(left: string[], right: string[]): boolean {
+  const normalizedLeft = normalizeStringList(left);
+  const normalizedRight = normalizeStringList(right);
+  return normalizedLeft.length === normalizedRight.length
+    && normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 function isNonBlankString(value: unknown): value is string {
@@ -2734,6 +2743,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
   const latestAdhocAttempt = (runId: string): ExecutionAttempt | undefined =>
     executionAttemptService.listAttempts().filter(attempt =>
       attempt.kind === 'adhoc' && attempt.runId === runId).at(-1);
+  const latestAdhocWorktreeAttempt = (runId: string): ExecutionAttempt | undefined =>
+    executionAttemptService.listAttempts().filter(attempt =>
+      attempt.kind === 'adhoc' && attempt.runId === runId && attempt.placement.kind === 'worktree').at(-1);
   const observeNativeTaskTermination = (
     input: { tool: string; sessionID: string; callID?: string; args?: Record<string, unknown> },
     outputDefined: boolean,
@@ -2789,6 +2801,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       attemptId: string | undefined;
       phase: ExecutionAttempt['phase'] | undefined;
     } | undefined;
+    let continuationPlacement: ExecutionAttempt['placement'] | undefined;
 
     if (input.scope.kind === 'task') {
       if (!isNonBlankString(input.scope.task)) {
@@ -2834,6 +2847,30 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       const dependency = checkDependencies(feature, input.scope.task);
       if (!dependency.allowed) return respond({ success: false, reason: 'dependencies_not_done', error: dependency.error });
       const currentAttempt = executionAttemptService.currentTaskAttempt(feature, input.scope.task);
+      if (input.scope.continueFromBlocked === true) {
+        if (!currentAttempt || currentAttempt.phase !== 'finalized') {
+          return respond({
+            success: false,
+            reason: 'blocked_continuation_placement_mismatch',
+            mutation: 'none',
+            feature,
+            task: input.scope.task,
+            error: 'Blocked continuation requires a prior finalized execution placement.',
+          });
+        }
+        continuationPlacement = currentAttempt.placement;
+        if (continuationPlacement.kind !== input.placement.kind) {
+          return respond({
+            success: false,
+            reason: 'blocked_continuation_placement_mismatch',
+            mutation: 'none',
+            feature,
+            task: input.scope.task,
+            attemptId: currentAttempt.id,
+            error: `Blocked continuation must reuse its finalized ${continuationPlacement.kind} placement.`,
+          });
+        }
+      }
       taskAdmissionSnapshot = {
         workerAttempt: taskService.getRawStatus(feature, input.scope.task)?.workerAttempt,
         attemptId: currentAttempt?.id,
@@ -2953,6 +2990,54 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       };
       const initialAdmissionFailure = revalidateTaskAdmission();
       if (initialAdmissionFailure) return initialAdmissionFailure;
+      if (scope.kind === 'task' && continuationPlacement) {
+        const currentAttempt = executionAttemptService.currentTaskAttempt(scope.feature, scope.task);
+        if (!currentAttempt || currentAttempt.phase !== 'finalized'
+          || currentAttempt.id !== taskAdmissionSnapshot?.attemptId
+          || currentAttempt.placement.kind !== input.placement.kind) {
+          return respond({
+            success: false,
+            reason: 'blocked_continuation_placement_mismatch',
+            mutation: 'none',
+            feature: scope.feature,
+            task: scope.task,
+            error: 'Blocked continuation no longer matches its prior finalized placement.',
+          });
+        }
+        if (continuationPlacement.kind === 'in_place') {
+          if (preparationResourcePaths.length !== 1
+            || preparationResourcePaths[0] !== continuationPlacement.directory) {
+            return respond({
+              success: false,
+              reason: 'blocked_continuation_placement_mismatch',
+              mutation: 'none',
+              feature: scope.feature,
+              task: scope.task,
+              attemptId: currentAttempt.id,
+              error: 'Blocked continuation must reuse its exact finalized in-place directory.',
+            });
+          }
+        } else {
+          const registered = await worktreeService.get(scope.feature, scope.task);
+          const registeredIdentities = registered?.repos
+            ? Object.values(registered.repos).map(repository => normalizeResourcePath(repository.path))
+            : registered
+              ? [normalizeResourcePath(registered.workspacePath ?? registered.path)]
+              : [];
+          if (registeredIdentities.length !== continuationPlacement.workspaceIdentities.length
+            || registeredIdentities.some(identity => !continuationPlacement.workspaceIdentities.includes(identity))) {
+            return respond({
+              success: false,
+              reason: 'blocked_continuation_placement_mismatch',
+              mutation: 'none',
+              feature: scope.feature,
+              task: scope.task,
+              attemptId: currentAttempt.id,
+              error: 'Blocked continuation must reuse its exact finalized worktree identities.',
+            });
+          }
+        }
+      }
       let existingAttempt: ExecutionAttempt | undefined;
       try {
         existingAttempt = executionAttemptService.preflightArm({
@@ -3040,12 +3125,11 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     } else if (input.placement.kind === 'worktree' && scope.kind === 'adhoc') {
       const { runId } = scope;
       const requestedRepoIds = normalizeOptionalStringList(input.placement.repoIds) ?? ['root'];
-      const latestAttempt = latestAdhocAttempt(runId);
+      const latestAttempt = latestAdhocWorktreeAttempt(runId);
       if (latestAttempt?.placement.kind === 'worktree') {
         const registeredRepoIds = latestAttempt.placement.repositories?.map(repository => repository.id);
         const matchesFinalizedSelection = registeredRepoIds !== undefined
-          && requestedRepoIds.length === registeredRepoIds.length
-          && requestedRepoIds.every((repoId, index) => repoId === registeredRepoIds[index]);
+          && sameNormalizedStringList(requestedRepoIds, registeredRepoIds);
         if (!matchesFinalizedSelection) {
           return respond({
             success: false,
@@ -3060,8 +3144,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       const existing = await adhocWorktreeService.get(runId);
       if (existing) {
         const registeredRepoIds = existing.repos ? Object.keys(existing.repos) : ['root'];
-        const matchesRegisteredSelection = requestedRepoIds.length === registeredRepoIds.length
-          && requestedRepoIds.every((repoId, index) => repoId === registeredRepoIds[index]);
+        const matchesRegisteredSelection = sameNormalizedStringList(requestedRepoIds, registeredRepoIds);
         if (!matchesRegisteredSelection) {
           return respond({
             success: false,

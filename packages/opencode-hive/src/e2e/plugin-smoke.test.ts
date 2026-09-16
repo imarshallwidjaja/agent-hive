@@ -4958,6 +4958,31 @@ async function completePreparedTask(
   return prepared;
 }
 
+async function blockPreparedTask(
+  projectRoot: string,
+  hooks: PluginHooks,
+  parents: Map<string, string>,
+  context: ToolContext,
+  feature: string,
+  placement: Record<string, unknown>,
+  marker: string,
+): Promise<Record<string, any>> {
+  const prepared = await prepareTask(hooks, context, feature, placement);
+  const callID = `${marker}-call`;
+  const childSessionID = `${marker}-child`;
+  const attached = await attachPreparedTask(hooks, parents, context, callID, childSessionID);
+  await stopAttachedTask(hooks, context, callID, childSessionID, attached.args);
+  const finalized = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+    attemptId: prepared.attemptId,
+    status: 'blocked',
+    summary: `Blocked ${marker}.`,
+    blocker: { reason: 'Operator decision required.' },
+  }, context) as string);
+  expect(finalized).toMatchObject({ success: true, phase: 'finalized', status: 'blocked' });
+  expect(new ExecutionAttemptService(projectRoot).getAttempt(prepared.attemptId)?.phase).toBe('finalized');
+  return prepared;
+}
+
 function configureForagerDerivative() {
   return spyOn(ConfigService.prototype, 'get').mockReturnValue({
     agents: {},
@@ -5053,6 +5078,102 @@ describe('managed execution attachment', () => {
     },
   );
 
+  it.each([
+    ['worktree', 'in_place'],
+    ['in_place', 'worktree'],
+  ] as const)('rejects blocked continuation from %s to %s without mutation', async (priorKind, requestedKind) => {
+    const feature = `continue-${priorKind}-to-${requestedKind}`;
+    const fixture = await harness(root, `primary-${feature}`);
+    await seedFeature(fixture.hooks, fixture.context, feature);
+    const priorDirectory = path.join(root, `${feature}-prior`);
+    const requestedDirectory = path.join(root, `${feature}-requested`);
+    fs.mkdirSync(priorDirectory);
+    fs.mkdirSync(requestedDirectory);
+    const priorPlacement = priorKind === 'worktree'
+      ? { kind: 'worktree' }
+      : { kind: 'in_place', directory: priorDirectory };
+    const prior = await blockPreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context, feature, priorPlacement, feature,
+    );
+    const attemptsPath = path.join(root, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+    const requestedPlacement = requestedKind === 'worktree'
+      ? { kind: 'worktree' }
+      : { kind: 'in_place', directory: requestedDirectory };
+
+    const denied = JSON.parse(await fixture.hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+      placement: requestedPlacement,
+    }, fixture.context) as string);
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'blocked_continuation_placement_mismatch',
+      mutation: 'none',
+      attemptId: prior.attemptId,
+    });
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+    expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(worktreesBefore);
+  });
+
+  it('rejects blocked continuation to a different in-place directory without mutation', async () => {
+    const feature = 'continue-in-place-directory';
+    const fixture = await harness(root, 'primary-continue-in-place-directory');
+    await seedFeature(fixture.hooks, fixture.context, feature);
+    const priorDirectory = path.join(root, 'continue-live-a');
+    const requestedDirectory = path.join(root, 'continue-live-b');
+    fs.mkdirSync(priorDirectory);
+    fs.mkdirSync(requestedDirectory);
+    const prior = await blockPreparedTask(root, fixture.hooks, fixture.parents, fixture.context, feature, {
+      kind: 'in_place', directory: priorDirectory,
+    }, feature);
+    const attemptsPath = path.join(root, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+
+    const denied = JSON.parse(await fixture.hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+      placement: { kind: 'in_place', directory: requestedDirectory },
+    }, fixture.context) as string);
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'blocked_continuation_placement_mismatch',
+      mutation: 'none',
+      attemptId: prior.attemptId,
+    });
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+  });
+
+  it('rejects blocked continuation after its finalized worktree identity moves without mutation', async () => {
+    const feature = 'continue-moved-worktree';
+    const fixture = await harness(root, 'primary-continue-moved-worktree');
+    await seedFeature(fixture.hooks, fixture.context, feature);
+    const prior = await blockPreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context, feature, { kind: 'worktree' }, feature,
+    );
+    const movedPath = path.join(root, 'moved-blocked-worktree');
+    execSync(`git worktree move "${prior.placement.workspacePath}" "${movedPath}"`, { cwd: root });
+    const attemptsPath = path.join(root, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+
+    const denied = JSON.parse(await fixture.hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+      placement: { kind: 'worktree' },
+    }, fixture.context) as string);
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'blocked_continuation_placement_mismatch',
+      mutation: 'none',
+      attemptId: prior.attemptId,
+    });
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+    expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(worktreesBefore);
+    expect(fs.existsSync(prior.placement.workspacePath)).toBe(false);
+  });
+
   it('rejects a feature BLOCKED marker before worktree admission without mutation', async () => {
     const feature = 'blocked-before-admission';
     const { hooks, context } = await harness(root, 'primary-blocked-before');
@@ -5141,10 +5262,14 @@ describe('managed execution attachment', () => {
 
   it('revalidates blocked continuation after waiting and before placement creation', async () => {
     const feature = 'continue-race';
-    const { hooks, context } = await harness(root, 'primary-continue-race');
+    const fixture = await harness(root, 'primary-continue-race');
+    const { hooks, context } = fixture;
     await seedFeature(hooks, context, feature);
     const tasks = new TaskService(root);
-    tasks.update(feature, '01-first-task', { status: 'blocked' });
+    await blockPreparedTask(
+      root, hooks, fixture.parents, context, feature, { kind: 'worktree' }, feature,
+    );
+    const attemptsBefore = new ExecutionAttemptService(root).listAttempts();
     const beforeWorktrees = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
     const originalGet = WorktreeService.prototype.get;
     let entered!: () => void;
@@ -5175,7 +5300,7 @@ describe('managed execution attachment', () => {
         mutation: 'none',
       });
       expect(tasks.getRawStatus(feature, '01-first-task')?.status).toBe('failed');
-      expect(new ExecutionAttemptService(root).listAttempts()).toEqual([]);
+      expect(new ExecutionAttemptService(root).listAttempts()).toEqual(attemptsBefore);
       expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(beforeWorktrees);
     } finally {
       release();

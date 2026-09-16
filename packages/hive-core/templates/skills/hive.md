@@ -1,6 +1,6 @@
 ---
 name: hive
-description: Plan-first AI development with isolated git worktrees and human review. Use for any feature development.
+description: Plan-first AI development with managed worktree or in-place worker placement and human review. Use for any feature development.
 ---
 
 # Hive Workflow
@@ -27,7 +27,7 @@ Review -> `plan-reviewer` / `code-reviewer` / `approach-advisor`
 | `swarm-orchestrator` | Dedicated primary | Orchestration |
 | `hive-builder` | Primary in both modes | Ad-hoc orchestration |
 | `scout-researcher` | Subagent in both modes | Exploration, research, and retrieval |
-| `forager-worker` | Subagent in both modes | Executes tasks in worktrees |
+| `forager-worker` | Subagent in both modes | Executes tasks in the placement selected by `hive_execution_prepare` |
 | `hive-helper` | Subagent in both modes | Bounded merge recovery, state clarification, and safe manual follow-up |
 | `plan-reviewer` | Subagent in both modes | Plan readiness review |
 | `code-reviewer` | Subagent in both modes | Implementation review against plan |
@@ -254,6 +254,13 @@ hive_tasks_sync()
 
 ### Execute Each Task
 
+Choose the placement before dispatch:
+
+- `worktree` uses an exact registered Git worktree identity. After stop evidence, `hive_execution_finish` may commit changes; `hive_merge` integrates the finalized task.
+- `in_place` uses one resolved absolute existing directory. It is cooperative live editing with no Hive filesystem exclusion, Git isolation, rollback, commit, merge, or cleanup.
+
+Worktree flow:
+
 ```
 hive_execution_prepare({ scope: { kind: "task", task: "01-task-name" }, placement: { kind: "worktree" } })
 task({
@@ -268,6 +275,24 @@ hive_execution_finish({ attemptId, status: "completed", summary, message })
   ↓
 hive_merge({ task: "01-task-name", strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
 ```
+
+In-place flow:
+
+```
+hive_execution_prepare({ scope: { kind: "task", task: "01-task-name" }, placement: { kind: "in_place", directory: "/absolute/existing/directory" } })
+task({
+  subagent_type: "forager-worker",
+  description: "Implement 01-task-name",
+  prompt: "Primary-authored objective, evidence, constraints, and checks"
+})
+  ↓
+[Worker edits the live directory and returns one terminal handoff]
+  ↓
+hive_execution_finish({ attemptId, status: "completed", summary })
+hive_status()
+```
+
+After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. A finalized retry or blocked continuation must reuse the prior placement kind and identity: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. An ad-hoc `runId` keeps its historical worktree repository selection even if newer in-place attempts exist; repository IDs are normalized and deduplicated, and a different selection requires a new `runId`.
 
 ### Parallel Execution
 
@@ -305,14 +330,14 @@ When worker returns `status: 'blocked'`:
 
 ### Quick Decision (No Plan Change)
 
-A blocked task continues in its existing worktree with a fresh worker session, but only after the stopped attempt is finalized:
+A blocked task continues in its finalized placement with a fresh worker session, but only after the stopped attempt is finalized:
 
 1. Observe exact stop evidence
 2. Finalize the stopped attempt: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker })`
 3. Call `hive_status()` and read the blocker details
 4. Ask the user via question tool and record the decision
 5. Call `hive_status()` again; continue only while status is exactly blocked
-6. Continue in the existing worktree with a fresh worker session: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement: { kind: "worktree" } })`, then an unchanged native Forager `task()` whose prompt includes the operator decision
+6. Continue with the same placement kind and exact worktree identities or exact in-place directory: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement })`, then an unchanged native Forager `task()` whose prompt includes the operator decision
 
 ### Plan Gap Detected
 

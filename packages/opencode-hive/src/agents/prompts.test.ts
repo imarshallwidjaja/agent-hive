@@ -1671,6 +1671,13 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).not.toContain('acknowledgeOrphanedAttempt');
     });
 
+    it('documents fail-closed migrated background mode classification', () => {
+      expect(dataModelContent).toContain('proves `background: true`');
+      expect(dataModelContent).toContain('No board match proves blocking mode');
+      expect(dataModelContent).toContain('Unknown mode accepts only exact structured background terminal evidence');
+      expect(dataModelContent).not.toContain('one exact board record proves blocking or background mode');
+    });
+
     it('does not keep stale root README runtime counts', () => {
       expect(rootReadmeContent).not.toContain('7 agents, 17 tools');
       expect(rootReadmeContent).not.toContain('9 agents');

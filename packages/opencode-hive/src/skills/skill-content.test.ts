@@ -624,6 +624,20 @@ describe('skill content', () => {
     expect(hiveSkill).not.toContain('taskToolCall');
   });
 
+  it('documents both execution placements and their retry identities in the core hive skill', () => {
+    const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
+
+    expect(hiveSkill).toContain('placement: { kind: "worktree" }');
+    expect(hiveSkill).toContain('placement: { kind: "in_place", directory: "/absolute/existing/directory" }');
+    expect(hiveSkill).toContain('no Hive filesystem exclusion, Git isolation, rollback, commit, merge, or cleanup');
+    expect(hiveSkill).toContain('call `hive_execution_finish` before `hive_status()` or any continuation');
+    expect(hiveSkill).toContain('exact registered worktree identities');
+    expect(hiveSkill).toContain('exact resolved directory');
+    expect(hiveSkill).toContain('historical worktree repository selection');
+    expect(hiveSkill).toContain('normalized and deduplicated');
+    expect(hiveSkill).not.toContain('Executes tasks in worktrees');
+  });
+
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'dispatching-parallel-agents');
 

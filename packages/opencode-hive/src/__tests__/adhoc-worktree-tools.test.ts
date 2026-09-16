@@ -285,6 +285,22 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(fs.existsSync(path.join(first.placement.workspacePath, 'repos', 'web'))).toBe(false);
   });
 
+  it('normalizes repository order and duplicates before creating or reusing a worktree', async () => {
+    initCompositeRepositories(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-normalized-selection');
+    const first = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'normalized-selection' },
+      placement: { kind: 'worktree', repoIds: ['web', 'api', 'web'] },
+    }, context) as string);
+    const repeated = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'normalized-selection' },
+      placement: { kind: 'worktree', repoIds: ['api', 'web'] },
+    }, context) as string);
+
+    expect(first.placement.repositories.map((repository: { id: string }) => repository.id)).toEqual(['api', 'web']);
+    expect(repeated).toMatchObject({ success: true, existing: true, attemptId: first.attemptId });
+  });
+
   it('binds a finalized ad-hoc retry to its repository selection after cleanup', async () => {
     const repositories = initCompositeRepositories(TEST_ROOT);
     const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-finalized-selection');
@@ -339,6 +355,80 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       expect(execSync('git worktree list --porcelain', { cwd: repository, encoding: 'utf8' })).toBe(worktreesBefore[id]);
     }
     expect(fs.existsSync(path.join(prepared.placement.workspacePath, 'repos', 'web'))).toBe(false);
+  });
+
+  it('does not let newer in-place history mask a finalized worktree repository selection', async () => {
+    const repositories = initCompositeRepositories(TEST_ROOT);
+    const liveDirectory = path.join(TEST_ROOT, 'live-after-worktree');
+    fs.mkdirSync(liveDirectory);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-historical-selection');
+    const worktree = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'historical-selection' },
+      placement: { kind: 'worktree', repoIds: ['api'] },
+    }, context) as string);
+    await hooks['tool.execute.before']!({
+      tool: 'task', sessionID: context.sessionID, callID: 'call-historical-worktree',
+    }, { args: { subagent_type: 'forager-worker', description: 'Finish worktree', prompt: 'Do it.' } });
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-historical-worktree',
+      outputDefined: true,
+    });
+    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: worktree.attemptId,
+      status: 'completed',
+      summary: 'Finalize the historical worktree selection.',
+    }, context) as string).success).toBe(true);
+    expect(JSON.parse(await hooks.tool!.hive_adhoc_cleanup.execute({
+      runId: 'historical-selection',
+    }, context) as string).success).toBe(true);
+
+    const inPlace = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'historical-selection' },
+      placement: { kind: 'in_place', directory: liveDirectory },
+    }, context) as string);
+    await hooks['tool.execute.before']!({
+      tool: 'task', sessionID: context.sessionID, callID: 'call-historical-in-place',
+    }, { args: { subagent_type: 'forager-worker', description: 'Finish in-place', prompt: 'Do it.' } });
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-historical-in-place',
+      outputDefined: true,
+    });
+    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: inPlace.attemptId,
+      status: 'completed',
+      summary: 'Finalize newer in-place history.',
+    }, context) as string).success).toBe(true);
+
+    const attemptsPath = path.join(TEST_ROOT, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+    const branchesBefore = Object.fromEntries(Object.entries(repositories).map(([id, repository]) => [
+      id,
+      execSync('git branch --format="%(refname:short)"', { cwd: repository, encoding: 'utf8' }),
+    ]));
+    const worktreesBefore = Object.fromEntries(Object.entries(repositories).map(([id, repository]) => [
+      id,
+      execSync('git worktree list --porcelain', { cwd: repository, encoding: 'utf8' }),
+    ]));
+
+    const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'historical-selection' },
+      placement: { kind: 'worktree', repoIds: ['web'] },
+    }, context) as string);
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'workspace_conflict_denied',
+      mutation: 'none',
+      attemptId: worktree.attemptId,
+      phase: 'finalized',
+    });
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+    for (const [id, repository] of Object.entries(repositories)) {
+      expect(execSync('git branch --format="%(refname:short)"', { cwd: repository, encoding: 'utf8' })).toBe(branchesBefore[id]);
+      expect(execSync('git worktree list --porcelain', { cwd: repository, encoding: 'utf8' })).toBe(worktreesBefore[id]);
+    }
   });
 
   it('removes a newly created rejected placement despite unrelated finalized history', async () => {
