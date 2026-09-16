@@ -292,7 +292,7 @@ hive_execution_finish({ attemptId, status: "completed", summary })
 hive_status()
 ```
 
-After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. Blocked task continuation must reuse the prior placement kind and identity: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. Ad-hoc retries follow the current attempt. A later in-place attempt on the same `runId` is allowed and then governs merge and cleanup. Any later worktree prepare still binds to the historical worktree repository selection; repository IDs are normalized and deduplicated, and a different worktree selection requires a new `runId`.
+After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. Failed or partial recovery without exact stop evidence must trace or wait and keep the placement quarantined; do not finish or prepare a retry. Only a stopped attempt may be finalized. Blocked task continuation must reuse the prior placement kind and identity: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. Ad-hoc retries follow the current attempt. A later in-place attempt on the same `runId` is allowed and then governs merge and cleanup. Any later worktree prepare still binds to the historical worktree repository selection; repository IDs are normalized and deduplicated, and a different worktree selection requires a new `runId`.
 
 ### Parallel Execution
 
@@ -333,8 +333,8 @@ When worker returns `status: 'blocked'`:
 A blocked task continues in its existing worktree or in-place placement with a fresh worker session, but only after the stopped attempt is finalized:
 
 1. Observe exact stop evidence
-2. Finalize the stopped attempt: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker })`
-3. Call `hive_status()` and read the blocker details
+2. Finalize the stopped attempt: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker })`; retain its authoritative immutable report
+3. Call `hive_status()` and read the persisted blocker details; do not reconstruct them from worker prose
 4. Ask the user via question tool and record the decision
 5. Call `hive_status()` again; continue only while status is exactly blocked
 6. Continue with the same placement kind and exact worktree identities or exact in-place directory: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement })`, then an unchanged native Forager `task()` whose prompt includes the operator decision

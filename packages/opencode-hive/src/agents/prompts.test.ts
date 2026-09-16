@@ -1158,6 +1158,24 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('second `hive_status()`');
     });
 
+    it('uses persisted finalization state as blocker authority', () => {
+      for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
+        expect(prompt, name).toContain('retain its immutable `reportPath`');
+        expect(prompt, name).toContain('finish result and immutable report are authoritative');
+        expect(prompt, name).toContain('do not reconstruct blocker details from worker prose');
+        expect(prompt, name).toContain('`hive_status` and its persisted blocker');
+      }
+    });
+
+    it('requires stop evidence before failed or partial recovery', () => {
+      for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
+        expect(prompt, name).toContain('Failed or partial recovery requires exact stop evidence');
+        expect(prompt, name).toContain('use `hive_task_trace`, wait when the execution may still be live');
+        expect(prompt, name).toContain('do not finish or prepare a retry');
+        expect(prompt, name).toContain('Only after a stopped attempt is finalized');
+      }
+    });
+
     it('allows blocked continuation only for exactly blocked tasks', () => {
       expect(SWARM_BEE_PROMPT).toContain('Use `scope.continueFromBlocked` only when status is exactly `blocked`');
       expect(SWARM_BEE_PROMPT).not.toContain('continueFrom: "blocked"');

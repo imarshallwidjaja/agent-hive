@@ -149,10 +149,14 @@ export class ExecutionFinalizationService {
     let current = this.attempts.beginFinalization(attempt.id, receipt);
     this.checkpoint('after_intent');
 
-    await this.validateRecordedRepositoryResults(current);
+    const verifiedRepositories = current.placement.kind === 'worktree' && current.finalization!.repositories.length > 0
+      ? await this.resolveWorktreeRepositories(current)
+      : [];
+    await this.validateRecordedRepositoryResults(current, verifiedRepositories);
 
     for (const repository of current.finalization!.repositories) {
-      await this.finishRepository(current.id, repository.id, repository.path, current.finalization!.message);
+      const verified = verifiedRepositories.find(candidate => candidate.id === repository.id)!;
+      await this.finishRepository(current.id, repository.id, verified.path, current.finalization!.message);
     }
 
     current = this.attempts.getAttempt(attempt.id)!;
@@ -306,11 +310,14 @@ export class ExecutionFinalizationService {
     this.checkpoint(`after_repository_receipt:${repositoryId}`);
   }
 
-  private async validateRecordedRepositoryResults(attempt: ExecutionAttempt): Promise<void> {
+  private async validateRecordedRepositoryResults(
+    attempt: ExecutionAttempt,
+    verifiedRepositories?: Array<{ id: string; path: string; branch: string }>,
+  ): Promise<void> {
     if (attempt.placement.kind !== 'worktree' || !attempt.finalization?.repositories.some(repository => repository.result)) {
       return;
     }
-    const resolved = await this.resolveWorktreeRepositories(attempt);
+    const resolved = verifiedRepositories ?? await this.resolveWorktreeRepositories(attempt);
     for (const repository of attempt.finalization.repositories.filter(repository => repository.result)) {
       const live = resolved.find(candidate => candidate.id === repository.id)!;
       await this.validateRepositoryResult(repository, live.path, attempt.finalization.message);

@@ -80,6 +80,30 @@ function finalizationOptions(checkpoint?: (checkpoint: ExecutionFinalizationChec
   };
 }
 
+function registeredFinalizationOptions(
+  workspacePath: string,
+  repositories: Array<{ id: string; path: string; branch: string; gitIdentity: number }>,
+  checkpoint?: (checkpoint: ExecutionFinalizationCheckpoint) => void,
+) {
+  return {
+    ...(checkpoint ? { checkpoint } : {}),
+    resolveWorktreePlacement: async () => ({
+      workspacePath: fs.realpathSync(workspacePath),
+      repositories: await Promise.all(repositories.map(async repository => {
+        const actualPath = fs.realpathSync(repository.path);
+        if (actualPath !== repository.path || fs.statSync(path.join(actualPath, '.git')).ino !== repository.gitIdentity) {
+          throw new Error('Registered worktree topology no longer matches its exact Git backlink');
+        }
+        return {
+          id: repository.id,
+          path: actualPath,
+          branch: (await simpleGit(actualPath).revparse(['--abbrev-ref', 'HEAD'])).trim(),
+        };
+      })),
+    }),
+  };
+}
+
 describe('ExecutionAttemptService armed native attachment', () => {
   let service: ExecutionAttemptService;
 
@@ -796,6 +820,143 @@ describe('ExecutionFinalizationService crash recovery', () => {
       expect(new TaskService(TEST_DIR).get('feature-a', '01-task')?.status).toBe('done');
     }
   });
+
+  it.each(['replace', 'relink', 'branch'] as const)(
+    'rejects a single-repository %s after persisted intent before staging or committing',
+    async (tamper) => {
+      cleanup();
+      fs.mkdirSync(TEST_DIR, { recursive: true });
+      const repository = path.join(TEST_DIR, 'repo');
+      const { attempts, attemptId } = await stoppedTask(TEST_DIR, repository);
+      const branch = (await simpleGit(repository).revparse(['--abbrev-ref', 'HEAD'])).trim();
+      const registered = [{
+        id: 'root',
+        path: fs.realpathSync(repository),
+        branch,
+        gitIdentity: fs.statSync(path.join(repository, '.git')).ino,
+      }];
+      fs.writeFileSync(path.join(repository, 'intended.txt'), 'intended\n');
+      const input = {
+        attemptId,
+        originatingPrimarySession: 'primary-a',
+        status: 'completed' as const,
+        summary: 'Reject post-intent topology drift.',
+        message: 'fix: validate finalization topology\n\nReject replacement before staging or committing.',
+      };
+      const failing = new ExecutionFinalizationService(
+        TEST_DIR,
+        registeredFinalizationOptions(repository, registered, checkpoint => {
+          if (checkpoint === 'after_intent') throw new Error('intent persisted');
+        }),
+        attempts,
+      );
+      await expect(failing.finish(input)).rejects.toThrow('intent persisted');
+
+      const original = `${repository}-original`;
+      if (tamper === 'replace' || tamper === 'relink') {
+        fs.renameSync(repository, original);
+        if (tamper === 'replace') await initializeRepository(repository);
+        else {
+          const replacement = `${repository}-replacement`;
+          await initializeRepository(replacement);
+          fs.symlinkSync(replacement, repository);
+        }
+      } else {
+        await simpleGit(repository).checkoutLocalBranch('tampered-branch');
+      }
+
+      await expect(new ExecutionFinalizationService(
+        TEST_DIR,
+        registeredFinalizationOptions(repository, registered),
+        attempts,
+      ).finish(input)).rejects.toThrow(/registered topology|Git backlink/i);
+      const intendedRepository = tamper === 'replace' || tamper === 'relink' ? original : repository;
+      expect((await simpleGit(intendedRepository).log()).all).toHaveLength(1);
+      expect((await simpleGit(intendedRepository).status()).files)
+        .toContainEqual(expect.objectContaining({ path: 'intended.txt', index: '?' }));
+      expect(attempts.getAttempt(attemptId)).toMatchObject({
+        phase: 'stopped',
+        placement: { workspaceIdentities: [registered[0]!.path] },
+      });
+      expect(attempts.getAttempt(attemptId)?.finalization?.disposition).toBeUndefined();
+    },
+  );
+
+  it.each(['replace', 'relink', 'branch'] as const)(
+    'rejects a later composite repository %s after persisted intent before any repository commit',
+    async (tamper) => {
+      cleanup();
+      fs.mkdirSync(TEST_DIR, { recursive: true });
+      setupTask('feature-a', '01-task');
+      const api = path.join(TEST_DIR, 'repos', 'api');
+      const web = path.join(TEST_DIR, 'repos', 'web');
+      await initializeRepository(api);
+      await initializeRepository(web);
+      const repositories = await Promise.all([api, web].map(async repositoryPath => ({
+        id: path.basename(repositoryPath),
+        path: fs.realpathSync(repositoryPath),
+        branch: (await simpleGit(repositoryPath).revparse(['--abbrev-ref', 'HEAD'])).trim(),
+        gitIdentity: fs.statSync(path.join(repositoryPath, '.git')).ino,
+      })));
+      const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-composite-topology');
+      const attempt = attempts.arm({
+        kind: 'task', featureName: 'feature-a', taskFolder: '01-task', originatingPrimarySession: 'primary-a',
+        placement: {
+          kind: 'worktree',
+          workspaceIdentities: repositories.map(repository => repository.path),
+          repositories: repositories.map(({ id, path: repositoryPath, branch }) => ({ id, path: repositoryPath, branch })),
+          workspacePath: fs.realpathSync(TEST_DIR),
+        },
+      }).attempt;
+      attempts.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+      attempts.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
+      fs.writeFileSync(path.join(api, 'api.txt'), 'api\n');
+      fs.writeFileSync(path.join(web, 'web.txt'), 'web\n');
+      const input = {
+        attemptId: attempt.id,
+        originatingPrimarySession: 'primary-a',
+        status: 'completed' as const,
+        summary: 'Reject composite post-intent topology drift.',
+        message: 'fix: validate composite topology\n\nReject later repository tampering before any commit.',
+      };
+      const failing = new ExecutionFinalizationService(
+        TEST_DIR,
+        registeredFinalizationOptions(TEST_DIR, repositories, checkpoint => {
+          if (checkpoint === 'after_intent') throw new Error('intent persisted');
+        }),
+        attempts,
+      );
+      await expect(failing.finish(input)).rejects.toThrow('intent persisted');
+
+      const originalWeb = `${web}-original`;
+      if (tamper === 'replace' || tamper === 'relink') {
+        fs.renameSync(web, originalWeb);
+        if (tamper === 'replace') await initializeRepository(web);
+        else {
+          const replacement = `${web}-replacement`;
+          await initializeRepository(replacement);
+          fs.symlinkSync(replacement, web);
+        }
+      } else {
+        await simpleGit(web).checkoutLocalBranch('tampered-branch');
+      }
+
+      await expect(new ExecutionFinalizationService(
+        TEST_DIR,
+        registeredFinalizationOptions(TEST_DIR, repositories),
+        attempts,
+      ).finish(input)).rejects.toThrow(/registered topology|Git backlink/i);
+      expect((await simpleGit(api).log()).all).toHaveLength(1);
+      expect((await simpleGit(api).status()).files)
+        .toContainEqual(expect.objectContaining({ path: 'api.txt', index: '?' }));
+      const intendedWeb = tamper === 'replace' || tamper === 'relink' ? originalWeb : web;
+      expect((await simpleGit(intendedWeb).log()).all).toHaveLength(1);
+      expect((await simpleGit(intendedWeb).status()).files)
+        .toContainEqual(expect.objectContaining({ path: 'web.txt', index: '?' }));
+      expect(attempts.getAttempt(attempt.id)?.phase).toBe('stopped');
+      expect(() => attempts.assertWorkspacesIdle(repositories.map(repository => repository.path))).toThrow(/claimed/i);
+    },
+  );
 
   it('rejects active, foreign-primary, and ambiguous-HEAD finalization', async () => {
     cleanup();

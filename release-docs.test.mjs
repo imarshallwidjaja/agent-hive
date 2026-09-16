@@ -257,8 +257,24 @@ describe('current documentation contract', () => {
       ['feature completion', /mark the feature complete only after/i],
     ], 'Operator Guide feature lifecycle');
     assert.match(lifecycle, /in-place tasks have no Hive merge step[\s\S]{0,80}verify the live target/i);
-    assert.match(recovery, /(?:fails?|failed|partial)[\s\S]{0,220}hive_execution_finish[\s\S]{0,220}hive_status[\s\S]{0,220}hive_execution_prepare/i);
-    assert.match(recovery, /blocked[\s\S]{0,420}continueFromBlocked[\s\S]{0,220}(?:fresh|new) worker[\s\S]{0,120}(?:same|existing) worktree/i);
+    assertInOrder(recovery, [
+      ['failed or partial outcome', /(?:fails?|failed|partial)/i],
+      ['finalization', /hive_execution_finish/i],
+      ['status re-check', /hive_status/i],
+      ['retry preparation', /hive_execution_prepare/i],
+    ], 'Operator Guide failed or partial recovery');
+    assert.match(recovery, /fails or reports partial[\s\S]{0,220}exact stop evidence[\s\S]{0,320}do not call `hive_execution_finish`[\s\S]{0,160}prepare a retry/i);
+    assertInOrder(recovery, [
+      ['blocked outcome', /blocked/i],
+      ['blocked continuation', /continueFromBlocked/i],
+      ['fresh worker', /(?:fresh|new) worker/i],
+      ['existing worktree', /(?:same|existing) worktree/i],
+    ], 'Operator Guide blocked recovery');
+    assertInOrder(recovery, [
+      ['immutable blocker report', /immutable `reportPath`/i],
+      ['persisted blocker', /persisted blocker/i],
+      ['worker prose prohibition', /do not invent blocker details from worker prose/i],
+    ], 'Operator Guide blocker authority');
     assert.match(reviewOptions, /\/dash-review[\s\S]{0,160}without changing source/i);
     assert.match(reviewOptions, /\/vuln-review[\s\S]{0,220}does not[\s\S]{0,80}edit source[\s\S]{0,80}automatic fixes/i);
   });
@@ -280,6 +296,14 @@ describe('current documentation contract', () => {
     }
     assert.match(design, /fails worktree placement, worktree finalization, and merge/i);
     assert.match(design, /In-place placement and finalization still require an explicit existing directory/i);
+    assert.doesNotMatch(design, /tasks\.json/);
+    assert.match(design, /TaskService\.sync[\s\S]{0,160}status\.json[\s\S]{0,80}spec\.md/i);
+    assert.match(design, /TaskService\.create[\s\S]{0,160}append-only manual tasks/i);
+    assert.match(readText('AGENTS.md'), /tasks\/[\s\S]{0,100}status\.json[\s\S]{0,100}spec\.md/i);
+    assert.doesNotMatch(readText('AGENTS.md'), /tasks\.json/);
+    const recoveryTable = sectionText(readText('packages/opencode-hive/docs/HIVE-TOOLS.md'), 'Recovery fields and failure classification');
+    assert.match(recoveryTable, /`phase`[\s\S]{0,180}`finalization`/i);
+    assert.match(recoveryTable, /`FINALIZATION_STATE_UNKNOWN`\s*\|\s*`finalization`\s*\|\s*`unknown`\s*\|\s*`false`\s*\|\s*`inspect_state`/i);
   });
 
   it('keeps detailed compatibility and operator contracts in the package README', () => {

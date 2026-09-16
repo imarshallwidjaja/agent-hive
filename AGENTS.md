@@ -172,7 +172,7 @@ Features stored in `.hive/features/<name>/`:
 .hive/features/my-feature/
 ├── feature.json       # Feature metadata
 ├── plan.md            # Execution plan (can include a readable design summary before ## Tasks)
-├── tasks.json         # Generated tasks
+├── tasks/             # Per-task status.json, spec.md, and finalization reports
 └── context/           # Managed persistent context
     ├── index.json     # Revisioned kind and timestamp metadata
     ├── overview.md    # Reserved human-facing summary/history
@@ -368,14 +368,14 @@ For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decom
 
 **Handling blocked task continuation:**
 1. Observe exact stop evidence and finalize the stopped attempt with `hive_execution_finish({ status: "blocked", ... })`
-2. Call `hive_status()` and read the blocker info (reason, options, recommendation, context)
+2. Retain the finish result and authoritative immutable `reportPath`, then call `hive_status()` and read the persisted blocker info (reason, options, recommendation, context); never reconstruct blocker details from worker prose
 3. Ask the user via `question()` - NEVER plain text - and record the decision
 4. Call `hive_status()` again; only while status remains exactly blocked, call `hive_execution_prepare` with `scope.continueFromBlocked: true` and put the decision in the native Forager `task.prompt`
 
 **CRITICAL**: Blocked continuation starts a NEW worker in the SAME existing worktree or exact in-place directory.
 The previous worker's progress is preserved. The operator decision belongs in the fresh primary-authored native prompt.
 
-Failed or retry work starts only after the stopped attempt is finalized and status is re-checked. The new worker receives a concise self-contained handoff. An unobserved feature-task attempt remains quarantined; do not create an alternate placement. Compaction may re-anchor a currently running worker; it is not re-delegation. After compaction, recover managed context with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Keep exact IDs. Do not replay historical assignment bodies.
+Failed or partial recovery branches on exact stop evidence. If evidence is absent, inspect with `hive_task_trace`, wait when execution may still be live, and keep the placement quarantined; do not call `hive_execution_finish`, prepare a retry, or create an alternate placement. Only a stopped attempt may be finalized. After finalization and a fresh `hive_status()` check, failed or retry work may start with a new worker and a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation. After compaction, recover managed context with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Keep exact IDs. Do not replay historical assignment bodies.
 
 Root relocation: the old recipient remains denied. An authenticated primary at the newly trusted canonical root allocates a fresh task attempt and establishes a fresh authenticated child binding. Ad-hoc relocation requires a fresh authenticated run. Old persisted metadata remains inert history; never edit roots to rebind it, follow the stored former root, or suggest root migration/aliases. Seamless continuation is intentionally sacrificed. Exact-worktree registration is the Git integrity prerequisite, not trusted repository/common-directory containment alone. Direct the operator to prepare/recreate an independently valid workspace, then launch fresh. Do not rewrite `.git` or administration metadata, repair worktrees automatically, or treat error notices as empty catalogs. Never delete an index to restore classification. Details: `docs/OPERATOR-GUIDE.md` and `context-engineering`.
 

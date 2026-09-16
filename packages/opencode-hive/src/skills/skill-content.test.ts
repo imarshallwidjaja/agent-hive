@@ -631,6 +631,12 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('placement: { kind: "in_place", directory: "/absolute/existing/directory" }');
     expect(hiveSkill).toContain('no Hive filesystem exclusion, Git isolation, rollback, commit, merge, or cleanup');
     expect(hiveSkill).toContain('call `hive_execution_finish` before `hive_status()` or any continuation');
+    expect(hiveSkill).toContain('Failed or partial recovery without exact stop evidence must trace or wait');
+    expect(hiveSkill).toContain('do not finish or prepare a retry');
+    expect(hiveSkill).toContain('Only a stopped attempt may be finalized');
+    expect(hiveSkill).toContain('retain its authoritative immutable report');
+    expect(hiveSkill).toContain('read the persisted blocker details');
+    expect(hiveSkill).toContain('do not reconstruct them from worker prose');
     expect(hiveSkill).toContain('Blocked task continuation must reuse the prior placement kind and identity');
     expect(hiveSkill).toContain('exact registered worktree identities');
     expect(hiveSkill).toContain('exact resolved directory');

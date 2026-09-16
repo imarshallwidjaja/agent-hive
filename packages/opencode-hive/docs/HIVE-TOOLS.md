@@ -61,7 +61,7 @@ Task-backed worktree, ad-hoc worktree, and merge results carry the same recovery
 
 | Field | Meaning |
 |------|---------|
-| `phase` | Where the operation stopped: `validation`, `preflight`, `integration`, `rollback`, `verification`, or `cleanup`. |
+| `phase` | Where the operation stopped: `validation`, `preflight`, `finalization`, `integration`, `rollback`, `verification`, or `cleanup`. |
 | `reasonCode` | Stable uppercase code naming the condition. See the classification table below. |
 | `mutation` | Durable target state relative to the operation's starting state: `none`, `applied`, `partial`, `preserved`, or `unknown`. Cleanup itself never changes this value; a failed cleanup after a completed integration still reports the integration's `applied`, because the target moved. |
 | `retryable` | True only when the exact same tool call may be repeated after satisfying the reported prerequisite and no durable target mutation occurred from this attempt. False whenever `mutation` is anything other than `none`. |
@@ -81,6 +81,7 @@ Task-backed worktree, ad-hoc worktree, and merge results carry the same recovery
 | `SOURCE_BRANCH_MISSING` | `preflight` | `none` | `false` | `inspect_state` |
 | `TARGET_DIRTY` | `preflight` | `none` | `true` | `clean_target` |
 | `GIT_OPERATION_IN_PROGRESS` | `preflight` | `none` | `false` | `inspect_state` |
+| `FINALIZATION_STATE_UNKNOWN` | `finalization` | `unknown` | `false` | `inspect_state` |
 | `NO_TRACKED_CHANGES` | `integration` | `none` | `false` | `none` |
 | `MERGE_CONFLICT_ABORTED` | `integration` | `none` | `true` | `retry_same_operation` |
 | `MERGE_CONFLICT_PRESERVED` | `integration` | `preserved` | `false` | `resolve_conflicts` |
@@ -120,7 +121,7 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - Finalization persists intent first, then per-repository baseline/tree/result receipts, an immutable deterministic report receipt, generation-guarded disposition, and `finalized` last. Retry the exact same input after interruption. A commit can be adopted only when HEAD parent, tree, and exact message match the receipt; ambiguous HEAD movement requires explicit recovery.
 - Composite partial commits are not rolled back. The stopped claim remains reserved until every checkpoint completes.
 - The returned `reportPath` is authoritative. Task receipts live under the task's `reports/finalization-<operationId>.md`, and task `report.md` links the latest immutable receipt. Ad-hoc receipts live under `.hive/execution-reports/finalization-<operationId>.md` and have no task-local `report.md`.
-- An unclassified finish failure returns `phase: 'finalization'`, `reasonCode: 'FINALIZATION_STATE_UNKNOWN'`, `mutation: 'unknown'`, `retryable: false`, and `action: 'inspect_state'`. Inspect the durable receipt, task or ad-hoc attempt state, and Git state. After confirming the prior call stopped, retry the identical finish input; changing it conflicts with the persisted immutable intent.
+- An unclassified finish failure returns `phase: 'finalization'`, `reasonCode: 'FINALIZATION_STATE_UNKNOWN'`, `mutation: 'unknown'`, `retryable: false`, and `action: 'inspect_state'`. Inspect the durable receipt, task or ad-hoc attempt state, Git state, and exact native stop evidence. If stop evidence is absent, trace or wait and keep the placement quarantined; do not finish or retry. After confirming the execution stopped and the prior finish call is no longer running, retry the identical finish input; changing it conflicts with the persisted immutable intent.
 
 #### hive_execution_prepare output
 
@@ -158,7 +159,7 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - `hive_adhoc_merge` returns `commitMessage` when it creates a merge/squash commit.
 - A failed non-preserved integration restores the affected target repository to its original HEAD and clean state. `preserveConflicts: true` retains only an actual conflict state. Ad-hoc merge uses the same operation-scoped integration lock as `hive_merge`.
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID. Cleanup never cancels execution and is refused while the source worktree has a live or unobserved claim.
-- Ad-hoc prepare, finish, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)) when classified. An unclassified finish failure reports `phase: 'finalization'`, `reasonCode: 'FINALIZATION_STATE_UNKNOWN'`, `mutation: 'unknown'`, `retryable: false`, and `action: 'inspect_state'`; inspect the receipt, ad-hoc attempt state, and Git state before retrying the identical finish input. Unclassified merge and cleanup errors use the operation phase's conservative `inspect_state` classification. Unclassified prepare errors keep their tool-specific fallback fields. See that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
+- Ad-hoc prepare, finish, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)) when classified. An unclassified finish failure reports `phase: 'finalization'`, `reasonCode: 'FINALIZATION_STATE_UNKNOWN'`, `mutation: 'unknown'`, `retryable: false`, and `action: 'inspect_state'`; follow the finish recovery rule above, including exact stop-evidence inspection and quarantine when evidence is absent, before retrying the identical finish input. Unclassified merge and cleanup errors use the operation phase's conservative `inspect_state` classification. Unclassified prepare errors keep their tool-specific fallback fields. See that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
 
 ### Background Orchestration (4 tools)
 
