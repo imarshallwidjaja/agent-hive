@@ -339,8 +339,6 @@ import {
   ExecutionFinalizationService,
   ExecutionPlacementMismatchError,
   ExecutionScopeConflictError,
-  validateAssignmentDescriptorShape,
-  workerAssignmentsEqual,
   DEFAULT_COUNCIL_CONFIG,
   buildEffectiveDependencies,
   computeRunnableAndBlocked,
@@ -364,7 +362,6 @@ import {
   type PlanPatchOperation,
   type TruncationEvent,
   type ContextReadSummary,
-  type WorkerAssignmentDescriptor,
   PLACEHOLDER_NATIVE_CHILD_ID,
   type ExecutionAttempt,
   type WorktreeMutationState,
@@ -769,7 +766,7 @@ const plugin: Plugin = async (ctx) => {
     return agents.some(agent => classifySession(agent ?? '', customAgentConfigsForClassification).sessionKind !== 'unknown')
       || (!!stored?.sessionKind && stored.sessionKind !== 'unknown')
       || (!!stored && ['duplicatedFromSessionId', 'projectRoot', 'featureName', 'taskFolder',
-        'workerAssignment', 'assignmentSourceSessionId', 'adHocRunId', 'workerPromptPath']
+        'adHocRunId', 'executionWorkspacePath']
         .some(field => Object.hasOwn(stored, field)));
   };
   const stampSessionOrigin = async (sessionID: string): Promise<void> => {
@@ -1749,14 +1746,10 @@ const plugin: Plugin = async (ctx) => {
     management: boolean;
   };
   type StoredSessionIdentity = {
-    assignment?: WorkerAssignmentDescriptor;
     hasAdHocRun: boolean;
-    hasAssignment: boolean;
-    hasAssignmentSource: boolean;
     hasDuplicateSource: boolean;
     hasParentSession: boolean;
     hasTaskFolder: boolean;
-    hasWorkerPrompt: boolean;
     hasExistingWorkspace: boolean;
   };
   type RuntimeLineage = {
@@ -1785,29 +1778,19 @@ const plugin: Plugin = async (ctx) => {
     const relative = path.relative(root, candidate);
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   };
-  const assignmentRecoveryFailure = (): string => contextFailure(
-    'assignment_recovery_error',
-    'The stored assignment descriptor is malformed or incompatible with the authenticated runtime.',
-  );
   const inspectStoredSessionIdentity = (
     stored: ReturnType<SessionService['getGlobal']>,
   ): StoredSessionIdentity | string => {
     const hasParentSession = stored?.parentSessionId !== undefined;
-    const hasAssignment = stored?.workerAssignment !== undefined;
     const hasAdHocRun = stored?.adHocRunId !== undefined;
-    const hasAssignmentSource = stored?.assignmentSourceSessionId !== undefined;
     const hasDuplicateSource = stored?.duplicatedFromSessionId !== undefined;
     const hasTaskFolder = stored?.taskFolder !== undefined;
-    const hasWorkerPrompt = stored?.workerPromptPath !== undefined;
     const nonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
     const malformed = !!stored && (
       (hasParentSession && !nonEmptyString(stored.parentSessionId))
-      || (hasAssignment && !validateAssignmentDescriptorShape(stored.workerAssignment))
       || (hasAdHocRun && !nonEmptyString(stored.adHocRunId))
-      || (hasAssignmentSource && !nonEmptyString(stored.assignmentSourceSessionId))
       || (hasDuplicateSource && !nonEmptyString(stored.duplicatedFromSessionId))
       || (hasTaskFolder && !nonEmptyString(stored.taskFolder))
-      || (hasWorkerPrompt && !nonEmptyString(stored.workerPromptPath))
       || (stored?.executionWorkspacePath !== undefined && (!nonEmptyString(stored.executionWorkspacePath)
         || !path.isAbsolute(stored.executionWorkspacePath)))
       || (stored?.projectRoot !== undefined && !nonEmptyString(stored.projectRoot))
@@ -1816,17 +1799,13 @@ const plugin: Plugin = async (ctx) => {
       || (stored?.agent !== undefined && !nonEmptyString(stored.agent))
       || (stored?.baseAgent !== undefined && !nonEmptyString(stored.baseAgent))
     );
-    if (malformed) return assignmentRecoveryFailure();
+    if (malformed) return contextFailure('assignment_recovery_error', 'The stored session identity is malformed.');
     return {
-      assignment: hasAssignment ? stored!.workerAssignment : undefined,
       hasAdHocRun,
-      hasAssignment,
-      hasAssignmentSource,
       hasDuplicateSource,
       hasParentSession,
       hasTaskFolder,
-      hasWorkerPrompt,
-      hasExistingWorkspace: stored?.executionWorkspacePath !== undefined && !hasAssignment && !hasAdHocRun,
+      hasExistingWorkspace: stored?.executionWorkspacePath !== undefined && !hasAdHocRun,
     };
   };
   const readRuntimeLineage = async (sessionID: string): Promise<RuntimeLineage | string> => {
@@ -1914,8 +1893,7 @@ const plugin: Plugin = async (ctx) => {
     }
 
     if (classification.sessionKind === 'primary' && runtimeLineage.parentID === undefined) {
-      if (identity.hasAssignment || identity.hasAdHocRun || identity.hasExistingWorkspace || identity.hasAssignmentSource
-        || identity.hasParentSession) {
+      if (identity.hasAdHocRun || identity.hasExistingWorkspace || identity.hasParentSession) {
         return deny(contextFailure('context_authorization_denied', 'The primary runtime identity contradicts stored delegated-session provenance.'));
       }
       return { kind: 'primary', stored };
@@ -1943,7 +1921,7 @@ const plugin: Plugin = async (ctx) => {
         return deny(contextFailure('context_authorization_denied', 'Runtime session lineage exceeds the supported depth.'));
       }
       if (classification.baseAgent === 'hive-helper' || runtimeAgent === 'general') {
-        if (identity.hasAssignment || identity.hasAdHocRun || identity.hasExistingWorkspace || identity.hasAssignmentSource || identity.hasDuplicateSource) {
+        if (identity.hasAdHocRun || identity.hasExistingWorkspace || identity.hasDuplicateSource) {
           return deny(contextFailure('context_authorization_denied', 'Helper authority cannot carry worker or duplicate provenance.'));
         }
         const bind = [...helperAuthBinds.values()].find(candidate =>
@@ -1961,14 +1939,12 @@ const plugin: Plugin = async (ctx) => {
     } else {
       const authenticatedDuplicate = classification.sessionKind === 'task-worker'
         && !identity.hasParentSession
-        && identity.hasDuplicateSource
-        && identity.hasAssignmentSource;
+        && identity.hasDuplicateSource;
       if (!authenticatedDuplicate) {
         return deny(contextFailure('context_authorization_denied', 'A non-primary context recipient requires authenticated child or duplicate provenance.'));
       }
     }
-    const executionSourceSessionID = stored.assignmentSourceSessionId
-      ?? stored.duplicatedFromSessionId
+    const executionSourceSessionID = stored.duplicatedFromSessionId
       ?? sessionID;
     const executionAttempt = executionAttemptService.listAttempts().find(attempt =>
       attempt.phase !== 'finalized' && attempt.native?.childSessionId === executionSourceSessionID);
@@ -2842,6 +2818,16 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       }
       const taskInfo = taskService.get(feature, input.scope.task);
       if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature, task: input.scope.task });
+      if (input.scope.continueFromBlocked === true && taskInfo.status !== 'blocked') {
+        return respond({
+          success: false,
+          reason: 'blocked_continuation_not_allowed',
+          mutation: 'none',
+          feature,
+          task: input.scope.task,
+          error: `Blocked continuation requires task status blocked; current status is ${taskInfo.status}.`,
+        });
+      }
       if (taskInfo.status === 'done') return respond({ success: false, reason: 'task_done', feature, task: input.scope.task });
       if (taskInfo.status === 'blocked' && input.scope.continueFromBlocked !== true) {
         return respond({ success: false, reason: 'blocked_resume_required', feature, task: input.scope.task });
@@ -2860,6 +2846,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         context: `.hive/features/${resolveFeatureDirectoryName(directory, feature)}/context/`,
       };
     } else if (input.scope.kind === 'adhoc') {
+      if (input.scope.continueFromBlocked === true) {
+        return respond({ success: false, reason: 'invalid_argument', mutation: 'none', error: 'continueFromBlocked is valid only for a blocked task scope.' });
+      }
       const target = adhocWorktreeService.resolveCreateTarget({ runId: blankToUndefined(input.scope.runId) });
       scope = { kind: 'adhoc', runId: target.runId };
       references = { projectContext: '.hive/context/' };
@@ -2891,6 +2880,16 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         if (scope.kind !== 'task' || !taskAdmissionSnapshot) return undefined;
         const taskInfo = taskService.get(scope.feature, scope.task);
         if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature: scope.feature, task: scope.task });
+        if (input.scope.continueFromBlocked === true && taskInfo.status !== 'blocked') {
+          return respond({
+            success: false,
+            reason: 'blocked_continuation_not_allowed',
+            mutation: 'none',
+            feature: scope.feature,
+            task: scope.task,
+            error: `Blocked continuation requires task status blocked; current status is ${taskInfo.status}.`,
+          });
+        }
         if (taskInfo.status === 'done') return respond({ success: false, reason: 'task_done', feature: scope.feature, task: scope.task });
         if (taskInfo.status === 'blocked' && input.scope.continueFromBlocked !== true) {
           return respond({ success: false, reason: 'blocked_resume_required', feature: scope.feature, task: scope.task });
@@ -3200,13 +3199,8 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           if (event.type === 'session.created') {
             const originSessionId = info.metadata?.agentHive?.originSessionId as string | undefined;
             if (originSessionId && originSessionId !== eventSessionID) {
-              const originSession = sessionService.getGlobal(originSessionId);
               try {
-                if (originSession && Object.prototype.hasOwnProperty.call(originSession, 'workerAssignment')) {
-                  sessionService.copyWorkerAssignment(eventSessionID, originSessionId);
-                } else {
-                  sessionService.copySessionOrigin(eventSessionID, originSessionId);
-                }
+                sessionService.copySessionOrigin(eventSessionID, originSessionId);
               } catch (error) {
                 if (!(error instanceof SessionContinuityError)) throw error;
                 console.warn(`[hive:session] Optional origin continuity unavailable (${error.reason}); continuing session observation.`);
@@ -5909,9 +5903,8 @@ NEXT: Ask your first clarifying question about this feature.`;
           task: tool.schema.string().describe('Task folder name'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
           attemptId: tool.schema.string().optional().describe('Execution attempt id. Omit to discard the current task slot. A non-current id discards only that superseded slot.'),
-          acknowledgeOrphanedAttempt: tool.schema.boolean().optional().describe('Required to discard a non-current slot whose native child is still active or uncertain, or that has no child id.'),
         },
-        async execute({ task, feature: explicitFeature, attemptId, acknowledgeOrphanedAttempt }, toolContext) {
+        async execute({ task, feature: explicitFeature, attemptId }, toolContext) {
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
 

@@ -4870,6 +4870,78 @@ describe('managed execution attachment', () => {
     });
   });
 
+  it.each(['pending', 'in_progress', 'failed', 'partial', 'cancelled'] as const)(
+    'rejects blocked continuation from %s without mutating task or execution state',
+    async (status) => {
+      const feature = `continue-${status}`;
+      const { hooks, context } = await harness(root, `primary-${status}`);
+      await seedFeature(hooks, context, feature);
+      new TaskService(root).update(feature, '01-first-task', { status });
+      const beforeStatus = new TaskService(root).getRawStatus(feature, '01-first-task');
+      const beforeWorktrees = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+
+      const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+        scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+        placement: { kind: 'worktree' },
+      }, context) as string);
+
+      expect(denied).toMatchObject({
+        success: false,
+        reason: 'blocked_continuation_not_allowed',
+        mutation: 'none',
+        feature,
+        task: '01-first-task',
+      });
+      expect(new TaskService(root).getRawStatus(feature, '01-first-task')).toEqual(beforeStatus);
+      expect(new ExecutionAttemptService(root).listAttempts()).toEqual([]);
+      expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(beforeWorktrees);
+    },
+  );
+
+  it('revalidates blocked continuation after waiting and before placement creation', async () => {
+    const feature = 'continue-race';
+    const { hooks, context } = await harness(root, 'primary-continue-race');
+    await seedFeature(hooks, context, feature);
+    const tasks = new TaskService(root);
+    tasks.update(feature, '01-first-task', { status: 'blocked' });
+    const beforeWorktrees = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+    const originalGet = WorktreeService.prototype.get;
+    let entered!: () => void;
+    let release!: () => void;
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    const get = spyOn(WorktreeService.prototype, 'get').mockImplementation(async function (...args) {
+      const result = await originalGet.apply(this, args);
+      if (args[0] === feature) {
+        entered();
+        await paused;
+      }
+      return result;
+    });
+
+    try {
+      const preparing = hooks.tool!.hive_execution_prepare.execute({
+        scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+        placement: { kind: 'worktree' },
+      }, context);
+      await enteredPromise;
+      tasks.update(feature, '01-first-task', { status: 'failed' });
+      release();
+
+      expect(JSON.parse(await preparing as string)).toMatchObject({
+        success: false,
+        reason: 'blocked_continuation_not_allowed',
+        mutation: 'none',
+      });
+      expect(tasks.getRawStatus(feature, '01-first-task')?.status).toBe('failed');
+      expect(new ExecutionAttemptService(root).listAttempts()).toEqual([]);
+      expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(beforeWorktrees);
+    } finally {
+      release();
+      get.mockRestore();
+    }
+  });
+
   it('does not reopen a task finalized while preparation waits for the scope lock', async () => {
     const fixture = await harness(root, 'finalize-prepare-primary');
     await seedFeature(fixture.hooks, fixture.context, 'finalize-prepare');

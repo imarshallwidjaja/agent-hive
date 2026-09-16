@@ -46,13 +46,13 @@ Single-repo projects use the git root directly; multi-repo topology, when needed
 
 ## Execution attempts and live claims
 
-`.hive/execution-attempts.json` stores **ExecutionAttempt** history. An ExecutionAttempt is the dispatch and recovery record for a managed feature-task or ad-hoc launch. Its lifecycle is `armed` -> `attached` -> `stopped` -> `finalized`. A record holds the attempt id, task or ad-hoc run identity, originating primary session, discriminated `worktree | in_place` placement, exact workspace identity for worktree claims, optional `attemptSlot` for feature-task worktrees, branch and base commit where applicable, parent/call/child identities, stop evidence, and finalization receipts.
+`.hive/execution-attempts.json` stores **ExecutionAttempt** history. An ExecutionAttempt is the dispatch and recovery record for a managed feature-task or ad-hoc launch. Its lifecycle is `armed` -> `attached` -> `stopped` -> `finalized`. A record holds the attempt id, task or ad-hoc run identity, originating primary session, discriminated `worktree | in_place` placement, exact workspace identity for worktree claims, branch and base commit where applicable, parent/call/child identities, stop evidence, and finalization receipts.
 
 A **live claim** maps exact worktree identity to the active attempt ID. In-place placement creates no exclusive filesystem claim. Composite claims cover the explicit registered worktree set. Two executions conflict when those identity sets intersect. One exact registered worktree may have only one managed writer at a time.
 
 Persisted history is not proof that an execution is still alive. After restart, unattached arms close as `not_started` because no native call could have crossed the durable attachment boundary; attached attempts remain quarantined until exact stop evidence arrives. Unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
 
-Feature-task retries record an optional `attemptSlot`. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
+A feature-task worktree remains quarantined through `stopped` until the originating primary finalizes it. An unobserved feature-task execution cannot be moved to an alternate placement or force-discarded. For ad-hoc work, retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
 
 `.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It is not an ownership registry. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace.
 
@@ -190,7 +190,7 @@ hive_tasks_sync({ refreshPending: true })
 - Deletes pending plan-backed tasks removed from `plan.md`
 - Preserves manual tasks and any task with execution history (`in_progress`, `done`, `blocked`, `failed`, `partial`)
 
-To make it simple: ad-hoc orchestration uses ad-hoc worktree tools (`hive_adhoc_*`) for isolated work without feature/task overhead. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
+Ad-hoc orchestration uses `hive_execution_prepare` and `hive_execution_finish`, followed by `hive_adhoc_merge` and `hive_adhoc_cleanup` for Git worktree placement. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
 
 For the issue-72 `3b` / `3c` scenario, treat `helperStatus` and live worktree/task state as the bounded truth surface: ask for a locally testable state or interrupted-state wrap-up summary first, create a safe manual follow-up only when it can append after the approved DAG, and amend `plan.md` instead of inventing intermediate numbering.
 
@@ -295,7 +295,7 @@ _None_
 ```
 
 Plan-backed specs also include the matching `## Plan Section` excerpt from `plan.md`.
-Supporting context bodies are not assignment data and do not appear in generated specs. Live catalogs provide current project and feature metadata after the child session is authenticated.
+Supporting context bodies do not appear in generated specs. Live catalogs provide current project and feature metadata after the child session is authenticated.
 
 Manual-task specs derive their sections from structured metadata and may include:
 - `## Goal`
@@ -305,7 +305,7 @@ Manual-task specs derive their sections from structured metadata and may include
 - `## References`
 - `## Origin`
 
-## Assignment And Session Metadata
+## Session Metadata
 
 Canonical session bindings live in project `.hive/sessions.json`. Feature-local `sessions.json` files are projections for navigation and cannot replace missing canonical provenance.
 
@@ -319,15 +319,7 @@ Canonical session bindings live in project `.hive/sessions.json`. Feature-local 
       "featureName": "feature-a",
       "taskFolder": "01-first-task",
       "projectRoot": "/trusted/project",
-      "workerAssignment": {
-        "format": "hive-worker-assignment/v1",
-        "projectRoot": "/trusted/project",
-        "featureName": "feature-a",
-        "taskFolder": "01-first-task",
-        "attempt": 2,
-        "locator": ".hive/features/feature-a/tasks/01-first-task/assignments/attempt-2.md",
-        "contentHash": "<sha256>"
-      },
+      "executionWorkspacePath": "/trusted/project/.hive/.worktrees/feature-a/01-first-task",
       "startedAt": "2025-01-05T09:00:00Z",
       "lastActiveAt": "2025-01-05T10:30:00Z",
       "messageCount": 42,
@@ -344,11 +336,11 @@ Canonical session bindings live in project `.hive/sessions.json`. Feature-local 
 
 `standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
 
-Task `status.json` records current execution identity from preparation and finalized disposition from `hive_execution_finish`. Historical assignment descriptors remain evidence, not active instructions. A duplicate session gets its own session ID plus `assignmentSourceSessionId`, while the source descriptor and task association stay unchanged.
+Task `status.json` records the current worker generation and finalized disposition from `hive_execution_finish`. `ExecutionAttempt.native` is the sole managed execution authority. Stale generated-assignment keys in older JSON are ignored rather than interpreted as authority.
 
-Every catalog delivery and compaction replay revalidates the current runtime root and descriptor. Root relocation, legacy prompt shape, or any exact identity/hash mismatch fails explicitly. Recovery creates a fresh attempt and child at the newly trusted root; it never edits old session or assignment records in place.
+Every catalog delivery and compaction replay revalidates the current runtime root and authenticated session/execution identity. Root relocation or an exact identity mismatch fails explicitly. Recovery creates a fresh attempt and child at the newly trusted root; it never edits old session or execution records in place.
 
-Once an assignment or ad-hoc run is bound, ordinary session patches cannot change its descriptor, root, task, feature, parent, or agent classification. Assignment identity requires validation even if persisted classification disagrees. Dispatch and compaction consume the exact bytes returned by hash validation; replay never reopens the artifact after validating it. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation.
+Once an ad-hoc run or execution workspace is bound, ordinary session patches cannot change its root, task, feature, parent, or agent classification. Dispatch and compaction use the authenticated `ExecutionAttempt` scope. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation.
 
 One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory`. Exact worktree-path, non-placeholder, non-capability leases become unobserved dispatched ExecutionAttempt claims once. This is not an ongoing second admission API. Live claims live with ExecutionAttempt records, not with a lease array on `sessions.json`.
 

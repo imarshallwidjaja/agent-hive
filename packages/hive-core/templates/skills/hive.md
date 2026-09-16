@@ -266,7 +266,7 @@ task({
   ↓
 hive_execution_finish({ attemptId, status: "completed", summary, message })
   ↓
-hive_merge({ task: "01-task-name", strategy: "squash" })
+hive_merge({ task: "01-task-name", strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
 ```
 
 ### Parallel Execution
@@ -305,9 +305,13 @@ When worker returns `status: 'blocked'`:
 
 ### Quick Decision (No Plan Change)
 
+A blocked task continues in its existing worktree with a fresh worker session, but only after the stopped attempt is finalized:
+
 1. `hive_status()` - get details
-2. Ask user via question tool
-3. Continue the blocked task in its existing worktree with a fresh worker session: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement: { kind: "worktree" } })`, then an unchanged native Forager `task()` whose prompt includes the operator decision
+2. Finalize the stopped attempt: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker })`
+3. Re-check `hive_status()`, then ask the user via question tool
+4. Record the decision and re-check `hive_status()`; continue only while status is exactly blocked
+5. Continue in the existing worktree with a fresh worker session: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement: { kind: "worktree" } })`, then an unchanged native Forager `task()` whose prompt includes the operator decision
 
 ### Plan Gap Detected
 
@@ -328,10 +332,11 @@ If blocker suggests plan is incomplete:
 ```
 
 If "Revise Plan":
-1. `hive_worktree_discard({ task })`
-2. `hive_context_write({ name: "learnings", content: "..." })`
-3. `hive_plan_write({ content: "..." })` (updated plan)
-4. Wait for re-approval
+1. Confirm the stopped attempt was finalized and re-check `hive_status()`
+2. `hive_worktree_discard({ task })`
+3. `hive_context_write({ name: "learnings", content: "..." })`
+4. `hive_plan_write({ content: "..." })` (updated plan)
+5. Wait for re-approval
 
 ---
 
@@ -378,6 +383,8 @@ If "Revise Plan":
 
 ### Task Failed
 ```
+hive_execution_finish({ attemptId, status: "failed", summary })
+hive_status()  # Confirm finalization and current task state before retry.
 hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "worktree" } })  # Reuse the worktree; fresh arm. Do not discard failed work by default.
 ```
 
@@ -387,6 +394,6 @@ hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "work
 3. If the advisor is unavailable or the failure remains unresolved, ask the user how to proceed
 
 ### Merge Conflicts
-1. Resolve in worktree
-2. Commit resolution
-3. `hive_merge` again
+1. Call `hive_merge({ task, strategy: "squash", message: "fix: integrate resolved outcome\n\nDescribe the integrated behavior.", preserveConflicts: true })` only when you intend to resolve a real conflict in the destination checkout.
+2. If Hive reports `MERGE_CONFLICT_PRESERVED`, resolve and commit the preserved Git operation in that destination checkout.
+3. Do not call `hive_merge` again while preserved conflict state is active. If Hive aborted the conflict instead, satisfy the returned recovery action and retry with a valid message.

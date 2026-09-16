@@ -97,20 +97,19 @@ Task-backed worktree, ad-hoc worktree, and merge results carry the same recovery
 - `COMPOSITE_PARTIAL` means at least one repository was integrated and a later repository failed. Earlier repositories remain integrated. Per-repository results are authoritative, and an aggregate top-level `sha` is a representative value from one repository, not a cross-repository identifier. Start recovery from the per-repository results rather than repeating the whole operation.
 - When integration succeeds and requested cleanup does not fully complete, the result reports `CLEANUP_FAILED` with `action: 'cleanup_only'`. `mutation` still reflects the completed integration. Repeat only the cleanup step; the caller must not re-run the merge.
 
-### Managed Execution And Worktrees
+### Execution (3 tools)
 | Tool | Purpose |
 |------|---------|
 | `hive_execution_prepare` | Arm one task or ad-hoc Forager dispatch with worktree or in-place placement |
 | `hive_execution_finish` | Originating-primary-only checkpointed Git/report/disposition finalization after exact native stop evidence |
 | `hive_worktree_discard` | Discard changes, reset status |
-| `hive_merge` | Integrate a finalized completed feature-task worktree |
 
 Discard, cleanup, and archival never cancel execution. Current-slot discard is refused while that source worktree has a live or unobserved claim. Uncertain workspaces stay in place; they are not reset, copied, or deleted to recover.
 
 #### hive_worktree_discard input notes
 
 - Omit `attemptId` to discard the current task slot, or pass the current `attemptId` for the same current-slot discard. That path may reset the task to pending.
-- Pass a non-current `attemptId` to remove only that superseded worktree slot. The current task pointer and task status stay unchanged. If the superseded attempt still has active or uncertain native execution, or has no native child id, also pass `acknowledgeOrphanedAttempt: true`. Terminal native evidence allows that cleanup without the acknowledgement. Inspect `hive_status.unfinishedAttempts` for superseded slots.
+- Pass a non-current `attemptId` only for a finalized historical worktree attempt. The current task pointer and task status stay unchanged. Attached, stopped, and unobserved attempts remain quarantined and cannot be discarded. Inspect `hive_status.unfinishedAttempts` before cleanup.
 
 #### hive_execution_finish input notes
 
@@ -126,7 +125,8 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - Returns the durable attempt ID, exact scope and placement, task/context references, arm expiry, and lifecycle facts. Native task arguments remain unchanged.
 - The next Forager-derived native call from that primary consumes the sole arm and persists exact parent/call attachment before dispatch. Non-Forager calls do not consume it. Missing or ambiguous arms fail loudly.
 - Worktree placement validates exact Git registration and holds claims through `stopped`; in-place placement is cooperative and creates no filesystem exclusion claim. Cross-process exclusivity is unsupported.
-- Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
+- In-place `directory` must be a resolved absolute path to an existing directory. Expand shell shorthand such as `~` before passing the tool argument.
+- Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. A feature-task worktree remains quarantined through `stopped` until the originating primary calls `hive_execution_finish`. Uncertain workspaces are preserved; they are not reset, copied, discarded, or replaced with another placement.
 - Native `general` is an ordinary unmanaged delegation. It consumes no Forager arm and receives no Hive claim or lifecycle authority.
 - Workers have no lifecycle mutation or commit tool. They return one terminal handoff; the originating primary calls `hive_execution_finish` only after exact stop evidence.
 - Every native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches.
@@ -136,12 +136,13 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
 - Preparation failures return structured scope/placement recovery guidance and never return a generated native-task payload.
 
-### Ad-hoc Worktree
+### Integration (3 tools)
 
 These tools are for isolated ad-hoc orchestration work. They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`.
 
 | Tool | Purpose |
 |------|---------|
+| `hive_merge` | Integrate a finalized completed feature-task worktree |
 | `hive_adhoc_merge` | Merge the ad-hoc branch into the current branch |
 | `hive_adhoc_cleanup` | Remove the ad-hoc worktree and branch |
 
@@ -186,7 +187,7 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 - Returned background task IDs are observe-only board handles for status, reconcile, and cancel. Never pass `task_id` to `task()` or treat it as an input for session continuation.
 - Cancellation is not rollback. `hive_background_cancel` does not revert files, branches, worktrees, commits, or task reports; it only records a cancellation request and any confirmed runtime cancellation. Cancel is unavailable without a real native identity. Cancellation is owner-scoped: another primary must not automatically terminate another primary's child. Cancel acknowledgement is not proof of termination; live claims remain until termination is observed. Cleanup and archival never imply execution cancellation.
 - The board is observational bookkeeping; `hive_status` is not that surface. Do not invent native task IDs. Exact callbacks can update board visibility and provide authenticated stop evidence, but reconciliation and ignore only archive board rows. They do not release an execution claim or authorize retry in the same workspace.
-- If a background lane cannot be resumed safely: retry after confirmed termination may reuse the same worktree, and retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Ignoring stale board bookkeeping does not authorize that retry. Escalate a concrete blocker to the operator when needed.
+- If a background feature-task lane cannot be resumed safely, its worktree remains quarantined until authenticated stop evidence and primary finalization. For ad-hoc work, retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Ignoring stale board bookkeeping does not authorize retry. Escalate a concrete blocker to the operator when needed.
 
 ### Runtime Session Inspection (2 tools)
 
@@ -276,10 +277,7 @@ hive_task_trace_content({ task_id: "child", content_id: "<content_id from hive_t
 - Configure optional recovery interpretation under global `taskTraceSummarizer` (`model`, `variant`, `temperature` 0–2). Omitted model/variant use OpenCode defaults; temperature defaults to 0. This setting affects only `recovery: true` interpretation; forensic traces stay model-free. An unavailable configured model/variant produces deterministic partial fallback without provider retry. Operator reference: [Task trace summarizer](../README.md#task-trace-summarizer).
 - Recovery context is input for a NEW task without `task_id`; fresh-session-only delegation remains mandatory.
 
-### Merge (1 tool)
-| Tool | Purpose |
-|------|---------|
-| `hive_merge` | Integrate a task branch; defaults to one squash commit with an explicit aggregate message |
+### Feature-task merge details
 
 #### hive_merge input notes
 
@@ -289,6 +287,7 @@ hive_task_trace_content({ task_id: "child", content_id: "<content_id from hive_t
 - Use `rebase` or normal `merge` only when preserving independently valuable source commits or branch topology is intentional. Hive validates every exact raw source commit message before mutation.
 - Do not provide a non-blank `message` with `strategy: 'rebase'`.
 - Failed integrations restore the target to its original HEAD and clean state unless an actual conflict is explicitly preserved.
+- A preserved conflict leaves an active Git operation in the destination checkout. Resolve and commit that operation there; do not call `hive_merge` again while the preserved state is active. An auto-aborted conflict may be retried only after satisfying its returned recovery action, with the required merge/squash message.
 - Integration locking is operation-scoped: source worktree, destination checkout, and composite repositories. Two integrations into the same destination checkout serialize. Integration while unrelated worktrees are active is allowed when source and destination do not conflict. Integration is refused while the source worktree has an active writer. The project root does not overlap every worktree merely because it is an ancestor path.
 
 #### hive_merge output
@@ -467,6 +466,8 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Tool | Reason |
 |------|--------|
 | `hive_existing_workspace_start` | Unavailable. Isolated worktrees are the managed placement. Direct checkout work is unmanaged OpenCode work, not a Hive placement. |
+| `hive_worktree_start`, `hive_worktree_create`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_start` | Replaced by `hive_execution_prepare` followed by an unchanged native `task()` call. |
+| `hive_worktree_commit`, `hive_adhoc_worktree_commit` | Replaced by primary-only `hive_execution_finish`. |
 | `hive_subtask_*` (5 tools) | Subtask complexity not needed, use todowrite instead |
 | `hive_session_*` (2 tools) | Replaced by `hive_status` |
 | Custom Hive skill-loading tool | Replaced by OpenCode's native `skill` tool |
@@ -483,15 +484,14 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Repository Manifest | 3 | status, discover, update |
 | Plan | 4 | write, patch, read, approve |
 | Task | 3 | sync, create, update |
-| Worktree (task-backed) | 4 | start, create, commit, discard |
-| Ad-hoc Worktree | 5 | create, start, commit, merge, cleanup |
+| Execution | 3 | prepare, finish, discard |
+| Integration | 3 | merge, ad-hoc merge, ad-hoc cleanup |
 | Background Orchestration | 4 | status, reconcile, batch reconcile, cancel |
 | Runtime Session Inspection | 2 | trace, source-backed content |
-| Merge | 1 | merge |
 | Context | 4 | read, write, append, archive |
 | Operator Constraints | 4 | read, add, edit, clear |
 | Status | 1 | status |
-| **Total** | **37** | |
+| **Total** | **33** | |
 
 ## Feature Resolution
 

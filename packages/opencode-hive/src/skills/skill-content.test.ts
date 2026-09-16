@@ -582,7 +582,7 @@ describe('skill content', () => {
       'hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })',
     );
     expect(skill!.template).toContain('Attached or uncertain feature-task scopes remain quarantined');
-    expect(skill!.template).toContain('preparation stays denied until supported lifecycle recovery establishes termination');
+    expect(skill!.template).toContain('claim remains held through `stopped` until `hive_execution_finish` reaches `finalized`');
     expect(skill!.template).toContain('cannot reuse that run');
   });
 
@@ -613,6 +613,12 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('hive_execution_prepare({ scope: { kind: "task", task: "02-task-a" }, placement: { kind: "worktree" } })');
     expect(hiveSkill).toContain('subagent_type: "forager-worker"');
     expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "completed", summary, message })');
+    expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "blocked", summary, blocker })');
+    expect(hiveSkill.indexOf('hive_execution_finish({ attemptId, status: "blocked", summary, blocker })'))
+      .toBeLessThan(hiveSkill.indexOf('continueFromBlocked: true'));
+    expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "failed", summary })');
+    expect(hiveSkill).toContain('strategy: "squash", message:');
+    expect(hiveSkill).toContain('Do not call `hive_merge` again while preserved conflict state is active');
     expect(hiveSkill).not.toContain('hive_worktree_start');
     expect(hiveSkill).not.toContain('taskToolCall');
   });
@@ -773,6 +779,10 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('wait for the native correlation event');
     expect(skill!.template).toContain('Gate-closed Forager launch (blocking wait mode)');
     expect(skill!.template).toContain('Gate-open Forager launch (background wait mode)');
+    expect(skill!.template).toContain('const prepared = await hive_execution_prepare');
+    expect(skill!.template).toContain('attemptId: prepared.attemptId');
+    expect(skill!.template).toContain('await hive_execution_finish');
+    expect(skill!.template).toContain('Reconcile each board row exactly once');
     expect(skill!.template).toContain("scope: { kind: 'adhoc' }");
     expect(skill!.template).toContain("subagent_type: 'forager-worker'");
     expect(skill!.template).toContain('Only a delegated `architect-planner` may call `task()` from a subagent session');
@@ -912,8 +922,8 @@ describe('skill content', () => {
     expect(template).toContain('The old recipient remains denied');
     expect(template).toContain('fresh authenticated child binding');
     expect(template).toContain('Ad-hoc relocation requires a fresh authenticated run');
-    expect(template).toContain('Old session and assignment descriptors remain historical');
-    expect(template).toContain('never edit roots to rebind them');
+    expect(template).toContain('Old persisted metadata remains inert history');
+    expect(template).toContain('never edit roots to rebind it');
     expect(template).toContain('follow the stored former root');
     expect(template).toContain('root migration/aliases');
     expect(template).toContain('Seamless continuation is intentionally sacrificed');

@@ -80,7 +80,7 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 
 1. Consume the owning workflow's ready lanes, delegation kinds, ownership boundaries, and safe independent foreground work.
 2. Build the context packet for each supplied lane without changing its boundary.
-3. Every Forager lane, including report-only diagnosis, needs one armed execution. Call `hive_execution_prepare` with the exact task or ad-hoc scope and `worktree` or `in_place` placement, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. The primary authors that prompt. The runtime attaches that call and appends the canonical execution scope plus the dispatch-time standing-constraint snapshot. After exact structured stop evidence, the originating primary calls `hive_execution_finish`. Unused arms expire after five minutes; an unobserved ExecutionAttempt keeps a live claim on only that worktree. Retry after confirmed termination may reuse the same worktree. Attached or uncertain feature-task scopes remain quarantined, and preparation stays denied until exact supported stop or finalization evidence is recorded. Do not invent an alternate feature-task placement while the prior writer may still be live. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree without copying mutable progress from the uncertain run. Ordinary Scout, advisor, and reviewer calls do not require an armed execution.
+3. Every Forager lane, including report-only diagnosis, needs one armed execution. Call `hive_execution_prepare` with the exact task or ad-hoc scope and `worktree` or `in_place` placement, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. The primary authors that prompt. The runtime attaches that call and appends the canonical execution scope plus the dispatch-time standing-constraint snapshot. After exact structured stop evidence, the originating primary calls `hive_execution_finish`. Unused arms expire after five minutes; an unobserved ExecutionAttempt keeps a live claim on only that worktree, and the claim remains held through `stopped` until `hive_execution_finish` reaches `finalized`. Attached or uncertain feature-task scopes remain quarantined until authenticated stop evidence and primary finalization. Do not invent an alternate feature-task placement while the prior writer may still be live. For ad-hoc work, retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree without copying mutable progress from the uncertain run. Ordinary Scout, advisor, and reviewer calls do not require an armed execution.
 4. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 5. Follow `recommendedNextAction` from `hive_background_status` when present; use `nextActions` and `orchestrationBurden` as supporting detail for visible lanes and operator reporting. Treat `waitingForNativeCompletion` as wait-only state; an empty `jobs` list is not proof that no native background work exists.
 6. Continue only foreground work that does not depend on the background result.
@@ -94,7 +94,7 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 Gate-closed Forager launch (blocking wait mode):
 
 ```ts
-hive_execution_prepare({
+const prepared = await hive_execution_prepare({
   scope: { kind: 'adhoc' },
   placement: { kind: 'worktree' },
 });
@@ -105,7 +105,7 @@ await task({
 });
 ```
 
-Retry after confirmed termination may reuse the same `runId` worktree:
+Retry after finalization may reuse the same `runId` worktree:
 
 ```ts
 hive_execution_prepare({
@@ -138,12 +138,20 @@ hive_background_status({});
 // Wait for the native background completion notification, then refresh the Hive board
 // instead of repeatedly refreshing or manually mutating .hive/background-jobs.json.
 hive_background_status({});
+await hive_execution_finish({
+  attemptId: prepared.attemptId,
+  status: 'completed',
+  summary: 'Primary-authored result summary after consuming the worker handoff.',
+  message: 'feat: implement independent change\n\nRecord the finalized background lane result.',
+});
 hive_background_reconcile({
   identifier: task_id,
   decision: 'reconciled',
-  summary: 'Background job result was applied to the task state.',
+  summary: 'Consumed the background result after execution finalization.',
 });
 ```
+
+Reconcile each board row exactly once. Reconciliation archives board bookkeeping; it does not apply task state or finalize an execution.
 
 Exempt ordinary Scout, advisor, or reviewer launch:
 
@@ -161,15 +169,11 @@ hive_background_status({});
 hive_background_reconcile({
   identifier: task_id,
   decision: 'reconciled',
-  summary: 'Background job result was applied to the task state.',
+  summary: 'Consumed the background research result.',
 });
 // Reconciled or ignored jobs are archived by the tool and hidden from normal status.
-// For multiple terminal lanes, prefer one batch cleanup after consuming results.
-hive_background_reconcile_batch({
-  items: [
-    { identifier: task_id, decision: 'reconciled', summary: 'Background job result was applied to the task state.' },
-  ],
-});
+// For multiple different terminal lanes, batch reconciliation is an alternative to
+// individual reconciliation, not a second pass over rows already archived.
 ```
 
 ## Decision Examples

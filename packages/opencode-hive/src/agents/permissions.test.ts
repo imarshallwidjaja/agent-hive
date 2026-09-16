@@ -167,59 +167,6 @@ function createGitRepository(repository: string): void {
   execFileSync('git', ['-C', repository, 'commit', '-m', 'initial'], { shell: false });
 }
 
-function createValidAssignmentIdentity(
-  repository: string,
-  sessionID: string,
-  sourceSessionID = sessionID,
-): Record<string, unknown> {
-  const featureName = 'assigned-feature';
-  const taskFolder = '01-assigned-task';
-  const content = '# Immutable assignment';
-  const locator = `.hive/features/${featureName}/tasks/${taskFolder}/assignments/attempt-1.md`;
-  const assignment = {
-    format: 'hive-worker-assignment/v1' as const,
-    projectRoot: repository,
-    featureName,
-    taskFolder,
-    attempt: 1,
-    locator,
-    contentHash: createHash('sha256').update(content).digest('hex'),
-  };
-  const taskDir = path.join(repository, '.hive', 'features', featureName, 'tasks', taskFolder);
-  mkdirSync(path.join(taskDir, 'assignments'), { recursive: true });
-  writeFileSync(path.join(repository, locator), content);
-  writeFileSync(path.join(taskDir, 'status.json'), JSON.stringify({
-    status: 'in_progress',
-    origin: 'plan',
-    workerAttempt: 1,
-    workerAssignment: assignment,
-    workerAttempts: [{
-      attempt: 1,
-      idempotencyKey: 'attempt-1',
-      state: 'associated',
-      assignment,
-      workerSessionId: sourceSessionID,
-    }],
-    workerSession: { sessionId: sourceSessionID, attempt: 1 },
-  }));
-  const sessions = new SessionService(repository);
-  if (sourceSessionID !== sessionID) {
-    sessions.trackGlobal(sourceSessionID, {
-      projectRoot: repository,
-      featureName,
-      taskFolder,
-      workerAssignment: assignment,
-    });
-  }
-  return {
-    projectRoot: repository,
-    featureName,
-    taskFolder,
-    workerAssignment: assignment,
-    ...(sourceSessionID === sessionID ? {} : { assignmentSourceSessionId: sourceSessionID }),
-  };
-}
-
 function gitAt(repository: string, args: string[]): string {
   return execFileSync('git', ['-C', repository, ...args], {
     encoding: 'utf8',
@@ -1582,6 +1529,10 @@ describe('Agent permissions', () => {
       sessions.trackGlobal(sessionID, {
         projectRoot: repository,
         taskFolder: '01-stale-task',
+      });
+      corruptStoredSession(repository, sessionID, {
+        workerAssignment: { stale: true },
+        assignmentSourceSessionId: 'old-source',
         workerPromptPath: '.hive/features/old/tasks/01-stale-task/worker-prompt.md',
       });
 
@@ -1613,14 +1564,8 @@ describe('Agent permissions', () => {
   });
 
   it.each([
-    ['immutable assignment', 'context_authorization_denied', (repository: string, sessionID: string) => createValidAssignmentIdentity(repository, sessionID)],
     ['ad-hoc identity', 'context_authorization_denied', (repository: string) => ({ adHocRunId: 'valid-run', projectRoot: repository })],
     ['stored parent identity', 'context_authorization_denied', () => ({ parentSessionId: 'stored-parent' })],
-    ['assignment source', 'context_authorization_denied', (repository: string, sessionID: string) => createValidAssignmentIdentity(repository, sessionID, 'assignment-source')],
-    ['duplicate source', 'context_authorization_denied', (repository: string, sessionID: string) => ({
-      ...createValidAssignmentIdentity(repository, sessionID, 'duplicate-source'),
-      duplicatedFromSessionId: 'duplicate-source',
-    })],
     ['cross-root identity', 'context_root_mismatch', (repository: string) => ({ projectRoot: path.join(repository, 'other-root') })],
   ])('denies project context management to a runtime primary with %s', async (_label, reason, storedPatch) => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-contradictory-primary-management-'));
@@ -1680,6 +1625,8 @@ describe('Agent permissions', () => {
         parentSessionId: parentSessionID,
         featureName: 'legacy-feature',
         taskFolder: '01-legacy-task',
+      });
+      corruptStoredSession(repository, sessionID, {
         workerPromptPath: '.hive/features/legacy-feature/tasks/01-legacy-task/worker-prompt.md',
       });
       expect(sessions.getGlobal(sessionID)).toMatchObject({
@@ -1744,21 +1691,9 @@ describe('Agent permissions', () => {
     ['stored agent conflict', { storedPatch: { agent: 'forager-worker' } }],
     ['stored base-agent conflict', { storedPatch: { baseAgent: 'swarm-orchestrator' } }],
     ['stored session-kind conflict', { storedPatch: { sessionKind: 'task-worker' } }],
-    ['immutable assignment provenance', { storedPatch: { workerAssignment: {
-      format: 'hive-worker-assignment/v1',
-      projectRoot: '/wrong-root',
-      featureName: 'old',
-      taskFolder: '01-stale-task',
-      attempt: 1,
-      locator: '.hive/features/old/tasks/01-stale-task/assignments/attempt-1.md',
-      contentHash: '0'.repeat(64),
-    } } }],
-    ['malformed null assignment provenance', { storedPatch: { workerAssignment: null } }],
     ['ad-hoc provenance', { storedPatch: { adHocRunId: 'adhoc-run' } }],
-    ['assignment-source provenance', { storedPatch: { assignmentSourceSessionId: 'source-worker' } }],
     ['malformed empty parent lineage', { storedPatch: { parentSessionId: '' } }],
     ['malformed empty ad-hoc provenance', { storedPatch: { adHocRunId: '' } }],
-    ['malformed empty assignment-source provenance', { storedPatch: { assignmentSourceSessionId: '' } }],
     ['malformed empty duplicate provenance', { storedPatch: { duplicatedFromSessionId: '' } }],
   ];
   it.each(pollutedPrimaryDenialScenarios)('does not ignore stale task projection fields with %s', async (_label, scenario) => {
@@ -1805,15 +1740,9 @@ describe('Agent permissions', () => {
   });
 
   const malformedStoredProvenanceScenarios: Array<[string, string, null | '' | false]> = [
-    ['null worker assignment', 'workerAssignment', null],
-    ['empty worker assignment', 'workerAssignment', ''],
-    ['false worker assignment', 'workerAssignment', false],
     ['null ad-hoc run', 'adHocRunId', null],
     ['empty ad-hoc run', 'adHocRunId', ''],
     ['false ad-hoc run', 'adHocRunId', false],
-    ['null assignment source', 'assignmentSourceSessionId', null],
-    ['empty assignment source', 'assignmentSourceSessionId', ''],
-    ['false assignment source', 'assignmentSourceSessionId', false],
     ['null duplicate source', 'duplicatedFromSessionId', null],
     ['empty duplicate source', 'duplicatedFromSessionId', ''],
     ['false duplicate source', 'duplicatedFromSessionId', false],

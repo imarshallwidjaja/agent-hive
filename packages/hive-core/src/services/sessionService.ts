@@ -1,48 +1,20 @@
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import { getFeaturePath, getGlobalSessionsPath, ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
-import type { NativeTaskLease, SessionInfo, SessionsJson, StandingConstraintEntry, WorkerAssignmentDescriptor } from '../types.js';
-import { EXECUTION_OWNERSHIP_VERSION, WORKER_ASSIGNMENT_FORMAT } from '../types.js';
+import type { NativeTaskLease, SessionInfo, SessionsJson, StandingConstraintEntry } from '../types.js';
+import { EXECUTION_OWNERSHIP_VERSION } from '../types.js';
 
 export const STANDING_CONSTRAINTS_MAX_CHARS = 8000;
 export const LEGACY_STANDING_CONSTRAINT_ID = 'legacy';
 
 export class SessionContinuityError extends Error {
-  constructor(readonly reason: 'missing_origin' | 'invalid_origin' | 'invalid_worker_assignment', message: string) {
+  constructor(readonly reason: 'missing_origin' | 'invalid_origin', message: string) {
     super(`assignment_recovery_error: ${message}`);
   }
 }
 
-export function validateAssignmentDescriptorShape(value: unknown): value is WorkerAssignmentDescriptor {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const descriptor = value as Record<string, unknown>;
-  const nonEmptyString = (member: unknown): member is string => (
-    typeof member === 'string' && member.trim().length > 0
-  );
-  const safeSegment = (member: unknown): member is string => nonEmptyString(member)
-    && member !== '.' && member !== '..' && !/[\\/\x00]/.test(member);
-  if (descriptor.format !== WORKER_ASSIGNMENT_FORMAT || !nonEmptyString(descriptor.projectRoot)
-    || !safeSegment(descriptor.featureName) || !safeSegment(descriptor.taskFolder)
-    || !nonEmptyString(descriptor.locator) || !Number.isSafeInteger(descriptor.attempt)
-    || (descriptor.attempt as number) < 1
-    || typeof descriptor.contentHash !== 'string' || !/^[a-f0-9]{64}$/.test(descriptor.contentHash)) return false;
-  const locator = descriptor.locator.split('/');
-  return locator.length === 7 && locator[0] === '.hive' && locator[1] === 'features'
-    && safeSegment(locator[2]) && locator[3] === 'tasks' && locator[4] === descriptor.taskFolder
-    && locator[5] === 'assignments' && locator[6] === `attempt-${descriptor.attempt}.md`;
-}
-
-function hasWorkerAssignment(session: Partial<SessionInfo>): boolean {
-  if (!Object.prototype.hasOwnProperty.call(session, 'workerAssignment')) return false;
-  if (!validateAssignmentDescriptorShape(session.workerAssignment)) {
-    throw new SessionContinuityError('invalid_worker_assignment', 'invalid immutable worker assignment');
-  }
-  return true;
-}
-
 function hasExistingWorkspaceAssignment(session: Partial<SessionInfo>): boolean {
-  return session.executionWorkspacePath !== undefined
-    && session.workerAssignment === undefined && session.adHocRunId === undefined;
+  return session.executionWorkspacePath !== undefined && session.adHocRunId === undefined;
 }
 
 export interface StandingConstraintRegister {
@@ -50,17 +22,6 @@ export interface StandingConstraintRegister {
   revision: number;
   constraints: string;
   constraintsChars: number;
-}
-
-export function workerAssignmentsEqual(left: WorkerAssignmentDescriptor | undefined, right: WorkerAssignmentDescriptor): boolean {
-  return !!left
-    && left.format === right.format
-    && left.projectRoot === right.projectRoot
-    && left.featureName === right.featureName
-    && left.taskFolder === right.taskFolder
-    && left.attempt === right.attempt
-    && left.locator === right.locator
-    && left.contentHash === right.contentHash;
 }
 
 export class StandingConstraintError extends Error {
@@ -118,7 +79,6 @@ export class SessionService {
   }
 
   private applySessionPatch(target: SessionInfo, patch?: Partial<SessionInfo>): void {
-    const targetHasAssignment = hasWorkerAssignment(target);
     if (!patch) {
       return;
     }
@@ -128,19 +88,15 @@ export class SessionService {
       && target.duplicatedFromSessionId !== rest.duplicatedFromSessionId) {
       throw new Error('assignment_recovery_error: immutable duplicate source cannot change');
     }
-    hasWorkerAssignment(rest);
-    if (targetHasAssignment
-      || Object.prototype.hasOwnProperty.call(target, 'adHocRunId')
+    if (Object.prototype.hasOwnProperty.call(target, 'adHocRunId')
       || Object.prototype.hasOwnProperty.call(target, 'executionWorkspacePath')) {
       const identityFields: Array<keyof SessionInfo> = [
-        'workerAssignment', 'assignmentSourceSessionId', 'duplicatedFromSessionId', 'adHocRunId', 'projectRoot',
+        'duplicatedFromSessionId', 'adHocRunId', 'projectRoot',
         'featureName', 'taskFolder', 'parentSessionId', 'sessionKind', 'agent', 'baseAgent', 'executionWorkspacePath',
       ];
       for (const key of identityFields) {
         if (!Object.prototype.hasOwnProperty.call(rest, key) || rest[key] === undefined) continue;
-        const unchanged = key === 'workerAssignment'
-          ? workerAssignmentsEqual(target.workerAssignment, rest.workerAssignment!)
-          : target[key] === rest[key];
+        const unchanged = target[key] === rest[key];
         if (!unchanged) throw new Error(`assignment_recovery_error: immutable session identity field ${key} cannot change`);
       }
     }
@@ -228,9 +184,6 @@ export class SessionService {
         data.sessions.push(current);
       }
 
-      if (current.workerAssignment && current.workerAssignment.featureName !== featureName) {
-        throw new Error('assignment_recovery_error: an immutable assignment cannot be rebound to another feature');
-      }
       if (Object.prototype.hasOwnProperty.call(current, 'adHocRunId') && current.featureName !== featureName) {
         throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot acquire another feature binding');
       }
@@ -257,60 +210,22 @@ export class SessionService {
     return session;
   }
 
-  bindWorkerAssignment(
-    sessionId: string,
-    parentSessionId: string,
-    assignment: WorkerAssignmentDescriptor,
-    patch?: Partial<SessionInfo>,
-  ): SessionInfo {
-    hasWorkerAssignment({ workerAssignment: assignment });
-    const session = this.updateGlobalSessions((data) => {
-      const current = this.getOrCreateGlobalSession(data, sessionId);
-      if (Object.prototype.hasOwnProperty.call(current, 'adHocRunId')) {
-        throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot become a task assignment');
-      }
-      if (hasExistingWorkspaceAssignment(current)) {
-        throw new Error('assignment_recovery_error: an immutable existing-workspace assignment cannot become a task assignment');
-      }
-      if (current.parentSessionId && current.parentSessionId !== parentSessionId) {
-        throw new Error('assignment_recovery_error: parent session mismatch');
-      }
-      if (current.workerAssignment && !workerAssignmentsEqual(current.workerAssignment, assignment)) {
-        throw new Error('assignment_recovery_error: immutable assignment mismatch');
-      }
-      this.applySessionPatch(current, patch);
-      current.parentSessionId = parentSessionId;
-      current.projectRoot = assignment.projectRoot;
-      current.featureName = assignment.featureName;
-      current.taskFolder = assignment.taskFolder;
-      current.workerAssignment = { ...assignment };
-      current.lastActiveAt = new Date().toISOString();
-      return { ...current, workerAssignment: { ...assignment } };
-    });
-    this.mirrorSessionProjection(assignment.featureName, session);
-    return session;
-  }
-
   copySessionOrigin(sessionId: string, sourceSessionId: string): SessionInfo {
     return this.updateGlobalSessions((data) => {
       const source = data.sessions.find(candidate => candidate.sessionId === sourceSessionId);
       if (!source) throw new SessionContinuityError('missing_origin', 'missing generic duplicate source');
-      if (hasWorkerAssignment(source)
-        || Object.prototype.hasOwnProperty.call(source, 'executionWorkspacePath')
+      if (Object.prototype.hasOwnProperty.call(source, 'executionWorkspacePath')
         || sessionId === sourceSessionId) {
         throw new SessionContinuityError('invalid_origin', 'invalid immutable generic duplicate origin');
       }
       const current = this.getOrCreateGlobalSession(data, sessionId);
-      hasWorkerAssignment(current);
       const identity = {
         agent: source?.agent, baseAgent: source?.baseAgent, sessionKind: source?.sessionKind,
         projectRoot: source?.projectRoot, featureName: source?.featureName,
         duplicatedFromSessionId: sourceSessionId,
       };
-      if (current.parentSessionId !== undefined || current.workerAssignment !== undefined
-        || current.taskFolder !== undefined || current.workerPromptPath !== undefined || current.adHocRunId !== undefined
+      if (current.parentSessionId !== undefined || current.taskFolder !== undefined || current.adHocRunId !== undefined
         || current.executionWorkspacePath !== undefined
-        || current.assignmentSourceSessionId !== undefined
         || Object.entries(identity).some(([key, value]) =>
           current[key as keyof SessionInfo] !== undefined && current[key as keyof SessionInfo] !== value)) {
         throw new Error('assignment_recovery_error: immutable duplicate recipient identity mismatch');
@@ -326,83 +241,6 @@ export class SessionService {
       });
       return { ...current };
     });
-  }
-
-  copyWorkerAssignment(sessionId: string, sourceSessionId: string): SessionInfo | undefined {
-    const copied = this.updateGlobalSessions((data) => {
-      const recipient = data.sessions.find(candidate => candidate.sessionId === sessionId);
-      if (recipient && Object.prototype.hasOwnProperty.call(recipient, 'adHocRunId')) {
-        throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot become a task assignment');
-      }
-      if (recipient && hasExistingWorkspaceAssignment(recipient)) {
-        throw new Error('assignment_recovery_error: an immutable existing-workspace assignment cannot become a task assignment');
-      }
-      const currentHasAssignment = recipient ? hasWorkerAssignment(recipient) : false;
-      const source = data.sessions.find(candidate => candidate.sessionId === sourceSessionId);
-      if (!source || !hasWorkerAssignment(source)) return undefined;
-      const canonicalSourceId = source.assignmentSourceSessionId ?? sourceSessionId;
-      const visited = new Set([sessionId]);
-      let ancestor: SessionInfo | undefined = source;
-      while (ancestor) {
-        if (visited.has(ancestor.sessionId) || visited.size > 32
-          || Object.prototype.hasOwnProperty.call(ancestor, 'adHocRunId')
-          || hasExistingWorkspaceAssignment(ancestor)
-          || !hasWorkerAssignment(ancestor)
-          || !workerAssignmentsEqual(ancestor.workerAssignment, source.workerAssignment!)) {
-          throw new Error('assignment_recovery_error: invalid immutable duplicate provenance');
-        }
-        visited.add(ancestor.sessionId);
-        if (ancestor.sessionId === canonicalSourceId) {
-          if (ancestor.assignmentSourceSessionId || ancestor.duplicatedFromSessionId) {
-            throw new Error('assignment_recovery_error: invalid immutable canonical source');
-          }
-          break;
-        }
-        if (ancestor.assignmentSourceSessionId !== canonicalSourceId || !ancestor.duplicatedFromSessionId) {
-          throw new Error('assignment_recovery_error: invalid immutable duplicate provenance');
-        }
-        ancestor = data.sessions.find(candidate => candidate.sessionId === ancestor!.duplicatedFromSessionId);
-      }
-      if (!ancestor) throw new Error('assignment_recovery_error: missing immutable duplicate source');
-      const current = this.getOrCreateGlobalSession(data, sessionId);
-      const duplicateIdentity = {
-        agent: source.agent, baseAgent: source.baseAgent, sessionKind: source.sessionKind,
-        projectRoot: source.projectRoot, featureName: source.featureName, taskFolder: source.taskFolder,
-        assignmentSourceSessionId: canonicalSourceId, duplicatedFromSessionId: sourceSessionId,
-      };
-      if (current.parentSessionId !== undefined || Object.entries(duplicateIdentity).some(([key, value]) =>
-        current[key as keyof SessionInfo] !== undefined && current[key as keyof SessionInfo] !== value)) {
-        throw new Error('assignment_recovery_error: immutable duplicate recipient identity mismatch');
-      }
-      if (currentHasAssignment && (!workerAssignmentsEqual(current.workerAssignment, source.workerAssignment!)
-        || current.assignmentSourceSessionId !== canonicalSourceId
-        || current.duplicatedFromSessionId !== sourceSessionId
-        || current.agent !== source.agent || current.baseAgent !== source.baseAgent
-        || current.sessionKind !== source.sessionKind || current.projectRoot !== source.projectRoot
-        || current.featureName !== source.featureName || current.taskFolder !== source.taskFolder)) {
-        throw new Error('assignment_recovery_error: immutable assignment mismatch');
-      }
-      if (currentHasAssignment) return { ...current };
-      this.applySessionPatch(current, {
-        agent: source.agent,
-        baseAgent: source.baseAgent,
-        sessionKind: source.sessionKind,
-        projectRoot: source.projectRoot,
-        featureName: source.featureName,
-        taskFolder: source.taskFolder,
-        workerAssignment: { ...source.workerAssignment! },
-        executionWorkspacePath: source.executionWorkspacePath,
-        assignmentSourceSessionId: canonicalSourceId,
-        duplicatedFromSessionId: sourceSessionId,
-        standingConstraints: source.standingConstraints,
-        standingConstraintEntries: source.standingConstraintEntries?.map(entry => ({ ...entry })),
-        standingConstraintsRevision: source.standingConstraintsRevision,
-      });
-      current.lastActiveAt = new Date().toISOString();
-      return { ...current, workerAssignment: { ...source.workerAssignment! } };
-    });
-    if (copied) this.mirrorSessionProjection(copied.workerAssignment!.featureName, copied);
-    return copied;
   }
 
   private mirrorSessionProjection(featureName: string, session: SessionInfo): void {

@@ -254,8 +254,8 @@ describe('current documentation contract', () => {
       ['fresh merged-result verification', /fresh build\/test verification[^.]*merged result/i],
       ['feature completion', /mark the feature complete only after/i],
     ], 'Operator Guide feature lifecycle');
-    assert.match(recovery, /(?:fails?|failed|partial)[\s\S]{0,220}hive_execution_prepare/i);
-    assert.match(recovery, /blocked[\s\S]{0,220}continueFromBlocked[\s\S]{0,220}(?:fresh|new) worker[\s\S]{0,120}(?:same|existing) worktree/i);
+    assert.match(recovery, /(?:fails?|failed|partial)[\s\S]{0,220}hive_execution_finish[\s\S]{0,220}hive_status[\s\S]{0,220}hive_execution_prepare/i);
+    assert.match(recovery, /blocked[\s\S]{0,420}continueFromBlocked[\s\S]{0,220}(?:fresh|new) worker[\s\S]{0,120}(?:same|existing) worktree/i);
     assert.match(reviewOptions, /\/dash-review[\s\S]{0,160}without changing source/i);
     assert.match(reviewOptions, /\/vuln-review[\s\S]{0,220}does not[\s\S]{0,80}edit source[\s\S]{0,80}automatic fixes/i);
   });

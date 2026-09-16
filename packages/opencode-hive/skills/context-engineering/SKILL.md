@@ -139,7 +139,7 @@ After compaction, recover by catalog selection and named reads. Keep exact IDs. 
 
 Seamless continuation is intentionally sacrificed.
 
-The old recipient remains denied. An authenticated primary at the newly trusted canonical root allocates a fresh task attempt, publishes a new immutable assignment, and establishes a fresh authenticated child binding. Ad-hoc relocation requires a fresh authenticated run. Old session and assignment descriptors remain historical; never edit roots to rebind them, follow the stored former root, or suggest root migration/aliases.
+The old recipient remains denied. An authenticated primary at the newly trusted canonical root allocates a fresh task attempt and establishes a fresh authenticated child binding. Ad-hoc relocation requires a fresh authenticated run. Old persisted metadata remains inert history; never edit roots to rebind it, follow the stored former root, or suggest root migration/aliases.
 
 Exact-worktree registration is the Git integrity prerequisite, not trusted repository or common-directory containment alone. Local byte/path inspection first rejects untrusted `.git` targets without dereferencing them. Only after the selected administration path passes trusted identity-bound common-directory containment without symlink escape may preflight perform contained administration-metadata inspection: `commondir` must resolve to the expected trusted common directory and the parsed/normalized `gitdir` backlink must match the current worktree's own trusted `.git` path. Reject sibling/old entries inside the same valid common directory explicitly, with zero access through mismatched backlinks/former paths and before any suspect-worktree Git.
 

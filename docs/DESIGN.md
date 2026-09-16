@@ -43,7 +43,7 @@ Hive admits one managed writer per exact registered worktree identity. Multiple 
 
 An **ExecutionAttempt** is the dispatch and recovery record (`armed` -> `attached` -> `stopped` -> `finalized`). Persist attempt history in `.hive/execution-attempts.json`. A **live claim** maps exact worktree identity to the active attempt ID. In-place placement records an existing directory for scope only and creates no exclusive filesystem claim. Persisted history is not proof that an execution is still alive. After restart, unattached arms close as `not_started`; attached attempts remain quarantined until exact stop evidence arrives.
 
-When native execution is unobserved or unavailable, only the affected worktree is quarantined; unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
+When native execution is unobserved or unavailable, only the affected worktree is quarantined; unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover. A feature-task worktree cannot be retried until authenticated stop evidence and primary finalization release its claim. Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. For ad-hoc work, retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
 
 An **integration lock** is operation-scoped: source worktree, destination checkout, and composite repositories. Two integrations into the same destination checkout serialize. Integration while unrelated worktrees are active is allowed when source and destination do not conflict. Integration is refused while the source worktree has an active writer. Context, plan, and constraint mutations keep revision and hash conflict handling.
 
@@ -114,13 +114,13 @@ Tracked metadata can include:
 - `featureName`
 - `taskFolder`
 - `projectRoot`
-- `workerAssignment` (format/root/feature/task/attempt/locator/hash)
-- `assignmentSourceSessionId` for authenticated duplicates
 - `adHocRunId` for project-only ad-hoc workers
+- `executionWorkspacePath` for an authenticated delegated execution
+- `duplicatedFromSessionId` for generic origin continuity
 - `directivePrompt`
 - replay flags and activity metadata
 
-This metadata is the recovery surface Hive can rely on inside OpenCode today. It records the role, feature binding, and task identity needed for bounded replay without depending on a first-class upstream child-session ownership API.
+This metadata records role and context continuity. Managed execution authority comes only from exact `ExecutionAttempt.native` parent/call/child correlation and placement scope.
 
 ### Session kinds
 

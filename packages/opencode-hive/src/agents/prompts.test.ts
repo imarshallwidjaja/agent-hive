@@ -1561,6 +1561,8 @@ describe('README.md documentation', () => {
   const operatorGuideContent = readFileSync(OPERATOR_GUIDE_PATH, 'utf-8');
   const HIVE_TOOLS_PATH = path.resolve(import.meta.dir, '..', '..', 'docs', 'HIVE-TOOLS.md');
   const hiveToolsContent = readFileSync(HIVE_TOOLS_PATH, 'utf-8');
+  const DATA_MODEL_PATH = path.resolve(import.meta.dir, '..', '..', 'docs', 'DATA-MODEL.md');
+  const dataModelContent = readFileSync(DATA_MODEL_PATH, 'utf-8');
   const VSCODE_README_PATH = path.resolve(import.meta.dir, '..', '..', '..', 'vscode-hive', 'README.md');
   const vscodeReadmeContent = readFileSync(VSCODE_README_PATH, 'utf-8');
   const PHILOSOPHY_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'PHILOSOPHY.md');
@@ -1623,8 +1625,10 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('Background Orchestration');
       expect(hiveToolsContent).toContain('native completion notifications');
       expect(hiveToolsContent).toContain('Cancellation is not rollback');
-      expect(hiveToolsContent).toContain('retry after confirmed termination may reuse');
-      expect(hiveToolsContent).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+      expect(hiveToolsContent).toContain('retry after finalization may reuse');
+      expect(hiveToolsContent).toContain('background feature-task lane cannot be resumed safely');
+      expect(hiveToolsContent).toContain('remains quarantined until authenticated stop evidence and primary finalization');
+      expect(hiveToolsContent).not.toContain('acknowledgeOrphanedAttempt');
       expect(hiveToolsContent).toContain('cannot reuse that run');
       expect(hiveToolsContent).toContain('Cross-process exclusivity is unsupported');
       expect(hiveToolsContent).not.toContain('task_status');
@@ -1635,6 +1639,19 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain('With the env gate set');
       expect(readmeContent).not.toContain('prompt appendix text only');
       expect(hiveToolsContent).not.toContain('only controls primary-agent prompt appendix text');
+    });
+
+    it('documents finalized reports, absolute in-place paths, and the active tool inventory', () => {
+      expect(operatorGuideContent).toContain('reports/finalization-<operationId>.md');
+      expect(operatorGuideContent).not.toContain('reports/<revision>.md');
+      expect(dataModelContent).toContain('`ExecutionAttempt.native` is the sole managed execution authority');
+      expect(hiveToolsContent).toContain('### Execution (3 tools)');
+      expect(hiveToolsContent).toContain('### Integration (3 tools)');
+      expect(hiveToolsContent).toContain('| **Total** | **33** |');
+      expect(hiveToolsContent).toContain('resolved absolute path to an existing directory');
+      expect(hiveToolsContent).toContain('Expand shell shorthand such as `~` before passing the tool argument');
+      expect(hiveToolsContent).not.toContain('### Merge (1 tool)');
+      expect(hiveToolsContent).not.toContain('acknowledgeOrphanedAttempt');
     });
 
     it('does not keep stale root README runtime counts', () => {
@@ -1999,19 +2016,23 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       for (const symbol of removed) expect(prompt, `${name}: ${symbol}`).not.toContain(symbol);
     }
     expect(QUEEN_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
-    expect(QUEEN_BEE_PROMPT).toContain('preparation stays denied until exact supported stop or finalization evidence is recorded');
+    expect(QUEEN_BEE_PROMPT).toContain('preparation stays denied until authenticated stop evidence and primary finalization');
     expect(QUEEN_BEE_PROMPT).toContain('generic terminal session status alone does not prove stop');
     expect(QUEEN_BEE_PROMPT).toContain('Exact blocking task return or an authenticated native background completion notification');
     expect(QUEEN_BEE_PROMPT).toContain('cannot reuse that run');
     expect(SWARM_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
-    expect(SWARM_BEE_PROMPT).toContain('preparation stays denied until supported lifecycle recovery establishes termination');
-    expect(SWARM_BEE_PROMPT).toContain('For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree');
+    expect(SWARM_BEE_PROMPT).toContain('preparation stays denied until authenticated stop evidence and primary finalization');
+    expect(SWARM_BEE_PROMPT).toContain('For ad-hoc work, retry after finalization may reuse the same `runId` worktree');
     expect(SWARM_BEE_PROMPT).toContain('Retry while termination is unobserved cannot reuse that run; use a new ad-hoc `runId` and worktree');
     expect(SWARM_BEE_PROMPT).toContain('without copying mutable progress from the uncertain run');
-    expect(HIVE_BUILDER_PROMPT).toContain('Retry after confirmed termination may reuse the same `runId` worktree');
+    expect(HIVE_BUILDER_PROMPT).toContain('Retry after finalization may reuse the same `runId` worktree');
     expect(HIVE_BUILDER_PROMPT).toContain('cannot reuse that run');
     expect(QUEEN_BEE_PROMPT).toContain('without copying mutable progress from the uncertain run');
     expect(HIVE_BUILDER_PROMPT).not.toContain('supersede onto a fresh `attemptSlot` worktree');
+    expect(SWARM_BEE_PROMPT).toContain('claim remains held through `stopped` until `hive_execution_finish` reaches `finalized`');
+    expect(HIVE_BUILDER_PROMPT).toContain('claim remains held through `stopped` until `hive_execution_finish` reaches `finalized`');
+    expect(SWARM_BEE_PROMPT).not.toContain('Observed native termination settles the claim');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('Observed native termination settles the claim');
     expect(QUEEN_BEE_PROMPT).toContain('then dispatch one unchanged native Forager `task()` call');
   });
 
