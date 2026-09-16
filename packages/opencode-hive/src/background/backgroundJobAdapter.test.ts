@@ -72,7 +72,6 @@ describe('background job adapter observation', () => {
       taskId: 'task-a',
       callId: 'call-a',
       runtimeState: 'running',
-      scopeSource: 'native-fallback',
       scope: { parentSessionId: 'parent' },
     });
   });

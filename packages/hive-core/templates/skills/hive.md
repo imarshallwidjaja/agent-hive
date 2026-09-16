@@ -384,7 +384,12 @@ If "Revise Plan":
 
 ### Task Failed
 ```
-hive_execution_finish({ attemptId, status: "failed", summary })
+hive_execution_finish({
+  attemptId,
+  status: "failed",
+  summary,
+  ...(worktreeHasChanges ? { message: "fix: preserve failed task progress\n\nRecord the current worktree changes for the next worker attempt." } : {})
+})
 hive_status()  # Confirm finalization and current task state before retry.
 hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "worktree" } })  # Reuse the worktree; fresh arm. Do not discard failed work by default.
 ```

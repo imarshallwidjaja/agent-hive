@@ -71,6 +71,9 @@ export class FeatureService {
   updateStatus(name: string, status: FeatureStatusType): FeatureJson {
     const feature = this.get(name);
     if (!feature) throw new Error(`Feature '${name}' not found`);
+    if (feature.status === 'completed' && status !== 'completed') {
+      throw new Error(`Feature '${name}' is completed and cannot be reopened`);
+    }
 
     feature.status = status;
     
@@ -146,6 +149,9 @@ export class FeatureService {
   archive(name: string, reason?: string): FeatureJson {
     const feature = this.get(name);
     if (!feature) throw new Error(`Feature '${name}' not found`);
+    if (feature.status === 'completed') {
+      throw new Error(`Feature '${name}' is completed and cannot be archived`);
+    }
 
     feature.status = 'archived';
     if (!feature.archivedAt) {

@@ -21,9 +21,7 @@ function registerJob(service: BackgroundJobService, taskId = 'task-1', sessionId
     sessionId,
     callId: `call-${taskId}`,
     agentName: 'forager-worker',
-    scopeSource: 'native-fallback',
     description: 'Implement the worker task',
-    objective: 'Add the service contract',
     runtimeId: 'runtime-a',
     scope: {
       projectRoot: TEST_DIR,
@@ -31,12 +29,6 @@ function registerJob(service: BackgroundJobService, taskId = 'task-1', sessionId
       primaryAgent: 'hive-master',
       feature: 'feature-a',
       task: '01-task',
-    },
-    ownership: {
-      worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'feature-a', '01-task'),
-      branch: 'hive/feature-a/01-task',
-      files: ['packages/hive-core/src/services/backgroundJobService.ts'],
-      repoIds: ['root'],
     },
   });
 }
@@ -70,7 +62,6 @@ describe('BackgroundJobService', () => {
       sessionId: 'session-1',
       callId: 'call-task-1',
       runtimeState: 'running',
-      scopeSource: 'native-fallback',
     });
   });
 
@@ -99,6 +90,26 @@ describe('BackgroundJobService', () => {
     expect(readBoard()).toEqual(expect.objectContaining({ schemaVersion: 1, jobs: [expect.any(Object)] }));
     expect(JSON.stringify(readBoard())).not.toContain('pendingLaunches');
     expect(service.resolve('legacy-launch')).toBeUndefined();
+  });
+
+  it('keeps removed persisted projection keys inert', () => {
+    fs.mkdirSync(path.dirname(BOARD_PATH), { recursive: true });
+    fs.writeFileSync(BOARD_PATH, JSON.stringify({
+      schemaVersion: 1,
+      jobs: [{
+        taskId: 'legacy-task', sessionId: 'legacy-session', agentName: 'forager-worker', alias: 'legacy',
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', runtimeState: 'running',
+        objective: 'legacy objective', scopeSource: 'retry', retryOf: 'older-task', supersedes: 'newer-task',
+        ownership: { workerPromptPath: '/legacy/prompt', worktreePath: '/legacy/worktree' },
+      }],
+    }));
+
+    expect(service.formatForPrompt()).not.toContain('legacy objective');
+    expect(service.formatForPrompt()).not.toContain('/legacy/');
+    const next = service.registerLaunch({ taskId: 'new-task', sessionId: 'new-session', agentName: 'forager-worker' });
+    expect(next).not.toHaveProperty('objective');
+    expect(next).not.toHaveProperty('scopeSource');
+    expect(next).not.toHaveProperty('ownership');
   });
 
   it('correlates one native call idempotently and rejects contradictory identity', () => {
@@ -174,22 +185,6 @@ describe('BackgroundJobService', () => {
     expect(service.markRuntimeEpochStale('task-1', 'runtime-b', 'again')).toBeUndefined();
   });
 
-  it('records retries as new native jobs linked to the original task', () => {
-    registerJob(service);
-    service.markTerminal('task-1', 'error');
-
-    const retry = service.recordRetry('task-1', {
-      taskId: 'task-2',
-      sessionId: 'session-2',
-      callId: 'call-task-2',
-      agentName: 'forager-worker',
-      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' },
-    });
-
-    expect(retry).toMatchObject({ retryOf: 'task-1', scopeSource: 'retry' });
-    expect(service.resolve('task-1')?.supersedes).toBe('task-2');
-  });
-
   it('formats only native job records for prompts', () => {
     expect(service.formatForPrompt()).toBe('No background jobs are currently visible for this scope.');
     registerJob(service);
@@ -230,13 +225,12 @@ describe('BackgroundJobService', () => {
   });
 
   it('keeps cancellation requests distinct from confirmed runtime cancellation', () => {
-    const registered = registerJob(service);
+    registerJob(service);
     const requested = service.markCancelRequested('task-1', 'No longer needed');
 
     expect(requested).toMatchObject({
       runtimeState: 'running',
       cancelReason: 'No longer needed',
-      ownership: registered.ownership,
     });
     const cancelled = service.markRuntimeCancelled('task-1', { resultSummary: 'Runtime confirmed cancellation' });
     expect(cancelled).toMatchObject({

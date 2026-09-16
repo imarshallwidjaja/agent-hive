@@ -5685,12 +5685,16 @@ NEXT: Ask your first clarifying question about this feature.`;
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
 
-          const discoveryError = validateDiscoverySection(content);
-          if (discoveryError) return discoveryError;
-
-          captureSession(feature, toolContext);
-          const planPath = planService.write(feature, content);
-          return `Plan written to ${planPath}. Comments cleared for fresh review. Refresh the primary human-facing overview with hive_context_write({ feature: "${feature}", name: "overview", content }) using ## At a Glance, ## Workstreams, and ## Revision History. Review context/overview.md first; plan.md remains execution truth.`;
+          return withIntegrationLock([featureLockKey(feature)], async () => {
+            if (featureService.get(feature)?.status === 'completed') {
+              return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature });
+            }
+            const discoveryError = validateDiscoverySection(content);
+            if (discoveryError) return discoveryError;
+            captureSession(feature, toolContext);
+            const planPath = planService.write(feature, content);
+            return `Plan written to ${planPath}. Comments cleared for fresh review. Refresh the primary human-facing overview with hive_context_write({ feature: "${feature}", name: "overview", content }) using ## At a Glance, ## Workstreams, and ## Revision History. Review context/overview.md first; plan.md remains execution truth.`;
+          });
         },
       }),
 
@@ -5710,18 +5714,23 @@ NEXT: Ask your first clarifying question about this feature.`;
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
 
-          try {
-            const normalizedOperations = normalizePlanPatchOperations(operations);
-            captureSession(feature, toolContext);
-            const result = planService.patch(feature, expectedRevision, normalizedOperations, validateDiscoverySection);
-            return JSON.stringify({
-              ...result,
-              summary: `Patched ${result.changedSections.join(', ')}`,
-              nextAction: 'If task sequencing or scope changed, run hive_tasks_sync({ refreshPending: true }) explicitly after review/approval. hive_plan_patch does not sync tasks automatically.',
-            }, null, 2);
-          } catch (error) {
-            return `Error: ${error instanceof Error ? error.message : String(error)}`;
-          }
+          return withIntegrationLock([featureLockKey(feature)], async () => {
+            if (featureService.get(feature)?.status === 'completed') {
+              return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature });
+            }
+            try {
+              const normalizedOperations = normalizePlanPatchOperations(operations);
+              captureSession(feature, toolContext);
+              const result = planService.patch(feature, expectedRevision, normalizedOperations, validateDiscoverySection);
+              return JSON.stringify({
+                ...result,
+                summary: `Patched ${result.changedSections.join(', ')}`,
+                nextAction: 'If task sequencing or scope changed, run hive_tasks_sync({ refreshPending: true }) explicitly after review/approval. hive_plan_patch does not sync tasks automatically.',
+              }, null, 2);
+            } catch (error) {
+              return `Error: ${error instanceof Error ? error.message : String(error)}`;
+            }
+          });
         },
       }),
 
@@ -5755,14 +5764,19 @@ NEXT: Ask your first clarifying question about this feature.`;
         async execute({ feature: explicitFeature }, toolContext) {
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
-          captureSession(feature, toolContext);
-          const info = featureService.getInfo(feature);
-          const planComments = info?.reviewCounts.plan ?? 0;
-          if (planComments > 0) {
-            return `Error: Cannot approve - ${planComments} unresolved plan review comment(s) remain. Address them first.`;
-          }
-          planService.approve(feature);
-          return 'Plan approved. Run hive_tasks_sync to generate tasks. Draft cleanup is explicit: after approval succeeds, archive context/draft with hive_context_archive when it is no longer needed. Refresh the plan summary if approval changed the narrative, workstreams, or milestones; plan.md remains execution truth.';
+          return withIntegrationLock([featureLockKey(feature)], async () => {
+            if (featureService.get(feature)?.status === 'completed') {
+              return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature });
+            }
+            captureSession(feature, toolContext);
+            const info = featureService.getInfo(feature);
+            const planComments = info?.reviewCounts.plan ?? 0;
+            if (planComments > 0) {
+              return `Error: Cannot approve - ${planComments} unresolved plan review comment(s) remain. Address them first.`;
+            }
+            planService.approve(feature);
+            return 'Plan approved. Run hive_tasks_sync to generate tasks. Draft cleanup is explicit: after approval succeeds, archive context/draft with hive_context_archive when it is no longer needed. Refresh the plan summary if approval changed the narrative, workstreams, or milestones; plan.md remains execution truth.';
+          });
         },
       }),
 

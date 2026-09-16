@@ -228,11 +228,13 @@ describe('current documentation contract', () => {
   it('keeps the first feature loop ordered around worker output and completion', () => {
     const firstFeatureLoop = sectionText(readText('README.md'), 'First feature loop');
 
-    assert.match(firstFeatureLoop, /workers?[\s\S]{0,100}task-level,\s+best-effort checks[\s\S]{0,100}isolated git worktrees?/i);
+    assert.match(firstFeatureLoop, /workers?[\s\S]{0,100}task-level,\s+best-effort checks[\s\S]{0,140}isolated git worktree[\s\S]{0,80}in-place directory/i);
+    assert.match(firstFeatureLoop, /hive_execution_finish[\s\S]{0,140}worker output[\s\S]{0,80}report path/i);
+    assert.match(firstFeatureLoop, /in-place task has no Hive Git\s+merge step/i);
     assertInOrder(firstFeatureLoop, [
       ['completed worker inspection', /operator\/orchestrator[^.]*inspects completed worker output/i],
-      ['task branch merge', /merge completed task branches/i],
-      ['fresh merged-result verification', /fresh build\/test verification[^.]*merged result/i],
+      ['task branch merge', /merge completed worktree task branches/i],
+      ['fresh target verification', /fresh build\/test verification[\s\S]*merged worktree result[\s\S]*live in-place target/i],
       ['feature completion', /mark the feature complete only after/i],
     ], 'README first feature loop');
   });
@@ -246,14 +248,15 @@ describe('current documentation contract', () => {
 
     assert.match(workflow, /feature[\s\S]{0,220}(?:reviewed plan|dependencies|isolated task worktrees|durable execution record)/i);
     assert.match(workflow, /ad-?hoc[\s\S]{0,220}(?:not a feature|feature planning lifecycle|feature or task records)/i);
-    assert.match(lifecycle, /workers?[\s\S]{0,160}task-level,\s+best-effort checks[\s\S]{0,160}isolated git worktrees?/i);
+    assert.match(lifecycle, /workers?[\s\S]{0,160}task-level,\s+best-effort checks[\s\S]{0,180}isolated git worktree[\s\S]{0,100}in-place directory/i);
     assert.match(lifecycle, /hive_execution_finish[\s\S]{0,160}(?:does not|not) merge/i);
     assertInOrder(lifecycle, [
       ['completed worker inspection', /operator\/orchestrator[^.]*inspects completed worker output/i],
-      ['task branch merge', /merge completed task branches/i],
+      ['task branch merge', /merge completed worktree task branches/i],
       ['fresh merged-result verification', /fresh build\/test verification[^.]*merged result/i],
       ['feature completion', /mark the feature complete only after/i],
     ], 'Operator Guide feature lifecycle');
+    assert.match(lifecycle, /in-place tasks have no Hive merge step[\s\S]{0,80}verify the live target/i);
     assert.match(recovery, /(?:fails?|failed|partial)[\s\S]{0,220}hive_execution_finish[\s\S]{0,220}hive_status[\s\S]{0,220}hive_execution_prepare/i);
     assert.match(recovery, /blocked[\s\S]{0,420}continueFromBlocked[\s\S]{0,220}(?:fresh|new) worker[\s\S]{0,120}(?:same|existing) worktree/i);
     assert.match(reviewOptions, /\/dash-review[\s\S]{0,160}without changing source/i);

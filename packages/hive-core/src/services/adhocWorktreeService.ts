@@ -40,10 +40,6 @@ export interface AdhocWorktreeConfig {
 export interface AdhocCreateOptions {
   /** Explicit run identifier. When omitted, a unique safe id is generated. */
   runId?: string;
-  /** Optional slug label folded into the generated runId; ignored when runId is provided. */
-  label?: string;
-  /** Optional base ref/commit; defaults to current HEAD. */
-  baseBranch?: string;
   /** Explicit repo IDs for composite ad-hoc workspaces. When omitted, single-root mode is used. */
   repoIds?: string[];
 }
@@ -583,28 +579,18 @@ export class AdhocWorktreeService {
     }
   }
 
-  private slugify(label: string): string {
-    return label
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 32);
-  }
-
-  private generateRunId(label?: string): string {
+  private generateRunId(): string {
     const ts = new Date()
       .toISOString()
       .replace(/[-:.]/g, '')
       .replace('T', '-')
       .replace('Z', '');
     const rand = Math.random().toString(36).slice(2, 8);
-    const slug = label ? this.slugify(label) : '';
-    const id = slug ? `${ts}-${slug}-${rand}` : `${ts}-${rand}`;
-    return id;
+    return `${ts}-${rand}`;
   }
 
-  resolveCreateTarget(options: Pick<AdhocCreateOptions, 'runId' | 'label'> = {}): AdhocCreateTarget {
-    const runId = options.runId ?? this.generateRunId(options.label);
+  resolveCreateTarget(options: Pick<AdhocCreateOptions, 'runId'> = {}): AdhocCreateTarget {
+    const runId = options.runId ?? this.generateRunId();
     this.assertSafeRunId(runId);
     return { runId, workspacePath: this.getWorktreePath(runId) };
   }
@@ -616,22 +602,21 @@ export class AdhocWorktreeService {
       runId = options.runId as string;
       this.assertSafeRunId(runId);
     } else {
-      runId = this.generateRunId(options.label);
+      runId = this.generateRunId();
       // Defensive: generated ids must satisfy the same shape.
       this.assertSafeRunId(runId);
     }
 
     if (options.repoIds && options.repoIds.length > 0) {
-      return this.createComposite(runId, options.repoIds, explicit, options.baseBranch);
+      return this.createComposite(runId, options.repoIds, explicit);
     }
 
-    return this.createSingle(runId, explicit, options.baseBranch);
+    return this.createSingle(runId, explicit);
   }
 
   private async createSingle(
     runId: string,
     explicit: boolean,
-    baseBranch?: string,
   ): Promise<AdhocWorktreeInfo> {
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
@@ -671,7 +656,7 @@ export class AdhocWorktreeService {
 
     await fs.mkdir(path.dirname(worktreePath), { recursive: true });
 
-    const base = baseBranch || (await git.revparse(['HEAD'])).trim();
+    const base = (await git.revparse(['HEAD'])).trim();
 
     try {
       await git.raw(['worktree', 'add', '-b', branchName, '--', worktreePath, base]);
@@ -690,7 +675,6 @@ export class AdhocWorktreeService {
     runId: string,
     repoIds: string[],
     explicit: boolean,
-    baseBranch?: string,
   ): Promise<AdhocWorktreeInfo> {
     // Validate inputs
     for (const repoId of repoIds) this.assertSafeRepoId(repoId);
@@ -765,7 +749,7 @@ export class AdhocWorktreeService {
         const repoWtPath = this.getCompositeRepoPath(runId, repoId);
         const branchName = this.getCompositeBranchName(repoId, runId);
         const repoGit = this.getGit(repo.path);
-        const base = baseBranch || (await repoGit.revparse(['HEAD'])).trim();
+        const base = (await repoGit.revparse(['HEAD'])).trim();
 
         await this.assertNoSymlinkComponents(path.parse(repoWtPath).root, repoWtPath, true);
         await fs.mkdir(path.dirname(repoWtPath), { recursive: true });

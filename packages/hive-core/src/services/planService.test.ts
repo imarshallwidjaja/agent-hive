@@ -109,6 +109,28 @@ describe('PlanService', () => {
     expect(service.isApproved(featureName)).toBe(true);
   });
 
+  it('rejects write, patch, and approval after feature completion without changing plan state', () => {
+    const featureName = 'completed-plan';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const revision = service.read(featureName)!.revision;
+    fs.writeFileSync(
+      path.join(featurePath, 'feature.json'),
+      JSON.stringify({ name: featureName, status: 'completed', createdAt: new Date().toISOString() }),
+    );
+    const before = fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf8');
+
+    expect(() => service.write(featureName, '# Reopened\n')).toThrow(/completed/i);
+    expect(() => service.patch(featureName, revision, [{
+      type: 'replace_section',
+      headingPath: ['Design Summary'],
+      content: '## Design Summary\n\nReopened.\n',
+    }])).toThrow(/completed/i);
+    expect(() => service.approve(featureName)).toThrow(/completed/i);
+    expect(fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf8')).toBe(before);
+    expect(service.isApproved(featureName)).toBe(false);
+  });
+
   it('read returns a deterministic revision and content hash', () => {
     const featureName = 'read-revision';
     setupFeature(featureName);

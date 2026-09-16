@@ -17,7 +17,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { AdhocWorktreeService, ConfigService, ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, ExecutionAttemptService, ExecutionFinalizationService, FeatureService, SessionService, TaskService, WorktreeService, resolveFeatureDirectoryName } from 'hive-core';
+import { AdhocWorktreeService, ConfigService, ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, ExecutionAttemptService, ExecutionFinalizationService, FeatureService, PlanService, SessionService, TaskService, WorktreeService, resolveFeatureDirectoryName } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 const ROOT_SESSION_CLIENT = {
@@ -1799,6 +1799,42 @@ Do it
     expect(new ExecutionAttemptService(testRoot).listAttempts()).toHaveLength(0);
   });
 
+  it('rejects every plan mutation after feature completion without reopening the feature', async () => {
+    const feature = 'completed-feature-plan-mutations';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_completed_feature_plan_mutations');
+    new FeatureService(testRoot).create(feature);
+    const plan = `# Plan\n\n## Discovery\n\nThis completed feature has enough documented discovery detail to pass plan validation before terminal-state checks.\n\n## Tasks\n`;
+    await hooks.tool!.hive_plan_write.execute({ feature, content: plan }, toolContext);
+    const planRead = JSON.parse(await hooks.tool!.hive_plan_read.execute({ feature }, toolContext) as string);
+    await hooks.tool!.hive_feature_complete.execute({ name: feature }, toolContext);
+    const featurePath = path.join(testRoot, '.hive', 'features', resolveFeatureDirectoryName(testRoot, feature));
+    const before = {
+      feature: fs.readFileSync(path.join(featurePath, 'feature.json'), 'utf8'),
+      plan: fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf8'),
+      attempts: fs.existsSync(path.join(testRoot, '.hive', 'execution-attempts.json'))
+        ? fs.readFileSync(path.join(testRoot, '.hive', 'execution-attempts.json'), 'utf8')
+        : undefined,
+    };
+
+    const results = await Promise.all([
+      hooks.tool!.hive_plan_write.execute({ feature, content: '# Invalid late write\n' }, toolContext),
+      hooks.tool!.hive_plan_patch.execute({ feature, expectedRevision: planRead.revision, operations: [{
+        type: 'insert_after_section', headingPath: ['Discovery'], content: '## Late Section\n\nLate patch.\n',
+      }] }, toolContext),
+      hooks.tool!.hive_plan_approve.execute({ feature }, toolContext),
+    ]);
+
+    for (const raw of results) {
+      expect(JSON.parse(raw as string)).toMatchObject({ success: false, reason: 'feature_completed', mutation: 'none', feature });
+    }
+    expect(fs.readFileSync(path.join(featurePath, 'feature.json'), 'utf8')).toBe(before.feature);
+    expect(fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf8')).toBe(before.plan);
+    expect(fs.existsSync(path.join(featurePath, 'approved'))).toBe(false);
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'execution-attempts.json'))
+      ? fs.readFileSync(path.join(testRoot, '.hive', 'execution-attempts.json'), 'utf8')
+      : undefined).toBe(before.attempts);
+  });
+
   it('serializes feature completion ahead of a concurrent task creation', async () => {
     const feature = 'completion-create-race';
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_completion_create_race');
@@ -1815,6 +1851,25 @@ Do it
     });
     expect(new FeatureService(testRoot).get(feature)?.status).toBe('completed');
     expect(new TaskService(testRoot).list(feature)).toHaveLength(0);
+  });
+
+  it('serializes feature completion ahead of concurrent plan approval', async () => {
+    const feature = 'completion-approval-race';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_completion_approval_race');
+    new FeatureService(testRoot).create(feature);
+    new PlanService(testRoot).write(feature, '# Plan\n');
+
+    const [completion, approval] = await Promise.all([
+      hooks.tool!.hive_feature_complete.execute({ name: feature }, toolContext),
+      hooks.tool!.hive_plan_approve.execute({ feature }, toolContext),
+    ]);
+
+    expect(completion).toContain('marked as completed');
+    expect(JSON.parse(approval as string)).toMatchObject({
+      success: false, reason: 'feature_completed', mutation: 'none', feature,
+    });
+    expect(new FeatureService(testRoot).get(feature)?.status).toBe('completed');
+    expect(new PlanService(testRoot).isApproved(feature)).toBe(false);
   });
 
   it('rejects explicitly blank feature arguments without completing the sole live feature', async () => {

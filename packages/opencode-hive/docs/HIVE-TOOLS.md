@@ -120,7 +120,7 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - Finalization persists intent first, then per-repository baseline/tree/result receipts, an immutable deterministic report receipt, generation-guarded disposition, and `finalized` last. Retry the exact same input after interruption. A commit can be adopted only when HEAD parent, tree, and exact message match the receipt; ambiguous HEAD movement requires explicit recovery.
 - Composite partial commits are not rolled back. The stopped claim remains reserved until every checkpoint completes.
 - The returned `reportPath` is authoritative. Task receipts live under the task's `reports/finalization-<operationId>.md`, and task `report.md` links the latest immutable receipt. Ad-hoc receipts live under `.hive/execution-reports/finalization-<operationId>.md` and have no task-local `report.md`.
-- On an unclassified finish failure, inspect the durable receipt, task state, and Git state. After confirming the prior call stopped, retry the identical finish input; changing it conflicts with the persisted immutable intent.
+- An unclassified finish failure returns `phase: 'finalization'`, `reasonCode: 'FINALIZATION_STATE_UNKNOWN'`, `mutation: 'unknown'`, `retryable: false`, and `action: 'inspect_state'`. Inspect the durable receipt, task or ad-hoc attempt state, and Git state. After confirming the prior call stopped, retry the identical finish input; changing it conflicts with the persisted immutable intent.
 
 #### hive_execution_prepare output
 
@@ -140,7 +140,7 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 
 ### Integration (3 tools)
 
-These tools are for isolated ad-hoc orchestration work. They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`.
+`hive_merge` integrates a finalized feature-task worktree. The ad-hoc tools operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records; ad-hoc runs do not appear in `hive_status`. In-place feature and ad-hoc executions have no Hive integration step.
 
 | Tool | Purpose |
 |------|---------|
@@ -158,7 +158,7 @@ These tools are for isolated ad-hoc orchestration work. They operate on `.hive/.
 - `hive_adhoc_merge` returns `commitMessage` when it creates a merge/squash commit.
 - A failed non-preserved integration restores the affected target repository to its original HEAD and clean state. `preserveConflicts: true` retains only an actual conflict state. Ad-hoc merge uses the same operation-scoped integration lock as `hive_merge`.
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID. Cleanup never cancels execution and is refused while the source worktree has a live or unobserved claim.
-- Ad-hoc prepare, finish, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)) when classified. An unclassified finish failure reports `phase: 'finalization'`, `reasonCode: 'FINALIZATION_STATE_UNKNOWN'`, `mutation: 'unknown'`, `retryable: false`, and `action: 'inspect_state'`; inspect the receipt, task state, and Git state before retrying the identical finish input. Unclassified merge and cleanup errors use the operation phase's conservative `inspect_state` classification. Unclassified prepare errors keep their tool-specific fallback fields. See that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
+- Ad-hoc prepare, finish, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)) when classified. An unclassified finish failure reports `phase: 'finalization'`, `reasonCode: 'FINALIZATION_STATE_UNKNOWN'`, `mutation: 'unknown'`, `retryable: false`, and `action: 'inspect_state'`; inspect the receipt, ad-hoc attempt state, and Git state before retrying the identical finish input. Unclassified merge and cleanup errors use the operation phase's conservative `inspect_state` classification. Unclassified prepare errors keep their tool-specific fallback fields. See that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
 
 ### Background Orchestration (4 tools)
 

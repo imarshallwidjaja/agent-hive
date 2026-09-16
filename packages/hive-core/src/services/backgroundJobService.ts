@@ -1,7 +1,6 @@
 import * as path from 'path';
 import { acquireLockSync, getHivePath, readJson, writeJsonAtomic } from '../utils/paths.js';
 import type {
-  BackgroundJobOwnership,
   BackgroundJobRecord,
   BackgroundJobRuntimeState,
   BackgroundJobsJson,
@@ -14,13 +13,9 @@ export interface RegisterBackgroundJobInput {
   sessionId: string;
   callId?: string;
   agentName: string;
-  customAgentBase?: string;
   description?: string;
-  objective?: string;
   runtimeId?: string;
-  scopeSource?: BackgroundJobRecord['scopeSource'];
   scope?: BackgroundJobScope;
-  ownership?: BackgroundJobOwnership;
 }
 
 export interface RuntimeStatePatch {
@@ -138,17 +133,13 @@ export class BackgroundJobService {
         sessionId: input.sessionId,
         callId: input.callId,
         agentName: input.agentName,
-        customAgentBase: input.customAgentBase,
         description: input.description,
-        objective: input.objective,
         runtimeId: input.runtimeId,
         createdAt: now,
         updatedAt: now,
         runtimeState: 'running',
-        scopeSource: input.scopeSource,
         alias: this.nextAlias(board, input.scope?.parentSessionId),
         scope: input.scope,
-        ownership: input.ownership,
       };
 
       board.jobs.push(record);
@@ -388,42 +379,6 @@ export class BackgroundJobService {
     const matches = board.jobs.filter(job => job.taskId === identifier || job.sessionId === identifier || job.alias === identifier);
     if (matches.length > 1) throw new Error(`Ambiguous background job identifier: ${identifier}`);
     return matches[0];
-  }
-
-  recordRetry(identifier: string, input: RegisterBackgroundJobInput): BackgroundJobRecord {
-    return this.updateBoard((board) => {
-      const original = this.findRecord(board, identifier);
-      if (board.jobs.some(job => job.taskId === input.taskId)) {
-        throw new Error(`Background job already registered for task ID: ${input.taskId}`);
-      }
-      if (board.jobs.some(job => job.sessionId === input.sessionId)) {
-        throw new Error(`Background job already registered for session ID: ${input.sessionId}`);
-      }
-
-      const now = new Date().toISOString();
-      const retry: BackgroundJobRecord = {
-        taskId: input.taskId,
-        sessionId: input.sessionId,
-        agentName: input.agentName,
-        customAgentBase: input.customAgentBase,
-        description: input.description,
-        objective: input.objective,
-        runtimeId: input.runtimeId,
-        createdAt: now,
-        updatedAt: now,
-        runtimeState: 'running',
-        scopeSource: 'retry',
-        retryOf: original.taskId,
-        alias: this.nextAlias(board, input.scope?.parentSessionId),
-        scope: input.scope,
-        ownership: input.ownership,
-      };
-
-      original.supersedes = retry.taskId;
-      original.updatedAt = now;
-      board.jobs.push(retry);
-      return retry;
-    });
   }
 
   formatForPrompt(filter: BackgroundJobScopeFilter = {}): string {

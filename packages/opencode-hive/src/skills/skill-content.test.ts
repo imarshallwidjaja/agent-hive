@@ -616,7 +616,8 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "blocked", summary, blocker })');
     expect(hiveSkill.indexOf('hive_execution_finish({ attemptId, status: "blocked", summary, blocker })'))
       .toBeLessThan(hiveSkill.indexOf('continueFromBlocked: true'));
-    expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "failed", summary })');
+    expect(hiveSkill).toContain('...(worktreeHasChanges ? { message:');
+    expect(hiveSkill).toContain('status: "failed"');
     expect(hiveSkill).toContain('strategy: "squash", message:');
     expect(hiveSkill).toContain('Do not call `hive_merge` again while preserved conflict state is active');
     expect(hiveSkill).not.toContain('hive_worktree_start');

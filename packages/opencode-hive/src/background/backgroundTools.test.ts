@@ -59,13 +59,6 @@ function registerScopedJob(
       feature: input.feature ?? 'feature-a',
       task: input.task ?? '01-task',
     },
-    ownership: {
-      worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'feature-a', '01-task'),
-      branch: 'hive/feature-a/01-task',
-      workerPromptPath: '.hive/features/feature-a/tasks/01-task/worker-prompt.md',
-      files: ['packages/opencode-hive/src/background/backgroundTools.ts'],
-      repoIds: ['root'],
-    },
   });
 }
 
@@ -87,11 +80,6 @@ function registerUnscopedJob(
       projectRoot: TEST_DIR,
       parentSessionId: input.parentSessionId ?? 'parent-1',
       primaryAgent: input.primaryAgent ?? 'hive-master',
-    },
-    ownership: {
-      worktreePath: path.join(TEST_DIR, '.hive', '.worktrees', 'unscoped', input.taskId),
-      branch: `hive/unscoped/${input.taskId}`,
-      repoIds: ['root'],
     },
   });
 }
@@ -615,7 +603,6 @@ describe('background management tools', () => {
       coordination: { cancelReason: 'operator stopped stale work' },
     });
     expect(accepted.job?.coordination.cancelRequestedAt).toBeDefined();
-    expect(service.resolve('cancel-task')?.ownership?.worktreePath).toContain('.hive/.worktrees/feature-a/01-task');
   });
 
   it('hive_background_cancel keeps runtime running when cancellation is not confirmed', async () => {

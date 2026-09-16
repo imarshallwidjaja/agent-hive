@@ -160,7 +160,7 @@ Require explicit dependency metadata for every generated subtask.
 | Swarm | Orchestrates execution. Delegates, spawns workers, verifies |
 | Hive Builder | Ad-hoc orchestrator for non-feature work; decomposes larger requests into coherent lane inventories and dependency waves, delegates non-trivial work, and tracks verification and integration. Parallel writers use distinct ad-hoc worktrees. Background mode only changes wait mode and board protocol. Available in both modes, not default |
 | Scout | Researches codebase + external docs/data |
-| Forager | Executes delegated work directly in the workspace selected by its prepared assignment |
+| Forager | Executes delegated work directly in the placement selected by `hive_execution_prepare` |
 | Hygienic | Reviews plan/code quality. OKAY/REJECT verdict |
 
 ### Data Model
@@ -373,7 +373,7 @@ For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decom
 4. Call `hive_status()` again; only while status remains exactly blocked, call `hive_execution_prepare` with `scope.continueFromBlocked: true` and put the decision in the native Forager `task.prompt`
 
 **CRITICAL**: Blocked continuation starts a NEW worker in the SAME worktree.
-The previous worker's progress is preserved. The operator decision belongs in the primary-authored prompt, not in a generated assignment.
+The previous worker's progress is preserved. The operator decision belongs in the fresh primary-authored native prompt.
 
 Failed or retry work starts only after the stopped attempt is finalized and status is re-checked. The new worker receives a concise self-contained handoff. An unobserved feature-task attempt remains quarantined; do not create an alternate placement. Compaction may re-anchor a currently running worker; it is not re-delegation. After compaction, recover managed context with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Keep exact IDs. Do not replay historical assignment bodies.
 

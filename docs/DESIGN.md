@@ -186,13 +186,8 @@ Contains task context for the executing agent:
 - Prior tasks (what came before)
 - Upcoming tasks (what comes after)
 
-### report.md (generated on task complete)
-Contains execution results:
-- Feature name, completion timestamp
-- Status (success/failed)
-- Summary (agent-provided)
-- Diff statistics (files changed, insertions, deletions)
-- List of modified files
+### Finalization reports
+Task finalization writes an immutable `reports/finalization-<operationId>.md` receipt and updates `report.md` with the same report plus a history link. Ad-hoc finalization writes `.hive/execution-reports/finalization-<operationId>.md` and has no task-local latest report. The returned `reportPath` is authoritative. Each report records the attempt, operation, disposition, primary-authored summary, and per-repository commit SHA or `NO_TRACKED_CHANGES`; blocked reports also record the blocker JSON.
 
 ## Worktree Isolation
 
@@ -359,6 +354,6 @@ Manual tasks are first-class task records, not loose notes.
 If a tool call fails mid-operation:
 1. Check `hive_status` to see current state
 2. Most operations leave state consistent (atomic file writes)
-3. If `hive_execution_finish` fails, inspect its durable receipt, task state, and Git state, then retry the identical finish input after confirming the prior call stopped
+3. If `hive_execution_finish` fails, inspect its durable receipt, task or ad-hoc attempt state, and Git state, then retry the identical finish input after confirming the prior call stopped
 4. Discard only an unconsumed arm or a finalized worktree attempt; attached, stopped, and uncertain attempts remain quarantined
 5. Partial merges require manual git intervention

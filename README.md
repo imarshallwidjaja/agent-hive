@@ -48,12 +48,15 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
    sync it. Hive creates the executable task records.
 4. Start execution with `/start-execution`. The primary selects `worktree` or
    `in_place` placement for each task, then tracks dependencies and progress.
-5. After exact native stop evidence, the originating primary calls
-   `hive_execution_finish` and inspects the returned report path.
-6. Inspect finalized output, then merge completed worktree task branches. An
-   in-place task has no Hive Git merge step.
-7. Run fresh build/test verification against the merged result.
-8. Mark the feature complete only after that merged-result verification passes.
+5. Each worker runs task-level, best-effort checks in its isolated Git worktree
+   or explicit in-place directory. After exact native stop evidence, the
+   originating primary calls `hive_execution_finish`. The operator/orchestrator
+   inspects completed worker output and the returned report path.
+6. Merge completed worktree task branches. An in-place task has no Hive Git
+   merge step.
+7. Run fresh build/test verification against the merged worktree result or the
+   live in-place target.
+8. Mark the feature complete only after that target verification passes.
 
 ## What you can run
 
@@ -86,7 +89,7 @@ are in both modes.
 | `hive-master` | Hybrid planner and orchestrator. Unified-mode default. |
 | `hive-builder` | Ad-hoc orchestrator. No feature or task DAG. |
 | `scout-researcher` | Retrieves bounded source evidence; does not own diagnosis, tradeoffs, or solution selection. |
-| `forager-worker` | Implements in the workspace selected by its prepared assignment; diagnosis-only assignments are report-only. Never delegates. |
+| `forager-worker` | Implements in the placement selected by `hive_execution_prepare`; diagnosis-only work is report-only. Never delegates. |
 | `plan-reviewer` | Checks whether a plan is worker-executable. |
 | `code-reviewer` | Checks an implementation against the task or plan. |
 | `simplicity-reviewer` | Deletion-biased cleanup of a completed diff. |

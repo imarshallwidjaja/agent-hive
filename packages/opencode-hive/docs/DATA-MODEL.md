@@ -30,7 +30,12 @@
             └── {NN-task-name}/
                 ├── status.json  # Task state + metadata
                 ├── spec.md      # Task context and requirements
-                └── report.md    # Execution summary and results
+                ├── report.md    # Latest report plus immutable-history link
+                └── reports/
+                    └── finalization-{operationId}.md # Immutable receipt
+
+.hive/execution-reports/
+    └── finalization-{operationId}.md # Ad-hoc immutable receipt
 
 .hive/.worktrees/              # Isolated git worktrees
     ├── {feature}/{task}/       # Task-backed: full repo copy for safe execution
@@ -50,7 +55,7 @@ Single-repo projects use the git root directly; multi-repo topology, when needed
 
 A **live claim** maps exact worktree identity to the active attempt ID. In-place placement creates no exclusive filesystem claim. Composite claims cover the explicit registered worktree set. Two executions conflict when those identity sets intersect. One exact registered worktree may have only one managed writer at a time.
 
-Persisted history is not proof that an execution is still alive. After restart, unattached arms close as `not_started` because no native call could have crossed the durable attachment boundary; attached attempts remain quarantined until exact stop evidence arrives. Unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
+Persisted history is not proof that an execution is still alive. After restart, unattached arms close as `not_started` because no native call could have crossed the durable attachment boundary; attached attempts remain quarantined until exact stop evidence arrives. Migrated dispatched attempts are attached with `background: 'unknown'` unless one exact board record proves blocking or background mode; unknown mode accepts only exact structured background terminal evidence. Unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
 
 A feature-task worktree remains quarantined through `stopped` until the originating primary finalizes it. An unobserved feature-task execution cannot be moved to an alternate placement or force-discarded. For ad-hoc work, retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
 
@@ -208,7 +213,7 @@ Feature statuses (FeatureStatusType):
 - `planning`: Plan being written/reviewed
 - `approved`: Plan approved, ready for execution
 - `executing`: Tasks being executed
-- `completed`: All tasks done, feature complete
+- `completed`: Terminal state; all later plan and task mutations are rejected
 
 ## hive_status Output
 
@@ -341,7 +346,7 @@ Every catalog delivery and compaction replay revalidates the current runtime roo
 
 Once an ad-hoc run or execution workspace is bound, ordinary session patches cannot change its root, task, feature, parent, or agent classification. Dispatch and compaction use the authenticated `ExecutionAttempt` scope. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation.
 
-One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory`. Exact worktree-path, non-placeholder, non-capability leases become unobserved dispatched ExecutionAttempt claims once. This is not an ongoing second admission API. Live claims live with ExecutionAttempt records, not with a lease array on `sessions.json`.
+One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory`. Exact worktree-path, non-placeholder, non-capability leases become unobserved attached ExecutionAttempt claims once with fail-closed `background: 'unknown'` unless exact board evidence classifies the launch. This is not an ongoing second admission API. Live claims live with ExecutionAttempt records, not with a lease array on `sessions.json`.
 
 ## Migration from Legacy
 

@@ -1567,6 +1567,21 @@ describe('README.md documentation', () => {
   const vscodeReadmeContent = readFileSync(VSCODE_README_PATH, 'utf-8');
   const PHILOSOPHY_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'PHILOSOPHY.md');
   const philosophyContent = readFileSync(PHILOSOPHY_PATH, 'utf-8');
+  const AGENTS_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'AGENTS.md');
+  const agentsContent = readFileSync(AGENTS_PATH, 'utf-8');
+
+  it('keeps removed assignment-artifact authority out of active prompts and docs', () => {
+    for (const content of [
+      HIVE_BUILDER_PROMPT,
+      SWARM_BEE_PROMPT,
+      rootReadmeContent,
+      philosophyContent,
+      agentsContent,
+    ]) {
+      expect(content).not.toContain('prepared assignment');
+      expect(content).not.toContain('worker-prompt.md');
+    }
+  });
 
   describe('grilling command docs alignment', () => {
     it('documents the separate-action, destination, and unavailable-research boundaries', () => {

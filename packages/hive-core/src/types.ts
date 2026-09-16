@@ -437,26 +437,15 @@ export interface BackgroundJobScope {
   projectRoot?: string;
 }
 
-export interface BackgroundJobOwnership {
-  worktreePath?: string;
-  branch?: string;
-  workerPromptPath?: string;
-  files?: string[];
-  repoIds?: string[];
-}
-
 export interface BackgroundJobRecord {
   taskId: string;
   sessionId: string;
   callId?: string;
   agentName: string;
-  customAgentBase?: string;
   description?: string;
-  objective?: string;
   createdAt: string;
   updatedAt: string;
   runtimeState: BackgroundJobRuntimeState;
-  scopeSource?: 'native-fallback' | 'retry';
   runtimeId?: string;
   terminalUnreconciled?: boolean;
   statusUncertain?: boolean;
@@ -477,11 +466,8 @@ export interface BackgroundJobRecord {
   promptNotifiedInSessionId?: string;
   promptAcknowledgedAt?: string;
   promptBoardInjectionCount?: number;
-  retryOf?: string;
-  supersedes?: string;
   alias: string;
   scope?: BackgroundJobScope;
-  ownership?: BackgroundJobOwnership;
 }
 
 export function isBackgroundJobArchived(job: { archivedAt?: string; ignoredAt?: string; reconciledAt?: string }): boolean {

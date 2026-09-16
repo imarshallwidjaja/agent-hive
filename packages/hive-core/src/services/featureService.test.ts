@@ -155,4 +155,14 @@ describe('FeatureService', () => {
     expect(result.status).toBe('archived');
     expect(result.archivedAt).toBeDefined();
   });
+
+  it('does not reopen or archive a completed feature', () => {
+    setupFeature('terminal-feature');
+    service.complete('terminal-feature');
+    const before = service.get('terminal-feature');
+
+    expect(() => service.updateStatus('terminal-feature', 'planning')).toThrow(/cannot be reopened/i);
+    expect(() => service.archive('terminal-feature')).toThrow(/cannot be archived/i);
+    expect(service.get('terminal-feature')).toEqual(before);
+  });
 });

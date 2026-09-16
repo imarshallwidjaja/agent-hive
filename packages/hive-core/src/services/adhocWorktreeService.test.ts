@@ -130,6 +130,7 @@ describe("AdhocWorktreeService.create", () => {
       path.join(fixture.hiveDir, ".worktrees", "adhoc", result.runId),
     );
     expect(result.branch).toBe(`hive/adhoc/${result.runId}`);
+    expect(result.commit).toBe((await fixture.repoGit.revparse(['HEAD'])).trim());
     expect(await pathExists(result.path)).toBe(true);
     expect(await branchExists(fixture.repoGit, result.branch)).toBe(true);
   });

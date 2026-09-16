@@ -238,7 +238,6 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
           agentName: event.args.subagent_type ?? 'unknown',
           description: event.args.description,
           runtimeId: options.runtimeId,
-          scopeSource: 'native-fallback',
           scope: {
             projectRoot: options.projectRoot,
             parentSessionId: event.parentSessionId,
@@ -427,7 +426,6 @@ function formatPromptBoard(jobs: BackgroundJobRecord[]): string {
       job.terminalUnreconciled ? 'terminal unreconciled' : undefined,
       job.cancelReason ? `cancel requested: ${singleLine(job.cancelReason)}` : undefined,
       job.staleAt ? 'stale/orphan recovery' : undefined,
-      job.retryOf ? `retry of ${job.retryOf}` : undefined,
     ].filter(Boolean).join('; ') || 'none';
     const scope = [job.scope?.feature, job.scope?.task, job.scope?.adHocRunId, job.scope?.workflow].filter(Boolean).join('/');
 

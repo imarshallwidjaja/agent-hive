@@ -355,9 +355,17 @@ export class PlanService {
   private withPlanStateLock<T>(featureName: string, fn: () => T): T {
     const releaseLock = acquirePlanPatchLock(this.projectRoot, featureName);
     try {
+      this.assertFeatureMutable(featureName);
       return fn();
     } finally {
       releaseLock();
+    }
+  }
+
+  private assertFeatureMutable(featureName: string): void {
+    const feature = readJson<FeatureJson>(getFeatureJsonPath(this.projectRoot, featureName));
+    if (feature?.status === 'completed') {
+      throw new Error(`Feature '${featureName}' is completed and cannot be modified`);
     }
   }
 
@@ -414,6 +422,7 @@ export class PlanService {
   ): PlanPatchResult {
     const releaseLock = acquirePlanPatchLock(this.projectRoot, featureName);
     try {
+      this.assertFeatureMutable(featureName);
       const planPath = getPlanPath(this.projectRoot, featureName);
       const content = readText(planPath);
 

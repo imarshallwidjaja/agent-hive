@@ -36,24 +36,17 @@ class BackgroundJobItem extends vscode.TreeItem {
     super(job.alias || job.taskId, vscode.TreeItemCollapsibleState.None)
     this.taskId = job.taskId
     this.alias = job.alias
-    this.description = [job.agentName, job.runtimeState, presentation.statusLabel || job.objective || job.description]
+    this.description = [job.agentName, job.runtimeState, presentation.statusLabel || job.description]
       .filter(Boolean)
       .join(' · ')
     this.tooltip = getJobTooltip(job)
     this.contextValue = isBackgroundJobArchived(job) ? 'background-job-archived' : 'background-job-archiveable'
     this.iconPath = new vscode.ThemeIcon(presentation.iconId)
-    const relatedPath = getRelatedPath(job, workspaceRoot)
-    this.command = relatedPath
-      ? {
-          command: 'hive.openFile',
-          title: 'Open Background Job Context',
-          arguments: [relatedPath],
-        }
-      : {
-          command: 'hive.openBackgroundJobInBoard',
-          title: 'Open Background Job Record',
-          arguments: [boardPath, job.taskId],
-        }
+    this.command = {
+      command: 'hive.openBackgroundJobInBoard',
+      title: 'Open Background Job Record',
+      arguments: [boardPath, job.taskId],
+    }
     this.copyCommand = {
       command: 'hive.copyToClipboard',
       title: 'Copy Background Job ID',
@@ -147,12 +140,6 @@ export class BackgroundJobsProvider implements vscode.TreeDataProvider<Backgroun
   }
 }
 
-function getRelatedPath(job: BackgroundJobRecord, workspaceRoot: string): string | null {
-  const relatedPath = job.ownership?.workerPromptPath ?? job.ownership?.worktreePath
-  if (!relatedPath) return null
-  return path.isAbsolute(relatedPath) ? relatedPath : path.resolve(workspaceRoot, relatedPath)
-}
-
 function getJobPresentation(job: BackgroundJobRecord): BackgroundJobPresentation {
   const cancellationHistory = job.cancelRequestedAt ? 'cancel requested' : undefined
 
@@ -235,14 +222,11 @@ function getJobTooltip(job: BackgroundJobRecord): string {
     `Alias: ${job.alias}`,
     `Agent: ${job.agentName}`,
     `Runtime: ${job.runtimeState}`,
-    job.objective ? `Objective: ${job.objective}` : undefined,
     job.description ? `Description: ${job.description}` : undefined,
     job.cancelReason ? `Cancel reason: ${job.cancelReason}` : undefined,
     job.resultSummary ? `Result: ${job.resultSummary}` : undefined,
     job.scope?.feature ? `Feature: ${job.scope.feature}` : undefined,
     job.scope?.task ? `Task: ${job.scope.task}` : undefined,
-    job.ownership?.worktreePath ? `Worktree: ${job.ownership.worktreePath}` : undefined,
-    job.ownership?.workerPromptPath ? `Worker prompt: ${job.ownership.workerPromptPath}` : undefined,
   ]
 
   return lines.filter(Boolean).join('\n')

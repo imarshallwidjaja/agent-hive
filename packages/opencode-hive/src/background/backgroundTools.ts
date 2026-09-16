@@ -503,7 +503,6 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
     alias: job.alias,
     agentName: job.agentName,
     description: job.description,
-    objective: job.objective,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     runtime: pruneUndefined({
@@ -519,7 +518,6 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
       promptNotifiedInSessionId: job.promptNotifiedInSessionId,
       promptAcknowledgedAt: job.promptAcknowledgedAt,
       promptBoardInjectionCount: job.promptBoardInjectionCount,
-      scopeSource: job.scopeSource,
       cancelRequestedAt: job.cancelRequestedAt,
       cancelReason: job.cancelReason,
       reconciledAt: job.reconciledAt,
@@ -530,13 +528,10 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
       archivedAt: job.archivedAt,
       archiveReason: job.archiveReason,
       staleAt: job.staleAt,
-      retryOf: job.retryOf,
-      supersedes: job.supersedes,
       visibility,
       actionRequired,
     }),
     scope: job.scope,
-    ownership: job.ownership,
   };
 }
 
