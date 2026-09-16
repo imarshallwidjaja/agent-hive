@@ -1409,7 +1409,9 @@ describe('Forager (Worker/Coder) prompt', () => {
   });
 
   it('directs forager to honor declared repository scope and escalate out-of-scope files through the blocker protocol', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('declared repository paths');
+    expect(FORAGER_BEE_PROMPT).toContain('When the injected Hive execution scope includes a `## Declared Repositories` table');
+    expect(FORAGER_BEE_PROMPT).toContain('those exact repository paths define the writable boundary');
+    expect(FORAGER_BEE_PROMPT).not.toContain('the worker prompt includes a `## Declared Repositories` table');
     expect(FORAGER_BEE_PROMPT).toContain('out of scope');
     expect(FORAGER_BEE_PROMPT).toContain('blocker protocol');
   });

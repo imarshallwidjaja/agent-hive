@@ -263,6 +263,25 @@ describe('current documentation contract', () => {
     assert.match(reviewOptions, /\/vuln-review[\s\S]{0,220}does not[\s\S]{0,80}edit source[\s\S]{0,80}automatic fixes/i);
   });
 
+  it('keeps active execution and repository-manifest contracts current', () => {
+    const changelog = readText('CHANGELOG.md');
+    const unreleasedStart = changelog.indexOf('## [Unreleased]');
+    const unreleasedEnd = changelog.indexOf('\n## [', unreleasedStart + 1);
+    assert.notEqual(unreleasedStart, -1, 'missing Unreleased changelog section');
+    const unreleased = changelog.slice(unreleasedStart, unreleasedEnd === -1 ? undefined : unreleasedEnd);
+    const design = readText('docs/DESIGN.md');
+
+    assert.match(unreleased, /hive_execution_prepare/);
+    assert.match(unreleased, /hive_execution_finish/);
+    assert.match(unreleased, /unobserved feature-task attempt remains quarantined/i);
+    assert.match(unreleased, /unobserved ad-hoc run cannot be reused/i);
+    for (const removed of ['hive_launch_id', 'launchId', 'hive_adhoc_worktree_start', 'attemptSlot']) {
+      assert.doesNotMatch(unreleased, new RegExp(removed));
+    }
+    assert.match(design, /fails worktree placement, worktree finalization, and merge/i);
+    assert.match(design, /In-place placement and finalization still require an explicit existing directory/i);
+  });
+
   it('keeps detailed compatibility and operator contracts in the package README', () => {
     const pluginReadme = readText('packages/opencode-hive/README.md');
 

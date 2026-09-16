@@ -487,7 +487,6 @@ type HelperAuthBind = {
   parentSessionID: string;
   callID: string;
   agent: string;
-  capabilityReason?: string;
   childSessionID?: string;
 };
 
@@ -2541,34 +2540,18 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
   const invalidAdhocArgumentsResponse = (
     toolName: string,
     fields: string[],
-    options: { runId?: string; reuseCreateIdentity?: boolean } = {},
   ): string => {
     const classification = classifyWorktreeOutcome('INVALID_ARGUMENTS');
     const detail = `Missing or blank required argument(s) for ${toolName}: ${fields.join(', ')}.`;
     return respond({
       success: false,
       reason: 'invalid_arguments',
-      ...(options.runId !== undefined ? { runId: options.runId } : {}),
       error: detail,
       message: detail,
       ...worktreeOutcomeFields(classification),
-      nextAction: options.reuseCreateIdentity
-        ? `${worktreeNextAction(classification.action)} Reuse the exact runId, workspacePath, and branch values returned by hive_execution_prepare.`
-        : worktreeNextAction(classification.action),
+      nextAction: worktreeNextAction(classification.action),
     });
   };
-
-  const describeInvalidStringArguments = (
-    args: Array<{ name: string; value: unknown }>,
-  ): string[] => args
-    .filter((arg) => !isNonBlankString(arg.value))
-    .map((arg) => arg.name);
-
-  const describeNonStringArguments = (
-    args: Array<{ name: string; value: unknown }>,
-  ): string[] => args
-    .filter((arg) => arg.value !== undefined && arg.value !== null && typeof arg.value !== 'string')
-    .map((arg) => arg.name);
 
   type WritableLaunchTarget = {
     label: string;
@@ -2693,15 +2676,13 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     attemptSlot: string | undefined,
     finalizedAttempt: ExecutionAttempt,
     options: { resetTaskPending: boolean },
-  ): Promise<void> => {
-    const worktree = await worktreeService.get(feature, task, attemptSlot);
+  ) => {
+    if (finalizedAttempt.placement.kind !== 'worktree') {
+      throw new WorktreeTopologyMismatchError(`Execution ${finalizedAttempt.id} does not have a worktree placement`);
+    }
     const projectRoot = fs.realpathSync(directory);
-    const resourcePaths = worktree
-      ? worktree.repos
-        ? Object.values(worktree.repos).map(repo => fs.realpathSync(repo.path))
-        : [fs.realpathSync(worktree.workspacePath ?? worktree.path)]
-      : [normalizeResourcePath(worktreeService.getWorktreePath(feature, task, attemptSlot))];
-    await withWritableOperation({
+    const resourcePaths = finalizedAttempt.placement.workspaceIdentities.map(normalizeResourcePath);
+    return withWritableOperation({
       projectRoot,
       feature,
       task,
@@ -2710,6 +2691,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       label: `feature task '${feature}/${task}'`,
       checkSourceClaim: false,
     }, async () => {
+      if (featureService.get(feature)?.status === 'completed') {
+        return { featureCompleted: true as const };
+      }
       let current = executionAttemptService.getAttempt(finalizedAttempt.id);
       const currentTask = executionAttemptService.currentTaskAttempt(feature, task);
       if (!current
@@ -2723,10 +2707,11 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       if (current.phase !== 'finalized' || !(await placementMatchesRegisteredWorktree(current))) {
         throw new WorktreeTopologyMismatchError(`Finalized execution ${current.id} no longer matches the registered worktree placement`);
       }
-      await worktreeService.remove(feature, task, false, {}, attemptSlot);
-      if (options.resetTaskPending) {
+      const removal = await worktreeService.remove(feature, task, false, {}, attemptSlot);
+      if (options.resetTaskPending && removal.cleanup.outcome === 'complete') {
         taskService.update(feature, task, { status: 'pending' });
       }
+      return { featureCompleted: false as const, removal };
     });
   };
   const unfinishedAttemptsPayload = () => executionAttemptService.listAttempts()
@@ -2814,11 +2799,24 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         const failure = getFeatureResolutionFailure('feature', input.scope.feature);
         return respond({ success: false, reason: failure.reason, error: failure.error, candidates: failure.candidates });
       }
-      const taskInfo = taskService.get(feature, input.scope.task);
-      if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature, task: input.scope.task });
       if (featureService.get(feature)?.status === 'completed') {
         return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature, task: input.scope.task });
       }
+      const blocked = checkBlocked(feature);
+      if (blocked) {
+        return respond({
+          ok: false,
+          terminal: true,
+          success: false,
+          reason: 'feature_blocked',
+          mutation: 'none',
+          feature,
+          task: input.scope.task,
+          error: blocked,
+        });
+      }
+      const taskInfo = taskService.get(feature, input.scope.task);
+      if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature, task: input.scope.task });
       if (input.scope.continueFromBlocked === true && taskInfo.status !== 'blocked') {
         return respond({
           success: false,
@@ -2907,6 +2905,19 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature: scope.feature, task: scope.task });
         if (featureService.get(scope.feature)?.status === 'completed') {
           return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature: scope.feature, task: scope.task });
+        }
+        const blocked = checkBlocked(scope.feature);
+        if (blocked) {
+          return respond({
+            ok: false,
+            terminal: true,
+            success: false,
+            reason: 'feature_blocked',
+            mutation: 'none',
+            feature: scope.feature,
+            task: scope.task,
+            error: blocked,
+          });
         }
         if (input.scope.continueFromBlocked === true && taskInfo.status !== 'blocked') {
           return respond({
@@ -3028,10 +3039,41 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       }
     } else if (input.placement.kind === 'worktree' && scope.kind === 'adhoc') {
       const { runId } = scope;
+      const requestedRepoIds = normalizeOptionalStringList(input.placement.repoIds) ?? ['root'];
+      const latestAttempt = latestAdhocAttempt(runId);
+      if (latestAttempt?.placement.kind === 'worktree') {
+        const registeredRepoIds = latestAttempt.placement.repositories?.map(repository => repository.id);
+        const matchesFinalizedSelection = registeredRepoIds !== undefined
+          && requestedRepoIds.length === registeredRepoIds.length
+          && requestedRepoIds.every((repoId, index) => repoId === registeredRepoIds[index]);
+        if (!matchesFinalizedSelection) {
+          return respond({
+            success: false,
+            reason: 'workspace_conflict_denied',
+            mutation: 'none',
+            attemptId: latestAttempt.id,
+            phase: latestAttempt.phase,
+            error: 'The ad-hoc run is bound to a different repository selection. Use a new runId for different repoIds.',
+          });
+        }
+      }
       const existing = await adhocWorktreeService.get(runId);
+      if (existing) {
+        const registeredRepoIds = existing.repos ? Object.keys(existing.repos) : ['root'];
+        const matchesRegisteredSelection = requestedRepoIds.length === registeredRepoIds.length
+          && requestedRepoIds.every((repoId, index) => repoId === registeredRepoIds[index]);
+        if (!matchesRegisteredSelection) {
+          return respond({
+            success: false,
+            reason: 'workspace_conflict_denied',
+            mutation: 'none',
+            error: 'The registered ad-hoc worktree uses different repoIds. Use a new runId for a different repository selection.',
+          });
+        }
+      }
       const info = existing ?? await adhocWorktreeService.create({
         runId,
-        repoIds: normalizeOptionalStringList(input.placement.repoIds),
+        repoIds: requestedRepoIds[0] === 'root' && requestedRepoIds.length === 1 ? undefined : requestedRepoIds,
       });
       const workspacePath = fs.realpathSync(info.workspacePath ?? info.path);
       const repositories = info.repos
@@ -6077,9 +6119,41 @@ NEXT: Ask your first clarifying question about this feature.`;
             }
             if (!isCurrentDiscard && requested) {
               const requestedSlot = requested.placement.kind === 'worktree' ? requested.placement.attemptSlot : undefined;
-              await discardTaskWorktreeSlot(feature, task, requestedSlot, discardAttempt, {
+              const discarded = await discardTaskWorktreeSlot(feature, task, requestedSlot, discardAttempt, {
                 resetTaskPending: false,
               });
+              if (discarded.featureCompleted) {
+                return respond({
+                  ok: false,
+                  terminal: true,
+                  success: false,
+                  reason: 'feature_completed',
+                  mutation: 'none',
+                  feature,
+                  task,
+                  attemptId: requested.id,
+                  error: 'Completed features are immutable; no worktree was removed.',
+                });
+              }
+              if (discarded.removal.cleanup.outcome !== 'complete') {
+                const classification = classifyWorktreeOutcome(
+                  'CLEANUP_FAILED',
+                  discarded.removal.cleanup.outcome === 'partial' ? 'partial' : 'none',
+                );
+                return respond({
+                  ok: false,
+                  terminal: true,
+                  success: false,
+                  reason: 'worktree_cleanup_incomplete',
+                  feature,
+                  task,
+                  attemptId: requested.id,
+                  currentTaskUnchanged: true,
+                  cleanup: discarded.removal.cleanup,
+                  ...worktreeOutcomeFields(classification),
+                  nextAction: worktreeNextAction(classification.action),
+                });
+              }
               return respond({
                 ok: true,
                 success: true,
@@ -6095,7 +6169,41 @@ NEXT: Ask your first clarifying question about this feature.`;
             const attemptSlot = discardAttempt.placement.kind === 'worktree'
               ? discardAttempt.placement.attemptSlot
               : undefined;
-            await discardTaskWorktreeSlot(feature, task, attemptSlot, discardAttempt, { resetTaskPending: true });
+            const discarded = await discardTaskWorktreeSlot(
+              feature, task, attemptSlot, discardAttempt, { resetTaskPending: true },
+            );
+            if (discarded.featureCompleted) {
+              return respond({
+                ok: false,
+                terminal: true,
+                success: false,
+                reason: 'feature_completed',
+                mutation: 'none',
+                feature,
+                task,
+                attemptId: discardAttempt.id,
+                error: 'Completed features are immutable; no worktree was removed and task state is unchanged.',
+              });
+            }
+            if (discarded.removal.cleanup.outcome !== 'complete') {
+              const classification = classifyWorktreeOutcome(
+                'CLEANUP_FAILED',
+                discarded.removal.cleanup.outcome === 'partial' ? 'partial' : 'none',
+              );
+              return respond({
+                ok: false,
+                terminal: true,
+                success: false,
+                reason: 'worktree_cleanup_incomplete',
+                feature,
+                task,
+                attemptId: discardAttempt.id,
+                taskStatePreserved: true,
+                cleanup: discarded.removal.cleanup,
+                ...worktreeOutcomeFields(classification),
+                nextAction: worktreeNextAction(classification.action),
+              });
+            }
           } catch (error: unknown) {
             const fenced = writerFenceResponse(error);
             if (fenced) return fenced;

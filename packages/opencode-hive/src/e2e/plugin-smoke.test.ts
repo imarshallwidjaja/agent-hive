@@ -5053,6 +5053,92 @@ describe('managed execution attachment', () => {
     },
   );
 
+  it('rejects a feature BLOCKED marker before worktree admission without mutation', async () => {
+    const feature = 'blocked-before-admission';
+    const { hooks, context } = await harness(root, 'primary-blocked-before');
+    await seedFeature(hooks, context, feature);
+    const featureDirectory = resolveFeatureDirectoryName(root, feature);
+    fs.writeFileSync(path.join(root, '.hive', 'features', featureDirectory, 'BLOCKED'), 'operator pause\n');
+    const taskBefore = new TaskService(root).getRawStatus(feature, '01-first-task');
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+
+    const denied = await prepareTask(hooks, context, feature);
+
+    expect(denied).toMatchObject({
+      ok: false,
+      terminal: true,
+      success: false,
+      reason: 'feature_blocked',
+      mutation: 'none',
+      feature,
+      task: '01-first-task',
+    });
+    expect(denied.error).toContain('operator pause');
+    expect(new TaskService(root).getRawStatus(feature, '01-first-task')).toEqual(taskBefore);
+    expect(new ExecutionAttemptService(root).listAttempts()).toEqual([]);
+    expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(worktreesBefore);
+  });
+
+  it('revalidates a feature BLOCKED marker after entering the preparation lock', async () => {
+    const feature = 'blocked-under-lock';
+    const { hooks, context } = await harness(root, 'primary-blocked-under-lock');
+    await seedFeature(hooks, context, feature);
+    const featureDirectory = resolveFeatureDirectoryName(root, feature);
+    const taskBefore = new TaskService(root).getRawStatus(feature, '01-first-task');
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+    const originalGet = WorktreeService.prototype.get;
+    let injected = false;
+    const get = spyOn(WorktreeService.prototype, 'get').mockImplementation(async function (...args) {
+      const result = await originalGet.apply(this, args);
+      if (!injected && args[0] === feature) {
+        injected = true;
+        fs.writeFileSync(path.join(root, '.hive', 'features', featureDirectory, 'BLOCKED'), 'lock pause\n');
+      }
+      return result;
+    });
+    try {
+      const denied = await prepareTask(hooks, context, feature);
+
+      expect(denied).toMatchObject({
+        ok: false, terminal: true, success: false, reason: 'feature_blocked', mutation: 'none',
+      });
+      expect(new TaskService(root).getRawStatus(feature, '01-first-task')).toEqual(taskBefore);
+      expect(new ExecutionAttemptService(root).listAttempts()).toEqual([]);
+      expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(worktreesBefore);
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it('removes a placement created while a feature becomes BLOCKED before arming', async () => {
+    const feature = 'blocked-placement-race';
+    const { hooks, context } = await harness(root, 'primary-blocked-placement-race');
+    await seedFeature(hooks, context, feature);
+    const featureDirectory = resolveFeatureDirectoryName(root, feature);
+    const taskBefore = new TaskService(root).getRawStatus(feature, '01-first-task');
+    const branchesBefore = execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' });
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+    const originalCreate = WorktreeService.prototype.create;
+    const create = spyOn(WorktreeService.prototype, 'create').mockImplementation(async function (...args) {
+      const result = await originalCreate.apply(this, args);
+      fs.writeFileSync(path.join(root, '.hive', 'features', featureDirectory, 'BLOCKED'), 'placement race pause\n');
+      return result;
+    });
+    try {
+      const denied = await prepareTask(hooks, context, feature);
+
+      expect(denied).toMatchObject({
+        ok: false, terminal: true, success: false, reason: 'feature_blocked', mutation: 'none',
+      });
+      expect(new TaskService(root).getRawStatus(feature, '01-first-task')).toEqual(taskBefore);
+      expect(new ExecutionAttemptService(root).listAttempts()).toEqual([]);
+      expect(execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' })).toBe(branchesBefore);
+      expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(worktreesBefore);
+    } finally {
+      create.mockRestore();
+    }
+  });
+
   it('revalidates blocked continuation after waiting and before placement creation', async () => {
     const feature = 'continue-race';
     const { hooks, context } = await harness(root, 'primary-continue-race');
@@ -5637,6 +5723,99 @@ describe('managed execution attachment', () => {
     expect(discard).toMatchObject({ success: false, reason: 'in_place_has_no_worktree', mutation: 'none' });
     expect(fs.existsSync(oldWorktree)).toBe(true);
     expect(execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' })).toContain(oldBranch);
+  });
+
+  it('discards a finalized task only after complete cleanup', async () => {
+    const fixture = await harness(root, 'primary-complete-discard');
+    await seedFeature(fixture.hooks, fixture.context, 'complete-discard');
+    const prepared = await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      'complete-discard', '01-first-task', 'complete-discard',
+    );
+
+    const discarded = await fixture.hooks.tool!.hive_worktree_discard.execute({
+      feature: 'complete-discard', task: '01-first-task',
+    }, fixture.context);
+
+    expect(discarded).toContain('Status reset to pending');
+    expect(new TaskService(root).getRawStatus('complete-discard', '01-first-task')?.status).toBe('pending');
+    expect(fs.existsSync(prepared.placement.workspacePath)).toBe(false);
+  });
+
+  it.each(['partial', 'failed'] as const)('preserves task and worktree state when discard cleanup is %s', async (outcome) => {
+    const feature = `${outcome}-discard`;
+    const fixture = await harness(root, `primary-${outcome}-discard`);
+    await seedFeature(fixture.hooks, fixture.context, feature);
+    const prepared = await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      feature, '01-first-task', feature,
+    );
+    const remove = spyOn(WorktreeService.prototype, 'remove').mockResolvedValue({
+      worktreeRemoved: outcome === 'partial',
+      branchDeleted: false,
+      pruned: false,
+      cleanup: {
+        requested: 'worktree',
+        outcome,
+        worktreeRemoval: outcome === 'partial'
+          ? { status: 'succeeded' }
+          : { status: 'failed', error: 'injected removal failure' },
+        branchDeletion: { status: 'not_requested' },
+        prune: { status: 'failed', error: 'injected prune failure' },
+        failures: outcome === 'partial'
+          ? [{ step: 'prune', cause: 'injected prune failure' }]
+          : [
+              { step: 'worktreeRemoval', cause: 'injected removal failure' },
+              { step: 'prune', cause: 'injected prune failure' },
+            ],
+      },
+    });
+    try {
+      const discarded = JSON.parse(await fixture.hooks.tool!.hive_worktree_discard.execute({
+        feature, task: '01-first-task',
+      }, fixture.context) as string);
+
+      expect(discarded).toMatchObject({
+        ok: false,
+        terminal: true,
+        success: false,
+        reason: 'worktree_cleanup_incomplete',
+        reasonCode: 'CLEANUP_FAILED',
+        mutation: outcome === 'partial' ? 'partial' : 'none',
+        taskStatePreserved: true,
+        cleanup: { outcome },
+      });
+      expect(new TaskService(root).getRawStatus(feature, '01-first-task')?.status).toBe('done');
+      expect(fs.existsSync(prepared.placement.workspacePath)).toBe(true);
+    } finally {
+      remove.mockRestore();
+    }
+  });
+
+  it('rejects discard after feature completion without mutating task or worktree state', async () => {
+    const fixture = await harness(root, 'primary-completed-feature-discard');
+    await seedFeature(fixture.hooks, fixture.context, 'completed-feature-discard');
+    const prepared = await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      'completed-feature-discard', '01-first-task', 'completed-feature-discard',
+    );
+    expect(await fixture.hooks.tool!.hive_feature_complete.execute({
+      name: 'completed-feature-discard',
+    }, fixture.context)).toContain('marked as completed');
+
+    const discarded = JSON.parse(await fixture.hooks.tool!.hive_worktree_discard.execute({
+      feature: 'completed-feature-discard', task: '01-first-task',
+    }, fixture.context) as string);
+
+    expect(discarded).toMatchObject({
+      ok: false,
+      terminal: true,
+      success: false,
+      reason: 'feature_completed',
+      mutation: 'none',
+    });
+    expect(new TaskService(root).getRawStatus('completed-feature-discard', '01-first-task')?.status).toBe('done');
+    expect(fs.existsSync(prepared.placement.workspacePath)).toBe(true);
   });
 
   it('lets two primaries prepare and attach different task worktrees', async () => {

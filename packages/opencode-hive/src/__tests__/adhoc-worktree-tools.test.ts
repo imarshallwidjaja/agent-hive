@@ -285,6 +285,62 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(fs.existsSync(path.join(first.placement.workspacePath, 'repos', 'web'))).toBe(false);
   });
 
+  it('binds a finalized ad-hoc retry to its repository selection after cleanup', async () => {
+    const repositories = initCompositeRepositories(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-finalized-selection');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'finalized-selection' },
+      placement: { kind: 'worktree', repoIds: ['api'] },
+    }, context) as string);
+    await hooks['tool.execute.before']!({
+      tool: 'task', sessionID: context.sessionID, callID: 'call-finalized-selection',
+    }, { args: { subagent_type: 'forager-worker', description: 'Finish selection', prompt: 'Do it.' } });
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-finalized-selection',
+      outputDefined: true,
+    });
+    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Finalize the selected repository without changes.',
+    }, context) as string)).toMatchObject({ success: true, phase: 'finalized' });
+    expect(JSON.parse(await hooks.tool!.hive_adhoc_cleanup.execute({
+      runId: 'finalized-selection',
+    }, context) as string)).toMatchObject({ success: true, cleanup: { outcome: 'complete' } });
+
+    const attemptsPath = path.join(TEST_ROOT, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+    const branchesBefore = Object.fromEntries(Object.entries(repositories).map(([id, repository]) => [
+      id,
+      execSync('git branch --format="%(refname:short)"', { cwd: repository, encoding: 'utf8' }),
+    ]));
+    const worktreesBefore = Object.fromEntries(Object.entries(repositories).map(([id, repository]) => [
+      id,
+      execSync('git worktree list --porcelain', { cwd: repository, encoding: 'utf8' }),
+    ]));
+
+    const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'finalized-selection' },
+      placement: { kind: 'worktree', repoIds: ['web'] },
+    }, context) as string);
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'workspace_conflict_denied',
+      mutation: 'none',
+      attemptId: prepared.attemptId,
+      phase: 'finalized',
+    });
+    expect(denied.error).toContain('Use a new runId');
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+    for (const [id, repository] of Object.entries(repositories)) {
+      expect(execSync('git branch --format="%(refname:short)"', { cwd: repository, encoding: 'utf8' })).toBe(branchesBefore[id]);
+      expect(execSync('git worktree list --porcelain', { cwd: repository, encoding: 'utf8' })).toBe(worktreesBefore[id]);
+    }
+    expect(fs.existsSync(path.join(prepared.placement.workspacePath, 'repos', 'web'))).toBe(false);
+  });
+
   it('removes a newly created rejected placement despite unrelated finalized history', async () => {
     initGit(TEST_ROOT);
     const liveDirectory = path.join(TEST_ROOT, 'live');

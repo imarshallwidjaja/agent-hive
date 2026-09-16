@@ -221,7 +221,7 @@ When `.hive/repositories.json` defines project repositories, tasks with a `Repos
 - Repository manifests are read from `<canonical-project-root>/.hive/repositories.json`
 - Repository paths are relative to the project root and must stay inside it
 - Matching legacy `repositoryRoot`/`repositories` global data is migration-only and is copied on explicit update, never during status or startup
-- A non-git project root without a matching manifest fails worktree placement, finish, and merge with a manifest-required error. In-place placement still requires an explicit existing directory and never invents Git semantics.
+- A non-git project root without a matching manifest fails worktree placement, worktree finalization, and merge with a manifest-required error. In-place placement and finalization still require an explicit existing directory and never invent Git semantics.
 
 **Manifest management tools:**
 - `hive_repositories_status` reports whether the project is using a manifest, legacy single-root mode, or is missing a required manifest
