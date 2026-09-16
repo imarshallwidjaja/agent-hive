@@ -779,8 +779,8 @@ describe('Hive (Hybrid) prompt', () => {
     });
 
     it('requires hive_status() before any blocked-continuation launch', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('After `task()` returns, immediately call `hive_status()`');
-      expect(QUEEN_BEE_PROMPT).toContain('before any blocked-continuation launch');
+      expect(QUEEN_BEE_PROMPT).toContain('call `hive_execution_finish` before `hive_status()`');
+      expect(QUEEN_BEE_PROMPT).toContain('second `hive_status()`');
     });
 
     it('allows blocked continuation only for exactly blocked tasks', () => {
@@ -1154,8 +1154,8 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('requires hive_status() before any blocked-continuation launch', () => {
-      expect(SWARM_BEE_PROMPT).toContain('After `task()` returns, call `hive_status()` immediately');
-      expect(SWARM_BEE_PROMPT).toContain('before any blocked-continuation launch');
+      expect(SWARM_BEE_PROMPT).toContain('call `hive_execution_finish` for the originating attempt before `hive_status()`');
+      expect(SWARM_BEE_PROMPT).toContain('second `hive_status()`');
     });
 
     it('allows blocked continuation only for exactly blocked tasks', () => {

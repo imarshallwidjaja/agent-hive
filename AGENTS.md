@@ -367,10 +367,10 @@ Feature task granularity remains separate: one implementation assignment normall
 For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decomposition, lane inventory, dependency waves, ready-lane placement, lane-level recovery, deterministic integration, and closure. `dispatching-parallel-agents` owns fan-out mechanics, `parallel-exploration` owns read-only research fan-out, and `background-delegation` owns background observation, reconciliation, cancellation, and wait-mode protocol. Feature escalation remains advisory. After rejection, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved; if one remains unresolved, ask the concrete blocking question before preparing workers.
 
 **Handling blocked task continuation:**
-1. Check blockers with `hive_status()`
-2. Read the blocker info (reason, options, recommendation, context)
-3. Ask user via `question()` tool - NEVER plain text
-4. Finalize the stopped attempt as blocked, re-check `hive_status()`, record the decision, call `hive_execution_prepare` with `scope.continueFromBlocked: true`, and put the decision in the native Forager `task.prompt`
+1. Observe exact stop evidence and finalize the stopped attempt with `hive_execution_finish({ status: "blocked", ... })`
+2. Call `hive_status()` and read the blocker info (reason, options, recommendation, context)
+3. Ask the user via `question()` - NEVER plain text - and record the decision
+4. Call `hive_status()` again; only while status remains exactly blocked, call `hive_execution_prepare` with `scope.continueFromBlocked: true` and put the decision in the native Forager `task.prompt`
 
 **CRITICAL**: Blocked continuation starts a NEW worker in the SAME worktree.
 The previous worker's progress is preserved. The operator decision belongs in the primary-authored prompt, not in a generated assignment.

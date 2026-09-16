@@ -1770,6 +1770,53 @@ Do it
     });
   });
 
+  it('rejects every task mutation after feature completion without changing task state', async () => {
+    const sessionID = 'sess_completed_feature_mutations';
+    const feature = 'completed-feature-mutations';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, sessionID);
+    new FeatureService(testRoot).create(feature);
+    const tasks = new TaskService(testRoot);
+    const task = tasks.create(feature, 'Existing task');
+    tasks.update(feature, task, { status: 'done', summary: 'Stable.' });
+    await hooks.tool!.hive_feature_complete.execute({ name: feature }, toolContext);
+    const statusPath = path.join(testRoot, '.hive', 'features', resolveFeatureDirectoryName(testRoot, feature), 'tasks', task, 'status.json');
+    const before = fs.readFileSync(statusPath, 'utf8');
+
+    const results = await Promise.all([
+      hooks.tool!.hive_task_create.execute({ feature, name: 'Late task' }, toolContext),
+      hooks.tool!.hive_tasks_sync.execute({ feature, refreshPending: true }, toolContext),
+      hooks.tool!.hive_task_update.execute({ feature, task, status: 'pending', summary: 'Late mutation.' }, toolContext),
+      hooks.tool!.hive_execution_prepare.execute({
+        scope: { kind: 'task', feature, task }, placement: { kind: 'in_place', directory: testRoot },
+      }, toolContext),
+    ]);
+
+    for (const raw of results) {
+      expect(JSON.parse(raw as string)).toMatchObject({ success: false, reason: 'feature_completed', mutation: 'none' });
+    }
+    expect(tasks.list(feature)).toHaveLength(1);
+    expect(fs.readFileSync(statusPath, 'utf8')).toBe(before);
+    expect(new ExecutionAttemptService(testRoot).listAttempts()).toHaveLength(0);
+  });
+
+  it('serializes feature completion ahead of a concurrent task creation', async () => {
+    const feature = 'completion-create-race';
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_completion_create_race');
+    new FeatureService(testRoot).create(feature);
+
+    const [completion, creation] = await Promise.all([
+      hooks.tool!.hive_feature_complete.execute({ name: feature }, toolContext),
+      hooks.tool!.hive_task_create.execute({ feature, name: 'Racing task' }, toolContext),
+    ]);
+
+    expect(completion).toContain('marked as completed');
+    expect(JSON.parse(creation as string)).toMatchObject({
+      success: false, reason: 'feature_completed', mutation: 'none', feature,
+    });
+    expect(new FeatureService(testRoot).get(feature)?.status).toBe('completed');
+    expect(new TaskService(testRoot).list(feature)).toHaveLength(0);
+  });
+
   it('rejects explicitly blank feature arguments without completing the sole live feature', async () => {
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_blank_explicit_feature');
     await hooks.tool!.hive_feature_create.execute({ name: 'still-live-feature' }, toolContext);
@@ -3473,10 +3520,14 @@ Original plan task four content must stay isolated from any append-only manual f
     const commitResult = JSON.parse(commitRaw as string) as {
       success?: boolean;
       phase?: string;
+      reportPath?: string;
     };
 
     expect(commitResult.success).toBe(true);
     expect(commitResult.phase).toBe('finalized');
+    expect(commitResult.reportPath).toMatch(new RegExp(`${path.sep}03-third-task${path.sep}reports${path.sep}finalization-[^${path.sep}]+\\.md$`));
+    expect(fs.existsSync(commitResult.reportPath!)).toBe(true);
+    expect(fs.existsSync(path.join(path.dirname(path.dirname(commitResult.reportPath!)), 'report.md'))).toBe(true);
 
     const thirdTaskWorktree = path.join(
       testRoot,
@@ -4279,7 +4330,7 @@ Do it.
     const webHead = execSync('git rev-parse HEAD', { cwd: path.join(testRoot, 'repos', 'web'), encoding: 'utf8' }).trim();
 
     const result = await finish();
-    expect(result).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(result).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'finalization', action: 'inspect_state' });
     expect(execSync('git rev-parse HEAD', { cwd: path.join(testRoot, 'repos', 'api'), encoding: 'utf8' }).trim()).toBe(apiHead);
     expect(execSync('git rev-parse HEAD', { cwd: path.join(testRoot, 'repos', 'web'), encoding: 'utf8' }).trim()).toBe(webHead);
   });
@@ -4298,7 +4349,7 @@ Do it.
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
     const result = await finish();
-    expect(result).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(result).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'finalization', action: 'inspect_state' });
     expect(execSync('git log --oneline', { cwd: path.join(testRoot, 'repos', 'api'), encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
     expect(execSync('git log --oneline', { cwd: path.join(testRoot, 'repos', 'web'), encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
   });
@@ -5462,7 +5513,7 @@ describe('managed execution attachment', () => {
       summary: 'Must fail before Git mutation.',
       message: TEST_COMMIT_MESSAGE,
     }, context) as string);
-    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'finalization', action: 'inspect_state' });
     expect(execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim()).toBe(projectHead);
   });
 
@@ -5487,7 +5538,7 @@ describe('managed execution attachment', () => {
       summary: 'Must reject the mismatched backlink.',
       message: TEST_COMMIT_MESSAGE,
     }, context) as string);
-    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'finalization', action: 'inspect_state' });
     expect(finalized.error).toMatch(/backlink/i);
     expect(execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim()).toBe(projectHead);
   });

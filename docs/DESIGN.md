@@ -139,10 +139,10 @@ When OpenCode emits a compaction event, Hive rebuilds a minimal re-anchor prompt
 - Primary and subagent sessions can restore the last real user directive through post-compaction replay, with `directiveRecoveryState` tracking whether recovery is still available for the current directive.
 - For primary/subagent sessions the state machine is `available -> consumed -> escalated`, so one normal replay attempt is allowed before later compactions switch the session into escalation-only behavior.
 - A new real directive resets the state so the next real assignment can use one fresh recovery cycle instead of inheriting the old session's terminal state.
-- Task-worker sessions do not restore the full user directive. Hive revalidates the current runtime root, exact session/attempt descriptor, format, and artifact hash, then replays the immutable assignment bytes. Live catalogs are fetched separately.
-- A missing or mismatched root, session, attempt, format, locator, or hash returns `assignment_recovery_error`. A legacy mixed prompt returns `legacy_assignment_reanchor_required`; Hive does not strip or replay it.
+- Task-worker sessions do not restore the full user directive or replay an earlier generated prompt. The attached `ExecutionAttempt.native` parent/call/child identity and placement remain the managed execution binding. Hive refreshes live context catalogs separately as untrusted metadata.
+- Missing or contradictory native identity leaves the attempt quarantined. Recovery uses exact runtime binding and current catalog reads; historical prompt text is not authority for a new launch.
 - Recovery prompts tell sessions not to switch roles, not to rediscover state through status tools, and not to re-read the full codebase.
-- Relocation intentionally loses seamless continuation. Stored roots are compared as provenance and are never followed as lookup redirects. An authenticated primary at the newly trusted canonical root must create a fresh task attempt, immutable assignment, and child binding. Ad-hoc work requires a fresh authenticated run. Historical sessions, descriptors, and artifacts remain unchanged.
+- Relocation intentionally loses seamless continuation. Stored roots are compared as provenance and are never followed as lookup redirects. An authenticated primary at the newly trusted canonical root must create a fresh task attempt and native child binding. Ad-hoc work requires a fresh authenticated run. Historical session and execution records remain unchanged.
 
 This keeps recovery narrow and deterministic: orchestrators recover their role and directive, while workers recover their exact task contract without drifting into orchestration. In operator terms, the durable recovery surface is task-level semantic `.hive` state, not transcript replay.
 
@@ -324,7 +324,7 @@ Task `status.json` fields and who writes them:
 
 Containment inside a Git common directory does not prove that a selected HEAD and index belong to the requested worktree. Before any Git command runs in a reused task worktree, Hive resolves the common directory with Git only from each currently trusted topology-resolved repository. A trusted linked manifest repository may have a common directory outside the canonical project root.
 
-Hive reads the suspect worktree's local `.git` pointer as bytes, resolves its syntax without dereferencing the target, and requires identity-bound containment with no symlink components before reading the selected administration metadata. The selected entry's `commondir` must resolve to the trusted common directory, and its normalized `gitdir` backlink must equal the current worktree's own `.git` path. Repository and persisted workspace topology must also match. A sibling or old entry is rejected before suspect-worktree Git or access through its mismatched backlink. Rejection does not rewrite `.git`, repair or delete the worktree, migrate roots, or modify historical assignment state; the operator prepares a valid workspace before a fresh launch.
+Hive reads the suspect worktree's local `.git` pointer as bytes, resolves its syntax without dereferencing the target, and requires identity-bound containment with no symlink components before reading the selected administration metadata. The selected entry's `commondir` must resolve to the trusted common directory, and its normalized `gitdir` backlink must equal the current worktree's own `.git` path. Repository and persisted workspace topology must also match. A sibling or old entry is rejected before suspect-worktree Git or access through its mismatched backlink. Rejection does not rewrite `.git`, repair or delete the worktree, migrate roots, or modify historical execution state; the operator prepares a valid workspace before a fresh launch.
 
 ## Idempotency Expectations
 
@@ -359,5 +359,6 @@ Manual tasks are first-class task records, not loose notes.
 If a tool call fails mid-operation:
 1. Check `hive_status` to see current state
 2. Most operations leave state consistent (atomic file writes)
-3. Worktrees can be cleaned up with `hive_worktree_discard`
-4. Partial merges require manual git intervention
+3. If `hive_execution_finish` fails, inspect its durable receipt, task state, and Git state, then retry the identical finish input after confirming the prior call stopped
+4. Discard only an unconsumed arm or a finalized worktree attempt; attached, stopped, and uncertain attempts remain quarantined
+5. Partial merges require manual git intervention

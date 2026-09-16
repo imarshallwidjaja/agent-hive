@@ -307,11 +307,12 @@ When worker returns `status: 'blocked'`:
 
 A blocked task continues in its existing worktree with a fresh worker session, but only after the stopped attempt is finalized:
 
-1. `hive_status()` - get details
+1. Observe exact stop evidence
 2. Finalize the stopped attempt: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker })`
-3. Re-check `hive_status()`, then ask the user via question tool
-4. Record the decision and re-check `hive_status()`; continue only while status is exactly blocked
-5. Continue in the existing worktree with a fresh worker session: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement: { kind: "worktree" } })`, then an unchanged native Forager `task()` whose prompt includes the operator decision
+3. Call `hive_status()` and read the blocker details
+4. Ask the user via question tool and record the decision
+5. Call `hive_status()` again; continue only while status is exactly blocked
+6. Continue in the existing worktree with a fresh worker session: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement: { kind: "worktree" } })`, then an unchanged native Forager `task()` whose prompt includes the operator decision
 
 ### Plan Gap Detected
 

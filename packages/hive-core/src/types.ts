@@ -337,7 +337,8 @@ export interface ExecutionNativeAttachment {
   parentSessionId: string;
   callId: string;
   selectedAgent: string;
-  background: boolean;
+  /** Migrated launches remain unknown unless persisted native board identity proves background mode. */
+  background: boolean | 'unknown';
   attachedAt: string;
   childSessionId?: string;
   constraintSnapshot?: {

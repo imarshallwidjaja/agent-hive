@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
-import { AdhocWorktreeService, ExecutionAttemptService } from 'hive-core';
+import { AdhocWorktreeService, ExecutionAttemptService, ExecutionFinalizationService } from 'hive-core';
 import plugin from '../index.js';
 
 const TEST_ROOT = `/tmp/opencode-hive-execution-prepare-${process.pid}`;
@@ -449,7 +449,15 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       summary: 'Complete.',
       message: 'test: finalize ad-hoc execution\n\nCommit only after exact native stop evidence.',
     }, context) as string);
-    expect(active).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'attached' });
+    expect(active).toMatchObject({
+      success: false,
+      reason: 'execution_finalization_failed',
+      phase: 'finalization',
+      reasonCode: 'FINALIZATION_STATE_UNKNOWN',
+      mutation: 'unknown',
+      retryable: false,
+      action: 'inspect_state',
+    });
 
     new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
       originatingPrimarySession: context.sessionID,
@@ -471,6 +479,9 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       message: 'test: finalize ad-hoc execution\n\nCommit only after exact native stop evidence.',
     }, context) as string);
     expect(finalized).toMatchObject({ success: true, phase: 'finalized', status: 'completed' });
+    expect(finalized.reportPath).toMatch(new RegExp(`${path.sep}\\.hive${path.sep}execution-reports${path.sep}finalization-[^${path.sep}]+\\.md$`));
+    expect(fs.existsSync(finalized.reportPath)).toBe(true);
+    expect(fs.existsSync(path.join(prepared.placement.workspacePath, 'report.md'))).toBe(false);
     expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)).toMatchObject({
       phase: 'finalized',
       finalization: { repositories: [{ id: 'root', result: 'committed' }] },
@@ -514,6 +525,43 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)?.phase).toBe('stopped');
   });
 
+  it('returns a conservative envelope when finalization throws an unclassified failure', async () => {
+    const liveDirectory = path.join(TEST_ROOT, 'finish-failure');
+    fs.mkdirSync(liveDirectory);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-finish-failure');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'finish-failure' },
+      placement: { kind: 'in_place', directory: liveDirectory },
+    }, context) as string);
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-finish-failure' }, {
+      args: { subagent_type: 'forager-worker', description: 'Fail finalization', prompt: 'Do it.' },
+    });
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID, nativeCallId: 'call-finish-failure', outputDefined: true,
+    });
+    const finish = spyOn(ExecutionFinalizationService.prototype, 'finish').mockRejectedValue(new Error('injected finalization failure'));
+    try {
+      const result = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+        attemptId: prepared.attemptId, status: 'failed', summary: 'Injected failure.',
+      }, context) as string);
+
+      expect(result).toMatchObject({
+        success: false,
+        reason: 'execution_finalization_failed',
+        phase: 'finalization',
+        reasonCode: 'FINALIZATION_STATE_UNKNOWN',
+        mutation: 'unknown',
+        retryable: false,
+        action: 'inspect_state',
+        error: 'injected finalization failure',
+      });
+      expect(result.nextAction).toContain('retry the identical hive_execution_finish input');
+      expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)?.phase).toBe('stopped');
+    } finally {
+      finish.mockRestore();
+    }
+  });
+
   it('rejects second-repository branch and manifest tampering before any ad-hoc finalization commit', async () => {
     const repositories = initCompositeRepositories(TEST_ROOT);
     const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-composite-tamper');
@@ -544,7 +592,7 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       summary: 'Must reject tampered composite identity.',
       message: 'test: reject composite tamper\n\nBind every repository branch to the armed placement.',
     }, context) as string);
-    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'finalization', action: 'inspect_state' });
     expect(execSync('git log --oneline', { cwd: repositories.api, encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
     expect(execSync('git log --oneline', { cwd: repositories.web, encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
   });

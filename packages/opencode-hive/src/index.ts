@@ -2668,6 +2668,13 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     target.feature && target.task
       ? `scope:task:${target.feature}\0${target.task}`
       : target.runId ? `scope:adhoc:${target.runId}` : undefined;
+  const featureLockKey = (feature: string): string => `scope:feature:${feature}`;
+  const scopeLockKeys = (target: Pick<WritableLaunchTarget, 'feature' | 'task' | 'runId'>): string[] => {
+    const keys = target.feature ? [featureLockKey(target.feature)] : [];
+    const scopeKey = scopeLockKey(target);
+    if (scopeKey) keys.push(scopeKey);
+    return keys;
+  };
   const withWritableOperation = async <T>(target: WritableLaunchTarget, operation: () => Promise<T>): Promise<T> => {
     const run = async () => {
       if (target.checkSourceClaim !== false) await assertNoWritableExecution(target);
@@ -2677,8 +2684,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       ? withLaunchPreparationLock(target.resourcePaths, run)
       : run();
     const keys = target.destCheckouts?.length ? destCheckoutKeys(target.destCheckouts) : [];
-    const scopeKey = scopeLockKey(target);
-    if (scopeKey) keys.push(scopeKey);
+    keys.push(...scopeLockKeys(target));
     return keys.length ? withIntegrationLock(keys, withResources) : withResources();
   };
   const discardTaskWorktreeSlot = async (
@@ -2810,6 +2816,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       }
       const taskInfo = taskService.get(feature, input.scope.task);
       if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature, task: input.scope.task });
+      if (featureService.get(feature)?.status === 'completed') {
+        return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature, task: input.scope.task });
+      }
       if (input.scope.continueFromBlocked === true && taskInfo.status !== 'blocked') {
         return respond({
           success: false,
@@ -2891,11 +2900,14 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           : normalizeResourcePath(adhocWorktreeService.resolveCreateTarget({ runId: scope.runId }).workspacePath)];
     }
 
-    return withIntegrationLock([scopeLockKey(scope)!], () => withLaunchPreparationLock(preparationResourcePaths, async () => {
+    return withIntegrationLock(scopeLockKeys(scope), () => withLaunchPreparationLock(preparationResourcePaths, async () => {
       const revalidateTaskAdmission = (): string | undefined => {
         if (scope.kind !== 'task' || !taskAdmissionSnapshot) return undefined;
         const taskInfo = taskService.get(scope.feature, scope.task);
         if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature: scope.feature, task: scope.task });
+        if (featureService.get(scope.feature)?.status === 'completed') {
+          return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature: scope.feature, task: scope.task });
+        }
         if (input.scope.continueFromBlocked === true && taskInfo.status !== 'blocked') {
           return respond({
             success: false,
@@ -5640,9 +5652,7 @@ NEXT: Ask your first clarifying question about this feature.`;
         async execute({ name }, toolContext) {
           const feature = resolveFeature(name, toolContext);
           if (!feature) return formatFeatureResolutionError('name', name);
-          const taskLocks = taskService.list(feature)
-            .map(task => scopeLockKey({ feature, task: task.folder })!);
-          return withIntegrationLock(taskLocks, async () => {
+          return withIntegrationLock([featureLockKey(feature)], async () => {
             const unfinishedTasks = taskService.list(feature).filter(task => task.status !== 'done');
             const unfinishedAttempts = executionAttemptService.listAttempts().filter(attempt =>
               attempt.kind === 'task' && attempt.featureName === feature && attempt.phase !== 'finalized');
@@ -5765,15 +5775,20 @@ NEXT: Ask your first clarifying question about this feature.`;
         async execute({ feature: explicitFeature, refreshPending }, toolContext) {
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
-          const featureData = featureService.get(feature);
-          if (!featureData || featureData.status === 'planning') {
-            return "Error: Plan must be approved first";
-          }
-          const result = taskService.sync(feature, { refreshPending });
-          if (featureData.status === 'approved') {
-            featureService.updateStatus(feature, 'executing');
-          }
-          return `Tasks synced: ${result.created.length} created, ${result.removed.length} removed, ${result.kept.length} kept, ${result.manual.length} manual`;
+          return withIntegrationLock([featureLockKey(feature)], async () => {
+            const featureData = featureService.get(feature);
+            if (featureData?.status === 'completed') {
+              return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature });
+            }
+            if (!featureData || featureData.status === 'planning') {
+              return "Error: Plan must be approved first";
+            }
+            const result = taskService.sync(feature, { refreshPending });
+            if (featureData.status === 'approved') {
+              featureService.updateStatus(feature, 'executing');
+            }
+            return `Tasks synced: ${result.created.length} created, ${result.removed.length} removed, ${result.kept.length} kept, ${result.manual.length} manual`;
+          });
         },
       }),
 
@@ -5820,8 +5835,13 @@ NEXT: Ask your first clarifying question about this feature.`;
               );
             }
           }
-          const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata as any : undefined);
-          return `Manual task created: ${folder}\nDependencies: [${(dependsOn ?? []).join(', ')}]${repos ? `\nRepos: [${repos.join(', ')}]` : ''}\nReminder: arm work with hive_execution_prepare and dispatch one unchanged native Forager task call.`;
+          return withIntegrationLock([featureLockKey(feature)], async () => {
+            if (featureService.get(feature)?.status === 'completed') {
+              return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature });
+            }
+            const folder = taskService.create(feature, name, order, Object.keys(metadata).length > 0 ? metadata as any : undefined);
+            return `Manual task created: ${folder}\nDependencies: [${(dependsOn ?? []).join(', ')}]${repos ? `\nRepos: [${repos.join(', ')}]` : ''}\nReminder: arm work with hive_execution_prepare and dispatch one unchanged native Forager task call.`;
+          });
         },
       }),
 
@@ -5836,11 +5856,16 @@ NEXT: Ask your first clarifying question about this feature.`;
         async execute({ task, status, summary, feature: explicitFeature }, toolContext) {
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
-          const updated = taskService.update(feature, task, {
-            status: status as any,
-            summary,
+          return withIntegrationLock([featureLockKey(feature)], async () => {
+            if (featureService.get(feature)?.status === 'completed') {
+              return respond({ success: false, reason: 'feature_completed', mutation: 'none', feature, task });
+            }
+            const updated = taskService.update(feature, task, {
+              status: status as any,
+              summary,
+            });
+            return `Task "${task}" updated: status=${updated.status}`;
           });
-          return `Task "${task}" updated: status=${updated.status}`;
         },
       }),
 
@@ -5940,9 +5965,13 @@ NEXT: Ask your first clarifying question about this feature.`;
               success: false,
               reason: 'execution_finalization_failed',
               attemptId,
-              phase: executionAttemptService.getAttempt(attemptId)?.phase,
+              phase: 'finalization',
+              reasonCode: 'FINALIZATION_STATE_UNKNOWN',
+              mutation: 'unknown',
+              retryable: false,
+              action: 'inspect_state',
               error: errorMessage,
-              nextAction: 'Inspect the durable finalization receipt and Git state, then retry the same immutable finalization input.',
+              nextAction: 'Inspect the durable finalization receipt, task state, and Git state. After confirming the prior call is no longer running, retry the identical hive_execution_finish input so its immutable intent can resume safely.',
             });
           }
         },

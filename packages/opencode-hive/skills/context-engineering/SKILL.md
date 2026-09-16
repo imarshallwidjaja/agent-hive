@@ -129,7 +129,7 @@ Repair is out of band through trusted local editing: quiesce writers, preserve a
 
 New assignments contain no supporting bodies or catalog snapshots. Fresh catalogs arrive in untrusted knowledge messages. Restart and compaction reuse the same authenticated binding.
 
-Attempt identity is immutable once attached. Compaction in the same authenticated runtime preserves an arm. Plugin restart closes unattached arms as `not_started`. Missing or wrong identity, artifact, format, or hash is `assignment_recovery_error`. Older mixed prompts without a new assignment marker return `legacy_assignment_reanchor_required` and need a fresh parent launch. Never strip, replay, or overwrite prior attempts.
+Attempt identity is immutable once attached. Compaction in the same authenticated runtime preserves the native execution binding. Plugin restart closes unattached arms as `not_started`. Missing or contradictory parent, call, child, or placement identity leaves the attempt quarantined and requires a fresh authenticated launch when exact recovery is unavailable. Recover current supporting knowledge from the live catalog and named reads; never replay historical prompt text as launch authority.
 
 `.hive/sessions.json` is canonical global session truth. Feature-local `sessions.json` is a projection, never alternate recovery truth. Stored canonical root is provenance only.
 

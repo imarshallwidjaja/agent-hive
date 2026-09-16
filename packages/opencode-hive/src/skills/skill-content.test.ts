@@ -953,7 +953,10 @@ describe('skill content', () => {
     expect(template).toContain('no automatic worktree repair');
     expect(template).toContain('Error notices are not empty/current catalogs');
     expect(template).toContain('`.hive/sessions.json` is canonical global session truth');
-    expect(template).toContain('legacy_assignment_reanchor_required');
+    expect(template).toContain('native execution binding');
+    expect(template).toContain('live catalog and named reads');
+    expect(template).toContain('never replay historical prompt text as launch authority');
+    expect(template).not.toContain('legacy_assignment_reanchor_required');
     expect(template).not.toContain('seamless relocation or in-place rebind');
   });
 

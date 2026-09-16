@@ -32,6 +32,24 @@ function worktree(name: string): string {
   return fs.realpathSync(directory);
 }
 
+function persistBackgroundJob(parentSessionId: string, callId: string, taskId: string): void {
+  const now = new Date().toISOString();
+  fs.writeFileSync(path.join(TEST_DIR, '.hive', 'background-jobs.json'), JSON.stringify({
+    schemaVersion: 1,
+    jobs: [{
+      taskId,
+      sessionId: taskId,
+      callId,
+      agentName: 'forager-worker',
+      createdAt: now,
+      updatedAt: now,
+      runtimeState: 'running',
+      alias: `${parentSessionId}:job-1`,
+      scope: { parentSessionId, projectRoot: TEST_DIR },
+    }],
+  }, null, 2));
+}
+
 async function initializeRepository(directory: string): Promise<void> {
   fs.mkdirSync(directory, { recursive: true });
   const git = simpleGit(directory);
@@ -522,8 +540,11 @@ describe('ExecutionAttemptService armed native attachment', () => {
     expect(migrated.getAttempt('legacy-dispatched')).toMatchObject({
       phase: 'attached',
       placement: { kind: 'worktree', workspaceIdentities: [attachedPath] },
-      native: { parentSessionId: 'primary-b', callId: 'call-b', childSessionId: 'child-b' },
+      native: { parentSessionId: 'primary-b', callId: 'call-b', childSessionId: 'child-b', background: 'unknown' },
     });
+    expect(() => migrated.observeBlockingStop({
+      originatingPrimarySession: 'primary-b', nativeCallId: 'call-b', outputDefined: true,
+    })).toThrow(/structured background terminal evidence/i);
     const persisted = JSON.parse(fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8'));
     expect(persisted.schemaVersion).toBe(2);
     expect(JSON.stringify(persisted)).not.toContain('old-launch');
@@ -609,13 +630,18 @@ describe('ExecutionAttemptService armed native attachment', () => {
         id: 'legacy-finalizable', kind: 'task', featureName: 'feature-a', taskFolder: '01-task',
         originatingPrimarySession: 'legacy-parent', workspaceIdentities: [api, web],
         assignment: { taskAttempt: 1 }, dispatchState: 'dispatched', nativeCallId: 'legacy-call',
+        nativeChildSessionId: 'legacy-task',
         createdAt: now, updatedAt: now,
       }],
       currentTaskAttempts: { 'feature-a\u001f01-task': 'legacy-finalizable' },
     }, null, 2));
+    persistBackgroundJob('legacy-parent', 'legacy-call', 'legacy-task');
 
     const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-new');
-    attempts.observeBlockingStop({ originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', outputDefined: true });
+    expect(attempts.getAttempt('legacy-finalizable')?.native?.background).toBe(true);
+    attempts.observeBackgroundStop({
+      originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', nativeTaskId: 'legacy-task', state: 'completed',
+    });
     const result = await new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts).finish({
       attemptId: 'legacy-finalizable', originatingPrimarySession: 'legacy-parent', status: 'completed',
       summary: 'Finalize migrated composite work.',
@@ -639,10 +665,14 @@ describe('ExecutionAttemptService armed native attachment', () => {
       projectRoot: TEST_DIR, resourcePaths: [identity], runtimeId: 'legacy-runtime', childSessionId: 'legacy-child',
     };
     fs.writeFileSync(getGlobalSessionsPath(TEST_DIR), JSON.stringify({ sessions: [], nativeTaskLeases: [lease] }, null, 2));
+    persistBackgroundJob('legacy-parent', 'legacy-call', 'legacy-child');
 
     const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-new');
     const migrated = attempts.listAttempts().find(attempt => attempt.native?.callId === 'legacy-call')!;
-    attempts.observeBlockingStop({ originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', outputDefined: true });
+    expect(migrated.native?.background).toBe(true);
+    attempts.observeBackgroundStop({
+      originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', nativeTaskId: 'legacy-child', state: 'error',
+    });
     const result = await new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts).finish({
       attemptId: migrated.id, originatingPrimarySession: 'legacy-parent', status: 'failed',
       summary: 'Record the historical lease outcome.',
@@ -667,11 +697,15 @@ describe('ExecutionAttemptService armed native attachment', () => {
       attempts: [{
         id: 'legacy-mismatch', kind: 'adhoc', runId: 'mismatch', originatingPrimarySession: 'legacy-parent',
         workspaceIdentities: [identity], branch, dispatchState: 'dispatched', nativeCallId: 'legacy-call',
+        nativeChildSessionId: 'legacy-task',
         createdAt: now, updatedAt: now,
       }],
     }, null, 2));
+    persistBackgroundJob('legacy-parent', 'legacy-call', 'legacy-task');
     const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-new');
-    attempts.observeBlockingStop({ originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', outputDefined: true });
+    attempts.observeBackgroundStop({
+      originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', nativeTaskId: 'legacy-task', state: 'completed',
+    });
     const finalizer = new ExecutionFinalizationService(TEST_DIR, {
       resolveWorktreePlacement: async () => ({
         workspacePath: identity,

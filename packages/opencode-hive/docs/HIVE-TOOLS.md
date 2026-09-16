@@ -108,7 +108,7 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 
 #### hive_worktree_discard input notes
 
-- Omit `attemptId` to discard the current task slot, or pass the current `attemptId` for the same current-slot discard. That path may reset the task to pending.
+- Omit `attemptId` to discard the current task slot, or pass the current `attemptId` for the same current-slot discard. That path may close an unconsumed arm as `not_started`, or remove an already finalized worktree and reset the task to pending. It never discards an attached, stopped, or uncertain execution.
 - Pass a non-current `attemptId` only for a finalized historical worktree attempt. The current task pointer and task status stay unchanged. Attached, stopped, and unobserved attempts remain quarantined and cannot be discarded. Inspect `hive_status.unfinishedAttempts` before cleanup.
 
 #### hive_execution_finish input notes
@@ -119,6 +119,8 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - Every created commit message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
 - Finalization persists intent first, then per-repository baseline/tree/result receipts, an immutable deterministic report receipt, generation-guarded disposition, and `finalized` last. Retry the exact same input after interruption. A commit can be adopted only when HEAD parent, tree, and exact message match the receipt; ambiguous HEAD movement requires explicit recovery.
 - Composite partial commits are not rolled back. The stopped claim remains reserved until every checkpoint completes.
+- The returned `reportPath` is authoritative. Task receipts live under the task's `reports/finalization-<operationId>.md`, and task `report.md` links the latest immutable receipt. Ad-hoc receipts live under `.hive/execution-reports/finalization-<operationId>.md` and have no task-local `report.md`.
+- On an unclassified finish failure, inspect the durable receipt, task state, and Git state. After confirming the prior call stopped, retry the identical finish input; changing it conflicts with the persisted immutable intent.
 
 #### hive_execution_prepare output
 
@@ -132,7 +134,7 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - Every native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches.
 - Do not pass `task_id` to `task()`. Returned task IDs are observe-only handles for background management and read-only runtime-visible session inspection with `hive_task_trace`; they are not inputs for session continuation. Recovery context belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
 - The `question` tool is reserved for primary sessions. Subagents return required operator clarification as an exact terminal-response question for their parent orchestrator.
-- A blocked feature continuation starts a new worker session in the same worktree with the operator decision. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
+- A blocked feature continuation follows one order: exact stop evidence, `hive_execution_finish(status: 'blocked')`, `hive_status`, operator decision, a second `hive_status`, then `hive_execution_prepare` with `continueFromBlocked: true`. The fresh worker starts in the same worktree with the decision in its primary-authored prompt. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
 - One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
 - Preparation failures return structured scope/placement recovery guidance and never return a generated native-task payload.
 
@@ -156,7 +158,7 @@ These tools are for isolated ad-hoc orchestration work. They operate on `.hive/.
 - `hive_adhoc_merge` returns `commitMessage` when it creates a merge/squash commit.
 - A failed non-preserved integration restores the affected target repository to its original HEAD and clean state. `preserveConflicts: true` retains only an actual conflict state. Ad-hoc merge uses the same operation-scoped integration lock as `hive_merge`.
 - `hive_adhoc_cleanup` accepts `runId` and optional `deleteBranch`; merge and cleanup resolve `workspacePath` and `branch` from the run ID. Cleanup never cancels execution and is refused while the source worktree has a live or unobserved claim.
-- Ad-hoc prepare, finish, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)) when classified. Unclassified finish, merge, and cleanup errors fall back to the operation phase's conservative `inspect_state` classification; unclassified prepare errors keep their tool-specific fallback fields. See that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
+- Ad-hoc prepare, finish, merge, and cleanup failures report the shared recovery fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)) when classified. An unclassified finish failure reports `phase: 'finalization'`, `reasonCode: 'FINALIZATION_STATE_UNKNOWN'`, `mutation: 'unknown'`, `retryable: false`, and `action: 'inspect_state'`; inspect the receipt, task state, and Git state before retrying the identical finish input. Unclassified merge and cleanup errors use the operation phase's conservative `inspect_state` classification. Unclassified prepare errors keep their tool-specific fallback fields. See that section for `COMPOSITE_PARTIAL`, `CLEANUP_FAILED`, and per-step cleanup status.
 
 ### Background Orchestration (4 tools)
 
@@ -349,7 +351,7 @@ Invalid indexes return `context_index_invalid`; surviving managed-mutation marke
 - Call `hive_constraints_clear` only when the operator explicitly requests a whole-register clear, using the revision from `hive_constraints_read`.
 - Blank additions and replacements, missing IDs, stale revisions, and aggregate content over 8000 UTF-16 code units are rejected without changing the register. Identical repeated additions are idempotent.
 - Access is limited to primary orchestrators: `hive-master`, `swarm-orchestrator`, `architect-planner`, and `hive-builder`. Foragers, scouts, and reviewers cannot call it.
-- The runtime adds the register text to every delegated `task()` prompt from that session, and from its task-created architect child, and to generated worker prompts, under the heading `## Standing Constraints (operator, session-wide)`.
+- The runtime adds the register text to every delegated `task()` prompt from that session, and from its task-created architect child, under the heading `## Standing Constraints (operator, session-wide)`.
 - Injection is skipped for `/dash-review` and `/vuln-review` lanes. Those workflows are fixed policy with their own operator-intent contract.
 - Standing constraints are operator-scoped and session-wide. Plan-declared task requirements stay task-scoped. A worker that finds the two in conflict reports the conflict rather than choosing one.
 
@@ -458,21 +460,6 @@ Caller-supplied `maxFiles` (cap 200) and `maxPatchBytes` (cap 256 KiB) are clamp
 
 ### Skill Loading
 Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered through `skills.paths`. No Hive plugin tool is used for skill loading. The `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` env flag enables the primary-agent background-first scheduler contract and background management tools for sessions where OpenCode exposes native background subagents.
-
----
-
-## Removed Tools
-
-| Tool | Reason |
-|------|--------|
-| `hive_existing_workspace_start` | Unavailable. Isolated worktrees are the managed placement. Direct checkout work is unmanaged OpenCode work, not a Hive placement. |
-| `hive_worktree_start`, `hive_worktree_create`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_start` | Replaced by `hive_execution_prepare` followed by an unchanged native `task()` call. |
-| `hive_worktree_commit`, `hive_adhoc_worktree_commit` | Replaced by primary-only `hive_execution_finish`. |
-| `hive_subtask_*` (5 tools) | Subtask complexity not needed, use todowrite instead |
-| `hive_session_*` (2 tools) | Replaced by `hive_status` |
-| Custom Hive skill-loading tool | Replaced by OpenCode's native `skill` tool |
-| `hive_agents_md` | Replaced by direct agent review of the full feature record plus normal documentation edits |
-| `hive_context_list` | Agents can use glob/Read |
 
 ---
 

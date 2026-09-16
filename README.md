@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ## Requirements
 
-Managed Forager execution uses isolated git worktrees. `hive_existing_workspace_start` is unavailable. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement. See the [Operator Guide](docs/OPERATOR-GUIDE.md#execution-ownership) for admission, live claims, and recovery.
+Managed Forager execution uses either an isolated Git `worktree` placement or an explicit existing `in_place` directory. Worktree placement provides managed Git commit and integration; in-place placement records disposition without Git isolation, rollback, commit, or merge. Direct foreground OpenCode work is unmanaged OpenCode work, not a Hive placement. See the [Operator Guide](docs/OPERATOR-GUIDE.md#execution-ownership) for admission, live claims, and recovery.
 
 - [OpenCode](https://opencode.ai) `>= 1.18.30` (peer dependency of `oc-arkive`; required for native `tool.definition` and task attachment hooks)
 - Worktree workflows require a project whose work resolves to one or more git repositories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
@@ -46,11 +46,12 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
    VS Code, add comments, and request changes until the plan is clear.
 3. Approve the plan with `/approve-sync-plan` or ask the agent to approve and
    sync it. Hive creates the executable task records.
-4. Start execution with `/start-execution`. Workers perform task-level,
-   best-effort checks in isolated git worktrees while implementing tasks. The
-   primary agent tracks dependencies and progress.
-5. The operator/orchestrator inspects completed worker output.
-6. Merge completed task branches after inspection.
+4. Start execution with `/start-execution`. The primary selects `worktree` or
+   `in_place` placement for each task, then tracks dependencies and progress.
+5. After exact native stop evidence, the originating primary calls
+   `hive_execution_finish` and inspects the returned report path.
+6. Inspect finalized output, then merge completed worktree task branches. An
+   in-place task has no Hive Git merge step.
 7. Run fresh build/test verification against the merged result.
 8. Mark the feature complete only after that merged-result verification passes.
 

@@ -7,10 +7,12 @@ import {
   ensureDir,
   fileExists,
   getExecutionAttemptsPath,
+  getHivePath,
   readJson,
   writeJsonAtomic,
 } from '../utils/paths.js';
 import type {
+  BackgroundJobsJson,
   ExecutionAttempt,
   ExecutionAttemptsJson,
   ExecutionObservedOutcome,
@@ -292,7 +294,7 @@ export class ExecutionAttemptService {
     if (!input.outputDefined) return undefined;
     return this.withStore(store => {
       const attempt = this.requireAttachedCall(store, input.originatingPrimarySession, input.nativeCallId);
-      if (attempt.native!.background) throw new Error('Background execution requires structured background terminal evidence');
+      if (attempt.native!.background !== false) throw new Error('Background or migrated-unknown execution requires structured background terminal evidence');
       return this.stopAttempt(attempt, 'blocking_after', 'completed');
     });
   }
@@ -300,7 +302,7 @@ export class ExecutionAttemptService {
   observeBackgroundStop(input: ObserveBackgroundStopInput): ExecutionAttempt {
     return this.withStore(store => {
       const attempt = this.requireAttachedCall(store, input.originatingPrimarySession, input.nativeCallId);
-      if (!attempt.native!.background || attempt.native!.childSessionId !== input.nativeTaskId) {
+      if (attempt.native!.background === false || attempt.native!.childSessionId !== input.nativeTaskId) {
         throw new Error('Background terminal evidence does not match the exact attached execution');
       }
       return this.stopAttempt(attempt, 'background_terminal', input.state, input.nativeTaskId);
@@ -668,7 +670,11 @@ export class ExecutionAttemptService {
           parentSessionId: old.originatingPrimarySession,
           callId: old.nativeCallId ?? `legacy-unobserved-${old.id}`,
           selectedAgent: 'forager-worker',
-          background: false,
+          background: this.migratedBackgroundMode(
+            old.originatingPrimarySession,
+            old.nativeCallId,
+            old.nativeChildSessionId,
+          ),
           attachedAt: old.updatedAt,
           ...(!isPlaceholderNativeChildId(old.nativeChildSessionId) && old.nativeChildSessionId
             ? { childSessionId: old.nativeChildSessionId }
@@ -909,6 +915,9 @@ export class ExecutionAttemptService {
           if (lease.childSessionId && !isPlaceholderNativeChildId(lease.childSessionId)) {
             matching.native.childSessionId ??= lease.childSessionId;
           }
+          if (this.migratedBackgroundMode(lease.parentSessionId, lease.callId, lease.childSessionId) === true) {
+            matching.native.background = true;
+          }
           if (matching.placement.kind === 'worktree') {
             matching.placement.workspacePath = this.workspacePathForIdentities(matching.placement.workspaceIdentities);
           }
@@ -930,7 +939,7 @@ export class ExecutionAttemptService {
           parentSessionId: lease.parentSessionId,
           callId: lease.callId,
           selectedAgent: lease.agent,
-          background: false,
+          background: this.migratedBackgroundMode(lease.parentSessionId, lease.callId, lease.childSessionId),
           attachedAt: now,
           ...(lease.childSessionId && !isPlaceholderNativeChildId(lease.childSessionId)
             ? { childSessionId: lease.childSessionId }
@@ -956,6 +965,23 @@ export class ExecutionAttemptService {
   private shouldCreateLiveClaim(lease: NativeTaskLease): boolean {
     if (lease.terminal || isCapabilityLease(lease) || isPlaceholderNativeChildId(lease.childSessionId)) return false;
     return lease.resourcePaths.length > 0 && lease.resourcePaths.every(resource => this.isExactWorktreeResource(resource));
+  }
+
+  private migratedBackgroundMode(
+    parentSessionId: string,
+    callId: string | undefined,
+    nativeTaskId: string | undefined,
+  ): true | 'unknown' {
+    if (!callId || !nativeTaskId || isPlaceholderNativeChildId(nativeTaskId)) return 'unknown';
+    try {
+      const board = readJson<BackgroundJobsJson>(path.join(getHivePath(this.projectRoot), 'background-jobs.json'));
+      const matches = board?.jobs.filter(job => job.taskId === nativeTaskId
+        && job.callId === callId
+        && job.scope?.parentSessionId === parentSessionId) ?? [];
+      return matches.length === 1 ? true : 'unknown';
+    } catch {
+      return 'unknown';
+    }
   }
 
   private isExactWorktreeResource(resourcePath: string): boolean {

@@ -11,7 +11,7 @@ export const FORAGER_BEE_PROMPT = `# Forager (Worker/Coder)
 
 You are an autonomous senior engineer. Once given direction, gather context, implement, and verify without waiting for prompts.
 
-Execute directly in the workspace named by the immutable assignment. Do not delegate implementation.
+Execute directly in the workspace named by the authenticated execution scope appended to this native task prompt. Do not delegate implementation.
 
 ${ENGINEERING_JUDGMENT_PROMPT}
 

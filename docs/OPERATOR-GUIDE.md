@@ -197,9 +197,9 @@ After a worker fails or reports partial progress, the originating primary first 
 
 Ad-hoc retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. `hive_execution_prepare` on an unobserved run is denied.
 
-When a worker is blocked, the originating primary finalizes the stopped attempt with `status: 'blocked'`, a primary-authored summary, and blocker details. Inspect the blocker, make and record the operator decision, then re-check that task status is still exactly `blocked`. Only then call `hive_execution_prepare` with `scope.continueFromBlocked: true` and include the decision in the next unchanged native Forager prompt. That preparation launches a fresh worker session in the same existing worktree.
+When a worker is blocked, follow this order: observe exact stop evidence; call `hive_execution_finish` with `status: 'blocked'`, a primary-authored summary, and blocker details; call `hive_status`; obtain and record the operator decision; call `hive_status` again; then call `hive_execution_prepare` with `scope.continueFromBlocked: true`. Include the decision in the next unchanged native Forager prompt. The fresh worker uses the same existing worktree.
 
-Each primary finalization writes an immutable task-local `reports/finalization-<operationId>.md` receipt. Task-local `report.md` is the latest entry point and links that immutable receipt. The receipt records the primary-authored summary and finalization facts; worker prose remains untrusted handoff input rather than an automatically preserved narrative.
+Task finalization writes an immutable task-local `reports/finalization-<operationId>.md` receipt. Task-local `report.md` is the latest entry point and links that receipt. Ad-hoc finalization writes `.hive/execution-reports/finalization-<operationId>.md` and does not create task-local `report.md`. In both cases, the `reportPath` returned by `hive_execution_finish` is authoritative. The receipt records the primary-authored summary and finalization facts; worker prose remains untrusted handoff input rather than an automatically preserved narrative.
 
 Finalization reports capture the accepted disposition, primary-authored summary, repository receipts, and finalization state. They do not establish independent verification or merged state. Git, report storage, task disposition, and the final `finalized` transition are checkpointed parts of one retryable finalization operation.
 
@@ -213,7 +213,7 @@ Prepare or recreate an independently valid workspace at the new root, then launc
 
 ### Reading a failure result
 
-Git-affecting worktree, ad-hoc, and merge failures return classification fields alongside the existing result: `phase`, `reasonCode`, `mutation`, `retryable`, and `action`. Field definitions and the full code table live in [Recovery fields and failure classification](../packages/opencode-hive/docs/HIVE-TOOLS.md#recovery-fields-and-failure-classification). Read `mutation` before anything else: it says whether the target moved, and it governs whether the operation can be repeated. If `retryable` is `false`, repeating the same call is not the recovery path.
+Git-affecting worktree, ad-hoc, and merge failures return classification fields alongside the existing result: `phase`, `reasonCode`, `mutation`, `retryable`, and `action`. Field definitions and the full code table live in [Recovery fields and failure classification](../packages/opencode-hive/docs/HIVE-TOOLS.md#recovery-fields-and-failure-classification). Read `mutation` before anything else: it says whether the target moved, and it governs whether the operation can be repeated. If `retryable` is `false`, do not repeat the call blindly. `FINALIZATION_STATE_UNKNOWN` is the checkpointed-finalization exception: inspect its durable receipt, task state, and Git state, confirm the prior call stopped, then retry the identical `hive_execution_finish` input so the persisted intent can resume.
 
 Group the codes by the decision you actually make:
 

@@ -53,7 +53,7 @@ Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"ag
 7. **Merge** - `hive_merge` integrates completed task branches
 8. **Complete feature** - `hive_feature_complete` when done
 
-Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Hive Builder or unified `hive-master` loads `orchestrating-ad-hoc-work` before requests with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. Parallel writers use distinct ad-hoc worktrees, but fixed-path fixtures, ports, databases, containers, generated outputs, and external mutable resources still require explicit ownership or sequencing. Ad-hoc work uses `hive_adhoc_*`; `architect-planner` is planning-only. Operator-facing seats and loops are in the [Operator Guide](../../docs/OPERATOR-GUIDE.md).
+Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Hive Builder or unified `hive-master` loads `orchestrating-ad-hoc-work` before requests with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. Parallel writers use distinct ad-hoc worktrees, but fixed-path fixtures, ports, databases, containers, generated outputs, and external mutable resources still require explicit ownership or sequencing. Ad-hoc execution uses `hive_execution_prepare` with `worktree` or `in_place`, then primary-only `hive_execution_finish`; finalized worktrees use `hive_adhoc_merge` and `hive_adhoc_cleanup`. `architect-planner` is planning-only. Operator-facing seats and loops are in the [Operator Guide](../../docs/OPERATOR-GUIDE.md).
 
 ### Operator Commands
 
@@ -329,7 +329,7 @@ If you see repeated retries around blocked continuation, use this protocol. Bloc
 
 1. Call `hive_status()` first.
 2. If status is `pending` or `in_progress`, call `hive_execution_prepare` for the task.
-3. If status is `blocked`, record the operator decision and pass `scope.continueFromBlocked: true` to `hive_execution_prepare`.
+3. If the worker blocks, require exact stop evidence, finalize with `hive_execution_finish(status: 'blocked')`, call `hive_status`, record the operator decision, call `hive_status` again, then pass `scope.continueFromBlocked: true` to `hive_execution_prepare` only while status remains blocked.
 
 Do not request blocked continuation on non-blocked statuses; re-check `hive_status()` and prepare normally.
 
