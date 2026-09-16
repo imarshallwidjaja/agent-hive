@@ -335,6 +335,7 @@ import {
   SessionService,
   SessionContinuityError,
   ExecutionAttemptService,
+  ExecutionPlacementMismatchError,
   ExecutionScopeConflictError,
   validateAssignmentDescriptorShape,
   workerAssignmentsEqual,
@@ -2249,15 +2250,20 @@ const plugin: Plugin = async (ctx) => {
     prompt: string,
     constraintSnapshot: NonNullable<NonNullable<ExecutionAttempt['native']>['constraintSnapshot']>,
   ): string => {
-    const scopeBlock = buildExecutionScopeBlock({
-      kind: attempt.kind,
-      featureName: attempt.featureName,
-      taskFolder: attempt.taskFolder,
-      runId: attempt.runId,
-      placement: attempt.placement.kind === 'worktree'
-        ? { kind: 'worktree', workspacePath: attempt.placement.workspacePath }
-        : { kind: 'in_place', directory: attempt.placement.directory },
-    });
+    const promptPlacement = attempt.placement.kind === 'worktree'
+      ? { kind: 'worktree' as const, workspacePath: attempt.placement.workspacePath }
+      : { kind: 'in_place' as const, directory: attempt.placement.directory };
+    const scopeBlock = buildExecutionScopeBlock(
+      attempt.kind === 'task'
+        ? {
+          kind: 'task',
+          featureName: attempt.featureName!,
+          featureDirectory: resolveFeatureDirectoryName(directory, attempt.featureName!),
+          taskFolder: attempt.taskFolder!,
+          placement: promptPlacement,
+        }
+        : { kind: 'adhoc', runId: attempt.runId!, placement: promptPlacement },
+    );
     const withScope = appendManagedPromptBlock(prompt, scopeBlock);
     return appendManagedPromptBlock(
       withScope,
@@ -2845,6 +2851,20 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     }
 
     if (existingAttempt) {
+      const requestedKindMatches = existingAttempt.placement.kind === input.placement.kind;
+      const requestedDirectoryMatches = existingAttempt.placement.kind !== 'in_place'
+        || input.placement.kind !== 'in_place'
+        || existingAttempt.placement.directory === fs.realpathSync(input.placement.directory!);
+      if (!requestedKindMatches || !requestedDirectoryMatches) {
+        return respond({
+          success: false,
+          reason: 'workspace_conflict_denied',
+          mutation: 'none',
+          attemptId: existingAttempt.id,
+          phase: existingAttempt.phase,
+          error: 'The requested scope is already armed with a different placement.',
+        });
+      }
       placement = existingAttempt.placement;
     } else if (input.placement.kind === 'worktree' && scope.kind === 'task') {
       const { feature, task } = scope;
@@ -2905,7 +2925,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       if (cleanupCreatedPlacement && placement.kind === 'worktree') {
         const cleanupReservation = executionAttemptService.reserveWorkspaceCleanup(
           placement.workspaceIdentities,
-          error instanceof ExecutionScopeConflictError ? error.attempt.id : undefined,
+          error instanceof ExecutionScopeConflictError || error instanceof ExecutionPlacementMismatchError
+            ? error.attempt.id
+            : undefined,
         );
         if (cleanupReservation.reserved) {
           try {
@@ -2918,14 +2940,16 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           }
         }
       }
-      if (!(error instanceof ExecutionScopeConflictError)) throw error;
+      if (!(error instanceof ExecutionScopeConflictError) && !(error instanceof ExecutionPlacementMismatchError)) throw error;
       return respond({
         success: false,
         reason: 'workspace_conflict_denied',
         mutation: 'none',
         attemptId: error.attempt.id,
         phase: error.attempt.phase,
-        error: 'The requested scope is owned by another authenticated primary.',
+        error: error instanceof ExecutionPlacementMismatchError
+          ? 'The requested scope is already armed with a different placement.'
+          : 'The requested scope is owned by another authenticated primary.',
       });
     }
     if (armed.attempt.phase !== 'armed') {

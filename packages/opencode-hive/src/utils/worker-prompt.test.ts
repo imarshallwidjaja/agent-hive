@@ -33,10 +33,12 @@ describe('managed prompt blocks', () => {
 
   it('describes in-place handoff as report-only', () => {
     const block = buildExecutionScopeBlock({
-      kind: 'task', featureName: 'feature', taskFolder: '01-task',
+      kind: 'task', featureName: 'feature', featureDirectory: '09_feature', taskFolder: '01-task',
       placement: { kind: 'in_place', directory: '/tmp/live' },
     });
 
+    expect(block).toContain('Task spec: .hive/features/09_feature/tasks/01-task/spec.md');
+    expect(block).toContain('Feature context: .hive/features/09_feature/context/');
     expect(block).toContain('without a commit message');
     expect(block).not.toContain('hive_worktree_commit');
   });
@@ -53,7 +55,7 @@ describe('managed prompt blocks', () => {
 
   it('directs feature worktree workers through the temporary commit bridge', () => {
     const block = buildExecutionScopeBlock({
-      kind: 'task', featureName: 'feature', taskFolder: '01-task',
+      kind: 'task', featureName: 'feature', featureDirectory: '09_feature', taskFolder: '01-task',
       placement: { kind: 'worktree', workspacePath: '/tmp/feature-worktree' },
     });
 

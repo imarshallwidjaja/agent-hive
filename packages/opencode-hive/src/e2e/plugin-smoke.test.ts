@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
-import { AdhocWorktreeService, ConfigService, ExecutionAttemptService, SessionService } from 'hive-core';
+import { AdhocWorktreeService, ConfigService, ExecutionAttemptService, FeatureService, SessionService } from 'hive-core';
 import plugin from '../index.js';
 
 const TEST_ROOT_BASE = `/tmp/hive-e2e-plugin-${process.pid}`;
@@ -162,7 +162,15 @@ describe('managed execution attachment', () => {
 
   it('prepares concise task placement and attaches an unchanged native call', async () => {
     const { hooks, context } = await harness(root, 'primary');
-    await seedFeature(hooks, context, 'feature-a');
+    new FeatureService(root).create('feature-a');
+    await hooks.tool!.hive_plan_write.execute({ content: plan('feature-a'), feature: 'feature-a' }, context);
+    await hooks.tool!.hive_plan_approve.execute({ feature: 'feature-a' }, context);
+    await hooks.tool!.hive_tasks_sync.execute({ feature: 'feature-a' }, context);
+    await hooks.tool!.hive_context_write.execute({
+      feature: 'feature-a',
+      name: 'scope-reference',
+      content: '---\ndescription: Scope reference fixture\nread_when: Testing execution scope paths\n---\n\nFixture.',
+    }, context);
     const prepared = await prepareTask(hooks, context, 'feature-a');
     expect(prepared).toMatchObject({ success: true, phase: 'armed', scope: { kind: 'task', feature: 'feature-a', task: '01-first-task' } });
     expect(prepared).not.toHaveProperty('taskToolCall');
@@ -173,10 +181,19 @@ describe('managed execution attachment', () => {
     expect(Object.keys(args).sort()).toEqual(['background', 'description', 'prompt', 'subagent_type']);
     expect(args.prompt).toContain('Use the task spec.');
     expect(args.prompt).toContain('Feature: feature-a');
-    expect(args.prompt).toContain('Task spec:');
+    const featureDirectory = fs.readdirSync(path.join(root, '.hive', 'features')).find(entry => entry.endsWith('_feature-a'))!;
+    const specReference = `.hive/features/${featureDirectory}/tasks/01-first-task/spec.md`;
+    const contextReference = `.hive/features/${featureDirectory}/context/`;
+    expect(args.prompt).toContain(`Task spec: ${specReference}`);
+    expect(args.prompt).toContain(`Feature context: ${contextReference}`);
+    expect(fs.existsSync(path.join(root, specReference))).toBe(true);
+    expect(fs.existsSync(path.join(root, contextReference))).toBe(true);
     expect(args.prompt).toContain('report and commit through hive_worktree_commit');
     expect(args.prompt).toContain('the primary owns both');
-    expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)?.phase).toBe('attached');
+    expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)).toMatchObject({
+      phase: 'attached',
+      featureName: 'feature-a',
+    });
   });
 
   it('denies another primary before creating Git resources for the same feature task', async () => {
@@ -243,6 +260,49 @@ describe('managed execution attachment', () => {
       });
     } finally {
       reserve.mockRestore();
+      arm.mockRestore();
+    }
+  });
+
+  it('removes a same-parent feature worktree that loses to an in-place arm', async () => {
+    const loser = await harness(root, 'primary-feature-race');
+    await seedFeature(loser.hooks, loser.context, 'feature-a');
+    const liveDirectory = path.join(root, 'live-feature-race');
+    fs.mkdirSync(liveDirectory);
+    const branchesBefore = execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' });
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' });
+    const originalArm = ExecutionAttemptService.prototype.arm;
+    let winnerId: string | undefined;
+    const arm = spyOn(ExecutionAttemptService.prototype, 'arm').mockImplementation(function (input) {
+      if (!winnerId && input.originatingPrimarySession === 'primary-feature-race') {
+        winnerId = originalArm.call(this, {
+          ...input,
+          placement: { kind: 'in_place', directory: liveDirectory },
+        }).attempt.id;
+      }
+      return originalArm.call(this, input);
+    });
+
+    try {
+      const denied = await prepareTask(loser.hooks, loser.context, 'feature-a');
+      const worktreePath = path.join(root, '.hive', '.worktrees', 'feature-a', '01-first-task');
+
+      expect(denied).toMatchObject({
+        success: false,
+        reason: 'workspace_conflict_denied',
+        mutation: 'none',
+        attemptId: winnerId,
+      });
+      expect(execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' })).toBe(branchesBefore);
+      expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(worktreesBefore);
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      const winner = JSON.parse(fs.readFileSync(path.join(root, '.hive', 'execution-attempts.json'), 'utf8'))
+        .attempts.find((attempt: { id: string }) => attempt.id === winnerId);
+      expect(winner).toMatchObject({
+        phase: 'armed',
+        placement: { kind: 'in_place', directory: fs.realpathSync(liveDirectory) },
+      });
+    } finally {
       arm.mockRestore();
     }
   });

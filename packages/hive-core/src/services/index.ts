@@ -3,7 +3,11 @@ export { PlanService } from './planService.js';
 export { TaskService } from './taskService.js';
 export type { SyncOptions } from './taskService.js';
 export { SubtaskService } from './subtaskService.js';
-export { ExecutionAttemptService, ExecutionScopeConflictError } from './executionAttemptService.js';
+export {
+  ExecutionAttemptService,
+  ExecutionPlacementMismatchError,
+  ExecutionScopeConflictError,
+} from './executionAttemptService.js';
 export type {
   ArmExecutionAttemptInput,
   ArmExecutionAttemptResult,

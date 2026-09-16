@@ -161,6 +161,18 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     }, context) as string);
     expect(repeated).toMatchObject({ success: true, existing: true, attemptId: first.attemptId });
 
+    const mismatched = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'owned-scope' },
+      placement: { kind: 'worktree' },
+    }, context) as string);
+    expect(mismatched).toMatchObject({
+      success: false,
+      reason: 'workspace_conflict_denied',
+      mutation: 'none',
+      attemptId: first.attemptId,
+      phase: 'armed',
+    });
+
     const branchesBefore = execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' });
     const worktreesBefore = execSync('git worktree list --porcelain', { cwd: TEST_ROOT, encoding: 'utf8' });
     const attemptsPath = path.join(TEST_ROOT, '.hive', 'execution-attempts.json');
@@ -235,6 +247,55 @@ describe('hive_execution_prepare ad-hoc placement', () => {
         phase: 'finalized',
         observedOutcome: 'not_started',
       }));
+    } finally {
+      arm.mockRestore();
+    }
+  });
+
+  it('removes a same-parent worktree that loses to an in-place arm for the same run', async () => {
+    initGit(TEST_ROOT);
+    const liveDirectory = path.join(TEST_ROOT, 'live');
+    fs.mkdirSync(liveDirectory);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-same-run-race');
+    const branchesBefore = execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' });
+    const worktreesBefore = execSync('git worktree list --porcelain', { cwd: TEST_ROOT, encoding: 'utf8' });
+    const originalArm = ExecutionAttemptService.prototype.arm;
+    let winnerId: string | undefined;
+    const arm = spyOn(ExecutionAttemptService.prototype, 'arm').mockImplementation(function (input) {
+      if (!winnerId && input.originatingPrimarySession === 'primary-same-run-race') {
+        winnerId = originalArm.call(this, {
+          ...input,
+          placement: { kind: 'in_place', directory: liveDirectory },
+        }).attempt.id;
+      }
+      return originalArm.call(this, input);
+    });
+
+    try {
+      const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+        scope: { kind: 'adhoc', runId: 'same-run-race' },
+        placement: { kind: 'worktree' },
+      }, context) as string);
+
+      expect(denied).toMatchObject({
+        success: false,
+        reason: 'workspace_conflict_denied',
+        mutation: 'none',
+        attemptId: winnerId,
+      });
+      expect(execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' })).toBe(branchesBefore);
+      expect(execSync('git worktree list --porcelain', { cwd: TEST_ROOT, encoding: 'utf8' })).toBe(worktreesBefore);
+      expect(await new AdhocWorktreeService({
+        baseDir: TEST_ROOT,
+        hiveDir: path.join(TEST_ROOT, '.hive'),
+        repositoryResolver: { resolveRepositories: () => [] },
+      }).get('same-run-race')).toBeNull();
+      const winner = JSON.parse(fs.readFileSync(path.join(TEST_ROOT, '.hive', 'execution-attempts.json'), 'utf8'))
+        .attempts.find((attempt: { id: string }) => attempt.id === winnerId);
+      expect(winner).toMatchObject({
+        phase: 'armed',
+        placement: { kind: 'in_place', directory: fs.realpathSync(liveDirectory) },
+      });
     } finally {
       arm.mockRestore();
     }

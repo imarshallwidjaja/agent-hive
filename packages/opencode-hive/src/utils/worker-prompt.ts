@@ -13,13 +13,17 @@ export function buildStandingConstraintsBlock(standingConstraints: string | unde
   return `${STANDING_CONSTRAINTS_START}\n${STANDING_CONSTRAINTS_HEADING}\n\n${standingConstraints}\n\n${STANDING_CONSTRAINTS_FOOTER}\n${STANDING_CONSTRAINTS_END}`;
 }
 
-export interface ExecutionScopeBlockInput {
-  kind: 'task' | 'adhoc';
-  featureName?: string;
-  taskFolder?: string;
-  runId?: string;
+type ExecutionScopeBlockInput = ({
+  kind: 'task';
+  featureName: string;
+  featureDirectory: string;
+  taskFolder: string;
+} | {
+  kind: 'adhoc';
+  runId: string;
+}) & {
   placement: { kind: 'worktree'; workspacePath: string } | { kind: 'in_place'; directory: string };
-}
+};
 
 export function buildExecutionScopeBlock(input: ExecutionScopeBlockInput): string {
   const scope = input.kind === 'task'
@@ -27,7 +31,7 @@ export function buildExecutionScopeBlock(input: ExecutionScopeBlockInput): strin
     : `Ad-hoc run: ${input.runId}`;
   const directory = input.placement.kind === 'worktree' ? input.placement.workspacePath : input.placement.directory;
   const references = input.kind === 'task'
-    ? `Task spec: .hive/features/${input.featureName}/tasks/${input.taskFolder}/spec.md\nFeature context: .hive/features/${input.featureName}/context/`
+    ? `Task spec: .hive/features/${input.featureDirectory}/tasks/${input.taskFolder}/spec.md\nFeature context: .hive/features/${input.featureDirectory}/context/`
     : 'Managed context: project scope only unless the authenticated execution has a feature binding.';
   const placement = input.placement.kind === 'worktree'
     ? input.kind === 'task'

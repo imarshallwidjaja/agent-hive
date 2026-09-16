@@ -151,6 +151,30 @@ describe('ExecutionAttemptService armed native attachment', () => {
     });
   });
 
+  it('reuses a same-scope arm only when its placement matches', () => {
+    const first = service.arm({
+      kind: 'adhoc',
+      runId: 'placement-bound-arm',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    });
+
+    expect(() => service.arm({
+      kind: 'adhoc',
+      runId: 'placement-bound-arm',
+      originatingPrimarySession: 'primary-a',
+      placement: {
+        kind: 'worktree',
+        workspaceIdentities: [worktree('placement-loser')],
+        workspacePath: worktree('placement-loser'),
+      },
+    })).toThrow(/different placement/i);
+    expect(service.getAttempt(first.attempt.id)).toMatchObject({
+      phase: 'armed',
+      placement: { kind: 'in_place', directory: fs.realpathSync(TEST_DIR) },
+    });
+  });
+
   it('preflights same-scope ownership without creating another attempt', () => {
     const first = service.arm({
       kind: 'adhoc',

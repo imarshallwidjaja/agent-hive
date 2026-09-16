@@ -53,6 +53,13 @@ export class ExecutionScopeConflictError extends Error {
   }
 }
 
+export class ExecutionPlacementMismatchError extends Error {
+  constructor(readonly attempt: ExecutionAttempt) {
+    super(`Execution scope is already armed with a different placement (${attempt.id})`);
+    this.name = 'ExecutionPlacementMismatchError';
+  }
+}
+
 export interface AttachExecutionAttemptInput {
   originatingPrimarySession: string;
   nativeCallId: string;
@@ -171,7 +178,12 @@ export class ExecutionAttemptService {
       const parentArm = store.attempts.find(attempt =>
         attempt.originatingPrimarySession === input.originatingPrimarySession && attempt.phase === 'armed');
       if (parentArm) {
-        if (this.sameScope(parentArm, input)) return { attempt: structuredClone(parentArm), existing: true };
+        if (this.sameScope(parentArm, input)) {
+          if (!this.samePlacement(parentArm.placement, placement)) {
+            throw new ExecutionPlacementMismatchError(structuredClone(parentArm));
+          }
+          return { attempt: structuredClone(parentArm), existing: true };
+        }
         throw new Error(`Primary session '${input.originatingPrimarySession}' already has an armed execution`);
       }
 
@@ -179,6 +191,9 @@ export class ExecutionAttemptService {
       if (existing) {
         if (existing.originatingPrimarySession !== input.originatingPrimarySession) {
           throw new ExecutionScopeConflictError(structuredClone(existing));
+        }
+        if (!this.samePlacement(existing.placement, placement)) {
+          throw new ExecutionPlacementMismatchError(structuredClone(existing));
         }
         return { attempt: structuredClone(existing), existing: true };
       }
@@ -626,6 +641,18 @@ export class ExecutionAttemptService {
       && (attempt.kind === 'task'
         ? attempt.featureName === input.featureName && attempt.taskFolder === input.taskFolder
         : attempt.runId === input.runId);
+  }
+
+  private samePlacement(left: ExecutionPlacement, right: ExecutionPlacement): boolean {
+    if (left.kind !== right.kind) return false;
+    if (left.kind === 'in_place' && right.kind === 'in_place') return left.directory === right.directory;
+    if (left.kind !== 'worktree' || right.kind !== 'worktree') return false;
+    return left.workspacePath === right.workspacePath
+      && left.workspaceIdentities.length === right.workspaceIdentities.length
+      && left.workspaceIdentities.every(identity => right.workspaceIdentities.includes(identity))
+      && left.attemptSlot === right.attemptSlot
+      && left.branch === right.branch
+      && left.baseCommit === right.baseCommit;
   }
 
   private assertCurrentTaskGeneration(store: ExecutionAttemptsJson, attempt: ExecutionAttempt): void {
