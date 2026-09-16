@@ -378,6 +378,7 @@ import {
   appendManagedPromptBlock,
   buildExecutionScopeBlock,
   buildStandingConstraintsBlock,
+  removeTrailingManagedPromptBlocks,
   STANDING_CONSTRAINTS_HEADING,
 } from "./utils/worker-prompt";
 import { calculatePromptMeta, calculatePayloadMeta, checkWarnings } from "./utils/prompt-observability";
@@ -1506,7 +1507,6 @@ const plugin: Plugin = async (ctx) => {
 
   const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
   const helperAuthBinds = new Map<string, HelperAuthBind>();
-  const trustedConstraintAugmentations = new Map<string, string>();
   const finalizeStoppedBridgeAttempt = (attempt: ExecutionAttempt): void => {
     if (attempt.phase !== 'stopped') return;
     const fallbackOutcome = attempt.stopEvidence?.state === 'cancelled'
@@ -2253,6 +2253,7 @@ const plugin: Plugin = async (ctx) => {
     const promptPlacement = attempt.placement.kind === 'worktree'
       ? { kind: 'worktree' as const, workspacePath: attempt.placement.workspacePath }
       : { kind: 'in_place' as const, directory: attempt.placement.directory };
+    const constraintBlock = buildStandingConstraintsBlock(constraintSnapshot.constraints);
     const scopeBlock = buildExecutionScopeBlock(
       attempt.kind === 'task'
         ? {
@@ -2264,11 +2265,11 @@ const plugin: Plugin = async (ctx) => {
         }
         : { kind: 'adhoc', runId: attempt.runId!, placement: promptPlacement },
     );
-    const withScope = appendManagedPromptBlock(prompt, scopeBlock);
-    return appendManagedPromptBlock(
-      withScope,
-      buildStandingConstraintsBlock(constraintSnapshot.constraints),
+    const withScope = appendManagedPromptBlock(
+      removeTrailingManagedPromptBlocks(prompt, constraintBlock),
+      scopeBlock,
     );
+    return appendManagedPromptBlock(withScope, constraintBlock);
   };
 
   const attachArmedForager = async (
@@ -2292,8 +2293,6 @@ const plugin: Plugin = async (ctx) => {
     const constraintSnapshot = captureConstraintSnapshot(sessionID);
     const augmentedPrompt = appendExecutionPrompt(armed, prompt, constraintSnapshot);
     adapterOutput.args.prompt = augmentedPrompt;
-    const constraintBlock = buildStandingConstraintsBlock(constraintSnapshot.constraints);
-    if (constraintBlock) trustedConstraintAugmentations.set(augmentedPrompt, constraintBlock);
     const attached = executionAttemptService.attachNext({
       originatingPrimarySession: sessionID,
       nativeCallId: callID,
@@ -3893,11 +3892,12 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         if (
           constraintsBlock
           && !isReviewLaneTarget
-          && trustedConstraintAugmentations.get(prompt) !== constraintsBlock
         ) {
-          const augmentedPrompt = appendManagedPromptBlock(prompt, constraintsBlock);
+          const augmentedPrompt = appendManagedPromptBlock(
+            removeTrailingManagedPromptBlocks(prompt, constraintsBlock),
+            constraintsBlock,
+          );
           output.args.prompt = augmentedPrompt;
-          trustedConstraintAugmentations.set(augmentedPrompt, constraintsBlock);
         }
       }
 

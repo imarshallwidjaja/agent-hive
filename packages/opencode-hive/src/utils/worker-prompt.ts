@@ -43,6 +43,18 @@ export function buildExecutionScopeBlock(input: ExecutionScopeBlockInput): strin
   return `${EXECUTION_SCOPE_START}\n${EXECUTION_SCOPE_HEADING}\n\n${scope}\nWorking directory: ${directory}\n${references}\n${placement}\nReturn one terminal handoff to the primary; worker prose does not finalize execution state.\n${EXECUTION_SCOPE_END}`;
 }
 
+/** Remove only complete authoritative suffixes produced by appendManagedPromptBlock. */
+export function removeTrailingManagedPromptBlocks(prompt: string, block: string | null): string {
+  if (!block) return prompt;
+
+  const appendedBlock = `\n\n${block}`;
+  let normalized = prompt;
+  while (normalized.endsWith(appendedBlock)) {
+    normalized = normalized.slice(0, -appendedBlock.length);
+  }
+  return normalized === block ? '' : normalized;
+}
+
 /** Append trusted runtime material without interpreting or rewriting caller-authored bytes. */
 export function appendManagedPromptBlock(prompt: string, block: string | null): string {
   if (!block) return prompt;
