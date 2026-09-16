@@ -268,12 +268,13 @@ describe('current documentation contract', () => {
       ['blocked outcome', /blocked/i],
       ['blocked continuation', /continueFromBlocked/i],
       ['fresh worker', /(?:fresh|new) worker/i],
-      ['existing worktree', /(?:same|existing) worktree/i],
+      ['exact worktree identities', /exact registered worktree identities/i],
+      ['exact in-place directory', /exact resolved in-place directory/i],
     ], 'Operator Guide blocked recovery');
     assertInOrder(recovery, [
       ['immutable blocker report', /immutable `reportPath`/i],
       ['persisted blocker', /persisted blocker/i],
-      ['worker prose prohibition', /do not invent blocker details from worker prose/i],
+      ['reconstruction prohibition', /do not reconstruct blocker details from worker prose or task traces/i],
     ], 'Operator Guide blocker authority');
     assert.match(reviewOptions, /\/dash-review[\s\S]{0,160}without changing source/i);
     assert.match(reviewOptions, /\/vuln-review[\s\S]{0,220}does not[\s\S]{0,80}edit source[\s\S]{0,80}automatic fixes/i);

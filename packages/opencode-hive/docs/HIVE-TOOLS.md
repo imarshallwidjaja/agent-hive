@@ -135,13 +135,15 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - Every native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches.
 - Do not pass `task_id` to `task()`. Returned task IDs are observe-only handles for background management and read-only runtime-visible session inspection with `hive_task_trace`; they are not inputs for session continuation. Recovery context belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
 - The `question` tool is reserved for primary sessions. Subagents return required operator clarification as an exact terminal-response question for their parent orchestrator.
-- A blocked feature continuation follows one order: exact stop evidence, `hive_execution_finish(status: 'blocked')`, `hive_status`, operator decision, a second `hive_status`, then `hive_execution_prepare` with `continueFromBlocked: true`. The fresh worker starts in the same worktree with the decision in its primary-authored prompt. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
+- A blocked feature continuation follows one order: exact stop evidence, `hive_execution_finish(status: 'blocked')`, `hive_status`, operator decision, a second `hive_status`, then `hive_execution_prepare` with `continueFromBlocked: true`. The persisted `hive_status` blocker or immutable finalization report is authoritative; never reconstruct blocker details from worker prose or task traces. The fresh worker starts in the same finalized placement, using the exact registered worktree identities or exact resolved in-place directory, with the decision in its primary-authored prompt. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
 - One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
 - Preparation failures return structured scope/placement recovery guidance and never return a generated native-task payload.
 
 ### Integration (3 tools)
 
 `hive_merge` integrates a finalized feature-task worktree. The ad-hoc tools operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records; ad-hoc runs do not appear in `hive_status`. In-place feature and ad-hoc executions have no Hive integration step.
+
+Only finalized worktree attempts can be merged or cleaned up. A later in-place attempt controls disposition and report state only; it has no merge or cleanup lifecycle and does not select a historical worktree.
 
 | Tool | Purpose |
 |------|---------|

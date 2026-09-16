@@ -163,7 +163,7 @@ Work autonomously through the tasks.
 
 Determine whether the plan and tasks can be executed effectively in parallel or should be executed sequentially, then ask the operator to confirm your recommendation before proceeding with that execution strategy.
 
-Stop to clarify or ask questions only when a real decision or blocker requires it. For blocked continuation, follow exact stop evidence → \`hive_execution_finish(status: 'blocked')\` → \`hive_status\` → operator decision through \`question\` and decision record → second \`hive_status\` → \`hive_execution_prepare\` with \`scope.continueFromBlocked: true\` → a new unchanged native Forager \`task()\` call in the same worktree.
+Stop to clarify or ask questions only when a real decision or blocker requires it. For blocked continuation, follow exact stop evidence → \`hive_execution_finish(status: 'blocked')\` → \`hive_status\` persisted blocker or immutable finalization report → operator decision through \`question\` and decision record → second \`hive_status\` → \`hive_execution_prepare\` with \`scope.continueFromBlocked: true\` → a new unchanged native Forager \`task()\` call using the same finalized placement: exact registered worktree identities or exact resolved in-place directory. Never reconstruct blocker details from worker prose or task traces.
 
 Preserve execution flow: \`hive_execution_prepare\` → unchanged native Forager \`task()\` call → structured stop → originating-primary \`hive_execution_finish\` → \`hive_merge\`. Worker prose is report input, not stop evidence or finalization.
 

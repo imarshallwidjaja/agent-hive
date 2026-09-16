@@ -190,11 +190,15 @@ Contains task context for the executing agent:
 ### Finalization reports
 Task finalization writes an immutable `reports/finalization-<operationId>.md` receipt and updates `report.md` with the same report plus a history link. Ad-hoc finalization writes `.hive/execution-reports/finalization-<operationId>.md` and has no task-local latest report. The returned `reportPath` is authoritative. Each report records the attempt, operation, disposition, primary-authored summary, and per-repository commit SHA or `NO_TRACKED_CHANGES`; blocked reports also record the blocker JSON.
 
+Blocked task status preserves that blocker JSON and exposes it unchanged through `hive_status.tasks.list[].blocker`. Continuation reuses the finalized placement: the exact registered worktree identity set for worktree placement, or the exact resolved directory for in-place placement.
+
 ## Worktree Isolation
 
 Each task executes in an isolated workspace under `.hive/.worktrees/{feature}/{task}/`. In legacy mode that path is a single git worktree. In manifest-backed mode that path is a composite workspace, with one git worktree per declared repo under `repos/<repoId>/`.
 
 Agents edit only the selected workspace. For worktree placement, `hive_execution_finish` collects the task diff after exact stop evidence. In-place placement records disposition only and never runs Git. `hive_worktree_discard` removes a worktree without applying changes, and is refused while that worktree has a live or unobserved claim.
+
+Only a finalized worktree attempt can be merged or cleaned up. A later in-place attempt governs disposition and report state only; it does not create, select, merge, or clean up a worktree.
 
 ### Multi-Repo Composite Workspaces
 

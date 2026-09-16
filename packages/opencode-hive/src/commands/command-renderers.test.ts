@@ -537,7 +537,7 @@ describe('hive command renderers', () => {
     expect(output).toContain('subject, a blank line, and a descriptive body');
     expect(output).not.toContain('Prefer `strategy: "rebase"`');
     expect(output).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
-    expect(output).toContain('new unchanged native Forager `task()` call in the same worktree');
+    expect(output).toContain('same finalized placement: exact registered worktree identities or exact resolved in-place directory');
     expect(output).toContain('concise self-contained handoff');
     expect(output).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
   });

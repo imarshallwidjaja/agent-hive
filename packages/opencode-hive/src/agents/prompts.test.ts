@@ -417,7 +417,9 @@ describe('Fresh-session delegation contract', () => {
       ['Hive', QUEEN_BEE_PROMPT],
       ['Swarm', SWARM_BEE_PROMPT],
     ] as const) {
-      expect(prompt, name).toContain('new unchanged native Forager call in the same worktree');
+      expect(prompt, name).toContain('same finalized placement: exact registered worktree identities or exact resolved in-place directory');
+      expect(prompt, name).toContain('persisted `hive_status` blocker or immutable finalization report is authoritative');
+      expect(prompt, name).toContain('do not reconstruct blocker details from worker prose or task traces');
     }
   });
 
@@ -1161,8 +1163,8 @@ describe('Swarm (Orchestrator) prompt', () => {
     it('uses persisted finalization state as blocker authority', () => {
       for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
         expect(prompt, name).toContain('retain its immutable `reportPath`');
-        expect(prompt, name).toContain('finish result and immutable report are authoritative');
-        expect(prompt, name).toContain('do not reconstruct blocker details from worker prose');
+        expect(prompt, name).toContain('persisted `hive_status` blocker or immutable finalization report is authoritative');
+        expect(prompt, name).toContain('do not reconstruct blocker details from worker prose or task traces');
         expect(prompt, name).toContain('`hive_status` and its persisted blocker');
       }
     });

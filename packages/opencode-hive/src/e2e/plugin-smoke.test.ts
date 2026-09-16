@@ -5050,6 +5050,38 @@ describe('managed execution attachment', () => {
     });
   });
 
+  it('exposes the exact persisted blocker and authoritative continuation action in status', async () => {
+    const feature = 'blocked-status-contract';
+    const { hooks, context, parents } = await harness(root, 'primary-blocked-status');
+    await seedFeature(hooks, context, feature);
+    const prepared = await prepareTask(hooks, context, feature, { kind: 'in_place', directory: root });
+    const attached = await attachPreparedTask(hooks, parents, context, 'blocked-status-call', 'blocked-status-child');
+    await stopAttachedTask(hooks, context, 'blocked-status-call', 'blocked-status-child', attached.args);
+    const blocker = {
+      reason: 'Choose the durable storage policy.',
+      options: ['Keep seven days', 'Keep thirty days'],
+      recommendation: 'Keep thirty days.',
+      context: 'Compliance review requires an explicit retention period.',
+    };
+
+    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'blocked',
+      summary: 'Waiting for the retention decision.',
+      blocker,
+    }, context) as string)).toMatchObject({ success: true, phase: 'finalized', status: 'blocked' });
+
+    const status = JSON.parse(await hooks.tool!.hive_status.execute({ feature }, context) as string);
+    expect(status.tasks.list).toContainEqual(expect.objectContaining({
+      folder: '01-first-task',
+      status: 'blocked',
+      blocker,
+    }));
+    expect(status.nextAction).toContain('exact persisted blocker from tasks.list');
+    expect(status.nextAction).toContain('authoritative immutable finalization report');
+    expect(status.nextAction).not.toContain('hive_task_trace');
+  });
+
   it.each(['pending', 'in_progress', 'failed', 'partial', 'cancelled'] as const)(
     'rejects blocked continuation from %s without mutating task or execution state',
     async (status) => {

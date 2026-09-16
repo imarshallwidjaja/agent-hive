@@ -573,7 +573,11 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Post-Batch Code Review');
     expect(skill!.template).toContain('recommended review path');
     expect(skill!.template).toContain('One implementation assignment normally maps to one numbered task');
-    expect(skill!.template).toContain('new unchanged native Forager call in the same existing worktree or exact in-place directory');
+    expect(skill!.template).toContain('same finalized placement: exact registered worktree identities or exact resolved in-place directory');
+    expect(skill!.template).toContain('persisted `hive_status` blocker or immutable finalization report is authoritative');
+    expect(skill!.template).toContain('never reconstruct blocker details from worker prose or task traces');
+    expect(skill!.template).toContain('Only a finalized worktree attempt can be merged or cleaned up');
+    expect(skill!.template).toContain('has no merge or cleanup lifecycle');
     expect(skill!.template).toContain('explicitly admitted native general/helper exceptions');
     expect(skill!.template).toContain('Other mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('Architect retains its bounded planning lane');
@@ -637,10 +641,11 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('retain its authoritative immutable report');
     expect(hiveSkill).toContain('read the persisted blocker details');
     expect(hiveSkill).toContain('do not reconstruct them from worker prose');
-    expect(hiveSkill).toContain('Blocked task continuation must reuse the prior placement kind and identity');
+    expect(hiveSkill).toContain('Blocked task continuation must reuse the prior finalized placement');
     expect(hiveSkill).toContain('exact registered worktree identities');
     expect(hiveSkill).toContain('exact resolved directory');
-    expect(hiveSkill).toContain('Ad-hoc retries follow the current attempt');
+    expect(hiveSkill).toContain('Only finalized worktree attempts can be merged or cleaned up');
+    expect(hiveSkill).toContain('governs disposition and report state only and has no merge or cleanup lifecycle');
     expect(hiveSkill).toContain('historical worktree repository selection');
     expect(hiveSkill).toContain('normalized and deduplicated');
     expect(hiveSkill).toContain('existing worktree or in-place placement with a fresh worker session');

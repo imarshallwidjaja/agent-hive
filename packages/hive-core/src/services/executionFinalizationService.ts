@@ -6,6 +6,7 @@ import type {
   ExecutionAttempt,
   ExecutionFinalizationReceipt,
   ExecutionFinalizationStatus,
+  TaskBlocker,
   TaskStatusType,
 } from '../types.js';
 import { normalizeCommitMessage } from '../utils/mergeMessage.js';
@@ -29,7 +30,7 @@ export interface ExecutionFinishInput {
   originatingPrimarySession: string;
   status: ExecutionFinalizationStatus;
   summary: string;
-  blocker?: unknown;
+  blocker?: TaskBlocker;
   message?: string;
 }
 
@@ -175,7 +176,7 @@ export class ExecutionFinalizationService {
         const result = this.attempts.applyCurrentTaskDisposition(current.id, {
           status: taskStatus,
           summary,
-          ...(input.status === 'blocked' ? { blocker: input.blocker as any } : {}),
+          ...(input.status === 'blocked' ? { blocker: input.blocker } : {}),
         });
         currentTaskUnchanged = !result.applied;
         if (result.applied) this.writeLatestTaskReport(current, reportBody);

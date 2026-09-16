@@ -64,6 +64,13 @@ export function renderAggregateBranchDiff(diff: TaskAggregateBranchDiff): string
     + `areas: ${diff.areas.length > 0 ? diff.areas.join(', ') : 'none'}; report: ${diff.report}`;
 }
 
+export interface TaskBlocker {
+  reason: string;
+  options?: string[];
+  recommendation?: string;
+  context?: string;
+}
+
 export interface TaskStatus {
   /** Schema version for forward compatibility (default: 1) */
   schemaVersion?: number;
@@ -71,6 +78,8 @@ export interface TaskStatus {
   origin: TaskOrigin;
   planTitle?: string;
   summary?: string;
+  /** Persisted operator-decision input for a blocked task. */
+  blocker?: TaskBlocker;
   /** Runtime-owned aggregate branch diff captured when a terminal report is written. */
   aggregateBranchDiff?: TaskAggregateBranchDiff;
   startedAt?: string;
@@ -375,7 +384,7 @@ export interface ExecutionFinalizationReceipt {
   reportInputHash: string;
   status: ExecutionFinalizationStatus;
   summary: string;
-  blocker?: unknown;
+  blocker?: TaskBlocker;
   message?: string;
   repositories: ExecutionFinalizationRepositoryReceipt[];
   report?: { locator: string; contentHash: string };

@@ -7060,6 +7060,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               finalizedPlacementMatches,
               origin: t.origin || 'plan',
               dependsOn: rawStatus?.dependsOn ?? null,
+              ...(t.status === 'blocked' && rawStatus?.blocker ? { blocker: rawStatus.blocker } : {}),
               ...(executionAttempt?.native?.childSessionId ? { traceTaskId: executionAttempt.native.childSessionId } : {}),
               repoIds: t.repoIds ?? null,
               worktree: worktree ? {
@@ -7163,9 +7164,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             }
             const blocked = tasks.find(t => t.status === 'blocked');
             if (blocked) {
-              return blocked.traceTaskId
-                ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(blocked.traceTaskId)} }) before collecting the operator decision. Then arm blocked continuation with hive_execution_prepare for task ${blocked.folder}.`
-                : `Task ${blocked.folder} is blocked, but no traceTaskId is available. Inspect its blocker details, collect the operator decision, then arm blocked continuation with hive_execution_prepare.`;
+              return `Read the exact persisted blocker from tasks.list for ${blocked.folder}, or its authoritative immutable finalization report, then collect the operator decision and arm blocked continuation with hive_execution_prepare.`;
             }
             const failed = tasks.find(t => t.status === 'failed' || t.status === 'partial');
             if (failed) {

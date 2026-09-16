@@ -372,7 +372,7 @@ For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decom
 3. Ask the user via `question()` - NEVER plain text - and record the decision
 4. Call `hive_status()` again; only while status remains exactly blocked, call `hive_execution_prepare` with `scope.continueFromBlocked: true` and put the decision in the native Forager `task.prompt`
 
-**CRITICAL**: Blocked continuation starts a NEW worker in the SAME existing worktree or exact in-place directory.
+**CRITICAL**: Blocked continuation starts a NEW worker using the SAME finalized placement: exact registered worktree identities or exact resolved in-place directory.
 The previous worker's progress is preserved. The operator decision belongs in the fresh primary-authored native prompt.
 
 Failed or partial recovery branches on exact stop evidence. If evidence is absent, inspect with `hive_task_trace`, wait when execution may still be live, and keep the placement quarantined; do not call `hive_execution_finish`, prepare a retry, or create an alternate placement. Only a stopped attempt may be finalized. After finalization and a fresh `hive_status()` check, failed or retry work may start with a new worker and a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation. After compaction, recover managed context with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Keep exact IDs. Do not replay historical assignment bodies.

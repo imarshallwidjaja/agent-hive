@@ -651,7 +651,7 @@ export class TaskService {
     featureName: string,
     taskFolder: string,
     taskAttempt: number,
-    updates: Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff'>> & { blocker?: unknown },
+    updates: Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff' | 'blocker'>>,
     lockOptions?: LockOptions,
   ): { applied: boolean; status: TaskStatus } {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
