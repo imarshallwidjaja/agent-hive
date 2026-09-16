@@ -1883,7 +1883,9 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(QUEEN_BEE_PROMPT).toContain('cannot reuse that run');
     expect(SWARM_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
     expect(SWARM_BEE_PROMPT).toContain('preparation stays denied until supported lifecycle recovery establishes termination');
-    expect(SWARM_BEE_PROMPT).toContain('cannot reuse that run');
+    expect(SWARM_BEE_PROMPT).toContain('For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree');
+    expect(SWARM_BEE_PROMPT).toContain('Retry while termination is unobserved cannot reuse that run; use a new ad-hoc `runId` and worktree');
+    expect(SWARM_BEE_PROMPT).toContain('without copying mutable progress from the uncertain run');
     expect(HIVE_BUILDER_PROMPT).toContain('Retry after confirmed termination may reuse the same `runId` worktree');
     expect(HIVE_BUILDER_PROMPT).toContain('cannot reuse that run');
     expect(QUEEN_BEE_PROMPT).toContain('without copying mutable progress from the uncertain run');

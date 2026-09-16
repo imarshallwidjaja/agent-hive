@@ -2610,20 +2610,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       if (index >= 0) resourcePreparationQueues.splice(index, 1);
     }
   };
-  const nativeExecutionState = async (sessionID: string): Promise<'active' | 'terminal' | 'uncertain'> => {
-    if (typeof client.session.status !== 'function') return 'uncertain';
-    try {
-      const statusResponse = await client.session.status({ query: { directory } });
-      if (statusResponse.error !== undefined || !statusResponse.data || typeof statusResponse.data !== 'object') return 'uncertain';
-      const status = (statusResponse.data as Record<string, { type?: string }>)[sessionID];
-      if (status?.type === 'busy' || status?.type === 'retry') return 'active';
-      if (status?.type === 'closed' || status?.type === 'deleted' || status?.type === 'terminated') return 'terminal';
-      return 'uncertain';
-    } catch {
-      return 'uncertain';
-    }
-  };
-  const writerFenceFailure = (target: WritableLaunchTarget, detail: string, sessionID?: string): Error => {
+  const writerFenceFailure = (target: WritableLaunchTarget, detail: string): Error => {
     const attemptId = detail.match(/claimed by attempt ([A-Za-z0-9._-]+)/)?.[1]
       ?? detail.match(/live execution attempt ([A-Za-z0-9._-]+)/)?.[1];
     const error = new Error(JSON.stringify({
@@ -2631,13 +2618,11 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         'writer_fence_error',
         `Cannot mutate or prepare another writer for ${target.label}: ${detail}`,
         true,
-        sessionID
-          ? `Inspect the exact native session with hive_task_trace({ task_id: "${sessionID}" }); cancel it if still active, then retry only after exact supported stop or finalization evidence is recorded.`
-          : target.task
-            ? 'Execution identity is unknown. Keep this feature-task worktree quarantined until exact supported stop or finalization evidence is recorded. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.'
-            : target.runId
-              ? 'Execution identity is unknown. Keep this ad-hoc run quarantined; retry in a new ad-hoc run and worktree without copying mutable progress from this run. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.'
-              : 'Execution identity is unknown. Preserve the claimed workspace until exact supported stop or finalization evidence is recorded. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.',
+        target.task
+          ? 'Execution identity is unknown. Keep this feature-task worktree quarantined until exact supported stop or finalization evidence is recorded. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.'
+          : target.runId
+            ? 'Execution identity is unknown. Keep this ad-hoc run quarantined; retry in a new ad-hoc run and worktree without copying mutable progress from this run. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.'
+            : 'Execution identity is unknown. Preserve the claimed workspace until exact supported stop or finalization evidence is recorded. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.',
       )),
       ...(attemptId ? { attemptId } : {}),
     }));
