@@ -564,15 +564,15 @@ describe('skill content', () => {
     expect(skill!.template).toContain('gate-closed fallback guidance');
     expect(skill!.template).toContain('Execution and Forager lanes are managed/heavy background lanes');
     expect(skill!.template).toContain('unresolved-lane checks before dependent decisions');
-    expect(skill!.template).toContain('Unused preparation expires after five minutes');
-    expect(skill!.template).toContain('hive_launch_id');
-    expect(skill!.template).toContain('The preparation response includes `launchId`');
-    expect(skill!.template).toContain('In gate-closed sessions launch the blocking `taskToolCall`');
+    expect(skill!.template).toContain('Unused arms expire after five minutes');
+    expect(skill!.template).toContain('hive_execution_prepare');
+    expect(skill!.template).toContain('unchanged native Forager');
+    expect(skill!.template).toContain('In gate-closed sessions use a blocking native `task()` call');
     expect(skill!.template).toContain('Risk-Tier Review Routing');
     expect(skill!.template).toContain('Post-Batch Code Review');
     expect(skill!.template).toContain('recommended review path');
     expect(skill!.template).toContain('One implementation assignment normally maps to one numbered task');
-    expect(skill!.template).toContain('new worker session in the same worktree');
+    expect(skill!.template).toContain('new unchanged native Forager call in the same worktree');
     expect(skill!.template).toContain('explicitly admitted native general/helper exceptions');
     expect(skill!.template).toContain('Other mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('Architect retains its bounded planning lane');
@@ -618,8 +618,8 @@ describe('skill content', () => {
     expect(skill).toBeDefined();
     expect(skill!.template).toContain('task({');
     expect(skill!.template).toContain('Independent Forager worktrees may be prepared and dispatched under one parent');
-    expect(skill!.template).toContain('Gate-open only: use backgroundTaskCall');
-    expect(skill!.template).toContain('hive_launch_id');
+    expect(skill!.template).toContain('Gate-open only: use background: true');
+    expect(skill!.template).toContain('hive_execution_prepare');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
     expect(skill!.template).toContain('In feature-task mode, follow the feature workflow\'s verification and `hive_merge` lifecycle');
     expect(skill!.template).toContain('In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`');
@@ -638,6 +638,36 @@ describe('skill content', () => {
     );
     expect(skill!.template).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
     expect(skill!.template).toContain('cannot reuse that run');
+  });
+
+  it('cuts removed launch fields and states general/helper ownership on dispatch skills', () => {
+    const removed = [
+      'hive_capability_reason',
+      'hive_launch_id',
+      'launchId',
+      'taskToolCall',
+      'backgroundTaskCall',
+      'workerInstructions',
+      'hive_worktree_start',
+      'hive_worktree_create',
+      'hive_adhoc_worktree_create',
+      'hive_adhoc_worktree_start',
+      'continueFrom: "blocked"',
+    ];
+
+    for (const name of ['background-delegation', 'dispatching-parallel-agents', 'executing-plans']) {
+      const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
+
+      expect(skill).toBeDefined();
+      expect(skill!.template, name).toContain('hive_execution_prepare');
+      expect(skill!.template, name).toContain('unchanged native');
+      expect(skill!.template, name).toContain('ordinary `task()` call');
+      expect(skill!.template, name).toContain('consumes no arm');
+      expect(skill!.template, name).toContain('gains no Hive claim, managed context, or lifecycle authority');
+      expect(skill!.template, name).toContain('Native helpers keep only their bounded operational permissions');
+      expect(skill!.template, name).not.toContain('reserve the active root');
+      for (const symbol of removed) expect(skill!.template, `${name}: ${symbol}`).not.toContain(symbol);
+    }
   });
 
   it('does not keep stale synchronous-exploration wording in delegation skills', () => {
@@ -670,9 +700,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Direct Work Boundary');
     expect(skill!.template).toContain('Delegation Kind Reference');
     expect(skill!.template).toContain('Context Packet');
-    expect(skill!.template).toContain('Put Forager instructions in `workerInstructions`');
-    expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`');
-    expect(skill!.template).toContain('Editing a prepared Forager dispatch prompt cannot update its instructions');
+    expect(skill!.template).toContain('Put the complete Forager context packet directly in the unchanged native `task.prompt`');
+    expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer packets also go in `task.prompt`');
     expect(skill!.template).toContain('descriptor is a closer match');
     expect(skill!.template).toContain('Orchestrator owns final confidence');
     expect(skill!.template).toContain('terminal-unreconciled');
@@ -685,11 +714,10 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Independent ordinary Scout, advisor, and reviewer tasks can run in parallel');
     expect(skill!.template).toContain('Every Forager lane, including report-only diagnosis');
-    expect(skill!.template).toContain('hive_launch_id');
-    expect(skill!.template).toContain('hive_adhoc_worktree_start');
+    expect(skill!.template).toContain('hive_execution_prepare');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
     expect(skill!.template).toContain('Isolated worktrees are the managed placement');
-    expect(skill!.template).toContain('Unused preparation expires after five minutes');
+    expect(skill!.template).toContain('Unused arms expire after five minutes');
     expect(skill!.template).toContain('an unobserved ExecutionAttempt keeps a live claim on only that worktree');
     expect(skill!.template).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
     expect(skill!.template).toContain('cannot reuse that run');
@@ -697,9 +725,8 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('wait for the native correlation event');
     expect(skill!.template).toContain('Gate-closed Forager launch (blocking wait mode)');
     expect(skill!.template).toContain('Gate-open Forager launch (background wait mode)');
-    expect(skill!.template).toContain('JSON.parse(await hive_adhoc_worktree_create');
-    expect(skill!.template).toContain('prepared.taskToolCall');
-    expect(skill!.template).toContain('prepared.backgroundTaskCall');
+    expect(skill!.template).toContain("scope: { kind: 'adhoc' }");
+    expect(skill!.template).toContain("subagent_type: 'forager-worker'");
     expect(skill!.template).toContain('Only a delegated `architect-planner` may call `task()` from a subagent session');
     expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
     expect(skill!.template).toContain('waitingForNativeCompletion');

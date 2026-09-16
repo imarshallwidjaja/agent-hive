@@ -14,7 +14,7 @@ When you have multiple unrelated failures (different test files, different subsy
 ### Worktree Concurrency & Sequencing
 - **One writer per worktree:** A single worktree has exactly one active writer at a time.
 - **Parallel writes across worktrees:** You can dispatch writing workers in parallel ONLY if each worker runs in its own distinct worktree (distinct feature tasks or distinct ad-hoc `runId`s).
-- **Sequential passes within a worktree:** If multiple tasks or bug fixes target the SAME worktree, sequence them: `prepare` -> `dispatch task({ ...taskToolCall })` -> `wait for completion` -> `inspect/commit` -> `prepare next pass with start`.
+- **Sequential passes within a worktree:** If multiple tasks or bug fixes target the SAME worktree, sequence them: `prepare` -> `dispatch the unchanged native call` -> `wait for completion` -> `inspect/commit` -> `prepare again`.
 - **Read-only fan-out:** Scouts and reviewers do not write code and can run concurrently anywhere.
 
 When `## Background-First Orchestration` is present, load `background-delegation` for scheduler and wait-mode decisions. This skill covers task independence, scope, and prompt quality; the background skill governs whether each independent lane runs blocking or background.
@@ -97,20 +97,20 @@ In feature-task mode, one implementation assignment normally maps to one numbere
 The example below is feature-task mode. In ad-hoc mode, consume the ready wave and prepared runs from `orchestrating-ad-hoc-work`.
 
 ```typescript
-// Gate-open only: use backgroundTaskCall when independent foreground work can continue.
-const first = JSON.parse(await hive_worktree_start({ task: "01-fix-abort-tests" }))
-task({ ...first.backgroundTaskCall })
-const second = JSON.parse(await hive_worktree_start({ task: "02-fix-batch-tests" }))
-task({ ...second.backgroundTaskCall })
+// Gate-open only: use background: true when independent foreground work can continue.
+hive_execution_prepare({ scope: { kind: "task", task: "01-fix-abort-tests" }, placement: { kind: "worktree" } })
+task({ subagent_type: "forager-worker", prompt: "Fix abort tests", background: true })
+hive_execution_prepare({ scope: { kind: "task", task: "02-fix-batch-tests" }, placement: { kind: "worktree" } })
+task({ subagent_type: "forager-worker", prompt: "Fix batch tests", background: true })
 
 // Blocking alternative, including every gate-closed session:
-const blocking = JSON.parse(await hive_worktree_start({ task: "03-fix-cleanup-tests" }))
-await task({ ...blocking.taskToolCall })
+hive_execution_prepare({ scope: { kind: "task", task: "03-fix-cleanup-tests" }, placement: { kind: "worktree" } })
+await task({ subagent_type: "forager-worker", prompt: "Fix cleanup tests" })
 ```
 
-Independent Forager worktrees may be prepared and dispatched under one parent. Use `hive_worktree_start` for managed tasks or the ad-hoc tools for isolated non-feature work. Preserve the returned `hive_launch_id`; do not invent one. `launchId` is a one-time dispatch selector. Two executions conflict when their exact worktree identity sets intersect. A live claim blocks conflicting preparation, dispatch, and lifecycle mutation of that worktree identity. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch and omit `hive_launch_id`.
+Independent Forager worktrees may be prepared and dispatched under one parent. Call `hive_execution_prepare` with the exact task or ad-hoc scope and placement, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Two executions conflict when their exact worktree identity sets intersect. A live claim blocks conflicting preparation, dispatch, and lifecycle mutation of that worktree identity. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch and do not require an armed execution.
 
-Use Forager-derived workers for delegated execution. A rare `general` capability exception requires a specific nonblank `hive_capability_reason` on native `task()` and no `hive_launch_id`. The reason declares the need without proving a capability gap. General receives ordinary tools only, no Hive authority, recursion, or questions. Native helpers retain bounded permissions. Helper and general calls use a runtime-local bind for Hive-tool authentication; they do not take a live claim on a worktree or the project root. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Isolated worktrees are the managed placement. Direct checkout work is unmanaged OpenCode work, not a Hive placement. Worktree integration follows its authorized lifecycle.
+Use Forager-derived workers for delegated execution. A rare native `general` exception is an ordinary `task()` call: it consumes no arm and gains no Hive claim, managed context, or lifecycle authority. General receives ordinary tools only, no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Helper and general calls use a runtime-local parent/call/child bind for Hive-tool authentication; they do not take a live claim on a worktree or the project root. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Isolated worktrees are the managed placement. Direct checkout work is unmanaged OpenCode work, not a Hive placement. Worktree integration follows its authorized lifecycle.
 
 Recover native binding from exact parent/call metadata only; never guess the latest child or infer ownership from prose. Preserve the workspace while a writer may still be live, and never copy its mutable progress. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Archive, restart, and preparation expiry do not release uncertain execution. See `background-delegation` for board recovery.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.

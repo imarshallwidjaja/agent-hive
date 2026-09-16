@@ -661,12 +661,12 @@ describe('Hive (Hybrid) prompt', () => {
     });
 
     it('allows blocked continuation only for exactly blocked tasks', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Use `continueFrom: "blocked"` only when status is exactly `blocked`');
-      expect(QUEEN_BEE_PROMPT).not.toContain('Use `continueFrom: "blocked"` when status is unresolved');
+      expect(QUEEN_BEE_PROMPT).toContain('Use `scope.continueFromBlocked` only when status is exactly `blocked`');
+      expect(QUEEN_BEE_PROMPT).not.toContain('continueFrom: "blocked"');
     });
 
     it('forbids blocked-continuation loops on non-blocked statuses', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Never loop `continueFrom: "blocked"` on non-blocked statuses');
+      expect(QUEEN_BEE_PROMPT).toContain('Never loop `scope.continueFromBlocked` on non-blocked statuses');
     });
 
     it('requires immediate status re-check before blocked continuation', () => {
@@ -684,7 +684,7 @@ describe('Hive (Hybrid) prompt', () => {
 
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
       expect(QUEEN_BEE_PROMPT).toContain('If status is not `blocked`');
-      expect(QUEEN_BEE_PROMPT).toContain('omit `continueFromBlocked`');
+      expect(QUEEN_BEE_PROMPT).toContain('omit `scope.continueFromBlocked`');
       expect(QUEEN_BEE_PROMPT).toContain('only for normal starts (`pending` / `in_progress`)');
       expect(QUEEN_BEE_PROMPT).toContain('hive_execution_prepare');
     });
@@ -1036,7 +1036,8 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('allows blocked continuation only for exactly blocked tasks', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Use `continueFrom: "blocked"` only when status is exactly `blocked`');
+      expect(SWARM_BEE_PROMPT).toContain('Use `scope.continueFromBlocked` only when status is exactly `blocked`');
+      expect(SWARM_BEE_PROMPT).not.toContain('continueFrom: "blocked"');
     });
 
     it('requires immediate status re-check before each blocked continuation', () => {
@@ -1052,7 +1053,7 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('forbids blocked-continuation loops on non-blocked statuses', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Never loop `continueFrom: "blocked"` on non-blocked statuses');
+      expect(SWARM_BEE_PROMPT).toContain('Never loop `scope.continueFromBlocked` on non-blocked statuses');
     });
 
     it('clarifies terminal finality scope while allowing final natural-language handoff', () => {
@@ -1064,7 +1065,7 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
       expect(SWARM_BEE_PROMPT).toContain('If status is not `blocked`');
-      expect(SWARM_BEE_PROMPT).toContain('omit `continueFromBlocked`');
+      expect(SWARM_BEE_PROMPT).toContain('omit `scope.continueFromBlocked`');
       expect(SWARM_BEE_PROMPT).toContain('only for normal starts (`pending` / `in_progress`)');
       expect(SWARM_BEE_PROMPT).toContain('hive_execution_prepare');
     });
@@ -1851,6 +1852,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     const removed = [
       'launchId',
       'hive_launch_id',
+      'hive_capability_reason',
       'taskToolCall',
       'backgroundTaskCall',
       'workerInstructions',
@@ -1858,6 +1860,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       'hive_worktree_create',
       'hive_adhoc_worktree_create',
       'hive_adhoc_worktree_start',
+      'continueFrom: "blocked"',
     ];
     for (const [name, prompt] of [
       ['Hive', QUEEN_BEE_PROMPT],
@@ -1879,6 +1882,22 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('cannot reuse that run');
     expect(HIVE_BUILDER_PROMPT).not.toContain('supersede onto a fresh `attemptSlot` worktree');
     expect(QUEEN_BEE_PROMPT).toContain('then dispatch one unchanged native Forager `task()` call');
+  });
+
+  it('describes general and helper ownership without root reservation or capability fields', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('ordinary `task()` call');
+      expect(prompt, name).toContain('consumes no arm');
+      expect(prompt, name).toContain('gains no Hive claim, managed context, or lifecycle authority');
+      expect(prompt, name).toContain('Native helpers keep only their bounded operational permissions');
+      expect(prompt, name).toContain('they do not take a live claim on a worktree or the project root');
+      expect(prompt, name).not.toContain('hive_capability_reason');
+      expect(prompt, name).not.toContain('reserve the active root');
+    }
   });
 
   it('limits recursive task use to one architect planning-helper level', () => {
