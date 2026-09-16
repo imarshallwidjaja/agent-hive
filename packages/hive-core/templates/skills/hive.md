@@ -292,7 +292,7 @@ hive_execution_finish({ attemptId, status: "completed", summary })
 hive_status()
 ```
 
-After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. A finalized retry or blocked continuation must reuse the prior placement kind and identity: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. An ad-hoc `runId` keeps its historical worktree repository selection even if newer in-place attempts exist; repository IDs are normalized and deduplicated, and a different selection requires a new `runId`.
+After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. Blocked task continuation must reuse the prior placement kind and identity: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. Ad-hoc retries follow the current attempt. A later in-place attempt on the same `runId` is allowed and then governs merge and cleanup. Any later worktree prepare still binds to the historical worktree repository selection; repository IDs are normalized and deduplicated, and a different worktree selection requires a new `runId`.
 
 ### Parallel Execution
 
@@ -330,7 +330,7 @@ When worker returns `status: 'blocked'`:
 
 ### Quick Decision (No Plan Change)
 
-A blocked task continues in its finalized placement with a fresh worker session, but only after the stopped attempt is finalized:
+A blocked task continues in its existing worktree or in-place placement with a fresh worker session, but only after the stopped attempt is finalized:
 
 1. Observe exact stop evidence
 2. Finalize the stopped attempt: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker })`
@@ -359,10 +359,11 @@ If blocker suggests plan is incomplete:
 
 If "Revise Plan":
 1. Confirm the stopped attempt was finalized and re-check `hive_status()`
-2. `hive_worktree_discard({ task })`
-3. `hive_context_write({ name: "learnings", content: "..." })`
-4. `hive_plan_write({ content: "..." })` (updated plan)
-5. Wait for re-approval
+2. Worktree placement: `hive_worktree_discard({ task })` only when the current attempt is armed or finalized. Discard is refused for attached, stopped, or unobserved claims.
+3. In-place placement: do not discard. After finalization, `hive_task_update({ task, status: "pending" })`, then replan.
+4. `hive_context_write({ name: "learnings", content: "..." })`
+5. `hive_plan_write({ content: "..." })` (updated plan)
+6. Wait for re-approval
 
 ---
 

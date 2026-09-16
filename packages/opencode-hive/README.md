@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/oc-arkive)](https://www.npmjs.com/package/oc-arkive)
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
 
-OpenCode workflow plugin for plan-first development: feature plans, approval gates, isolated git worktrees, durable `.hive/` state, and optional review commands.
+OpenCode workflow plugin for plan-first development: feature plans, approval gates, managed Git worktrees or explicit in-place directories, durable `.hive/` state, and optional review commands.
 
 Requires **OpenCode >= 1.18.30** for native task attachment hooks. Open your project and ask Hive to work.
 
@@ -230,7 +230,7 @@ When delegation is warranted, synthesize the task before handing it off: name th
 
 Each native `task()` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, then split independently verifiable outcomes into fresh launches. Never pass `task_id` to `task()`: returned IDs are observe-only handles for status, reconciliation, cancellation, and runtime-visible session trace inspection. Recovery context from `hive_task_trace` belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Compaction may re-anchor a currently running worker; it is not re-delegation.
 
-One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. A blocked feature continuation starts a new worker session in the same worktree with the operator decision. Failed or retry work starts a new worker with a concise self-contained handoff. For ad-hoc work, use multiple fresh one-goal launches on worktrees whose registered identities do not intersect, or sequence writers that share a worktree. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only research, plan-reviewer, and approach-advisor helpers; those children cannot delegate. The `question` tool is reserved for primary sessions. Any subagent that needs operator clarification returns the exact question in its terminal response for the parent orchestrator to ask.
+One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. A blocked feature continuation follows exact stop evidence, originating-primary `hive_execution_finish(status: 'blocked')`, `hive_status`, the operator decision, a second `hive_status`, then `hive_execution_prepare` with `scope.continueFromBlocked: true` only while status remains blocked. The next native Forager session binds to that execution attempt and reuses the same existing worktree or exact in-place directory. Failed or retry work starts a new worker with a concise self-contained handoff after finalization. For ad-hoc work, use multiple fresh one-goal launches on worktrees whose registered identities do not intersect, or sequence writers that share a worktree. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only research, plan-reviewer, and approach-advisor helpers; those children cannot delegate. The `question` tool is reserved for primary sessions. Any subagent that needs operator clarification returns the exact question in its terminal response for the parent orchestrator to ask.
 
 For execution work, treat worker output as evidence to inspect, not proof to trust blindly. OpenCode is the supported execution runtime; if you use `vscode-arkive`, treat it as a review/sidebar companion. Read changed files yourself and run the shared verification commands on the main branch before claiming the batch is complete.
 
@@ -289,7 +289,7 @@ When a task branch has no net tracked changes to integrate, `hive_merge` reports
 
 ### Ad-hoc Worktree
 
-Use ad-hoc orchestration when you need isolation, delegation, verification, and merge without a feature, plan, or task record. Dedicated mode uses `hive-builder`; unified mode can use `hive-master`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#ad-hoc-lifecycle-hive-builder).
+Use ad-hoc orchestration when you need delegation, verification, and a managed worktree or in-place placement without a feature, plan, or task record. Dedicated mode uses `hive-builder`; unified mode can use `hive-master`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#ad-hoc-lifecycle-hive-builder).
 
 The ad-hoc orchestrator calls `hive_execution_prepare` with `scope: { kind: "adhoc" }` and either `placement: { kind: "worktree" }` for isolated Git work or `placement: { kind: "in_place", directory }` for cooperative live editing. These runs do not create feature/task records and do not appear in `hive_status`. The response supplies the `runId` and placement; the next ordinary native Forager call attaches to that arm. Worktree finalization can commit and is followed by `hive_adhoc_merge` and cleanup. In-place finalization records disposition only and has no Hive commit, merge, cleanup, or rollback. Retry after confirmed finalization may reuse the same run. Unobserved or stopped-but-unfinalized execution retains its claim. See `docs/HIVE-TOOLS.md` for the full contracts.
 
@@ -325,7 +325,7 @@ Primary orchestrators can inspect any explicitly identified native OpenCode sess
 
 #### Repeated blocked-continuation errors / loop
 
-If you see repeated retries around blocked continuation, use this protocol. Blocked continuation launches a new worker session in the same worktree; it does not continue the previous session:
+If you see repeated retries around blocked continuation, use this protocol. Blocked continuation launches a new worker session in the same existing worktree or exact in-place directory; it does not continue the previous session:
 
 1. Call `hive_status()` first.
 2. If status is `pending` or `in_progress`, call `hive_execution_prepare` for the task.
@@ -353,7 +353,7 @@ For normal usage, set the OpenCode plugin entry to `"oc-arkive@latest"`. Keep a 
 
 After session compaction in the same authenticated runtime, an armed or attached execution is preserved. Plugin restart closes every unattached arm as `not_started`; attached attempts remain quarantined until exact stop evidence arrives. Live project and feature catalogs refresh separately as untrusted metadata. Primary and subagent sessions replay the stored user directive once, then escalate if needed.
 
-Moving a project root intentionally breaks old task and ad-hoc continuation. Hive never follows the stored former root, migrates it, aliases it, or edits historical bindings. At the new trusted root, an authenticated primary prepares a valid worktree and launches a fresh task attempt/assignment/child, or creates a fresh authenticated ad-hoc run. Old sessions and artifacts remain historical.
+Moving a project root intentionally breaks old task and ad-hoc continuation. Hive never follows the stored former root, migrates it, aliases it, or edits historical bindings. At the new trusted root, an authenticated primary prepares a valid worktree or in-place directory and launches a fresh task attempt with native execution binding, or creates a fresh authenticated ad-hoc run. Old sessions and artifacts remain historical.
 
 Manual tasks created with `hive_task_create()` follow the same DAG model as plan-backed tasks. The `goal`, `description`, `acceptanceCriteria`, `files`, and `references` fields are turned into `spec.md` content visible to the worker. To change downstream sequencing or scope after review feedback, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })`.
 

@@ -179,7 +179,7 @@ Features stored in `.hive/features/<name>/`:
     └── decisions.md   # Durable execution context
 ```
 
-Managed execution records live at `.hive/execution-attempts.json` (ExecutionAttempt history: `armed` -> `attached` -> `stopped` -> `finalized`). Worktree placement holds an exclusive claim through `stopped`; in-place placement records scope only and creates no filesystem exclusion. `.hive/background-jobs.json` is observational board bookkeeping, not an ownership registry. One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, stores them as `nativeTaskLeaseHistory`, and promotes exact worktree-path non-placeholder non-capability leases into unobserved attached ExecutionAttempt claims once. That is not an ongoing second admission API.
+Managed execution records live at `.hive/execution-attempts.json` (ExecutionAttempt history: `armed` -> `attached` -> `stopped` -> `finalized`). Worktree placement holds an exclusive claim through `stopped`; in-place placement records scope only and creates no filesystem exclusion. `.hive/background-jobs.json` is observational board bookkeeping, not an ownership registry. One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, stores them as `nativeTaskLeaseHistory`, and promotes exact worktree-path non-placeholder non-capability leases into unobserved attached ExecutionAttempt claims once. Migrated dispatched attempts and unmatched migrated leases stay `background: 'unknown'` unless one exact board record correlates the parent session, native call, and native task identity and therefore proves `background: true`. Board records never prove blocking mode; unmatched migrated attempts remain unknown. That is not an ongoing second admission API.
 
 ## Development Workflow
 
@@ -372,7 +372,7 @@ For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decom
 3. Ask the user via `question()` - NEVER plain text - and record the decision
 4. Call `hive_status()` again; only while status remains exactly blocked, call `hive_execution_prepare` with `scope.continueFromBlocked: true` and put the decision in the native Forager `task.prompt`
 
-**CRITICAL**: Blocked continuation starts a NEW worker in the SAME worktree.
+**CRITICAL**: Blocked continuation starts a NEW worker in the SAME existing worktree or exact in-place directory.
 The previous worker's progress is preserved. The operator decision belongs in the fresh primary-authored native prompt.
 
 Failed or retry work starts only after the stopped attempt is finalized and status is re-checked. The new worker receives a concise self-contained handoff. An unobserved feature-task attempt remains quarantined; do not create an alternate placement. Compaction may re-anchor a currently running worker; it is not re-delegation. After compaction, recover managed context with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Keep exact IDs. Do not replay historical assignment bodies.

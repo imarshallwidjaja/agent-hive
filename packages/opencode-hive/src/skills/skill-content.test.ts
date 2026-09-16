@@ -573,7 +573,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Post-Batch Code Review');
     expect(skill!.template).toContain('recommended review path');
     expect(skill!.template).toContain('One implementation assignment normally maps to one numbered task');
-    expect(skill!.template).toContain('new unchanged native Forager call in the same worktree');
+    expect(skill!.template).toContain('new unchanged native Forager call in the same existing worktree or exact in-place directory');
     expect(skill!.template).toContain('explicitly admitted native general/helper exceptions');
     expect(skill!.template).toContain('Other mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('Architect retains its bounded planning lane');
@@ -631,10 +631,17 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('placement: { kind: "in_place", directory: "/absolute/existing/directory" }');
     expect(hiveSkill).toContain('no Hive filesystem exclusion, Git isolation, rollback, commit, merge, or cleanup');
     expect(hiveSkill).toContain('call `hive_execution_finish` before `hive_status()` or any continuation');
+    expect(hiveSkill).toContain('Blocked task continuation must reuse the prior placement kind and identity');
     expect(hiveSkill).toContain('exact registered worktree identities');
     expect(hiveSkill).toContain('exact resolved directory');
+    expect(hiveSkill).toContain('Ad-hoc retries follow the current attempt');
     expect(hiveSkill).toContain('historical worktree repository selection');
     expect(hiveSkill).toContain('normalized and deduplicated');
+    expect(hiveSkill).toContain('existing worktree or in-place placement with a fresh worker session');
+    expect(hiveSkill).toContain('hive_worktree_discard({ task })` only when the current attempt is armed or finalized');
+    expect(hiveSkill).toContain('In-place placement: do not discard');
+    expect(hiveSkill).toContain('hive_task_update({ task, status: "pending" })');
+    expect(hiveSkill).not.toContain('A finalized retry or blocked continuation must reuse');
     expect(hiveSkill).not.toContain('Executes tasks in worktrees');
   });
 
@@ -785,7 +792,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Every Forager lane, including report-only diagnosis');
     expect(skill!.template).toContain('hive_execution_prepare');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
-    expect(skill!.template).toContain('Isolated worktrees are the managed placement');
+    expect(skill!.template).toContain('Managed placement is a registered Git worktree or an explicit `in_place` directory');
+    expect(skill!.template).toContain('Hive does not isolate it, roll it back, commit, or merge');
     expect(skill!.template).toContain('Unused arms expire after five minutes');
     expect(skill!.template).toContain('an unobserved ExecutionAttempt keeps a live claim on only that worktree');
     expect(skill!.template).toContain('Attached or uncertain feature-task scopes remain quarantined');

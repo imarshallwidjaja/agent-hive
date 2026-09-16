@@ -1673,9 +1673,13 @@ describe('README.md documentation', () => {
 
     it('documents fail-closed migrated background mode classification', () => {
       expect(dataModelContent).toContain('proves `background: true`');
-      expect(dataModelContent).toContain('No board match proves blocking mode');
+      expect(dataModelContent).toContain('Board records never prove blocking mode; unmatched migrated attempts remain unknown');
       expect(dataModelContent).toContain('Unknown mode accepts only exact structured background terminal evidence');
+      expect(dataModelContent).toContain('parent session, native call, and native task identity');
+      expect(dataModelContent).not.toContain('No board match proves blocking mode');
       expect(dataModelContent).not.toContain('one exact board record proves blocking or background mode');
+      expect(agentsContent).toContain('Board records never prove blocking mode; unmatched migrated attempts remain unknown');
+      expect(agentsContent).toContain('parent session, native call, and native task identity');
     });
 
     it('does not keep stale root README runtime counts', () => {

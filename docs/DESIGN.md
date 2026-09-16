@@ -47,7 +47,7 @@ When native execution is unobserved or unavailable, only the affected worktree i
 
 An **integration lock** is operation-scoped: source worktree, destination checkout, and composite repositories. Two integrations into the same destination checkout serialize. Integration while unrelated worktrees are active is allowed when source and destination do not conflict. Integration is refused while the source worktree has an active writer. Context, plan, and constraint mutations keep revision and hash conflict handling.
 
-`hive_existing_workspace_start` is unavailable. Isolated worktrees are the managed placement. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement. The native `general` or helper exception is not a replacement placement.
+`hive_existing_workspace_start` is unavailable. Managed placement is a registered Git worktree or an explicit `in_place` directory. Worktree placement holds exclusive claims and supports commit, merge, and cleanup. In-place placement records an existing directory for scope only: Hive does not isolate it, roll it back, commit, or merge. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement. The native `general` or helper exception is not a replacement placement.
 
 The background board is observational bookkeeping. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace. A parent may hold only one undispatched Forager arm. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation. `NativeTaskLease` values are diagnostic history after one-shot migration onto `nativeTaskLeaseHistory`; they are not scheduling authority.
 
@@ -250,7 +250,7 @@ When `.hive/repositories.json` defines project repositories, tasks with a `Repos
 
 ### Aggregate Commit Contract
 
-Composite commits iterate declared repos in stable sorted ID order:
+Composite commits iterate repositories in persisted placement order. Feature-task order matches the task `Repos:` list; it is not a universally sorted ID order.
 
 | Scenario | `committed` | `partial` | `error` |
 |---|---|---|---|
@@ -258,7 +258,7 @@ Composite commits iterate declared repos in stable sorted ID order:
 | All repos no changes | `false` | `false` | absent |
 | Some succeed, later repo fails | `false` | `true` | names failed repo |
 
-Top-level `sha` is the first repo result SHA in stable order. Per-repo SHAs are authoritative. `committed: true` only when at least one repo committed and none failed.
+Top-level `sha` is the first repo result SHA in that persisted order. Per-repo SHAs are authoritative. `committed: true` only when at least one repo committed and none failed.
 
 ### Aggregate Merge Contract
 

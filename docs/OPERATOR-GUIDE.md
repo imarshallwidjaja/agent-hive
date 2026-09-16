@@ -9,7 +9,7 @@ Agent Hive separates decisions from execution:
 - **You** set direction, review the plan, answer blockers, and approve risk.
 - The **primary agent** turns the request into a plan and orchestrates the work.
 - **Researchers and reviewers** inspect code, plans, or frozen review workspaces.
-- **Workers** implement approved tasks in isolated git worktrees.
+- **Workers** implement approved tasks in a managed Git worktree or an explicit in-place directory.
 - **`.hive/`** stores durable plans, task state, reports, comments, and recovery metadata.
 
 A plan does not authorize implementation until you approve it. `/dash-review` and `/vuln-review` bind to separate review primaries so the agent that wrote the change is not the one judging it.
@@ -197,7 +197,7 @@ After a worker fails or reports partial progress, inspect the placement and dirt
 
 Ad-hoc retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. `hive_execution_prepare` on an unobserved run is denied.
 
-When a worker is blocked, follow this order: observe exact stop evidence; call `hive_execution_finish` with `status: 'blocked'`, a primary-authored summary, and blocker details; call `hive_status`; obtain and record the operator decision; call `hive_status` again; then call `hive_execution_prepare` with `scope.continueFromBlocked: true`. Include the decision in the next unchanged native Forager prompt. The fresh worker reuses the finalized placement kind and exact worktree identities or exact in-place directory.
+When a worker is blocked, follow this order: observe exact stop evidence; call `hive_execution_finish` with `status: 'blocked'`, a primary-authored summary, and blocker details; call `hive_status`; obtain and record the operator decision; call `hive_status` again; then call `hive_execution_prepare` with `scope.continueFromBlocked: true`. Include the decision in the next unchanged native Forager prompt. The fresh worker reuses the finalized placement kind: the same existing worktree or exact in-place directory.
 
 Task finalization writes `<task>/reports/finalization-<operationId>.md`; task-local `report.md` contains the same report plus a history link to that immutable receipt. Ad-hoc finalization writes `.hive/execution-reports/finalization-<operationId>.md` and creates no task-local report. Each immutable report contains `Attempt`, `Operation`, `Disposition`, `Summary`, and `Git receipts`; a blocked report also contains the JSON `Blocker`. In both cases, the `reportPath` returned by `hive_execution_finish` is authoritative. Worker prose remains untrusted handoff input rather than an automatically preserved narrative.
 
