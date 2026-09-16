@@ -338,7 +338,7 @@ Canonical Forager flow:
 1. `hive_execution_prepare` with exact task or ad-hoc scope and `worktree` or `in_place` placement. It returns `attemptId`, scope, placement facts, references, expiry, and lifecycle reminders. IDs returned here are Hive lifecycle selectors, never native task arguments.
 2. Issue one unchanged native Forager `task({ subagent_type, description, prompt, background? })`. The primary authors those fields. The runtime consumes the sole arm, persists parent/call attachment before dispatch continues, and appends execution scope plus the dispatch-time standing-constraint snapshot. Caller-supplied headings do not suppress real injection.
 3. Observe structured stop evidence for that exact parent/call. A blocking `task()` return with defined output is terminal. A background task is terminal only on an authenticated native completion notification for the stored task/job identity. Worker prose, board state, `task_status` samples, idle events, timeouts, undefined after-hook output, and cancel acknowledgement are not stop evidence.
-4. Originating primary calls `hive_execution_finish({ attemptId, status, summary, blocker?, message? })`. Worktree placement commits through the crash-safe journal when a message is supplied. In-place and blocked finalization reject commit messages and skip Git. Worker text is report input, not authorization to finish.
+4. Originating primary calls `hive_execution_finish({ attemptId, status, summary, blocker?, message? })`. Blocked status requires `blocker.reason` to be nonblank; blocker data on other statuses is invalid. Worktree placement commits through the crash-safe journal when a message is supplied. In-place and blocked finalization reject commit messages and skip Git. Worker text is report input, not authorization to finish.
 5. Git integration remains explicit: `hive_merge` or `hive_adhoc_merge`, then cleanup. Merge requires finalized execution, matching receipt SHAs or no-change baselines, and no active source writer.
 
 Four placements use that same sequence:
@@ -347,6 +347,8 @@ Four placements use that same sequence:
 - Git ad-hoc work: prepare ad-hoc/worktree, native Forager, stop, finish with report and commit, then `hive_adhoc_merge`.
 - Non-Git ad-hoc work: prepare ad-hoc/in-place for an explicit directory, native Forager with live-edit instructions, stop, finish with a report only.
 - Feature-scoped non-Git work: prepare task/in-place, native Forager, retain feature catalog/context access, stop, finish task state without Git.
+
+An ad-hoc run must merge or clean up its finalized registered worktree before switching to in-place placement. This keeps historical worktree integration reachable without introducing a second attempt-scoped integration API.
 
 Independent worktrees whose registered identities do not intersect may be prepared and dispatched under one parent. Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. Unused arms expire after five minutes. Unobserved native execution quarantines only that worktree. Cancel acknowledgement is not proof of termination; live claims remain until termination is observed. There is no automatic claim release or force bypass.
 

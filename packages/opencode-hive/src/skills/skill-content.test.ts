@@ -577,7 +577,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('persisted `hive_status` blocker or immutable finalization report is authoritative');
     expect(skill!.template).toContain('never reconstruct blocker details from worker prose or task traces');
     expect(skill!.template).toContain('Only a finalized worktree attempt can be merged or cleaned up');
-    expect(skill!.template).toContain('has no merge or cleanup lifecycle');
+    expect(skill!.template).toContain('Merge or clean up a finalized registered worktree before switching the same `runId` to in-place placement');
     expect(skill!.template).toContain('explicitly admitted native general/helper exceptions');
     expect(skill!.template).toContain('Other mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('Architect retains its bounded planning lane');
@@ -602,6 +602,9 @@ describe('skill content', () => {
     expect(completeDevelopment).toContain('skill({ name: "verification" })');
     expect(completeDevelopment).toContain('hive_merge');
     expect(completeDevelopment).toContain('hive-helper');
+    expect(completeDevelopment).toContain('For finalized worktree placement');
+    expect(completeDevelopment).toContain('For finalized in-place placement');
+    expect(completeDevelopment).toContain('skip Hive merge and cleanup');
     expect(completeDevelopment).toContain('Do not present a generic merge/PR/keep/discard menu');
     expect(completeDevelopment).toContain('do not use raw `git merge` / `git worktree remove` as the Hive finish path');
     expect(completeDevelopment).not.toContain('present options');
@@ -617,8 +620,8 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('hive_execution_prepare({ scope: { kind: "task", task: "02-task-a" }, placement: { kind: "worktree" } })');
     expect(hiveSkill).toContain('subagent_type: "forager-worker"');
     expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "completed", summary, message })');
-    expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "blocked", summary, blocker })');
-    expect(hiveSkill.indexOf('hive_execution_finish({ attemptId, status: "blocked", summary, blocker })'))
+    expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "blocked", summary, blocker: { reason, options, recommendation, context } })');
+    expect(hiveSkill.indexOf('hive_execution_finish({ attemptId, status: "blocked", summary, blocker: { reason, options, recommendation, context } })'))
       .toBeLessThan(hiveSkill.indexOf('continueFromBlocked: true'));
     expect(hiveSkill).toContain('...(worktreeHasChanges ? { message:');
     expect(hiveSkill).toContain('status: "failed"');
@@ -645,8 +648,8 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('exact registered worktree identities');
     expect(hiveSkill).toContain('exact resolved directory');
     expect(hiveSkill).toContain('Only finalized worktree attempts can be merged or cleaned up');
-    expect(hiveSkill).toContain('governs disposition and report state only and has no merge or cleanup lifecycle');
-    expect(hiveSkill).toContain('historical worktree repository selection');
+    expect(hiveSkill).toContain('merge or clean up its registered finalized worktree');
+    expect(hiveSkill).toContain('Before switching an ad-hoc `runId` from worktree to in-place placement');
     expect(hiveSkill).toContain('normalized and deduplicated');
     expect(hiveSkill).toContain('existing worktree or in-place placement with a fresh worker session');
     expect(hiveSkill).toContain('hive_worktree_discard({ task })` only when the current attempt is armed or finalized');
@@ -672,6 +675,9 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
     expect(skill!.template).toContain('Blocking alternative, including every gate-closed session');
     expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch');
+    expect(skill!.template).toContain('Managed placement is a registered worktree or an explicit in-place directory');
+    expect(skill!.template).toContain('Only worktrees provide isolation and Git integration');
+    expect(skill!.template).toContain('in-place work is cooperative');
     expect(skill!.template).toContain('one primary goal');
     expect(skill!.template).toContain('fresh subagent session');
     expect(skill!.template).toContain('disjoint path ownership or sequence overlapping writers');

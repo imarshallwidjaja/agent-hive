@@ -276,6 +276,11 @@ describe('current documentation contract', () => {
       ['persisted blocker', /persisted blocker/i],
       ['reconstruction prohibition', /do not reconstruct blocker details from worker prose or task traces/i],
     ], 'Operator Guide blocker authority');
+    assert.match(recovery, /blocker containing a nonblank `reason`/i);
+    assert.match(recovery, /tasks\.list\[\]\.blocker/i);
+    assert.match(recovery, /legacy blocked status without blocker data requires inspection/i);
+    assert.match(recovery, /stale finalization writes immutable history without replacing the latest pointer/i);
+    assert.match(recovery, /merge or clean up a finalized registered worktree before switching.*in-place/is);
     assert.match(reviewOptions, /\/dash-review[\s\S]{0,160}without changing source/i);
     assert.match(reviewOptions, /\/vuln-review[\s\S]{0,220}does not[\s\S]{0,80}edit source[\s\S]{0,80}automatic fixes/i);
   });
@@ -305,6 +310,11 @@ describe('current documentation contract', () => {
     const recoveryTable = sectionText(readText('packages/opencode-hive/docs/HIVE-TOOLS.md'), 'Recovery fields and failure classification');
     assert.match(recoveryTable, /`phase`[\s\S]{0,180}`finalization`/i);
     assert.match(recoveryTable, /`FINALIZATION_STATE_UNKNOWN`\s*\|\s*`finalization`\s*\|\s*`unknown`\s*\|\s*`false`\s*\|\s*`inspect_state`/i);
+    assert.match(design, /updates `report\.md`[\s\S]{0,100}only when.*current task generation/i);
+    assert.match(design, /merge or clean up its registered finalized worktree before switching to in-place placement/i);
+    const toolDocs = readText('packages/opencode-hive/docs/HIVE-TOOLS.md');
+    assert.match(toolDocs, /status: 'blocked'[\s\S]{0,100}blocker\.reason[\s\S]{0,80}nonblank/i);
+    assert.match(toolDocs, /task `report\.md` links the receipt only for the current generation/i);
   });
 
   it('keeps detailed compatibility and operator contracts in the package README', () => {

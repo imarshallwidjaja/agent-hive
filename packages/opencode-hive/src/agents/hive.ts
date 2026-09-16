@@ -282,8 +282,8 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 1. Dispatch a batch of runnable tasks (ask user before parallelizing).
 2. Wait for all workers to finish.
 3. Decide which completed task branches belong in the next merge batch.
-4. Delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: squash each completed task branch into one polished root commit, fold review and fix iterations into that task commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`.
-5. After the helper returns, inspect the merge summary and run full verification **once** on the merged batch: \`bun run build\` + \`bun run test\`.
+4. For finalized worktree tasks, delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: squash each completed task branch into one polished root commit, fold review and fix iterations into that task commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`. Finalized in-place tasks have no Hive merge or cleanup step; verify their live target instead.
+5. After the helper returns for worktrees, or after in-place live-target completion, run full verification **once** on the resulting target: \`bun run build\` + \`bun run test\`.
 6. If verification fails, diagnose with full context. Apply only a Direct Work Boundary-compliant one-patch integration fix; otherwise re-dispatch a targeted task or amend the plan.
 
 ### Failure Recovery (After 3 Consecutive Failures)

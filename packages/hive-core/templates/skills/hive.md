@@ -289,10 +289,12 @@ task({
 [Worker edits the live directory and returns one terminal handoff]
   ↓
 hive_execution_finish({ attemptId, status: "completed", summary })
+  ↓
+[Primary verifies the live target; no Hive merge or cleanup]
 hive_status()
 ```
 
-After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. Failed or partial recovery without exact stop evidence must trace or wait and keep the placement quarantined; do not finish or prepare a retry. Only a stopped attempt may be finalized. The persisted `hive_status` blocker or immutable finalization report is authoritative for blocked continuation; never reconstruct blocker details from worker prose or task traces. Blocked task continuation must reuse the prior finalized placement: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. Only finalized worktree attempts can be merged or cleaned up. A later in-place attempt on the same `runId` governs disposition and report state only and has no merge or cleanup lifecycle. Any later worktree prepare still binds to the historical worktree repository selection; repository IDs are normalized and deduplicated, and a different worktree selection requires a new `runId`.
+After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. Failed or partial recovery without exact stop evidence must trace or wait and keep the placement quarantined; do not finish or prepare a retry. Only a stopped attempt may be finalized. The persisted `hive_status` blocker or immutable finalization report is authoritative for blocked continuation; never reconstruct blocker details from worker prose or task traces. Blocked task continuation must reuse the prior finalized placement: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. Only finalized worktree attempts can be merged or cleaned up. Before switching an ad-hoc `runId` from worktree to in-place placement, merge or clean up its registered finalized worktree. Repository IDs are normalized and deduplicated, and a different worktree selection requires a new `runId`.
 
 ### Parallel Execution
 
@@ -333,7 +335,7 @@ When worker returns `status: 'blocked'`:
 A blocked task continues in its existing worktree or in-place placement with a fresh worker session, but only after the stopped attempt is finalized:
 
 1. Observe exact stop evidence
-2. Finalize the stopped attempt: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker })`; retain its authoritative immutable report
+2. Finalize the stopped attempt with a nonblank blocker reason: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker: { reason, options, recommendation, context } })`; retain its authoritative immutable report
 3. Call `hive_status()` and read the persisted blocker details; do not reconstruct them from worker prose
 4. Ask the user via question tool and record the decision
 5. Call `hive_status()` again; continue only while status is exactly blocked

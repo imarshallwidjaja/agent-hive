@@ -77,6 +77,12 @@ export class ExecutionFinalizationService {
     const attempt = this.requireAuthorizedStoppedAttempt(input);
     const summary = input.summary.trim();
     if (!summary) throw new Error('Finalization summary must not be blank');
+    if (input.status === 'blocked' && !input.blocker?.reason.trim()) {
+      throw new Error('Blocked finalization requires a nonblank blocker reason');
+    }
+    if (input.status !== 'blocked' && input.blocker !== undefined) {
+      throw new Error('Blocker details are accepted only for blocked finalization');
+    }
     if (input.status === 'blocked' && input.message?.trim()) {
       throw new Error('Blocked finalization skips Git and does not accept a commit message');
     }

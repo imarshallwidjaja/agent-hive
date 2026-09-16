@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { PluginInput } from '@opencode-ai/plugin';
@@ -357,6 +358,45 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(fs.existsSync(path.join(prepared.placement.workspacePath, 'repos', 'web'))).toBe(false);
   });
 
+  it('merges and cleans up a provable migrated settled ad-hoc worktree', async () => {
+    initGit(TEST_ROOT);
+    const worktrees = new AdhocWorktreeService({
+      baseDir: TEST_ROOT,
+      hiveDir: path.join(TEST_ROOT, '.hive'),
+      repositoryResolver: { resolveRepositories: () => [] },
+    });
+    const info = await worktrees.create({ runId: 'legacy-settled' });
+    const workspacePath = fs.realpathSync(info.workspacePath ?? info.path);
+    const baseCommit = execSync('git rev-parse HEAD', { cwd: workspacePath, encoding: 'utf8' }).trim();
+    fs.writeFileSync(path.join(workspacePath, 'legacy.txt'), 'legacy\n');
+    execSync('git add legacy.txt && git commit -m "test: legacy settled"', { cwd: workspacePath, stdio: 'ignore' });
+    const reportLocator = '.hive/legacy-settled-report.md';
+    const reportBody = 'legacy settled report\n';
+    fs.writeFileSync(path.join(TEST_ROOT, reportLocator), reportBody);
+    const reportContentHash = createHash('sha256').update(reportBody).digest('hex');
+    const now = new Date().toISOString();
+    fs.writeFileSync(path.join(TEST_ROOT, '.hive', 'execution-attempts.json'), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [{
+        id: 'legacy-settled-attempt', kind: 'adhoc', runId: 'legacy-settled', originatingPrimarySession: 'legacy-primary',
+        workspaceIdentities: [workspacePath], branch: info.branch, baseCommit, dispatchState: 'settled',
+        observedOutcome: 'completed', reportLocator, reportContentHash, createdAt: now, updatedAt: now, settledAt: now,
+      }],
+    }, null, 2));
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-legacy-integration');
+
+    const merged = JSON.parse(await hooks.tool!.hive_adhoc_merge.execute({
+      runId: 'legacy-settled',
+      message: 'test: integrate legacy completion\n\nMerge a migration-verified source commit.',
+    }, context) as string);
+    expect(merged).toMatchObject({ success: true });
+    expect(fs.readFileSync(path.join(TEST_ROOT, 'legacy.txt'), 'utf8')).toBe('legacy\n');
+    const cleanup = JSON.parse(await hooks.tool!.hive_adhoc_cleanup.execute({
+      runId: 'legacy-settled', deleteBranch: true,
+    }, context) as string);
+    expect(cleanup).toMatchObject({ success: true, cleanup: { outcome: 'complete' } });
+  });
+
   it('does not let newer in-place history mask a finalized worktree repository selection', async () => {
     const repositories = initCompositeRepositories(TEST_ROOT);
     const liveDirectory = path.join(TEST_ROOT, 'live-after-worktree');
@@ -671,6 +711,43 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)?.phase).toBe('stopped');
   });
 
+  it.each([
+    ['blank summary', { status: 'failed', summary: '   ' }, 'INVALID_ARGUMENTS'],
+    ['missing blocked reason', { status: 'blocked', summary: 'Blocked.' }, 'INVALID_ARGUMENTS'],
+    ['blank blocked reason', { status: 'blocked', summary: 'Blocked.', blocker: { reason: '  ' } }, 'INVALID_ARGUMENTS'],
+    ['blocker on failed status', { status: 'failed', summary: 'Failed.', blocker: { reason: 'Wrong status.' } }, 'INVALID_ARGUMENTS'],
+  ] as const)('rejects %s finalization without mutation', async (_label, invalid, reasonCode) => {
+    const liveDirectory = path.join(TEST_ROOT, 'invalid-finalization');
+    fs.mkdirSync(liveDirectory);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-invalid-finalization');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'invalid-finalization' },
+      placement: { kind: 'in_place', directory: liveDirectory },
+    }, context) as string);
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-invalid-finalization' }, {
+      args: { subagent_type: 'forager-worker', description: 'Stop', prompt: 'Stop.' },
+    });
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID, nativeCallId: 'call-invalid-finalization', outputDefined: true,
+    });
+    const before = fs.readFileSync(path.join(TEST_ROOT, '.hive', 'execution-attempts.json'), 'utf8');
+
+    const result = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      ...invalid,
+    }, context) as string);
+
+    expect(result).toMatchObject({
+      success: false,
+      reason: 'invalid_finalization_arguments',
+      phase: 'validation',
+      reasonCode,
+      mutation: 'none',
+      action: 'correct_arguments',
+    });
+    expect(fs.readFileSync(path.join(TEST_ROOT, '.hive', 'execution-attempts.json'), 'utf8')).toBe(before);
+  });
+
   it('returns a conservative envelope when finalization throws an unclassified failure', async () => {
     const liveDirectory = path.join(TEST_ROOT, 'finish-failure');
     fs.mkdirSync(liveDirectory);
@@ -773,7 +850,7 @@ describe('hive_execution_prepare ad-hoc placement', () => {
   });
 
   it.each(['merge', 'cleanup'] as const)(
-    'leaves a newer ad-hoc in-place arm and stale worktree untouched during a stale %s race',
+    'rejects an in-place mode switch while finalized ad-hoc %s retires the worktree',
     async (operation) => {
       initGit(TEST_ROOT);
       const liveDirectory = path.join(TEST_ROOT, `live-${operation}-race`);
@@ -817,21 +894,27 @@ describe('hive_execution_prepare ad-hoc placement', () => {
             }, context)
           : hooks.tool!.hive_adhoc_cleanup.execute({ runId: `${operation}-race`, deleteBranch: true }, context);
         await enteredPromise;
-        const newer = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+        const deniedSwitch = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
           scope: { kind: 'adhoc', runId: `${operation}-race` },
           placement: { kind: 'in_place', directory: liveDirectory },
         }, context) as string);
         release();
         const staleResult = JSON.parse(await staleOperation as string);
 
-        expect(staleResult.success).toBe(false);
-        const persisted = JSON.parse(fs.readFileSync(path.join(TEST_ROOT, '.hive', 'execution-attempts.json'), 'utf8'));
-        expect(persisted.attempts.find((attempt: { id: string }) => attempt.id === newer.attemptId)).toMatchObject({
-          phase: 'armed', placement: { kind: 'in_place', directory: fs.realpathSync(liveDirectory) },
+        expect(deniedSwitch).toMatchObject({
+          success: false,
+          reason: 'adhoc_worktree_retirement_required',
+          mutation: 'none',
+          attemptId: prepared.attemptId,
         });
-        expect(fs.existsSync(prepared.placement.workspacePath)).toBe(true);
-        expect(execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' }))
-          .toContain(prepared.placement.branch);
+        expect(staleResult.success).toBe(true);
+        const persisted = JSON.parse(fs.readFileSync(path.join(TEST_ROOT, '.hive', 'execution-attempts.json'), 'utf8'));
+        expect(persisted.attempts).toHaveLength(1);
+        if (operation === 'merge') {
+          expect(fs.existsSync(prepared.placement.workspacePath)).toBe(true);
+        } else {
+          expect(fs.existsSync(prepared.placement.workspacePath)).toBe(false);
+        }
       } finally {
         release();
         get.mockRestore();
@@ -863,7 +946,7 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)?.phase).toBe('attached');
   });
 
-  it('does not merge or clean up a stale ad-hoc worktree after a newer in-place success', async () => {
+  it('requires a finalized ad-hoc worktree to be retired before switching to in-place', async () => {
     initGit(TEST_ROOT);
     const liveDirectory = path.join(TEST_ROOT, 'live-retry');
     fs.mkdirSync(liveDirectory);
@@ -885,35 +968,22 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       summary: 'Old worktree attempt failed.',
     }, context) as string).success).toBe(true);
 
-    const current = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+    const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
       scope: { kind: 'adhoc', runId: 'stale-adhoc' },
       placement: { kind: 'in_place', directory: liveDirectory },
     }, context) as string);
-    const currentArgs = { subagent_type: 'forager-worker', description: 'Current in-place attempt', prompt: 'Do it.' };
-    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-current-adhoc' }, { args: currentArgs });
-    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
-      originatingPrimarySession: context.sessionID,
-      nativeCallId: 'call-current-adhoc',
-      outputDefined: true,
-    });
-    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
-      attemptId: current.attemptId,
-      status: 'completed',
-      summary: 'Current in-place attempt completed.',
-    }, context) as string).success).toBe(true);
 
-    const merge = JSON.parse(await hooks.tool!.hive_adhoc_merge.execute({
-      runId: 'stale-adhoc',
-      message: 'feat: forbidden stale merge\n\nDo not merge the old worktree branch.',
-    }, context) as string);
-    expect(merge).toMatchObject({ success: false, reason: 'in_place_has_no_worktree' });
-    const cleanup = JSON.parse(await hooks.tool!.hive_adhoc_cleanup.execute({
-      runId: 'stale-adhoc', deleteBranch: true,
-    }, context) as string);
-    expect(cleanup).toMatchObject({ success: false, reason: 'in_place_has_no_worktree' });
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'adhoc_worktree_retirement_required',
+      mutation: 'none',
+      attemptId: old.attemptId,
+    });
+    expect(denied.nextAction).toContain('hive_adhoc_cleanup');
     expect(fs.existsSync(old.placement.workspacePath)).toBe(true);
     expect(execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' }))
       .toContain(old.placement.branch);
+    expect(new ExecutionAttemptService(TEST_ROOT).listAttempts()).toHaveLength(1);
   });
 
   it('does not register the removed preparation APIs or native schema hook', async () => {

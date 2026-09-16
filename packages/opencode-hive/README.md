@@ -383,7 +383,7 @@ Long task summaries use explicit `...[truncated]` markers and report paths. Cata
 
 The primary authors the native Forager prompt. At dispatch, Hive appends authenticated execution scope and the standing-constraint snapshot without replacing caller prompt bytes. Later session events cannot change a bound attempt identity. Catalog refresh preserves real user and assistant messages, including quoted catalog markers.
 
-A blocked continuation arms a new attempt using the same finalized placement: the exact registered worktree identities or exact resolved in-place directory. The persisted `hive_status` blocker or immutable finalization report is authoritative, and the operator decision belongs in the primary-authored native prompt. Only finalized worktree attempts can be merged or cleaned up; in-place attempts govern disposition and report state only.
+A blocked continuation arms a new attempt using the same finalized placement: the exact registered worktree identities or exact resolved in-place directory. Blocked finalization requires a nonblank blocker reason. The persisted `hive_status` blocker or immutable finalization report is authoritative, and the operator decision belongs in the primary-authored native prompt. Only finalized worktree attempts can be merged or cleaned up. Merge or clean up an ad-hoc run's finalized registered worktree before switching that run to in-place placement.
 
 ## Plan Format
 

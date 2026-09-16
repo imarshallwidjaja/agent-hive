@@ -188,7 +188,7 @@ Contains task context for the executing agent:
 `TaskService.sync` creates or refreshes plan-backed task folders and their `status.json` and `spec.md` files. `TaskService.create` owns the same files for append-only manual tasks. Execution preparation reads these records; it does not generate `spec.md`.
 
 ### Finalization reports
-Task finalization writes an immutable `reports/finalization-<operationId>.md` receipt and updates `report.md` with the same report plus a history link. Ad-hoc finalization writes `.hive/execution-reports/finalization-<operationId>.md` and has no task-local latest report. The returned `reportPath` is authoritative. Each report records the attempt, operation, disposition, primary-authored summary, and per-repository commit SHA or `NO_TRACKED_CHANGES`; blocked reports also record the blocker JSON.
+Task finalization always writes an immutable `reports/finalization-<operationId>.md` receipt. It updates `report.md` with the same report plus a history link only when the finalized attempt is still the current task generation; a stale finalization leaves the latest pointer unchanged. Ad-hoc finalization writes `.hive/execution-reports/finalization-<operationId>.md` and has no task-local latest report. The returned `reportPath` is authoritative. Each report records the attempt, operation, disposition, primary-authored summary, and per-repository commit SHA or `NO_TRACKED_CHANGES`; blocked reports also record a required nonblank blocker reason and optional blocker details.
 
 Blocked task status preserves that blocker JSON and exposes it unchanged through `hive_status.tasks.list[].blocker`. Continuation reuses the finalized placement: the exact registered worktree identity set for worktree placement, or the exact resolved directory for in-place placement.
 
@@ -198,7 +198,7 @@ Each task executes in an isolated workspace under `.hive/.worktrees/{feature}/{t
 
 Agents edit only the selected workspace. For worktree placement, `hive_execution_finish` collects the task diff after exact stop evidence. In-place placement records disposition only and never runs Git. `hive_worktree_discard` removes a worktree without applying changes, and is refused while that worktree has a live or unobserved claim.
 
-Only a finalized worktree attempt can be merged or cleaned up. A later in-place attempt governs disposition and report state only; it does not create, select, merge, or clean up a worktree.
+Only a finalized worktree attempt can be merged or cleaned up. An ad-hoc run must merge or clean up its registered finalized worktree before switching to in-place placement, so the historical branch cannot be stranded behind newer in-place history.
 
 ### Multi-Repo Composite Workspaces
 

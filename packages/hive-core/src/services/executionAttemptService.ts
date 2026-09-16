@@ -1,7 +1,8 @@
 /** Durable execution ownership for managed Forager dispatches. */
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   acquireLockSync,
   ensureDir,
@@ -120,6 +121,10 @@ interface LegacyExecutionAttemptsJson {
   attempts: LegacyExecutionAttempt[];
   nativeTaskLeaseHistory?: NativeTaskLease[];
   currentTaskAttempts?: Record<string, string>;
+}
+
+function hash(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function taskPointerKey(featureName: string, taskFolder: string): string {
@@ -683,6 +688,7 @@ export class ExecutionAttemptService {
       } else {
         attempt.observedOutcome = old.observedOutcome === 'expired' ? 'not_started' : old.observedOutcome;
         attempt.finalizedAt = old.settledAt ?? now;
+        attempt.finalization = this.migrateSettledFinalization(old, placement);
       }
       if (old.reportLocator) attempt.reportLocator = old.reportLocator;
       if (old.reportContentHash) attempt.reportContentHash = old.reportContentHash;
@@ -695,6 +701,61 @@ export class ExecutionAttemptService {
       ...(legacy.nativeTaskLeaseHistory ? { nativeTaskLeaseHistory: legacy.nativeTaskLeaseHistory } : {}),
       ...(legacy.currentTaskAttempts ? { currentTaskAttempts: legacy.currentTaskAttempts } : {}),
     };
+  }
+
+  private migrateSettledFinalization(
+    old: LegacyExecutionAttempt,
+    placement: Extract<ExecutionPlacement, { kind: 'worktree' }>,
+  ): ExecutionFinalizationReceipt | undefined {
+    if (old.observedOutcome !== 'completed'
+      || placement.workspaceIdentities.length !== 1
+      || !old.branch
+      || !old.baseCommit
+      || !old.reportLocator
+      || !old.reportContentHash) return undefined;
+    try {
+      const repositoryPath = placement.workspaceIdentities[0]!;
+      const reportPath = fs.realpathSync(path.resolve(this.projectRoot, old.reportLocator));
+      const relativeReport = path.relative(this.projectRoot, reportPath);
+      if (relativeReport.startsWith('..') || path.isAbsolute(relativeReport)
+        || !fs.statSync(repositoryPath).isDirectory()
+        || hash(fs.readFileSync(reportPath, 'utf8')) !== old.reportContentHash) return undefined;
+      const git = (...args: string[]) => execFileSync('git', ['-C', repositoryPath, ...args], { encoding: 'utf8' }).trim();
+      const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
+      const head = git('rev-parse', 'HEAD');
+      const expectedTree = git('rev-parse', `${head}^{tree}`);
+      const clean = git('status', '--porcelain').length === 0;
+      if (!clean || branch !== old.branch) return undefined;
+      const result = head === old.baseCommit ? 'no_changes' : 'committed';
+      if (result === 'committed' && git('rev-parse', `${head}^`) !== old.baseCommit) return undefined;
+      const repositories: ExecutionFinalizationRepositoryReceipt[] = [{
+        id: 'root',
+        path: repositoryPath,
+        branch,
+        baselineHead: old.baseCommit,
+        expectedTree,
+        result,
+        commitSha: head,
+      }];
+      placement.repositories = [{ id: 'root', path: repositoryPath, branch }];
+      const operationId = hash(`legacy-execution-finalization\0${old.id}`);
+      const intent = {
+        operationId,
+        expectedTaskAttempt: old.assignment?.taskAttempt,
+        reportInputHash: hash(`legacy-report\0${old.reportContentHash}`),
+        status: 'completed' as const,
+        summary: 'Migrated verified legacy completion.',
+        repositories,
+      };
+      return {
+        ...intent,
+        intentHash: hash(JSON.stringify(intent)),
+        report: { locator: relativeReport, contentHash: old.reportContentHash },
+        disposition: { applied: old.kind === 'task' },
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   private expireArmsInStore(store: ExecutionAttemptsJson, nowMs = Date.now()): boolean {

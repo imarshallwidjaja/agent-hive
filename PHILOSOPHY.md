@@ -6,7 +6,7 @@ Agent Hive is a plan-first workflow plugin for OpenCode. It coordinates independ
 
 Chat memory is ephemeral. Multi-step agent work fails when plans stay implicit, workers share one dirty tree, and "done" means a confident sentence instead of checked output.
 
-Hive keeps the durable pieces on disk under `.hive/`, requires human approval before feature execution, and runs implementation in isolated git worktrees so parallel work can merge deliberately.
+Hive keeps the durable pieces on disk under `.hive/`, requires human approval before feature execution, and records managed implementation in either isolated Git worktrees or explicit in-place directories. Isolation and deliberate Git integration apply only to worktree placement.
 
 ## Core principles
 

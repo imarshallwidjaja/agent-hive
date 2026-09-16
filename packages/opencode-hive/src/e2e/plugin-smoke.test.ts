@@ -5077,8 +5077,10 @@ describe('managed execution attachment', () => {
       status: 'blocked',
       blocker,
     }));
-    expect(status.nextAction).toContain('exact persisted blocker from tasks.list');
+    expect(status.nextAction).toContain('tasks.list[].blocker');
     expect(status.nextAction).toContain('authoritative immutable finalization report');
+    expect(status.nextAction).toContain('continueFromBlocked: true');
+    expect(status.nextAction).toContain('same finalized placement');
     expect(status.nextAction).not.toContain('hive_task_trace');
   });
 
@@ -5109,6 +5111,27 @@ describe('managed execution attachment', () => {
       expect(execSync('git worktree list --porcelain', { cwd: root, encoding: 'utf8' })).toBe(beforeWorktrees);
     },
   );
+
+  it('fails closed with recovery guidance for legacy blocked status without blocker data', async () => {
+    const feature = 'legacy-blocker-recovery';
+    const { hooks, context } = await harness(root, 'primary-legacy-blocker');
+    await seedFeature(hooks, context, feature);
+    new TaskService(root).update(feature, '01-first-task', { status: 'blocked' });
+
+    const status = JSON.parse(await hooks.tool!.hive_status.execute({ feature }, context) as string);
+    expect(status.nextAction).toContain('migrated legacy blocked status without authoritative blocker data');
+    expect(status.nextAction).toContain('do not arm continuation');
+    const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+      placement: { kind: 'worktree' },
+    }, context) as string);
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'legacy_blocker_recovery_required',
+      mutation: 'none',
+    });
+    expect(new ExecutionAttemptService(root).listAttempts()).toEqual([]);
+  });
 
   it.each([
     ['worktree', 'in_place'],
@@ -5175,6 +5198,71 @@ describe('managed execution attachment', () => {
       attemptId: prior.attemptId,
     });
     expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+  });
+
+  it('continues a migrated blocked task in its persisted non-default attempt slot', async () => {
+    const feature = 'continue-migrated-slot';
+    const first = await harness(root, 'primary-migrated-slot');
+    await seedFeature(first.hooks, first.context, feature);
+    const worktrees = new WorktreeService({
+      baseDir: root,
+      hiveDir: path.join(root, '.hive'),
+      repositoryResolver: { resolveRepositories: () => [] },
+      taskRepoResolver: { resolveTaskRepoIds: () => undefined },
+    });
+    const slot = 'legacy-retry';
+    const registered = await worktrees.create(feature, '01-first-task', undefined, slot);
+    const taskService = new TaskService(root);
+    const allocation = taskService.allocateWorkerAttempt(feature, '01-first-task');
+    taskService.update(feature, '01-first-task', { status: 'blocked' });
+    const taskStatusPath = path.join(
+      root,
+      '.hive',
+      'features',
+      resolveFeatureDirectoryName(root, feature),
+      'tasks',
+      '01-first-task',
+      'status.json',
+    );
+    const taskStatus = JSON.parse(fs.readFileSync(taskStatusPath, 'utf8'));
+    taskStatus.blocker = { reason: 'Recovered legacy blocker.' };
+    fs.writeFileSync(taskStatusPath, JSON.stringify(taskStatus, null, 2));
+    const now = new Date().toISOString();
+    const workspacePath = fs.realpathSync(registered.workspacePath ?? registered.path);
+    fs.writeFileSync(path.join(root, '.hive', 'execution-attempts.json'), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [{
+        id: 'legacy-blocked-slot',
+        kind: 'task',
+        featureName: feature,
+        taskFolder: '01-first-task',
+        originatingPrimarySession: 'primary-migrated-slot',
+        assignment: { taskAttempt: allocation.attempt },
+        workspaceIdentities: [workspacePath],
+        attemptSlot: slot,
+        branch: registered.branch,
+        baseCommit: registered.commit,
+        dispatchState: 'settled',
+        observedOutcome: 'blocked',
+        createdAt: now,
+        updatedAt: now,
+        settledAt: now,
+      }],
+      currentTaskAttempts: { [`${feature}\u001f01-first-task`]: 'legacy-blocked-slot' },
+    }, null, 2));
+    const restarted = await harness(root, 'primary-migrated-slot');
+
+    const prepared = JSON.parse(await restarted.hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+      placement: { kind: 'worktree' },
+    }, restarted.context) as string);
+
+    expect(prepared).toMatchObject({
+      success: true,
+      placement: { kind: 'worktree', attemptSlot: slot, workspacePath },
+    });
+    expect(fs.existsSync(worktrees.getWorktreePath(feature, '01-first-task'))).toBe(false);
+    expect(await worktrees.get(feature, '01-first-task', slot)).not.toBeNull();
   });
 
   it('rejects blocked continuation after its finalized worktree identity moves without mutation', async () => {

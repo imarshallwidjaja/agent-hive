@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'node:crypto';
 import simpleGit from 'simple-git';
 import { ExecutionAttemptService } from './executionAttemptService.js';
 import { ExecutionFinalizationService, type ExecutionFinalizationCheckpoint } from './executionFinalizationService.js';
@@ -572,6 +573,68 @@ describe('ExecutionAttemptService armed native attachment', () => {
     const persisted = JSON.parse(fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8'));
     expect(persisted.schemaVersion).toBe(2);
     expect(JSON.stringify(persisted)).not.toContain('old-launch');
+  });
+
+  it('migrates a provable legacy settled completion into an integration receipt', async () => {
+    cleanup();
+    const identity = worktree('legacy-settled');
+    await initializeRepository(identity);
+    const git = simpleGit(identity);
+    const baseCommit = (await git.revparse(['HEAD'])).trim();
+    fs.writeFileSync(path.join(identity, 'settled.txt'), 'settled\n');
+    await git.add('-A').commit('test: legacy settled\n\nCreate a provable legacy source commit.');
+    const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    const head = (await git.revparse(['HEAD'])).trim();
+    const reportLocator = '.hive/legacy-report.md';
+    const reportBody = 'verified legacy report\n';
+    fs.mkdirSync(path.join(TEST_DIR, '.hive'), { recursive: true });
+    fs.writeFileSync(path.join(TEST_DIR, reportLocator), reportBody);
+    const reportContentHash = createHash('sha256').update(reportBody).digest('hex');
+    const now = new Date().toISOString();
+    fs.writeFileSync(getExecutionAttemptsPath(TEST_DIR), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [{
+        id: 'legacy-settled', kind: 'adhoc', runId: 'legacy-settled', originatingPrimarySession: 'legacy-parent',
+        workspaceIdentities: [identity], branch, baseCommit, dispatchState: 'settled', observedOutcome: 'completed',
+        reportLocator, reportContentHash, createdAt: now, updatedAt: now, settledAt: now,
+      }],
+    }, null, 2));
+
+    const migrated = new ExecutionAttemptService(TEST_DIR, 'runtime-new').getAttempt('legacy-settled');
+    expect(migrated).toMatchObject({
+      phase: 'finalized',
+      observedOutcome: 'completed',
+      finalization: {
+        status: 'completed',
+        report: { locator: reportLocator, contentHash: reportContentHash },
+        repositories: [{
+          id: 'root', branch, baselineHead: baseCommit, result: 'committed', commitSha: head,
+        }],
+      },
+    });
+  });
+
+  it('fails closed when a legacy settled completion cannot prove its report and commit identity', async () => {
+    cleanup();
+    const identity = worktree('legacy-unverifiable');
+    await initializeRepository(identity);
+    const git = simpleGit(identity);
+    const baseCommit = (await git.revparse(['HEAD'])).trim();
+    const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    const now = new Date().toISOString();
+    fs.mkdirSync(path.dirname(getExecutionAttemptsPath(TEST_DIR)), { recursive: true });
+    fs.writeFileSync(getExecutionAttemptsPath(TEST_DIR), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [{
+        id: 'legacy-unverifiable', kind: 'adhoc', runId: 'legacy-unverifiable', originatingPrimarySession: 'legacy-parent',
+        workspaceIdentities: [identity], branch, baseCommit, dispatchState: 'settled', observedOutcome: 'completed',
+        reportLocator: '.hive/missing-report.md', reportContentHash: 'missing', createdAt: now, updatedAt: now,
+      }],
+    }, null, 2));
+
+    const migrated = new ExecutionAttemptService(TEST_DIR, 'runtime-new').getAttempt('legacy-unverifiable');
+    expect(migrated).toMatchObject({ phase: 'finalized', observedOutcome: 'completed' });
+    expect(migrated).not.toHaveProperty('finalization');
   });
 
   it('extracts legacy native leases once and preserves exact live worktree quarantine', () => {
@@ -1275,6 +1338,21 @@ describe('ExecutionFinalizationService crash recovery', () => {
     status.status = 'in_progress';
     fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
     const finalizer = new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts);
+    const before = fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8');
+    await expect(finalizer.finish({
+      attemptId: stale.id,
+      originatingPrimarySession: 'primary-a',
+      status: 'blocked',
+      summary: 'Need operator input.',
+    })).rejects.toThrow(/nonblank blocker reason/i);
+    await expect(finalizer.finish({
+      attemptId: stale.id,
+      originatingPrimarySession: 'primary-a',
+      status: 'failed',
+      summary: 'Failed.',
+      blocker: { reason: 'Not valid for failed status.' },
+    })).rejects.toThrow(/only for blocked/i);
+    expect(fs.readFileSync(getExecutionAttemptsPath(TEST_DIR), 'utf8')).toBe(before);
     await expect(finalizer.finish({
       attemptId: stale.id,
       originatingPrimarySession: 'primary-a',

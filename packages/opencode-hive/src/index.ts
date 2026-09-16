@@ -1975,7 +1975,7 @@ const plugin: Plugin = async (ctx) => {
       return deny(contextFailure('context_authorization_denied', 'The Forager recipient has no live authenticated execution scope.'));
     }
     if (identity.hasExistingWorkspace) {
-      return deny(contextFailure('context_authorization_denied', 'Existing-workspace placement is unavailable. Isolated worktrees are the managed placement.'));
+      return deny(contextFailure('context_authorization_denied', 'Unarmed existing-workspace access is unavailable. Managed Forager execution requires a prepared worktree or explicit in-place placement.'));
     }
     return { kind: 'delegated', stored };
   };
@@ -2840,6 +2840,18 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           error: `Blocked continuation requires task status blocked; current status is ${taskInfo.status}.`,
         });
       }
+      if (input.scope.continueFromBlocked === true
+        && !taskService.getRawStatus(feature, input.scope.task)?.blocker?.reason.trim()) {
+        return respond({
+          success: false,
+          reason: 'legacy_blocker_recovery_required',
+          mutation: 'none',
+          feature,
+          task: input.scope.task,
+          error: 'Blocked continuation requires authoritative persisted blocker data with a nonblank reason.',
+          nextAction: 'Inspect the preserved historical report and task state. Do not continue until an explicit blocker is recovered through a new managed disposition.',
+        });
+      }
       if (taskInfo.status === 'done') return respond({ success: false, reason: 'task_done', feature, task: input.scope.task });
       if (taskInfo.status === 'blocked' && input.scope.continueFromBlocked !== true) {
         return respond({ success: false, reason: 'blocked_resume_required', feature, task: input.scope.task });
@@ -2892,6 +2904,22 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       return respond({ success: false, reason: 'invalid_argument', error: 'scope.kind must be task or adhoc.' });
     }
 
+    if (scope.kind === 'adhoc' && input.placement.kind === 'in_place') {
+      const historicalWorktree = latestAdhocWorktreeAttempt(scope.runId);
+      const registeredWorktree = await adhocWorktreeService.get(scope.runId);
+      if (historicalWorktree?.phase === 'finalized' && registeredWorktree) {
+        return respond({
+          success: false,
+          reason: 'adhoc_worktree_retirement_required',
+          mutation: 'none',
+          runId: scope.runId,
+          attemptId: historicalWorktree.id,
+          error: 'Finalize integration or cleanup for the existing ad-hoc worktree before switching this run to in-place placement.',
+          nextAction: 'Use hive_adhoc_merge or hive_adhoc_cleanup for the finalized worktree, then retry in-place preparation.',
+        });
+      }
+    }
+
     let preparationResourcePaths: string[];
     if (input.placement.kind === 'in_place') {
       const requestedDirectory = input.placement.directory;
@@ -2920,12 +2948,15 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         });
       }
     } else if (scope.kind === 'task') {
-      const existing = await worktreeService.get(scope.feature, scope.task);
+      const attemptSlot = continuationPlacement?.kind === 'worktree'
+        ? continuationPlacement.attemptSlot
+        : undefined;
+      const existing = await worktreeService.get(scope.feature, scope.task, attemptSlot);
       preparationResourcePaths = existing?.repos
         ? Object.values(existing.repos).map(repo => normalizeResourcePath(repo.path))
         : [existing
           ? normalizeResourcePath(existing.workspacePath ?? existing.path)
-          : normalizeResourcePath(worktreeService.getWorktreePath(scope.feature, scope.task))];
+          : normalizeResourcePath(worktreeService.getWorktreePath(scope.feature, scope.task, attemptSlot))];
     } else {
       const existing = await adhocWorktreeService.get(scope.runId);
       preparationResourcePaths = existing?.repos
@@ -2964,6 +2995,18 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
             feature: scope.feature,
             task: scope.task,
             error: `Blocked continuation requires task status blocked; current status is ${taskInfo.status}.`,
+          });
+        }
+        if (input.scope.continueFromBlocked === true
+          && !taskService.getRawStatus(scope.feature, scope.task)?.blocker?.reason.trim()) {
+          return respond({
+            success: false,
+            reason: 'legacy_blocker_recovery_required',
+            mutation: 'none',
+            feature: scope.feature,
+            task: scope.task,
+            error: 'Blocked continuation requires authoritative persisted blocker data with a nonblank reason.',
+            nextAction: 'Inspect the preserved historical report and task state. Do not continue until an explicit blocker is recovered through a new managed disposition.',
           });
         }
         if (taskInfo.status === 'done') return respond({ success: false, reason: 'task_done', feature: scope.feature, task: scope.task });
@@ -3018,7 +3061,11 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
             });
           }
         } else {
-          const registered = await worktreeService.get(scope.feature, scope.task);
+          const registered = await worktreeService.get(
+            scope.feature,
+            scope.task,
+            continuationPlacement.attemptSlot,
+          );
           const registeredIdentities = registered?.repos
             ? Object.values(registered.repos).map(repository => normalizeResourcePath(repository.path))
             : registered
@@ -3099,8 +3146,11 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       placement = existingAttempt.placement;
     } else if (input.placement.kind === 'worktree' && scope.kind === 'task') {
       const { feature, task } = scope;
-      const existing = await worktreeService.get(feature, task);
-      const worktree = existing ?? await worktreeService.create(feature, task);
+      const attemptSlot = continuationPlacement?.kind === 'worktree'
+        ? continuationPlacement.attemptSlot
+        : undefined;
+      const existing = await worktreeService.get(feature, task, attemptSlot);
+      const worktree = existing ?? await worktreeService.create(feature, task, undefined, attemptSlot);
       const workspacePath = fs.realpathSync(worktree.workspacePath ?? worktree.path);
       const repositories = worktree.repos
         ? Object.entries(worktree.repos).map(([id, repository]) => ({
@@ -3114,12 +3164,13 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         workspacePath,
         workspaceIdentities: repositories.map(repository => repository.path),
         repositories,
+        ...(attemptSlot ? { attemptSlot } : {}),
         branch: worktree.branch,
         baseCommit: worktree.commit,
       };
       if (!existing) {
         cleanupCreatedPlacement = async () => {
-          return (await worktreeService.remove(feature, task, true)).cleanup.outcome;
+          return (await worktreeService.remove(feature, task, true, {}, attemptSlot)).cleanup.outcome;
         };
       }
     } else if (input.placement.kind === 'worktree' && scope.kind === 'adhoc') {
@@ -6087,9 +6138,11 @@ NEXT: Ask your first clarifying question about this feature.`;
             });
           } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            const invalidArguments = /must not be blank|does not accept a commit message|commit message is required|non-empty one-line subject/i.test(errorMessage);
+            const invalidCommitMessage = /does not accept a commit message|commit message is required|non-empty one-line subject/i.test(errorMessage);
+            const invalidArguments = invalidCommitMessage
+              || /must not be blank|requires a nonblank blocker reason|blocker details are accepted only/i.test(errorMessage);
             if (invalidArguments) {
-              const classification = classifyWorktreeOutcome('INVALID_COMMIT_MESSAGE');
+              const classification = classifyWorktreeOutcome(invalidCommitMessage ? 'INVALID_COMMIT_MESSAGE' : 'INVALID_ARGUMENTS');
               return respond({
                 success: false,
                 reason: 'invalid_finalization_arguments',
@@ -6348,6 +6401,11 @@ NEXT: Ask your first clarifying question about this feature.`;
           const taskInfo = taskService.get(feature, task);
           if (!taskInfo) return failure(`Task "${task}" not found`);
           const finalizedAttempt = executionAttemptService.currentTaskAttempt(feature, task);
+          if (finalizedAttempt?.phase === 'finalized'
+            && finalizedAttempt.observedOutcome === 'completed'
+            && !finalizedAttempt.finalization) {
+            return failure('The legacy settled task has no verifiable canonical integration receipt. Inspect its preserved report, branch, base commit, and registered worktree; integrate or retire it manually only after proving source commit identity.');
+          }
           if (taskInfo.status !== 'done' || finalizedAttempt?.phase !== 'finalized'
             || finalizedAttempt.observedOutcome !== 'completed'
             || !(await placementMatchesRegisteredWorktree(finalizedAttempt))) {
@@ -6434,6 +6492,17 @@ NEXT: Ask your first clarifying question about this feature.`;
                 nextAction: 'Call hive_execution_finish from the originating primary after exact native stop evidence.',
               });
             }
+            if (attempt.observedOutcome === 'completed' && !attempt.finalization) {
+              return respond({
+                success: false,
+                reason: 'legacy_finalization_unverifiable',
+                mutation: 'none',
+                runId,
+                attemptId: attempt.id,
+                error: 'The legacy settled execution has no verifiable canonical integration receipt.',
+                nextAction: 'Inspect the preserved report, branch, base commit, and registered worktree. Integrate or retire it manually only after proving the source commit identity.',
+              });
+            }
             if (!(await placementMatchesRegisteredWorktree(attempt))) {
               return respond({
                 success: false,
@@ -6518,6 +6587,17 @@ NEXT: Ask your first clarifying question about this feature.`;
                 runId,
                 error: 'Ad-hoc execution must be finalized before cleanup.',
                 nextAction: 'Call hive_execution_finish from the originating primary after exact native stop evidence.',
+              });
+            }
+            if (attempt.observedOutcome === 'completed' && !attempt.finalization) {
+              return respond({
+                success: false,
+                reason: 'legacy_finalization_unverifiable',
+                mutation: 'none',
+                runId,
+                attemptId: attempt.id,
+                error: 'The legacy settled execution has no verifiable canonical cleanup receipt.',
+                nextAction: 'Inspect the preserved report, branch, base commit, and registered worktree. Remove it manually only after proving which source history is being retired.',
               });
             }
             if (!(await placementMatchesRegisteredWorktree(attempt))) {
@@ -7145,7 +7225,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
 
           const getNextAction = (
             planStatus: string | null,
-            tasks: Array<{ status: string; folder: string; traceTaskId?: string }>,
+            tasks: Array<{ status: string; folder: string; traceTaskId?: string; blocker?: unknown }>,
             runnableTasks: string[],
             hasPlan: boolean,
           ): string => {
@@ -7164,7 +7244,10 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             }
             const blocked = tasks.find(t => t.status === 'blocked');
             if (blocked) {
-              return `Read the exact persisted blocker from tasks.list for ${blocked.folder}, or its authoritative immutable finalization report, then collect the operator decision and arm blocked continuation with hive_execution_prepare.`;
+              if (!blocked.blocker) {
+                return `Task ${blocked.folder} has migrated legacy blocked status without authoritative blocker data. Inspect its preserved historical report and task state; do not arm continuation until an explicit blocker is recovered through a new managed disposition.`;
+              }
+              return `Confirm exact stop evidence and finish the attempt with hive_execution_finish({ status: "blocked", blocker: { reason: "..." } }); then call hive_status and read tasks.list[].blocker for ${blocked.folder} or the authoritative immutable finalization report; collect and record the operator decision; call hive_status again; while status remains exactly blocked, call hive_execution_prepare({ scope: { kind: "task", task: ${JSON.stringify(blocked.folder)}, continueFromBlocked: true }, placement: <same finalized placement> }); then launch a new unchanged native Forager task() call with the decision in its prompt.`;
             }
             const failed = tasks.find(t => t.status === 'failed' || t.status === 'partial');
             if (failed) {

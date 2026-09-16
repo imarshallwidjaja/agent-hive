@@ -790,6 +790,12 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).not.toContain('continueFrom: "blocked"');
     });
 
+    it('describes both managed placements without claiming in-place isolation', () => {
+      expect(SWARM_BEE_PROMPT).toContain('Managed placement is either a registered Git worktree or an explicit in-place directory');
+      expect(SWARM_BEE_PROMPT).toContain('Only worktrees provide isolation, commit, merge, and cleanup');
+      expect(SWARM_BEE_PROMPT).toContain('only worktrees carry exclusion and Git lifecycle');
+    });
+
     it('forbids blocked-continuation loops on non-blocked statuses', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Never loop `scope.continueFromBlocked` on non-blocked statuses');
     });

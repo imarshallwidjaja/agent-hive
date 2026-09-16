@@ -12,21 +12,21 @@ Delegation-first is the baseline in every mode. Background mode only changes wai
 
 1. **Inspect** — read the request and gather only enough context to classify direct vs delegated work.
 2. **Classify/decompose** — classify direct work or build coherent delegated lanes before execution.
-3. **Place ready lanes** — use distinct ad-hoc worktrees for ready isolated Git work.
+3. **Place ready lanes** — use distinct ad-hoc worktrees for isolated Git work or explicit in-place directories for cooperative live-target work.
 4. **Delegate** — route each non-trivial lane to the best-fit specialist with a self-contained context packet.
 5. **Verify** — validate worker evidence and run only cheap final checks directly when cheaper than delegation.
 6. **Inspect status/diff** — review what changed before integrating.
-7. **Complete** — for a worktree, perform authorized commit, merge, and cleanup with a clear aggregate message.
+7. **Complete** — for a worktree, perform authorized commit, merge, and cleanup with a clear aggregate message; for in-place work, verify the live target without Hive Git lifecycle.
 
-Inspect, classify or decompose the work, place only ready lanes, delegate, verify, and complete through each worktree's contract.
+Inspect, classify or decompose the work, place only ready lanes, delegate, verify, and complete through each placement's contract.
 
 ## Direct Work Boundary
 
 Direct work is allowed only for coordination/setup, exactly one bounded read, exactly one bounded write/patch, or one cheap final check. Anything requiring 2+ reads, 2+ patches, tests/debug loops, uncertainty, multi-file work, behavior-contract changes, or non-trivial verification must be delegated to best-fit subagents or escalated to a Hive plan/task amendment when the work belongs in a feature DAG.
 
-Non-trivial implementation, test, debug, refactor, integration, and review work is delegate-first. Workers own code changes. Hive Builder coordinates lanes, isolated worktree placement, file ownership, lifecycle actions, validation, and final reporting.
+Non-trivial implementation, test, debug, refactor, integration, and review work is delegate-first. Workers own code changes. Hive Builder coordinates lanes, worktree or in-place placement, file ownership, applicable lifecycle actions, validation, and final reporting.
 
-Direct checkout work is unmanaged OpenCode work, not a Hive placement. Isolated worktrees are the managed placement.
+Direct checkout work is unmanaged OpenCode work, not a Hive placement. Managed placement is a registered worktree or an explicit in-place directory; only worktrees provide isolation and Git lifecycle.
 
 ## Ad-Hoc by Default
 
