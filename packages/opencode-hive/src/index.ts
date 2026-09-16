@@ -2825,6 +2825,11 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     let placement: ExecutionAttempt['placement'];
     let references: Record<string, string>;
     let cleanupCreatedPlacement: (() => Promise<'complete' | 'partial' | 'failed' | 'not_requested'>) | undefined;
+    let taskAdmissionSnapshot: {
+      workerAttempt: number | undefined;
+      attemptId: string | undefined;
+      phase: ExecutionAttempt['phase'] | undefined;
+    } | undefined;
 
     if (input.scope.kind === 'task') {
       if (!isNonBlankString(input.scope.task)) {
@@ -2843,6 +2848,12 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       }
       const dependency = checkDependencies(feature, input.scope.task);
       if (!dependency.allowed) return respond({ success: false, reason: 'dependencies_not_done', error: dependency.error });
+      const currentAttempt = executionAttemptService.currentTaskAttempt(feature, input.scope.task);
+      taskAdmissionSnapshot = {
+        workerAttempt: taskService.getRawStatus(feature, input.scope.task)?.workerAttempt,
+        attemptId: currentAttempt?.id,
+        phase: currentAttempt?.phase,
+      };
       scope = { kind: 'task', feature, task: input.scope.task };
       references = {
         spec: `.hive/features/${resolveFeatureDirectoryName(directory, feature)}/tasks/${input.scope.task}/spec.md`,
@@ -2876,6 +2887,34 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     }
 
     return withIntegrationLock([scopeLockKey(scope)!], () => withLaunchPreparationLock(preparationResourcePaths, async () => {
+      const revalidateTaskAdmission = (): string | undefined => {
+        if (scope.kind !== 'task' || !taskAdmissionSnapshot) return undefined;
+        const taskInfo = taskService.get(scope.feature, scope.task);
+        if (!taskInfo) return respond({ success: false, reason: 'task_not_found', feature: scope.feature, task: scope.task });
+        if (taskInfo.status === 'done') return respond({ success: false, reason: 'task_done', feature: scope.feature, task: scope.task });
+        if (taskInfo.status === 'blocked' && input.scope.continueFromBlocked !== true) {
+          return respond({ success: false, reason: 'blocked_resume_required', feature: scope.feature, task: scope.task });
+        }
+        const dependency = checkDependencies(scope.feature, scope.task);
+        if (!dependency.allowed) return respond({ success: false, reason: 'dependencies_not_done', error: dependency.error });
+        const taskStatus = taskService.getRawStatus(scope.feature, scope.task);
+        const currentAttempt = executionAttemptService.currentTaskAttempt(scope.feature, scope.task);
+        if (taskStatus?.workerAttempt !== taskAdmissionSnapshot.workerAttempt
+          || currentAttempt?.id !== taskAdmissionSnapshot.attemptId
+          || currentAttempt?.phase !== taskAdmissionSnapshot.phase) {
+          return respond({
+            success: false,
+            reason: 'stale_transition',
+            mutation: 'none',
+            feature: scope.feature,
+            task: scope.task,
+            error: 'Task execution state changed while preparation waited for its scope lock.',
+          });
+        }
+        return undefined;
+      };
+      const initialAdmissionFailure = revalidateTaskAdmission();
+      if (initialAdmissionFailure) return initialAdmissionFailure;
       let existingAttempt: ExecutionAttempt | undefined;
       try {
         existingAttempt = executionAttemptService.preflightArm({
@@ -2992,6 +3031,14 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       placement = { kind: 'in_place', directory: fs.realpathSync(input.placement.directory!) };
     }
 
+    const admissionFailure = revalidateTaskAdmission();
+    if (admissionFailure) {
+      if (cleanupCreatedPlacement) {
+        const cleanupOutcome = await cleanupCreatedPlacement();
+        if (cleanupOutcome !== 'complete') throw new Error(`Stale execution placement cleanup was ${cleanupOutcome}`);
+      }
+      return admissionFailure;
+    }
     let armed;
     try {
       armed = executionAttemptService.arm({

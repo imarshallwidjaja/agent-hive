@@ -754,9 +754,14 @@ describe('ExecutionFinalizationService crash recovery', () => {
     expect((await simpleGit(repository).log()).all).toHaveLength(2);
   });
 
-  it.each(['committed', 'no_changes'] as const)(
-    'revalidates a persisted %s result before accepting a retry',
-    async (result) => {
+  it.each([
+    ['committed', 'tracked'],
+    ['committed', 'untracked'],
+    ['no_changes', 'tracked'],
+    ['no_changes', 'untracked'],
+  ] as const)(
+    'rejects %s receipt retries with unstaged %s drift',
+    async (result, drift) => {
       cleanup();
       fs.mkdirSync(TEST_DIR, { recursive: true });
       const repository = path.join(TEST_DIR, 'repo');
@@ -775,21 +780,25 @@ describe('ExecutionFinalizationService crash recovery', () => {
         if (checkpoint === 'after_repository_receipt:root') throw new Error('receipt persisted');
       }), attempts);
       await expect(failing.finish(input)).rejects.toThrow('receipt persisted');
-      fs.writeFileSync(path.join(repository, 'drift.txt'), 'drift\n');
-      if (result === 'committed') {
-        await simpleGit(repository).add('-A');
-      } else {
-        await simpleGit(repository).add('-A').commit('test: drift after receipt\n\nMove HEAD after the durable result receipt.');
-      }
+      fs.writeFileSync(
+        path.join(repository, drift === 'tracked' ? 'base.txt' : 'drift.txt'),
+        'unstaged drift\n',
+      );
 
       await expect(new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts).finish(input))
         .rejects.toThrow(/changed after its .* finalization receipt/i);
       expect(attempts.getAttempt(attemptId)?.phase).toBe('stopped');
       expect(() => attempts.assertWorkspacesIdle([repository])).toThrow(/claimed/i);
+      expect((await simpleGit(repository).status()).isClean()).toBe(false);
     },
   );
 
-  it('revalidates all persisted composite results before committing a remaining repository', async () => {
+  it.each([
+    ['committed', 'tracked'],
+    ['committed', 'untracked'],
+    ['no_changes', 'tracked'],
+    ['no_changes', 'untracked'],
+  ] as const)('rejects composite %s receipt retries with unstaged %s drift before mutating another repository', async (result, drift) => {
     cleanup();
     fs.mkdirSync(TEST_DIR, { recursive: true });
     setupTask('feature-a', '01-task');
@@ -814,7 +823,7 @@ describe('ExecutionFinalizationService crash recovery', () => {
     }).attempt;
     attempts.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
     attempts.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
-    fs.writeFileSync(path.join(api, 'api.txt'), 'api\n');
+    if (result === 'committed') fs.writeFileSync(path.join(api, 'api.txt'), 'api\n');
     fs.writeFileSync(path.join(web, 'web.txt'), 'web\n');
     const input = {
       attemptId: attempt.id,
@@ -827,13 +836,16 @@ describe('ExecutionFinalizationService crash recovery', () => {
       if (checkpoint === 'after_repository_receipt:api') throw new Error('api receipt persisted');
     }), attempts);
     await expect(failing.finish(input)).rejects.toThrow('api receipt persisted');
-    fs.writeFileSync(path.join(api, 'drift.txt'), 'drift\n');
-    await simpleGit(api).add('-A').commit('test: drift committed api\n\nMove the already receipted repository HEAD.');
+    fs.writeFileSync(
+      path.join(api, drift === 'tracked' ? 'base.txt' : 'drift.txt'),
+      'unstaged drift\n',
+    );
 
     await expect(new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts).finish(input))
-      .rejects.toThrow(/api changed after its committed finalization receipt/i);
+      .rejects.toThrow(new RegExp(`api changed after its ${result === 'committed' ? 'committed' : 'no-change'} finalization receipt`, 'i'));
     expect((await simpleGit(web).log()).all).toHaveLength(1);
     expect(attempts.getAttempt(attempt.id)?.phase).toBe('stopped');
+    expect(() => attempts.assertWorkspacesIdle([api, web])).toThrow(/claimed/i);
   });
 
   it('fails closed when a commit hook mutates the immutable commit message', async () => {

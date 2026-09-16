@@ -149,19 +149,14 @@ export class ExecutionFinalizationService {
     let current = this.attempts.beginFinalization(attempt.id, receipt);
     this.checkpoint('after_intent');
 
-    if (current.placement.kind === 'worktree' && current.finalization!.repositories.length > 0) {
-      const resolved = await this.resolveWorktreeRepositories(current);
-      for (const repository of current.finalization!.repositories.filter(repository => repository.result)) {
-        const live = resolved.find(candidate => candidate.id === repository.id)!;
-        await this.validateRepositoryResult(repository, live.path, current.finalization!.message);
-      }
-    }
+    await this.validateRecordedRepositoryResults(current);
 
     for (const repository of current.finalization!.repositories) {
       await this.finishRepository(current.id, repository.id, repository.path, current.finalization!.message);
     }
 
     current = this.attempts.getAttempt(attempt.id)!;
+    await this.validateRecordedRepositoryResults(current);
     const reportBody = this.renderReport(current);
     const reportHash = hash(reportBody);
     const reportPath = this.reportPath(current, operationId);
@@ -190,6 +185,7 @@ export class ExecutionFinalizationService {
     }
     this.checkpoint('after_disposition');
     this.checkpoint('before_release');
+    await this.validateRecordedRepositoryResults(current);
     current = this.attempts.finalize(current.id, input.status);
     return { attempt: current, reportPath, currentTaskUnchanged };
   }
@@ -281,7 +277,7 @@ export class ExecutionFinalizationService {
     const indexTree = (await git.raw(['write-tree'])).trim();
     const baselineTree = (await git.revparse([`${repository.baselineHead}^{tree}`])).trim();
     if (baselineTree === repository.expectedTree) {
-      if (head !== repository.baselineHead || indexTree !== repository.expectedTree) {
+      if (head !== repository.baselineHead || indexTree !== repository.expectedTree || !(await git.status()).isClean()) {
         throw new Error(`Repository ${repositoryId} changed after its immutable no-change intent was recorded`);
       }
       this.attempts.recordRepositoryResult(attemptId, repositoryId, 'no_changes', repository.baselineHead!);
@@ -310,6 +306,17 @@ export class ExecutionFinalizationService {
     this.checkpoint(`after_repository_receipt:${repositoryId}`);
   }
 
+  private async validateRecordedRepositoryResults(attempt: ExecutionAttempt): Promise<void> {
+    if (attempt.placement.kind !== 'worktree' || !attempt.finalization?.repositories.some(repository => repository.result)) {
+      return;
+    }
+    const resolved = await this.resolveWorktreeRepositories(attempt);
+    for (const repository of attempt.finalization.repositories.filter(repository => repository.result)) {
+      const live = resolved.find(candidate => candidate.id === repository.id)!;
+      await this.validateRepositoryResult(repository, live.path, attempt.finalization.message);
+    }
+  }
+
   private async validateRepositoryResult(
     repository: ExecutionFinalizationReceipt['repositories'][number],
     repositoryPath: string,
@@ -317,10 +324,11 @@ export class ExecutionFinalizationService {
   ): Promise<void> {
     const git = simpleGit(repositoryPath);
     const head = (await git.revparse(['HEAD'])).trim();
+    const clean = (await git.status()).isClean();
     if (repository.result === 'committed') {
       const indexTree = (await git.raw(['write-tree'])).trim();
       if (!repository.commitSha || !repository.baselineHead || !repository.expectedTree || !message
-        || head !== repository.commitSha || indexTree !== repository.expectedTree) {
+        || head !== repository.commitSha || indexTree !== repository.expectedTree || !clean) {
         throw new Error(`Repository ${repository.id} changed after its committed finalization receipt was recorded`);
       }
       await this.validateCommit(
@@ -336,7 +344,7 @@ export class ExecutionFinalizationService {
     if (repository.result === 'no_changes') {
       const indexTree = (await git.raw(['write-tree'])).trim();
       if (!repository.baselineHead || !repository.expectedTree
-        || head !== repository.baselineHead || indexTree !== repository.expectedTree) {
+        || head !== repository.baselineHead || indexTree !== repository.expectedTree || !clean) {
         throw new Error(`Repository ${repository.id} changed after its no-change finalization receipt was recorded`);
       }
     }
@@ -350,12 +358,13 @@ export class ExecutionFinalizationService {
     expectedTree: string,
     message: string,
   ): Promise<void> {
-    const [parent, tree, actualMessage] = await Promise.all([
+    const [parent, tree, actualMessage, status] = await Promise.all([
       git.revparse([`${commitSha}^`]).then(value => value.trim()),
       git.revparse([`${commitSha}^{tree}`]).then(value => value.trim()),
       git.raw(['show', '-s', '--format=%B', commitSha]).then(value => value.trim()),
+      git.status(),
     ]);
-    if (parent !== baselineHead || tree !== expectedTree || actualMessage !== message) {
+    if (parent !== baselineHead || tree !== expectedTree || actualMessage !== message || !status.isClean()) {
       throw new Error(`Repository ${repositoryId} HEAD moved ambiguously after finalization intent; explicit recovery is required`);
     }
   }

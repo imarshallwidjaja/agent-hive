@@ -17,7 +17,7 @@ import { BUILTIN_SKILLS } from "../skills/registry.generated.js";
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { buildPluginManifest, HIVE_TOOL_NAMES, SUPPORTED_PLUGIN_HOOKS } from '../utils/plugin-manifest.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from '../task-trace.js';
-import { AdhocWorktreeService, ConfigService, ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, ExecutionAttemptService, FeatureService, SessionService, WorktreeService, resolveFeatureDirectoryName } from 'hive-core';
+import { AdhocWorktreeService, ConfigService, ContextMutationError, ContextService, CUSTOM_AGENT_BASES, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, ExecutionAttemptService, ExecutionFinalizationService, FeatureService, SessionService, TaskService, WorktreeService, resolveFeatureDirectoryName } from 'hive-core';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: "http://localhost:1" }) as unknown as PluginInput["client"];
 const ROOT_SESSION_CLIENT = {
@@ -4869,6 +4869,71 @@ describe('managed execution attachment', () => {
       featureName: 'feature-a',
     });
   });
+
+  it('does not reopen a task finalized while preparation waits for the scope lock', async () => {
+    const fixture = await harness(root, 'finalize-prepare-primary');
+    await seedFeature(fixture.hooks, fixture.context, 'finalize-prepare');
+    const prepared = await prepareNamedTask(
+      fixture.hooks, fixture.context, 'finalize-prepare', '01-first-task',
+    );
+    const attached = await attachPreparedTask(
+      fixture.hooks, fixture.parents, fixture.context,
+      'finalize-prepare-call', 'finalize-prepare-child',
+    );
+    await stopAttachedTask(
+      fixture.hooks, fixture.context,
+      'finalize-prepare-call', 'finalize-prepare-child', attached.args,
+    );
+    const before = new ExecutionAttemptService(root).listAttempts();
+    const beforeStatus = new TaskService(root).getRawStatus('finalize-prepare', '01-first-task')!;
+    let entered!: () => void;
+    let release!: () => void;
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    const originalFinish = ExecutionFinalizationService.prototype.finish;
+    const finish = spyOn(ExecutionFinalizationService.prototype, 'finish').mockImplementation(async function (...args) {
+      entered();
+      await paused;
+      return originalFinish.apply(this, args);
+    });
+    const originalGet = WorktreeService.prototype.get;
+    let preparationPassedOuterGate!: () => void;
+    const preparationPassedOuterGatePromise = new Promise<void>(resolve => { preparationPassedOuterGate = resolve; });
+    const get = spyOn(WorktreeService.prototype, 'get').mockImplementation(async function (...args) {
+      const result = await originalGet.apply(this, args);
+      if (args[0] === 'finalize-prepare') preparationPassedOuterGate();
+      return result;
+    });
+
+    try {
+      const finalizing = fixture.hooks.tool!.hive_execution_finish.execute({
+        attemptId: prepared.attemptId,
+        status: 'completed',
+        summary: 'Finalize before queued preparation can arm.',
+      }, fixture.context);
+      await enteredPromise;
+      const preparing = prepareNamedTask(
+        fixture.hooks, fixture.context, 'finalize-prepare', '01-first-task',
+      );
+      await preparationPassedOuterGatePromise;
+      await Bun.sleep(0);
+      release();
+
+      expect(JSON.parse(await finalizing as string)).toMatchObject({ success: true, phase: 'finalized' });
+      const denied = await preparing;
+      expect(['task_done', 'stale_transition']).toContain(denied.reason);
+      const after = new ExecutionAttemptService(root).listAttempts();
+      const afterStatus = new TaskService(root).getRawStatus('finalize-prepare', '01-first-task')!;
+      expect(afterStatus.status).toBe('done');
+      expect(afterStatus.workerAttempt).toBe(beforeStatus.workerAttempt);
+      expect(after.map(attempt => attempt.id)).toEqual(before.map(attempt => attempt.id));
+      expect(after.find(attempt => attempt.id === prepared.attemptId)?.phase).toBe('finalized');
+    } finally {
+      release();
+      get.mockRestore();
+      finish.mockRestore();
+    }
+  }, 30_000);
 
   it('denies another primary before creating Git resources for the same feature task', async () => {
     const owner = await harness(root, 'primary-owner');
