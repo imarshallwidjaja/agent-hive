@@ -448,6 +448,13 @@ export class WorktreeService {
     }
   }
 
+  private async validateWorktreeBranch(worktreePath: string, branch: string, repositoryId: string): Promise<void> {
+    const currentBranch = (await this.getGit(worktreePath).revparse(['--abbrev-ref', 'HEAD'])).trim();
+    if (currentBranch !== branch) {
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: current branch does not match the registered branch`);
+    }
+  }
+
   private trustedRepositoriesForManifest(manifest: WorkspaceManifest): Map<string, ResolvedRepository> {
     const trustedRepositories = this.resolveRepositories();
     if (!trustedRepositories?.length) {
@@ -840,6 +847,7 @@ export class WorktreeService {
         const trusted = trustedById.get(id)!;
         const repoWtPath = path.join(compositeRoot, entry.path);
         await this.validateExactWorktreeRegistration(repoWtPath, trusted.path, id);
+        await this.validateWorktreeBranch(repoWtPath, entry.branch, id);
         let commit = manifest.repos[id].commit;
         commit = (await this.getGit(repoWtPath).revparse(["HEAD"])).trim();
         repos[id] = { path: repoWtPath, branch: manifest.repos[id].branch, commit };
@@ -868,6 +876,7 @@ export class WorktreeService {
       throw error;
     }
     await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
+    await this.validateWorktreeBranch(worktreePath, branchName, 'legacy');
     const worktreeGit = this.getGit(worktreePath);
     const commit = (await worktreeGit.revparse(["HEAD"])).trim();
     return {

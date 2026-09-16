@@ -479,6 +479,59 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)?.phase).toBe('attached');
   });
 
+  it('does not merge or clean up a stale ad-hoc worktree after a newer in-place success', async () => {
+    initGit(TEST_ROOT);
+    const liveDirectory = path.join(TEST_ROOT, 'live-retry');
+    fs.mkdirSync(liveDirectory);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-stale-adhoc');
+    const old = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'stale-adhoc' },
+      placement: { kind: 'worktree' },
+    }, context) as string);
+    const oldArgs = { subagent_type: 'forager-worker', description: 'Old worktree attempt', prompt: 'Do it.' };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-old-adhoc' }, { args: oldArgs });
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-old-adhoc',
+      outputDefined: true,
+    });
+    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: old.attemptId,
+      status: 'failed',
+      summary: 'Old worktree attempt failed.',
+    }, context) as string).success).toBe(true);
+
+    const current = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'stale-adhoc' },
+      placement: { kind: 'in_place', directory: liveDirectory },
+    }, context) as string);
+    const currentArgs = { subagent_type: 'forager-worker', description: 'Current in-place attempt', prompt: 'Do it.' };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-current-adhoc' }, { args: currentArgs });
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-current-adhoc',
+      outputDefined: true,
+    });
+    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: current.attemptId,
+      status: 'completed',
+      summary: 'Current in-place attempt completed.',
+    }, context) as string).success).toBe(true);
+
+    const merge = JSON.parse(await hooks.tool!.hive_adhoc_merge.execute({
+      runId: 'stale-adhoc',
+      message: 'feat: forbidden stale merge\n\nDo not merge the old worktree branch.',
+    }, context) as string);
+    expect(merge).toMatchObject({ success: false, reason: 'in_place_has_no_worktree' });
+    const cleanup = JSON.parse(await hooks.tool!.hive_adhoc_cleanup.execute({
+      runId: 'stale-adhoc', deleteBranch: true,
+    }, context) as string);
+    expect(cleanup).toMatchObject({ success: false, reason: 'in_place_has_no_worktree' });
+    expect(fs.existsSync(old.placement.workspacePath)).toBe(true);
+    expect(execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' }))
+      .toContain(old.placement.branch);
+  });
+
   it('does not register the removed preparation APIs or native schema hook', async () => {
     const { hooks } = await hooksFor(TEST_ROOT, 'primary-surface');
     expect(hooks.tool!.hive_worktree_start).toBeUndefined();

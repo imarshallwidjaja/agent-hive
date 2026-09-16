@@ -456,13 +456,36 @@ export class ExecutionAttemptService {
 
   recordFinalizationDisposition(
     attemptId: string,
-    disposition: { applied: boolean; currentTaskUnchanged?: boolean },
+    disposition: { applied: boolean },
   ): ExecutionAttempt {
     return this.updateFinalization(attemptId, receipt => {
       if (receipt.disposition && JSON.stringify(receipt.disposition) !== JSON.stringify(disposition)) {
         throw new Error('Finalization disposition conflicts with its durable receipt');
       }
       receipt.disposition = disposition;
+    });
+  }
+
+  applyCurrentTaskDisposition(
+    attemptId: string,
+    updates: Parameters<TaskService['finalizeWorkerAttempt']>[3],
+  ): { applied: boolean } {
+    return this.withStore(store => {
+      const attempt = this.requireAttempt(store, attemptId);
+      if (attempt.kind !== 'task' || !attempt.featureName || !attempt.taskFolder || !attempt.taskAttempt) {
+        throw new Error(`Execution attempt ${attemptId} is not a task attempt`);
+      }
+      if (!this.isCurrentTaskAttemptInStore(store, attempt.featureName, attempt.taskFolder, attempt.id)) {
+        return { applied: false };
+      }
+      return {
+        applied: this.taskService.finalizeWorkerAttempt(
+          attempt.featureName,
+          attempt.taskFolder,
+          attempt.taskAttempt,
+          updates,
+        ).applied,
+      };
     });
   }
 
@@ -728,7 +751,7 @@ export class ExecutionAttemptService {
     if (left.kind !== 'worktree' || right.kind !== 'worktree') return false;
     return left.workspacePath === right.workspacePath
       && left.workspaceIdentities.length === right.workspaceIdentities.length
-      && left.workspaceIdentities.every(identity => right.workspaceIdentities.includes(identity))
+      && left.workspaceIdentities.every((identity, index) => right.workspaceIdentities[index] === identity)
       && left.attemptSlot === right.attemptSlot
       && left.branch === right.branch
       && left.baseCommit === right.baseCommit;

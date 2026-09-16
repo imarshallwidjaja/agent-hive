@@ -4218,6 +4218,23 @@ Do it.
     expect(mergeResult.message).toContain('merged successfully');
   });
 
+  it('rejects one mismatched composite .git backlink before committing any repository', async () => {
+    const feature = 'mr-finalization-backlink';
+    const { repos, finish } = await setupCompositeTaskWorktree(
+      ['api', 'web'], feature, 'sess_mr_finalization_backlink',
+    );
+    fs.writeFileSync(path.join(repos.api.path, 'api.txt'), 'api\n');
+    fs.writeFileSync(path.join(repos.web.path, 'web.txt'), 'web\n');
+    fs.writeFileSync(path.join(repos.web.path, '.git'), fs.readFileSync(path.join(repos.api.path, '.git'), 'utf8'));
+    const apiHead = execSync('git rev-parse HEAD', { cwd: path.join(testRoot, 'repos', 'api'), encoding: 'utf8' }).trim();
+    const webHead = execSync('git rev-parse HEAD', { cwd: path.join(testRoot, 'repos', 'web'), encoding: 'utf8' }).trim();
+
+    const result = await finish();
+    expect(result).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(execSync('git rev-parse HEAD', { cwd: path.join(testRoot, 'repos', 'api'), encoding: 'utf8' }).trim()).toBe(apiHead);
+    expect(execSync('git rev-parse HEAD', { cwd: path.join(testRoot, 'repos', 'web'), encoding: 'utf8' }).trim()).toBe(webHead);
+  });
+
   it('hive_merge (composite multi-repo): all-success returns aggregate repos with flattened repoId:path filesChanged', async () => {
     const feature = 'mr-merge-multi';
     const { hooks, toolContext, repos, finish } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_merge_multi');
@@ -5096,6 +5113,103 @@ describe('managed execution attachment', () => {
       message: 'feat: merge feature result\n\nIntegrate the finalized background execution.',
     }, context) as string);
     expect(merged.success).toBe(true);
+  });
+
+  it.each(['replaced', 'symlinked', 'detached'] as const)('rejects a %s task worktree before finalization Git mutation', async (damage) => {
+    const { hooks, context, parents } = await harness(root, `primary-${damage}`);
+    await seedFeature(hooks, context, 'feature-a');
+    const prepared = await prepareTask(hooks, context, 'feature-a');
+    const attached = await attachPreparedTask(hooks, parents, context, `call-${damage}`, `child-${damage}`);
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'intended.txt'), 'intended\n');
+    await stopAttachedTask(hooks, context, `call-${damage}`, `child-${damage}`, attached.args);
+    const projectHead = execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
+    if (damage === 'detached') {
+      execSync('git checkout --detach', { cwd: prepared.placement.workspacePath });
+    } else {
+      execSync(`git worktree remove --force "${prepared.placement.workspacePath}"`, { cwd: root });
+      if (damage === 'replaced') {
+        fs.mkdirSync(prepared.placement.workspacePath, { recursive: true });
+        initGit(prepared.placement.workspacePath);
+      } else {
+        fs.symlinkSync(root, prepared.placement.workspacePath, 'dir');
+      }
+    }
+
+    const finalized = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Must fail before Git mutation.',
+      message: TEST_COMMIT_MESSAGE,
+    }, context) as string);
+    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim()).toBe(projectHead);
+  });
+
+  it('rejects a mismatched task .git administration backlink before finalization Git mutation', async () => {
+    const { hooks, context, parents } = await harness(root, 'primary-backlink');
+    await seedFeature(hooks, context, 'feature-a');
+    const prepared = await prepareTask(hooks, context, 'feature-a');
+    const attached = await attachPreparedTask(hooks, parents, context, 'call-backlink', 'child-backlink');
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'intended.txt'), 'intended\n');
+    await stopAttachedTask(hooks, context, 'call-backlink', 'child-backlink', attached.args);
+    const sibling = path.join(root, '.hive', '.worktrees', 'backlink-sibling');
+    execSync(`git worktree add -b hive/backlink-sibling "${sibling}" HEAD`, { cwd: root });
+    fs.writeFileSync(
+      path.join(prepared.placement.workspacePath, '.git'),
+      fs.readFileSync(path.join(sibling, '.git'), 'utf8'),
+    );
+    const projectHead = execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
+
+    const finalized = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Must reject the mismatched backlink.',
+      message: TEST_COMMIT_MESSAGE,
+    }, context) as string);
+    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(finalized.error).toMatch(/backlink/i);
+    expect(execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim()).toBe(projectHead);
+  });
+
+  it('does not expose or remove a stale task worktree after a newer in-place success', async () => {
+    const { hooks, context, parents } = await harness(root, 'primary-stale-task');
+    await seedFeature(hooks, context, 'feature-a');
+    const old = await prepareTask(hooks, context, 'feature-a');
+    const oldAttached = await attachPreparedTask(hooks, parents, context, 'call-old-task', 'child-old-task');
+    await stopAttachedTask(hooks, context, 'call-old-task', 'child-old-task', oldAttached.args);
+    const oldFinalized = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: old.attemptId,
+      status: 'failed',
+      summary: 'Old worktree attempt failed.',
+    }, context) as string);
+    expect(oldFinalized.success).toBe(true);
+    const oldWorktree = old.placement.workspacePath;
+    const oldBranch = old.placement.branch;
+    const live = path.join(root, 'live-retry');
+    fs.mkdirSync(live);
+    const current = await prepareTask(hooks, context, 'feature-a', { kind: 'in_place', directory: live });
+    const currentAttached = await attachPreparedTask(hooks, parents, context, 'call-current-task', 'child-current-task');
+    await stopAttachedTask(hooks, context, 'call-current-task', 'child-current-task', currentAttached.args);
+    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: current.attemptId,
+      status: 'completed',
+      summary: 'In-place retry completed.',
+    }, context) as string).success).toBe(true);
+
+    const status = JSON.parse(await hooks.tool!.hive_status.execute({ feature: 'feature-a' }, context) as string);
+    expect(status.helperStatus.mergeEligibility).toContainEqual(expect.objectContaining({
+      task: '01-first-task', eligible: false, reasonCode: 'FINALIZED_PLACEMENT_MISMATCH',
+    }));
+    const merge = JSON.parse(await hooks.tool!.hive_merge.execute({
+      feature: 'feature-a', task: '01-first-task', strategy: 'squash', message: TEST_COMMIT_MESSAGE,
+    }, context) as string);
+    expect(merge.success).toBe(false);
+    const discard = JSON.parse(await hooks.tool!.hive_worktree_discard.execute({
+      feature: 'feature-a', task: '01-first-task',
+    }, context) as string);
+    expect(discard).toMatchObject({ success: false, reason: 'in_place_has_no_worktree', mutation: 'none' });
+    expect(fs.existsSync(oldWorktree)).toBe(true);
+    expect(execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' })).toContain(oldBranch);
   });
 
   it('lets two primaries prepare and attach different task worktrees', async () => {

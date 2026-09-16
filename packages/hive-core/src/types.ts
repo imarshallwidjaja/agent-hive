@@ -412,6 +412,7 @@ export type ExecutionFinalizationStatus = 'completed' | 'partial' | 'failed' | '
 export interface ExecutionFinalizationRepositoryReceipt {
   id: string;
   path: string;
+  branch: string;
   baselineHead?: string;
   expectedTree?: string;
   result?: 'committed' | 'no_changes';
@@ -429,7 +430,7 @@ export interface ExecutionFinalizationReceipt {
   message?: string;
   repositories: ExecutionFinalizationRepositoryReceipt[];
   report?: { locator: string; contentHash: string };
-  disposition?: { applied: boolean; currentTaskUnchanged?: boolean };
+  disposition?: { applied: boolean };
 }
 
 export interface ExecutionAttempt {

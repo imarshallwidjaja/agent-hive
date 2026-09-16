@@ -316,6 +316,7 @@ function buildBackgroundDelegationPromptAppendix(
 // ============================================================================
 import {
   WorktreeService,
+  WorktreeTopologyMismatchError,
   AdhocWorktreeService,
   ReviewWorkspaceService,
   ReviewEvidenceBundleService,
@@ -1504,11 +1505,42 @@ const plugin: Plugin = async (ctx) => {
 
   const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
   const helperAuthBinds = new Map<string, HelperAuthBind>();
+  const registeredWorktreePlacement = async (attempt: ExecutionAttempt) => {
+    if (attempt.placement.kind !== 'worktree') {
+      throw new Error(`Execution attempt ${attempt.id} does not have a worktree placement`);
+    }
+    const info = attempt.kind === 'task'
+      ? await worktreeService.get(attempt.featureName!, attempt.taskFolder!, attempt.placement.attemptSlot)
+      : await adhocWorktreeService.get(attempt.runId!);
+    if (!info) throw new Error(`Execution attempt ${attempt.id} registered worktree is unavailable`);
+    const workspacePath = fs.realpathSync(info.workspacePath ?? info.path);
+    const repositories = info.repos
+      ? Object.entries(info.repos).map(([id, repository]) => ({
+          id,
+          path: fs.realpathSync(repository.path),
+          branch: repository.branch,
+        }))
+      : [{ id: 'root', path: workspacePath, branch: info.branch }];
+    return { workspacePath, repositories };
+  };
+  const placementMatchesRegisteredWorktree = async (attempt: ExecutionAttempt): Promise<boolean> => {
+    if (attempt.phase !== 'finalized' || attempt.placement.kind !== 'worktree') return false;
+    const placement = attempt.placement;
+    try {
+      const registered = await registeredWorktreePlacement(attempt);
+      return registered.workspacePath === placement.workspacePath
+        && registered.repositories.length === placement.workspaceIdentities.length
+        && registered.repositories.every((repository, index) =>
+          repository.path === placement.workspaceIdentities[index])
+        && registered.repositories[0]?.branch === placement.branch;
+    } catch {
+      return false;
+    }
+  };
   const executionFinalizationService = new ExecutionFinalizationService(
     directory,
-    {},
+    { resolveWorktreePlacement: registeredWorktreePlacement },
     executionAttemptService,
-    taskService,
   );
   const settleAttemptFromNativeBackground = (event: {
     taskId: string;
@@ -2652,6 +2684,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     feature: string,
     task: string,
     attemptSlot: string | undefined,
+    finalizedAttempt: ExecutionAttempt,
     options: { resetTaskPending: boolean },
   ): Promise<void> => {
     const worktree = await worktreeService.get(feature, task, attemptSlot);
@@ -2669,6 +2702,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       destCheckouts: [projectRoot],
       label: `feature task '${feature}/${task}'`,
     }, async () => {
+      if (!(await placementMatchesRegisteredWorktree(finalizedAttempt))) {
+        throw new WorktreeTopologyMismatchError(`Finalized execution ${finalizedAttempt.id} no longer matches the registered worktree placement`);
+      }
       await worktreeService.remove(feature, task, false, {}, attemptSlot);
       if (options.resetTaskPending) {
         taskService.update(feature, task, { status: 'pending' });
@@ -5822,27 +5858,54 @@ NEXT: Ask your first clarifying question about this feature.`;
             || executionAttemptService.isCurrentTaskAttempt(feature, task, requested.id);
 
           try {
+            const discardAttempt = requested ?? executionAttemptService.currentTaskAttempt(feature, task);
+            if (!discardAttempt) {
+              return respond({
+                ok: false,
+                terminal: true,
+                success: false,
+                reason: 'execution_not_finalized',
+                feature,
+                task,
+                error: 'Discard requires an exact finalized worktree execution placement.',
+              });
+            }
+            if (discardAttempt.phase === 'attached' || discardAttempt.phase === 'stopped') {
+              return respond({
+                ok: false,
+                terminal: true,
+                success: false,
+                reason: 'workspace_conflict_denied',
+                mutation: 'none',
+                feature,
+                task,
+                attemptId: discardAttempt.id,
+                error: discardAttempt.native?.childSessionId
+                  ? `Execution attempt ${discardAttempt.id} remains attached or awaits finalization.`
+                  : `Execution attempt ${discardAttempt.id} has no authenticated stop/finalization evidence.`,
+                nextAction: 'Retain the quarantined worktree until authenticated stop evidence and primary finalization are recorded.',
+              });
+            }
+            if (discardAttempt.phase === 'armed') executionAttemptService.closeArmNotStarted(discardAttempt.id);
+            const finalizedDiscardAttempt = executionAttemptService.getAttempt(discardAttempt.id)!;
+            if (!(await placementMatchesRegisteredWorktree(finalizedDiscardAttempt))) {
+              return respond({
+                ok: false,
+                terminal: true,
+                success: false,
+                reason: finalizedDiscardAttempt.placement.kind === 'in_place'
+                  ? 'in_place_has_no_worktree'
+                  : 'finalized_placement_mismatch',
+                mutation: 'none',
+                feature,
+                task,
+                attemptId: finalizedDiscardAttempt.id,
+                error: 'Discard requires an exact finalized worktree execution placement; no worktree was removed.',
+              });
+            }
             if (!isCurrentDiscard && requested) {
-              const childId = requested.native?.childSessionId;
-              if (requested.phase === 'attached' || requested.phase === 'stopped') {
-                return respond({
-                  ok: false,
-                  terminal: true,
-                  success: false,
-                  reason: 'workspace_conflict_denied',
-                  mutation: 'none',
-                  feature,
-                  task,
-                  attemptId: requested.id,
-                  error: childId
-                    ? `Superseded execution attempt ${requested.id} remains attached or awaits finalization.`
-                    : `Superseded execution attempt ${requested.id} has no authenticated stop/finalization evidence.`,
-                  nextAction: 'Retain the quarantined worktree until authenticated stop evidence and primary finalization are recorded.',
-                });
-              }
-              if (requested.phase === 'armed') executionAttemptService.closeArmNotStarted(requested.id);
               const requestedSlot = requested.placement.kind === 'worktree' ? requested.placement.attemptSlot : undefined;
-              await discardTaskWorktreeSlot(feature, task, requestedSlot, {
+              await discardTaskWorktreeSlot(feature, task, requestedSlot, finalizedDiscardAttempt, {
                 resetTaskPending: false,
               });
               return respond({
@@ -5857,9 +5920,10 @@ NEXT: Ask your first clarifying question about this feature.`;
               });
             }
 
-            const attemptSlot = currentTaskAttemptSlot(feature, task);
-            releaseUnusedPreparedClaim(currentUnsettledTaskAttempt(feature, task));
-            await discardTaskWorktreeSlot(feature, task, attemptSlot, { resetTaskPending: true });
+            const attemptSlot = finalizedDiscardAttempt.placement.kind === 'worktree'
+              ? finalizedDiscardAttempt.placement.attemptSlot
+              : undefined;
+            await discardTaskWorktreeSlot(feature, task, attemptSlot, finalizedDiscardAttempt, { resetTaskPending: true });
           } catch (error: unknown) {
             const fenced = writerFenceResponse(error);
             if (fenced) return fenced;
@@ -5922,7 +5986,8 @@ NEXT: Ask your first clarifying question about this feature.`;
           if (!taskInfo) return failure(`Task "${task}" not found`);
           const finalizedAttempt = executionAttemptService.currentTaskAttempt(feature, task);
           if (taskInfo.status !== 'done' || finalizedAttempt?.phase !== 'finalized'
-            || finalizedAttempt.observedOutcome !== 'completed') {
+            || finalizedAttempt.observedOutcome !== 'completed'
+            || !(await placementMatchesRegisteredWorktree(finalizedAttempt))) {
             return failure('Task execution must be finalized as completed before merging. Use hive_execution_finish first.');
           }
 
@@ -5946,10 +6011,15 @@ NEXT: Ask your first clarifying question about this feature.`;
                 resourcePaths: sourcePaths,
                 destCheckouts,
                 label: `feature task '${feature}/${task}'`,
-              }, () => worktreeService.merge(feature, task, strategy, message, {
-              preserveConflicts,
-              cleanup,
-            }, attemptSlot));
+              }, async () => {
+                if (!(await placementMatchesRegisteredWorktree(finalizedAttempt))) {
+                  throw new WorktreeTopologyMismatchError(`Finalized execution ${finalizedAttempt.id} no longer matches the registered worktree placement`);
+                }
+                return worktreeService.merge(feature, task, strategy, message, {
+                  preserveConflicts,
+                  cleanup,
+                }, attemptSlot);
+              });
           } catch (error: unknown) {
             const classification = classifyServiceThrow(error);
             if (!classification && error instanceof Error && error.name === 'WriterFenceError') {
@@ -6000,6 +6070,16 @@ NEXT: Ask your first clarifying question about this feature.`;
                 nextAction: 'Call hive_execution_finish from the originating primary after exact native stop evidence.',
               });
             }
+            if (!(await placementMatchesRegisteredWorktree(attempt))) {
+              return respond({
+                success: false,
+                reason: attempt.placement.kind === 'in_place'
+                  ? 'in_place_has_no_worktree'
+                  : 'finalized_placement_mismatch',
+                runId,
+                error: 'Ad-hoc merge requires the exact finalized worktree placement.',
+              });
+            }
             const info = await adhocWorktreeService.get(runId);
             if (!info) {
               const classification = classifyWorktreeOutcome('RUN_NOT_FOUND');
@@ -6016,10 +6096,15 @@ NEXT: Ask your first clarifying question about this feature.`;
             releaseUnusedPreparedClaim(currentUnsettledAdhocAttempt(runId));
             const target = adhocWritableTarget(info);
             target.destCheckouts = [fs.realpathSync(directory)];
-            const result: AdhocMergeResult = await withWritableOperation(target, () => adhocWorktreeService.merge(runId, strategy, message, {
-              preserveConflicts,
-              cleanup,
-            }));
+            const result: AdhocMergeResult = await withWritableOperation(target, async () => {
+              if (!(await placementMatchesRegisteredWorktree(attempt))) {
+                throw new WorktreeTopologyMismatchError(`Finalized execution ${attempt.id} no longer matches the registered worktree placement`);
+              }
+              return adhocWorktreeService.merge(runId, strategy, message, {
+                preserveConflicts,
+                cleanup,
+              });
+            });
             return respond({
               ...result,
               runId,
@@ -6061,13 +6146,23 @@ NEXT: Ask your first clarifying question about this feature.`;
           }
           try {
             const attempt = latestAdhocAttempt(runId);
-            if (attempt && attempt.phase !== 'finalized') {
+            if (!attempt || attempt.phase !== 'finalized') {
               return respond({
                 success: false,
                 reason: 'execution_not_finalized',
                 runId,
                 error: 'Ad-hoc execution must be finalized before cleanup.',
                 nextAction: 'Call hive_execution_finish from the originating primary after exact native stop evidence.',
+              });
+            }
+            if (!(await placementMatchesRegisteredWorktree(attempt))) {
+              return respond({
+                success: false,
+                reason: attempt.placement.kind === 'in_place'
+                  ? 'in_place_has_no_worktree'
+                  : 'finalized_placement_mismatch',
+                runId,
+                error: 'Ad-hoc cleanup requires the exact finalized worktree placement; no worktree was removed.',
               });
             }
             const info = await adhocWorktreeService.get(runId);
@@ -6087,8 +6182,12 @@ NEXT: Ask your first clarifying question about this feature.`;
             releaseUnusedPreparedClaim(currentUnsettledAdhocAttempt(runId));
             const target = adhocWritableTarget(info);
             target.destCheckouts = [fs.realpathSync(directory)];
-            const result: AdhocCleanupResult = await withWritableOperation(target,
-              () => adhocWorktreeService.cleanup(runId, deleteBranch ?? false));
+            const result: AdhocCleanupResult = await withWritableOperation(target, async () => {
+              if (!(await placementMatchesRegisteredWorktree(attempt))) {
+                throw new WorktreeTopologyMismatchError(`Finalized execution ${attempt.id} no longer matches the registered worktree placement`);
+              }
+              return adhocWorktreeService.cleanup(runId, deleteBranch ?? false);
+            });
             const cleanupSucceeded = result.cleanup.outcome === 'complete' || result.cleanup.outcome === 'not_requested';
             return respond({
               success: cleanupSucceeded,
@@ -6580,6 +6679,9 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             const executionFinalized = !executionAttempt || executionAttempt.phase === 'finalized';
             const attemptSlot = currentTaskAttemptSlot(feature, t.folder);
             const worktree = await worktreeService.get(feature, t.folder, attemptSlot);
+            const finalizedPlacementMatches = executionAttempt
+              ? await placementMatchesRegisteredWorktree(executionAttempt)
+              : false;
             const hasChanges = worktree
               ? await worktreeService.hasUncommittedChanges(worktree.feature, worktree.step, attemptSlot)
               : null;
@@ -6589,6 +6691,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               name: t.name,
               status: t.status,
               executionFinalized,
+              finalizedPlacementMatches,
               origin: t.origin || 'plan',
               dependsOn: rawStatus?.dependsOn ?? null,
               ...(rawStatus?.workerSession?.sessionId ? { traceTaskId: rawStatus.workerSession.sessionId } : {}),
@@ -6624,14 +6727,17 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             .filter(t => t.status !== 'in_progress' && t.worktree)
             .map(t => t.folder);
           const mergeEligibility = tasksSummary.map(t => {
-            const eligible = t.status === 'done' && t.executionFinalized && !!t.worktree;
+            const eligible = t.status === 'done' && t.executionFinalized
+              && t.finalizedPlacementMatches && !!t.worktree;
             const reasonCode = eligible
               ? 'TASK_DONE_WITH_LIVE_WORKTREE'
               : t.status !== 'done'
                 ? 'TASK_NOT_DONE'
                 : !t.executionFinalized
                   ? 'EXECUTION_NOT_FINALIZED'
-                : 'NO_LIVE_WORKTREE';
+                  : !t.worktree
+                    ? 'NO_LIVE_WORKTREE'
+                    : 'FINALIZED_PLACEMENT_MISMATCH';
 
             return {
               task: t.folder,

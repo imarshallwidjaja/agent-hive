@@ -11,7 +11,6 @@ import type {
 import { normalizeCommitMessage } from '../utils/mergeMessage.js';
 import { getTaskPath, writeAtomic } from '../utils/paths.js';
 import { ExecutionAttemptService } from './executionAttemptService.js';
-import { TaskService } from './taskService.js';
 
 export type ExecutionFinalizationCheckpoint =
   | 'before_intent'
@@ -42,6 +41,10 @@ export interface ExecutionFinishResult {
 
 export interface ExecutionFinalizationServiceOptions {
   checkpoint?: (checkpoint: ExecutionFinalizationCheckpoint) => void;
+  resolveWorktreePlacement?: (attempt: ExecutionAttempt) => Promise<{
+    workspacePath: string;
+    repositories: Array<{ id: string; path: string; branch: string }>;
+  }>;
 }
 
 function stableValue(value: unknown): unknown {
@@ -67,7 +70,6 @@ export class ExecutionFinalizationService {
     private readonly projectRoot: string,
     private readonly options: ExecutionFinalizationServiceOptions,
     private readonly attempts: ExecutionAttemptService,
-    private readonly tasks = new TaskService(projectRoot),
   ) {}
 
   async finish(input: ExecutionFinishInput): Promise<ExecutionFinishResult> {
@@ -82,12 +84,7 @@ export class ExecutionFinalizationService {
     }
 
     const repositories = attempt.placement.kind === 'worktree' && input.status !== 'blocked'
-      ? attempt.placement.workspaceIdentities.map((repositoryPath, index) => ({
-          id: attempt.placement.kind === 'worktree' && attempt.placement.workspaceIdentities.length === 1
-            ? 'root'
-            : path.basename(repositoryPath) || `repo-${index + 1}`,
-          path: repositoryPath,
-        }))
+      ? await this.resolveWorktreeRepositories(attempt)
       : [];
     const message = await this.validateCommitIntent(repositories.map(repository => repository.path), input.message);
     const reportInput = {
@@ -122,10 +119,20 @@ export class ExecutionFinalizationService {
       if (attempt.finalization?.intentHash !== receipt.intentHash || !attempt.finalization.report) {
         throw new Error(`Execution attempt ${attempt.id} is finalized with a different receipt`);
       }
+      const reportBody = this.renderReport(attempt);
+      const reportHash = hash(reportBody);
+      const expectedReportPath = this.reportPath(attempt, operationId);
+      const recordedReportPath = path.resolve(this.projectRoot, attempt.finalization.report.locator);
+      if (recordedReportPath !== expectedReportPath
+        || attempt.finalization.report.contentHash !== reportHash
+        || !fs.existsSync(recordedReportPath)
+        || hash(fs.readFileSync(recordedReportPath, 'utf8')) !== reportHash) {
+        throw new Error(`Finalized execution report is missing or does not match its deterministic receipt: ${expectedReportPath}`);
+      }
       return {
         attempt,
-        reportPath: path.join(this.projectRoot, attempt.finalization.report.locator),
-        currentTaskUnchanged: attempt.finalization.disposition?.currentTaskUnchanged === true,
+        reportPath: expectedReportPath,
+        currentTaskUnchanged: attempt.finalization.disposition?.applied === false,
       };
     }
 
@@ -145,40 +152,52 @@ export class ExecutionFinalizationService {
     this.checkpoint('after_report_write');
     current = this.attempts.recordFinalizationReport(current.id, path.relative(this.projectRoot, reportPath), reportHash);
     this.checkpoint('after_report_receipt');
-    const currentTaskGeneration = current.kind !== 'task' || (
-      this.attempts.isCurrentTaskAttempt(current.featureName!, current.taskFolder!, current.id)
-      && this.tasks.getRawStatus(current.featureName!, current.taskFolder!)?.workerAttempt === current.taskAttempt
-    );
-    if (currentTaskGeneration) this.writeLatestTaskReport(current, reportBody);
-
     let currentTaskUnchanged = false;
     if (!current.finalization!.disposition) {
       if (current.kind === 'task') {
         const taskStatus = this.taskStatus(input.status);
-        const result = this.tasks.finalizeWorkerAttempt(
-          current.featureName!,
-          current.taskFolder!,
-          current.taskAttempt!,
-          {
-            status: taskStatus,
-            summary,
-            ...(input.status === 'blocked' ? { blocker: input.blocker as any } : {}),
-          },
-        );
+        const result = this.attempts.applyCurrentTaskDisposition(current.id, {
+          status: taskStatus,
+          summary,
+          ...(input.status === 'blocked' ? { blocker: input.blocker as any } : {}),
+        });
         currentTaskUnchanged = !result.applied;
+        if (result.applied) this.writeLatestTaskReport(current, reportBody);
       }
       this.checkpoint('after_task_status');
       current = this.attempts.recordFinalizationDisposition(current.id, {
         applied: !currentTaskUnchanged,
-        ...(currentTaskUnchanged ? { currentTaskUnchanged: true } : {}),
       });
     } else {
-      currentTaskUnchanged = current.finalization.disposition.currentTaskUnchanged === true;
+      currentTaskUnchanged = !current.finalization.disposition.applied;
     }
     this.checkpoint('after_disposition');
     this.checkpoint('before_release');
     current = this.attempts.finalize(current.id, input.status);
     return { attempt: current, reportPath, currentTaskUnchanged };
+  }
+
+  private async resolveWorktreeRepositories(
+    attempt: ExecutionAttempt,
+  ): Promise<Array<{ id: string; path: string; branch: string }>> {
+    if (attempt.placement.kind !== 'worktree') return [];
+    if (!this.options.resolveWorktreePlacement) {
+      throw new Error('Finalization cannot use a worktree without trusted topology validation');
+    }
+    const placement = attempt.placement;
+    const resolved = await this.options.resolveWorktreePlacement(attempt);
+    const actualWorkspacePath = fs.realpathSync(resolved.workspacePath);
+    const actualIdentities = resolved.repositories.map(repository => fs.realpathSync(repository.path));
+    if (actualWorkspacePath !== placement.workspacePath
+      || actualIdentities.length !== placement.workspaceIdentities.length
+      || actualIdentities.some((identity, index) => identity !== placement.workspaceIdentities[index])
+      || resolved.repositories[0]?.branch !== placement.branch) {
+      throw new Error(`Execution attempt ${attempt.id} worktree placement no longer matches its exact registered topology`);
+    }
+    return resolved.repositories.map((repository, index) => ({
+      ...repository,
+      path: actualIdentities[index]!,
+    }));
   }
 
   private requireAuthorizedStoppedAttempt(input: ExecutionFinishInput): ExecutionAttempt {
@@ -226,32 +245,55 @@ export class ExecutionFinalizationService {
       this.checkpoint(`after_repository_preparation:${repositoryId}`);
     }
 
+    const head = (await git.revparse(['HEAD'])).trim();
+    const indexTree = (await git.raw(['write-tree'])).trim();
     const baselineTree = (await git.revparse([`${repository.baselineHead}^{tree}`])).trim();
     if (baselineTree === repository.expectedTree) {
+      if (head !== repository.baselineHead || indexTree !== repository.expectedTree) {
+        throw new Error(`Repository ${repositoryId} changed after its immutable no-change intent was recorded`);
+      }
       this.attempts.recordRepositoryResult(attemptId, repositoryId, 'no_changes', repository.baselineHead!);
       this.checkpoint(`after_repository_receipt:${repositoryId}`);
       return;
     }
     if (!message) throw new Error(`Repository ${repositoryId} has changes but finalization has no commit message`);
 
-    const head = (await git.revparse(['HEAD'])).trim();
     let commitSha = head;
     if (head === repository.baselineHead) {
-      await git.commit(message);
-      commitSha = (await git.revparse(['HEAD'])).trim();
-      this.checkpoint(`after_repository_commit:${repositoryId}`);
-    } else {
-      const [parent, tree, actualMessage] = await Promise.all([
-        git.revparse([`${head}^`]).then(value => value.trim()),
-        git.revparse([`${head}^{tree}`]).then(value => value.trim()),
-        git.raw(['show', '-s', '--format=%B', head]).then(value => value.trim()),
-      ]);
-      if (parent !== repository.baselineHead || tree !== repository.expectedTree || actualMessage !== message) {
-        throw new Error(`Repository ${repositoryId} HEAD moved ambiguously after finalization intent; explicit recovery is required`);
+      if (indexTree !== repository.expectedTree) {
+        throw new Error(`Repository ${repositoryId} index changed after its immutable finalization intent was recorded`);
       }
+      let commitError: unknown;
+      try {
+        await git.commit(message);
+      } catch (error) {
+        commitError = error;
+      }
+      commitSha = (await git.revparse(['HEAD'])).trim();
+      if (commitError && commitSha === repository.baselineHead) throw commitError;
+      this.checkpoint(`after_repository_commit:${repositoryId}`);
     }
+    await this.validateCommit(repositoryId, git, commitSha, repository.baselineHead!, repository.expectedTree!, message);
     this.attempts.recordRepositoryResult(attemptId, repositoryId, 'committed', commitSha);
     this.checkpoint(`after_repository_receipt:${repositoryId}`);
+  }
+
+  private async validateCommit(
+    repositoryId: string,
+    git: ReturnType<typeof simpleGit>,
+    commitSha: string,
+    baselineHead: string,
+    expectedTree: string,
+    message: string,
+  ): Promise<void> {
+    const [parent, tree, actualMessage] = await Promise.all([
+      git.revparse([`${commitSha}^`]).then(value => value.trim()),
+      git.revparse([`${commitSha}^{tree}`]).then(value => value.trim()),
+      git.raw(['show', '-s', '--format=%B', commitSha]).then(value => value.trim()),
+    ]);
+    if (parent !== baselineHead || tree !== expectedTree || actualMessage !== message) {
+      throw new Error(`Repository ${repositoryId} HEAD moved ambiguously after finalization intent; explicit recovery is required`);
+    }
   }
 
   private renderReport(attempt: ExecutionAttempt): string {
