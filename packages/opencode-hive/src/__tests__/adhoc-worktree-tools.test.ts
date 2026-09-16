@@ -65,6 +65,24 @@ function initGit(root: string): void {
   execSync('git add README.md .gitignore && git commit -m init', { cwd: root, stdio: 'ignore' });
 }
 
+function initCompositeRepositories(root: string): { api: string; web: string } {
+  const api = path.join(root, 'api');
+  const web = path.join(root, 'web');
+  fs.mkdirSync(api);
+  fs.mkdirSync(web);
+  initGit(api);
+  initGit(web);
+  fs.mkdirSync(path.join(root, '.hive'));
+  fs.writeFileSync(path.join(root, '.hive', 'repositories.json'), JSON.stringify({
+    schemaVersion: 1,
+    repositories: [
+      { id: 'api', path: './api' },
+      { id: 'web', path: './web' },
+    ],
+  }));
+  return { api, web };
+}
+
 describe('hive_execution_prepare ad-hoc placement', () => {
   beforeEach(() => {
     fs.rmSync(TEST_ROOT, { recursive: true, force: true });
@@ -196,6 +214,53 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       hiveDir: path.join(TEST_ROOT, '.hive'),
       repositoryResolver: { resolveRepositories: () => [] },
     }).get('owned-scope')).toBeNull();
+  });
+
+  it('reuses an exact composite selection and rejects a different repository without mutation', async () => {
+    const repositories = initCompositeRepositories(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-composite-reuse');
+    const first = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'selected-repository' },
+      placement: { kind: 'worktree', repoIds: ['api'] },
+    }, context) as string);
+    const repeated = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'selected-repository' },
+      placement: { kind: 'worktree', repoIds: ['api'] },
+    }, context) as string);
+    expect(repeated).toMatchObject({ success: true, existing: true, attemptId: first.attemptId });
+
+    const branchesBefore = Object.fromEntries(Object.entries(repositories).map(([id, repository]) => [
+      id,
+      execSync('git branch --format="%(refname:short)"', { cwd: repository, encoding: 'utf8' }),
+    ]));
+    const worktreesBefore = Object.fromEntries(Object.entries(repositories).map(([id, repository]) => [
+      id,
+      execSync('git worktree list --porcelain', { cwd: repository, encoding: 'utf8' }),
+    ]));
+    const attemptsPath = path.join(TEST_ROOT, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+    const workspaceManifest = path.join(first.placement.workspacePath, 'workspace.json');
+    const workspaceManifestBefore = fs.readFileSync(workspaceManifest, 'utf8');
+
+    const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'selected-repository' },
+      placement: { kind: 'worktree', repoIds: ['web'] },
+    }, context) as string);
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'workspace_conflict_denied',
+      mutation: 'none',
+      attemptId: first.attemptId,
+      phase: 'armed',
+    });
+    for (const [id, repository] of Object.entries(repositories)) {
+      expect(execSync('git branch --format="%(refname:short)"', { cwd: repository, encoding: 'utf8' })).toBe(branchesBefore[id]);
+      expect(execSync('git worktree list --porcelain', { cwd: repository, encoding: 'utf8' })).toBe(worktreesBefore[id]);
+    }
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+    expect(fs.readFileSync(workspaceManifest, 'utf8')).toBe(workspaceManifestBefore);
+    expect(fs.existsSync(path.join(first.placement.workspacePath, 'repos', 'web'))).toBe(false);
   });
 
   it('removes a newly created rejected placement despite unrelated finalized history', async () => {
@@ -524,6 +589,52 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(attempts.getAttempt(runB.attemptId)).toMatchObject({
       phase: 'attached',
       native: { childSessionId: 'child-run-b' },
+    });
+  });
+
+  it('denies run B child from mutating an attemptless run A', async () => {
+    initGit(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-attemptless');
+    const worktrees = new AdhocWorktreeService({
+      baseDir: TEST_ROOT,
+      hiveDir: path.join(TEST_ROOT, '.hive'),
+      repositoryResolver: { resolveRepositories: () => [] },
+    });
+    const runA = await worktrees.create({ runId: 'attemptless-run-a' });
+    const runB = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'attached-run-b' },
+      placement: { kind: 'worktree' },
+    }, context) as string);
+    const args = { subagent_type: 'forager-worker', description: 'Attach run B', prompt: 'Do it.', background: false };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-attemptless-run-b' }, { args });
+    const attempts = new ExecutionAttemptService(TEST_ROOT);
+    attempts.bindNativeChild({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-attemptless-run-b',
+      nativeChildSessionId: 'child-attemptless-run-b',
+    });
+
+    fs.writeFileSync(path.join(runA.path, 'attemptless.txt'), 'must remain uncommitted\n');
+    const headBefore = execSync('git rev-parse HEAD', { cwd: runA.path, encoding: 'utf8' }).trim();
+    const statusBefore = execSync('git status --porcelain', { cwd: runA.path, encoding: 'utf8' });
+    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
+      runId: runA.runId,
+      workspacePath: runA.path,
+      branch: runA.branch,
+      message: 'test: reject attemptless mutation\n\nAn attached child for run B must not authorize run A.',
+    }, { ...context, sessionID: 'child-attemptless-run-b', agent: 'forager-worker' }) as string);
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'workspace_conflict_denied',
+      mutation: 'none',
+      runId: runA.runId,
+    });
+    expect(execSync('git rev-parse HEAD', { cwd: runA.path, encoding: 'utf8' }).trim()).toBe(headBefore);
+    expect(execSync('git status --porcelain', { cwd: runA.path, encoding: 'utf8' })).toBe(statusBefore);
+    expect(attempts.getAttempt(runB.attemptId)).toMatchObject({
+      phase: 'attached',
+      native: { childSessionId: 'child-attemptless-run-b' },
     });
   });
 

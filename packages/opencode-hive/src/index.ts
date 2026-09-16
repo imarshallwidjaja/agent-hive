@@ -2855,7 +2855,29 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       const requestedDirectoryMatches = existingAttempt.placement.kind !== 'in_place'
         || input.placement.kind !== 'in_place'
         || existingAttempt.placement.directory === fs.realpathSync(input.placement.directory!);
-      if (!requestedKindMatches || !requestedDirectoryMatches) {
+      let requestedWorktreeMatches = true;
+      if (scope.kind === 'adhoc'
+        && input.placement.kind === 'worktree'
+        && existingAttempt.placement.kind === 'worktree') {
+        const existingWorkspaceIdentities = existingAttempt.placement.workspaceIdentities;
+        const target = adhocWorktreeService.resolveCreateTarget({ runId: scope.runId });
+        const requestedRepoIds = normalizeOptionalStringList(input.placement.repoIds);
+        const requestedRepositories = requestedRepoIds
+          ? new Map(repositoryManifestService.resolveRepositories().map(repository => [repository.id, repository]))
+          : undefined;
+        const requestedWorkspaceIdentities = requestedRepoIds && requestedRepositories
+          ? requestedRepoIds.map((repoId) => {
+            const repository = requestedRepositories.get(repoId);
+            if (!repository) {
+              throw new Error(`Repository manifest is missing required repo for ad-hoc run ${scope.runId}: ${repoId}`);
+            }
+            return normalizeResourcePath(path.join(target.workspacePath, 'repos', repository.id));
+          })
+          : [normalizeResourcePath(target.workspacePath)];
+        requestedWorktreeMatches = requestedWorkspaceIdentities.length === existingWorkspaceIdentities.length
+          && requestedWorkspaceIdentities.every(identity => existingWorkspaceIdentities.includes(identity));
+      }
+      if (!requestedKindMatches || !requestedDirectoryMatches || !requestedWorktreeMatches) {
         return respond({
           success: false,
           reason: 'workspace_conflict_denied',
@@ -6431,29 +6453,37 @@ NEXT: Ask your first clarifying question about this feature.`;
                 nextAction: 'Use the workspacePath and branch returned by hive_execution_prepare, or prepare a new ad-hoc worktree.',
               });
             }
-            const commitTarget = adhocWritableTarget(info);
             const targetAttempt = latestAdhocAttempt(runId);
             const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
-            if (targetAttempt) {
-              const placementMatches = targetAttempt.placement.kind === 'worktree'
-                && path.resolve(targetAttempt.placement.workspacePath) === path.resolve(workspacePath)
-                && targetAttempt.placement.branch === info.branch;
-              if (!isAuthorizedAdhocCommitSession(targetAttempt, committingSessionID) || !placementMatches) {
-                return respond({
-                  success: false,
-                  reason: 'workspace_conflict_denied',
-                  mutation: 'none',
-                  runId,
-                  attemptId: targetAttempt.id,
-                  phase: targetAttempt.phase,
-                  error: 'Ad-hoc handoff mutation requires the target attempt identity and exact worktree placement.',
-                  nextAction: targetAttempt.phase === 'finalized'
-                    ? 'Return to the originating authenticated primary for finalized-run recovery.'
-                    : 'Return to the authenticated parent; the execution claim remains quarantined until finalization.',
-                });
-              }
-              if (targetAttempt.phase === 'attached') commitTarget.checkSourceClaim = false;
+            if (!targetAttempt) {
+              return respond({
+                success: false,
+                reason: 'workspace_conflict_denied',
+                mutation: 'none',
+                runId,
+                error: 'Ad-hoc handoff mutation requires an authenticated execution attempt for the target run.',
+                nextAction: 'Return to the authenticated primary and prepare this run through hive_execution_prepare.',
+              });
             }
+            const placementMatches = targetAttempt.placement.kind === 'worktree'
+              && path.resolve(targetAttempt.placement.workspacePath) === path.resolve(workspacePath)
+              && targetAttempt.placement.branch === info.branch;
+            if (!isAuthorizedAdhocCommitSession(targetAttempt, committingSessionID) || !placementMatches) {
+              return respond({
+                success: false,
+                reason: 'workspace_conflict_denied',
+                mutation: 'none',
+                runId,
+                attemptId: targetAttempt.id,
+                phase: targetAttempt.phase,
+                error: 'Ad-hoc handoff mutation requires the target attempt identity and exact worktree placement.',
+                nextAction: targetAttempt.phase === 'finalized'
+                  ? 'Return to the originating authenticated primary for finalized-run recovery.'
+                  : 'Return to the authenticated parent; the execution claim remains quarantined until finalization.',
+              });
+            }
+            const commitTarget = adhocWritableTarget(info);
+            if (targetAttempt.phase === 'attached') commitTarget.checkSourceClaim = false;
             const result: AdhocCommitResult = await withWritableOperation(commitTarget,
               () => adhocWorktreeService.commit(runId, message));
             const isPartial = result.partial === true;
