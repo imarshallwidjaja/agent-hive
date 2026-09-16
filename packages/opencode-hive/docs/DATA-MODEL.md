@@ -275,7 +275,7 @@ Example:
     "list": [
       {"folder":"01-setup","status":"done","dependsOn":[]},
       {"folder":"02-core","status":"pending","dependsOn":["01-setup"]},
-      {"folder":"03-ui","status":"pending","dependsOn":["02-core"]}
+      {"folder":"03-ui","status":"blocked","dependsOn":["02-core"],"blocker":{"reason":"Choose the deployment region.","options":["iad","ams"],"recommendation":"iad","context":"The existing data residency approval covers iad."}}
     ],
     "runnable": ["02-core"],
     "blockedBy": {

@@ -3653,7 +3653,7 @@ Original plan task four content must stay isolated from any append-only manual f
         {
           task: '03-third-task',
           eligible: true,
-          reasonCode: 'TASK_DONE_WITH_LIVE_WORKTREE',
+          reasonCode: 'CANONICAL_RECEIPT_MATCHES_SOURCE',
           recommendedCommand: 'hive_merge({ task: "03-third-task" })',
         },
         {
@@ -5091,7 +5091,7 @@ describe('managed execution attachment', () => {
     expect(continued).toMatchObject({ success: true, phase: 'armed', placement: { kind: 'in_place' } });
     expect(new TaskService(root).getRawStatus(feature, '01-first-task')?.blocker).toBeUndefined();
     const activeStatus = JSON.parse(await hooks.tool!.hive_status.execute({ feature }, context) as string);
-    expect(activeStatus.nextAction).toContain('Continue work on task');
+    expect(activeStatus.nextAction).toContain('Dispatch the next unchanged native Forager');
   });
 
   it('advises an identical finish retry when blocked disposition exists before finalization completes', async () => {
@@ -5111,7 +5111,7 @@ describe('managed execution attachment', () => {
 
     const status = JSON.parse(await fixture.hooks.tool!.hive_status.execute({ feature }, fixture.context) as string);
 
-    expect(status.nextAction).toContain('retry the identical hive_execution_finish');
+    expect(status.nextAction).toContain('Retry the identical hive_execution_finish');
     expect(status.nextAction).not.toContain('continueFromBlocked: true');
   });
 
@@ -5942,6 +5942,10 @@ describe('managed execution attachment', () => {
       cwd: prepared.placement.workspacePath,
     });
     const targetHead = execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
+    const status = JSON.parse(await fixture.hooks.tool!.hive_status.execute({ feature: 'merge-head' }, fixture.context) as string);
+    expect(status.helperStatus.mergeEligibility).toContainEqual(expect.objectContaining({
+      task: '01-first-task', eligible: false, reasonCode: 'SOURCE_DRIFT',
+    }));
 
     const merged = JSON.parse(await fixture.hooks.tool!.hive_merge.execute({
       feature: 'merge-head', task: '01-first-task', message: TEST_MERGE_MESSAGE,
@@ -6006,7 +6010,7 @@ describe('managed execution attachment', () => {
     expect(execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim()).toBe(projectHead);
   });
 
-  it('does not expose or remove a stale task worktree after a newer in-place success', async () => {
+  it('requires failed retries to reuse the exact finalized worktree placement', async () => {
     const { hooks, context, parents } = await harness(root, 'primary-stale-task');
     await seedFeature(hooks, context, 'feature-a');
     const old = await prepareTask(hooks, context, 'feature-a');
@@ -6022,29 +6026,20 @@ describe('managed execution attachment', () => {
     const oldBranch = old.placement.branch;
     const live = path.join(root, 'live-retry');
     fs.mkdirSync(live);
-    const current = await prepareTask(hooks, context, 'feature-a', { kind: 'in_place', directory: live });
-    const currentAttached = await attachPreparedTask(hooks, parents, context, 'call-current-task', 'child-current-task');
-    await stopAttachedTask(hooks, context, 'call-current-task', 'child-current-task', currentAttached.args);
-    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
-      attemptId: current.attemptId,
-      status: 'completed',
-      summary: 'In-place retry completed.',
-    }, context) as string).success).toBe(true);
-
-    const status = JSON.parse(await hooks.tool!.hive_status.execute({ feature: 'feature-a' }, context) as string);
-    expect(status.helperStatus.mergeEligibility).toContainEqual(expect.objectContaining({
-      task: '01-first-task', eligible: false, reasonCode: 'FINALIZED_PLACEMENT_MISMATCH',
-    }));
-    const merge = JSON.parse(await hooks.tool!.hive_merge.execute({
-      feature: 'feature-a', task: '01-first-task', strategy: 'squash', message: TEST_COMMIT_MESSAGE,
-    }, context) as string);
-    expect(merge.success).toBe(false);
-    const discard = JSON.parse(await hooks.tool!.hive_worktree_discard.execute({
-      feature: 'feature-a', task: '01-first-task',
-    }, context) as string);
-    expect(discard).toMatchObject({ success: false, reason: 'in_place_has_no_worktree', mutation: 'none' });
-    expect(fs.existsSync(oldWorktree)).toBe(true);
-    expect(execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' })).toContain(oldBranch);
+    const denied = await prepareTask(hooks, context, 'feature-a', { kind: 'in_place', directory: live });
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'failed_retry_placement_mismatch',
+      mutation: 'none',
+      attemptId: old.attemptId,
+    });
+    const retried = await prepareTask(hooks, context, 'feature-a');
+    expect(retried).toMatchObject({
+      success: true,
+      phase: 'armed',
+      placement: { kind: 'worktree', workspacePath: oldWorktree },
+    });
+    expect(retried.placement.branch).toBe(oldBranch);
   });
 
   it('discards a finalized task only after complete cleanup', async () => {
@@ -6061,6 +6056,32 @@ describe('managed execution attachment', () => {
 
     expect(discarded).toContain('Status reset to pending');
     expect(new TaskService(root).getRawStatus('complete-discard', '01-first-task')?.status).toBe('pending');
+    expect(fs.existsSync(prepared.placement.workspacePath)).toBe(false);
+  });
+
+  it('retries cleanup for an exact finalized task placement without changing task status', async () => {
+    const feature = 'cleanup-only-discard';
+    const fixture = await harness(root, 'primary-cleanup-only-discard');
+    await seedFeature(fixture.hooks, fixture.context, feature);
+    const prepared = await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      feature, '01-first-task', feature,
+    );
+
+    const cleaned = JSON.parse(await fixture.hooks.tool!.hive_worktree_discard.execute({
+      feature,
+      task: '01-first-task',
+      attemptId: prepared.attemptId,
+      cleanupOnly: true,
+    }, fixture.context) as string);
+
+    expect(cleaned).toMatchObject({
+      success: true,
+      attemptId: prepared.attemptId,
+      taskStatePreserved: true,
+      cleanup: { outcome: 'complete' },
+    });
+    expect(new TaskService(root).getRawStatus(feature, '01-first-task')?.status).toBe('done');
     expect(fs.existsSync(prepared.placement.workspacePath)).toBe(false);
   });
 
@@ -6112,6 +6133,22 @@ describe('managed execution attachment', () => {
     } finally {
       remove.mockRestore();
     }
+    if (outcome === 'partial') {
+      execSync(`git worktree remove --force "${prepared.placement.workspacePath}"`, { cwd: root });
+    }
+
+    const recovered = JSON.parse(await fixture.hooks.tool!.hive_worktree_discard.execute({
+      feature,
+      task: '01-first-task',
+      attemptId: prepared.attemptId,
+      cleanupOnly: true,
+    }, fixture.context) as string);
+    expect(recovered).toMatchObject({
+      success: true,
+      taskStatePreserved: true,
+      cleanup: { outcome: 'complete' },
+    });
+    expect(new TaskService(root).getRawStatus(feature, '01-first-task')?.status).toBe('done');
   });
 
   it('rejects discard after feature completion without mutating task or worktree state', async () => {

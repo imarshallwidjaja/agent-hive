@@ -514,6 +514,44 @@ describe('ExecutionAttemptService armed native attachment', () => {
     service.assertWorkspacesIdle([identity]);
   });
 
+  it.each(['after_task_status', 'after_task_arm'] as const)(
+    'restores blocked task authority after an interrupted arm at %s',
+    (checkpoint) => {
+      cleanup();
+      setupTask('feature-a', '01-task');
+      const statusPath = path.join(TEST_DIR, '.hive', 'features', 'feature-a', 'tasks', '01-task', 'status.json');
+      const blocked = JSON.parse(fs.readFileSync(statusPath, 'utf8')) as TaskStatus;
+      blocked.status = 'blocked';
+      blocked.summary = 'Need a decision.';
+      blocked.blocker = { reason: 'Choose a target.', options: ['A', 'B'] };
+      blocked.workerAttempt = 0;
+      fs.writeFileSync(statusPath, JSON.stringify(blocked, null, 2));
+      const identity = worktree(`interrupted-${checkpoint}`);
+      const service = new ExecutionAttemptService(TEST_DIR, 'runtime-a', {
+        checkpoint: current => {
+          if (current === checkpoint) throw new Error(`crash:${checkpoint}`);
+        },
+      });
+
+      expect(() => service.arm({
+        kind: 'task',
+        featureName: 'feature-a',
+        taskFolder: '01-task',
+        originatingPrimarySession: 'primary-a',
+        placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+      })).toThrow(`crash:${checkpoint}`);
+
+      new ExecutionAttemptService(TEST_DIR, 'runtime-restart');
+      expect(new TaskService(TEST_DIR).getRawStatus('feature-a', '01-task')).toMatchObject({
+        status: 'blocked',
+        workerAttempt: 0,
+        blocker: { reason: 'Choose a target.', options: ['A', 'B'] },
+      });
+      expect(new ExecutionAttemptService(TEST_DIR, 'runtime-inspect').listAttempts()
+        .some(attempt => attempt.phase !== 'finalized')).toBe(false);
+    },
+  );
+
   it('requires exact structured background identity', () => {
     const attempt = service.arm({
       kind: 'adhoc',
@@ -586,7 +624,13 @@ describe('ExecutionAttemptService armed native attachment', () => {
     const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
     const head = (await git.revparse(['HEAD'])).trim();
     const reportLocator = '.hive/legacy-report.md';
-    const reportBody = 'verified legacy report\n';
+    const reportBody = [
+      '# Task Report: legacy-settled',
+      '',
+      '**Worker-reported outcome:** completed',
+      `**Created commit:** ${head}`,
+      '',
+    ].join('\n');
     fs.mkdirSync(path.join(TEST_DIR, '.hive'), { recursive: true });
     fs.writeFileSync(path.join(TEST_DIR, reportLocator), reportBody);
     const reportContentHash = createHash('sha256').update(reportBody).digest('hex');
@@ -612,6 +656,41 @@ describe('ExecutionAttemptService armed native attachment', () => {
         }],
       },
     });
+  });
+
+  it('does not synthesize a legacy receipt when the canonical report SHA differs from live HEAD', async () => {
+    cleanup();
+    const identity = worktree('legacy-report-head-mismatch');
+    await initializeRepository(identity);
+    const git = simpleGit(identity);
+    const baseCommit = (await git.revparse(['HEAD'])).trim();
+    const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    const reportLocator = '.hive/legacy-report.md';
+    const reportBody = [
+      '# Task Report: legacy-report-head-mismatch',
+      '',
+      '**Worker-reported outcome:** completed',
+      `**Observed HEAD (no new commit):** ${baseCommit}`,
+      '',
+    ].join('\n');
+    fs.mkdirSync(path.join(TEST_DIR, '.hive'), { recursive: true });
+    fs.writeFileSync(path.join(TEST_DIR, reportLocator), reportBody);
+    fs.writeFileSync(path.join(identity, 'unrelated.txt'), 'unrelated\n');
+    await git.add('-A').commit('test: unrelated commit\n\nMove live HEAD beyond the recorded no-change handoff.');
+    const now = new Date().toISOString();
+    fs.writeFileSync(getExecutionAttemptsPath(TEST_DIR), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [{
+        id: 'legacy-report-head-mismatch', kind: 'adhoc', runId: 'legacy-report-head-mismatch',
+        originatingPrimarySession: 'legacy-parent', workspaceIdentities: [identity], branch, baseCommit,
+        dispatchState: 'settled', observedOutcome: 'completed', reportLocator,
+        reportContentHash: createHash('sha256').update(reportBody).digest('hex'),
+        createdAt: now, updatedAt: now, settledAt: now,
+      }],
+    }, null, 2));
+
+    expect(new ExecutionAttemptService(TEST_DIR, 'runtime-new')
+      .getAttempt('legacy-report-head-mismatch')).not.toHaveProperty('finalization');
   });
 
   it('fails closed when a legacy settled completion cannot prove its report and commit identity', async () => {
@@ -1398,7 +1477,7 @@ describe('ExecutionFinalizationService crash recovery', () => {
     });
     expect(result.currentTaskUnchanged).toBe(true);
     expect(result.attempt.finalization?.disposition).toEqual({ applied: false });
-    expect(new TaskService(TEST_DIR).get('feature-a', '01-task')?.status).toBe('pending');
+    expect(new TaskService(TEST_DIR).get('feature-a', '01-task')?.status).toBe('in_progress');
     expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'features', 'feature-a', 'tasks', '01-task', 'report.md'))).toBe(false);
   });
 

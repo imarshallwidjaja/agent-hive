@@ -103,7 +103,7 @@ Task-backed worktree, ad-hoc worktree, and merge results carry the same recovery
 |------|---------|
 | `hive_execution_prepare` | Arm one task or ad-hoc Forager dispatch with worktree or in-place placement |
 | `hive_execution_finish` | Originating-primary-only checkpointed Git/report/disposition finalization after exact native stop evidence |
-| `hive_worktree_discard` | Discard changes, reset status |
+| `hive_worktree_discard` | Remove an exact finalized task worktree; reset current task status unless `cleanupOnly` is true |
 
 Discard, cleanup, and archival never cancel execution. Current-slot discard is refused while that source worktree has a live or unobserved claim. Uncertain workspaces stay in place; they are not reset, copied, or deleted to recover.
 
@@ -111,6 +111,7 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 
 - Omit `attemptId` to discard the current task slot, or pass the current `attemptId` for the same current-slot discard. That path may close an unconsumed arm as `not_started`, or remove an already finalized worktree and reset the task to pending. It never discards an attached, stopped, or uncertain execution.
 - Pass a non-current `attemptId` only for a finalized historical worktree attempt. The current task pointer and task status stay unchanged. Attached, stopped, and unobserved attempts remain quarantined and cannot be discarded. Inspect `hive_status.unfinishedAttempts` before cleanup.
+- For `CLEANUP_FAILED` after a feature-task integration, call `hive_worktree_discard({ task, attemptId, cleanupOnly: true })` with the exact finalized attempt. This repeats only worktree cleanup and preserves task status. Do not re-run `hive_merge`.
 
 #### hive_execution_finish input notes
 
@@ -136,6 +137,7 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - Do not pass `task_id` to `task()`. Returned task IDs are observe-only handles for background management and read-only runtime-visible session inspection with `hive_task_trace`; they are not inputs for session continuation. Recovery context belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
 - The `question` tool is reserved for primary sessions. Subagents return required operator clarification as an exact terminal-response question for their parent orchestrator.
 - A blocked feature continuation follows one order: exact stop evidence; `hive_execution_finish({ status: 'blocked', blocker: { reason: '<nonblank>' } })`; retain its `reportPath`; `hive_status` and `tasks.list[].blocker`; operator decision and decision record; a second `hive_status`; while status remains exactly blocked, `hive_execution_prepare` with `scope.continueFromBlocked: true` and the same finalized placement; then a new unchanged native Forager call with the decision in its prompt. If blocked disposition is visible before execution finalization completes, retry the identical finish input and do not ask for a decision yet. Continuation requires the current finalized blocked receipt, task generation, and persisted blocker to match exactly. Legacy or inconsistent blocked state has no normal continuation operation: quiesce writers and repair or retire it out of band while preserving reports and placement history.
+- Failed and partial task retries require the current finalized disposition receipt and reuse its exact placement. A worktree retry reuses the registered identities and `attemptSlot`; an in-place retry reuses the canonical directory. A kind, directory, identity, or slot mismatch is rejected without allocating a generation or changing task state.
 - One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
 - Preparation failures return structured scope/placement recovery guidance and never return a generated native-task payload.
 
@@ -371,8 +373,9 @@ Invalid indexes return `context_index_invalid`; surviving managed-mutation marke
 
 - A successful `context` block includes `metadataClipped` and `diagnostics` alongside `fileCount`, `files`, `revision`, and `durable`. `metadataClipped: true` means the summary exceeded the response bound and per-file descriptive metadata was omitted; the clipping notice appears in `diagnostics`. Use `hive_context_read` with the catalog view for full per-file metadata.
 
-- `helperStatus.mergeEligibility` is the canonical operator surface for whether completed task work has a live worktree and can be considered for merge or cleanup.
-- A task list item includes `traceTaskId` only after Hive deterministically associates native task metadata with that feature-task launch. Failed and partial `nextAction` guidance uses the exact forensic call when this ID exists and says when it does not. Finalized blocked tasks instead use persisted blocker and receipt authority; a blocked task whose finalization is incomplete is told to retry the identical finish input.
+- `helperStatus.mergeEligibility` is the canonical operator surface for whether completed task work can be merged. Eligibility requires the current task generation's completed finalization receipt, applied disposition, exact registered placement, and source HEAD matching every repository receipt. `LEGACY_FINALIZATION_UNVERIFIABLE` means migrated history lacks a provable canonical receipt; `SOURCE_DRIFT` means topology still matches but source HEAD no longer matches its receipt.
+- Status guidance follows execution phase before task status. `attached` waits for exact stop evidence, `stopped` retries the identical finish input, and `armed` dispatches the next unchanged native Forager call. Finalized blocked tasks use persisted blocker and receipt authority. Blockerless or receipt-mismatched blocked state fails closed to manual repair or retirement.
+- Schema-v1 settled completion migrates to an integration receipt only when its canonical report records `completed` and the exact 40-character source SHA, the report hash matches, and clean live HEAD equals that SHA. A no-change report followed by an unrelated commit, or any report/HEAD mismatch, remains legacy-unverifiable and cannot merge through Hive.
 - Background board state is intentionally separate. Reconcile terminal background jobs first, then refresh `hive_status` before making dependent task or merge decisions.
 
 ## Review and Snapshot Runtime Tools (7 workflow-only tools)

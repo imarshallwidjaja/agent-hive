@@ -422,10 +422,17 @@ export interface ExecutionAttempt {
 export interface ExecutionAttemptsJson {
   schemaVersion: 2;
   attempts: ExecutionAttempt[];
+  taskArmJournals?: TaskArmJournal[];
   cleanupReservations?: WorkspaceCleanupReservation[];
   nativeTaskLeaseHistory?: NativeTaskLease[];
   /** Current dispatch pointer per feature/task. Late records on superseded attempts must not move this. */
   currentTaskAttempts?: Record<string, string>;
+}
+
+export interface TaskArmJournal {
+  attempt: ExecutionAttempt;
+  previousStatus: TaskStatus;
+  previousAttemptId?: string;
 }
 
 export interface WorkspaceCleanupReservation {

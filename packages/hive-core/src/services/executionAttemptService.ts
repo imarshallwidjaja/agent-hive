@@ -21,6 +21,7 @@ import type {
   ExecutionFinalizationRepositoryReceipt,
   ExecutionPlacement,
   NativeTaskLease,
+  TaskArmJournal,
   WorkspaceCleanupReservation,
 } from '../types.js';
 import {
@@ -92,6 +93,12 @@ export interface ObserveBackgroundStopInput {
   state: 'completed' | 'error' | 'cancelled';
 }
 
+export type ExecutionArmCheckpoint = 'after_task_arm_journal' | 'after_task_status' | 'after_task_arm';
+
+export interface ExecutionAttemptServiceOptions {
+  checkpoint?: (checkpoint: ExecutionArmCheckpoint) => void;
+}
+
 interface LegacyExecutionAttempt {
   id: string;
   kind: 'task' | 'adhoc';
@@ -156,6 +163,7 @@ export class ExecutionAttemptService {
   constructor(
     private readonly projectRoot: string,
     private readonly runtimeId = `execution-runtime-${randomUUID()}`,
+    private readonly options: ExecutionAttemptServiceOptions = {},
   ) {
     this.taskService = new TaskService(projectRoot);
     this.sessionService = new SessionService(projectRoot);
@@ -168,6 +176,7 @@ export class ExecutionAttemptService {
     if (extracted.length === 0 && !fileExists(filePath)) return;
     this.withStore(store => {
       this.mergeMigratedLeases(store, extracted);
+      this.reconcileTaskArmJournals(store);
       this.closeForeignRuntimeArms(store);
       this.closeForeignRuntimeCleanupReservations(store);
     });
@@ -177,7 +186,7 @@ export class ExecutionAttemptService {
   arm(input: ArmExecutionAttemptInput): ArmExecutionAttemptResult {
     this.assertArmShape(input);
     const placement = this.canonicalizePlacement(input.placement);
-    return this.withStore(store => {
+    const existing = this.withStore(store => {
       const parentArm = store.attempts.find(attempt =>
         attempt.originatingPrimarySession === input.originatingPrimarySession && attempt.phase === 'armed');
       if (parentArm) {
@@ -185,7 +194,7 @@ export class ExecutionAttemptService {
           if (!this.samePlacement(parentArm.placement, placement)) {
             throw new ExecutionPlacementMismatchError(structuredClone(parentArm));
           }
-          return { attempt: structuredClone(parentArm), existing: true };
+          return structuredClone(parentArm);
         }
         throw new Error(`Primary session '${input.originatingPrimarySession}' already has an armed execution`);
       }
@@ -198,35 +207,72 @@ export class ExecutionAttemptService {
         if (!this.samePlacement(existing.placement, placement)) {
           throw new ExecutionPlacementMismatchError(structuredClone(existing));
         }
-        return { attempt: structuredClone(existing), existing: true };
+        return structuredClone(existing);
       }
       if (placement.kind === 'worktree') {
         this.assertWorkspacesIdleInStore(store, placement.workspaceIdentities);
       }
-      const now = new Date().toISOString();
-      const attempt: ExecutionAttempt = {
-        id: randomUUID(),
-        kind: input.kind,
-        originatingPrimarySession: this.requireToken(input.originatingPrimarySession, 'originatingPrimarySession'),
-        placement,
-        phase: 'armed',
-        armRuntimeId: this.runtimeId,
-        expiresAt: new Date(Date.now() + ARMED_ATTEMPT_TTL_MS).toISOString(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      if (input.kind === 'task') {
-        const allocation = this.taskService.allocateWorkerAttempt(input.featureName!, input.taskFolder!);
-        attempt.featureName = input.featureName;
-        attempt.taskFolder = input.taskFolder;
-        attempt.taskAttempt = allocation.attempt;
-        this.setCurrentTaskAttempt(store, input.featureName!, input.taskFolder!, attempt.id);
-      } else {
-        attempt.runId = input.runId;
-      }
-      store.attempts.push(attempt);
-      return { attempt: structuredClone(attempt), existing: false };
+      return undefined;
     });
+    if (existing) return { attempt: existing, existing: true };
+
+    const now = new Date().toISOString();
+    const attempt: ExecutionAttempt = {
+      id: randomUUID(),
+      kind: input.kind,
+      originatingPrimarySession: this.requireToken(input.originatingPrimarySession, 'originatingPrimarySession'),
+      placement,
+      phase: 'armed',
+      armRuntimeId: this.runtimeId,
+      expiresAt: new Date(Date.now() + ARMED_ATTEMPT_TTL_MS).toISOString(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (input.kind === 'adhoc') {
+      attempt.runId = input.runId;
+      return this.withStore(store => {
+        store.attempts.push(attempt);
+        return { attempt: structuredClone(attempt), existing: false };
+      });
+    }
+
+    const featureName = input.featureName!;
+    const taskFolder = input.taskFolder!;
+    const previousStatus = this.taskService.getRawStatus(featureName, taskFolder);
+    if (!previousStatus) throw new Error(`Task '${taskFolder}' not found`);
+    attempt.featureName = featureName;
+    attempt.taskFolder = taskFolder;
+    attempt.taskAttempt = (previousStatus.workerAttempt ?? 0) + 1;
+    const previousAttemptId = this.currentTaskAttempt(featureName, taskFolder)?.id;
+    const journal: TaskArmJournal = {
+      attempt: structuredClone(attempt),
+      previousStatus: structuredClone(previousStatus),
+      ...(previousAttemptId ? { previousAttemptId } : {}),
+    };
+    this.withStore(store => {
+      const pending = store.taskArmJournals?.find(candidate =>
+        candidate.attempt.originatingPrimarySession === input.originatingPrimarySession
+        || (candidate.attempt.featureName === featureName && candidate.attempt.taskFolder === taskFolder));
+      if (pending) {
+        throw new ExecutionScopeConflictError(structuredClone(pending.attempt));
+      }
+      if (placement.kind === 'worktree') {
+        this.assertWorkspacesIdleInStore(store, placement.workspaceIdentities);
+      }
+      (store.taskArmJournals ??= []).push(journal);
+    });
+    this.options.checkpoint?.('after_task_arm_journal');
+    this.taskService.allocateExecutionWorkerAttempt(featureName, taskFolder, attempt.taskAttempt);
+    this.options.checkpoint?.('after_task_status');
+    const armed = this.withStore(store => {
+      const pending = store.taskArmJournals?.find(candidate => candidate.attempt.id === attempt.id);
+      if (!pending) throw new Error(`Task arm journal for ${attempt.id} is unavailable`);
+      store.attempts.push(attempt);
+      this.setCurrentTaskAttempt(store, featureName, taskFolder, attempt.id);
+      return structuredClone(attempt);
+    });
+    this.options.checkpoint?.('after_task_arm');
+    return { attempt: armed, existing: false };
   }
 
   preflightArm(input: PreflightExecutionAttemptInput): ExecutionAttempt | undefined {
@@ -272,6 +318,8 @@ export class ExecutionAttemptService {
       delete attempt.armRuntimeId;
       delete attempt.expiresAt;
       attempt.updatedAt = now;
+      store.taskArmJournals = store.taskArmJournals?.filter(journal => journal.attempt.id !== attempt.id);
+      if (store.taskArmJournals?.length === 0) delete store.taskArmJournals;
       return structuredClone(attempt);
     });
   }
@@ -318,6 +366,7 @@ export class ExecutionAttemptService {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
       if (attempt.phase !== 'armed') throw new Error(`Execution attempt ${attemptId} is not armed`);
+      this.rollbackTaskArmJournal(store, attempt);
       this.finalizeRecord(attempt, 'not_started');
       return structuredClone(attempt);
     });
@@ -593,6 +642,7 @@ export class ExecutionAttemptService {
 
   private hasPersistableState(store: ExecutionAttemptsJson): boolean {
     return store.attempts.length > 0
+      || (store.taskArmJournals?.length ?? 0) > 0
       || (store.cleanupReservations?.length ?? 0) > 0
       || (store.nativeTaskLeaseHistory?.length ?? 0) > 0
       || Object.keys(store.currentTaskAttempts ?? {}).length > 0;
@@ -635,6 +685,7 @@ export class ExecutionAttemptService {
       throw new Error(`Unsupported execution-attempts schemaVersion ${String((loaded as { schemaVersion: unknown }).schemaVersion)}`);
     }
     loaded.attempts ??= [];
+    if (loaded.taskArmJournals?.length === 0) delete loaded.taskArmJournals;
     if (loaded.cleanupReservations?.length === 0) delete loaded.cleanupReservations;
     return loaded;
   }
@@ -717,16 +768,24 @@ export class ExecutionAttemptService {
       const repositoryPath = placement.workspaceIdentities[0]!;
       const reportPath = fs.realpathSync(path.resolve(this.projectRoot, old.reportLocator));
       const relativeReport = path.relative(this.projectRoot, reportPath);
+      const reportBody = fs.readFileSync(reportPath, 'utf8');
+      const reportOutcome = reportBody.match(/^\*\*Worker-reported outcome:\*\* (completed|partial|failed|blocked)$/m)?.[1];
+      const reportReceipt = reportBody.match(/^\*\*(Created commit|Observed HEAD \(no new commit\)):\*\* ([0-9a-f]{40})$/m);
+      const reportKind = reportReceipt?.[1];
+      const reportSha = reportReceipt?.[2];
       if (relativeReport.startsWith('..') || path.isAbsolute(relativeReport)
         || !fs.statSync(repositoryPath).isDirectory()
-        || hash(fs.readFileSync(reportPath, 'utf8')) !== old.reportContentHash) return undefined;
+        || hash(reportBody) !== old.reportContentHash
+        || reportOutcome !== old.observedOutcome
+        || !reportSha) return undefined;
       const git = (...args: string[]) => execFileSync('git', ['-C', repositoryPath, ...args], { encoding: 'utf8' }).trim();
       const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
       const head = git('rev-parse', 'HEAD');
       const expectedTree = git('rev-parse', `${head}^{tree}`);
       const clean = git('status', '--porcelain').length === 0;
-      if (!clean || branch !== old.branch) return undefined;
+      if (!clean || branch !== old.branch || head !== reportSha) return undefined;
       const result = head === old.baseCommit ? 'no_changes' : 'committed';
+      if ((result === 'no_changes') !== (reportKind === 'Observed HEAD (no new commit)')) return undefined;
       if (result === 'committed' && git('rev-parse', `${head}^`) !== old.baseCommit) return undefined;
       const repositories: ExecutionFinalizationRepositoryReceipt[] = [{
         id: 'root',
@@ -762,6 +821,7 @@ export class ExecutionAttemptService {
     let changed = false;
     for (const attempt of store.attempts) {
       if (attempt.phase !== 'armed' || !attempt.expiresAt || Date.parse(attempt.expiresAt) > nowMs) continue;
+      this.rollbackTaskArmJournal(store, attempt);
       this.finalizeRecord(attempt, 'not_started');
       changed = true;
     }
@@ -774,6 +834,38 @@ export class ExecutionAttemptService {
         this.finalizeRecord(attempt, 'not_started');
       }
     }
+  }
+
+  private reconcileTaskArmJournals(store: ExecutionAttemptsJson): void {
+    for (const journal of [...(store.taskArmJournals ?? [])]) {
+      const attempt = store.attempts.find(candidate => candidate.id === journal.attempt.id);
+      this.rollbackTaskArmJournal(store, attempt ?? journal.attempt);
+      if (attempt?.phase === 'armed') this.finalizeRecord(attempt, 'not_started');
+    }
+  }
+
+  private rollbackTaskArmJournal(store: ExecutionAttemptsJson, attempt: ExecutionAttempt): void {
+    const journal = store.taskArmJournals?.find(candidate => candidate.attempt.id === attempt.id);
+    if (!journal) return;
+    const status = this.taskService.getRawStatus(journal.attempt.featureName!, journal.attempt.taskFolder!);
+    if (status?.workerAttempt === journal.attempt.taskAttempt) {
+      this.taskService.restoreWorkerAttemptAllocation(
+        journal.attempt.featureName!,
+        journal.attempt.taskFolder!,
+        journal.attempt.taskAttempt!,
+        journal.previousStatus,
+      );
+    } else if (JSON.stringify(status) !== JSON.stringify(journal.previousStatus)) {
+      throw new Error(`Task arm journal ${journal.attempt.id} cannot reconcile changed task state`);
+    }
+    const key = taskPointerKey(journal.attempt.featureName!, journal.attempt.taskFolder!);
+    if (journal.previousAttemptId) {
+      (store.currentTaskAttempts ??= {})[key] = journal.previousAttemptId;
+    } else if (store.currentTaskAttempts?.[key] === journal.attempt.id) {
+      delete store.currentTaskAttempts[key];
+    }
+    store.taskArmJournals = store.taskArmJournals?.filter(candidate => candidate.attempt.id !== attempt.id);
+    if (store.taskArmJournals?.length === 0) delete store.taskArmJournals;
   }
 
   private closeForeignRuntimeCleanupReservations(store: ExecutionAttemptsJson): void {
@@ -918,6 +1010,9 @@ export class ExecutionAttemptService {
 
   private assertWorkspacesIdleInStore(store: ExecutionAttemptsJson, identities: string[]): void {
     this.assertCleanupNotReserved(store, identities);
+    const pending = store.taskArmJournals?.find(journal => journal.attempt.placement.kind === 'worktree'
+      && identitiesIntersect(journal.attempt.placement.workspaceIdentities, identities));
+    if (pending) throw new Error(`Workspace identity is claimed by pending task arm ${pending.attempt.id}`);
     for (const attempt of store.attempts) {
       if (attempt.phase === 'finalized' || attempt.placement.kind !== 'worktree') continue;
       if (!identitiesIntersect(attempt.placement.workspaceIdentities, identities)) continue;

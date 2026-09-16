@@ -370,8 +370,15 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     const baseCommit = execSync('git rev-parse HEAD', { cwd: workspacePath, encoding: 'utf8' }).trim();
     fs.writeFileSync(path.join(workspacePath, 'legacy.txt'), 'legacy\n');
     execSync('git add legacy.txt && git commit -m "test: legacy settled"', { cwd: workspacePath, stdio: 'ignore' });
+    const head = execSync('git rev-parse HEAD', { cwd: workspacePath, encoding: 'utf8' }).trim();
     const reportLocator = '.hive/legacy-settled-report.md';
-    const reportBody = 'legacy settled report\n';
+    const reportBody = [
+      '# Task Report: legacy-settled',
+      '',
+      '**Worker-reported outcome:** completed',
+      `**Created commit:** ${head}`,
+      '',
+    ].join('\n');
     fs.writeFileSync(path.join(TEST_ROOT, reportLocator), reportBody);
     const reportContentHash = createHash('sha256').update(reportBody).digest('hex');
     const now = new Date().toISOString();

@@ -535,38 +535,6 @@ function renderSubagentRoutingCard(
 const AUTONOMOUS_ROUTING_GUIDANCE = "Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.";
 const CANDIDATE_SPECIFIC_ROUTING_GUARD = 'Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.';
 
-function buildForagerEligibleAgents(configService: ConfigService): Array<{
-  name: string;
-  baseAgent: 'forager-worker';
-  description: string;
-}> {
-  return [
-    {
-      name: 'forager-worker',
-      baseAgent: 'forager-worker',
-      description: configService.getRoutingAgentDescription('forager-worker'),
-    },
-    ...Object.entries(configService.getCustomAgentConfigs())
-      .filter((entry): entry is [string, ResolvedCustomAgentConfig & { baseAgent: 'forager-worker' }] => (
-        entry[1].baseAgent === 'forager-worker'
-      ))
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, config]) => ({
-        name,
-        baseAgent: config.baseAgent,
-        description: config.description,
-      })),
-  ];
-}
-
-function formatEligibleAgentChoices(
-  eligibleAgents: ReadonlyArray<{ name: string; description: string }>,
-): string {
-  return eligibleAgents
-    .map((candidate) => `- \`${candidate.name}\` — ${candidate.description}`)
-    .join('\n');
-}
-
 function buildSubagentRoutingAppendix(
   baseAgents: readonly CustomAgentBase[],
   customAgentConfigs: Record<string, ResolvedCustomAgentConfig>,
@@ -2684,7 +2652,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     task: string,
     attemptSlot: string | undefined,
     finalizedAttempt: ExecutionAttempt,
-    options: { resetTaskPending: boolean },
+    options: { resetTaskPending: boolean; requireCurrent?: boolean; cleanupOnly?: boolean },
   ) => {
     if (finalizedAttempt.placement.kind !== 'worktree') {
       throw new WorktreeTopologyMismatchError(`Execution ${finalizedAttempt.id} does not have a worktree placement`);
@@ -2706,14 +2674,16 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       let current = executionAttemptService.getAttempt(finalizedAttempt.id);
       const currentTask = executionAttemptService.currentTaskAttempt(feature, task);
       if (!current
-        || (options.resetTaskPending ? currentTask?.id !== current.id : currentTask?.id === current.id)) {
+        || (options.requireCurrent && currentTask?.id !== current.id)
+        || (!options.requireCurrent && (options.resetTaskPending ? currentTask?.id !== current.id : currentTask?.id === current.id))) {
         throw new WorktreeTopologyMismatchError(`Execution ${finalizedAttempt.id} no longer matches the expected task attempt at discard time`);
       }
       if (current.phase === 'armed') {
         executionAttemptService.closeArmNotStarted(current.id);
         current = executionAttemptService.getAttempt(current.id)!;
       }
-      if (current.phase !== 'finalized' || !(await placementMatchesRegisteredWorktree(current))) {
+      if (current.phase !== 'finalized'
+        || (!options.cleanupOnly && !(await placementMatchesRegisteredWorktree(current)))) {
         throw new WorktreeTopologyMismatchError(`Finalized execution ${current.id} no longer matches the registered worktree placement`);
       }
       const removal = await worktreeService.remove(feature, task, false, {}, attemptSlot);
@@ -2814,6 +2784,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       phase: ExecutionAttempt['phase'] | undefined;
     } | undefined;
     let continuationPlacement: ExecutionAttempt['placement'] | undefined;
+    let retryPlacement: ExecutionAttempt['placement'] | undefined;
 
     if (input.scope.kind === 'task') {
       if (!isNonBlankString(input.scope.task)) {
@@ -2896,6 +2867,35 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           });
         }
       }
+      if (taskInfo.status === 'failed' || taskInfo.status === 'partial') {
+        if (!currentAttempt
+          || currentAttempt.phase !== 'finalized'
+          || currentAttempt.finalization?.status !== taskInfo.status
+          || currentAttempt.finalization.disposition?.applied !== true
+          || currentAttempt.taskAttempt !== rawTaskStatus?.workerAttempt
+          || currentAttempt.finalization.expectedTaskAttempt !== rawTaskStatus?.workerAttempt) {
+          return respond({
+            success: false,
+            reason: 'failed_retry_authority_mismatch',
+            mutation: 'none',
+            feature,
+            task: input.scope.task,
+            error: `${taskInfo.status} retry requires the exact current finalized receipt and task generation.`,
+          });
+        }
+        retryPlacement = currentAttempt.placement;
+        if (retryPlacement.kind !== input.placement.kind) {
+          return respond({
+            success: false,
+            reason: 'failed_retry_placement_mismatch',
+            mutation: 'none',
+            feature,
+            task: input.scope.task,
+            attemptId: currentAttempt.id,
+            error: `${taskInfo.status} retry must reuse its finalized ${retryPlacement.kind} placement.`,
+          });
+        }
+      }
       taskAdmissionSnapshot = {
         workerAttempt: taskService.getRawStatus(feature, input.scope.task)?.workerAttempt,
         attemptId: currentAttempt?.id,
@@ -2961,8 +2961,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         });
       }
     } else if (scope.kind === 'task') {
-      const attemptSlot = continuationPlacement?.kind === 'worktree'
-        ? continuationPlacement.attemptSlot
+      const requiredPlacement = continuationPlacement ?? retryPlacement;
+      const attemptSlot = requiredPlacement?.kind === 'worktree'
+        ? requiredPlacement.attemptSlot
         : undefined;
       const existing = await worktreeService.get(scope.feature, scope.task, attemptSlot);
       preparationResourcePaths = existing?.repos
@@ -3057,54 +3058,61 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       };
       const initialAdmissionFailure = revalidateTaskAdmission();
       if (initialAdmissionFailure) return initialAdmissionFailure;
-      if (scope.kind === 'task' && continuationPlacement) {
+      const requiredPlacement = continuationPlacement ?? retryPlacement;
+      if (scope.kind === 'task' && requiredPlacement) {
         const currentAttempt = executionAttemptService.currentTaskAttempt(scope.feature, scope.task);
         if (!currentAttempt || currentAttempt.phase !== 'finalized'
           || currentAttempt.id !== taskAdmissionSnapshot?.attemptId
           || currentAttempt.placement.kind !== input.placement.kind) {
           return respond({
             success: false,
-            reason: 'blocked_continuation_placement_mismatch',
+            reason: continuationPlacement
+              ? 'blocked_continuation_placement_mismatch'
+              : 'failed_retry_placement_mismatch',
             mutation: 'none',
             feature: scope.feature,
             task: scope.task,
-            error: 'Blocked continuation no longer matches its prior finalized placement.',
+            error: `${continuationPlacement ? 'Blocked continuation' : 'Failed/partial retry'} no longer matches its prior finalized placement.`,
           });
         }
-        if (continuationPlacement.kind === 'in_place') {
+        if (requiredPlacement.kind === 'in_place') {
           if (preparationResourcePaths.length !== 1
-            || preparationResourcePaths[0] !== continuationPlacement.directory) {
+            || preparationResourcePaths[0] !== requiredPlacement.directory) {
             return respond({
               success: false,
-              reason: 'blocked_continuation_placement_mismatch',
+              reason: continuationPlacement
+                ? 'blocked_continuation_placement_mismatch'
+                : 'failed_retry_placement_mismatch',
               mutation: 'none',
               feature: scope.feature,
               task: scope.task,
               attemptId: currentAttempt.id,
-              error: 'Blocked continuation must reuse its exact finalized in-place directory.',
+              error: `${continuationPlacement ? 'Blocked continuation' : 'Failed/partial retry'} must reuse its exact finalized in-place directory.`,
             });
           }
         } else {
           const registered = await worktreeService.get(
             scope.feature,
             scope.task,
-            continuationPlacement.attemptSlot,
+            requiredPlacement.attemptSlot,
           );
           const registeredIdentities = registered?.repos
             ? Object.values(registered.repos).map(repository => normalizeResourcePath(repository.path))
             : registered
               ? [normalizeResourcePath(registered.workspacePath ?? registered.path)]
               : [];
-          if (registeredIdentities.length !== continuationPlacement.workspaceIdentities.length
-            || registeredIdentities.some(identity => !continuationPlacement.workspaceIdentities.includes(identity))) {
+          if (registeredIdentities.length !== requiredPlacement.workspaceIdentities.length
+            || registeredIdentities.some((identity, index) => identity !== requiredPlacement.workspaceIdentities[index])) {
             return respond({
               success: false,
-              reason: 'blocked_continuation_placement_mismatch',
+              reason: continuationPlacement
+                ? 'blocked_continuation_placement_mismatch'
+                : 'failed_retry_placement_mismatch',
               mutation: 'none',
               feature: scope.feature,
               task: scope.task,
               attemptId: currentAttempt.id,
-              error: 'Blocked continuation must reuse its exact finalized worktree identities.',
+              error: `${continuationPlacement ? 'Blocked continuation' : 'Failed/partial retry'} must reuse its exact finalized worktree identities and attempt slot.`,
             });
           }
         }
@@ -3170,8 +3178,9 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       placement = existingAttempt.placement;
     } else if (input.placement.kind === 'worktree' && scope.kind === 'task') {
       const { feature, task } = scope;
-      const attemptSlot = continuationPlacement?.kind === 'worktree'
-        ? continuationPlacement.attemptSlot
+      const requiredPlacement = continuationPlacement ?? retryPlacement;
+      const attemptSlot = requiredPlacement?.kind === 'worktree'
+        ? requiredPlacement.attemptSlot
         : undefined;
       const existing = await worktreeService.get(feature, task, attemptSlot);
       const worktree = existing ?? await worktreeService.create(feature, task, undefined, attemptSlot);
@@ -3317,7 +3326,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       });
     }
     if (scope.kind === 'task') {
-      taskService.update(scope.feature, scope.task, { status: 'in_progress' });
       bindFeatureSession(scope.feature, toolContext);
     }
       return respond({
@@ -6148,6 +6156,19 @@ NEXT: Ask your first clarifying question about this feature.`;
               blocker,
               message,
             }));
+            const nextAction = result.attempt.placement.kind === 'in_place'
+              ? status === 'blocked'
+                ? 'Read hive_status blocker guidance, record the operator decision, then prepare a fresh continuation in this exact in-place directory. No Hive merge or cleanup applies.'
+                : status === 'failed' || status === 'partial'
+                  ? 'Inspect hive_status and the immutable report, then prepare a fresh retry in this exact in-place directory. No Hive merge or cleanup applies.'
+                  : 'The in-place execution is finalized; no Git merge or cleanup applies.'
+              : status === 'completed'
+                ? 'Review hive_status receipt-backed merge eligibility, then merge or clean up explicitly.'
+                : status === 'blocked'
+                  ? 'Read hive_status tasks.list[].blocker, record the operator decision, recheck status, then prepare same-placement continuation.'
+                  : status === 'failed' || status === 'partial'
+                    ? 'Inspect hive_status and the immutable report, then prepare a fresh retry in the exact finalized worktree placement.'
+                    : 'The worktree execution is finalized; inspect status before choosing explicit cleanup.';
             return respond({
               success: true,
               attemptId,
@@ -6156,9 +6177,7 @@ NEXT: Ask your first clarifying question about this feature.`;
               reportPath: result.reportPath,
               currentTaskUnchanged: result.currentTaskUnchanged,
               finalization: result.attempt.finalization,
-              nextAction: result.attempt.placement.kind === 'worktree'
-                ? 'Review the finalized report, then merge or clean up explicitly.'
-                : 'The in-place execution is finalized; no Git operation was performed.',
+              nextAction,
             });
           } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -6194,13 +6213,14 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
       hive_worktree_discard: tool({
-        description: 'Abort task: discard changes, reset status. Optional attemptId discards a superseded worktree slot without changing the current task.',
+        description: 'Remove a finalized task worktree. Default current-task discard resets status; cleanupOnly preserves task status for post-integration cleanup recovery.',
         args: {
           task: tool.schema.string().describe('Task folder name'),
           feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
           attemptId: tool.schema.string().optional().describe('Execution attempt id. Omit to discard the current task slot. A non-current id discards only that superseded slot.'),
+          cleanupOnly: tool.schema.boolean().optional().describe('Remove only the exact finalized placement without resetting task status (default: false).'),
         },
-        async execute({ task, feature: explicitFeature, attemptId }, toolContext) {
+        async execute({ task, feature: explicitFeature, attemptId, cleanupOnly }, toolContext) {
           const feature = resolveFeature(explicitFeature, toolContext);
           if (!feature) return formatFeatureResolutionError('feature', explicitFeature);
 
@@ -6275,6 +6295,51 @@ NEXT: Ask your first clarifying question about this feature.`;
                 task,
                 attemptId: discardAttempt.id,
                 error: 'Discard requires a finalized worktree placement; no worktree was removed.',
+              });
+            }
+            if (cleanupOnly === true) {
+              const attemptSlot = discardAttempt.placement.attemptSlot;
+              const cleaned = await discardTaskWorktreeSlot(feature, task, attemptSlot, discardAttempt, {
+                resetTaskPending: false,
+                requireCurrent: isCurrentDiscard,
+                cleanupOnly: true,
+              });
+              if (cleaned.featureCompleted) {
+                return respond({
+                  success: false,
+                  reason: 'feature_completed',
+                  mutation: 'none',
+                  feature,
+                  task,
+                  attemptId: discardAttempt.id,
+                  error: 'Completed features are immutable; task state and worktree are unchanged.',
+                });
+              }
+              if (cleaned.removal.cleanup.outcome !== 'complete') {
+                const classification = classifyWorktreeOutcome(
+                  'CLEANUP_FAILED',
+                  cleaned.removal.cleanup.outcome === 'partial' ? 'partial' : 'none',
+                );
+                return respond({
+                  success: false,
+                  reason: 'worktree_cleanup_incomplete',
+                  feature,
+                  task,
+                  attemptId: discardAttempt.id,
+                  taskStatePreserved: true,
+                  cleanup: cleaned.removal.cleanup,
+                  ...worktreeOutcomeFields(classification),
+                  nextAction: worktreeNextAction(classification.action),
+                });
+              }
+              return respond({
+                success: true,
+                feature,
+                task,
+                attemptId: discardAttempt.id,
+                taskStatePreserved: true,
+                cleanup: cleaned.removal.cleanup,
+                message: 'Finalized task worktree cleanup completed without changing task status.',
               });
             }
             if (!isCurrentDiscard && requested) {
@@ -6432,7 +6497,7 @@ NEXT: Ask your first clarifying question about this feature.`;
           }
           if (taskInfo.status !== 'done' || finalizedAttempt?.phase !== 'finalized'
             || finalizedAttempt.observedOutcome !== 'completed'
-            || !(await placementMatchesRegisteredWorktree(finalizedAttempt))) {
+            || !(await finalizationMatchesRegisteredWorktree(finalizedAttempt))) {
             return failure('Task execution must be finalized as completed before merging. Use hive_execution_finish first.');
           }
 
@@ -7152,6 +7217,16 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             const finalizedPlacementMatches = executionAttempt
               ? await placementMatchesRegisteredWorktree(executionAttempt)
               : false;
+            const canonicalFinalizationReceipt = !!executionAttempt
+              && executionAttempt.phase === 'finalized'
+              && executionAttempt.observedOutcome === 'completed'
+              && executionAttempt.finalization?.status === 'completed'
+              && executionAttempt.finalization.disposition?.applied === true
+              && executionAttempt.taskAttempt === rawStatus?.workerAttempt
+              && executionAttempt.finalization.expectedTaskAttempt === rawStatus?.workerAttempt;
+            const finalizationReceiptMatches = canonicalFinalizationReceipt
+              ? await finalizationMatchesRegisteredWorktree(executionAttempt)
+              : false;
             const hasChanges = worktree
               ? await worktreeService.hasUncommittedChanges(worktree.feature, worktree.step, attemptSlot)
               : null;
@@ -7161,7 +7236,14 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               name: t.name,
               status: t.status,
               executionFinalized,
+              executionPhase: executionAttempt?.phase ?? null,
+              placement: executionAttempt?.placement ?? null,
               finalizedPlacementMatches,
+              canonicalFinalizationReceipt,
+              finalizationReceiptMatches,
+              legacyFinalizationUnverifiable: executionAttempt?.phase === 'finalized'
+                && executionAttempt.observedOutcome === 'completed'
+                && !executionAttempt.finalization,
               origin: t.origin || 'plan',
               dependsOn: rawStatus?.dependsOn ?? null,
               ...(t.status === 'blocked' && rawStatus?.blocker ? { blocker: rawStatus.blocker } : {}),
@@ -7199,16 +7281,22 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             .map(t => t.folder);
           const mergeEligibility = tasksSummary.map(t => {
             const eligible = t.status === 'done' && t.executionFinalized
-              && t.finalizedPlacementMatches && !!t.worktree;
+              && t.canonicalFinalizationReceipt && t.finalizationReceiptMatches && !!t.worktree;
             const reasonCode = eligible
-              ? 'TASK_DONE_WITH_LIVE_WORKTREE'
+              ? 'CANONICAL_RECEIPT_MATCHES_SOURCE'
               : t.status !== 'done'
                 ? 'TASK_NOT_DONE'
                 : !t.executionFinalized
                   ? 'EXECUTION_NOT_FINALIZED'
-                  : !t.worktree
-                    ? 'NO_LIVE_WORKTREE'
-                    : 'FINALIZED_PLACEMENT_MISMATCH';
+                  : t.legacyFinalizationUnverifiable
+                    ? 'LEGACY_FINALIZATION_UNVERIFIABLE'
+                    : !t.worktree
+                      ? 'NO_LIVE_WORKTREE'
+                      : !t.finalizedPlacementMatches
+                        ? 'FINALIZED_PLACEMENT_MISMATCH'
+                        : !t.canonicalFinalizationReceipt
+                          ? 'FINALIZATION_RECEIPT_MISMATCH'
+                          : 'SOURCE_DRIFT';
 
             return {
               task: t.folder,
@@ -7249,7 +7337,15 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
 
           const getNextAction = (
             planStatus: string | null,
-            tasks: Array<{ status: string; folder: string; executionFinalized: boolean; traceTaskId?: string; blocker?: unknown }>,
+            tasks: Array<{
+              status: string;
+              folder: string;
+              executionFinalized: boolean;
+              executionPhase: ExecutionAttempt['phase'] | null;
+              placement: ExecutionAttempt['placement'] | null;
+              traceTaskId?: string;
+              blocker?: unknown;
+            }>,
             runnableTasks: string[],
             hasPlan: boolean,
           ): string => {
@@ -7261,6 +7357,20 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             }
             if (tasks.length === 0) {
               return 'Generate tasks from plan with hive_tasks_sync';
+            }
+            const attached = tasks.find(t => t.executionPhase === 'attached');
+            if (attached) {
+              return attached.traceTaskId
+                ? `Wait for exact native stop evidence for task ${attached.folder}; hive_task_trace({ task_id: ${JSON.stringify(attached.traceTaskId)} }) is inspection-only and does not authorize finalization.`
+                : `Task ${attached.folder} remains attached without an authenticated child identity. Preserve its ${attached.placement?.kind ?? 'recorded'} placement and wait for exact stop evidence.`;
+            }
+            const stopped = tasks.find(t => t.executionPhase === 'stopped');
+            if (stopped) {
+              return `Task ${stopped.folder} has exact stop evidence but incomplete finalization. Retry the identical hive_execution_finish input; preserve its ${stopped.placement?.kind ?? 'recorded'} placement and do not arm another worker.`;
+            }
+            const armed = tasks.find(t => t.executionPhase === 'armed');
+            if (armed) {
+              return `Dispatch the next unchanged native Forager task() call for armed task ${armed.folder}; its ${armed.placement?.kind ?? 'recorded'} placement is already reserved.`;
             }
             const inProgress = tasks.find(t => t.status === 'in_progress');
             if (inProgress) {
@@ -7286,9 +7396,12 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             }
             const failed = tasks.find(t => t.status === 'failed' || t.status === 'partial');
             if (failed) {
-              return failed.traceTaskId
-                ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(failed.traceTaskId)} }) before retrying, then arm a NEW worker with hive_execution_prepare; do not pass task_id to task().`
-                : `Task ${failed.folder} needs retry, but no traceTaskId is available. Inspect its report and worktree, then arm a NEW worker with hive_execution_prepare; do not invent task_id.`;
+              const placement = failed.placement?.kind === 'in_place'
+                ? `the exact in-place directory ${JSON.stringify(failed.placement.directory)}`
+                : failed.placement?.kind === 'worktree'
+                  ? `the exact finalized worktree identities and attemptSlot ${JSON.stringify(failed.placement.attemptSlot ?? null)}`
+                  : 'its exact finalized placement';
+              return `Inspect the immutable report for ${failed.folder}, then arm a NEW worker with hive_execution_prepare reusing ${placement}; do not pass task_id to task().`;
             }
             if (runnableTasks.length > 1) {
               return `${runnableTasks.length} tasks are ready to start in parallel: ${runnableTasks.join(', ')}`;

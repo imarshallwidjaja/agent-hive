@@ -686,6 +686,25 @@ export class TaskService {
     taskFolder: string,
     lockOptions?: LockOptions
   ): WorkerAttemptAllocation {
+    return this.allocateWorkerAttemptState(featureName, taskFolder, false, undefined, lockOptions);
+  }
+
+  allocateExecutionWorkerAttempt(
+    featureName: string,
+    taskFolder: string,
+    expectedAttempt: number,
+    lockOptions?: LockOptions,
+  ): WorkerAttemptAllocation {
+    return this.allocateWorkerAttemptState(featureName, taskFolder, true, expectedAttempt, lockOptions);
+  }
+
+  private allocateWorkerAttemptState(
+    featureName: string,
+    taskFolder: string,
+    startExecution: boolean,
+    expectedAttempt: number | undefined,
+    lockOptions?: LockOptions,
+  ): WorkerAttemptAllocation {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
     if (!fileExists(statusPath)) {
       throw new Error(`Task '${taskFolder}' not found`);
@@ -699,14 +718,40 @@ export class TaskService {
       }
 
       const attempt = (current.workerAttempt || 0) + 1;
+      if (expectedAttempt !== undefined && attempt !== expectedAttempt) {
+        throw new Error(`Task '${taskFolder}' worker generation changed before allocation`);
+      }
       const status: TaskStatus = {
         ...current,
         schemaVersion: TASK_STATUS_SCHEMA_VERSION,
+        ...(startExecution ? { status: 'in_progress' as const } : {}),
         workerAttempt: attempt,
       };
+      if (startExecution && !current.startedAt) status.startedAt = this.now().toISOString();
       delete status.blocker;
       writeJsonAtomic(statusPath, status);
       return { status, attempt };
+    } finally {
+      release();
+    }
+  }
+
+  restoreWorkerAttemptAllocation(
+    featureName: string,
+    taskFolder: string,
+    expectedAttempt: number,
+    previousStatus: TaskStatus,
+    lockOptions?: LockOptions,
+  ): void {
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
+    if (!fileExists(statusPath)) throw new Error(`Task '${taskFolder}' not found`);
+    const release = acquireLockSync(statusPath, lockOptions);
+    try {
+      const current = readJson<TaskStatus>(statusPath);
+      if (!current || current.workerAttempt !== expectedAttempt || current.status !== 'in_progress' || current.blocker) {
+        throw new Error(`Task '${taskFolder}' no longer matches its interrupted worker allocation`);
+      }
+      writeJsonAtomic(statusPath, previousStatus);
     } finally {
       release();
     }
