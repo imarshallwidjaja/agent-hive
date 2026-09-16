@@ -288,6 +288,12 @@ describe('classifySession', () => {
       expect(result.baseAgent).toBe('approach-advisor');
     });
 
+    it('classifies vulnerability-reviewer as subagent', () => {
+      const result = classifySession('vulnerability-reviewer', NO_CUSTOM_AGENTS);
+      expect(result.sessionKind).toBe('subagent');
+      expect(result.baseAgent).toBe('vulnerability-reviewer');
+    });
+
     it('classifies simplicity-reviewer as subagent', () => {
       const result = classifySession('simplicity-reviewer', NO_CUSTOM_AGENTS);
       expect(result.sessionKind).toBe('subagent');
@@ -307,6 +313,7 @@ describe('classifySession', () => {
       'scout-custom': { baseAgent: 'scout-researcher' },
       'reviewer-security': { baseAgent: 'code-reviewer' },
       'reviewer-minimalist': { baseAgent: 'simplicity-reviewer' },
+      'reviewer-vulnerability': { baseAgent: 'vulnerability-reviewer' },
     };
 
     it('classifies custom forager-derived agent as task-worker', () => {
@@ -325,6 +332,12 @@ describe('classifySession', () => {
       const result = classifySession('reviewer-minimalist', customAgents);
       expect(result.sessionKind).toBe('subagent');
       expect(result.baseAgent).toBe('simplicity-reviewer');
+    });
+
+    it('classifies custom vulnerability-reviewer-derived agent as subagent', () => {
+      const result = classifySession('reviewer-vulnerability', customAgents);
+      expect(result.sessionKind).toBe('subagent');
+      expect(result.baseAgent).toBe('vulnerability-reviewer');
     });
 
     it('classifies custom scout-derived agent as subagent', () => {

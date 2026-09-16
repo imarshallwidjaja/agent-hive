@@ -1932,7 +1932,7 @@ const plugin: Plugin = async (ctx) => {
         return { kind: runtimeAgent === 'general' ? 'ordinary-child' : 'helper', stored };
       }
       if (classification.baseAgent !== 'architect-planner'
-        && !['forager-worker', 'scout-researcher', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor']
+        && !['forager-worker', 'scout-researcher', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer']
           .includes(classification.baseAgent ?? '')) {
         return deny(contextFailure('context_authorization_denied', 'The runtime child agent is not eligible for delegated authority.'));
       }
@@ -3957,6 +3957,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         const targetBase = classifySession(targetAgent, customAgentConfigsForClassification).baseAgent ?? targetAgent;
         if (observedAgent && classifySession(observedAgent, customAgentConfigsForClassification).sessionKind === 'primary'
           && targetBase !== 'forager-worker' && targetBase !== 'architect-planner' && !isReadOnlyCouncilEligibleBase(targetBase)
+          && targetAgent !== 'vulnerability-reviewer'
           && targetBase !== 'hive-helper' && targetAgent !== 'general'
           && !dashTaskReservation && !vulnerabilityDeepReservation) {
           throw new Error('workspace_dispatch_denied: mutation-capable or unknown task targets require a prepared Forager assignment with tracked workspace ownership.');

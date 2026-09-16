@@ -5136,6 +5136,76 @@ describe('managed execution attachment', () => {
     })).rejects.toThrow(/no armed execution/i);
   });
 
+  it('binds standalone vulnerability reviewer authority without weakening dispatch or private review gates', async () => {
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const configSpy = spyOn(ConfigService.prototype, 'get').mockReturnValue({
+      agents: {},
+      customAgents: {
+        'custom-vulnerability-reviewer': {
+          baseAgent: 'vulnerability-reviewer',
+          description: 'Configured vulnerability specialist',
+        },
+      },
+    } as any);
+    try {
+      const { hooks, context, parents } = await harness(root, 'review-primary');
+      const config: { agent?: Record<string, { prompt?: string }> } = {};
+      await hooks.config?.(config);
+      const privateLane = Object.entries(config.agent ?? {})
+        .find(([name, agent]) => name.startsWith('__hive_vulnerability_review_')
+          && name !== '__hive_vulnerability_review_primary'
+          && agent.prompt?.includes('mandatory cross-cutting baseline'))?.[0];
+      expect(privateLane).toBeDefined();
+
+      await hooks.tool!.hive_feature_create.execute({ name: 'review-feature' }, context);
+      await hooks.tool!.hive_context_write.execute({
+        scope: 'project', name: 'review-fixture', content: projectContext('review context'),
+      }, context);
+      const before = hooks['tool.execute.before']!;
+
+      for (const background of [false, true]) {
+        const suffix = background ? 'background' : 'blocking';
+        const callID = `vulnerability-review-${suffix}`;
+        const childSessionID = `vulnerability-review-child-${suffix}`;
+        await expect(before({ tool: 'task', sessionID: 'review-primary', callID }, {
+          args: { subagent_type: 'vulnerability-reviewer', description: 'Review', prompt: 'Review read-only.', background },
+        })).resolves.toBeUndefined();
+        await bindChild(hooks, parents, 'review-primary', callID, childSessionID, 'vulnerability-reviewer');
+        const childContext = { ...context, sessionID: childSessionID, agent: 'vulnerability-reviewer' };
+
+        expect(JSON.parse(await hooks.tool!.hive_repositories_status.execute({}, childContext) as string)).toMatchObject({
+          mode: 'legacy-root', repositories: [{ id: 'root', path: '.' }],
+        });
+        expect(JSON.parse(await hooks.tool!.hive_context_read.execute({
+          scope: 'project', name: 'review-fixture',
+        }, childContext) as string)).toMatchObject({ file: { content: projectContext('review context') } });
+        expect(JSON.parse(await hooks.tool!.hive_status.execute({
+          feature: 'review-feature',
+        }, childContext) as string)).toMatchObject({ feature: { name: 'review-feature' } });
+      }
+
+      for (const target of ['Vulnerability-Reviewer', ' vulnerability-reviewer', 'custom-vulnerability-reviewer']) {
+        await expect(before({ tool: 'task', sessionID: 'review-primary', callID: `denied-${target}` }, {
+          args: { subagent_type: target, description: 'Review', prompt: 'Run.' },
+        }), target).rejects.toThrow('workspace_dispatch_denied');
+      }
+      await expect(before({ tool: 'task', sessionID: 'review-primary', callID: 'private-primary' }, {
+        args: { subagent_type: '__hive_vulnerability_review_primary', description: 'Review', prompt: 'Run.' },
+      })).rejects.toThrow('workspace_dispatch_denied');
+      await expect(before({ tool: 'task', sessionID: 'review-primary', callID: 'private-lane' }, {
+        args: { subagent_type: privateLane!, description: 'Review', prompt: 'Run.' },
+      })).rejects.toThrow('workspace_dispatch_denied');
+      await expect(before({ tool: 'task', sessionID: 'review-primary', callID: 'unknown-target' }, {
+        args: { subagent_type: 'unknown-target', description: 'Unknown', prompt: 'Run.' },
+      })).rejects.toThrow('workspace_dispatch_denied');
+      await expect(before({ tool: 'task', sessionID: 'review-primary', callID: 'unprepared-worker' }, {
+        args: { subagent_type: 'forager-worker', description: 'Mutate', prompt: 'Edit files.' },
+      })).rejects.toThrow('no armed execution');
+    } finally {
+      configSpy.mockRestore();
+    }
+  });
+
   it('binds authenticated child scope for feature context and rejects cross-feature access', async () => {
     const { hooks, context, parents } = await harness(root, 'primary');
     await seedFeature(hooks, context, 'feature-a');

@@ -18,6 +18,7 @@ const BUILT_IN_AGENTS: Record<string, { sessionKind: SessionKind; baseAgent: str
   'code-reviewer': { sessionKind: 'subagent', baseAgent: 'code-reviewer' },
   'simplicity-reviewer': { sessionKind: 'subagent', baseAgent: 'simplicity-reviewer' },
   'approach-advisor': { sessionKind: 'subagent', baseAgent: 'approach-advisor' },
+  'vulnerability-reviewer': { sessionKind: 'subagent', baseAgent: 'vulnerability-reviewer' },
 };
 
 const BASE_AGENT_KIND: Record<string, SessionKind> = {
@@ -27,6 +28,7 @@ const BASE_AGENT_KIND: Record<string, SessionKind> = {
   'code-reviewer': 'subagent',
   'simplicity-reviewer': 'subagent',
   'approach-advisor': 'subagent',
+  'vulnerability-reviewer': 'subagent',
 };
 
 export function classifySession(
