@@ -2729,8 +2729,14 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
   const currentUnsettledAdhocAttempt = (runId: string): ExecutionAttempt | undefined =>
     executionAttemptService.listAttempts().find(attempt =>
       attempt.kind === 'adhoc' && attempt.runId === runId && attempt.phase !== 'finalized');
+  const latestAdhocAttempt = (runId: string): ExecutionAttempt | undefined =>
+    executionAttemptService.listAttempts().filter(attempt =>
+      attempt.kind === 'adhoc' && attempt.runId === runId).at(-1);
   const isAuthorizedAdhocCommitSession = (attempt: ExecutionAttempt, sessionID: string | undefined): boolean =>
-    Boolean(sessionID && attempt.phase === 'attached' && attempt.native?.childSessionId === sessionID);
+    Boolean(sessionID && (
+      (attempt.phase === 'attached' && attempt.native?.childSessionId === sessionID)
+      || (attempt.phase === 'finalized' && attempt.originatingPrimarySession === sessionID)
+    ));
   const releaseUnusedPreparedClaim = (attempt: ExecutionAttempt | undefined): void => {
     if (attempt?.phase !== 'armed') return;
     try { executionAttemptService.closeArmNotStarted(attempt.id); } catch { }
@@ -6402,25 +6408,27 @@ NEXT: Ask your first clarifying question about this feature.`;
               });
             }
             const commitTarget = adhocWritableTarget(info);
-            const liveAttempt = currentUnsettledAdhocAttempt(runId);
+            const targetAttempt = latestAdhocAttempt(runId);
             const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
-            if (liveAttempt) {
-              const placementMatches = liveAttempt.placement.kind === 'worktree'
-                && path.resolve(liveAttempt.placement.workspacePath) === path.resolve(workspacePath)
-                && liveAttempt.placement.branch === info.branch;
-              if (!isAuthorizedAdhocCommitSession(liveAttempt, committingSessionID) || !placementMatches) {
+            if (targetAttempt) {
+              const placementMatches = targetAttempt.placement.kind === 'worktree'
+                && path.resolve(targetAttempt.placement.workspacePath) === path.resolve(workspacePath)
+                && targetAttempt.placement.branch === info.branch;
+              if (!isAuthorizedAdhocCommitSession(targetAttempt, committingSessionID) || !placementMatches) {
                 return respond({
                   success: false,
                   reason: 'workspace_conflict_denied',
                   mutation: 'none',
                   runId,
-                  attemptId: liveAttempt.id,
-                  phase: liveAttempt.phase,
-                  error: 'Ad-hoc handoff mutation requires the exact bound child and attached worktree placement.',
-                  nextAction: 'Return to the authenticated parent; the execution claim remains quarantined until finalization.',
+                  attemptId: targetAttempt.id,
+                  phase: targetAttempt.phase,
+                  error: 'Ad-hoc handoff mutation requires the target attempt identity and exact worktree placement.',
+                  nextAction: targetAttempt.phase === 'finalized'
+                    ? 'Return to the originating authenticated primary for finalized-run recovery.'
+                    : 'Return to the authenticated parent; the execution claim remains quarantined until finalization.',
                 });
               }
-              commitTarget.checkSourceClaim = false;
+              if (targetAttempt.phase === 'attached') commitTarget.checkSourceClaim = false;
             }
             const result: AdhocCommitResult = await withWritableOperation(commitTarget,
               () => adhocWorktreeService.commit(runId, message));
@@ -6428,8 +6436,8 @@ NEXT: Ask your first clarifying question about this feature.`;
             const hasError = Boolean(result.error) || isPartial;
             const isNoChange = !result.committed && result.message === 'No changes to commit' && !hasError;
             const success = !hasError && (result.committed || isNoChange);
-            if (liveAttempt) {
-              executionAttemptService.recordHandoff(liveAttempt.id, {
+            if (targetAttempt?.phase === 'attached') {
+              executionAttemptService.recordHandoff(targetAttempt.id, {
                 outcome: success ? 'completed' : isPartial ? 'partial' : 'failed',
               });
             }
