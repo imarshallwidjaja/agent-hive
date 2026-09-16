@@ -455,6 +455,137 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     });
   });
 
+  it('rejects second-repository branch and manifest tampering before any ad-hoc finalization commit', async () => {
+    const repositories = initCompositeRepositories(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-composite-tamper');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'composite-tamper' },
+      placement: { kind: 'worktree', repoIds: ['api', 'web'] },
+    }, context) as string);
+    expect(prepared.placement.repositories.map((repository: { id: string }) => repository.id)).toEqual(['api', 'web']);
+    const args = { subagent_type: 'forager-worker', description: 'Edit composite worktree', prompt: 'Do it.' };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-composite-tamper' }, { args });
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-composite-tamper',
+      outputDefined: true,
+    });
+    const webWorktree = prepared.placement.repositories[1].path;
+    fs.writeFileSync(path.join(prepared.placement.repositories[0].path, 'api.txt'), 'api\n');
+    fs.writeFileSync(path.join(webWorktree, 'web.txt'), 'web\n');
+    execSync('git checkout -b tampered-web-branch', { cwd: webWorktree });
+    const manifestPath = path.join(prepared.placement.workspacePath, 'workspace.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.repos.web.branch = 'tampered-web-branch';
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const finalized = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Must reject tampered composite identity.',
+      message: 'test: reject composite tamper\n\nBind every repository branch to the armed placement.',
+    }, context) as string);
+    expect(finalized).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(execSync('git log --oneline', { cwd: repositories.api, encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
+    expect(execSync('git log --oneline', { cwd: repositories.web, encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
+  });
+
+  it('rejects ad-hoc merge when the source HEAD moves after finalization', async () => {
+    initGit(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-head-drift');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'head-drift' }, placement: { kind: 'worktree' },
+    }, context) as string);
+    const args = { subagent_type: 'forager-worker', description: 'Edit worktree', prompt: 'Do it.' };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-head-drift' }, { args });
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'intended.txt'), 'intended\n');
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID, nativeCallId: 'call-head-drift', outputDefined: true,
+    });
+    expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Finalize exact HEAD.',
+      message: 'test: finalize exact head\n\nRecord the source HEAD accepted for integration.',
+    }, context) as string).success).toBe(true);
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'drift.txt'), 'drift\n');
+    execSync('git add drift.txt && git commit -m "test: post-finalization drift"', { cwd: prepared.placement.workspacePath });
+    const targetHead = execSync('git rev-parse HEAD', { cwd: TEST_ROOT, encoding: 'utf8' }).trim();
+
+    const merged = JSON.parse(await hooks.tool!.hive_adhoc_merge.execute({
+      runId: 'head-drift', message: 'test: forbidden drift merge\n\nReject source history outside finalization.',
+    }, context) as string);
+    expect(merged).toMatchObject({ success: false, reason: 'adhoc_merge_failed' });
+    expect(execSync('git rev-parse HEAD', { cwd: TEST_ROOT, encoding: 'utf8' }).trim()).toBe(targetHead);
+  });
+
+  it.each(['merge', 'cleanup'] as const)(
+    'leaves a newer ad-hoc in-place arm and stale worktree untouched during a stale %s race',
+    async (operation) => {
+      initGit(TEST_ROOT);
+      const liveDirectory = path.join(TEST_ROOT, `live-${operation}-race`);
+      fs.mkdirSync(liveDirectory);
+      const { hooks, context } = await hooksFor(TEST_ROOT, `primary-${operation}-race`);
+      const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+        scope: { kind: 'adhoc', runId: `${operation}-race` }, placement: { kind: 'worktree' },
+      }, context) as string);
+      const args = { subagent_type: 'forager-worker', description: 'Edit worktree', prompt: 'Do it.' };
+      await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: `call-${operation}-race` }, { args });
+      fs.writeFileSync(path.join(prepared.placement.workspacePath, 'intended.txt'), 'intended\n');
+      new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+        originatingPrimarySession: context.sessionID, nativeCallId: `call-${operation}-race`, outputDefined: true,
+      });
+      expect(JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+        attemptId: prepared.attemptId,
+        status: 'completed',
+        summary: 'Finalize stale worktree.',
+        message: 'test: finalize stale worktree\n\nCreate the source receipt before the race.',
+      }, context) as string).success).toBe(true);
+
+      const originalGet = AdhocWorktreeService.prototype.get;
+      let calls = 0;
+      let release!: () => void;
+      let entered!: () => void;
+      const paused = new Promise<void>(resolve => { release = resolve; });
+      const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+      const get = spyOn(AdhocWorktreeService.prototype, 'get').mockImplementation(async function (runId) {
+        calls += 1;
+        if (runId === `${operation}-race` && calls === 2) {
+          entered();
+          await paused;
+        }
+        return originalGet.call(this, runId);
+      });
+      try {
+        const staleOperation = operation === 'merge'
+          ? hooks.tool!.hive_adhoc_merge.execute({
+              runId: `${operation}-race`,
+              message: 'test: stale integration\n\nThis integration must be rejected.',
+            }, context)
+          : hooks.tool!.hive_adhoc_cleanup.execute({ runId: `${operation}-race`, deleteBranch: true }, context);
+        await enteredPromise;
+        const newer = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+          scope: { kind: 'adhoc', runId: `${operation}-race` },
+          placement: { kind: 'in_place', directory: liveDirectory },
+        }, context) as string);
+        release();
+        const staleResult = JSON.parse(await staleOperation as string);
+
+        expect(staleResult.success).toBe(false);
+        const persisted = JSON.parse(fs.readFileSync(path.join(TEST_ROOT, '.hive', 'execution-attempts.json'), 'utf8'));
+        expect(persisted.attempts.find((attempt: { id: string }) => attempt.id === newer.attemptId)).toMatchObject({
+          phase: 'armed', placement: { kind: 'in_place', directory: fs.realpathSync(liveDirectory) },
+        });
+        expect(fs.existsSync(prepared.placement.workspacePath)).toBe(true);
+        expect(execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' }))
+          .toContain(prepared.placement.branch);
+      } finally {
+        release();
+        get.mockRestore();
+      }
+    },
+  );
+
   it('attaches the unchanged native shape and appends truthful in-place scope', async () => {
     const liveDirectory = path.join(TEST_ROOT, 'live');
     fs.mkdirSync(liveDirectory);

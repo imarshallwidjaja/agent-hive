@@ -4235,6 +4235,25 @@ Do it.
     expect(execSync('git rev-parse HEAD', { cwd: path.join(testRoot, 'repos', 'web'), encoding: 'utf8' }).trim()).toBe(webHead);
   });
 
+  it('rejects a changed second-repository branch and manifest before committing any task repository', async () => {
+    const feature = 'mr-finalization-branch-tamper';
+    const { repos, workspacePath, finish } = await setupCompositeTaskWorktree(
+      ['api', 'web'], feature, 'sess_mr_finalization_branch_tamper',
+    );
+    fs.writeFileSync(path.join(repos.api.path, 'api.txt'), 'api\n');
+    fs.writeFileSync(path.join(repos.web.path, 'web.txt'), 'web\n');
+    execSync('git checkout -b tampered-task-web', { cwd: repos.web.path });
+    const manifestPath = path.join(workspacePath, 'workspace.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.repos.web.branch = 'tampered-task-web';
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const result = await finish();
+    expect(result).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'stopped' });
+    expect(execSync('git log --oneline', { cwd: path.join(testRoot, 'repos', 'api'), encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
+    expect(execSync('git log --oneline', { cwd: path.join(testRoot, 'repos', 'web'), encoding: 'utf8' }).trim().split('\n')).toHaveLength(1);
+  });
+
   it('hive_merge (composite multi-repo): all-success returns aggregate repos with flattened repoId:path filesChanged', async () => {
     const feature = 'mr-merge-multi';
     const { hooks, toolContext, repos, finish } = await setupCompositeTaskWorktree(['api', 'web'], feature, 'sess_mr_merge_multi');
@@ -4263,6 +4282,32 @@ Do it.
     expect(mergeResult.repos!.web.merged).toBe(true);
     expect(mergeResult.filesChanged).toContain('api:api-merge.txt');
     expect(mergeResult.filesChanged).toContain('web:web-merge.txt');
+  });
+
+  it('rejects composite merge when one repository HEAD moves after finalization', async () => {
+    const feature = 'mr-merge-finalization-head';
+    const { hooks, toolContext, repos, finish } = await setupCompositeTaskWorktree(
+      ['api', 'web'], feature, 'sess_mr_merge_finalization_head',
+    );
+    fs.writeFileSync(path.join(repos.api.path, 'api.txt'), 'api\n');
+    fs.writeFileSync(path.join(repos.web.path, 'web.txt'), 'web\n');
+    expect((await finish()).success).toBe(true);
+    fs.writeFileSync(path.join(repos.web.path, 'drift.txt'), 'drift\n');
+    execSync('git add drift.txt && git commit -m "test: post-finalization composite drift"', { cwd: repos.web.path });
+    const targetHeads = ['api', 'web'].map(repoId => execSync('git rev-parse HEAD', {
+      cwd: path.join(testRoot, 'repos', repoId), encoding: 'utf8',
+    }).trim());
+
+    const result = JSON.parse(await hooks.tool!.hive_merge.execute({
+      feature,
+      task: '01-composite-task',
+      strategy: 'merge',
+      message: TEST_MERGE_MESSAGE,
+    }, toolContext) as string);
+    expect(result).toMatchObject({ success: false, merged: false });
+    expect(['api', 'web'].map(repoId => execSync('git rev-parse HEAD', {
+      cwd: path.join(testRoot, 'repos', repoId), encoding: 'utf8',
+    }).trim())).toEqual(targetHeads);
   });
 
   it('hive_merge (composite): preflight failure (target repo dirty) returns success=false partial=false before mutating any repo', async () => {
@@ -5115,6 +5160,26 @@ describe('managed execution attachment', () => {
     expect(merged.success).toBe(true);
   });
 
+  it('rejects task merge when the single-repository source HEAD moves after finalization', async () => {
+    const fixture = await harness(root, 'merge-head-primary');
+    await seedFeature(fixture.hooks, fixture.context, 'merge-head');
+    const prepared = await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      'merge-head', '01-first-task', 'merge-head',
+    );
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'drift.txt'), 'drift\n');
+    execSync('git add drift.txt && git commit -m "test: post-finalization task drift"', {
+      cwd: prepared.placement.workspacePath,
+    });
+    const targetHead = execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
+
+    const merged = JSON.parse(await fixture.hooks.tool!.hive_merge.execute({
+      feature: 'merge-head', task: '01-first-task', message: TEST_MERGE_MESSAGE,
+    }, fixture.context) as string);
+    expect(merged).toMatchObject({ success: false, merged: false });
+    expect(execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim()).toBe(targetHead);
+  });
+
   it.each(['replaced', 'symlinked', 'detached'] as const)('rejects a %s task worktree before finalization Git mutation', async (damage) => {
     const { hooks, context, parents } = await harness(root, `primary-${damage}`);
     await seedFeature(hooks, context, 'feature-a');
@@ -5346,6 +5411,61 @@ describe('managed execution attachment', () => {
     } finally {
       release();
       merge.mockRestore();
+    }
+  }, 30_000);
+
+  it('rejects a stale task merge without closing a newer in-place arm or removing its worktree', async () => {
+    const fixture = await harness(root, 'stale-merge-primary');
+    await seedFeature(fixture.hooks, fixture.context, 'stale-merge');
+    const prepared = await completePreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context,
+      'stale-merge', '01-first-task', 'stale-merge',
+    );
+    const liveDirectory = path.join(root, 'stale-merge-live');
+    fs.mkdirSync(liveDirectory);
+    let calls = 0;
+    let release!: () => void;
+    let entered!: () => void;
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+    const originalGet = WorktreeService.prototype.get;
+    const get = spyOn(WorktreeService.prototype, 'get').mockImplementation(async function (...args) {
+      calls += 1;
+      if (args[0] === 'stale-merge' && calls === 2) {
+        entered();
+        await paused;
+      }
+      return originalGet.apply(this, args);
+    });
+    try {
+      const merging = fixture.hooks.tool!.hive_merge.execute({
+        feature: 'stale-merge', task: '01-first-task', message: TEST_MERGE_MESSAGE,
+      }, fixture.context);
+      await enteredPromise;
+      const statusPath = path.join(
+        root, '.hive', 'features', resolveFeatureDirectoryName(root, 'stale-merge'),
+        'tasks', '01-first-task', 'status.json',
+      );
+      const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+      fs.writeFileSync(statusPath, JSON.stringify({ ...status, status: 'pending' }));
+      const newer = JSON.parse(await fixture.hooks.tool!.hive_execution_prepare.execute({
+        scope: { kind: 'task', feature: 'stale-merge', task: '01-first-task' },
+        placement: { kind: 'in_place', directory: liveDirectory },
+      }, fixture.context) as string);
+      release();
+      const result = JSON.parse(await merging as string);
+
+      expect(result).toMatchObject({ success: false, merged: false });
+      const persisted = JSON.parse(fs.readFileSync(path.join(root, '.hive', 'execution-attempts.json'), 'utf8'));
+      expect(persisted.attempts.find((attempt: { id: string }) => attempt.id === newer.attemptId)).toMatchObject({
+        phase: 'armed', placement: { kind: 'in_place', directory: fs.realpathSync(liveDirectory) },
+      });
+      expect(fs.existsSync(prepared.placement.workspacePath)).toBe(true);
+      expect(execSync('git branch --format="%(refname:short)"', { cwd: root, encoding: 'utf8' }))
+        .toContain(prepared.placement.branch);
+    } finally {
+      release();
+      get.mockRestore();
     }
   }, 30_000);
 

@@ -690,9 +690,25 @@ export class ExecutionAttemptService {
     }
     const workspaceIdentities = this.canonicalizeWorkspaceIdentities(placement.workspaceIdentities);
     const workspacePath = this.canonicalizeExistingDirectory(placement.workspacePath);
+    const repositories = placement.repositories?.map(repository => ({
+      id: this.requireToken(repository.id, 'repository id'),
+      path: this.canonicalizeWorkspaceIdentity(repository.path),
+      branch: this.requireToken(repository.branch, 'repository branch'),
+    }));
+    if (workspaceIdentities.length > 1 && !repositories) {
+      throw new Error('Composite worktree placement requires ordered repository identities');
+    }
+    if (repositories) {
+      if (new Set(repositories.map(repository => repository.id)).size !== repositories.length
+        || repositories.length !== workspaceIdentities.length
+        || repositories.some((repository, index) => repository.path !== workspaceIdentities[index])) {
+        throw new Error('Placement repositories must uniquely match ordered workspace identities');
+      }
+    }
     return {
       kind: 'worktree',
       workspaceIdentities,
+      ...(repositories ? { repositories } : {}),
       workspacePath,
       ...(placement.attemptSlot ? { attemptSlot: this.requireToken(placement.attemptSlot, 'attemptSlot') } : {}),
       ...(placement.branch ? { branch: placement.branch } : {}),
@@ -752,6 +768,7 @@ export class ExecutionAttemptService {
     return left.workspacePath === right.workspacePath
       && left.workspaceIdentities.length === right.workspaceIdentities.length
       && left.workspaceIdentities.every((identity, index) => right.workspaceIdentities[index] === identity)
+      && JSON.stringify(left.repositories) === JSON.stringify(right.repositories)
       && left.attemptSlot === right.attemptSlot
       && left.branch === right.branch
       && left.baseCommit === right.baseCommit;

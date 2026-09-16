@@ -208,6 +208,29 @@ describe('ExecutionAttemptService armed native attachment', () => {
     });
   });
 
+  it('persists ordered repository path and branch identity with a composite placement', () => {
+    const api = worktree('composite-api');
+    const web = worktree('composite-web');
+    const repositories = [
+      { id: 'api', path: api, branch: 'hive/api/task' },
+      { id: 'web', path: web, branch: 'hive/web/task' },
+    ];
+    const attempt = service.arm({
+      kind: 'adhoc',
+      runId: 'composite-identity',
+      originatingPrimarySession: 'primary-a',
+      placement: {
+        kind: 'worktree',
+        workspacePath: TEST_DIR,
+        workspaceIdentities: [api, web],
+        repositories,
+      },
+    }).attempt;
+
+    expect(attempt.placement).toMatchObject({ kind: 'worktree', repositories });
+    expect(service.getAttempt(attempt.id)?.placement).toMatchObject({ kind: 'worktree', repositories });
+  });
+
   it('preflights same-scope ownership without creating another attempt', () => {
     const first = service.arm({
       kind: 'adhoc',
@@ -731,6 +754,88 @@ describe('ExecutionFinalizationService crash recovery', () => {
     expect((await simpleGit(repository).log()).all).toHaveLength(2);
   });
 
+  it.each(['committed', 'no_changes'] as const)(
+    'revalidates a persisted %s result before accepting a retry',
+    async (result) => {
+      cleanup();
+      fs.mkdirSync(TEST_DIR, { recursive: true });
+      const repository = path.join(TEST_DIR, 'repo');
+      const { attempts, attemptId } = await stoppedTask(TEST_DIR, repository);
+      if (result === 'committed') fs.writeFileSync(path.join(repository, 'intended.txt'), 'intended\n');
+      const input = {
+        attemptId,
+        originatingPrimarySession: 'primary-a',
+        status: 'completed' as const,
+        summary: 'Persist a repository result.',
+        ...(result === 'committed'
+          ? { message: 'feat: persist result\n\nRevalidate the durable repository receipt on retry.' }
+          : {}),
+      };
+      const failing = new ExecutionFinalizationService(TEST_DIR, finalizationOptions(checkpoint => {
+        if (checkpoint === 'after_repository_receipt:root') throw new Error('receipt persisted');
+      }), attempts);
+      await expect(failing.finish(input)).rejects.toThrow('receipt persisted');
+      fs.writeFileSync(path.join(repository, 'drift.txt'), 'drift\n');
+      if (result === 'committed') {
+        await simpleGit(repository).add('-A');
+      } else {
+        await simpleGit(repository).add('-A').commit('test: drift after receipt\n\nMove HEAD after the durable result receipt.');
+      }
+
+      await expect(new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts).finish(input))
+        .rejects.toThrow(/changed after its .* finalization receipt/i);
+      expect(attempts.getAttempt(attemptId)?.phase).toBe('stopped');
+      expect(() => attempts.assertWorkspacesIdle([repository])).toThrow(/claimed/i);
+    },
+  );
+
+  it('revalidates all persisted composite results before committing a remaining repository', async () => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    setupTask('feature-a', '01-task');
+    const api = path.join(TEST_DIR, 'repos', 'api');
+    const web = path.join(TEST_DIR, 'repos', 'web');
+    await initializeRepository(api);
+    await initializeRepository(web);
+    const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-finalization');
+    const repositories = await Promise.all([api, web].map(async repositoryPath => ({
+      id: path.basename(repositoryPath),
+      path: fs.realpathSync(repositoryPath),
+      branch: (await simpleGit(repositoryPath).revparse(['--abbrev-ref', 'HEAD'])).trim(),
+    })));
+    const attempt = attempts.arm({
+      kind: 'task', featureName: 'feature-a', taskFolder: '01-task', originatingPrimarySession: 'primary-a',
+      placement: {
+        kind: 'worktree',
+        workspaceIdentities: repositories.map(repository => repository.path),
+        repositories,
+        workspacePath: fs.realpathSync(TEST_DIR),
+      },
+    }).attempt;
+    attempts.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+    attempts.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
+    fs.writeFileSync(path.join(api, 'api.txt'), 'api\n');
+    fs.writeFileSync(path.join(web, 'web.txt'), 'web\n');
+    const input = {
+      attemptId: attempt.id,
+      originatingPrimarySession: 'primary-a',
+      status: 'completed' as const,
+      summary: 'Composite finalization complete.',
+      message: 'feat: finalize composite work\n\nReject drift before committing another repository.',
+    };
+    const failing = new ExecutionFinalizationService(TEST_DIR, finalizationOptions(checkpoint => {
+      if (checkpoint === 'after_repository_receipt:api') throw new Error('api receipt persisted');
+    }), attempts);
+    await expect(failing.finish(input)).rejects.toThrow('api receipt persisted');
+    fs.writeFileSync(path.join(api, 'drift.txt'), 'drift\n');
+    await simpleGit(api).add('-A').commit('test: drift committed api\n\nMove the already receipted repository HEAD.');
+
+    await expect(new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts).finish(input))
+      .rejects.toThrow(/api changed after its committed finalization receipt/i);
+    expect((await simpleGit(web).log()).all).toHaveLength(1);
+    expect(attempts.getAttempt(attempt.id)?.phase).toBe('stopped');
+  });
+
   it('fails closed when a commit hook mutates the immutable commit message', async () => {
     cleanup();
     fs.mkdirSync(TEST_DIR, { recursive: true });
@@ -769,6 +874,10 @@ describe('ExecutionFinalizationService crash recovery', () => {
       placement: {
         kind: 'worktree',
         workspaceIdentities: [fs.realpathSync(api), fs.realpathSync(web)],
+        repositories: [
+          { id: 'api', path: fs.realpathSync(api), branch: (await simpleGit(api).revparse(['--abbrev-ref', 'HEAD'])).trim() },
+          { id: 'web', path: fs.realpathSync(web), branch: (await simpleGit(web).revparse(['--abbrev-ref', 'HEAD'])).trim() },
+        ],
         workspacePath: fs.realpathSync(TEST_DIR),
         branch: (await simpleGit(api).revparse(['--abbrev-ref', 'HEAD'])).trim(),
       },
@@ -814,6 +923,10 @@ describe('ExecutionFinalizationService crash recovery', () => {
       placement: {
         kind: 'worktree',
         workspaceIdentities: [fs.realpathSync(api), fs.realpathSync(web)],
+        repositories: [
+          { id: 'api', path: fs.realpathSync(api), branch: (await simpleGit(api).revparse(['--abbrev-ref', 'HEAD'])).trim() },
+          { id: 'web', path: fs.realpathSync(web), branch: (await simpleGit(web).revparse(['--abbrev-ref', 'HEAD'])).trim() },
+        ],
         workspacePath: fs.realpathSync(TEST_DIR),
         branch: (await simpleGit(api).revparse(['--abbrev-ref', 'HEAD'])).trim(),
       },
@@ -932,6 +1045,35 @@ describe('ExecutionFinalizationService crash recovery', () => {
 
     await expect(finalizer.finish(input)).rejects.toThrow(/missing or does not match/i);
   });
+
+  it.each(['intact', 'missing', 'tampered'] as const)(
+    'validates a finalized worktree retry after cleanup when its report is %s',
+    async (reportState) => {
+      cleanup();
+      fs.mkdirSync(TEST_DIR, { recursive: true });
+      const repository = path.join(TEST_DIR, 'repo');
+      const { attempts, attemptId } = await stoppedTask(TEST_DIR, repository);
+      fs.writeFileSync(path.join(repository, 'change.txt'), 'change\n');
+      const input = {
+        attemptId,
+        originatingPrimarySession: 'primary-a',
+        status: 'completed' as const,
+        summary: 'Finalize before cleanup.',
+        message: 'feat: finalize before cleanup\n\nAllow idempotent receipt verification after retirement.',
+      };
+      const finalizer = new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts);
+      const first = await finalizer.finish(input);
+      fs.rmSync(repository, { recursive: true });
+      if (reportState === 'missing') fs.rmSync(first.reportPath);
+      if (reportState === 'tampered') fs.writeFileSync(first.reportPath, 'tampered\n');
+
+      if (reportState === 'intact') {
+        await expect(finalizer.finish(input)).resolves.toMatchObject({ attempt: { phase: 'finalized' } });
+      } else {
+        await expect(finalizer.finish(input)).rejects.toThrow(/missing or does not match/i);
+      }
+    },
+  );
 
   it('records blocked, partial, failed, and cancelled task dispositions', async () => {
     for (const disposition of ['blocked', 'partial', 'failed', 'cancelled'] as const) {

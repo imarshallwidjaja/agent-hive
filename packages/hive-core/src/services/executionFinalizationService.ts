@@ -83,10 +83,19 @@ export class ExecutionFinalizationService {
       throw new Error('In-place finalization skips Git and does not accept a commit message');
     }
 
-    const repositories = attempt.placement.kind === 'worktree' && input.status !== 'blocked'
-      ? await this.resolveWorktreeRepositories(attempt)
-      : [];
-    const message = await this.validateCommitIntent(repositories.map(repository => repository.path), input.message);
+    const persistedIntent = attempt.finalization;
+    const repositories = persistedIntent
+      ? persistedIntent.repositories.map(repository => ({
+          id: repository.id,
+          path: repository.path,
+          branch: repository.branch,
+        }))
+      : attempt.placement.kind === 'worktree' && input.status !== 'blocked'
+        ? await this.resolveWorktreeRepositories(attempt)
+        : [];
+    const message = persistedIntent
+      ? input.message?.trim() ? normalizeCommitMessage(input.message) : undefined
+      : await this.validateCommitIntent(repositories.map(repository => repository.path), input.message);
     const reportInput = {
       attemptId: attempt.id,
       kind: attempt.kind,
@@ -140,6 +149,14 @@ export class ExecutionFinalizationService {
     let current = this.attempts.beginFinalization(attempt.id, receipt);
     this.checkpoint('after_intent');
 
+    if (current.placement.kind === 'worktree' && current.finalization!.repositories.length > 0) {
+      const resolved = await this.resolveWorktreeRepositories(current);
+      for (const repository of current.finalization!.repositories.filter(repository => repository.result)) {
+        const live = resolved.find(candidate => candidate.id === repository.id)!;
+        await this.validateRepositoryResult(repository, live.path, current.finalization!.message);
+      }
+    }
+
     for (const repository of current.finalization!.repositories) {
       await this.finishRepository(current.id, repository.id, repository.path, current.finalization!.message);
     }
@@ -185,13 +202,25 @@ export class ExecutionFinalizationService {
       throw new Error('Finalization cannot use a worktree without trusted topology validation');
     }
     const placement = attempt.placement;
+    if (placement.workspaceIdentities.length > 1 && !placement.repositories) {
+      throw new Error(`Execution attempt ${attempt.id} has no durable composite repository identity`);
+    }
     const resolved = await this.options.resolveWorktreePlacement(attempt);
     const actualWorkspacePath = fs.realpathSync(resolved.workspacePath);
     const actualIdentities = resolved.repositories.map(repository => fs.realpathSync(repository.path));
+    const expectedRepositories = placement.repositories;
     if (actualWorkspacePath !== placement.workspacePath
       || actualIdentities.length !== placement.workspaceIdentities.length
       || actualIdentities.some((identity, index) => identity !== placement.workspaceIdentities[index])
-      || resolved.repositories[0]?.branch !== placement.branch) {
+      || (expectedRepositories
+        ? resolved.repositories.length !== expectedRepositories.length
+          || resolved.repositories.some((repository, index) => {
+            const expected = expectedRepositories[index];
+            return repository.id !== expected?.id
+              || actualIdentities[index] !== expected.path
+              || repository.branch !== expected.branch;
+          })
+        : resolved.repositories[0]?.branch !== placement.branch)) {
       throw new Error(`Execution attempt ${attempt.id} worktree placement no longer matches its exact registered topology`);
     }
     return resolved.repositories.map((repository, index) => ({
@@ -234,7 +263,10 @@ export class ExecutionFinalizationService {
   ): Promise<void> {
     let attempt = this.attempts.getAttempt(attemptId)!;
     let repository = attempt.finalization!.repositories.find(candidate => candidate.id === repositoryId)!;
-    if (repository.result) return;
+    if (repository.result) {
+      await this.validateRepositoryResult(repository, repositoryPath, message);
+      return;
+    }
     const git = simpleGit(repositoryPath);
     if (!repository.baselineHead) {
       await git.add('-A');
@@ -276,6 +308,38 @@ export class ExecutionFinalizationService {
     await this.validateCommit(repositoryId, git, commitSha, repository.baselineHead!, repository.expectedTree!, message);
     this.attempts.recordRepositoryResult(attemptId, repositoryId, 'committed', commitSha);
     this.checkpoint(`after_repository_receipt:${repositoryId}`);
+  }
+
+  private async validateRepositoryResult(
+    repository: ExecutionFinalizationReceipt['repositories'][number],
+    repositoryPath: string,
+    message: string | undefined,
+  ): Promise<void> {
+    const git = simpleGit(repositoryPath);
+    const head = (await git.revparse(['HEAD'])).trim();
+    if (repository.result === 'committed') {
+      const indexTree = (await git.raw(['write-tree'])).trim();
+      if (!repository.commitSha || !repository.baselineHead || !repository.expectedTree || !message
+        || head !== repository.commitSha || indexTree !== repository.expectedTree) {
+        throw new Error(`Repository ${repository.id} changed after its committed finalization receipt was recorded`);
+      }
+      await this.validateCommit(
+        repository.id,
+        git,
+        repository.commitSha,
+        repository.baselineHead,
+        repository.expectedTree,
+        message,
+      );
+      return;
+    }
+    if (repository.result === 'no_changes') {
+      const indexTree = (await git.raw(['write-tree'])).trim();
+      if (!repository.baselineHead || !repository.expectedTree
+        || head !== repository.baselineHead || indexTree !== repository.expectedTree) {
+        throw new Error(`Repository ${repository.id} changed after its no-change finalization receipt was recorded`);
+      }
+    }
   }
 
   private async validateCommit(

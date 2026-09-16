@@ -374,6 +374,8 @@ export type ExecutionPlacement =
       kind: 'worktree';
       /** Exact registered worktree paths (realpath). Composite workspaces list every repo worktree. */
       workspaceIdentities: string[];
+      /** Ordered repository identity captured when the placement is armed. */
+      repositories?: Array<{ id: string; path: string; branch: string }>;
       workspacePath: string;
       attemptSlot?: string;
       branch?: string;
