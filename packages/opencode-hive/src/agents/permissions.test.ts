@@ -1292,7 +1292,8 @@ describe('Agent permissions', () => {
       ['forager-child', 'forager-worker'],
     ] as const) {
       if (agent === 'forager-worker') {
-        await expect(trackAgent(sessionID, agent)).rejects.toThrow('launch_binding_error');
+        await expect(trackAgent(sessionID, agent)).resolves.toBeUndefined();
+        await expect(callTask(sessionID, 'scout-researcher')).rejects.toThrow('context_authorization_denied');
         continue;
       }
       await trackAgent(sessionID, agent);
@@ -1656,79 +1657,7 @@ describe('Agent permissions', () => {
     fs.writeFileSync(registry, JSON.stringify(data));
   }
 
-  it.each([
-    ['unsupported format', { format: 'hive-worker-assignment/v2' }],
-    ['empty project root', { projectRoot: '' }],
-    ['non-string feature', { featureName: null }],
-    ['empty task folder', { taskFolder: '' }],
-    ['zero attempt', { attempt: 0 }],
-    ['fractional attempt', { attempt: 1.5 }],
-    ['object attempt', { attempt: { toString: null } }],
-    ['non-string locator', { locator: null }],
-    ['invalid content hash', { contentHash: 'not-a-hash' }],
-    ['traversal feature', { featureName: '../../outside' }],
-    ['traversal task', { taskFolder: '../../outside' }],
-    ['backslash feature', { featureName: '..\\outside' }],
-    ['cross-bound attempt', { locator: '.hive/features/assigned-feature/tasks/01-assigned-task/assignments/attempt-2.md' }],
-    ['cross-bound task', { locator: '.hive/features/assigned-feature/tasks/02-other/assignments/attempt-1.md' }],
-    ['cross-bound feature', { locator: '.hive/features/other-feature/tasks/01-assigned-task/assignments/attempt-1.md' }],
-    ['noncanonical locator', { locator: '.hive/features/assigned-feature/tasks/01-assigned-task/assignments/../assignments/attempt-1.md' }],
-  ])('denies a malformed nested assignment descriptor before reading its artifact: %s', async (_label, assignmentPatch) => {
-    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-malformed-assignment-'));
-    createGitRepository(repository);
-    try {
-      const sessionID = 'malformed-assignment-worker';
-      const hooks = await plugin({
-        directory: repository,
-        worktree: repository,
-        serverUrl: new URL('http://localhost:1'),
-        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
-        client: createLineageClient({ [sessionID]: 'worker-parent', 'worker-parent': undefined }),
-        $: createStubShell(),
-      } as any);
-      await hooks.config?.({});
-      await hooks['chat.message']?.({ sessionID, agent: 'forager-worker' }, {
-        message: { agent: 'forager-worker' }, parts: [],
-      } as any);
-      const assignment = {
-        format: 'hive-worker-assignment/v1',
-        projectRoot: repository,
-        featureName: 'assigned-feature',
-        taskFolder: '01-assigned-task',
-        attempt: 1,
-        locator: '.hive/features/assigned-feature/tasks/01-assigned-task/assignments/attempt-1.md',
-        contentHash: '0'.repeat(64),
-        ...assignmentPatch,
-      };
-      corruptStoredSession(repository, sessionID, {
-        parentSessionId: 'worker-parent',
-        projectRoot: assignment.projectRoot,
-        featureName: assignment.featureName,
-        taskFolder: assignment.taskFolder,
-        workerAssignment: assignment,
-      } as any);
-      const read = spyOn(fs, 'readFileSync');
-      const exists = spyOn(fs, 'existsSync');
-      try {
-        await expect(hooks['tool.execute.before']?.({
-          tool: 'read', sessionID, callID: `malformed-assignment-${_label}`,
-        }, { args: { filePath: path.join(repository, 'README.md') } } as any))
-          .rejects.toThrow('assignment_recovery_error');
-        expect(read.mock.calls.some(call => String(call[0]).includes('/assignments/'))).toBe(false);
-        // Directory identity requires feature.json resolution; malformed structure does not.
-        if (_label !== 'cross-bound feature') {
-          expect(exists.mock.calls.some(call => String(call[0]).includes('/features/'))).toBe(false);
-        }
-      } finally {
-        read.mockRestore();
-        exists.mockRestore();
-      }
-    } finally {
-      rmSync(repository, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps a fully observed legacy task worker denied from ordinary tools', async () => {
+  it('keeps an uncorrelated Forager denied despite stored legacy task projection', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-observed-legacy-worker-'));
     createGitRepository(repository);
     try {
@@ -1762,7 +1691,7 @@ describe('Agent permissions', () => {
       await expect(hooks['tool.execute.before']?.({
         tool: 'read', sessionID, callID: 'observed-legacy-worker-read',
       }, { args: { filePath: path.join(repository, 'README.md') } } as any))
-        .rejects.toThrow('legacy_assignment_reanchor_required');
+        .rejects.toThrow('context_authorization_denied');
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
@@ -2034,83 +1963,6 @@ describe('Agent permissions', () => {
     }
   });
 
-  it.each(['forager-worker', 'hive-master'])('preserves task-worker duplicate identity through the first %s runtime message', async (runtimeAgent) => {
-    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-valid-duplicate-'));
-    createGitRepository(repository);
-    try {
-      const sessionID = 'duplicate-worker';
-      const sessions = new SessionService(repository);
-      const identity = createValidAssignmentIdentity(repository, 'source-worker');
-      const source = sessions.bindWorkerAssignment('source-worker', 'parent', identity.workerAssignment as any, {
-        agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker',
-      });
-      const hooks = await plugin({
-        directory: repository, worktree: repository,
-        serverUrl: new URL('http://localhost:1'),
-        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
-        client: createLineageClient({ [sessionID]: undefined }), $: createStubShell(),
-      } as any);
-      await hooks.event!({ event: {
-        type: 'session.created', properties: { info: {
-          id: sessionID, metadata: { agentHive: { originSessionId: 'source-worker' } },
-        } },
-      } } as any);
-      const observe = () => hooks['chat.message']!({ sessionID, agent: runtimeAgent }, {
-        message: { agent: runtimeAgent }, parts: [],
-      } as any);
-      const admit = () => hooks['tool.execute.before']!({ tool: 'read', sessionID, callID: 'duplicate-read' }, {
-        args: { filePath: path.join(repository, 'README.md') },
-      } as any);
-      if (runtimeAgent === 'forager-worker') {
-        await expect(observe()).resolves.toBeUndefined();
-        await expect(admit()).resolves.toBeUndefined();
-      } else {
-        await expect(observe()).rejects.toThrow('assignment_recovery_error');
-        await expect(admit()).rejects.toThrow('context_authorization_denied');
-      }
-      expect(sessions.getGlobal(sessionID)).toMatchObject({
-        agent: source.agent, baseAgent: source.baseAgent, sessionKind: source.sessionKind,
-        projectRoot: source.projectRoot, featureName: source.featureName, taskFolder: source.taskFolder,
-        workerAssignment: source.workerAssignment,
-        assignmentSourceSessionId: 'source-worker', duplicatedFromSessionId: 'source-worker',
-      });
-      expect(sessions.getGlobal('source-worker')).toEqual(source);
-    } finally {
-      rmSync(repository, { recursive: true, force: true });
-    }
-  });
-
-  it.each(['source-worker', 'intermediate-worker'])('denies duplicate authority through hybrid ancestor %s', async (ancestor) => {
-    const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-hybrid-duplicate-'));
-    createGitRepository(repository);
-    try {
-      const sessions = new SessionService(repository);
-      const identity = createValidAssignmentIdentity(repository, 'source-worker');
-      sessions.bindWorkerAssignment('source-worker', 'parent', identity.workerAssignment as any, {
-        agent: 'forager-worker', baseAgent: 'forager-worker', sessionKind: 'task-worker',
-      });
-      sessions.copyWorkerAssignment('intermediate-worker', 'source-worker');
-      sessions.copyWorkerAssignment('duplicate-worker', 'intermediate-worker');
-      const registry = path.join(repository, '.hive/sessions.json');
-      const data = JSON.parse(readFileSync(registry, 'utf8'));
-      data.sessions.find((session: any) => session.sessionId === ancestor).adHocRunId = 'hybrid-run';
-      writeFileSync(registry, JSON.stringify(data));
-      const hooks = await plugin({
-        directory: repository, worktree: repository, serverUrl: new URL('http://localhost:1'),
-        project: { id: 'test', worktree: repository, time: { created: Date.now() } },
-        client: createLineageClient({ 'duplicate-worker': undefined }), $: createStubShell(),
-      } as any);
-      await hooks['chat.message']!({ sessionID: 'duplicate-worker', agent: 'forager-worker' }, {
-        message: { agent: 'forager-worker' }, parts: [],
-      } as any);
-      await expect(hooks['tool.execute.before']!({ tool: 'read', sessionID: 'duplicate-worker', callID: 'hybrid-read' }, {
-        args: { filePath: path.join(repository, 'README.md') },
-      } as any)).rejects.toThrow('assignment_recovery_error');
-    } finally {
-      rmSync(repository, { recursive: true, force: true });
-    }
-  });
-
   it('rejects context and generic tools when the runtime workspace resolves to another canonical root', async () => {
     const repository = mkdtempSync(path.join(os.tmpdir(), 'hive-context-root-'));
     const otherRoot = mkdtempSync(path.join(os.tmpdir(), 'hive-context-other-root-'));
@@ -2286,8 +2138,6 @@ describe('Agent permissions', () => {
     expect(helper?.tools?.['hive_task_update']).toBe(false);
     expect(helper?.tools?.['hive_plan_read']).toBeUndefined();
     expect(helper?.tools?.['hive_tasks_sync']).toBe(false);
-    expect(helper?.tools?.['hive_worktree_start']).toBe(false);
-    expect(helper?.tools?.['hive_worktree_create']).toBe(false);
     expect(helper?.tools?.['hive_worktree_commit']).toBe(false);
     expect(helper?.permission?.task).toBe('deny');
     expect(helper?.permission?.delegate).toBe('deny');
@@ -2381,8 +2231,6 @@ describe('Per-agent tool filtering', () => {
     expect(foragerTools!['hive_adhoc_worktree_commit']).toBeUndefined();
     expect(foragerTools!['hive_merge']).toBe(false);
     expect(foragerTools!['hive_tasks_sync']).toBe(false);
-    expect(foragerTools!['hive_worktree_create']).toBeUndefined();
-    expect(foragerTools!['hive_worktree_start']).toBeUndefined();
   });
 
   it('configured Forager derivatives inherit both authenticated handoff tools', async () => {
@@ -2407,23 +2255,6 @@ describe('Per-agent tool filtering', () => {
     expect(foragerTools!['hive_worktree_commit']).toBeUndefined();
     expect(foragerTools!['hive_context_write']).toBeUndefined();
     expect(foragerTools![removedHiveSkillTool]).toBeUndefined();
-  });
-
-  it('hive-helper tool list keeps only merge-recovery hive tools', async () => {
-    const agents = await buildConfig('unified');
-    const helperTools = agents['hive-helper']?.tools;
-    expect(helperTools).toBeTruthy();
-    expect(helperTools!['hive_merge']).toBeUndefined();
-    expect(helperTools!['hive_status']).toBeUndefined();
-    expect(helperTools!['hive_context_write']).toBeUndefined();
-    expect(helperTools!['hive_task_create']).toBeUndefined();
-    expect(helperTools![removedHiveSkillTool]).toBeUndefined();
-    expect(helperTools!['hive_task_update']).toBe(false);
-    expect(helperTools!['hive_plan_read']).toBeUndefined();
-    expect(helperTools!['hive_worktree_commit']).toBe(false);
-    expect(helperTools!['hive_worktree_start']).toBe(false);
-    expect(helperTools!['hive_worktree_create']).toBe(false);
-    expect(helperTools!['hive_tasks_sync']).toBe(false);
   });
 
   it('scout has only read-only hive tools (no worktree_commit, no merge)', async () => {
@@ -9207,8 +9038,6 @@ describe('Per-agent tool filtering', () => {
     expect(architectTools).toBeTruthy();
     expect(architectTools!['hive_plan_write']).toBeUndefined();
     expect(architectTools!['hive_plan_patch']).toBeUndefined();
-    expect(architectTools!['hive_worktree_create']).toBe(false);
-    expect(architectTools!['hive_worktree_start']).toBe(false);
     expect(architectTools!['hive_worktree_commit']).toBe(false);
     expect(architectTools!['hive_merge']).toBe(false);
   });
@@ -9217,8 +9046,6 @@ describe('Per-agent tool filtering', () => {
     const agents = await buildConfig('dedicated');
     const swarmTools = agents['swarm-orchestrator']?.tools;
     expect(swarmTools).toBeTruthy();
-    expect(swarmTools!['hive_worktree_create']).toBeUndefined();
-    expect(swarmTools!['hive_worktree_start']).toBeUndefined();
     expect(swarmTools!['hive_plan_write']).toBe(false);
     expect(swarmTools!['hive_plan_patch']).toBe(false);
     expect(swarmTools!['hive_worktree_commit']).toBe(false);
@@ -9268,29 +9095,20 @@ describe('Per-agent tool filtering', () => {
     }
   });
 
-  it('does not expose the removed historical lookup tool to any agent', async () => {
-    const removedNetworkTool = ['hive', 'network', 'query'].join('_');
-    const unifiedAgents = await buildConfig('unified');
-    for (const agent of Object.values(unifiedAgents)) {
-      expect(agent.tools ?? {}).not.toHaveProperty(removedNetworkTool);
-    }
-
-    const dedicatedAgents = await buildConfig('dedicated');
-    for (const agent of Object.values(dedicatedAgents)) {
-      expect(agent.tools ?? {}).not.toHaveProperty(removedNetworkTool);
-    }
-  });
-
-  it('does not expose the removed AGENTS.md maintenance tool to any agent', async () => {
-    const removedAgentsMdTool = ['hive', 'agents', 'md'].join('_');
-    const unifiedAgents = await buildConfig('unified');
-    for (const agent of Object.values(unifiedAgents)) {
-      expect(agent.tools ?? {}).not.toHaveProperty(removedAgentsMdTool);
-    }
-
-    const dedicatedAgents = await buildConfig('dedicated');
-    for (const agent of Object.values(dedicatedAgents)) {
-      expect(agent.tools ?? {}).not.toHaveProperty(removedAgentsMdTool);
+  it('does not expose removed tools to any agent', async () => {
+    const removedTools = [
+      removedHiveSkillTool,
+      ['hive', 'network', 'query'].join('_'),
+      ['hive', 'agents', 'md'].join('_'),
+      'hive_existing_workspace_start',
+      'hive_worktree_start',
+      'hive_worktree_create',
+      'hive_adhoc_worktree_create',
+    ];
+    for (const agents of [await buildConfig('unified'), await buildConfig('dedicated')]) {
+      for (const agent of Object.values(agents)) {
+        for (const tool of removedTools) expect(agent.tools ?? {}).not.toHaveProperty(tool);
+      }
     }
   });
 
@@ -9311,7 +9129,7 @@ describe('Per-agent tool filtering', () => {
     });
   });
 
-  it('hive-builder gets ad-hoc + repo manifest tools and disables task-backed worktree/plan tools by default', async () => {
+  it('hive-builder gets armed execution, ad-hoc handoff, and repository tools without feature planning tools', async () => {
     const agents = await buildConfig('unified');
     const builder = agents['hive-builder'];
     expect(builder).toBeTruthy();
@@ -9319,8 +9137,7 @@ describe('Per-agent tool filtering', () => {
     const tools = builder!.tools!;
     expect(tools).toBeTruthy();
     // Allowed (entries absent = allowed)
-    expect(tools['hive_existing_workspace_start']).toBeUndefined();
-    expect(tools['hive_adhoc_worktree_create']).toBeUndefined();
+    expect(tools['hive_execution_prepare']).toBeUndefined();
     expect(tools['hive_adhoc_worktree_commit']).toBeUndefined();
     expect(tools['hive_adhoc_merge']).toBeUndefined();
     expect(tools['hive_adhoc_cleanup']).toBeUndefined();
@@ -9336,9 +9153,7 @@ describe('Per-agent tool filtering', () => {
     }
     expect(tools['hive_constraints_set']).toBeUndefined();
     expect(tools['hive_context_write']).toBeUndefined();
-    // Disabled task-backed/plan/feature tools
-    expect(tools['hive_worktree_start']).toBe(false);
-    expect(tools['hive_worktree_create']).toBe(false);
+    // Disabled feature lifecycle and planning tools
     expect(tools['hive_worktree_commit']).toBe(false);
     expect(tools['hive_merge']).toBe(false);
     expect(tools['hive_status']).toBeUndefined();
@@ -9353,12 +9168,10 @@ describe('Per-agent tool filtering', () => {
     expect(builder!.permission?.todoread).toBe('allow');
   });
 
-  it('hive-helper still has ad-hoc tools disabled', async () => {
+  it('hive-helper keeps ad-hoc handoff and integration tools disabled', async () => {
     const agents = await buildConfig('unified');
     const helperTools = agents['hive-helper']?.tools;
     expect(helperTools).toBeTruthy();
-    expect(helperTools!['hive_existing_workspace_start']).toBeUndefined();
-    expect(helperTools!['hive_adhoc_worktree_create']).toBe(false);
     expect(helperTools!['hive_adhoc_worktree_commit']).toBe(false);
     expect(helperTools!['hive_adhoc_merge']).toBe(false);
     expect(helperTools!['hive_adhoc_cleanup']).toBe(false);
