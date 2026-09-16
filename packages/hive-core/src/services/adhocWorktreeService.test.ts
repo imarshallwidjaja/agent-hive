@@ -59,6 +59,37 @@ async function createFixture(): Promise<AdhocFixture> {
   return { repoPath, hiveDir, service, repoGit };
 }
 
+async function commitAdhocChanges(
+  service: AdhocWorktreeService,
+  runId: string,
+  message: string,
+): Promise<{ committed: boolean; sha: string; message: string; repos?: Record<string, { committed: boolean; sha: string }> }> {
+  const worktree = await service.get(runId);
+  if (!worktree) throw new Error('Worktree not found');
+  const repositories = worktree.repos
+    ? Object.fromEntries(Object.entries(worktree.repos).map(([id, repository]) => [id, repository.path]))
+    : { root: worktree.path };
+  const results: Record<string, { committed: boolean; sha: string }> = {};
+  for (const [id, repositoryPath] of Object.entries(repositories)) {
+    const git = simpleGit(repositoryPath);
+    const status = await git.status();
+    if (status.isClean()) {
+      results[id] = { committed: false, sha: (await git.revparse(['HEAD'])).trim() };
+      continue;
+    }
+    await git.add('-A');
+    await git.commit(message);
+    results[id] = { committed: true, sha: (await git.revparse(['HEAD'])).trim() };
+  }
+  const first = Object.values(results)[0]!;
+  return {
+    committed: Object.values(results).some(result => result.committed),
+    sha: first.sha,
+    message,
+    ...(worktree.repos ? { repos: results } : {}),
+  };
+}
+
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
@@ -204,64 +235,12 @@ describe("AdhocWorktreeService.create", () => {
   });
 });
 
-describe("AdhocWorktreeService.commit", () => {
-  it("stages all changes, uses the provided commit message verbatim, and returns committed=true with sha", async () => {
-    const fixture = await createFixture();
-    const created = await fixture.service.create({ runId: "commit-run" });
-
-    await fs.writeFile(path.join(created.path, "new-file.txt"), "hello\n", "utf-8");
-
-    const message = "feat(adhoc): subject line\n\nbody line 1\nbody line 2";
-    const result = await fixture.service.commit(created.runId, message);
-
-    expect(result.committed).toBe(true);
-    expect(result.sha).toBeTruthy();
-    expect(result.message).toBe(message);
-    expect(await readHeadBody(created.path)).toBe(message);
-  });
-
-  it('rejects a malformed message before changing HEAD or the index', async () => {
-    const fixture = await createFixture();
-    const created = await fixture.service.create({ runId: 'invalid-commit-message' });
-    await fs.writeFile(path.join(created.path, 'new-file.txt'), 'hello\n', 'utf-8');
-    const git = simpleGit(created.path);
-    const beforeHead = (await git.revparse(['HEAD'])).trim();
-
-    const result = await fixture.service.commit(created.runId, 'subject only');
-
-    expect(result.committed).toBe(false);
-    expect(result.message).toMatch(/subject.*blank line.*body/i);
-    expect((await git.revparse(['HEAD'])).trim()).toBe(beforeHead);
-    expect((await git.status()).staged).toEqual([]);
-  });
-
-  it('removes a direct commit when a hook rewrites its message and preserves the file changes', async () => {
-    const fixture = await createFixture();
-    const created = await fixture.service.create({ runId: 'hook-rewritten-commit' });
-    const filePath = path.join(created.path, 'hook-rewritten.txt');
-    await fs.writeFile(filePath, 'preserve me\n', 'utf-8');
-    await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'subject only' > "$1"`);
-    const git = simpleGit(created.path);
-    const beforeHead = (await git.revparse(['HEAD'])).trim();
-
-    const result = await fixture.service.commit(created.runId, testCommitMessage('feat: valid direct input'));
-
-    expect(result.committed).toBe(false);
-    expect(result.message).toMatch(/subject.*blank line.*body/i);
-    expect((await git.revparse(['HEAD'])).trim()).toBe(beforeHead);
-    expect(await fs.readFile(filePath, 'utf-8')).toBe('preserve me\n');
-    const status = await git.status();
-    expect(status.staged).toEqual([]);
-    expect(status.not_added).toContain('hook-rewritten.txt');
-  });
-});
-
 describe("AdhocWorktreeService.merge", () => {
   it("defaults to squash merge and returns cleanup flags=false when cleanup is not requested", async () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "merge-run" });
     await fs.writeFile(path.join(created.path, "merge-file.txt"), "hi\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('chore: merge content'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('chore: merge content'));
 
     await fixture.repoGit.checkout("main");
 
@@ -293,7 +272,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "merge-cleanup-run" });
     await fs.writeFile(path.join(created.path, "merge-file.txt"), "hi\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('chore: merge content'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('chore: merge content'));
 
     await fixture.repoGit.checkout("main");
 
@@ -355,7 +334,7 @@ describe("AdhocWorktreeService.merge", () => {
       const fixture = await createFixture();
       const created = await fixture.service.create({ runId: `target-advanced-${strategy}` });
       await fs.writeFile(path.join(created.path, "adhoc-only.txt"), "from ad-hoc branch\n", "utf-8");
-      await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc-only change'));
+      await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc-only change'));
 
       await fixture.repoGit.checkout("main");
       await fs.writeFile(path.join(fixture.repoPath, "main-only.txt"), "from main after fork\n", "utf-8");
@@ -399,7 +378,7 @@ describe("AdhocWorktreeService.merge", () => {
     // Source branch carries a commit whose net tracked change already exists on
     // main, so the endpoint trees match and nothing is applicable.
     await fs.writeFile(path.join(created.path, "tracked.txt"), "already on main\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('feat: converges with target'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: converges with target'));
 
     await fixture.repoGit.checkout("main");
     await fs.writeFile(path.join(fixture.repoPath, "tracked.txt"), "already on main\n", "utf-8");
@@ -427,7 +406,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "dirty-target-classification" });
     await fs.writeFile(path.join(created.path, "adhoc-file.txt"), "content\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc change'));
 
     await fixture.repoGit.checkout("main");
     const dirtyPath = path.join(fixture.repoPath, "user-note.txt");
@@ -455,7 +434,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "active-state-classification" });
     await fs.writeFile(path.join(created.path, "adhoc-file.txt"), "content\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc change'));
 
     await fixture.repoGit.checkout("main");
     await fs.writeFile(path.join(fixture.repoPath, ".git", "MERGE_HEAD"), "deadbeef\n", "utf-8");
@@ -480,9 +459,9 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "merge-no-change-run" });
     await fs.writeFile(path.join(created.path, "tracked.txt"), "transient ad-hoc change\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('chore: transient ad-hoc change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('chore: transient ad-hoc change'));
     await fs.writeFile(path.join(created.path, "tracked.txt"), "base\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('revert: transient ad-hoc change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('revert: transient ad-hoc change'));
     await fixture.repoGit.checkout("main");
     const beforeHead = (await fixture.repoGit.revparse(["HEAD"])).trim();
 
@@ -521,9 +500,9 @@ describe("AdhocWorktreeService.merge", () => {
       const fixture = await createFixture();
       const created = await fixture.service.create({ runId: `merge-active-${label}` });
       await fs.writeFile(path.join(created.path, "tracked.txt"), "transient ad-hoc change\n", "utf-8");
-      await fixture.service.commit(created.runId, testCommitMessage('chore: transient ad-hoc change'));
+      await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('chore: transient ad-hoc change'));
       await fs.writeFile(path.join(created.path, "tracked.txt"), "base\n", "utf-8");
-      await fixture.service.commit(created.runId, testCommitMessage('revert: transient ad-hoc change'));
+      await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('revert: transient ad-hoc change'));
       await fixture.repoGit.checkout("main");
       await fs.writeFile(path.join(fixture.repoPath, ".git", stateName), "deadbeef\n", "utf-8");
 
@@ -611,7 +590,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'squash-conflict' });
     await fs.writeFile(path.join(created.path, 'tracked.txt'), 'task side\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: conflicting ad-hoc source'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: conflicting ad-hoc source'));
     await fs.writeFile(path.join(fixture.repoPath, 'tracked.txt'), 'main side\n', 'utf-8');
     await fixture.repoGit.add('-A');
     await fixture.repoGit.commit(testCommitMessage('feat: conflicting ad-hoc target'));
@@ -633,7 +612,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'squash-hook-failure' });
     await fs.writeFile(path.join(created.path, 'new-file.txt'), 'new\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc source change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc source change'));
     const hookPath = path.join(fixture.repoPath, '.git', 'hooks', 'prepare-commit-msg');
     await fs.writeFile(hookPath, '#!/bin/sh\nexit 1\n', 'utf-8');
     await fs.chmod(hookPath, 0o755);
@@ -653,7 +632,7 @@ describe("AdhocWorktreeService.merge", () => {
       const fixture = await createFixture();
       const created = await fixture.service.create({ runId: `hook-rewritten-${strategy}` });
       await fs.writeFile(path.join(created.path, 'new-file.txt'), 'new\n', 'utf-8');
-      await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc source change'));
+      await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc source change'));
       const hookBody = strategy === 'squash'
         ? `printf '%s\\n' 'subject only' > "$1"`
         : `printf '%s\\n' 'subject line' 'continued subject' '' 'Descriptive body.' > "$1"`;
@@ -674,7 +653,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'hook-rewritten-rebase' });
     await fs.writeFile(path.join(created.path, 'new-file.txt'), 'new\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc source change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc source change'));
     await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'subject only' > "$1"`);
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
@@ -691,7 +670,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'hook-conflict-sentinel' });
     await fs.writeFile(path.join(created.path, 'new-file.txt'), 'new\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc source change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc source change'));
     await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'hook conflict sentinel' >&2\nexit 1`);
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
@@ -709,9 +688,9 @@ describe("AdhocWorktreeService.merge", () => {
     const created = await fixture.service.create({ runId: 'second-cherry-pick-failure' });
     const worktreeGit = simpleGit(created.path);
     await fs.writeFile(path.join(created.path, 'first.txt'), 'first\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: first ad-hoc source commit'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: first ad-hoc source commit'));
     await fs.writeFile(path.join(created.path, 'tracked.txt'), 'task side\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: conflicting second ad-hoc source commit'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: conflicting second ad-hoc source commit'));
     expect((await worktreeGit.log()).total).toBeGreaterThanOrEqual(3);
 
     await fs.writeFile(path.join(fixture.repoPath, 'tracked.txt'), 'main side\n', 'utf-8');
@@ -740,7 +719,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'rebase-message-classification' });
     await fs.writeFile(path.join(created.path, 'adhoc-file.txt'), 'content\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc change'));
     await fixture.repoGit.checkout('main');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
@@ -762,7 +741,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'invalid-merge-message' });
     await fs.writeFile(path.join(created.path, 'adhoc-file.txt'), 'content\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc change'));
     await fixture.repoGit.checkout('main');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
@@ -810,7 +789,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'preserved-conflict-classification' });
     await fs.writeFile(path.join(created.path, 'tracked.txt'), 'branch side\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: conflicting ad-hoc change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: conflicting ad-hoc change'));
     await fs.writeFile(path.join(fixture.repoPath, 'tracked.txt'), 'main side\n', 'utf-8');
     await fixture.repoGit.add('-A');
     await fixture.repoGit.commit(testCommitMessage('feat: conflicting target change'));
@@ -838,7 +817,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "merge-cleanup-failure" });
     await fs.writeFile(path.join(created.path, "merge-file.txt"), "hi\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('chore: merge content'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('chore: merge content'));
     await fixture.repoGit.checkout("main");
 
     const getGit = (fixture.service as any).getGit.bind(fixture.service);
@@ -886,7 +865,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'merge-cleanup-throw' });
     await fs.writeFile(path.join(created.path, 'merge-file.txt'), 'hi\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('chore: merge content'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('chore: merge content'));
     await fixture.repoGit.checkout('main');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
@@ -923,7 +902,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'post-integration-verification' });
     await fs.writeFile(path.join(created.path, 'new-file.txt'), 'new\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc source change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc source change'));
     await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'subject only' > "$1"`);
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
@@ -948,7 +927,7 @@ describe("AdhocWorktreeService.merge", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'rollback-failure' });
     await fs.writeFile(path.join(created.path, 'new-file.txt'), 'new\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: ad-hoc source change'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: ad-hoc source change'));
     await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'subject only' > "$1"`);
     const originalHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
@@ -996,7 +975,7 @@ describe("AdhocWorktreeService.merge", () => {
 
     const cleanRun = await fixture.service.create({ runId: 'invariant-clean' });
     await fs.writeFile(path.join(cleanRun.path, 'f.txt'), 'f\n', 'utf-8');
-    await fixture.service.commit(cleanRun.runId, testCommitMessage('feat: ad-hoc change'));
+    await commitAdhocChanges(fixture.service, cleanRun.runId, testCommitMessage('feat: ad-hoc change'));
     await fs.writeFile(path.join(fixture.repoPath, 'dirty.txt'), 'dirty\n', 'utf-8');
     responses.push(await fixture.service.merge(cleanRun.runId, 'squash', mergeMessage));
     await fs.rm(path.join(fixture.repoPath, 'dirty.txt'), { force: true });
@@ -1006,7 +985,7 @@ describe("AdhocWorktreeService.merge", () => {
 
     const conflictRun = await fixture.service.create({ runId: 'invariant-conflict' });
     await fs.writeFile(path.join(conflictRun.path, 'tracked.txt'), 'branch side\n', 'utf-8');
-    await fixture.service.commit(conflictRun.runId, testCommitMessage('feat: conflicting ad-hoc change'));
+    await commitAdhocChanges(fixture.service, conflictRun.runId, testCommitMessage('feat: conflicting ad-hoc change'));
     await fs.writeFile(path.join(fixture.repoPath, 'tracked.txt'), 'main side\n', 'utf-8');
     await fixture.repoGit.add('-A');
     await fixture.repoGit.commit(testCommitMessage('feat: conflicting target change'));
@@ -1162,84 +1141,6 @@ describe("AdhocWorktreeService composite create", () => {
   });
 });
 
-describe("AdhocWorktreeService composite commit", () => {
-  it("commits only repos with changes and reports per-repo results", async () => {
-    const fixture = await createCompositeFixture();
-    const created = await fixture.service.create({
-      runId: "commit-composite",
-      repoIds: ["api", "web"],
-    });
-
-    // Only mutate the api repo
-    await fs.writeFile(path.join(created.repos!.api.path, "new.txt"), "hello\n", "utf-8");
-
-    const result = await fixture.service.commit(created.runId, testCommitMessage('feat: api change'));
-
-    expect(result.repos).toBeDefined();
-    expect(result.repos!.api.committed).toBe(true);
-    expect(result.repos!.api.sha).toBeTruthy();
-    expect(result.repos!.web.committed).toBe(false);
-    expect(result.repos!.web.message).toBe("No changes to commit");
-  });
-
-  it('uses the first committed repo as the aggregate result when an earlier repo has no changes', async () => {
-    const fixture = await createCompositeFixture();
-    const created = await fixture.service.create({
-      runId: 'commit-composite-later-change',
-      repoIds: ['api', 'web'],
-    });
-    await fs.writeFile(path.join(created.repos!.web.path, 'new.txt'), 'hello\n', 'utf-8');
-    const message = testCommitMessage('feat: web change');
-
-    const result = await fixture.service.commit(created.runId, message);
-
-    expect(result.committed).toBe(true);
-    expect(result.repos!.api).toMatchObject({ committed: false, message: 'No changes to commit' });
-    expect(result.repos!.web.committed).toBe(true);
-    expect(result.sha).toBe(result.repos!.web.sha);
-    expect(result.message).toBe(result.repos!.web.message);
-    expect(result.message).toBe(message);
-  });
-
-  it("refuses to commit when a manifest repo worktree is no longer registered", async () => {
-    const fixture = await createCompositeFixture();
-    const created = await fixture.service.create({
-      runId: "commit-missing-composite",
-      repoIds: ["api", "web"],
-    });
-
-    await fixture.apiGit.raw(["worktree", "remove", created.repos!.api.path, "--force"]);
-
-    const result = await fixture.service.commit(created.runId, testCommitMessage('feat: should not commit'));
-
-    expect(result.committed).toBe(false);
-    expect(result.error).toContain("api: Worktree not found");
-    expect(result.repos!.api.message).toBe("Worktree not found");
-  });
-
-  it('uses the first failed repo message/sha/error when an earlier repo is unchanged and a later repo fails', async () => {
-    const fixture = await createCompositeFixture();
-    const created = await fixture.service.create({
-      runId: 'commit-composite-later-fail',
-      repoIds: ['api', 'web'],
-    });
-    await fs.writeFile(path.join(created.repos!.web.path, 'w.txt'), 'w\n', 'utf-8');
-    await fixture.webGit.raw(['worktree', 'remove', created.repos!.web.path, '--force']);
-
-    const result = await fixture.service.commit(created.runId, testCommitMessage('feat: later fail'));
-
-    expect(result.committed).toBe(false);
-    expect(result.partial).toBeUndefined();
-    expect(result.repos!.api).toMatchObject({ committed: false, message: 'No changes to commit' });
-    expect(result.repos!.web.committed).toBe(false);
-    expect(result.repos!.web.message).not.toBe('No changes to commit');
-    expect(result.error).toContain('web');
-    expect(result.message).toBe(result.repos!.web.message);
-    expect(result.sha).toBe(result.repos!.web.sha);
-    expect(result.message).not.toBe('No changes to commit');
-  });
-});
-
 describe("AdhocWorktreeService composite merge", () => {
   async function commitChangeInCompositeRepo(
     service: AdhocWorktreeService,
@@ -1249,7 +1150,7 @@ describe("AdhocWorktreeService composite merge", () => {
     content: string,
   ): Promise<void> {
     await fs.writeFile(path.join(repoPath, file), content, "utf-8");
-      const result = await service.commit(runId, testCommitMessage(`chore: ${file}`));
+      const result = await commitAdhocChanges(service, runId, testCommitMessage(`chore: ${file}`));
     expect(result.committed).toBe(true);
   }
 
@@ -1259,10 +1160,10 @@ describe("AdhocWorktreeService composite merge", () => {
     repoPath: string,
   ): Promise<void> {
     await fs.writeFile(path.join(repoPath, "tracked.txt"), "transient composite change\n", "utf-8");
-    const transient = await service.commit(runId, testCommitMessage('chore: transient composite change'));
+    const transient = await commitAdhocChanges(service, runId, testCommitMessage('chore: transient composite change'));
     expect(transient.committed).toBe(true);
     await fs.writeFile(path.join(repoPath, "tracked.txt"), "base\n", "utf-8");
-    const reverted = await service.commit(runId, testCommitMessage('revert: transient composite change'));
+    const reverted = await commitAdhocChanges(service, runId, testCommitMessage('revert: transient composite change'));
     expect(reverted.committed).toBe(true);
   }
 
@@ -1275,7 +1176,7 @@ describe("AdhocWorktreeService composite merge", () => {
 
     await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
     await fs.writeFile(path.join(created.repos!.web.path, "web-new.txt"), "w\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('feat: changes in both repos'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: changes in both repos'));
 
     // Both source repos already on main and clean.
     const result = await fixture.service.merge(created.runId, "merge", mergeMessage, {
@@ -1365,7 +1266,7 @@ describe("AdhocWorktreeService composite merge", () => {
     });
 
     await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('feat: api change only'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: api change only'));
 
     // Dirty the api source repo
     await fs.writeFile(path.join(fixture.repos[0].path, "dirty.txt"), "dirty\n", "utf-8");
@@ -1386,9 +1287,9 @@ describe("AdhocWorktreeService composite merge", () => {
     });
     await fs.writeFile(path.join(created.repos!.api.path, 'api.txt'), 'api\n', 'utf-8');
     await fs.writeFile(path.join(created.repos!.web.path, 'first.txt'), 'first\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: first composite source commits'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: first composite source commits'));
     await fs.writeFile(path.join(created.repos!.web.path, 'tracked.txt'), 'task side\n', 'utf-8');
-    await fixture.service.commit(created.runId, testCommitMessage('feat: conflicting second web source commit'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: conflicting second web source commit'));
 
     await fs.writeFile(path.join(fixture.repos[1].path, 'tracked.txt'), 'main side\n', 'utf-8');
     await fixture.webGit.add('-A');
@@ -1426,7 +1327,7 @@ describe("AdhocWorktreeService composite merge", () => {
       repoIds: ["api", "web"],
     });
     await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('feat: api change only'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: api change only'));
     await fs.writeFile(path.join(fixture.repos[0].path, "dirty.txt"), "dirty\n", "utf-8");
 
     const result = await fixture.service.merge(created.runId, "squash", mergeMessage);
@@ -1451,7 +1352,7 @@ describe("AdhocWorktreeService composite merge", () => {
     });
     await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
     await fs.writeFile(path.join(created.repos!.web.path, "web-new.txt"), "w\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage('feat: changes in both repos'));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: changes in both repos'));
 
     // web rejects the merge commit through a pre-merge-commit hook.
     const hookDir = path.join(fixture.repos[1].path, '.git', 'hooks');
@@ -1643,7 +1544,7 @@ describe("AdhocWorktreeService linkage preflight", () => {
         /administration entry is outside the trusted Git common directory/,
       );
       await expect(
-        fixture.service.commit(created.runId, testCommitMessage("feat: should not commit")),
+        commitAdhocChanges(fixture.service, created.runId, testCommitMessage("feat: should not commit")),
       ).rejects.toThrow(/administration entry is outside the trusted Git common directory/);
       const mergeResult = await fixture.service.merge(created.runId, "squash", mergeMessage);
       expect(mergeResult.success).toBe(false);
@@ -1697,7 +1598,7 @@ describe("AdhocWorktreeService linkage preflight", () => {
         /workspace topology does not match the trusted repository manifest/,
       );
       await expect(
-        fixture.service.commit(created.runId, testCommitMessage("feat: should not commit")),
+        commitAdhocChanges(fixture.service, created.runId, testCommitMessage("feat: should not commit")),
       ).rejects.toThrow(/workspace topology does not match the trusted repository manifest/);
       await expect(fixture.service.merge(created.runId, "squash", mergeMessage)).rejects.toThrow(
         /workspace topology does not match the trusted repository manifest/,
@@ -1720,26 +1621,6 @@ describe("AdhocWorktreeService linkage preflight", () => {
     expect((await fixture.apiGit.revparse(["hive/adhoc/api/topology-drift"])).trim()).toBe(apiBranchHead);
     expect(await branchExists(fixture.apiGit, "hive/adhoc/api/topology-drift")).toBe(true);
     expect(await branchExists(fixture.webGit, "hive/adhoc/web/topology-drift")).toBe(true);
-  });
-
-  it("does not commit an earlier repo when a later selected repo fails preflight", async () => {
-    const fixture = await createCompositeFixture();
-    const created = await fixture.service.create({ runId: "commit-preflight", repoIds: ["api", "web"] });
-    await fs.writeFile(path.join(created.repos!.api.path, "api.txt"), "api\n", "utf-8");
-    await fixture.webGit.raw(["worktree", "remove", created.repos!.web.path, "--force"]);
-    const apiBranchHead = (await fixture.apiGit.revparse(["hive/adhoc/api/commit-preflight"])).trim();
-
-    const result = await fixture.service.commit(created.runId, testCommitMessage("feat: should not commit"));
-
-    expect(result.committed).toBe(false);
-    expect(result.repos!.api).toMatchObject({
-      committed: false,
-      message: "Commit skipped: workspace preflight failed",
-    });
-    expect(result.repos!.web).toMatchObject({ committed: false, message: "Worktree not found" });
-    expect(result.error).toContain("web: Worktree not found");
-    expect((await fixture.apiGit.revparse(["hive/adhoc/api/commit-preflight"])).trim()).toBe(apiBranchHead);
-    expect(await pathExists(created.workspacePath!)).toBe(true);
   });
 
   it("retains the composite workspace root when cleanup preflight fails", async () => {
@@ -1778,7 +1659,7 @@ describe("AdhocWorktreeService linkage preflight", () => {
     const source = await fixture.service.create({ runId: "copy-source", repoIds: ["api", "web"] });
     const target = await fixture.service.create({ runId: "copy-target", repoIds: ["api", "web"] });
     await fs.writeFile(path.join(source.repos!.api.path, "source-only.txt"), "source-only\n", "utf-8");
-    await fixture.service.commit(source.runId, testCommitMessage("feat: source-only composite change"));
+    await commitAdhocChanges(fixture.service, source.runId, testCommitMessage("feat: source-only composite change"));
 
     const sourceManifestPath = path.join(source.workspacePath!, "workspace.json");
     const targetManifestPath = path.join(target.workspacePath!, "workspace.json");
@@ -1824,7 +1705,7 @@ describe("AdhocWorktreeService linkage preflight", () => {
         fixture.service.create({ runId: target.runId, repoIds: ["api", "web"] }),
       ).rejects.toThrow(runIdentityError);
       await expect(
-        fixture.service.commit(target.runId, testCommitMessage("feat: copied manifest must not commit")),
+        commitAdhocChanges(fixture.service, target.runId, testCommitMessage("feat: copied manifest must not commit")),
       ).rejects.toThrow(runIdentityError);
       await expect(fixture.service.merge(target.runId, "squash", mergeMessage)).rejects.toThrow(
         runIdentityError,
@@ -1929,7 +1810,7 @@ describe("AdhocWorktreeService linkage preflight", () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "lookup-failure-classification" });
     await fs.writeFile(path.join(created.path, "adhoc-file.txt"), "content\n", "utf-8");
-    await fixture.service.commit(created.runId, testCommitMessage("feat: ad-hoc change"));
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage("feat: ad-hoc change"));
     await fixture.repoGit.checkout("main");
     const beforeHead = (await fixture.repoGit.revparse(["HEAD"])).trim();
     const preservedBytes = await fs.readFile(path.join(created.path, "adhoc-file.txt"));

@@ -472,9 +472,12 @@ export class ExecutionAttemptService {
   ): { applied: boolean } {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
-      if (attempt.kind !== 'task' || !attempt.featureName || !attempt.taskFolder || !attempt.taskAttempt) {
+      if (attempt.kind !== 'task' || !attempt.featureName || !attempt.taskFolder) {
         throw new Error(`Execution attempt ${attemptId} is not a task attempt`);
       }
+      // Lease-only migrations predate task generations. They are historical
+      // claims and may be finalized, but must never mutate current task state.
+      if (!attempt.taskAttempt) return { applied: false };
       if (!this.isCurrentTaskAttemptInStore(store, attempt.featureName, attempt.taskFolder, attempt.id)) {
         return { applied: false };
       }
@@ -486,6 +489,46 @@ export class ExecutionAttemptService {
           updates,
         ).applied,
       };
+    });
+  }
+
+  hydrateMigratedWorktreeTopology(
+    attemptId: string,
+    workspacePath: string,
+    repositories: Array<{ id: string; path: string; branch: string }>,
+  ): ExecutionAttempt {
+    return this.withStore(store => {
+      const attempt = this.requireAttempt(store, attemptId);
+      if (attempt.phase !== 'attached' && attempt.phase !== 'stopped') {
+        throw new Error(`Execution attempt ${attemptId} cannot hydrate topology in phase ${attempt.phase}`);
+      }
+      if (attempt.placement.kind !== 'worktree') {
+        throw new Error(`Execution attempt ${attemptId} is not a worktree attempt`);
+      }
+      const placement = attempt.placement;
+      const canonicalWorkspacePath = this.canonicalizeExistingDirectory(workspacePath);
+      const canonicalRepositories = repositories.map(repository => ({
+        id: this.requireToken(repository.id, 'repository id'),
+        path: this.canonicalizeExistingDirectory(repository.path),
+        branch: this.requireToken(repository.branch, 'repository branch'),
+      }));
+      if (canonicalWorkspacePath !== placement.workspacePath
+        || canonicalRepositories.length !== placement.workspaceIdentities.length
+        || canonicalRepositories.some((repository, index) => repository.path !== placement.workspaceIdentities[index])
+        || new Set(canonicalRepositories.map(repository => repository.id)).size !== canonicalRepositories.length) {
+        throw new Error(`Execution attempt ${attemptId} worktree placement no longer matches its exact registered topology`);
+      }
+      if (placement.repositories
+        && JSON.stringify(placement.repositories) !== JSON.stringify(canonicalRepositories)) {
+        throw new Error(`Execution attempt ${attemptId} worktree placement no longer matches its exact registered topology`);
+      }
+      if (placement.branch && canonicalRepositories[0]?.branch !== placement.branch) {
+        throw new Error(`Execution attempt ${attemptId} worktree placement no longer matches its exact registered topology`);
+      }
+      placement.repositories ??= canonicalRepositories;
+      placement.branch ??= canonicalRepositories[0]?.branch;
+      attempt.updatedAt = new Date().toISOString();
+      return structuredClone(attempt);
     });
   }
 

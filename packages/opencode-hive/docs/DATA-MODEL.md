@@ -140,8 +140,7 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 | `completedAt` | string? | ISO timestamp when task completed |
 | `baseCommit` | string? | Git commit hash at task start |
 | `subtasks` | object[]? | Optional nested subtask state when a task is decomposed during execution. |
-| `idempotencyKey` | string? | Safe-retry key for background worker completion patches. |
-| `workerSession` | object? | Background worker session metadata such as heartbeat, attempt count, and message count. |
+| `workerAttempt` | number? | Monotonic task generation used for stale-attempt compare-and-swap during finalization. Native worker identity lives only on the current `ExecutionAttempt`. |
 | `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). A task is runnable only when every dependency is `done`. Plan tasks resolve this from `plan.md` `Depends on:` annotations during `hive_tasks_sync`; manual tasks persist an explicit array and default to `[]`. |
 | `metadata` | object? | Structured manual-task metadata used to generate `spec.md`. Omitted for normal plan-backed tasks. |
 

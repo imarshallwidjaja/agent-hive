@@ -589,6 +589,102 @@ describe('ExecutionAttemptService armed native attachment', () => {
       native: { selectedAgent: 'custom-forager', childSessionId: 'legacy-child' },
     });
   });
+
+  it('hydrates trusted composite topology and finalizes a migrated schema-v1 task', async () => {
+    cleanup();
+    setupTask('feature-a', '01-task');
+    const workspaceRoot = path.join(TEST_DIR, '.hive', '.worktrees', 'feature-a', '01-task');
+    const api = path.join(workspaceRoot, 'repos', 'api');
+    const web = path.join(workspaceRoot, 'repos', 'web');
+    await initializeRepository(api);
+    await initializeRepository(web);
+    const statusPath = path.join(TEST_DIR, '.hive', 'features', 'feature-a', 'tasks', '01-task', 'status.json');
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+    status.workerAttempt = 1;
+    fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
+    const now = new Date().toISOString();
+    fs.writeFileSync(getExecutionAttemptsPath(TEST_DIR), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [{
+        id: 'legacy-finalizable', kind: 'task', featureName: 'feature-a', taskFolder: '01-task',
+        originatingPrimarySession: 'legacy-parent', workspaceIdentities: [api, web],
+        assignment: { taskAttempt: 1 }, dispatchState: 'dispatched', nativeCallId: 'legacy-call',
+        createdAt: now, updatedAt: now,
+      }],
+      currentTaskAttempts: { 'feature-a\u001f01-task': 'legacy-finalizable' },
+    }, null, 2));
+
+    const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-new');
+    attempts.observeBlockingStop({ originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', outputDefined: true });
+    const result = await new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts).finish({
+      attemptId: 'legacy-finalizable', originatingPrimarySession: 'legacy-parent', status: 'completed',
+      summary: 'Finalize migrated composite work.',
+    });
+
+    expect(result.attempt).toMatchObject({
+      phase: 'finalized',
+      placement: { repositories: [{ id: 'api', path: fs.realpathSync(api) }, { id: 'web', path: fs.realpathSync(web) }] },
+    });
+    expect(new TaskService(TEST_DIR).get('feature-a', '01-task')?.status).toBe('done');
+    attempts.assertWorkspacesIdle([api, web]);
+  });
+
+  it('finalizes a lease-only task as historical without mutating task state', async () => {
+    cleanup();
+    setupTask('feature-a', '01-task');
+    const identity = worktree('feature-a');
+    await initializeRepository(identity);
+    const lease: NativeTaskLease = {
+      parentSessionId: 'legacy-parent', callId: 'legacy-call', agent: 'forager-worker',
+      projectRoot: TEST_DIR, resourcePaths: [identity], runtimeId: 'legacy-runtime', childSessionId: 'legacy-child',
+    };
+    fs.writeFileSync(getGlobalSessionsPath(TEST_DIR), JSON.stringify({ sessions: [], nativeTaskLeases: [lease] }, null, 2));
+
+    const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-new');
+    const migrated = attempts.listAttempts().find(attempt => attempt.native?.callId === 'legacy-call')!;
+    attempts.observeBlockingStop({ originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', outputDefined: true });
+    const result = await new ExecutionFinalizationService(TEST_DIR, finalizationOptions(), attempts).finish({
+      attemptId: migrated.id, originatingPrimarySession: 'legacy-parent', status: 'failed',
+      summary: 'Record the historical lease outcome.',
+    });
+
+    expect(result).toMatchObject({
+      currentTaskUnchanged: true,
+      attempt: { phase: 'finalized', finalization: { disposition: { applied: false } } },
+    });
+    expect(new TaskService(TEST_DIR).get('feature-a', '01-task')?.status).toBe('pending');
+    attempts.assertWorkspacesIdle([identity]);
+  });
+
+  it('rejects migrated topology mismatches and retains the stopped claim', async () => {
+    cleanup();
+    const identity = worktree('mismatch');
+    await initializeRepository(identity);
+    const branch = (await simpleGit(identity).revparse(['--abbrev-ref', 'HEAD'])).trim();
+    const now = new Date().toISOString();
+    fs.writeFileSync(getExecutionAttemptsPath(TEST_DIR), JSON.stringify({
+      schemaVersion: 1,
+      attempts: [{
+        id: 'legacy-mismatch', kind: 'adhoc', runId: 'mismatch', originatingPrimarySession: 'legacy-parent',
+        workspaceIdentities: [identity], branch, dispatchState: 'dispatched', nativeCallId: 'legacy-call',
+        createdAt: now, updatedAt: now,
+      }],
+    }, null, 2));
+    const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-new');
+    attempts.observeBlockingStop({ originatingPrimarySession: 'legacy-parent', nativeCallId: 'legacy-call', outputDefined: true });
+    const finalizer = new ExecutionFinalizationService(TEST_DIR, {
+      resolveWorktreePlacement: async () => ({
+        workspacePath: identity,
+        repositories: [{ id: 'root', path: identity, branch: 'wrong-branch' }],
+      }),
+    }, attempts);
+
+    await expect(finalizer.finish({
+      attemptId: 'legacy-mismatch', originatingPrimarySession: 'legacy-parent', status: 'completed', summary: 'Mismatch.',
+    })).rejects.toThrow(/registered topology/i);
+    expect(attempts.getAttempt('legacy-mismatch')?.phase).toBe('stopped');
+    expect(() => attempts.assertWorkspacesIdle([identity])).toThrow(/claimed/i);
+  });
 });
 
 describe('ExecutionFinalizationService crash recovery', () => {

@@ -198,9 +198,6 @@ export class ExecutionFinalizationService {
       throw new Error('Finalization cannot use a worktree without trusted topology validation');
     }
     const placement = attempt.placement;
-    if (placement.workspaceIdentities.length > 1 && !placement.repositories) {
-      throw new Error(`Execution attempt ${attempt.id} has no durable composite repository identity`);
-    }
     const resolved = await this.options.resolveWorktreePlacement(attempt);
     const actualWorkspacePath = fs.realpathSync(resolved.workspacePath);
     const actualIdentities = resolved.repositories.map(repository => fs.realpathSync(repository.path));
@@ -216,8 +213,11 @@ export class ExecutionFinalizationService {
               || actualIdentities[index] !== expected.path
               || repository.branch !== expected.branch;
           })
-        : resolved.repositories[0]?.branch !== placement.branch)) {
+        : placement.branch !== undefined && resolved.repositories[0]?.branch !== placement.branch)) {
       throw new Error(`Execution attempt ${attempt.id} worktree placement no longer matches its exact registered topology`);
+    }
+    if (!placement.repositories || !placement.branch) {
+      this.attempts.hydrateMigratedWorktreeTopology(attempt.id, actualWorkspacePath, resolved.repositories);
     }
     return resolved.repositories.map((repository, index) => ({
       ...repository,

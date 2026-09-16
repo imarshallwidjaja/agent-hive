@@ -131,6 +131,28 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     expect(secondResult.success).toBe(true);
   });
 
+  it.each(['missing', 'file'] as const)('returns correct_arguments for an in-place %s path', async (kind) => {
+    const target = path.join(TEST_ROOT, kind);
+    if (kind === 'file') fs.writeFileSync(target, 'not a directory');
+    const { hooks, context } = await hooksFor(TEST_ROOT, `primary-invalid-${kind}`);
+
+    const result = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: `invalid-${kind}` },
+      placement: { kind: 'in_place', directory: target },
+    }, context) as string);
+
+    expect(result).toMatchObject({
+      success: false,
+      reason: 'invalid_placement_directory',
+      phase: 'validation',
+      reasonCode: 'INVALID_ARGUMENTS',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
+    });
+    expect(new ExecutionAttemptService(TEST_ROOT).listAttempts()).toHaveLength(0);
+  });
+
   it('refuses a second outstanding arm before creating its worktree resources', async () => {
     initGit(TEST_ROOT);
     const liveDirectory = path.join(TEST_ROOT, 'live');
@@ -453,6 +475,43 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       phase: 'finalized',
       finalization: { repositories: [{ id: 'root', result: 'committed' }] },
     });
+  });
+
+  it('returns correct_arguments for an invalid finalization commit message without mutation', async () => {
+    initGit(TEST_ROOT);
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-invalid-message');
+    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'adhoc', runId: 'invalid-message' },
+      placement: { kind: 'worktree' },
+    }, context) as string);
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-invalid-message' }, {
+      args: { subagent_type: 'forager-worker', description: 'Edit worktree', prompt: 'Do it.' },
+    });
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'change.txt'), 'change\n');
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID, nativeCallId: 'call-invalid-message', outputDefined: true,
+    });
+    const beforeHead = execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim();
+
+    const result = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Complete.',
+      message: 'subject only',
+    }, context) as string);
+
+    expect(result).toMatchObject({
+      success: false,
+      reason: 'invalid_finalization_arguments',
+      phase: 'validation',
+      reasonCode: 'INVALID_COMMIT_MESSAGE',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
+    });
+    expect(result.nextAction).toContain('Correct the named invalid or missing arguments');
+    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(beforeHead);
+    expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)?.phase).toBe('stopped');
   });
 
   it('rejects second-repository branch and manifest tampering before any ad-hoc finalization commit', async () => {

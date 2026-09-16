@@ -39,26 +39,6 @@ export interface SubtaskStatus {
   completedAt?: string;
 }
 
-/** Worker session information for background task execution */
-export interface WorkerSession {
-  /** Background task ID when the worker runs as a background subagent */
-  taskId?: string;
-  /** Unique session identifier */
-  sessionId: string;
-  /** Worker instance identifier */
-  workerId?: string;
-  /** Agent type handling this task */
-  agent?: string;
-  /** Execution mode: inline (same session) or delegate (background) */
-  mode?: 'inline' | 'delegate';
-  /** ISO timestamp of last heartbeat */
-  lastHeartbeatAt?: string;
-  /** Current attempt number (1-based) */
-  attempt?: number;
-  /** Number of messages exchanged in session */
-  messageCount?: number;
-}
-
 export interface ManualTaskMetadata {
   goal?: string;
   description?: string;
@@ -99,12 +79,8 @@ export interface TaskStatus {
   baseCommits?: Record<string, string>;
   repoIds?: string[];
   subtasks?: Subtask[];
-  /** Idempotency key for safe retries */
-  idempotencyKey?: string;
-  /** Current worker launch attempt (1-based), including attempts not yet associated with a session */
+  /** Current worker launch generation (1-based), used for stale-attempt CAS. */
   workerAttempt?: number;
-  /** Worker session info for background execution */
-  workerSession?: WorkerSession;
   /**
    * Task dependencies expressed as task folder names (e.g., '01-setup', '02-core-api').
    * A task cannot start until all its dependencies have status 'done'.

@@ -1721,6 +1721,55 @@ Do it
     expect(new FeatureService(testRoot).get('zeta-feature')?.status).toBe('planning');
   });
 
+  it.each(['attached', 'stopped'] as const)('blocks feature completion while a task attempt is %s', async (phase) => {
+    const sessionID = `sess_completion_gate_${phase}`;
+    const feature = `completion-gate-${phase}`;
+    const { hooks, toolContext } = await createHooksForTest(testRoot, sessionID);
+    new FeatureService(testRoot).create(feature);
+    const tasks = new TaskService(testRoot);
+    const task = tasks.create(feature, 'Worker');
+    tasks.update(feature, task, { status: 'done' });
+    const attempts = new ExecutionAttemptService(testRoot, `runtime-${phase}`);
+    const attempt = attempts.arm({
+      kind: 'task', featureName: feature, taskFolder: task, originatingPrimarySession: sessionID,
+      placement: { kind: 'in_place', directory: testRoot },
+    }).attempt;
+    attempts.attachNext({
+      originatingPrimarySession: sessionID, nativeCallId: `call-${phase}`,
+      selectedAgent: 'forager-worker', background: false,
+    });
+    if (phase === 'stopped') {
+      attempts.observeBlockingStop({ originatingPrimarySession: sessionID, nativeCallId: `call-${phase}`, outputDefined: true });
+    }
+
+    const result = JSON.parse(await hooks.tool!.hive_feature_complete.execute({ name: feature }, toolContext) as string);
+
+    expect(result).toMatchObject({
+      success: false,
+      reason: 'feature_completion_blocked',
+      mutation: 'none',
+      unfinishedAttempts: [{ attemptId: attempt.id, task, phase }],
+    });
+    expect(result.nextAction).toContain(phase === 'stopped' ? 'hive_execution_finish' : 'exact stop evidence');
+    expect(new FeatureService(testRoot).get(feature)?.status).not.toBe('completed');
+  });
+
+  it('blocks feature completion until every task is done', async () => {
+    const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_completion_tasks');
+    const feature = 'completion-task-gate';
+    new FeatureService(testRoot).create(feature);
+    const task = new TaskService(testRoot).create(feature, 'Pending worker');
+
+    const result = JSON.parse(await hooks.tool!.hive_feature_complete.execute({ name: feature }, toolContext) as string);
+
+    expect(result).toMatchObject({
+      success: false,
+      reason: 'feature_completion_blocked',
+      mutation: 'none',
+      unfinishedTasks: [{ folder: task, status: 'pending' }],
+    });
+  });
+
   it('rejects explicitly blank feature arguments without completing the sole live feature', async () => {
     const { hooks, toolContext } = await createHooksForTest(testRoot, 'sess_blank_explicit_feature');
     await hooks.tool!.hive_feature_create.execute({ name: 'still-live-feature' }, toolContext);
@@ -2839,11 +2888,11 @@ Do it
     const sessionsPath = path.join(testRoot, ".hive", "sessions.json");
     expect(fs.existsSync(sessionsPath)).toBe(true);
     const sessions = JSON.parse(fs.readFileSync(sessionsPath, "utf-8"));
-    const workerSession = sessions.sessions.find(
+    const childSession = sessions.sessions.find(
       (s: { sessionId: string }) => s.sessionId === "sess_worker_plan_bind"
     );
-    expect(workerSession).toBeDefined();
-    expect(workerSession.featureName).toBe("plan-bind-feature");
+    expect(childSession).toBeDefined();
+    expect(childSession.featureName).toBe("plan-bind-feature");
     expect(boundRead.content).toContain('# Plan Bind Feature');
     expect(boundRead.content).not.toContain('# Competing Plan Feature');
   });
@@ -2901,11 +2950,11 @@ Do it
     const sessionsPath = path.join(testRoot, ".hive", "sessions.json");
     expect(fs.existsSync(sessionsPath)).toBe(true);
     const sessions = JSON.parse(fs.readFileSync(sessionsPath, "utf-8"));
-    const workerSession = sessions.sessions.find(
+    const childSession = sessions.sessions.find(
       (s: { sessionId: string }) => s.sessionId === "sess_worker_ctx_bind"
     );
-    expect(workerSession).toBeDefined();
-    expect(workerSession.featureName).toBe("ctx-bind-feature");
+    expect(childSession).toBeDefined();
+    expect(childSession.featureName).toBe("ctx-bind-feature");
   });
 
   it("preserves a non-root worktree for a global project", async () => {

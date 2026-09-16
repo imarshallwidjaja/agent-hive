@@ -58,75 +58,6 @@ describe("TaskService", () => {
     cleanup();
   });
 
-  it('preserves legacy bytes and immutable narratives across report revisions', () => {
-    setupFeature('reports');
-    setupTask('reports', '01-task');
-    const taskPath = path.join(TEST_DIR, '.hive/features/reports/tasks/01-task');
-    const legacy = 'legacy\r\nexact bytes\n';
-    fs.writeFileSync(path.join(taskPath, 'report.md'), legacy);
-    const firstResult = service.writeReportWithReference('reports', '01-task', 'first exact narrative');
-    service.writeReport('reports', '01-task', 'second exact narrative');
-    const first = fs.readFileSync(firstResult.reportReference, 'utf8');
-    expect(firstResult.reportPath).toBe(path.join(taskPath, 'report.md'));
-    expect(firstResult.reportReference).toBe(path.join(taskPath, 'reports/2.md'));
-    expect(fs.readFileSync(path.join(taskPath, 'reports/1.md'), 'utf8')).toBe(legacy);
-    expect(first.split('\n---\n')[0]).toBe('first exact narrative');
-    expect(first).not.toContain('second exact narrative');
-    expect(service.getLatestReportReference('reports', '01-task')).toEndWith('/reports/3.md');
-    expect(fs.readFileSync(path.join(taskPath, 'report.md'), 'utf8')).toContain('second exact narrative');
-  });
-
-  it('serializes concurrent report writers without overwriting revisions', async () => {
-    setupFeature('reports');
-    setupTask('reports', '01-task');
-    const source = path.join(import.meta.dir, 'taskService.ts');
-    const writers = ['one', 'two'].map(narrative => Bun.spawn([process.execPath, '-e',
-      `import { TaskService } from ${JSON.stringify(source)}; new TaskService(${JSON.stringify(TEST_DIR)}).writeReport('reports', '01-task', ${JSON.stringify(narrative)});`,
-    ], { stdout: 'pipe', stderr: 'pipe' }));
-    expect(await Promise.all(writers.map(writer => writer.exited))).toEqual([0, 0]);
-    const history = path.join(TEST_DIR, '.hive/features/reports/tasks/01-task/reports');
-    expect(fs.readdirSync(history).sort()).toEqual(['1.md', '2.md']);
-    const narratives = ['1.md', '2.md'].map(file => fs.readFileSync(path.join(history, file), 'utf8').split('\n')[0]).sort();
-    expect(narratives).toEqual(['one', 'two']);
-  });
-
-  it('preserves latest content and releases its lock when atomic replacement fails', () => {
-    setupFeature('reports');
-    setupTask('reports', '01-task');
-    const latest = service.writeReport('reports', '01-task', 'accepted');
-    const before = fs.readFileSync(latest, 'utf8');
-    const rename = spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('rename denied'); });
-    try {
-      expect(() => service.writeReport('reports', '01-task', 'later')).toThrow('rename denied');
-    } finally {
-      rename.mockRestore();
-    }
-    expect(fs.readFileSync(latest, 'utf8')).toBe(before);
-    expect(service.getLatestReportReference('reports', '01-task')).toEndWith('/reports/1.md');
-    expect(fs.existsSync(getLockPath(latest))).toBe(false);
-    service.writeReport('reports', '01-task', 'retry');
-    expect(service.getLatestReportReference('reports', '01-task')).toEndWith('/reports/3.md');
-  });
-
-  it('preserves legacy latest when its historical copy fails', () => {
-    setupFeature('reports');
-    setupTask('reports', '01-task');
-    const latest = path.join(TEST_DIR, '.hive/features/reports/tasks/01-task/report.md');
-    fs.writeFileSync(latest, 'legacy');
-    const originalWrite = fs.writeFileSync;
-    const copy = spyOn(fs, 'writeFileSync').mockImplementation(((target: any, ...args: any[]) => {
-      if (typeof target === 'number') throw new Error('copy denied');
-      return (originalWrite as any)(target, ...args);
-    }) as typeof fs.writeFileSync);
-    try {
-      expect(() => service.writeReport('reports', '01-task', 'later')).toThrow('copy denied');
-    } finally {
-      copy.mockRestore();
-    }
-    expect(fs.readFileSync(latest, 'utf8')).toBe('legacy');
-    expect(fs.existsSync(getLockPath(latest))).toBe(false);
-  });
-
   describe("update", () => {
     it("updates task status with locked atomic write", () => {
       const featureName = "test-feature";
@@ -229,118 +160,6 @@ describe("TaskService", () => {
     });
   });
 
-  describe("patchBackgroundFields", () => {
-    it("patches only background-owned fields", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task", {
-        status: "in_progress",
-        summary: "Working on it",
-      });
-
-      const result = service.patchBackgroundFields(featureName, "01-test-task", {
-        idempotencyKey: "key-123",
-        workerSession: {
-          sessionId: "session-abc",
-          agent: "forager",
-          mode: "delegate",
-        },
-      });
-
-      // Background fields updated
-      expect(result.idempotencyKey).toBe("key-123");
-      expect(result.workerSession?.sessionId).toBe("session-abc");
-      expect(result.workerSession?.agent).toBe("forager");
-      expect(result.workerSession?.mode).toBe("delegate");
-
-      // Completion-owned fields preserved
-      expect(result.status).toBe("in_progress");
-      expect(result.summary).toBe("Working on it");
-    });
-
-    it("deep merges workerSession fields", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task", {
-        workerSession: {
-          sessionId: "session-abc",
-          attempt: 1,
-          messageCount: 5,
-        },
-      });
-
-      // Patch only lastHeartbeatAt
-      service.patchBackgroundFields(featureName, "01-test-task", {
-        workerSession: {
-          lastHeartbeatAt: "2025-01-23T00:00:00Z",
-        } as any,
-      });
-
-      const result = service.getRawStatus(featureName, "01-test-task");
-
-      // Original workerSession fields preserved
-      expect(result?.workerSession?.sessionId).toBe("session-abc");
-      expect(result?.workerSession?.attempt).toBe(1);
-      expect(result?.workerSession?.messageCount).toBe(5);
-      // New field added
-      expect(result?.workerSession?.lastHeartbeatAt).toBe("2025-01-23T00:00:00Z");
-    });
-
-    it("does not clobber completion-owned fields", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task", {
-        status: "done",
-        summary: "Completed successfully",
-        completedAt: "2025-01-22T00:00:00Z",
-      });
-
-      // Background patch should not touch these
-      service.patchBackgroundFields(featureName, "01-test-task", {
-        workerSession: { sessionId: "new-session" },
-      });
-
-      const result = service.getRawStatus(featureName, "01-test-task");
-
-      expect(result?.status).toBe("done");
-      expect(result?.summary).toBe("Completed successfully");
-      expect(result?.completedAt).toBe("2025-01-22T00:00:00Z");
-    });
-
-    it("sets schemaVersion on patch", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task");
-
-      const result = service.patchBackgroundFields(featureName, "01-test-task", {
-        idempotencyKey: "key-456",
-      });
-
-      expect(result.schemaVersion).toBe(TASK_STATUS_SCHEMA_VERSION);
-    });
-
-    it("releases lock after patch", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task");
-
-      service.patchBackgroundFields(featureName, "01-test-task", {
-        idempotencyKey: "test",
-      });
-
-      const statusPath = path.join(
-        TEST_DIR,
-        ".hive",
-        "features",
-        featureName,
-        "tasks",
-        "01-test-task",
-        "status.json"
-      );
-      expect(fs.existsSync(getLockPath(statusPath))).toBe(false);
-    });
-  });
-
   describe("worker attempt lifecycle", () => {
     it("allocates sequential attempts under the status lock and preserves completion fields", () => {
       const featureName = "test-feature";
@@ -349,24 +168,14 @@ describe("TaskService", () => {
         status: "failed",
         summary: "Previous attempt failed",
         completedAt: "2025-01-22T00:00:00Z",
-        idempotencyKey: "old-key",
         workerAttempt: 1,
-        workerSession: {
-          sessionId: "old-session",
-          taskId: "old-trace",
-          attempt: 1,
-        },
       });
 
       const first = service.allocateWorkerAttempt(featureName, "01-test-task");
       const second = service.allocateWorkerAttempt(featureName, "01-test-task");
 
       expect(first.attempt).toBe(2);
-      expect(first.idempotencyKey).toBe("hive-test-feature-01-test-task-2");
-      expect(first.status.workerSession).toBeUndefined();
       expect(second.attempt).toBe(3);
-      expect(second.idempotencyKey).toBe("hive-test-feature-01-test-task-3");
-      expect(second.status.workerSession).toBeUndefined();
       expect(second.status.status).toBe("failed");
       expect(second.status.summary).toBe("Previous attempt failed");
       expect(second.status.completedAt).toBe("2025-01-22T00:00:00Z");
@@ -374,12 +183,11 @@ describe("TaskService", () => {
   });
 
   describe("getRawStatus", () => {
-    it("returns full TaskStatus including new fields", () => {
+    it("returns full TaskStatus including aggregate branch metadata", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
       setupTask(featureName, "01-test-task", {
         schemaVersion: 1,
-        idempotencyKey: "key-789",
         aggregateBranchDiff: {
           fileCount: 2,
           insertions: 8,
@@ -387,25 +195,12 @@ describe("TaskService", () => {
           areas: ["packages", "docs"],
           report: ".hive/features/test-feature/tasks/01-test-task/report.md",
         },
-        workerSession: {
-          sessionId: "session-xyz",
-          taskId: "bg-task-1",
-          agent: "forager",
-          mode: "delegate",
-          attempt: 2,
-        },
       });
 
       const result = service.getRawStatus(featureName, "01-test-task");
 
       expect(result).not.toBeNull();
       expect(result?.schemaVersion).toBe(1);
-      expect(result?.idempotencyKey).toBe("key-789");
-      expect(result?.workerSession?.sessionId).toBe("session-xyz");
-      expect(result?.workerSession?.taskId).toBe("bg-task-1");
-      expect(result?.workerSession?.agent).toBe("forager");
-      expect(result?.workerSession?.mode).toBe("delegate");
-      expect(result?.workerSession?.attempt).toBe(2);
       expect(result?.aggregateBranchDiff).toEqual({
         fileCount: 2,
         insertions: 8,
@@ -1105,40 +900,6 @@ Merge both branches.
       expect(result.created).toContain("02-left-branch");
       expect(result.created).toContain("03-right-branch");
       expect(result.created).toContain("04-merge");
-    });
-  });
-
-  describe("concurrent access safety", () => {
-    it("handles rapid sequential updates without corruption", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task");
-
-      // Rapid sequential updates
-      for (let i = 0; i < 10; i++) {
-        service.patchBackgroundFields(featureName, "01-test-task", {
-          workerSession: {
-            sessionId: "session-1",
-            messageCount: i,
-          } as any,
-        });
-      }
-
-      const result = service.getRawStatus(featureName, "01-test-task");
-
-      // Last write wins
-      expect(result?.workerSession?.messageCount).toBe(9);
-      // File should be valid JSON
-      const statusPath = path.join(
-        TEST_DIR,
-        ".hive",
-        "features",
-        featureName,
-        "tasks",
-        "01-test-task",
-        "status.json"
-      );
-      expect(() => JSON.parse(fs.readFileSync(statusPath, "utf-8"))).not.toThrow();
     });
   });
 

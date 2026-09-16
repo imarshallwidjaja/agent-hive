@@ -456,8 +456,15 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
 
     if (element instanceof ReportHistoryItem) {
       return this.getReportFilenames(element.reportsPath)
-        .sort((a, b) => b.length - a.length || b.localeCompare(a))
-        .map(filename => new TaskFileItem(`Revision ${filename.slice(0, -3)}`, path.join(element.reportsPath, filename)))
+        .sort((a, b) => {
+          const aTime = fs.statSync(path.join(element.reportsPath, a)).mtimeMs
+          const bTime = fs.statSync(path.join(element.reportsPath, b)).mtimeMs
+          return bTime - aTime || b.localeCompare(a)
+        })
+        .map(filename => new TaskFileItem(
+          filename.startsWith('finalization-') ? `Finalization ${filename.slice('finalization-'.length, -3)}` : `Revision ${filename.slice(0, -3)}`,
+          path.join(element.reportsPath, filename),
+        ))
     }
 
     return []
@@ -694,7 +701,7 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
   private getReportFilenames(reportsPath: string): string[] {
     if (!fs.existsSync(reportsPath)) return []
     return fs.readdirSync(reportsPath, { withFileTypes: true })
-      .filter(entry => entry.isFile() && /^[1-9]\d*\.md$/.test(entry.name))
+      .filter(entry => entry.isFile() && (/^[1-9]\d*\.md$/.test(entry.name) || /^finalization-[a-f0-9]+\.md$/.test(entry.name)))
       .map(entry => entry.name)
   }
 

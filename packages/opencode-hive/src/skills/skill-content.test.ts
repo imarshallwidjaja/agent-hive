@@ -760,7 +760,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Orchestrator owns final confidence');
     expect(skill!.template).toContain('terminal-unreconciled');
     expect(skill!.template).toContain('Reconcile and ignore are bookkeeping only');
-    expect(skill!.template).toContain('A live claim blocks preparation, dispatch, `hive_execution_finish`, and managed discard/merge of that exact worktree identity');
+    expect(skill!.template).toContain('A stopped claim permits `hive_execution_finish` only from its originating primary');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
     expect(skill!.template).toContain('`hive_status` is not that surface');
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns.');
@@ -827,6 +827,14 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('zellij');
     expect(skill!.template).not.toContain('hive_background_task');
     expect(skill!.template).not.toContain('hive_background_output');
+  });
+
+  it('keeps the gate-open background example self-contained and finish-before-reconcile', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation')!;
+    const example = skill.template.match(/Gate-open Forager launch \(background wait mode\):\n\n```ts\n([\s\S]*?)\n```/)?.[1];
+    expect(example).toBeDefined();
+    expect(example!.indexOf('const prepared = await hive_execution_prepare')).toBeLessThan(example!.indexOf('prepared.attemptId'));
+    expect(example!.indexOf('await hive_execution_finish')).toBeLessThan(example!.indexOf('hive_background_reconcile'));
   });
 
   it('bundled skill content does not contain removed Hive skill tool references', () => {

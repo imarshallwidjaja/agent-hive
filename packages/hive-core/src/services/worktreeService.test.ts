@@ -75,11 +75,45 @@ async function createFixture(): Promise<TestFixture> {
   };
 }
 
+async function commitTaskChanges(
+  service: WorktreeService,
+  feature: string,
+  task: string,
+  message?: string,
+  attemptSlot?: string,
+): Promise<{ committed: boolean; sha: string; message?: string; repos?: Record<string, { committed: boolean; sha: string }> }> {
+  const worktree = await service.get(feature, task, attemptSlot);
+  if (!worktree) throw new Error('Worktree not found');
+  const repositories = worktree.repos
+    ? Object.fromEntries(Object.entries(worktree.repos).map(([id, repository]) => [id, repository.path]))
+    : { root: worktree.path };
+  const results: Record<string, { committed: boolean; sha: string }> = {};
+  for (const [id, repositoryPath] of Object.entries(repositories)) {
+    const git = simpleGit(repositoryPath);
+    const status = await git.status();
+    if (status.isClean()) {
+      results[id] = { committed: false, sha: (await git.revparse(['HEAD'])).trim() };
+      continue;
+    }
+    if (!message) throw new Error('Direct Git fixture commit requires a message');
+    await git.add('-A');
+    await git.commit(message);
+    results[id] = { committed: true, sha: (await git.revparse(['HEAD'])).trim() };
+  }
+  const first = Object.values(results)[0]!;
+  return {
+    committed: Object.values(results).some(result => result.committed),
+    sha: first.sha,
+    ...(message ? { message } : {}),
+    ...(worktree.repos ? { repos: results } : {}),
+  };
+}
+
 async function createCommittedFixture(): Promise<TestFixture> {
   const fixture = await createFixture();
 
   await fs.writeFile(path.join(fixture.worktreePath, "task-change.txt"), "task change\n", "utf-8");
-  const result = await fixture.service.commitChanges(fixture.feature, fixture.task, testCommitMessage('chore: task change'));
+  const result = await commitTaskChanges(fixture.service, fixture.feature, fixture.task, testCommitMessage('chore: task change'));
   expect(result.committed).toBe(true);
 
   await fixture.repoGit.checkout("main");
@@ -91,11 +125,11 @@ async function createNetZeroCommittedFixture(): Promise<TestFixture> {
   const fixture = await createFixture();
 
   await fs.writeFile(path.join(fixture.worktreePath, "tracked.txt"), "transient task change\n", "utf-8");
-  const transient = await fixture.service.commitChanges(fixture.feature, fixture.task, testCommitMessage('chore: transient task change'));
+  const transient = await commitTaskChanges(fixture.service, fixture.feature, fixture.task, testCommitMessage('chore: transient task change'));
   expect(transient.committed).toBe(true);
 
   await fs.writeFile(path.join(fixture.worktreePath, "tracked.txt"), "base\n", "utf-8");
-  const reverted = await fixture.service.commitChanges(fixture.feature, fixture.task, testCommitMessage('revert: transient task change'));
+  const reverted = await commitTaskChanges(fixture.service, fixture.feature, fixture.task, testCommitMessage('revert: transient task change'));
   expect(reverted.committed).toBe(true);
 
   await fixture.repoGit.checkout("main");
@@ -107,7 +141,7 @@ async function createConflictingFixture(): Promise<TestFixture> {
   const fixture = await createFixture();
 
   await fs.writeFile(path.join(fixture.worktreePath, 'tracked.txt'), 'task change\n', 'utf-8');
-  const taskCommit = await fixture.service.commitChanges(
+  const taskCommit = await commitTaskChanges(fixture.service,
     fixture.feature,
     fixture.task,
     testCommitMessage('chore: conflicting task change'),
@@ -217,7 +251,7 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await service.hasUncommittedChanges(feature, task, "retry")).toBe(true);
     expect(await service.hasUncommittedChanges(feature, task)).toBe(true);
 
-    const commit = await service.commitChanges(feature, task, testCommitMessage("feat: slotted work"), "retry");
+    const commit = await commitTaskChanges(service, feature, task, testCommitMessage("feat: slotted work"), "retry");
     expect(commit.committed).toBe(true);
     expect(await service.hasUncommittedChanges(feature, task, "retry")).toBe(false);
     expect(await service.hasUncommittedChanges(feature, task)).toBe(true);
@@ -227,62 +261,6 @@ describe("WorktreeService merge and commit messages", () => {
     expect(removed.worktreeRemoved).toBe(true);
     expect(await service.get(feature, task, "retry")).toBeNull();
     expect(await service.get(feature, task)).not.toBeNull();
-  });
-
-  it("uses a custom commit message verbatim, including body text", async () => {
-    const fixture = await createFixture();
-    await fs.writeFile(path.join(fixture.worktreePath, "custom-commit.txt"), "custom\n", "utf-8");
-
-    const message = "feat(core): custom subject\n\nbody line 1\nbody line 2";
-    const result = await fixture.service.commitChanges(fixture.feature, fixture.task, message);
-
-    expect(result.committed).toBe(true);
-    expect(await readHeadBody(fixture.worktreePath)).toBe(message);
-  });
-
-  it("rejects a malformed commit message without changing HEAD or the index", async () => {
-    const fixture = await createFixture();
-    await fs.writeFile(path.join(fixture.worktreePath, "invalid-commit-message.txt"), "invalid\n", "utf-8");
-    const git = simpleGit(fixture.worktreePath);
-    const beforeHead = (await git.revparse(['HEAD'])).trim();
-
-    const result = await fixture.service.commitChanges(fixture.feature, fixture.task, "subject only");
-
-    expect(result.committed).toBe(false);
-    expect(result.message).toMatch(/subject.*blank line.*body/i);
-    expect((await git.revparse(['HEAD'])).trim()).toBe(beforeHead);
-    expect((await git.status()).staged).toEqual([]);
-  });
-
-  it('removes a direct commit when a hook rewrites its message and preserves the file changes', async () => {
-    const fixture = await createFixture();
-    const filePath = path.join(fixture.worktreePath, 'hook-rewritten.txt');
-    await fs.writeFile(filePath, 'preserve me\n', 'utf-8');
-    await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'subject only' > "$1"`);
-    const git = simpleGit(fixture.worktreePath);
-    const beforeHead = (await git.revparse(['HEAD'])).trim();
-
-    const result = await fixture.service.commitChanges(
-      fixture.feature,
-      fixture.task,
-      testCommitMessage('feat: valid direct input'),
-    );
-
-    expect(result.committed).toBe(false);
-    expect(result.message).toMatch(/subject.*blank line.*body/i);
-    expect((await git.revparse(['HEAD'])).trim()).toBe(beforeHead);
-    expect(await fs.readFile(filePath, 'utf-8')).toBe('preserve me\n');
-    const status = await git.status();
-    expect(status.staged).toEqual([]);
-    expect(status.not_added).toContain('hook-rewritten.txt');
-  });
-
-  it('allows omitted commit message only when there are no changes to commit', async () => {
-    const fixture = await createFixture();
-
-    const result = await fixture.service.commitChanges(fixture.feature, fixture.task);
-
-    expect(result).toMatchObject({ committed: false, message: 'No changes to commit' });
   });
 
   it("uses a custom merge message verbatim, including body text", async () => {
@@ -626,7 +604,7 @@ describe("WorktreeService merge and commit messages", () => {
     it(`reports only integration paths in filesChanged for ${strategy} when the target advanced independently`, async () => {
       const fixture = await createFixture();
       await fs.writeFile(path.join(fixture.worktreePath, 'task-only.txt'), 'task content\n', 'utf-8');
-      const taskCommit = await fixture.service.commitChanges(
+      const taskCommit = await commitTaskChanges(fixture.service,
         fixture.feature,
         fixture.task,
         testCommitMessage('chore: task-only change'),
@@ -1666,128 +1644,6 @@ describe("WorktreeService composite diff aggregation", () => {
     expect(diff.hasDiff).toBe(true);
     expect(diff.repos).toBeUndefined();
     expect(diff.filesChanged).toContain('legacy-change.txt');
-  });
-});
-
-describe("WorktreeService composite commit aggregation", () => {
-  it("commits a single-repo composite task and returns aggregate sha", async () => {
-    const fx = await createCompositeFixture({ repoIds: ['api'] });
-    const wt = await fx.service.create(fx.feature, fx.task);
-    await fs.writeFile(path.join(wt.repos!['api'].path, 'change.txt'), 'x\n', 'utf-8');
-
-    const result = await fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: api change'));
-
-    expect(result.committed).toBe(true);
-    expect(result.partial).not.toBe(true);
-    expect(result.repos).toBeDefined();
-    expect(result.repos!['api'].committed).toBe(true);
-    expect(typeof result.repos!['api'].sha).toBe('string');
-    expect(result.repos!['api'].sha.length).toBeGreaterThan(0);
-    expect(result.sha).toBe(result.repos!['api'].sha);
-  });
-
-  it("commits multiple repos in stable repo ID order when all have changes", async () => {
-    const fx = await createCompositeFixture({ repoIds: ['web-ui', 'api'] });
-    const wt = await fx.service.create(fx.feature, fx.task);
-    await fs.writeFile(path.join(wt.repos!['api'].path, 'a.txt'), 'a\n', 'utf-8');
-    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
-
-    const result = await fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: multi'));
-
-    expect(result.committed).toBe(true);
-    expect(result.partial).not.toBe(true);
-    expect(Object.keys(result.repos!)).toEqual(['api', 'web-ui']);
-    expect(result.repos!['api'].committed).toBe(true);
-    expect(result.repos!['web-ui'].committed).toBe(true);
-  });
-
-  it("commits only changed repos and reports no-change for the rest as success", async () => {
-    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
-    const wt = await fx.service.create(fx.feature, fx.task);
-    await fs.writeFile(path.join(wt.repos!['api'].path, 'a.txt'), 'a\n', 'utf-8');
-
-    const result = await fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: partial change'));
-
-    expect(result.committed).toBe(true);
-    expect(result.partial).not.toBe(true);
-    expect(result.repos!['api'].committed).toBe(true);
-    expect(result.repos!['web-ui'].committed).toBe(false);
-    expect(result.repos!['web-ui'].message).toMatch(/no changes/i);
-  });
-
-  it("returns committed=false and no error when no composite repo has changes", async () => {
-    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
-    const wt = await fx.service.create(fx.feature, fx.task);
-
-    const result = await fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: nothing'));
-
-    expect(result.committed).toBe(false);
-    expect(result.partial).toBeUndefined();
-    expect(result.error).toBeUndefined();
-    expect(result.message).toBe('No changes to commit');
-    expect(result.repos!['api'].committed).toBe(false);
-    expect(result.repos!['web-ui'].committed).toBe(false);
-    // Aggregate sha is the first repo (in stable ID order) HEAD.
-    const firstRepoHead = (await simpleGit(wt.repos!['api'].path).revparse(['HEAD'])).trim();
-    expect(result.sha).toBe(firstRepoHead);
-    expect(result.sha).toBe(result.repos!['api'].sha);
-  });
-
-  it("uses the first committed repo as the aggregate result when an earlier repo has no changes", async () => {
-    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
-    const wt = await fx.service.create(fx.feature, fx.task);
-    // Only the second repo (web-ui in stable order) has changes; api has none.
-    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
-
-    const result = await fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: only second'));
-
-    expect(result.committed).toBe(true);
-    expect(result.partial).not.toBe(true);
-    expect(result.repos!['api'].committed).toBe(false);
-    expect(result.repos!['web-ui'].committed).toBe(true);
-    expect(result.sha).toBe(result.repos!['web-ui'].sha);
-    expect(result.message).toBe(result.repos!['web-ui'].message);
-    expect(result.message).toBe(testCommitMessage('feat: only second'));
-  });
-
-  it("rejects a missing later worktree before committing an earlier repository", async () => {
-    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
-    const wt = await fx.service.create(fx.feature, fx.task);
-    await fs.writeFile(path.join(wt.repos!['api'].path, 'a.txt'), 'a\n', 'utf-8');
-    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
-
-    // Sabotage web-ui by removing its worktree directory after staging would otherwise succeed.
-    await fs.rm(wt.repos!['web-ui'].path, { recursive: true, force: true });
-
-    const apiHead = (await simpleGit(wt.repos!.api.path).revparse(['HEAD'])).trim();
-    await expect(fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: partial fail')))
-      .rejects.toThrow(/linkage preflight failed/);
-    expect((await simpleGit(wt.repos!.api.path).revparse(['HEAD'])).trim()).toBe(apiHead);
-    expect((await simpleGit(wt.repos!.api.path).status()).not_added).toContain('a.txt');
-  });
-
-  it('propagates missing-worktree preflight failure instead of returning a commit fallback', async () => {
-    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
-    const wt = await fx.service.create(fx.feature, fx.task);
-    // api stays clean; only web-ui would have changes, but its worktree is removed.
-    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
-    await fs.rm(wt.repos!['web-ui'].path, { recursive: true, force: true });
-
-    await expect(fx.service.commitChanges(fx.feature, fx.task, testCommitMessage('feat: later fail')))
-      .rejects.toThrow(/linkage preflight failed/);
-  });
-
-  it("preserves legacy single-repo commit shape when no manifest is configured", async () => {
-    const fixture = await createFixture();
-    await fs.writeFile(path.join(fixture.worktreePath, 'legacy.txt'), 'legacy\n', 'utf-8');
-
-    const result = await fixture.service.commitChanges(fixture.feature, fixture.task, testCommitMessage('chore: legacy commit'));
-
-    expect(result.committed).toBe(true);
-    expect(typeof result.sha).toBe('string');
-    expect(result.sha.length).toBeGreaterThan(0);
-    expect(result.repos).toBeUndefined();
-    expect(result.partial).toBeUndefined();
   });
 });
 

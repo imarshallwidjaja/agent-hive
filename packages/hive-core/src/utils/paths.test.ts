@@ -440,21 +440,21 @@ describe("Atomic + Locked JSON Utilities", () => {
         filePath,
         JSON.stringify({
           status: "pending",
-          workerSession: { sessionId: "abc", attempt: 1 },
+          metadata: { owner: "abc", attempt: 1 },
         })
       );
 
       await patchJsonLocked(filePath, {
-        workerSession: { lastHeartbeatAt: "2025-01-01T00:00:00Z" },
+        metadata: { updatedAt: "2025-01-01T00:00:00Z" },
       });
 
       const result = readJson<Record<string, unknown>>(filePath);
       expect(result).toEqual({
         status: "pending",
-        workerSession: {
-          sessionId: "abc",
+        metadata: {
+          owner: "abc",
           attempt: 1,
-          lastHeartbeatAt: "2025-01-01T00:00:00Z",
+          updatedAt: "2025-01-01T00:00:00Z",
         },
       });
     });

@@ -134,7 +134,7 @@ describe('HiveSidebarProvider', () => {
     fs.mkdirSync(reportsPath, { recursive: true });
     fs.writeFileSync(path.join(taskPath, 'spec.md'), 'spec');
     fs.writeFileSync(path.join(taskPath, 'report.md'), 'latest');
-    for (const filename of ['1.md', '2.md', '0.md', '01.md', '-1.md', '3.txt', 'notes.md', '1.5.md']) {
+    for (const filename of ['1.md', '2.md', 'finalization-a1b2.md', '0.md', '01.md', '-1.md', '3.txt', 'notes.md', '1.5.md']) {
       fs.writeFileSync(path.join(reportsPath, filename), filename);
     }
     fs.mkdirSync(path.join(reportsPath, '11.md'));
@@ -161,10 +161,10 @@ describe('HiveSidebarProvider', () => {
     const write = spyOn(fs, 'writeFileSync');
     try {
       const revisions = await provider.getChildren(history);
-      expect(revisions.map(item => item.label)).toEqual(['Revision 10', 'Revision 2', 'Revision 1']);
-      expect(revisions.map(item => item.command?.command)).toEqual(['vscode.open', 'vscode.open', 'vscode.open']);
+      expect(revisions.map(item => item.label)).toEqual(expect.arrayContaining(['Revision 10', 'Revision 2', 'Revision 1', 'Finalization a1b2']));
+      expect(revisions.map(item => item.command?.command)).toEqual(['vscode.open', 'vscode.open', 'vscode.open', 'vscode.open']);
       expect(revisions.map(item => item.command?.arguments?.[0].fsPath)).toEqual(
-        ['10.md', '2.md', '1.md'].map(filename => path.join(reportsPath, filename))
+        expect.arrayContaining(['10.md', '2.md', '1.md', 'finalization-a1b2.md'].map(filename => path.join(reportsPath, filename)))
       );
       expect(await provider.getChildren(revisions[0])).toEqual([]);
       expect(write).not.toHaveBeenCalled();

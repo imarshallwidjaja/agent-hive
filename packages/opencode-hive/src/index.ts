@@ -2196,14 +2196,6 @@ const plugin: Plugin = async (ctx) => {
       standingConstraintEntries: constraintSnapshot?.entries,
       standingConstraintsRevision: constraintSnapshot?.revision,
     });
-    if (attempt.kind === 'task' && attempt.featureName && attempt.taskFolder && attempt.taskAttempt) {
-      taskService.associateExecutionSession(attempt.featureName, attempt.taskFolder, attempt.taskAttempt, {
-        sessionId: childSessionID,
-        agent: selectedAgent,
-        mode: 'delegate',
-        attempt: attempt.taskAttempt,
-      });
-    }
   };
 
   const observeTaskChildBinding = (binding: RuntimeTaskChildBinding): void => {
@@ -2858,7 +2850,31 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
 
     let preparationResourcePaths: string[];
     if (input.placement.kind === 'in_place') {
-      preparationResourcePaths = [fs.realpathSync(input.placement.directory!)];
+      const requestedDirectory = input.placement.directory;
+      if (!isNonBlankString(requestedDirectory) || !path.isAbsolute(requestedDirectory)) {
+        const classification = classifyWorktreeOutcome('INVALID_ARGUMENTS');
+        return respond({
+          success: false,
+          reason: 'invalid_placement_directory',
+          error: 'In-place placement requires an absolute path to an existing directory.',
+          ...worktreeOutcomeFields(classification),
+          nextAction: WORKTREE_RECOVERY_NEXT_ACTION[classification.action],
+        });
+      }
+      try {
+        const canonicalDirectory = fs.realpathSync(requestedDirectory);
+        if (!fs.statSync(canonicalDirectory).isDirectory()) throw new Error('not a directory');
+        preparationResourcePaths = [canonicalDirectory];
+      } catch {
+        const classification = classifyWorktreeOutcome('INVALID_ARGUMENTS');
+        return respond({
+          success: false,
+          reason: 'invalid_placement_directory',
+          error: `In-place placement directory does not exist or is not a directory: ${requestedDirectory}`,
+          ...worktreeOutcomeFields(classification),
+          nextAction: WORKTREE_RECOVERY_NEXT_ACTION[classification.action],
+        });
+      }
     } else if (scope.kind === 'task') {
       const existing = await worktreeService.get(scope.feature, scope.task);
       preparationResourcePaths = existing?.repos
@@ -5624,8 +5640,28 @@ NEXT: Ask your first clarifying question about this feature.`;
         async execute({ name }, toolContext) {
           const feature = resolveFeature(name, toolContext);
           if (!feature) return formatFeatureResolutionError('name', name);
-          featureService.complete(feature);
-          return `Feature "${feature}" marked as completed`;
+          const taskLocks = taskService.list(feature)
+            .map(task => scopeLockKey({ feature, task: task.folder })!);
+          return withIntegrationLock(taskLocks, async () => {
+            const unfinishedTasks = taskService.list(feature).filter(task => task.status !== 'done');
+            const unfinishedAttempts = executionAttemptService.listAttempts().filter(attempt =>
+              attempt.kind === 'task' && attempt.featureName === feature && attempt.phase !== 'finalized');
+            if (unfinishedTasks.length > 0 || unfinishedAttempts.length > 0) {
+              return respond({
+                success: false,
+                reason: 'feature_completion_blocked',
+                mutation: 'none',
+                feature,
+                unfinishedTasks: unfinishedTasks.map(task => ({ folder: task.folder, status: task.status })),
+                unfinishedAttempts: unfinishedAttempts.map(attempt => ({ attemptId: attempt.id, task: attempt.taskFolder, phase: attempt.phase })),
+                nextAction: unfinishedAttempts.some(attempt => attempt.phase === 'stopped')
+                  ? 'Finalize each stopped attempt from its originating primary with hive_execution_finish, re-check hive_status, and complete every task before retrying feature completion.'
+                  : 'Wait for exact stop evidence, finalize each attempt from its originating primary, re-check hive_status, and complete every task before retrying feature completion.',
+              });
+            }
+            featureService.complete(feature);
+            return `Feature "${feature}" marked as completed`;
+          });
         },
       }),
 
@@ -5886,12 +5922,26 @@ NEXT: Ask your first clarifying question about this feature.`;
                 : 'The in-place execution is finalized; no Git operation was performed.',
             });
           } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const invalidArguments = /must not be blank|does not accept a commit message|commit message is required|non-empty one-line subject/i.test(errorMessage);
+            if (invalidArguments) {
+              const classification = classifyWorktreeOutcome('INVALID_COMMIT_MESSAGE');
+              return respond({
+                success: false,
+                reason: 'invalid_finalization_arguments',
+                attemptId,
+                phase: executionAttemptService.getAttempt(attemptId)?.phase,
+                error: errorMessage,
+                ...worktreeOutcomeFields(classification),
+                nextAction: WORKTREE_RECOVERY_NEXT_ACTION[classification.action],
+              });
+            }
             return respond({
               success: false,
               reason: 'execution_finalization_failed',
               attemptId,
               phase: executionAttemptService.getAttempt(attemptId)?.phase,
-              error: error instanceof Error ? error.message : String(error),
+              error: errorMessage,
               nextAction: 'Inspect the durable finalization receipt and Git state, then retry the same immutable finalization input.',
             });
           }
@@ -6776,7 +6826,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               finalizedPlacementMatches,
               origin: t.origin || 'plan',
               dependsOn: rawStatus?.dependsOn ?? null,
-              ...(rawStatus?.workerSession?.sessionId ? { traceTaskId: rawStatus.workerSession.sessionId } : {}),
+              ...(executionAttempt?.native?.childSessionId ? { traceTaskId: executionAttempt.native.childSessionId } : {}),
               repoIds: t.repoIds ?? null,
               worktree: worktree ? {
                 branch: worktree.branch,

@@ -4,7 +4,6 @@ import {
   getTasksPath,
   getTaskPath,
   getTaskStatusPath,
-  getTaskReportPath,
   getTaskSpecPath,
   getSubtasksPath,
   getSubtaskPath,
@@ -16,10 +15,7 @@ import {
   readJson,
   writeJson,
   writeJsonAtomic,
-  writeAtomic,
   acquireLockSync,
-  patchJsonLockedSync,
-  deepMerge,
   readText,
   writeText,
   fileExists,
@@ -34,7 +30,6 @@ import {
   Subtask,
   SubtaskType,
   SubtaskStatus,
-  WorkerSession,
   ManualTaskMetadata,
   renderAggregateBranchDiff,
 } from '../types.js';
@@ -42,12 +37,6 @@ import { RepositoryService } from './repositoryService.js';
 
 /** Current schema version for TaskStatus */
 export const TASK_STATUS_SCHEMA_VERSION = 1;
-
-/** Fields that can be updated by background workers without clobbering completion-owned fields */
-export interface BackgroundPatchFields {
-  idempotencyKey?: string;
-  workerSession?: Partial<WorkerSession>;
-}
 
 /** Fields owned by the completion flow (not to be touched by background patches) */
 export interface CompletionFields {
@@ -59,7 +48,6 @@ export interface CompletionFields {
 export interface WorkerAttemptAllocation {
   status: TaskStatus;
   attempt: number;
-  idempotencyKey: string;
 }
 
 interface ParsedTask {
@@ -687,45 +675,6 @@ export class TaskService {
   }
 
   /**
-   * Patch only background-owned fields without clobbering completion-owned fields.
-   * Safe for concurrent use by background workers.
-   * 
-   * Uses deep merge for workerSession to allow partial updates like:
-   * - patchBackgroundFields(..., { workerSession: { lastHeartbeatAt: '...' } })
-   *   will update only lastHeartbeatAt, preserving other workerSession fields.
-   * 
-   * @param featureName - Feature name
-   * @param taskFolder - Task folder name
-   * @param patch - Background-owned fields to update
-   * @param lockOptions - Optional lock configuration
-   * @returns Updated TaskStatus
-   */
-  patchBackgroundFields(
-    featureName: string,
-    taskFolder: string,
-    patch: BackgroundPatchFields,
-    lockOptions?: LockOptions
-  ): TaskStatus {
-    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
-    
-    // Build the patch object, only including fields that are defined
-    const safePatch: Partial<TaskStatus> = {
-      schemaVersion: TASK_STATUS_SCHEMA_VERSION,
-    };
-    
-    if (patch.idempotencyKey !== undefined) {
-      safePatch.idempotencyKey = patch.idempotencyKey;
-    }
-    
-    if (patch.workerSession !== undefined) {
-      safePatch.workerSession = patch.workerSession as WorkerSession;
-    }
-    
-    // Use patchJsonLockedSync which does deep merge
-    return patchJsonLockedSync<TaskStatus>(statusPath, safePatch, lockOptions);
-  }
-
-  /**
    * Allocate the next worker attempt and clear any association from the prior attempt.
    */
   allocateWorkerAttempt(
@@ -745,48 +694,14 @@ export class TaskService {
         throw new Error(`Task '${taskFolder}' not found`);
       }
 
-      const attempt = (current.workerAttempt || current.workerSession?.attempt || 0) + 1;
-      const idempotencyKey = `hive-${featureName}-${taskFolder}-${attempt}`;
+      const attempt = (current.workerAttempt || 0) + 1;
       const status: TaskStatus = {
         ...current,
         schemaVersion: TASK_STATUS_SCHEMA_VERSION,
-        idempotencyKey,
         workerAttempt: attempt,
       };
-      delete status.workerSession;
       writeJsonAtomic(statusPath, status);
-      return { status, attempt, idempotencyKey };
-    } finally {
-      release();
-    }
-  }
-
-  /** Associate an authenticated native child with the current armed task generation. */
-  associateExecutionSession(
-    featureName: string,
-    taskFolder: string,
-    taskAttempt: number,
-    workerSession: WorkerSession,
-    lockOptions?: LockOptions,
-  ): TaskStatus {
-    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
-    if (!fileExists(statusPath)) throw new Error(`Task '${taskFolder}' not found`);
-    const release = acquireLockSync(statusPath, lockOptions);
-    try {
-      const current = readJson<TaskStatus>(statusPath);
-      if (!current || current.workerAttempt !== taskAttempt) {
-        throw new Error(`assignment_recovery_error: task generation ${taskAttempt} is not current`);
-      }
-      if (current.workerSession && current.workerSession.sessionId !== workerSession.sessionId) {
-        throw new Error('assignment_recovery_error: task generation is already associated with another session');
-      }
-      const updated: TaskStatus = {
-        ...current,
-        schemaVersion: TASK_STATUS_SCHEMA_VERSION,
-        workerSession,
-      };
-      writeJsonAtomic(statusPath, updated);
-      return updated;
+      return { status, attempt };
     } finally {
       release();
     }
@@ -822,70 +737,6 @@ export class TaskService {
     return folders
       .map(folder => this.get(featureName, folder))
       .filter((t): t is TaskInfo => t !== null);
-  }
-
-  writeReport(featureName: string, taskFolder: string, report: string): string {
-    return this.writeReportWithReference(featureName, taskFolder, report).reportPath;
-  }
-
-  writeReportWithReference(featureName: string, taskFolder: string, report: string): { reportPath: string; reportReference: string } {
-    const reportPath = getTaskReportPath(this.projectRoot, featureName, taskFolder);
-    const release = acquireLockSync(reportPath);
-    try {
-      const historyPath = `${getTaskPath(this.projectRoot, featureName, taskFolder)}/reports`;
-      ensureDir(historyPath);
-      const revisions = fs.readdirSync(historyPath).filter(name => /^\d+\.md$/.test(name));
-      let revision = Math.max(0, ...revisions.map(name => Number.parseInt(name, 10)));
-      // Preserve legacy bytes before the first replacement. A failed latest write
-      // may leave an extra historical copy; it must never destroy old evidence.
-      if (revision === 0 && fileExists(reportPath)) {
-        const legacyPath = `${historyPath}/1.md`;
-        const legacyDescriptor = fs.openSync(legacyPath, 'wx');
-        try {
-          fs.writeFileSync(legacyDescriptor, fs.readFileSync(reportPath));
-        } catch (error) {
-          fs.unlinkSync(legacyPath);
-          throw error;
-        } finally {
-          fs.closeSync(legacyDescriptor);
-        }
-        revision = 1;
-      }
-      const name = `${revision + 1}.md`;
-      const recent = [...revisions, ...(revision === 1 && revisions.length === 0 ? ['1.md'] : []), name]
-        .sort((a, b) => Number.parseInt(b, 10) - Number.parseInt(a, 10));
-      const navigation = [
-        '', '---', '', '## Report history', '',
-        'Historical worker handoff snapshot; not current task state, independent verification, or integration evidence.',
-        `Immutable report: [revision ${revision + 1}](reports/${name}).`,
-        `Recent revisions: ${recent.slice(0, 5).map(file => `[${file}](reports/${file})`).join(', ')}.`,
-        `History: [reports/](reports/) (${Math.max(0, recent.length - 5)} older revisions omitted).`,
-        '',
-      ].join('\n');
-      const content = report + navigation;
-      const immutablePath = `${historyPath}/${name}`;
-      // Exclusive creation prevents accidental replacement of historical evidence.
-      const descriptor = fs.openSync(immutablePath, 'wx');
-      try {
-        fs.writeFileSync(descriptor, report + navigation.replaceAll('](reports/)', '](./)').replaceAll('](reports/', ']('));
-      } catch (error) {
-        fs.unlinkSync(immutablePath);
-        throw error;
-      } finally {
-        fs.closeSync(descriptor);
-      }
-      writeAtomic(reportPath, content);
-      return { reportPath, reportReference: immutablePath };
-    } finally {
-      release();
-    }
-  }
-
-  getLatestReportReference(featureName: string, taskFolder: string): string | null {
-    const reportPath = getTaskReportPath(this.projectRoot, featureName, taskFolder);
-    const report = readText(reportPath);
-    const reference = report ? [...report.matchAll(/^Immutable report: \[revision \d+\]\(reports\/(\d+\.md)\)\.$/gm)].at(-1)?.[1] : undefined;
-    return reference ? `${getTaskPath(this.projectRoot, featureName, taskFolder)}/reports/${reference}` : null;
   }
 
   private listFolders(featureName: string): string[] {

@@ -74,7 +74,7 @@ Orchestrator owns final confidence, not every verification action. Workers and r
 
 ## Unresolved Lanes
 
-Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`; `hive_status` is not that surface. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not settle an ExecutionAttempt or release a worktree identity. A live claim blocks preparation, dispatch, `hive_execution_finish`, and managed discard/merge of that exact worktree identity. Treat installs, builds, formatters, generators, and tests as mutations. Unrelated worktrees may continue.
+Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`; `hive_status` is not that surface. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not settle an ExecutionAttempt or release a worktree identity. A live claim blocks preparation, dispatch, and managed discard/merge of that exact worktree identity. A stopped claim permits `hive_execution_finish` only from its originating primary and remains held until finalization succeeds. Treat installs, builds, formatters, generators, and tests as mutations. Unrelated worktrees may continue.
 
 ## Protocol
 
@@ -124,7 +124,7 @@ Retry while termination is unobserved cannot reuse that run; start a new ad-hoc 
 Gate-open Forager launch (background wait mode):
 
 ```ts
-hive_execution_prepare({
+const prepared = await hive_execution_prepare({
   scope: { kind: 'adhoc' },
   placement: { kind: 'worktree' },
 });

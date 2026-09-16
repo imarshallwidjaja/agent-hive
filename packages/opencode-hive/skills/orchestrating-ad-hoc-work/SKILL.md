@@ -64,7 +64,7 @@ Project summary can expose evidence names while durable-only `view: "catalog"` c
 
 Prepare only lanes whose handoffs are available, close to dispatch. Code dependencies normally require a verified, committed, integrated predecessor so the successor base contains the code. A report/decision dependency may use an inspected concrete handoff without a source revision.
 
-Parallel writers require distinct ad-hoc `runId`s and worktrees. Writes and fix passes within one run remain sequential and require a fresh `hive_execution_prepare` followed by an unchanged native Forager call after confirmed termination. If termination is uncertain, preserve that run and use a new run for overlapping work. Read-only Scout, advisor, and reviewer lanes need no artificial worktree; reviews target settled source state.
+Parallel writers require distinct ad-hoc `runId`s and worktrees. Writes and fix passes within one run remain sequential. After exact stop evidence, the originating primary calls `hive_execution_finish`, checks status, then uses a fresh `hive_execution_prepare` followed by an unchanged native Forager call. If termination is uncertain, preserve that run and use a new run for overlapping work. Read-only Scout, advisor, and reviewer lanes need no artificial worktree; reviews target settled source state.
 
 For each ready wave, emit all independent launches in the same assistant message. Blocking is a wait mode, not serial scheduling. Use `dispatching-parallel-agents` for launch mechanics and `background-delegation` when background wait mode is available. Retain exact returned identifiers, consume terminal handoffs, inspect worktree state/diffs, update the ledger, and prepare the next wave only when its handoffs and base revisions are ready.
 
