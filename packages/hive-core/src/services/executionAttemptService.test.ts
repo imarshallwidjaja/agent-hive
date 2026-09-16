@@ -196,7 +196,22 @@ describe('ExecutionAttemptService armed native attachment', () => {
     }).attempt.phase).toBe('armed');
   });
 
-  it('preserves accepted workspace identities after their attempt finalizes', () => {
+  it('ignores unrelated finalized attempt history when reserving cleanup', () => {
+    const identity = worktree('finalized-history');
+    const history = service.arm({
+      kind: 'adhoc',
+      runId: 'finalized-history',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [identity], workspacePath: identity },
+    }).attempt;
+    service.closeArmNotStarted(history.id);
+
+    const reservation = service.reserveWorkspaceCleanup([identity]);
+    expect(reservation.reserved).toBe(true);
+    if (reservation.reserved) service.releaseWorkspaceCleanup(reservation.reservation.id);
+  });
+
+  it('protects the exact captured winner when it finalizes before cleanup reservation', () => {
     const identity = worktree('finalized-winner');
     const winner = service.arm({
       kind: 'adhoc',
@@ -206,7 +221,7 @@ describe('ExecutionAttemptService armed native attachment', () => {
     }).attempt;
     service.closeArmNotStarted(winner.id);
 
-    expect(service.reserveWorkspaceCleanup([identity])).toEqual({
+    expect(service.reserveWorkspaceCleanup([identity], winner.id)).toEqual({
       reserved: false,
       claimedAttempt: expect.objectContaining({ id: winner.id, phase: 'finalized' }),
     });

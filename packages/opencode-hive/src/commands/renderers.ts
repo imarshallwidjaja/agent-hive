@@ -577,7 +577,8 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       doItems: [
         'Confirm parallel vs sequential execution strategy with the operator before proceeding.',
         'Use todos to track task progress and transitions.',
-        'Preserve hive_worktree_start -> worker execution -> hive_worktree_commit -> hive_merge; orchestrator does not call hive_worktree_commit for workers.',
+        'Call hive_execution_prepare with the exact scope and placement, then issue the next unchanged native Forager task() call.',
+        'For blocked continuation, set scope.continueFromBlocked: true only after recording the operator decision.',
         'Retry failed worker sessions in fresh workers with concise failure context.',
       ],
       doNotItems: [

@@ -219,10 +219,10 @@ describe('managed execution attachment', () => {
       }
       return originalArm.call(this, input);
     });
-    const reserve = spyOn(ExecutionAttemptService.prototype, 'reserveWorkspaceCleanup').mockImplementation(function (identities) {
+    const reserve = spyOn(ExecutionAttemptService.prototype, 'reserveWorkspaceCleanup').mockImplementation(function (identities, protectedAttemptId) {
       if (!winnerId) throw new Error('Expected injected winner');
       this.closeArmNotStarted(winnerId);
-      return originalReserve.call(this, identities);
+      return originalReserve.call(this, identities, protectedAttemptId);
     });
 
     try {

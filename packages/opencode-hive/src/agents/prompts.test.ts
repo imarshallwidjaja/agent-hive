@@ -1861,6 +1861,8 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       'hive_adhoc_worktree_create',
       'hive_adhoc_worktree_start',
       'continueFrom: "blocked"',
+      'pendingLaunches',
+      'attemptSlot',
     ];
     for (const [name, prompt] of [
       ['Hive', QUEEN_BEE_PROMPT],
@@ -1874,9 +1876,11 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       expect(prompt, name).not.toContain('hive_existing_workspace_start');
       for (const symbol of removed) expect(prompt, `${name}: ${symbol}`).not.toContain(symbol);
     }
-    expect(QUEEN_BEE_PROMPT).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(QUEEN_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
+    expect(QUEEN_BEE_PROMPT).toContain('preparation stays denied until supported lifecycle recovery establishes termination');
     expect(QUEEN_BEE_PROMPT).toContain('cannot reuse that run');
-    expect(SWARM_BEE_PROMPT).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(SWARM_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
+    expect(SWARM_BEE_PROMPT).toContain('preparation stays denied until supported lifecycle recovery establishes termination');
     expect(SWARM_BEE_PROMPT).toContain('cannot reuse that run');
     expect(HIVE_BUILDER_PROMPT).toContain('Retry after confirmed termination may reuse the same `runId` worktree');
     expect(HIVE_BUILDER_PROMPT).toContain('cannot reuse that run');

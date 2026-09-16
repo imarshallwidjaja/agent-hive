@@ -580,7 +580,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain(
       'hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })',
     );
-    expect(skill!.template).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(skill!.template).toContain('Attached or uncertain feature-task scopes remain quarantined');
+    expect(skill!.template).toContain('preparation stays denied until supported lifecycle recovery establishes termination');
     expect(skill!.template).toContain('cannot reuse that run');
   });
 
@@ -636,7 +637,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain(
       'hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })',
     );
-    expect(skill!.template).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(skill!.template).toContain('Attached or uncertain feature-task scopes remain quarantined');
     expect(skill!.template).toContain('cannot reuse that run');
   });
 
@@ -653,6 +654,8 @@ describe('skill content', () => {
       'hive_adhoc_worktree_create',
       'hive_adhoc_worktree_start',
       'continueFrom: "blocked"',
+      'pendingLaunches',
+      'attemptSlot',
     ];
 
     for (const name of ['background-delegation', 'dispatching-parallel-agents', 'executing-plans']) {
@@ -667,6 +670,30 @@ describe('skill content', () => {
       expect(skill!.template, name).toContain('Native helpers keep only their bounded operational permissions');
       expect(skill!.template, name).not.toContain('reserve the active root');
       for (const symbol of removed) expect(skill!.template, `${name}: ${symbol}`).not.toContain(symbol);
+    }
+  });
+
+  it('keeps every registered skill on the armed native attachment contract', () => {
+    const forbidden = [
+      'hive_worktree_start',
+      'hive_worktree_create',
+      'hive_adhoc_worktree_create',
+      'hive_adhoc_worktree_start',
+      'taskToolCall',
+      'backgroundTaskCall',
+      'hive_launch_id',
+      'workerInstructions',
+      'hive_capability_reason',
+      'continueFrom: "blocked"',
+      'pendingLaunches',
+      'launchId',
+      'attemptSlot',
+    ];
+
+    for (const skill of BUILTIN_SKILLS) {
+      for (const symbol of forbidden) {
+        expect(skill.template, `${skill.name}: ${symbol}`).not.toContain(symbol);
+      }
     }
   });
 
@@ -719,7 +746,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Isolated worktrees are the managed placement');
     expect(skill!.template).toContain('Unused arms expire after five minutes');
     expect(skill!.template).toContain('an unobserved ExecutionAttempt keeps a live claim on only that worktree');
-    expect(skill!.template).toContain('supersedes that task onto a fresh `attemptSlot` worktree');
+    expect(skill!.template).toContain('Attached or uncertain feature-task scopes remain quarantined');
     expect(skill!.template).toContain('cannot reuse that run');
     expect(skill!.template).not.toContain('binding-in-progress');
     expect(skill!.template).not.toContain('wait for the native correlation event');

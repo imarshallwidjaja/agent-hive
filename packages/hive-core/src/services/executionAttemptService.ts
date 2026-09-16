@@ -328,10 +328,14 @@ export class ExecutionAttemptService {
     this.withStore(store => this.assertWorkspacesIdleInStore(store, identities));
   }
 
-  reserveWorkspaceCleanup(workspaceIdentities: string[]): WorkspaceCleanupReservationResult {
+  reserveWorkspaceCleanup(
+    workspaceIdentities: string[],
+    protectedAttemptId?: string,
+  ): WorkspaceCleanupReservationResult {
     const identities = this.canonicalizeWorkspaceIdentities(workspaceIdentities);
     return this.withStore(store => {
       const claimedAttempt = store.attempts.find(attempt => attempt.placement.kind === 'worktree'
+        && (attempt.phase !== 'finalized' || attempt.id === protectedAttemptId)
         && identitiesIntersect(attempt.placement.workspaceIdentities, identities));
       if (claimedAttempt) {
         return { reserved: false, claimedAttempt: structuredClone(claimedAttempt) };

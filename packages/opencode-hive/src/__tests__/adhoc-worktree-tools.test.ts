@@ -186,7 +186,7 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     }).get('owned-scope')).toBeNull();
   });
 
-  it('removes a newly created ad-hoc placement when another primary wins the arm race', async () => {
+  it('removes a newly created rejected placement despite unrelated finalized history', async () => {
     initGit(TEST_ROOT);
     const liveDirectory = path.join(TEST_ROOT, 'live');
     fs.mkdirSync(liveDirectory);
@@ -198,6 +198,13 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     const arm = spyOn(ExecutionAttemptService.prototype, 'arm').mockImplementation(function (input) {
       if (!injected && input.originatingPrimarySession === 'primary-race-loser') {
         injected = true;
+        const history = originalArm.call(this, {
+          kind: 'adhoc',
+          runId: 'unrelated-history',
+          originatingPrimarySession: 'primary-history',
+          placement: input.placement,
+        }).attempt;
+        this.closeArmNotStarted(history.id);
         originalArm.call(this, {
           kind: 'adhoc',
           runId: 'race-cleanup',
@@ -217,12 +224,17 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       expect(execSync('git branch --format="%(refname:short)"', { cwd: TEST_ROOT, encoding: 'utf8' })).toBe(branchesBefore);
       expect(execSync('git worktree list --porcelain', { cwd: TEST_ROOT, encoding: 'utf8' })).toBe(worktreesBefore);
       const attempts = JSON.parse(fs.readFileSync(path.join(TEST_ROOT, '.hive', 'execution-attempts.json'), 'utf8')).attempts;
-      expect(attempts).toHaveLength(1);
-      expect(attempts[0]).toMatchObject({
+      expect(attempts).toHaveLength(2);
+      expect(attempts).toContainEqual(expect.objectContaining({
         originatingPrimarySession: 'primary-race-winner',
         placement: { kind: 'in_place', directory: fs.realpathSync(liveDirectory) },
         phase: 'armed',
-      });
+      }));
+      expect(attempts).toContainEqual(expect.objectContaining({
+        originatingPrimarySession: 'primary-history',
+        phase: 'finalized',
+        observedOutcome: 'not_started',
+      }));
     } finally {
       arm.mockRestore();
     }
@@ -242,10 +254,10 @@ describe('hive_execution_prepare ad-hoc placement', () => {
       }
       return originalArm.call(this, input);
     });
-    const reserve = spyOn(ExecutionAttemptService.prototype, 'reserveWorkspaceCleanup').mockImplementation(function (identities) {
+    const reserve = spyOn(ExecutionAttemptService.prototype, 'reserveWorkspaceCleanup').mockImplementation(function (identities, protectedAttemptId) {
       if (!winnerId) throw new Error('Expected injected winner');
       this.closeArmNotStarted(winnerId);
-      return originalReserve.call(this, identities);
+      return originalReserve.call(this, identities, protectedAttemptId);
     });
     try {
       const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({

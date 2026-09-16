@@ -268,6 +268,35 @@ describe('hive command renderers', () => {
     }
   });
 
+  it('keeps every active command rendering on the armed native attachment contract', () => {
+    const forbidden = [
+      'hive_worktree_start',
+      'hive_worktree_create',
+      'hive_adhoc_worktree_create',
+      'hive_adhoc_worktree_start',
+      'taskToolCall',
+      'backgroundTaskCall',
+      'hive_launch_id',
+      'workerInstructions',
+      'hive_capability_reason',
+      'continueFrom: "blocked"',
+      'pendingLaunches',
+      'launchId',
+    ];
+    const contexts = [createContext(), createContext({ backgroundGuidance: { available: true } })];
+
+    for (const command of HIVE_COMMANDS) {
+      for (const context of contexts) {
+        for (const args of ['', 'Investigate the flaky restore path']) {
+          const output = render(command.key, args, context);
+          for (const symbol of forbidden) {
+            expect(output, `${command.key}: ${symbol}`).not.toContain(symbol);
+          }
+        }
+      }
+    }
+  });
+
   it('keeps gate-closed command text free of background orchestration protocol terms', () => {
     const forbidden = [
       'task({ background: true',
@@ -490,14 +519,15 @@ describe('hive command renderers', () => {
     expect(output).toContain('avoid generic advice');
   });
 
-  it('anchors start-execution: confirm strategy and worker commit boundary', () => {
+  it('anchors start-execution: confirm strategy and armed native attachment boundary', () => {
     const output = render('start-execution', '');
     expect(output).toMatch(/parallel|sequential/i);
-    expect(output).toContain('hive_worktree_commit');
-    expect(output).toContain('orchestrator must not call `hive_worktree_commit`');
+    expect(output).toContain('hive_execution_prepare');
+    expect(output).toContain('unchanged native Forager');
+    expect(output).toContain('scope.continueFromBlocked: true');
+    expect(output).toContain('must not finalize a worker\'s handoff on its behalf');
     expect(output).toContain('Work autonomously through the tasks');
     expect(output).toContain('salvageable');
-    expect(output).toContain('hive_worktree_start');
     expect(output).toContain('hive_merge');
     expect(output).toContain('todo list');
     expect(output).toContain('Default to `strategy: "squash"`');
@@ -506,7 +536,7 @@ describe('hive command renderers', () => {
     expect(output).toContain('subject, a blank line, and a descriptive body');
     expect(output).not.toContain('Prefer `strategy: "rebase"`');
     expect(output).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
-    expect(output).toContain('new worker session in the same worktree');
+    expect(output).toContain('new unchanged native Forager `task()` call in the same worktree');
     expect(output).toContain('concise self-contained handoff');
     expect(output).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
   });

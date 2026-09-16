@@ -2943,7 +2943,10 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       });
     } catch (error) {
       if (cleanupCreatedPlacement && placement.kind === 'worktree') {
-        const cleanupReservation = executionAttemptService.reserveWorkspaceCleanup(placement.workspaceIdentities);
+        const cleanupReservation = executionAttemptService.reserveWorkspaceCleanup(
+          placement.workspaceIdentities,
+          error instanceof ExecutionScopeConflictError ? error.attempt.id : undefined,
+        );
         if (cleanupReservation.reserved) {
           try {
             const cleanupOutcome = await cleanupCreatedPlacement();
