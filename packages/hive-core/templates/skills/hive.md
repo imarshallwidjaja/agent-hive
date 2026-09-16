@@ -255,10 +255,14 @@ hive_tasks_sync()
 ### Execute Each Task
 
 ```
-const prepared = JSON.parse(await hive_worktree_start({ task: "01-task-name" }))
-task({ ...prepared.taskToolCall })  // Preserve hive_launch_id from the returned payload
+hive_execution_prepare({ scope: { kind: "task", task: "01-task-name" }, placement: { kind: "worktree" } })
+task({
+  subagent_type: "forager-worker",
+  description: "Implement 01-task-name",
+  prompt: "Primary-authored objective, evidence, constraints, and checks"
+})
   ↓
-[Worker implements in worktree]
+[Worker implements in worktree and returns one terminal handoff]
   ↓
 hive_execution_finish({ attemptId, status: "completed", summary, message })
   ↓
@@ -286,10 +290,10 @@ When multiple tasks have their dependencies satisfied (runnable), the orchestrat
 Independent tasks may be prepared and dispatched under one parent. The same feature task stays serial until native terminal evidence.
 
 ```
-const a = JSON.parse(await hive_worktree_start({ task: "02-task-a" }))
-const b = JSON.parse(await hive_worktree_start({ task: "03-task-b" }))
-task({ ...a.taskToolCall })
-task({ ...b.taskToolCall })
+hive_execution_prepare({ scope: { kind: "task", task: "02-task-a" }, placement: { kind: "worktree" } })
+task({ subagent_type: "forager-worker", description: "Implement 02-task-a", prompt: "Primary-authored packet for 02-task-a" })
+hive_execution_prepare({ scope: { kind: "task", task: "03-task-b" }, placement: { kind: "worktree" } })
+task({ subagent_type: "forager-worker", description: "Implement 03-task-b", prompt: "Primary-authored packet for 03-task-b" })
 hive_status()  // Monitor all
 ```
 
@@ -303,7 +307,7 @@ When worker returns `status: 'blocked'`:
 
 1. `hive_status()` - get details
 2. Ask user via question tool
-3. Continue the blocked task in its existing worktree with a fresh worker session: `hive_worktree_create({ task, continueFrom: "blocked", decision: "..." })`
+3. Continue the blocked task in its existing worktree with a fresh worker session: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement: { kind: "worktree" } })`, then an unchanged native Forager `task()` whose prompt includes the operator decision
 
 ### Plan Gap Detected
 
@@ -342,8 +346,7 @@ If "Revise Plan":
 | Plan | `hive_plan_read` | Check comments |
 | Plan | `hive_plan_approve` | Approve plan |
 | Execute | `hive_tasks_sync` | Generate tasks |
-| Execute | `hive_worktree_start` | Spawn worker for normal starts |
-| Execute | `hive_worktree_create` | Launch a fresh worker for a blocked task in its existing worktree |
+| Execute | `hive_execution_prepare` | Arm the next Forager dispatch |
 | Finalize | `hive_execution_finish` | Persist primary disposition and release execution |
 | Execute | `hive_worktree_discard` | Discard task |
 | Execute | `hive_merge` | Integrate task |
@@ -375,7 +378,7 @@ If "Revise Plan":
 
 ### Task Failed
 ```
-hive_worktree_start({ task })  # Reuse the worktree; fresh assignment. Do not discard failed work by default.
+hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "worktree" } })  # Reuse the worktree; fresh arm. Do not discard failed work by default.
 ```
 
 ### After 3 Failures

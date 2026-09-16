@@ -165,7 +165,7 @@ Determine whether the plan and tasks can be executed effectively in parallel or 
 
 Stop to clarify or ask questions only when a real decision or blocker requires it. Use \`hive_status\` and the \`question\` tool for blockers. For blocked continuation, call \`hive_execution_prepare\` with \`scope.continueFromBlocked: true\` after recording the operator's decision, then issue a new unchanged native Forager \`task()\` call in the same worktree.
 
-Preserve execution flow: \`hive_execution_prepare\` → unchanged native Forager \`task()\` call → worker terminal handoff → orchestrator \`hive_merge\`. The orchestrator must not finalize a worker's handoff on its behalf.
+Preserve execution flow: \`hive_execution_prepare\` → unchanged native Forager \`task()\` call → structured stop → originating-primary \`hive_execution_finish\` → \`hive_merge\`. Worker prose is report input, not stop evidence or finalization.
 
 Each native \`task()\` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. Never pass \`task_id\` to \`task()\`; returned task IDs are observe-only board handles. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated \`architect-planner\` may launch one level of read-only planning helpers; those children cannot delegate.
 

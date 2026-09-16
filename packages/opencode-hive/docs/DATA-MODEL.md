@@ -30,7 +30,6 @@
             └── {NN-task-name}/
                 ├── status.json  # Task state + metadata
                 ├── spec.md      # Task context and requirements
-                ├── worker-prompt.md # Full worker prompt (generated)
                 └── report.md    # Execution summary and results
 
 .hive/.worktrees/              # Isolated git worktrees
@@ -47,21 +46,21 @@ Single-repo projects use the git root directly; multi-repo topology, when needed
 
 ## Execution attempts and live claims
 
-`.hive/execution-attempts.json` stores **ExecutionAttempt** history. An ExecutionAttempt is the dispatch and recovery record for a managed feature-task or ad-hoc launch. Its lifecycle is `prepared` -> `dispatched` -> `settled`. A record holds the attempt id, task or ad-hoc run identity, originating primary session, immutable assignment reference, exact workspace identity, optional `attemptSlot` for feature-task worktrees, branch and base commit where applicable, dispatch state, optional native child session ID, observed outcome, and report or result references.
+`.hive/execution-attempts.json` stores **ExecutionAttempt** history. An ExecutionAttempt is the dispatch and recovery record for a managed feature-task or ad-hoc launch. Its lifecycle is `armed` -> `attached` -> `stopped` -> `finalized`. A record holds the attempt id, task or ad-hoc run identity, originating primary session, discriminated `worktree | in_place` placement, exact workspace identity for worktree claims, optional `attemptSlot` for feature-task worktrees, branch and base commit where applicable, parent/call/child identities, stop evidence, and finalization receipts.
 
-A **live claim** maps exact workspace identity to the active attempt ID. Composite claims cover the explicit registered worktree set. Two executions conflict when those identity sets intersect. One exact registered workspace may have only one managed writer at a time.
+A **live claim** maps exact worktree identity to the active attempt ID. In-place placement creates no exclusive filesystem claim. Composite claims cover the explicit registered worktree set. Two executions conflict when those identity sets intersect. One exact registered worktree may have only one managed writer at a time.
 
-Persisted history is not proof that an execution is still alive. After restart, unsettled attempts become **unobserved** and only those workspaces are quarantined. Unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
+Persisted history is not proof that an execution is still alive. After restart, unattached arms close as `not_started` because no native call could have crossed the durable attachment boundary; attached attempts remain quarantined until exact stop evidence arrives. Unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
 
 Feature-task retries record an optional `attemptSlot`. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
 
 `.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It is not an ownership registry. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace.
 
-One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory` on `.hive/execution-attempts.json`. Exact worktree-path, non-placeholder, non-capability leases become unobserved dispatched ExecutionAttempt claims once. This is not an ongoing second admission API. After migration, `sessions.json` does not keep `nativeTaskLeases` as a live sibling.
+One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory` on `.hive/execution-attempts.json`. Exact worktree-path, non-placeholder, non-capability leases become unobserved attached ExecutionAttempt claims once. This is not an ongoing second admission API. After migration, `sessions.json` does not keep `nativeTaskLeases` as a live sibling.
 
 ## Prompt Files
 
-`hive_execution_prepare` records scope and placement. The native before-hook appends authenticated execution scope and the dispatch-time standing-constraint snapshot to the caller-authored prompt.
+`hive_execution_prepare` records scope and placement and returns lifecycle facts only. The primary authors the native Forager prompt. The native before-hook appends authenticated execution scope and the dispatch-time standing-constraint snapshot to the caller-authored prompt without replacing it. Standing constraints are operator directives, not tool permissions.
 
 ## Reserved Overview Convention
 
@@ -345,7 +344,7 @@ Canonical session bindings live in project `.hive/sessions.json`. Feature-local 
 
 `standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
 
-Task `status.json` keeps append-only `workerAttempts` records for allocated, published, associated, and publication-failed attempts. `workerAssignment` selects the current published descriptor; `worker-prompt.md` is not evidence. A duplicate gets its own session ID plus `assignmentSourceSessionId`, while the source descriptor and task association stay unchanged.
+Task `status.json` records current execution identity from preparation and finalized disposition from `hive_execution_finish`. Historical assignment descriptors remain evidence, not active instructions. A duplicate session gets its own session ID plus `assignmentSourceSessionId`, while the source descriptor and task association stay unchanged.
 
 Every catalog delivery and compaction replay revalidates the current runtime root and descriptor. Root relocation, legacy prompt shape, or any exact identity/hash mismatch fails explicitly. Recovery creates a fresh attempt and child at the newly trusted root; it never edits old session or assignment records in place.
 

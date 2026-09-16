@@ -23,7 +23,6 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 │           └── {task}/
 │               ├── status.json      <- Task state (repoIds, baseCommits for manifest-backed tasks)
 │               ├── spec.md          <- Task context and requirements
-│               ├── worker-prompt.md <- Full worker prompt
 │               └── report.md        <- Execution summary and results
 ├── .worktrees/           <- Isolated git worktrees per task
 │   └── {feature}/{task}/ <- Composite root (manifest-backed) or single git worktree (legacy)
@@ -42,7 +41,7 @@ packages/
 
 Hive admits one managed writer per exact registered worktree identity. Multiple primary sessions in one project may run concurrently on independent worktrees. Two executions conflict when their exact registered worktree identity sets intersect. A composite claim covers the explicit registered worktree set. Generic ancestor or descendant filesystem containment is not the conflict model, so the project root does not overlap every worktree merely because it is an ancestor path. Declared file ownership is not a concurrency guarantee.
 
-An **ExecutionAttempt** is the dispatch and recovery record (`prepared` -> `dispatched` -> `settled`). Persist attempt history in `.hive/execution-attempts.json`. A **live claim** maps exact workspace identity to the active attempt ID. Persisted history is not proof that an execution is still alive. After restart, unsettled attempts become **unobserved** and only those workspaces are quarantined.
+An **ExecutionAttempt** is the dispatch and recovery record (`armed` -> `attached` -> `stopped` -> `finalized`). Persist attempt history in `.hive/execution-attempts.json`. A **live claim** maps exact worktree identity to the active attempt ID. In-place placement records an existing directory for scope only and creates no exclusive filesystem claim. Persisted history is not proof that an execution is still alive. After restart, unattached arms close as `not_started`; attached attempts remain quarantined until exact stop evidence arrives.
 
 When native execution is unobserved or unavailable, only the affected worktree is quarantined; unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
 
@@ -50,9 +49,9 @@ An **integration lock** is operation-scoped: source worktree, destination checko
 
 `hive_existing_workspace_start` is unavailable. Isolated worktrees are the managed placement. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement. The native `general` or helper exception is not a replacement placement.
 
-The background board is observational bookkeeping. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace. `launchId` is a one-time dispatch selector. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation. `NativeTaskLease` values are diagnostic history after one-shot migration onto `nativeTaskLeaseHistory`; they are not scheduling authority.
+The background board is observational bookkeeping. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace. A parent may hold only one undispatched Forager arm. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation. `NativeTaskLease` values are diagnostic history after one-shot migration onto `nativeTaskLeaseHistory`; they are not scheduling authority.
 
-Cancellation is owner-scoped. Another primary must not automatically terminate another primary's child. Cancel acknowledgement is not proof of termination; live claims remain until termination is observed. Cleanup and archival never imply execution cancellation. Worker-side `hive_worktree_commit` remains for managed feature tasks and is authorized by the live attempt association.
+Cancellation is owner-scoped. Another primary must not automatically terminate another primary's child. Cancel acknowledgement is not proof of termination; live claims remain until termination is observed. Cleanup and archival never imply execution cancellation. Workers return one terminal handoff; the originating primary calls `hive_execution_finish` after exact structured stop evidence.
 
 Cross-process process supervision, exactly-once execution across independent OpenCode processes, automatic crash takeover, and distributed locking are unsupported. Independent OpenCode runtimes sharing a project do not get a complete exclusivity promise. Review-workspace claim and cleanup remain a separate security boundary.
 
@@ -63,16 +62,15 @@ Cross-process process supervision, exactly-once execution across independent Ope
 3. User reviews `plan.md` and adds comments there
 4. User approves via `hive_plan_approve`
 5. Tasks synced via `hive_tasks_sync` (generates spec.md for each)
-6. Each task executed via `hive_worktree_start` -> work -> `hive_worktree_commit`
-7. Changes applied from worktree to main repo
-8. Report generated with diff stats and file list
+6. Each task executed via `hive_execution_prepare` -> unchanged native Forager `task()` -> structured stop -> `hive_execution_finish`
+7. Changes applied from a finalized worktree to the destination checkout with `hive_merge`
+8. Report written as an immutable finalization receipt
 
 ## Prompt Management
 
 - `spec.md` contains the fixed task contract: the matching plan section, manual task requirements, dependencies, and bounded completed-task summaries. Supporting context bodies are not copied into it.
-- A launch allocates an attempt before rendering, then exclusively publishes `.hive/features/<feature>/tasks/<task>/assignments/attempt-<n>.md`. `status.json` stores its format, canonical root, feature, task, attempt, relative locator, and raw-byte SHA-256.
-- `worker-prompt.md` is only a latest-pointer navigation aid. Launch, association, recovery, and commit checks use the exact attempt descriptor, never that mutable pointer.
-- Before native dispatch, Hive reads and hashes the attempt artifact, then replaces the locator reference with those verified bytes. Association validates the artifact again. Compaction replays the bytes returned by validation without a second file read.
+- The primary authors the native Forager `description`, `prompt`, `subagent_type`, and optional `background`. Preparation does not generate, freeze, or replace those fields.
+- The native before-hook appends a factual `## Hive execution scope` footer and the dispatch-time `## Standing Constraints (operator, session-wide)` snapshot without replacing caller prompt bytes. Standing constraints are operator directives, not tool permissions.
 - Live project and feature catalogs are delivered separately as untrusted metadata under one 8 KiB automatic budget. Catalog continuations and current storage errors remain explicit; supporting document bodies require `hive_context_read`.
 - Catalog refresh removes only the plugin-owned synthetic user message with matching session, message, and part identities. Marker-prefixed user or assistant text is preserved.
 - Completed-task history retains the 10-task and 2000-character summary budgets. Supporting-context prompt budgets were removed with eager body injection.
@@ -200,7 +198,7 @@ Contains execution results:
 
 Each task executes in an isolated workspace under `.hive/.worktrees/{feature}/{task}/`. In legacy mode that path is a single git worktree. In manifest-backed mode that path is a composite workspace, with one git worktree per declared repo under `repos/<repoId>/`.
 
-Agents edit only the task workspace. `hive_worktree_commit` collects the task diff and is authorized by the live attempt association. `hive_worktree_discard` removes the workspace without applying changes, and is refused while that worktree has a live or unobserved claim.
+Agents edit only the selected workspace. For worktree placement, `hive_execution_finish` collects the task diff after exact stop evidence. In-place placement records disposition only and never runs Git. `hive_worktree_discard` removes a worktree without applying changes, and is refused while that worktree has a live or unobserved claim.
 
 ### Multi-Repo Composite Workspaces
 
@@ -228,7 +226,7 @@ When `.hive/repositories.json` defines project repositories, tasks with a `Repos
 - Repository manifests are read from `<canonical-project-root>/.hive/repositories.json`
 - Repository paths are relative to the project root and must stay inside it
 - Matching legacy `repositoryRoot`/`repositories` global data is migration-only and is copied on explicit update, never during status or startup
-- A non-git project root without a matching manifest fails worktree/commit/merge tools with a manifest-required error
+- A non-git project root without a matching manifest fails worktree placement, finish, and merge with a manifest-required error. In-place placement still requires an explicit existing directory and never invents Git semantics.
 
 **Manifest management tools:**
 - `hive_repositories_status` reports whether the project is using a manifest, legacy single-root mode, or is missing a required manifest
@@ -289,13 +287,11 @@ Hive uses file-based state with clear ownership boundaries:
 |------|-------|--------------| 
 | `feature.json` | Primary agent | VS Code (read-only) |
 | `tasks.json` | Primary agent | VS Code (read-only) |
-| `status.json` (task) | Worker | Primary agent (read), Poller (read-only) |
+| `status.json` (task) | Originating primary via `hive_execution_finish` | Worker (read), Poller (read-only) |
 | `plan.md` | Primary agent | VS Code (read + comment, execution source of truth) |
 | `comments/plan.json` | VS Code | Primary agent (read-only) |
-| `spec.md` | `hive_worktree_start` / `hive_worktree_create` | Worker (read-only) |
-| `assignments/attempt-<n>.md` | Launch publication | Worker (read-only, immutable) |
-| `worker-prompt.md` | Launch publication | All (latest-pointer navigation only) |
-| `report.md` | Worker | All (read-only) |
+| `spec.md` | `hive_execution_prepare` | Worker (read-only) |
+| `report.md` | Originating primary via `hive_execution_finish` | All (read-only) |
 | `BLOCKED` | Operator | All (read-only, blocks operations) |
 
 ### Poller Constraints
@@ -311,20 +307,18 @@ Task `status.json` fields and who writes them:
 
 | Field | Written By | When |
 |-------|-----------|------|
-| `status` | Worker via `hive_worktree_commit` | On completion/block |
+| `status` | Originating primary via `hive_execution_finish` | On finalized disposition |
 | `origin` | `hive_tasks_sync` | On task creation |
 | `planTitle` | `hive_tasks_sync` | On task creation |
-| `summary` | Worker via `hive_worktree_commit` | On completion |
-| `startedAt` | `hive_worktree_start` / `hive_worktree_create` | On task start/resume |
-| `completedAt` | `hive_worktree_commit` | On completion |
-| `baseCommit` | `hive_worktree_start` / `hive_worktree_create` | On worktree creation/resume (legacy; first repo HEAD) |
-| `baseCommits` | `hive_worktree_start` / `hive_worktree_create` | On composite worktree creation/resume (per-repo) |
+| `summary` | Originating primary via `hive_execution_finish` | On finalized disposition |
+| `startedAt` | `hive_execution_prepare` | On arming/resume |
+| `completedAt` | `hive_execution_finish` | On finalized completion |
+| `baseCommit` | `hive_execution_prepare` | On worktree creation/resume (legacy; first repo HEAD) |
+| `baseCommits` | `hive_execution_prepare` | On composite worktree creation/resume (per-repo) |
 | `repoIds` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
-| `blocker` | Worker via `hive_worktree_commit` | When blocked |
+| `blocker` | Originating primary via `hive_execution_finish` | When blocked disposition is recorded |
 | `dependsOn` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
 | `metadata` | `hive_task_create` | On structured manual task creation |
-| `workerAttempt` / `workerAttempts` | `hive_worktree_start` / `hive_worktree_create` | Allocation, publication, association, or publication failure |
-| `workerAssignment` | Launch publication | Exact immutable assignment descriptor |
 
 ### Reused worktree integrity
 
@@ -348,10 +342,9 @@ These operations have side effects:
 - `hive_tasks_sync` - Reconciles plan-backed tasks; `refreshPending: true` rewrites pending plan tasks from `plan.md`, updates `planTitle` / `dependsOn`, regenerates `spec.md`, and removes pending plan tasks deleted from the plan while preserving manual tasks and execution history
 - `hive_task_create` - Creates a manual task with explicit `dependsOn` and optional structured metadata
 - `hive_task_update` - Mutates task status/summary and is not a retry-safe read
-- `hive_worktree_start` - Creates worktree for normal start
-- `hive_worktree_create` - Resumes blocked task in existing worktree
-- `hive_worktree_commit` - Commits changes, writes report (once per completion)
-- `hive_merge` - Merges branch (fails if already merged)
+- `hive_execution_prepare` - Arms one next Forager dispatch and may create or reuse placement
+- `hive_execution_finish` - Checkpointed Git/report/disposition finalization after exact stop evidence
+- `hive_merge` - Merges a finalized completed branch (fails if already merged)
 
 ### Manual task model
 

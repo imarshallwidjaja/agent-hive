@@ -258,7 +258,7 @@ Use \`hive_status()\` to see **runnable** tasks (dependencies satisfied) and **b
 hive_execution_prepare({ scope: { kind: "task", task: "01-task-name" }, placement: { kind: "worktree" } })
 \`\`\`
 
-Every Forager lane, including report-only diagnosis, requires one armed execution. Call \`hive_execution_prepare\` with the exact task or ad-hoc scope and placement, then issue the next native \`task()\` call unchanged with a Forager or Forager-derived agent. The runtime attaches that call to the armed execution and appends the canonical execution scope to its prompt. Direct checkout work is unmanaged OpenCode work, not a Hive placement.
+Every Forager lane, including report-only diagnosis, requires one armed execution. Call \`hive_execution_prepare\` with the exact task or ad-hoc scope and \`worktree\` or \`in_place\` placement, then issue the next native \`task()\` call unchanged with a Forager or Forager-derived agent. The primary authors that prompt. The runtime attaches that call to the armed execution and appends the canonical execution scope plus the dispatch-time standing-constraint snapshot. Worktree placement holds an exclusive Git claim through \`stopped\`; in-place placement is cooperative live editing with no isolation, rollback, commit, or merge. Direct checkout work is unmanaged OpenCode work, not a Hive placement.
 
 Use Forager or a Forager-derived custom worker for delegated execution. General is exceptional: an ordinary \`task()\` call that consumes no arm and gains no Hive claim, managed context, or lifecycle authority. State the required capability unavailable in those lanes before dispatch. Native helpers keep only their bounded operational permissions. Helper and general calls use a runtime-local parent/call/child bind for Hive-tool authentication; they do not take a live claim on a worktree or the project root.
 
@@ -266,15 +266,16 @@ One managed writer per exact registered worktree identity. Parallel writes requi
 
 ### After Delegation
 1. \`task()\` is blocking by default — when it returns, the worker is done. If a task was explicitly launched in background mode, wait for the native completion notification and refresh \`hive_background_status\` before dependent decisions instead of applying the blocking-return rule.
-2. After \`task()\` returns, immediately call \`hive_status()\` to check the new task state and find next runnable tasks before any blocked-continuation launch
-3. Use \`scope.continueFromBlocked\` only when status is exactly \`blocked\`
-4. Before every blocked-continuation launch, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
-5. If status is not \`blocked\`, omit \`scope.continueFromBlocked\` and use \`hive_execution_prepare\` only for normal starts (\`pending\` / \`in_progress\`)
-6. Never loop \`scope.continueFromBlocked\` on non-blocked statuses
-7. If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
+2. After exact structured stop evidence, the originating primary calls \`hive_execution_finish\` with the attemptId, disposition, summary, and a worktree commit message when Git changes exist. In-place and blocked finalization skip Git. Worker prose is report input, not stop evidence.
+3. After \`task()\` returns, immediately call \`hive_status()\` to check the new task state and find next runnable tasks before any blocked-continuation launch
+4. Use \`scope.continueFromBlocked\` only when status is exactly \`blocked\`
+5. Before every blocked-continuation launch, call \`hive_status()\` immediately beforehand and verify the task is still exactly \`blocked\`
+6. If status is not \`blocked\`, omit \`scope.continueFromBlocked\` and use \`hive_execution_prepare\` only for normal starts (\`pending\` / \`in_progress\`)
+7. Never loop \`scope.continueFromBlocked\` on non-blocked statuses
+8. If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
    - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
-8. If task status is blocked: read blocker info → \`question()\` → user decision → call \`hive_execution_prepare\` with \`scope.continueFromBlocked: true\` and dispatch a new unchanged native Forager call in the same worktree
-9. Do not poll normal blocking \`task()\` calls — the result is available when \`task()\` returns. For explicitly launched background tasks, wait for native completion notification and refresh the board before dependent decisions.
+9. If task status is blocked: read blocker info → \`question()\` → user decision → call \`hive_execution_prepare\` with \`scope.continueFromBlocked: true\` and dispatch a new unchanged native Forager call in the same worktree
+10. Do not poll normal blocking \`task()\` calls — the result is available when \`task()\` returns. For explicitly launched background tasks, wait for native completion notification and refresh the board before dependent decisions.
 
 ### Batch Merge + Verify Workflow
 When multiple tasks are in flight, prefer **batch completion** over per-task verification:

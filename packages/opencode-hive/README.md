@@ -325,7 +325,7 @@ Primary orchestrators can inspect any explicitly identified native OpenCode sess
 
 #### Repeated blocked-continuation errors / loop
 
-If you see repeated retries around `continueFrom: "blocked"`, use this protocol. That tool launches a new worker session in the same worktree; it does not continue the previous session:
+If you see repeated retries around blocked continuation, use this protocol. Blocked continuation launches a new worker session in the same worktree; it does not continue the previous session:
 
 1. Call `hive_status()` first.
 2. If status is `pending` or `in_progress`, call `hive_execution_prepare` for the task.
@@ -351,7 +351,7 @@ For normal usage, set the OpenCode plugin entry to `"oc-arkive@latest"`. Keep a 
 
 ### Task worker recovery
 
-After session compaction, task workers receive their hash-verified immutable assignment again. Hive validates the canonical runtime root, exact task attempt, recipient provenance, locator, format, and SHA-256 before replay, then refreshes live project and feature catalogs separately. `worker-prompt.md` is a latest-pointer aid and is never recovery evidence. Primary and subagent sessions replay the stored user directive once, then escalate if needed.
+After session compaction in the same authenticated runtime, an armed or attached execution is preserved. Plugin restart closes every unattached arm as `not_started`; attached attempts remain quarantined until exact stop evidence arrives. Live project and feature catalogs refresh separately as untrusted metadata. Primary and subagent sessions replay the stored user directive once, then escalate if needed.
 
 Moving a project root intentionally breaks old task and ad-hoc continuation. Hive never follows the stored former root, migrates it, aliases it, or edits historical bindings. At the new trusted root, an authenticated primary prepares a valid worktree and launches a fresh task attempt/assignment/child, or creates a fresh authenticated ad-hoc run. Old sessions and artifacts remain historical.
 
@@ -381,11 +381,9 @@ Long task summaries use explicit `...[truncated]` markers and report paths. Cata
 
 ### Prompt Files
 
-Each launch exclusively publishes `.hive/features/<feature>/tasks/<task>/assignments/attempt-<n>.md` and passes that exact locator as `workerPromptPath`. `status.json` stores the immutable descriptor and raw-byte SHA-256. Interrupted or colliding publication never overwrites an earlier attempt.
+The primary authors the native Forager prompt. At dispatch, Hive appends authenticated execution scope and the standing-constraint snapshot without replacing caller prompt bytes. Later session events cannot change a bound attempt identity. Catalog refresh preserves real user and assistant messages, including quoted catalog markers.
 
-Pass the generated launch prompt unchanged. At native dispatch, Hive resolves the attempt reference to hash-verified bytes and sends those bytes to the child. Later session events cannot change a bound assignment or run identity. Catalog refresh preserves real user and assistant messages, including quoted catalog markers.
-
-The shared `worker-prompt.md` file only points to the latest assignment for human navigation. Compaction and lifecycle binding use the attempt descriptor. A blocked continuation allocates a new attempt and artifact while preserving the prior artifact and operator decision.
+A blocked continuation arms a new attempt in the same worktree. The operator decision belongs in the primary-authored native prompt.
 
 ## Plan Format
 

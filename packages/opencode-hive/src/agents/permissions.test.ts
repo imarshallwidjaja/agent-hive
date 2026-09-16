@@ -9099,11 +9099,11 @@ describe('Per-agent tool filtering', () => {
       ['hive', 'network', 'query'].join('_'),
       ['hive', 'agents', 'md'].join('_'),
       'hive_existing_workspace_start',
-      'hive_worktree_start',
-      'hive_worktree_create',
-      'hive_worktree_commit',
-      'hive_adhoc_worktree_create',
-      'hive_adhoc_worktree_commit',
+      ['hive', 'worktree', 'start'].join('_'),
+      ['hive', 'worktree', 'create'].join('_'),
+      ['hive', 'worktree', 'commit'].join('_'),
+      ['hive', 'adhoc', 'worktree', 'create'].join('_'),
+      ['hive', 'adhoc', 'worktree', 'commit'].join('_'),
     ];
     for (const agents of [await buildConfig('unified'), await buildConfig('dedicated')]) {
       for (const agent of Object.values(agents)) {

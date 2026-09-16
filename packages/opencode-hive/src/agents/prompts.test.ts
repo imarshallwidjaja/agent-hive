@@ -1368,7 +1368,7 @@ describe('Forager (Worker/Coder) prompt', () => {
   it('requires one terminal handoff without worker finalization', () => {
     expect(FORAGER_BEE_PROMPT).toContain('return one terminal response');
     expect(FORAGER_BEE_PROMPT).toContain('the primary records finalization');
-    expect(FORAGER_BEE_PROMPT).not.toContain('hive_worktree_commit');
+    expect(FORAGER_BEE_PROMPT).not.toContain(['hive', 'worktree', 'commit'].join('_'));
   });
 
   it('requires a final concise handoff response for primary finalization', () => {
@@ -1901,7 +1901,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_existing_workspace_start');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_execution_prepare');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_execution_finish');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_adhoc_worktree_commit');
+    expect(HIVE_BUILDER_PROMPT).not.toContain(['hive', 'adhoc', 'worktree', 'commit'].join('_'));
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_merge');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_cleanup');
     expect(HIVE_BUILDER_PROMPT).toContain('workspacePath');
@@ -1972,15 +1972,15 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
   it('documents armed native Forager attachment without removed launch authority', () => {
     const removed = [
       'launchId',
-      'hive_launch_id',
-      'hive_capability_reason',
-      'taskToolCall',
-      'backgroundTaskCall',
-      'workerInstructions',
-      'hive_worktree_start',
-      'hive_worktree_create',
-      'hive_adhoc_worktree_create',
-      'hive_adhoc_worktree_start',
+      ['hive', 'launch', 'id'].join('_'),
+      ['hive', 'capability', 'reason'].join('_'),
+      ['task', 'Tool', 'Call'].join(''),
+      ['background', 'Task', 'Call'].join(''),
+      ['worker', 'Instructions'].join(''),
+      ['hive', 'worktree', 'start'].join('_'),
+      ['hive', 'worktree', 'create'].join('_'),
+      ['hive', 'adhoc', 'worktree', 'create'].join('_'),
+      ['hive', 'adhoc', 'worktree', 'start'].join('_'),
       'continueFrom: "blocked"',
       'pendingLaunches',
       'attemptSlot',
@@ -1992,6 +1992,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     ] as const) {
       expect(prompt, name).toContain('including report-only diagnosis');
       expect(prompt, name).toContain('hive_execution_prepare');
+      expect(prompt, name).toContain('hive_execution_finish');
       expect(prompt, name).toContain('unchanged native');
       expect(prompt, name).toContain('Unused arms expire after five minutes');
       expect(prompt, name).not.toContain('hive_existing_workspace_start');
@@ -2025,7 +2026,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       expect(prompt, name).toContain('gains no Hive claim, managed context, or lifecycle authority');
       expect(prompt, name).toContain('Native helpers keep only their bounded operational permissions');
       expect(prompt, name).toContain('they do not take a live claim on a worktree or the project root');
-      expect(prompt, name).not.toContain('hive_capability_reason');
+      expect(prompt, name).not.toContain(['hive', 'capability', 'reason'].join('_'));
       expect(prompt, name).not.toContain('reserve the active root');
     }
   });
@@ -2039,7 +2040,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
   it('does NOT contain task-DAG defaults', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_tasks_sync({ refreshPending: true })');
     expect(HIVE_BUILDER_PROMPT).not.toContain('Depends on:');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_worktree_start(task)');
+    expect(HIVE_BUILDER_PROMPT).not.toContain(`${['hive', 'worktree', 'start'].join('_')}(task)`);
     expect(HIVE_BUILDER_PROMPT).not.toContain('plan.md');
     expect(HIVE_BUILDER_PROMPT).not.toContain('tasks.json');
     expect(HIVE_BUILDER_PROMPT).not.toContain('operator approval');

@@ -606,12 +606,15 @@ describe('skill content', () => {
     expect(template).not.toContain('finishing-a-development-branch');
   });
 
-  it('parses hive_worktree_start JSON in the core hive skill examples', () => {
+  it('uses armed native Forager examples in the core hive skill', () => {
     const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
 
-    expect(hiveSkill).toContain('JSON.parse(await hive_worktree_start({ task: "01-task-name" }))');
-    expect(hiveSkill).toContain('JSON.parse(await hive_worktree_start({ task: "02-task-a" }))');
-    expect(hiveSkill).toContain('task({ ...prepared.taskToolCall })');
+    expect(hiveSkill).toContain('hive_execution_prepare({ scope: { kind: "task", task: "01-task-name" }, placement: { kind: "worktree" } })');
+    expect(hiveSkill).toContain('hive_execution_prepare({ scope: { kind: "task", task: "02-task-a" }, placement: { kind: "worktree" } })');
+    expect(hiveSkill).toContain('subagent_type: "forager-worker"');
+    expect(hiveSkill).toContain('hive_execution_finish({ attemptId, status: "completed", summary, message })');
+    expect(hiveSkill).not.toContain('hive_worktree_start');
+    expect(hiveSkill).not.toContain('taskToolCall');
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
@@ -751,7 +754,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Orchestrator owns final confidence');
     expect(skill!.template).toContain('terminal-unreconciled');
     expect(skill!.template).toContain('Reconcile and ignore are bookkeeping only');
-    expect(skill!.template).toContain('A live claim blocks preparation, dispatch, ad-hoc commit/merge/cleanup, and managed discard/merge of that exact worktree identity');
+    expect(skill!.template).toContain('A live claim blocks preparation, dispatch, `hive_execution_finish`, and managed discard/merge of that exact worktree identity');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
     expect(skill!.template).toContain('`hive_status` is not that surface');
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns.');

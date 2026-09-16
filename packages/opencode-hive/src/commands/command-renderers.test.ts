@@ -525,7 +525,8 @@ describe('hive command renderers', () => {
     expect(output).toContain('hive_execution_prepare');
     expect(output).toContain('unchanged native Forager');
     expect(output).toContain('scope.continueFromBlocked: true');
-    expect(output).toContain('must not finalize a worker\'s handoff on its behalf');
+    expect(output).toContain('hive_execution_finish');
+    expect(output).toContain('Worker prose is report input, not stop evidence or finalization');
     expect(output).toContain('Work autonomously through the tasks');
     expect(output).toContain('salvageable');
     expect(output).toContain('hive_merge');

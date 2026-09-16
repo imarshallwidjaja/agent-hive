@@ -97,7 +97,7 @@ Use \`hive_constraints_add\` for a durable operator directive that should hold f
 
 ### Write-Conflict Guidance
 
-One managed writer per exact registered worktree identity. Parallel writes require disjoint registered worktrees (separate runs). Multiple iterative writes within the same worktree must run strictly sequentially: prepare -> dispatch the unchanged native Forager call -> await completion -> inspect/commit -> prepare again.
+One managed writer per exact registered worktree identity. Parallel writes require disjoint registered worktrees (separate runs). Multiple iterative writes within the same worktree must run strictly sequentially: prepare -> dispatch the unchanged native Forager call -> await completion -> \`hive_execution_finish\` -> prepare again.
 
 Default to one active writing/change lane per owned path/module. For ad-hoc work, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers. Do not dispatch two writing workers against the same files or tightly coupled modules unless sequenced. Assign file/path boundaries in worker prompts.
 
@@ -114,9 +114,9 @@ Use only explicit IDs returned by prior ad-hoc tool calls. Do not rely on hidden
 When an optional ad-hoc tool argument is not needed, omit it instead of sending an empty string.
 
 Choose the isolated worktree completion path:
-- \`hive_execution_prepare({ scope: { kind: "adhoc" }, placement: { kind: "worktree" } })\` creates or reuses the isolated workspace and arms the next native Forager call. Supply a \`runId\` when continuing a known run; otherwise use the returned one.
+- \`hive_execution_prepare({ scope: { kind: "adhoc" }, placement: { kind: "worktree" } })\` creates or reuses the isolated Git workspace and arms the next native Forager call. Use \`placement: { kind: "in_place", directory }\` for an explicit live directory with no isolation, rollback, commit, or merge. Supply a \`runId\` when continuing a known run; otherwise use the returned one.
 - Every ad-hoc Forager lane, including report-only diagnosis, needs one armed execution followed by an unchanged native \`task()\` call. Independent worktrees may be armed and dispatched under one parent. Two executions conflict when their exact worktree identity sets intersect. Unused arms expire after five minutes. An unobserved ExecutionAttempt keeps its worktree claim. Recover missing binding from exact parent/call metadata only; do not guess the latest child or infer ownership from prose. A native error or idle event alone does not prove stop. Observed native termination settles the claim; accepted \`session.abort\` is not terminal. Retry after confirmed termination may reuse the same \`runId\` worktree. Retry while termination is unobserved cannot reuse that run; use a new ad-hoc \`runId\` and worktree. Ordinary Scout, advisor, and reviewer calls do not require an armed execution. Use blocking wait mode when the next decision depends on the result and background wait mode only when independent foreground work can continue.
-- \`hive_execution_finish\` records disposition, commits worktree changes, and releases the execution claim after exact native stop evidence.
+- \`hive_execution_finish\` records disposition after exact native stop evidence. Worktree placement commits through the crash-safe journal; in-place and blocked finalization skip Git.
 - \`hive_adhoc_merge\` integrates the committed branch.
 - \`hive_adhoc_cleanup\` removes the ad-hoc worktree and branch when cleanup is not already part of merge.
 

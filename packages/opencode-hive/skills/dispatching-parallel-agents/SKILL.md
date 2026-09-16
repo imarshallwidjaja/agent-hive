@@ -14,7 +14,7 @@ When you have multiple unrelated failures (different test files, different subsy
 ### Worktree Concurrency & Sequencing
 - **One writer per worktree:** A single worktree has exactly one active writer at a time.
 - **Parallel writes across worktrees:** You can dispatch writing workers in parallel ONLY if each worker runs in its own distinct worktree (distinct feature tasks or distinct ad-hoc `runId`s).
-- **Sequential passes within a worktree:** If multiple tasks or bug fixes target the SAME worktree, sequence them: `prepare` -> `dispatch the unchanged native call` -> `wait for completion` -> `inspect/commit` -> `prepare again`.
+- **Sequential passes within a worktree:** If multiple tasks or bug fixes target the SAME worktree, sequence them: `prepare` -> `dispatch the unchanged native call` -> `wait for completion` -> `hive_execution_finish` -> `prepare again`.
 - **Read-only fan-out:** Scouts and reviewers do not write code and can run concurrently anywhere.
 
 When `## Background-First Orchestration` is present, load `background-delegation` for scheduler and wait-mode decisions. This skill covers task independence, scope, and prompt quality; the background skill governs whether each independent lane runs blocking or background.

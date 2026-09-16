@@ -247,15 +247,15 @@ describe('current documentation contract', () => {
     assert.match(workflow, /feature[\s\S]{0,220}(?:reviewed plan|dependencies|isolated task worktrees|durable execution record)/i);
     assert.match(workflow, /ad-?hoc[\s\S]{0,220}(?:not a feature|feature planning lifecycle|feature or task records)/i);
     assert.match(lifecycle, /workers?[\s\S]{0,160}task-level,\s+best-effort checks[\s\S]{0,160}isolated git worktrees?/i);
-    assert.match(lifecycle, /worker commit[\s\S]{0,100}(?:does not|not) merge/i);
+    assert.match(lifecycle, /hive_execution_finish[\s\S]{0,160}(?:does not|not) merge/i);
     assertInOrder(lifecycle, [
       ['completed worker inspection', /operator\/orchestrator[^.]*inspects completed worker output/i],
       ['task branch merge', /merge completed task branches/i],
       ['fresh merged-result verification', /fresh build\/test verification[^.]*merged result/i],
       ['feature completion', /mark the feature complete only after/i],
     ], 'Operator Guide feature lifecycle');
-    assert.match(recovery, /(?:fails?|failed|partial)[\s\S]{0,220}(?:retry|normal task-start path)[\s\S]{0,150}hive_worktree_start/i);
-    assert.match(recovery, /blocked[\s\S]{0,220}hive_worktree_create[\s\S]{0,180}(?:fresh|new) worker[\s\S]{0,120}(?:same|existing) worktree/i);
+    assert.match(recovery, /(?:fails?|failed|partial)[\s\S]{0,220}hive_execution_prepare/i);
+    assert.match(recovery, /blocked[\s\S]{0,220}continueFromBlocked[\s\S]{0,220}(?:fresh|new) worker[\s\S]{0,120}(?:same|existing) worktree/i);
     assert.match(reviewOptions, /\/dash-review[\s\S]{0,160}without changing source/i);
     assert.match(reviewOptions, /\/vuln-review[\s\S]{0,220}does not[\s\S]{0,80}edit source[\s\S]{0,80}automatic fixes/i);
   });
