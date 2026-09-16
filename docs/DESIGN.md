@@ -61,9 +61,9 @@ Cross-process process supervision, exactly-once execution across independent Ope
 3. User reviews `plan.md` and adds comments there
 4. User approves via `hive_plan_approve`
 5. Tasks synced via `hive_tasks_sync` (generates spec.md for each)
-6. Each task executed via `hive_execution_prepare` -> unchanged native Forager `task()` -> structured stop -> `hive_execution_finish`
-7. Changes applied from a finalized worktree to the destination checkout with `hive_merge`
-8. Report written as an immutable finalization receipt
+6. Each task executes via `hive_execution_prepare` -> unchanged native Forager `task()` -> structured stop -> `hive_execution_finish`
+7. A worktree execution records Git receipts and can be integrated with `hive_merge`; an in-place execution records disposition and has no Hive merge or cleanup step
+8. Both placements write an immutable finalization report
 
 ## Prompt Management
 
@@ -190,11 +190,11 @@ Contains task context for the executing agent:
 ### Finalization reports
 Task finalization always writes an immutable `reports/finalization-<operationId>.md` receipt. It updates `report.md` with the same report plus a history link only when the finalized attempt is still the current task generation; a stale finalization leaves the latest pointer unchanged. Ad-hoc finalization writes `.hive/execution-reports/finalization-<operationId>.md` and has no task-local latest report. The returned `reportPath` is authoritative. Each report records the attempt, operation, disposition, primary-authored summary, and per-repository commit SHA or `NO_TRACKED_CHANGES`; blocked reports also record a required nonblank blocker reason and optional blocker details.
 
-Blocked task status preserves that blocker JSON and exposes it unchanged through `hive_status.tasks.list[].blocker`. Continuation reuses the finalized placement: the exact registered worktree identity set for worktree placement, or the exact resolved directory for in-place placement.
+Blocked task status preserves that blocker JSON and exposes it unchanged through `hive_status.tasks.list[].blocker`. Continuation is admitted only when the current attempt has a finalized blocked receipt applied to the current task generation and its blocker exactly matches task status. It reuses the finalized placement: the exact registered worktree identity set for worktree placement, or the exact resolved directory for in-place placement. Allocating the continuation clears the old blocker. Legacy blocked state without that receipt cannot continue through normal tools; repair or retirement is an out-of-band operation that must preserve historical placement and reports.
 
-## Worktree Isolation
+## Execution Placement
 
-Each task executes in an isolated workspace under `.hive/.worktrees/{feature}/{task}/`. In legacy mode that path is a single git worktree. In manifest-backed mode that path is a composite workspace, with one git worktree per declared repo under `repos/<repoId>/`.
+Worktree placement executes a task in an isolated workspace under `.hive/.worktrees/{feature}/{task}/`. In legacy mode that path is a single Git worktree. In manifest-backed mode it is a composite workspace, with one Git worktree per declared repo under `repos/<repoId>/`. In-place placement uses the exact existing directory supplied by the caller and provides no filesystem isolation.
 
 Agents edit only the selected workspace. For worktree placement, `hive_execution_finish` collects the task diff after exact stop evidence. In-place placement records disposition only and never runs Git. `hive_worktree_discard` removes a worktree without applying changes, and is refused while that worktree has a live or unobserved claim.
 
@@ -275,7 +275,7 @@ Top-level `filesChanged` and `conflicts` flatten per-repo paths as `repoId:path`
 
 - **No global selection state** — Feature tools use explicit, path, session, or sole-live resolution
 - **Detection-first** — Task-worktree paths override session and repository fallback
-- **Isolation** — Each task in own worktree, safe to discard
+- **Placement-specific execution** — Worktree tasks are isolated and discardable; in-place tasks are cooperative and have no Hive rollback, merge, or cleanup
 - **Audit trail** — Every action logged to `.hive/`
 - **Agent-friendly** — Minimal overhead during execution
 

@@ -574,8 +574,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('recommended review path');
     expect(skill!.template).toContain('One implementation assignment normally maps to one numbered task');
     expect(skill!.template).toContain('same finalized placement: exact registered worktree identities or exact resolved in-place directory');
-    expect(skill!.template).toContain('persisted `hive_status` blocker or immutable finalization report is authoritative');
-    expect(skill!.template).toContain('never reconstruct blocker details from worker prose or task traces');
+    expect(skill!.template).toContain('current finalized blocked receipt, task generation, and persisted `hive_status` blocker to match exactly');
+    expect(skill!.template).toContain('Never reconstruct blocker details from worker prose or task traces');
     expect(skill!.template).toContain('Only a finalized worktree attempt can be merged or cleaned up');
     expect(skill!.template).toContain('Merge or clean up a finalized registered worktree before switching the same `runId` to in-place placement');
     expect(skill!.template).toContain('explicitly admitted native general/helper exceptions');

@@ -418,8 +418,8 @@ describe('Fresh-session delegation contract', () => {
       ['Swarm', SWARM_BEE_PROMPT],
     ] as const) {
       expect(prompt, name).toContain('same finalized placement: exact registered worktree identities or exact resolved in-place directory');
-      expect(prompt, name).toContain('persisted `hive_status` blocker or immutable finalization report is authoritative');
-      expect(prompt, name).toContain('do not reconstruct blocker details from worker prose or task traces');
+      expect(prompt, name).toContain('current finalized blocked receipt, task generation, and persisted blocker to match exactly');
+      expect(prompt, name).toContain('Do not reconstruct blocker details from worker prose or task traces');
     }
   });
 
@@ -1169,8 +1169,8 @@ describe('Swarm (Orchestrator) prompt', () => {
     it('uses persisted finalization state as blocker authority', () => {
       for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
         expect(prompt, name).toContain('retain its immutable `reportPath`');
-        expect(prompt, name).toContain('persisted `hive_status` blocker or immutable finalization report is authoritative');
-        expect(prompt, name).toContain('do not reconstruct blocker details from worker prose or task traces');
+        expect(prompt, name).toContain('current finalized blocked receipt, task generation, and persisted blocker to match exactly');
+        expect(prompt, name).toContain('Legacy or inconsistent state requires out-of-band repair or retirement');
         expect(prompt, name).toContain('`hive_status` and its persisted blocker');
       }
     });
@@ -1180,7 +1180,8 @@ describe('Swarm (Orchestrator) prompt', () => {
         expect(prompt, name).toContain('Failed or partial recovery requires exact stop evidence');
         expect(prompt, name).toContain('use `hive_task_trace`, wait when the execution may still be live');
         expect(prompt, name).toContain('do not finish or prepare a retry');
-        expect(prompt, name).toContain('Only after a stopped attempt is finalized');
+        expect(prompt, name).toContain('Retry a worktree placement on its existing worktree');
+        expect(prompt, name).toContain('Retry an in-place placement on its exact directory with report-only finish');
       }
     });
 
@@ -1695,6 +1696,16 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('Expand shell shorthand such as `~` before passing the tool argument');
       expect(hiveToolsContent).not.toContain('### Merge (1 tool)');
       expect(hiveToolsContent).not.toContain('acknowledgeOrphanedAttempt');
+    });
+
+    it('documents receipt-bound blocked continuation and placement-specific retry', () => {
+      expect(operatorGuideContent).toContain('current finalized blocked receipt');
+      expect(operatorGuideContent).toContain('repair or retire the inconsistent task state out of band');
+      expect(operatorGuideContent).toContain('In-place recovery has no Hive merge, cleanup, or rollback step');
+      expect(hiveToolsContent).toContain('retry the identical finish input');
+      expect(hiveToolsContent).toContain('Legacy or inconsistent blocked state has no normal continuation operation');
+      expect(dataModelContent).toContain('`blocker` (`TaskBlocker`, optional');
+      expect(dataModelContent).toContain('Every non-blocked transition and every new attempt allocation removes it');
     });
 
     it('documents fail-closed migrated background mode classification', () => {

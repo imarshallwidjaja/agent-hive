@@ -5081,7 +5081,38 @@ describe('managed execution attachment', () => {
     expect(status.nextAction).toContain('authoritative immutable finalization report');
     expect(status.nextAction).toContain('continueFromBlocked: true');
     expect(status.nextAction).toContain('same finalized placement');
+    expect(status.nextAction).not.toContain('finish the attempt');
     expect(status.nextAction).not.toContain('hive_task_trace');
+
+    const continued = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+      placement: { kind: 'in_place', directory: root },
+    }, context) as string);
+    expect(continued).toMatchObject({ success: true, phase: 'armed', placement: { kind: 'in_place' } });
+    expect(new TaskService(root).getRawStatus(feature, '01-first-task')?.blocker).toBeUndefined();
+    const activeStatus = JSON.parse(await hooks.tool!.hive_status.execute({ feature }, context) as string);
+    expect(activeStatus.nextAction).toContain('Continue work on task');
+  });
+
+  it('advises an identical finish retry when blocked disposition exists before finalization completes', async () => {
+    const feature = 'blocked-finalization-retry';
+    const fixture = await harness(root, 'primary-blocked-finalization-retry');
+    await seedFeature(fixture.hooks, fixture.context, feature);
+    const prepared = await blockPreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context, feature,
+      { kind: 'in_place', directory: root }, feature,
+    );
+    const attemptsPath = path.join(root, '.hive', 'execution-attempts.json');
+    const store = JSON.parse(fs.readFileSync(attemptsPath, 'utf8'));
+    const attempt = store.attempts.find((candidate: { id: string }) => candidate.id === prepared.attemptId);
+    attempt.phase = 'stopped';
+    delete attempt.finalizedAt;
+    fs.writeFileSync(attemptsPath, JSON.stringify(store, null, 2));
+
+    const status = JSON.parse(await fixture.hooks.tool!.hive_status.execute({ feature }, fixture.context) as string);
+
+    expect(status.nextAction).toContain('retry the identical hive_execution_finish');
+    expect(status.nextAction).not.toContain('continueFromBlocked: true');
   });
 
   it.each(['pending', 'in_progress', 'failed', 'partial', 'cancelled'] as const)(
@@ -5116,11 +5147,17 @@ describe('managed execution attachment', () => {
     const feature = 'legacy-blocker-recovery';
     const { hooks, context } = await harness(root, 'primary-legacy-blocker');
     await seedFeature(hooks, context, feature);
-    new TaskService(root).update(feature, '01-first-task', { status: 'blocked' });
+    expect(await hooks.tool!.hive_task_update.execute({
+      feature,
+      task: '01-first-task',
+      status: 'blocked',
+      summary: 'Imported legacy blocked state.',
+    }, context) as string).toContain('status=blocked');
 
     const status = JSON.parse(await hooks.tool!.hive_status.execute({ feature }, context) as string);
     expect(status.nextAction).toContain('migrated legacy blocked status without authoritative blocker data');
-    expect(status.nextAction).toContain('do not arm continuation');
+    expect(status.nextAction).toContain('Continuation is unavailable through normal tools');
+    expect(status.nextAction).toContain('out of band');
     const denied = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
       scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
       placement: { kind: 'worktree' },
@@ -5131,6 +5168,41 @@ describe('managed execution attachment', () => {
       mutation: 'none',
     });
     expect(new ExecutionAttemptService(root).listAttempts()).toEqual([]);
+  });
+
+  it('rejects a manually changed blocker that no longer matches the finalized receipt', async () => {
+    const feature = 'tampered-blocker-authority';
+    const fixture = await harness(root, 'primary-tampered-blocker');
+    await seedFeature(fixture.hooks, fixture.context, feature);
+    const prior = await blockPreparedTask(
+      root, fixture.hooks, fixture.parents, fixture.context, feature,
+      { kind: 'in_place', directory: root }, feature,
+    );
+    const taskStatusPath = path.join(
+      root, '.hive', 'features', resolveFeatureDirectoryName(root, feature),
+      'tasks', '01-first-task', 'status.json',
+    );
+    const taskStatus = JSON.parse(fs.readFileSync(taskStatusPath, 'utf8'));
+    taskStatus.blocker = { reason: 'Injected replacement blocker.' };
+    fs.writeFileSync(taskStatusPath, JSON.stringify(taskStatus, null, 2));
+    const attemptsPath = path.join(root, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+
+    const denied = JSON.parse(await fixture.hooks.tool!.hive_execution_prepare.execute({
+      scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
+      placement: { kind: 'in_place', directory: root },
+    }, fixture.context) as string);
+
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'blocked_continuation_authority_mismatch',
+      mutation: 'none',
+      feature,
+      task: '01-first-task',
+    });
+    expect(denied.nextAction).toContain('out of band');
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
+    expect(new ExecutionAttemptService(root).currentTaskAttempt(feature, '01-first-task')?.id).toBe(prior.attemptId);
   });
 
   it.each([
@@ -5200,7 +5272,7 @@ describe('managed execution attachment', () => {
     expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
   });
 
-  it('continues a migrated blocked task in its persisted non-default attempt slot', async () => {
+  it('fails closed for migrated blocked history without a modern finalization receipt', async () => {
     const feature = 'continue-migrated-slot';
     const first = await harness(root, 'primary-migrated-slot');
     await seedFeature(first.hooks, first.context, feature);
@@ -5252,15 +5324,20 @@ describe('managed execution attachment', () => {
     }, null, 2));
     const restarted = await harness(root, 'primary-migrated-slot');
 
-    const prepared = JSON.parse(await restarted.hooks.tool!.hive_execution_prepare.execute({
+    const attemptsPath = path.join(root, '.hive', 'execution-attempts.json');
+    const attemptsBefore = fs.readFileSync(attemptsPath, 'utf8');
+    const denied = JSON.parse(await restarted.hooks.tool!.hive_execution_prepare.execute({
       scope: { kind: 'task', feature, task: '01-first-task', continueFromBlocked: true },
       placement: { kind: 'worktree' },
     }, restarted.context) as string);
 
-    expect(prepared).toMatchObject({
-      success: true,
-      placement: { kind: 'worktree', attemptSlot: slot, workspacePath },
+    expect(denied).toMatchObject({
+      success: false,
+      reason: 'blocked_continuation_authority_mismatch',
+      mutation: 'none',
     });
+    expect(denied.nextAction).toContain('out of band');
+    expect(fs.readFileSync(attemptsPath, 'utf8')).toBe(attemptsBefore);
     expect(fs.existsSync(worktrees.getWorktreePath(feature, '01-first-task'))).toBe(false);
     expect(await worktrees.get(feature, '01-first-task', slot)).not.toBeNull();
   });

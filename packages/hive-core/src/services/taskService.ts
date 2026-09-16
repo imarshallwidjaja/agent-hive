@@ -638,6 +638,9 @@ export class TaskService {
       if (updates.status === 'done' && current.status !== 'done') {
         updated.completedAt = this.now().toISOString();
       }
+      if (updates.status !== undefined && updates.status !== 'blocked') {
+        delete updated.blocker;
+      }
 
       // Lock-first read-modify-write to avoid TOCTOU races.
       writeJsonAtomic(statusPath, updated);
@@ -667,6 +670,7 @@ export class TaskService {
         schemaVersion: TASK_STATUS_SCHEMA_VERSION,
       } as TaskStatus;
       if (updates.status === 'done' && current.status !== 'done') updated.completedAt = this.now().toISOString();
+      if (updates.status !== undefined && updates.status !== 'blocked') delete updated.blocker;
       writeJsonAtomic(statusPath, updated);
       return { applied: true, status: updated };
     } finally {
@@ -700,6 +704,7 @@ export class TaskService {
         schemaVersion: TASK_STATUS_SCHEMA_VERSION,
         workerAttempt: attempt,
       };
+      delete status.blocker;
       writeJsonAtomic(statusPath, status);
       return { status, attempt };
     } finally {

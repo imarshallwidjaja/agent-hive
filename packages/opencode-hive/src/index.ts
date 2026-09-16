@@ -2762,6 +2762,18 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     }
   };
 
+  const blockedContinuationAuthorityMatches = (
+    taskStatus: ReturnType<TaskService['getRawStatus']>,
+    attempt: ExecutionAttempt | undefined,
+  ): boolean => !!taskStatus?.blocker?.reason.trim()
+    && !!attempt
+    && attempt.phase === 'finalized'
+    && attempt.finalization?.status === 'blocked'
+    && attempt.finalization.disposition?.applied === true
+    && attempt.taskAttempt === taskStatus.workerAttempt
+    && attempt.finalization.expectedTaskAttempt === taskStatus.workerAttempt
+    && isDeepStrictEqual(attempt.finalization.blocker, taskStatus.blocker);
+
   type ExecutionPrepareInput = {
     scope: {
       kind: 'task' | 'adhoc';
@@ -2840,8 +2852,8 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           error: `Blocked continuation requires task status blocked; current status is ${taskInfo.status}.`,
         });
       }
-      if (input.scope.continueFromBlocked === true
-        && !taskService.getRawStatus(feature, input.scope.task)?.blocker?.reason.trim()) {
+      const rawTaskStatus = taskService.getRawStatus(feature, input.scope.task);
+      if (input.scope.continueFromBlocked === true && !rawTaskStatus?.blocker?.reason.trim()) {
         return respond({
           success: false,
           reason: 'legacy_blocker_recovery_required',
@@ -2849,7 +2861,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
           feature,
           task: input.scope.task,
           error: 'Blocked continuation requires authoritative persisted blocker data with a nonblank reason.',
-          nextAction: 'Inspect the preserved historical report and task state. Do not continue until an explicit blocker is recovered through a new managed disposition.',
+          nextAction: 'Continuation is unavailable through normal tools. Quiesce writers and repair or retire the legacy task state out of band, preserving its historical placement and reports.',
         });
       }
       if (taskInfo.status === 'done') return respond({ success: false, reason: 'task_done', feature, task: input.scope.task });
@@ -2860,14 +2872,15 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       if (!dependency.allowed) return respond({ success: false, reason: 'dependencies_not_done', error: dependency.error });
       const currentAttempt = executionAttemptService.currentTaskAttempt(feature, input.scope.task);
       if (input.scope.continueFromBlocked === true) {
-        if (!currentAttempt || currentAttempt.phase !== 'finalized') {
+        if (!blockedContinuationAuthorityMatches(rawTaskStatus, currentAttempt)) {
           return respond({
             success: false,
-            reason: 'blocked_continuation_placement_mismatch',
+            reason: 'blocked_continuation_authority_mismatch',
             mutation: 'none',
             feature,
             task: input.scope.task,
-            error: 'Blocked continuation requires a prior finalized execution placement.',
+            error: 'Blocked continuation requires the current finalized blocked receipt to match the persisted task generation and blocker exactly.',
+            nextAction: 'Inspect the immutable finalization report and task status. Repair or retire inconsistent legacy state out of band; do not arm continuation.',
           });
         }
         continuationPlacement = currentAttempt.placement;
@@ -2997,8 +3010,8 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
             error: `Blocked continuation requires task status blocked; current status is ${taskInfo.status}.`,
           });
         }
-        if (input.scope.continueFromBlocked === true
-          && !taskService.getRawStatus(scope.feature, scope.task)?.blocker?.reason.trim()) {
+        const taskStatus = taskService.getRawStatus(scope.feature, scope.task);
+        if (input.scope.continueFromBlocked === true && !taskStatus?.blocker?.reason.trim()) {
           return respond({
             success: false,
             reason: 'legacy_blocker_recovery_required',
@@ -3006,7 +3019,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
             feature: scope.feature,
             task: scope.task,
             error: 'Blocked continuation requires authoritative persisted blocker data with a nonblank reason.',
-            nextAction: 'Inspect the preserved historical report and task state. Do not continue until an explicit blocker is recovered through a new managed disposition.',
+            nextAction: 'Continuation is unavailable through normal tools. Quiesce writers and repair or retire the legacy task state out of band, preserving its historical placement and reports.',
           });
         }
         if (taskInfo.status === 'done') return respond({ success: false, reason: 'task_done', feature: scope.feature, task: scope.task });
@@ -3015,7 +3028,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         }
         const dependency = checkDependencies(scope.feature, scope.task);
         if (!dependency.allowed) return respond({ success: false, reason: 'dependencies_not_done', error: dependency.error });
-        const taskStatus = taskService.getRawStatus(scope.feature, scope.task);
         const currentAttempt = executionAttemptService.currentTaskAttempt(scope.feature, scope.task);
         if (taskStatus?.workerAttempt !== taskAdmissionSnapshot.workerAttempt
           || currentAttempt?.id !== taskAdmissionSnapshot.attemptId
@@ -3027,6 +3039,18 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
             feature: scope.feature,
             task: scope.task,
             error: 'Task execution state changed while preparation waited for its scope lock.',
+          });
+        }
+        if (input.scope.continueFromBlocked === true
+          && !blockedContinuationAuthorityMatches(taskStatus, currentAttempt)) {
+          return respond({
+            success: false,
+            reason: 'blocked_continuation_authority_mismatch',
+            mutation: 'none',
+            feature: scope.feature,
+            task: scope.task,
+            error: 'Blocked continuation no longer matches the current finalized blocked receipt.',
+            nextAction: 'Inspect the immutable finalization report and task status. Repair or retire inconsistent legacy state out of band; do not arm continuation.',
           });
         }
         return undefined;
@@ -7225,7 +7249,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
 
           const getNextAction = (
             planStatus: string | null,
-            tasks: Array<{ status: string; folder: string; traceTaskId?: string; blocker?: unknown }>,
+            tasks: Array<{ status: string; folder: string; executionFinalized: boolean; traceTaskId?: string; blocker?: unknown }>,
             runnableTasks: string[],
             hasPlan: boolean,
           ): string => {
@@ -7245,9 +7269,20 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             const blocked = tasks.find(t => t.status === 'blocked');
             if (blocked) {
               if (!blocked.blocker) {
-                return `Task ${blocked.folder} has migrated legacy blocked status without authoritative blocker data. Inspect its preserved historical report and task state; do not arm continuation until an explicit blocker is recovered through a new managed disposition.`;
+                if (!blocked.executionFinalized) {
+                  return `Continue managed execution on task ${blocked.folder}; its prior blocker was cleared when the new attempt was allocated.`;
+                }
+                return `Task ${blocked.folder} has migrated legacy blocked status without authoritative blocker data. Continuation is unavailable through normal tools: quiesce writers, inspect and preserve its historical placement and reports, then repair or retire the task state out of band.`;
               }
-              return `Confirm exact stop evidence and finish the attempt with hive_execution_finish({ status: "blocked", blocker: { reason: "..." } }); then call hive_status and read tasks.list[].blocker for ${blocked.folder} or the authoritative immutable finalization report; collect and record the operator decision; call hive_status again; while status remains exactly blocked, call hive_execution_prepare({ scope: { kind: "task", task: ${JSON.stringify(blocked.folder)}, continueFromBlocked: true }, placement: <same finalized placement> }); then launch a new unchanged native Forager task() call with the decision in its prompt.`;
+              if (!blocked.executionFinalized) {
+                return `Task ${blocked.folder} has blocked disposition state but its execution is not finalized. Confirm exact stop evidence and retry the identical hive_execution_finish({ status: "blocked", blocker: <same blocker>, ... }) input; do not ask for a decision or arm continuation until finalization succeeds.`;
+              }
+              const rawStatus = statusToolServices.tasks.getRawStatus(feature, blocked.folder);
+              const attempt = executionAttemptService.currentTaskAttempt(feature, blocked.folder);
+              if (!blockedContinuationAuthorityMatches(rawStatus, attempt)) {
+                return `Task ${blocked.folder} has blocked state that does not match the current finalized blocked receipt. Continuation is unavailable through normal tools: quiesce writers, inspect and preserve the immutable report and historical placement, then repair or retire the task state out of band.`;
+              }
+              return `Read tasks.list[].blocker for ${blocked.folder} or the authoritative immutable finalization report; collect and record the operator decision; call hive_status again; while status remains exactly blocked, call hive_execution_prepare({ scope: { kind: "task", task: ${JSON.stringify(blocked.folder)}, continueFromBlocked: true }, placement: <same finalized placement> }); then launch a new unchanged native Forager task() call with the decision in its prompt.`;
             }
             const failed = tasks.find(t => t.status === 'failed' || t.status === 'partial');
             if (failed) {

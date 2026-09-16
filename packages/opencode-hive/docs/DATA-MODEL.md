@@ -238,6 +238,9 @@ Each entry in `tasks.list` includes:
 - `origin` (string)
 - `summary` (string | null)
 - `dependsOn` (string[] | null, raw dependency metadata from `status.json`)
+- `blocker` (`TaskBlocker`, optional and present only while `status` is `blocked`)
+
+`TaskBlocker` contains a required nonblank `reason` and optional `options`, `recommendation`, and `context`. Blocked continuation requires this value to match the current finalized blocked execution receipt exactly. Every non-blocked transition and every new attempt allocation removes it.
 
 ### Runnable and Blocked
 

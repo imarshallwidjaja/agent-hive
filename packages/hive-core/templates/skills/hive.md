@@ -294,7 +294,7 @@ hive_execution_finish({ attemptId, status: "completed", summary })
 hive_status()
 ```
 
-After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. Failed or partial recovery without exact stop evidence must trace or wait and keep the placement quarantined; do not finish or prepare a retry. Only a stopped attempt may be finalized. The persisted `hive_status` blocker or immutable finalization report is authoritative for blocked continuation; never reconstruct blocker details from worker prose or task traces. Blocked task continuation must reuse the prior finalized placement: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. Only finalized worktree attempts can be merged or cleaned up. Before switching an ad-hoc `runId` from worktree to in-place placement, merge or clean up its registered finalized worktree. Repository IDs are normalized and deduplicated, and a different worktree selection requires a new `runId`.
+After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. Failed or partial recovery without exact stop evidence must trace or wait and keep the placement quarantined; do not finish or prepare a retry. Only a stopped attempt may be finalized. If blocked disposition is visible before execution finalization completes, retry the identical finish input before asking for a decision. Blocked continuation requires the current finalized blocked receipt, task generation, and persisted `hive_status` blocker to match exactly; legacy or inconsistent state requires out-of-band repair or retirement. Never reconstruct blocker details from worker prose or task traces. Blocked task continuation must reuse the prior finalized placement: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. Only finalized worktree attempts can be merged or cleaned up. Before switching an ad-hoc `runId` from worktree to in-place placement, merge or clean up its registered finalized worktree. Repository IDs are normalized and deduplicated, and a different worktree selection requires a new `runId`.
 
 ### Parallel Execution
 
@@ -412,6 +412,7 @@ If "Revise Plan":
 
 ### Task Failed
 ```
+# Worktree placement: preserve changed Git state in the finalization receipt.
 hive_execution_finish({
   attemptId,
   status: "failed",
@@ -420,7 +421,14 @@ hive_execution_finish({
 })
 hive_status()  # Confirm finalization and current task state before retry.
 hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "worktree" } })  # Reuse the worktree; fresh arm. Do not discard failed work by default.
+
+# In-place placement: report-only finalization, then reuse the exact directory.
+hive_execution_finish({ attemptId, status: "failed", summary })  # No message.
+hive_status()
+hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "in_place", directory: exactDirectory } })
 ```
+
+In-place retry has no Hive merge, cleanup, rollback, or commit step.
 
 ### After 3 Failures
 1. Stop all workers

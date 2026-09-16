@@ -158,6 +158,20 @@ describe("TaskService", () => {
       expect(result.planTitle).toBe("Original Title");
       expect(result.baseCommit).toBe("abc123");
     });
+
+    it.each(["pending", "in_progress", "done", "failed", "partial", "cancelled"] as const)(
+      "clears stale blocker data when transitioning to %s",
+      (status) => {
+        const featureName = "test-feature";
+        setupFeature(featureName);
+        setupTask(featureName, "01-test-task", {
+          status: "blocked",
+          blocker: { reason: "Old decision" },
+        });
+
+        expect(service.update(featureName, "01-test-task", { status }).blocker).toBeUndefined();
+      },
+    );
   });
 
   describe("worker attempt lifecycle", () => {
@@ -179,6 +193,32 @@ describe("TaskService", () => {
       expect(second.status.status).toBe("failed");
       expect(second.status.summary).toBe("Previous attempt failed");
       expect(second.status.completedAt).toBe("2025-01-22T00:00:00Z");
+    });
+
+    it("clears blocker data when allocating a new worker attempt", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", {
+        status: "blocked",
+        blocker: { reason: "Decision resolved" },
+      });
+
+      expect(service.allocateWorkerAttempt(featureName, "01-test-task").status.blocker).toBeUndefined();
+    });
+
+    it("clears blocker data when a worker finalizes with a non-blocked status", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", {
+        status: "blocked",
+        blocker: { reason: "Stale decision" },
+        workerAttempt: 2,
+      });
+
+      const result = service.finalizeWorkerAttempt(featureName, "01-test-task", 2, { status: "failed" });
+
+      expect(result.applied).toBe(true);
+      expect(result.status.blocker).toBeUndefined();
     });
   });
 

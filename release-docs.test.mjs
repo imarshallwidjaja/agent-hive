@@ -278,7 +278,8 @@ describe('current documentation contract', () => {
     ], 'Operator Guide blocker authority');
     assert.match(recovery, /blocker containing a nonblank `reason`/i);
     assert.match(recovery, /tasks\.list\[\]\.blocker/i);
-    assert.match(recovery, /legacy blocked status without blocker data requires inspection/i);
+    assert.match(recovery, /legacy blocked state without a matching finalized blocked receipt cannot continue through normal tools/i);
+    assert.match(recovery, /repair or retire the inconsistent task state out of band/i);
     assert.match(recovery, /stale finalization writes immutable history without replacing the latest pointer/i);
     assert.match(recovery, /merge or clean up a finalized registered worktree before switching.*in-place/is);
     assert.match(reviewOptions, /\/dash-review[\s\S]{0,160}without changing source/i);
