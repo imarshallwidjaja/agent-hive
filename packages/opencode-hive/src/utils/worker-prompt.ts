@@ -34,12 +34,8 @@ export function buildExecutionScopeBlock(input: ExecutionScopeBlockInput): strin
     ? `Task spec: .hive/features/${input.featureDirectory}/tasks/${input.taskFolder}/spec.md\nFeature context: .hive/features/${input.featureDirectory}/context/`
     : 'Managed context: project scope only unless the authenticated execution has a feature binding.';
   const placement = input.placement.kind === 'worktree'
-    ? input.kind === 'task'
-      ? 'Placement: registered Git worktree. For the temporary worker bridge, report and commit through hive_worktree_commit. That handoff does not authorize merge or cleanup; the primary owns both.'
-      : 'Placement: registered Git worktree. For the temporary worker bridge, report and commit through hive_adhoc_worktree_commit. That handoff does not authorize merge or cleanup; the primary owns both.'
-    : input.kind === 'task'
-      ? 'Placement: live in-place directory. Changes are immediately visible; Hive provides no filesystem confinement, staging, rollback, commit, or merge guarantee. For the temporary worker bridge, report through the task handoff tool without a commit message; Hive records disposition without running Git.'
-      : 'Placement: live in-place directory. Changes are immediately visible; Hive provides no filesystem confinement, staging, rollback, commit, or merge guarantee. Return the outcome and verification evidence in your terminal prose handoff to the primary.';
+    ? 'Placement: registered Git worktree. The primary owns finalization, commit, merge, and cleanup.'
+    : 'Placement: live in-place directory. Changes are immediately visible; Hive provides no filesystem confinement, staging, rollback, commit, or merge guarantee. Return the outcome and verification evidence in your terminal prose handoff to the primary.';
   return `${EXECUTION_SCOPE_START}\n${EXECUTION_SCOPE_HEADING}\n\n${scope}\nWorking directory: ${directory}\n${references}\n${placement}\nReturn one terminal handoff to the primary; worker prose does not finalize execution state.\n${EXECUTION_SCOPE_END}`;
 }
 

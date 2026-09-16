@@ -260,7 +260,7 @@ task({ ...prepared.taskToolCall })  // Preserve hive_launch_id from the returned
   ↓
 [Worker implements in worktree]
   ↓
-hive_worktree_commit({ task, summary, status: "completed" })
+hive_execution_finish({ attemptId, status: "completed", summary, message })
   ↓
 hive_merge({ task: "01-task-name", strategy: "squash" })
 ```
@@ -344,7 +344,7 @@ If "Revise Plan":
 | Execute | `hive_tasks_sync` | Generate tasks |
 | Execute | `hive_worktree_start` | Spawn worker for normal starts |
 | Execute | `hive_worktree_create` | Launch a fresh worker for a blocked task in its existing worktree |
-| Execute | `hive_worktree_commit` | Finish task |
+| Finalize | `hive_execution_finish` | Persist primary disposition and release execution |
 | Execute | `hive_worktree_discard` | Discard task |
 | Execute | `hive_merge` | Integrate task |
 | Execute | `hive_status` | Check workers/blockers |

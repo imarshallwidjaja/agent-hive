@@ -39,7 +39,7 @@ describe('managed prompt blocks', () => {
 
     expect(block).toContain('Task spec: .hive/features/09_feature/tasks/01-task/spec.md');
     expect(block).toContain('Feature context: .hive/features/09_feature/context/');
-    expect(block).toContain('without a commit message');
+    expect(block).toContain('terminal prose handoff');
     expect(block).not.toContain('hive_worktree_commit');
   });
 
@@ -53,25 +53,23 @@ describe('managed prompt blocks', () => {
     expect(block).not.toContain('task handoff tool');
   });
 
-  it('directs feature worktree workers through the temporary commit bridge', () => {
+  it('assigns feature worktree finalization to the primary', () => {
     const block = buildExecutionScopeBlock({
       kind: 'task', featureName: 'feature', featureDirectory: '09_feature', taskFolder: '01-task',
       placement: { kind: 'worktree', workspacePath: '/tmp/feature-worktree' },
     });
 
-    expect(block).toContain('report and commit through hive_worktree_commit');
-    expect(block).toContain('the primary owns both');
-    expect(block).not.toContain('hive_adhoc_worktree_commit');
+    expect(block).toContain('The primary owns finalization, commit, merge, and cleanup');
+    expect(block).not.toContain('hive_worktree_commit');
   });
 
-  it('directs ad-hoc worktree workers through the temporary commit bridge', () => {
+  it('assigns ad-hoc worktree finalization to the primary', () => {
     const block = buildExecutionScopeBlock({
       kind: 'adhoc', runId: 'adhoc-run',
       placement: { kind: 'worktree', workspacePath: '/tmp/adhoc-worktree' },
     });
 
-    expect(block).toContain('report and commit through hive_adhoc_worktree_commit');
-    expect(block).toContain('the primary owns both');
-    expect(block).not.toContain('hive_worktree_commit.');
+    expect(block).toContain('The primary owns finalization, commit, merge, and cleanup');
+    expect(block).not.toContain('hive_adhoc_worktree_commit');
   });
 });

@@ -128,7 +128,7 @@ When agents return:
 - Read each summary
 - Verify fixes don't conflict
 - In feature-task mode, follow the feature workflow's verification and `hive_merge` lifecycle.
-- In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`, which owns review gates, deterministic integration, full integrated-batch verification, and the authorized `hive_adhoc_worktree_commit` / `hive_adhoc_merge` lifecycle.
+- In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`, which owns review gates, primary-only `hive_execution_finish`, deterministic integration, full integrated-batch verification, and `hive_adhoc_merge`.
 
 ## Agent Prompt Structure
 

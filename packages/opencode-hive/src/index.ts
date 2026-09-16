@@ -335,6 +335,7 @@ import {
   SessionService,
   SessionContinuityError,
   ExecutionAttemptService,
+  ExecutionFinalizationService,
   ExecutionPlacementMismatchError,
   ExecutionScopeConflictError,
   validateAssignmentDescriptorShape,
@@ -354,16 +355,12 @@ import {
   classifyWorktreeOutcome,
   type CustomAgentBase,
   type ResolvedCustomAgentConfig,
-  type WorktreeInfo,
   type AdhocWorktreeInfo,
-  type AdhocCommitResult,
   type AdhocMergeResult,
   type AdhocCleanupResult,
-  type CommitResult,
   type MergeResult,
   type MergeCleanupBlock,
   type PlanPatchOperation,
-  type TaskAggregateBranchDiff,
   type TruncationEvent,
   type ContextReadSummary,
   type WorkerAssignmentDescriptor,
@@ -1507,13 +1504,12 @@ const plugin: Plugin = async (ctx) => {
 
   const customAgentConfigsForClassification = configService.getCustomAgentConfigs();
   const helperAuthBinds = new Map<string, HelperAuthBind>();
-  const finalizeStoppedBridgeAttempt = (attempt: ExecutionAttempt): void => {
-    if (attempt.phase !== 'stopped') return;
-    const fallbackOutcome = attempt.stopEvidence?.state === 'cancelled'
-      ? 'cancelled'
-      : attempt.stopEvidence?.state === 'error' ? 'failed' : 'completed';
-    executionAttemptService.finalize(attempt.id, attempt.handoffOutcome ?? fallbackOutcome);
-  };
+  const executionFinalizationService = new ExecutionFinalizationService(
+    directory,
+    {},
+    executionAttemptService,
+    taskService,
+  );
   const settleAttemptFromNativeBackground = (event: {
     taskId: string;
     callId?: string;
@@ -1522,13 +1518,12 @@ const plugin: Plugin = async (ctx) => {
   }): void => {
     if (!event.callId) return;
     try {
-      const stopped = executionAttemptService.observeBackgroundStop({
+      executionAttemptService.observeBackgroundStop({
         originatingPrimarySession: event.parentSessionId,
         nativeCallId: event.callId,
         nativeTaskId: event.taskId,
         state: event.state,
       });
-      finalizeStoppedBridgeAttempt(stopped);
     } catch {
       // Board callbacks are observational; identity mismatch cannot advance execution state.
     }
@@ -2468,10 +2463,14 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     for (const depFolder of deps) {
       const depStatus = taskService.getRawStatus(feature, depFolder);
 
-      if (!depStatus || depStatus.status !== 'done') {
+      const dependencyAttempt = executionAttemptService.currentTaskAttempt(feature, depFolder);
+      if (!depStatus || depStatus.status !== 'done'
+        || (dependencyAttempt !== undefined && dependencyAttempt.phase !== 'finalized')) {
         unmetDeps.push({
           folder: depFolder,
-          status: depStatus?.status ?? 'unknown',
+          status: dependencyAttempt && dependencyAttempt.phase !== 'finalized'
+            ? `${depStatus?.status ?? 'unknown'}; execution ${dependencyAttempt.phase}`
+            : depStatus?.status ?? 'unknown',
         });
       }
     }
@@ -2540,37 +2539,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
   ): string[] => args
     .filter((arg) => arg.value !== undefined && arg.value !== null && typeof arg.value !== 'string')
     .map((arg) => arg.name);
-
-  const deriveTopLevelAreas = (files: string[]): string[] => {
-    const compareText = (left: string, right: string): number =>
-      left < right ? -1 : left > right ? 1 : 0;
-    const areas = new Set<string>();
-    for (const qualifiedPath of [...files].sort(compareText)) {
-      const separator = qualifiedPath.indexOf(':');
-      const repo = separator >= 0 ? qualifiedPath.slice(0, separator) : undefined;
-      const filePath = separator >= 0 ? qualifiedPath.slice(separator + 1) : qualifiedPath;
-      const [topLevel] = filePath.split('/');
-      const area = repo
-        ? topLevel && topLevel !== filePath ? `${repo}:${topLevel}` : repo
-        : topLevel;
-      if (area) areas.add(area);
-    }
-    const sorted = [...areas].sort(compareText);
-    return sorted.length <= 8
-      ? sorted
-      : [...sorted.slice(0, 8), `+${sorted.length - 8} more`];
-  };
-
-  const buildAggregateBranchDiff = (
-    diff: { filesChanged: string[]; insertions: number; deletions: number },
-    reportPath: string,
-  ): TaskAggregateBranchDiff => ({
-    fileCount: diff.filesChanged.length,
-    insertions: diff.insertions,
-    deletions: diff.deletions,
-    areas: deriveTopLevelAreas(diff.filesChanged),
-    report: normalizePath(path.relative(directory, reportPath)),
-  });
 
   type WritableLaunchTarget = {
     label: string;
@@ -2728,7 +2696,7 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
       && attempt.phase !== 'finalized'
       && executionAttemptService.isCurrentTaskAttempt(feature, task, attempt.id));
   const currentTaskAttemptSlot = (feature: string, task: string): string | undefined => {
-    const placement = currentUnsettledTaskAttempt(feature, task)?.placement;
+    const placement = executionAttemptService.currentTaskAttempt(feature, task)?.placement;
     return placement?.kind === 'worktree' ? placement.attemptSlot : undefined;
   };
   const currentUnsettledAdhocAttempt = (runId: string): ExecutionAttempt | undefined =>
@@ -2737,11 +2705,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
   const latestAdhocAttempt = (runId: string): ExecutionAttempt | undefined =>
     executionAttemptService.listAttempts().filter(attempt =>
       attempt.kind === 'adhoc' && attempt.runId === runId).at(-1);
-  const isAuthorizedAdhocCommitSession = (attempt: ExecutionAttempt, sessionID: string | undefined): boolean =>
-    Boolean(sessionID && (
-      (attempt.phase === 'attached' && attempt.native?.childSessionId === sessionID)
-      || (attempt.phase === 'finalized' && attempt.originatingPrimarySession === sessionID)
-    ));
   const releaseUnusedPreparedClaim = (attempt: ExecutionAttempt | undefined): void => {
     if (attempt?.phase !== 'armed') return;
     try { executionAttemptService.closeArmNotStarted(attempt.id); } catch { }
@@ -2752,12 +2715,11 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
   ): void => {
     if (input.tool !== 'task' || !input.callID || input.args?.background === true) return;
     try {
-      const stopped = executionAttemptService.observeBlockingStop({
+      executionAttemptService.observeBlockingStop({
         originatingPrimarySession: input.sessionID,
         nativeCallId: input.callID,
         outputDefined,
       });
-      if (stopped) finalizeStoppedBridgeAttempt(stopped);
     } catch {
       // Missing, undefined, or contradictory stop evidence leaves the execution quarantined.
     }
@@ -5747,489 +5709,72 @@ NEXT: Ask your first clarifying question about this feature.`;
         },
       }),
 
-      hive_worktree_commit: tool({
-        description: 'Record worker handoff: commit accepted changes and preserve immutable report history with latest report.md navigation. Blocked reports perform no Git operation. Worker claims are not verification or integration evidence. Consolidate current cross-attempt knowledge into existing task-tagged durable context with report references; historical claims are not active instructions. Returns JSON with ok/terminal semantics.',
+      hive_execution_finish: tool({
+        description: 'Finalize one stopped managed execution from its originating primary. Checkpoints Git commits, immutable report history, task disposition, and claim release.',
         args: {
-          task: tool.schema.string().describe('Task folder name'),
-          summary: tool.schema.string().describe('Summary of what was done'),
-          message: tool.schema.string().optional().describe('Required when changes will be committed. Must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.'),
-          status: tool.schema.enum(['completed', 'blocked', 'failed', 'partial']).optional().default('completed').describe('Task completion status'),
+          attemptId: tool.schema.string().describe('Stopped execution attempt identifier.'),
+          status: tool.schema.enum(['completed', 'partial', 'failed', 'blocked', 'cancelled']).describe('Accepted disposition.'),
+          summary: tool.schema.string().describe('Primary-authored final report summary.'),
           blocker: tool.schema.object({
-            reason: tool.schema.string().describe('Why the task is blocked'),
-            options: tool.schema.array(tool.schema.string()).optional().describe('Available options for the user'),
-            recommendation: tool.schema.string().optional().describe('Your recommended choice'),
-            context: tool.schema.string().optional().describe('Additional context for the decision'),
-          }).optional().describe('Blocker info when status is blocked'),
-          feature: tool.schema.string().optional().describe(FEATURE_ARGUMENT_DESCRIPTION),
+            reason: tool.schema.string(),
+            options: tool.schema.array(tool.schema.string()).optional(),
+            recommendation: tool.schema.string().optional(),
+            context: tool.schema.string().optional(),
+          }).optional(),
+          message: tool.schema.string().optional().describe('Required when a Git worktree has changes; rejected for in-place and blocked finalization.'),
         },
-        async execute({ task, summary, message, status = 'completed', blocker, feature: explicitFeature }, toolContext) {
-          const respond = (payload: Record<string, unknown>) => JSON.stringify(payload, null, 2);
-          const feature = resolveFeature(explicitFeature, toolContext);
-          if (!feature) {
-            const failure = getFeatureResolutionFailure('feature', explicitFeature);
+        async execute({ attemptId, status, summary, blocker, message }, toolContext) {
+          const sessionID = (toolContext as ToolContext | undefined)?.sessionID;
+          const session = sessionID ? sessionService.getGlobal(sessionID) : undefined;
+          if (!sessionID || session?.sessionKind !== 'primary') {
             return respond({
-              ok: false,
-              terminal: false,
-              status: 'error',
-              reason: failure.reason,
-              candidates: failure.candidates,
-              task,
-              taskState: 'unknown',
-              message: failure.error,
-              nextAction: failure.hint,
+              success: false,
+              reason: 'primary_required',
+              error: 'hive_execution_finish is available only to an authenticated primary session.',
             });
           }
-
-          const taskInfo = taskService.get(feature, task);
-          if (!taskInfo) {
-            return respond({
-              ok: false,
-              terminal: false,
-              status: 'error',
-              reason: 'task_not_found',
-              feature,
-              task,
-              taskState: 'unknown',
-              message: `Task "${task}" not found`,
-              nextAction: 'Check the task folder name in your worker-prompt.md and retry hive_worktree_commit with the correct task id.',
-            });
-          }
-          const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
-          const committingSession = committingSessionID ? sessionService.getGlobal(committingSessionID) : undefined;
-          const unsettledTaskAttempts = executionAttemptService.listAttempts().filter(attempt =>
-            attempt.phase !== 'finalized'
-            && attempt.kind === 'task'
-            && attempt.featureName === feature
-            && attempt.taskFolder === task);
-          const workerAttempt = unsettledTaskAttempts.find(attempt =>
-            attempt.native?.childSessionId === committingSessionID);
-          const liveAttempt = workerAttempt;
-          if (!liveAttempt) {
-            return respond({
-              ok: false,
-              terminal: false,
-              status: 'error',
-              reason: 'assignment_recovery_error',
-              feature,
-              task,
-              taskState: taskInfo.status,
-              message: 'The worker has no live execution attempt association.',
-              nextAction: 'Return to the authenticated parent and create a fresh worker launch for this exact task.',
-            });
-          }
-          if (liveAttempt.phase !== 'attached') {
-            return respond({
-              ok: false,
-              terminal: false,
-              status: 'error',
-              reason: 'workspace_conflict_denied',
-              mutation: 'none',
-              feature,
-              task,
-              taskState: taskInfo.status,
-              attemptId: liveAttempt.id,
-              message: 'Feature-task handoff mutation requires the exact bound child while its execution is attached.',
-              nextAction: 'Return to the authenticated parent; stopped execution claims remain quarantined until finalization.',
-            });
-          }
-          const attemptIsCurrent = executionAttemptService.isCurrentTaskAttempt(feature, task, liveAttempt.id);
-          const attemptSlot = liveAttempt.placement.kind === 'worktree' ? liveAttempt.placement.attemptSlot : undefined;
-          const inPlaceDirectory = liveAttempt.placement.kind === 'in_place' ? liveAttempt.placement.directory : undefined;
-          const reportOnly = inPlaceDirectory !== undefined;
-          if (attemptIsCurrent && taskInfo.status !== 'in_progress' && taskInfo.status !== 'blocked') {
-            return respond({
-              ok: false,
-              terminal: false,
-              status: 'error',
-              reason: 'invalid_task_state',
-              feature,
-              task,
-              taskState: taskInfo.status,
-              message: 'Task not in progress',
-              nextAction: 'Only in_progress or blocked tasks can be committed. Start/resume the task first.',
-            });
-          }
-          if (reportOnly && message?.trim()) {
-            return respond({
-              ok: false,
-              terminal: false,
-              status: 'error',
-              reason: 'in_place_message_not_allowed',
-              feature,
-              task,
-              taskState: taskInfo.status,
-              message: 'In-place execution records a report only and does not accept a Git commit message.',
-              nextAction: 'Retry hive_worktree_commit without message. Hive will record only the in-place report.',
-            });
-          }
-
-          // ADVISORY: Track verification status (workers do best-effort)
-          let verificationNote: string | undefined;
-          if (status === 'completed') {
-            const verificationKeywords = ['test', 'build', 'lint', 'vitest', 'jest', 'npm run', 'pnpm', 'cargo', 'pytest', 'verified', 'passes', 'succeeds', 'ast-grep', 'scan'];
-            const summaryLower = summary.toLowerCase();
-            const hasVerificationMention = verificationKeywords.some(kw => summaryLower.includes(kw));
-
-            if (!hasVerificationMention) {
-              verificationNote = reportOnly
-                ? 'No verification evidence in summary. The orchestrator should run the relevant checks against the live directory.'
-                : 'No verification evidence in summary. Orchestrator should run build+test after merge.';
-            }
-          }
-
-          // Handle blocked status - don't commit, just update status
-          if (status === 'blocked') {
-            const blockedBody = [
-              `# Task Report: ${task}`, '', `**Feature:** ${feature}`,
-              `**Recorded:** ${new Date().toISOString()}`,
-              '**Worker-reported outcome:** blocked', '',
-              'No Git operation was requested for this blocked handoff.', '',
-              '## Summary', '', summary, '', '## Worker-reported blocker', '',
-              JSON.stringify(blocker ?? null, null, 2), '',
-            ].join('\n');
-            let reportPath: string;
-            let reportReference: string;
-            if (!attemptIsCurrent) {
-              const featureDir = resolveFeatureDirectoryName(directory, feature);
-              reportReference = `.hive/features/${featureDir}/tasks/${task}/assignments/attempt-${liveAttempt.taskAttempt ?? 'unknown'}-handoff.md`;
-              reportPath = path.join(directory, reportReference);
-              fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-              fs.writeFileSync(reportPath, blockedBody);
-              executionAttemptService.recordHandoff(liveAttempt.id, {
-                reportLocator: reportReference,
-                reportContentHash: createHash('sha256').update(blockedBody).digest('hex'),
-                outcome: 'blocked',
-              });
-            } else {
-              const written = taskService.writeReportWithReference(feature, task, blockedBody);
-              reportPath = written.reportPath;
-              reportReference = written.reportReference;
-              taskService.update(feature, task, {
-                status: 'blocked',
-                summary,
-                blocker: blocker as any,
-              } as any);
-            }
-            executionAttemptService.recordHandoff(liveAttempt.id, {
-              reportLocator: reportReference,
-              reportContentHash: createHash('sha256').update(blockedBody).digest('hex'),
-              outcome: 'blocked',
-            });
-
-            let worktree: WorktreeInfo | null = null;
-            try {
-              if (!reportOnly) worktree = await worktreeService.get(feature, task, attemptSlot);
-            } catch (error: unknown) {
-              const classification = classifyServiceThrow(error);
-              if (!classification) throw error;
-              return respond({
-                ok: false,
-                terminal: true,
-                status: 'error',
-                reason: 'blocked_handoff_worktree_unavailable',
-                feature,
-                task,
-                taskState: 'blocked',
-                summary,
-                blocker,
-                error: error instanceof Error ? error.message : String(error),
-                ...worktreeOutcomeFields(classification),
-                message: `Blocked handoff for task "${task}" was recorded, but the worktree can no longer be inspected.`,
-                nextAction: `${worktreeNextAction(classification.action)} The blocked report is already persisted, so do not repeat hive_worktree_commit.`,
-              });
-            }
-            const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
-            return respond({
-              ok: true,
-              terminal: true,
-              status: 'blocked',
-              reason: 'user_decision_required',
-              reportPath,
-              reportReference,
-              feature,
-              task,
-              taskState: 'blocked',
+          const attempt = executionAttemptService.getAttempt(attemptId);
+          if (!attempt) return respond({ success: false, reason: 'attempt_not_found', error: `Unknown execution attempt ${attemptId}.` });
+          try {
+            const target: WritableLaunchTarget = {
+              projectRoot: fs.realpathSync(directory),
+              resourcePaths: attempt.placement.kind === 'worktree' ? attempt.placement.workspaceIdentities : [],
+              label: `execution attempt '${attempt.id}'`,
+              checkSourceClaim: false,
+              ...(attempt.kind === 'task'
+                ? { feature: attempt.featureName, task: attempt.taskFolder }
+                : { runId: attempt.runId }),
+            };
+            const result = await withWritableOperation(target, () => executionFinalizationService.finish({
+              attemptId,
+              originatingPrimarySession: sessionID,
+              status,
               summary,
               blocker,
-              ...(traceTaskId ? { traceTaskId } : {}),
-              ...(reportOnly ? { directory: inPlaceDirectory } : { worktreePath: worktree?.path }),
-              ...(worktree?.branch ? { branch: worktree.branch } : {}),
-              message: reportOnly
-                ? 'Task blocked. Hive Master will collect the operator decision before a fresh in-place execution is prepared.'
-                : 'Task blocked. Hive Master will ask the user, then arm blocked continuation with hive_execution_prepare(scope.continueFromBlocked: true).',
-              nextAction: reportOnly
-                ? traceTaskId
-                  ? `The orchestrator should inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }), collect the operator decision, and prepare a fresh execution for the same live directory after terminal evidence.`
-                  : 'Wait for the orchestrator to inspect the blocker, collect the operator decision, and prepare a fresh execution for the same live directory after terminal evidence.'
-                : traceTaskId
-                  ? `The orchestrator should inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before collecting the operator decision, then request fresh worker launch guidance for the existing worktree.`
-                  : 'Wait for the orchestrator to inspect the blocker, collect the user decision, and request fresh worker launch guidance for the existing worktree. No traceTaskId is available.',
-            });
-          }
-
-          // For failed/partial, still commit what we have
-          let commitResult: CommitResult;
-          try {
-            commitResult = reportOnly
-              ? {
-                  committed: false,
-                  sha: '',
-                  message: 'In-place report-only handoff',
-                  phase: 'preflight',
-                  mutation: 'none',
-                  retryable: false,
-                  action: 'none',
-                }
-              : await worktreeService.commitChanges(feature, task, message, attemptSlot);
-          } catch (error: unknown) {
-            const classification = classifyServiceThrow(error);
-            if (!classification) throw error;
+              message,
+            }));
             return respond({
-              ok: false,
-              terminal: true,
-              status: 'error',
-              reason: 'commit_failed',
-              feature,
-              task,
-              taskState: taskInfo.status,
-              summary,
-              error: error instanceof Error ? error.message : String(error),
-              ...worktreeOutcomeFields(classification),
-              nextAction: worktreeNextAction(classification.action),
-            });
-          }
-
-          const commitClassification = {
-            phase: commitResult.phase,
-            ...(commitResult.reasonCode !== undefined ? { reasonCode: commitResult.reasonCode } : {}),
-            mutation: commitResult.mutation,
-            retryable: commitResult.retryable,
-            action: commitResult.action,
-          };
-
-          // Aggregate composite partial failure: at least one repo committed, at
-          // least one repo failed. Do not let this silently become `done`; keep
-          // task state and surface the per-repo breakdown so the worker can
-          // resolve, retry, or explicitly report blocked/failed.
-          if (commitResult.partial) {
-            return respond({
-              ok: false,
-              terminal: false,
-              status: 'rejected',
-              reason: 'commit_partial',
-              feature,
-              task,
-              taskState: taskInfo.status,
-              summary,
-              ...commitClassification,
-              commit: {
-                committed: commitResult.committed,
-                sha: commitResult.sha,
-                message: commitResult.message,
-                partial: true,
-                ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
-                ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
-                ...commitClassification,
-              },
-              message: `Partial commit failure: ${commitResult.error || 'one or more repos failed to commit after an earlier repo succeeded'}.`,
-              nextAction: `${worktreeNextAction(commitResult.action)} If unrecoverable, report blocked or failed instead of retrying.`,
-            });
-          }
-
-          if (!reportOnly && (commitResult.error || (!commitResult.committed && commitResult.message !== 'No changes to commit'))) {
-            return respond({
-              ok: false,
-              terminal: false,
-              status: 'rejected',
-              reason: 'commit_failed',
-              feature,
-              task,
-              taskState: taskInfo.status,
-              summary,
-              ...commitClassification,
-              commit: {
-                committed: commitResult.committed,
-                sha: commitResult.sha,
-                message: commitResult.message,
-                ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
-                ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
-                ...commitClassification,
-              },
-              message: `Commit failed: ${commitResult.error || commitResult.message || 'unknown error'}`,
-              nextAction: worktreeNextAction(commitResult.action),
-            });
-          }
-
-          let diff: Awaited<ReturnType<WorktreeService['getDiff']>> | undefined;
-          try {
-            if (!reportOnly) diff = await worktreeService.getDiff(feature, task, undefined, attemptSlot);
-          } catch (error: unknown) {
-            const classification = classifyServiceThrow(error);
-            if (!classification) throw error;
-            return respond({
-              ok: false,
-              terminal: true,
-              status: 'error',
-              reason: 'commit_diff_unavailable',
-              feature,
-              task,
-              taskState: taskInfo.status,
-              summary,
-              error: error instanceof Error ? error.message : String(error),
-              ...worktreeOutcomeFields(classification),
-              nextAction: worktreeNextAction(classification.action),
-            });
-          }
-
-          const reportLines: string[] = [
-            `# Task Report: ${task}`,
-            '',
-            `**Feature:** ${feature}`,
-            `**Recorded:** ${new Date().toISOString()}`,
-            `**Worker-reported outcome:** ${status}`,
-            reportOnly
-              ? '**Git operation:** not requested (in-place placement)'
-              : `**${commitResult.committed ? 'Created commit' : 'Observed HEAD (no new commit)'}:** ${commitResult.sha || 'none'}`,
-            '',
-            '---',
-            '',
-            '## Summary',
-            '',
-            summary,
-            '',
-          ];
-
-          if (diff?.hasDiff) {
-            reportLines.push(
-              '---',
-              '',
-              '## Changes',
-              '',
-              `- **Files changed:** ${diff.filesChanged.length}`,
-              `- **Insertions:** +${diff.insertions}`,
-              `- **Deletions:** -${diff.deletions}`,
-              '',
-            );
-
-            if (diff.filesChanged.length > 0) {
-              reportLines.push('### Files Modified', '');
-              for (const file of diff.filesChanged) {
-                reportLines.push(`- \`${file}\``);
-              }
-              reportLines.push('');
-            }
-          } else {
-            reportLines.push('---', '', '## Changes', '', '_No file changes detected_', '');
-          }
-
-          const reportBody = reportLines.join('\n');
-          let reportPath: string;
-          let reportReference: string;
-          if (!attemptIsCurrent) {
-            const featureDir = resolveFeatureDirectoryName(directory, feature);
-            reportReference = `.hive/features/${featureDir}/tasks/${task}/assignments/attempt-${liveAttempt.taskAttempt ?? 'unknown'}-handoff.md`;
-            reportPath = path.join(directory, reportReference);
-            fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-            fs.writeFileSync(reportPath, reportBody);
-            executionAttemptService.recordHandoff(liveAttempt.id, {
-              reportLocator: reportReference,
-              reportContentHash: createHash('sha256').update(reportBody).digest('hex'),
-              outcome: status,
-            });
-          } else {
-            const written = taskService.writeReportWithReference(feature, task, reportBody);
-            reportPath = written.reportPath;
-            reportReference = written.reportReference;
-            const finalStatus = status === 'completed' ? 'done' : status;
-            taskService.update(feature, task, {
-              status: finalStatus as any,
-              summary,
-              ...(diff ? { aggregateBranchDiff: buildAggregateBranchDiff(diff, reportReference) } : {}),
-            });
-          }
-          executionAttemptService.recordHandoff(liveAttempt.id, {
-            reportLocator: reportReference,
-            reportContentHash: createHash('sha256').update(reportBody).digest('hex'),
-            outcome: status,
-          });
-          const finalStatus = attemptIsCurrent
-            ? (status === 'completed' ? 'done' : status)
-            : taskInfo.status;
-
-          let worktree: WorktreeInfo | null = null;
-          try {
-            if (!reportOnly) worktree = await worktreeService.get(feature, task, attemptSlot);
-          } catch (error: unknown) {
-            const classification = classifyServiceThrow(error);
-            if (!classification) throw error;
-            return respond({
-              ok: false,
-              terminal: true,
+              success: true,
+              attemptId,
+              phase: result.attempt.phase,
               status,
-              feature,
-              task,
-              taskState: finalStatus,
-              summary,
-              ...(verificationNote && { verificationNote }),
-              ...(reportOnly
-                ? { handoff: { kind: 'report_only', gitOperation: 'not_requested' } }
-                : { commit: {
-                    committed: commitResult.committed,
-                    sha: commitResult.sha,
-                    message: commitResult.message,
-                    ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
-                    ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
-                    ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
-                    ...commitClassification,
-                  } }),
-              reportPath,
-              reportReference,
+              reportPath: result.reportPath,
+              currentTaskUnchanged: result.currentTaskUnchanged,
+              finalization: result.attempt.finalization,
+              nextAction: result.attempt.placement.kind === 'worktree'
+                ? 'Review the finalized report, then merge or clean up explicitly.'
+                : 'The in-place execution is finalized; no Git operation was performed.',
+            });
+          } catch (error) {
+            return respond({
+              success: false,
+              reason: 'execution_finalization_failed',
+              attemptId,
+              phase: executionAttemptService.getAttempt(attemptId)?.phase,
               error: error instanceof Error ? error.message : String(error),
-              ...worktreeOutcomeFields(classification),
-              message: `Task "${task}" ${status}; the commit and report are persisted, but the worktree can no longer be inspected.`,
-              nextAction: `${worktreeNextAction(classification.action)} The commit and report are already persisted, so do not repeat hive_worktree_commit.`,
+              nextAction: 'Inspect the durable finalization receipt and Git state, then retry the same immutable finalization input.',
             });
           }
-          const traceTaskId = taskService.getRawStatus(feature, task)?.workerSession?.sessionId;
-          return respond({
-            ok: true,
-            terminal: true,
-            status,
-            feature,
-            task,
-            taskState: finalStatus,
-            summary,
-            ...(verificationNote && { verificationNote }),
-            ...(reportOnly
-              ? { handoff: { kind: 'report_only', gitOperation: 'not_requested' } }
-              : { commit: {
-                  committed: commitResult.committed,
-                  sha: commitResult.sha,
-                  message: commitResult.message,
-                  ...(commitResult.partial !== undefined ? { partial: commitResult.partial } : {}),
-                  ...(commitResult.error !== undefined ? { error: commitResult.error } : {}),
-                  ...(commitResult.repos !== undefined ? { repos: commitResult.repos } : {}),
-                  ...commitClassification,
-                } }),
-            ...(reportOnly ? { directory: inPlaceDirectory } : { worktreePath: worktree?.path }),
-            ...(worktree?.branch ? { branch: worktree.branch } : {}),
-            reportPath,
-            reportReference,
-            ...(traceTaskId ? { traceTaskId } : {}),
-            message: `Task "${task}" ${status}.`,
-            ...(attemptIsCurrent ? {} : { currentTaskUnchanged: true, attemptId: liveAttempt.id }),
-            nextAction: reportOnly
-              ? status === 'completed'
-                ? 'The in-place report is recorded. Return this terminal handoff to the primary.'
-                : traceTaskId
-                  ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }), then prepare a fresh execution for the same live directory after terminal evidence. Recovery context goes to the new native call.`
-                  : 'Review the in-place report, then prepare a fresh execution for the same live directory after terminal evidence.'
-              : status === 'completed'
-                ? 'Use hive_merge to integrate changes. Worktree is preserved for review.'
-                : traceTaskId
-                  ? `Inspect hive_task_trace({ task_id: ${JSON.stringify(traceTaskId)} }) before retrying, then use hive_execution_prepare for a fresh native Forager call. Worktree is preserved. Recovery context goes to the NEW task without task_id.`
-                  : 'No traceTaskId is available. Review the task report and worktree, then use hive_execution_prepare for a fresh native Forager call. Do not invent or pass task_id to task().',
-          });
         },
       }),
 
@@ -6375,7 +5920,11 @@ NEXT: Ask your first clarifying question about this feature.`;
 
           const taskInfo = taskService.get(feature, task);
           if (!taskInfo) return failure(`Task "${task}" not found`);
-          if (taskInfo.status !== 'done') return failure('Task must be completed before merging. Use hive_worktree_commit first.');
+          const finalizedAttempt = executionAttemptService.currentTaskAttempt(feature, task);
+          if (taskInfo.status !== 'done' || finalizedAttempt?.phase !== 'finalized'
+            || finalizedAttempt.observedOutcome !== 'completed') {
+            return failure('Task execution must be finalized as completed before merging. Use hive_execution_finish first.');
+          }
 
           let result: MergeResult;
           try {
@@ -6427,142 +5976,6 @@ NEXT: Ask your first clarifying question about this feature.`;
       }),
 
 
-      hive_adhoc_worktree_commit: tool({
-        description: 'Commit changes in an ad-hoc worktree. Returns structured JSON with workspacePath, branch, and nextAction.',
-        args: {
-          runId: tool.schema.string().describe('Ad-hoc run identifier returned from hive_execution_prepare.'),
-          workspacePath: tool.schema.string().describe('Worktree workspace path returned in hive_execution_prepare placement.'),
-          branch: tool.schema.string().describe('Worktree branch returned in hive_execution_prepare placement.'),
-          message: tool.schema.string().describe('Git commit message with a non-empty one-line subject, a blank line, and a non-empty descriptive body.'),
-        },
-        async execute({ runId, workspacePath: expectedWorkspacePath, branch: expectedBranch, message }, toolContext) {
-          const invalidArguments = describeInvalidStringArguments([
-            { name: 'runId', value: runId },
-            { name: 'workspacePath', value: expectedWorkspacePath },
-            { name: 'branch', value: expectedBranch },
-            { name: 'message', value: message },
-          ]);
-          if (invalidArguments.length > 0) {
-            return invalidAdhocArgumentsResponse(
-              'hive_adhoc_worktree_commit',
-              invalidArguments,
-              { runId: isNonBlankString(runId) ? runId : undefined, reuseCreateIdentity: true },
-            );
-          }
-          try {
-            const info = await adhocWorktreeService.get(runId);
-            if (!info) {
-              const classification = classifyWorktreeOutcome('RUN_NOT_FOUND');
-              return respond({
-                success: false,
-                reason: 'adhoc_run_not_found',
-                runId,
-                error: `Ad-hoc run "${runId}" not found.`,
-                ...worktreeOutcomeFields(classification),
-                nextAction: `${worktreeNextAction(classification.action)} Verify the runId or prepare a new ad-hoc worktree with hive_execution_prepare.`,
-              });
-            }
-            const workspacePath = info.workspacePath ?? info.path;
-            if (path.resolve(workspacePath) !== path.resolve(expectedWorkspacePath) || info.branch !== expectedBranch) {
-              return respond({
-                success: false,
-                reason: 'adhoc_run_mismatch',
-                runId,
-                workspacePath,
-                branch: info.branch,
-                error: 'Provided workspacePath or branch does not match the ad-hoc run.',
-                nextAction: 'Use the workspacePath and branch returned by hive_execution_prepare, or prepare a new ad-hoc worktree.',
-              });
-            }
-            const targetAttempt = latestAdhocAttempt(runId);
-            const committingSessionID = (toolContext as ToolContext | undefined)?.sessionID;
-            if (!targetAttempt) {
-              return respond({
-                success: false,
-                reason: 'workspace_conflict_denied',
-                mutation: 'none',
-                runId,
-                error: 'Ad-hoc handoff mutation requires an authenticated execution attempt for the target run.',
-                nextAction: 'Return to the authenticated primary and prepare this run through hive_execution_prepare.',
-              });
-            }
-            const placementMatches = targetAttempt.placement.kind === 'worktree'
-              && path.resolve(targetAttempt.placement.workspacePath) === path.resolve(workspacePath)
-              && targetAttempt.placement.branch === info.branch;
-            if (!isAuthorizedAdhocCommitSession(targetAttempt, committingSessionID) || !placementMatches) {
-              return respond({
-                success: false,
-                reason: 'workspace_conflict_denied',
-                mutation: 'none',
-                runId,
-                attemptId: targetAttempt.id,
-                phase: targetAttempt.phase,
-                error: 'Ad-hoc handoff mutation requires the target attempt identity and exact worktree placement.',
-                nextAction: targetAttempt.phase === 'finalized'
-                  ? 'Return to the originating authenticated primary for finalized-run recovery.'
-                  : 'Return to the authenticated parent; the execution claim remains quarantined until finalization.',
-              });
-            }
-            const commitTarget = adhocWritableTarget(info);
-            if (targetAttempt.phase === 'attached') commitTarget.checkSourceClaim = false;
-            const result: AdhocCommitResult = await withWritableOperation(commitTarget,
-              () => adhocWorktreeService.commit(runId, message));
-            const isPartial = result.partial === true;
-            const hasError = Boolean(result.error) || isPartial;
-            const isNoChange = !result.committed && result.message === 'No changes to commit' && !hasError;
-            const success = !hasError && (result.committed || isNoChange);
-            if (targetAttempt?.phase === 'attached') {
-              executionAttemptService.recordHandoff(targetAttempt.id, {
-                outcome: success ? 'completed' : isPartial ? 'partial' : 'failed',
-              });
-            }
-            const commitClassification = {
-              phase: result.phase,
-              ...(result.reasonCode !== undefined ? { reasonCode: result.reasonCode } : {}),
-              mutation: result.mutation,
-              retryable: result.retryable,
-              action: result.action,
-            };
-            return respond({
-              success,
-              runId,
-              workspacePath,
-              branch: info.branch,
-              ...commitClassification,
-              commit: {
-                committed: result.committed,
-                sha: result.sha,
-                message: result.message,
-                ...(result.partial !== undefined ? { partial: result.partial } : {}),
-                ...(result.error !== undefined ? { error: result.error } : {}),
-                ...(result.repos !== undefined ? { repos: result.repos } : {}),
-                ...commitClassification,
-              },
-              ...(hasError && result.error !== undefined ? { error: result.error } : {}),
-              nextAction: !success
-                ? worktreeNextAction(result.action)
-                : result.committed
-                ? 'Call hive_adhoc_merge with an explicit valid aggregate message. Keep the default squash strategy unless preserved multi-commit history is intentionally valuable, or call hive_adhoc_cleanup to discard.'
-                : 'No changes were committed. Modify the worktree and retry hive_adhoc_worktree_commit.',
-            });
-          } catch (error: unknown) {
-            const err = error as { message?: string };
-            const classification = classifyServiceThrow(error)
-              ?? fallbackServiceClassification('integration');
-            const fenced = writerFenceResponse(error);
-            if (fenced) return fenced;
-            return respond({
-              success: false,
-              reason: 'adhoc_commit_failed',
-              runId,
-              error: err?.message ?? String(error),
-              ...worktreeOutcomeFields(classification),
-              nextAction: worktreeNextAction(classification.action),
-            });
-          }
-        },
-      }),
-
       hive_adhoc_merge: tool({
         description: 'Merge an ad-hoc worktree branch into the current branch. Defaults to squash; pass strategy: "merge" for an explicit normal merge. Returns structured JSON with workspacePath, branch, and nextAction.',
         args: {
@@ -6577,6 +5990,16 @@ NEXT: Ask your first clarifying question about this feature.`;
             return invalidAdhocArgumentsResponse('hive_adhoc_merge', ['runId']);
           }
           try {
+            const attempt = latestAdhocAttempt(runId);
+            if (!attempt || attempt.phase !== 'finalized') {
+              return respond({
+                success: false,
+                reason: 'execution_not_finalized',
+                runId,
+                error: 'Ad-hoc execution must be finalized before merge.',
+                nextAction: 'Call hive_execution_finish from the originating primary after exact native stop evidence.',
+              });
+            }
             const info = await adhocWorktreeService.get(runId);
             if (!info) {
               const classification = classifyWorktreeOutcome('RUN_NOT_FOUND');
@@ -6637,6 +6060,16 @@ NEXT: Ask your first clarifying question about this feature.`;
             return invalidAdhocArgumentsResponse('hive_adhoc_cleanup', ['runId']);
           }
           try {
+            const attempt = latestAdhocAttempt(runId);
+            if (attempt && attempt.phase !== 'finalized') {
+              return respond({
+                success: false,
+                reason: 'execution_not_finalized',
+                runId,
+                error: 'Ad-hoc execution must be finalized before cleanup.',
+                nextAction: 'Call hive_execution_finish from the originating primary after exact native stop evidence.',
+              });
+            }
             const info = await adhocWorktreeService.get(runId);
             if (!info) {
               const classification = classifyWorktreeOutcome('RUN_NOT_FOUND');
@@ -7143,6 +6576,8 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
 
           const tasksSummary = await Promise.all(tasks.map(async t => {
             const rawStatus = statusToolServices.tasks.getRawStatus(feature, t.folder);
+            const executionAttempt = executionAttemptService.currentTaskAttempt(feature, t.folder);
+            const executionFinalized = !executionAttempt || executionAttempt.phase === 'finalized';
             const attemptSlot = currentTaskAttemptSlot(feature, t.folder);
             const worktree = await worktreeService.get(feature, t.folder, attemptSlot);
             const hasChanges = worktree
@@ -7153,6 +6588,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
               folder: t.folder,
               name: t.name,
               status: t.status,
+              executionFinalized,
               origin: t.origin || 'plan',
               dependsOn: rawStatus?.dependsOn ?? null,
               ...(rawStatus?.workerSession?.sessionId ? { traceTaskId: rawStatus.workerSession.sessionId } : {}),
@@ -7188,11 +6624,13 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
             .filter(t => t.status !== 'in_progress' && t.worktree)
             .map(t => t.folder);
           const mergeEligibility = tasksSummary.map(t => {
-            const eligible = t.status === 'done' && !!t.worktree;
+            const eligible = t.status === 'done' && t.executionFinalized && !!t.worktree;
             const reasonCode = eligible
               ? 'TASK_DONE_WITH_LIVE_WORKTREE'
               : t.status !== 'done'
                 ? 'TASK_NOT_DONE'
+                : !t.executionFinalized
+                  ? 'EXECUTION_NOT_FINALIZED'
                 : 'NO_LIVE_WORKTREE';
 
             return {
@@ -7205,7 +6643,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
 
           const tasksWithDeps = tasksSummary.map(t => ({
             folder: t.folder,
-            status: t.status,
+            status: t.status === 'done' && !t.executionFinalized ? 'in_progress' as const : t.status,
             dependsOn: t.dependsOn ?? undefined,
           }));
           const effectiveDeps = buildEffectiveDependencies(tasksWithDeps);
@@ -7509,9 +6947,9 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_plan_approve',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
-          'hive_execution_prepare', 'hive_worktree_commit', 'hive_worktree_discard',
+          'hive_execution_prepare', 'hive_execution_finish', 'hive_worktree_discard',
           'hive_merge',
-          'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
+          'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
           'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',
@@ -7591,7 +7029,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
           'hive_feature_create', 'hive_feature_complete', 'hive_plan_read', 'hive_plan_approve',
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
           'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
-          'hive_execution_prepare', 'hive_worktree_discard', 'hive_merge',
+          'hive_execution_prepare', 'hive_execution_finish', 'hive_worktree_discard', 'hive_merge',
           'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',
           'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear', 'hive_status',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
@@ -7646,7 +7084,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
         temperature: foragerUserConfig.temperature ?? 0.3,
         mode: 'subagent' as const,
         description: builtInRoutingDescriptions['forager-worker'],
-        tools: agentTools(['hive_plan_read', 'hive_worktree_commit', 'hive_adhoc_worktree_commit', 'hive_context_read', 'hive_context_write', 'hive_context_append']),
+        tools: agentTools(['hive_plan_read', 'hive_context_read', 'hive_context_write', 'hive_context_append']),
         permission: {
           task: "deny",
           delegate: "deny",
@@ -7790,7 +7228,7 @@ To unblock: Remove .hive/features/${statusFeatureDir}/BLOCKED`,
         description: 'Hive Builder - Hive-aware ad-hoc orchestrator with lightweight worktree, delegation, verification, merge, and cleanup flow.',
         tools: agentTools([
           'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
-          'hive_execution_prepare', 'hive_adhoc_worktree_commit', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
+          'hive_execution_prepare', 'hive_execution_finish', 'hive_adhoc_merge', 'hive_adhoc_cleanup',
           'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
           'hive_task_trace', 'hive_task_trace_content',
           'hive_context_read', 'hive_context_write', 'hive_context_append', 'hive_context_archive',

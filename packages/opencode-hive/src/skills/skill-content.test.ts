@@ -625,7 +625,7 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
     expect(skill!.template).toContain('In feature-task mode, follow the feature workflow\'s verification and `hive_merge` lifecycle');
     expect(skill!.template).toContain('In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`');
-    expect(skill!.template).toContain('authorized `hive_adhoc_worktree_commit` / `hive_adhoc_merge` lifecycle');
+    expect(skill!.template).toContain('primary-only `hive_execution_finish`');
     expect(skill!.template).toContain('exact worktree identity sets intersect');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
     expect(skill!.template).toContain('Blocking alternative, including every gate-closed session');

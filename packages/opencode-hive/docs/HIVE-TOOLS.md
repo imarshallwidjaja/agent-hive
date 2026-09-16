@@ -97,13 +97,13 @@ Task-backed worktree, ad-hoc worktree, and merge results carry the same recovery
 - `COMPOSITE_PARTIAL` means at least one repository was integrated and a later repository failed. Earlier repositories remain integrated. Per-repository results are authoritative, and an aggregate top-level `sha` is a representative value from one repository, not a cross-repository identifier. Start recovery from the per-repository results rather than repeating the whole operation.
 - When integration succeeds and requested cleanup does not fully complete, the result reports `CLEANUP_FAILED` with `action: 'cleanup_only'`. `mutation` still reflects the completed integration. Repeat only the cleanup step; the caller must not re-run the merge.
 
-### Worktree (4 tools)
+### Managed Execution And Worktrees
 | Tool | Purpose |
 |------|---------|
-| `hive_worktree_start` | Create worktree and begin normal work |
-| `hive_worktree_create` | Launch blocked-task continuation in existing worktree |
-| `hive_worktree_commit` | Commit changes with an explicit structured `message`, write report (does NOT merge) |
+| `hive_execution_prepare` | Arm one task or ad-hoc Forager dispatch with worktree or in-place placement |
+| `hive_execution_finish` | Originating-primary-only checkpointed Git/report/disposition finalization after exact native stop evidence |
 | `hive_worktree_discard` | Discard changes, reset status |
+| `hive_merge` | Integrate a finalized completed feature-task worktree |
 
 Discard, cleanup, and archival never cancel execution. Current-slot discard is refused while that source worktree has a live or unobserved claim. Uncertain workspaces stay in place; they are not reset, copied, or deleted to recover.
 
@@ -112,62 +112,44 @@ Discard, cleanup, and archival never cancel execution. Current-slot discard is r
 - Omit `attemptId` to discard the current task slot, or pass the current `attemptId` for the same current-slot discard. That path may reset the task to pending.
 - Pass a non-current `attemptId` to remove only that superseded worktree slot. The current task pointer and task status stay unchanged. If the superseded attempt still has active or uncertain native execution, or has no native child id, also pass `acknowledgeOrphanedAttempt: true`. Terminal native evidence allows that cleanup without the acknowledgement. Inspect `hive_status.unfinishedAttempts` for superseded slots.
 
-#### hive_worktree_commit input notes
+#### hive_execution_finish input notes
 
-- `summary`: exact worker task/report claims, not independent verification. Accepted handoffs append immutable `reports/<revision>.md` and atomically replace the latest `report.md`; blocked handoffs also write reports without Git operations. Additive `reportReference` points to the immutable copy; `reportPath` retains latest navigation. Rejected Git operations do not write accepted reports. File writes are not a Git/status transaction. Legacy latest bytes are preserved on first replacement; earlier overwritten history is unavailable.
-- Retry context bounds summary or separately labelled legacy excerpt to 3,000 characters and error to 1,000, retaining explicit report/history references. Current operator decisions are separate and untruncated. Reports remain full historical snapshots after reopening. Consolidate current cross-attempt knowledge into existing task-tagged durable context with report references; do not promote historical claims into active instructions.
-- `message`: required whenever the worktree has changes to commit, including `completed`, `failed`, and `partial` handoffs.
+- `attemptId`: must identify an execution owned by the calling primary with exact structured `stopped` evidence. Worker prose and background board state never authorize finalization.
+- `status`, `summary`, and optional `blocker` form immutable report input. A stale task attempt receives historical report state but cannot mutate the current task generation.
+- `message`: required whenever a non-blocked worktree placement has changes to commit. In-place and blocked finalization reject commit messages and never run Git.
 - Every created commit message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
-- `message` may be omitted only when the worktree has no changes to commit. There is no default or derived commit message.
+- Finalization persists intent first, then per-repository baseline/tree/result receipts, an immutable deterministic report receipt, generation-guarded disposition, and `finalized` last. Retry the exact same input after interruption. A commit can be adopted only when HEAD parent, tree, and exact message match the receipt; ambiguous HEAD movement requires explicit recovery.
+- Composite partial commits are not rolled back. The stopped claim remains reserved until every checkpoint completes.
 
-#### hive_worktree_commit output
+#### hive_execution_prepare output
 
-- Always returns JSON with control-flow fields:
-  - `ok`: whether the operation succeeded
-  - `terminal`: whether worker should stop (`true`) or continue (`false`)
-  - `status`: completion status (`completed`, `blocked`, `failed`, `partial`) or error/rejected state
-  - `taskState`: resulting persisted task state
-  - `nextAction`: explicit next step for worker/orchestrator
-- Non-terminal responses (for example `reason: "verification_required"`) require worker remediation and retry.
-- Failures from worktree operations report the shared recovery classification fields alongside the existing control-flow fields ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)).
-
-#### hive_worktree_start / hive_worktree_create output
-
-- `workerPromptPath`: file path to `.hive/features/<feature>/tasks/<task>/worker-prompt.md`
-- `workerPromptPreview`: short preview of the prompt
-- `promptMeta`, `payloadMeta`, `budgetApplied`, `warnings`: size and budget observability
-- In gate-open sessions, `hive_worktree_start` can also return a `backgroundTaskCall` for independent work that can run while useful foreground work continues. The pending background board entry is created only after the parent actually launches the native background `task({ background: true, ... })`; blocking `hive_worktree_start` remains the correct path when the next meaningful step depends on the worker result.
-- The preparation response includes `launchId`. Nested `taskToolCall.hive_launch_id` and `backgroundTaskCall.hive_launch_id` carry that same selector. Spread the nested call object into `task()`; do not pass `launchId` as a `task()` argument. Runtime strips `hive_launch_id` and injects the canonical prepared prompt. Editing a prepared Forager dispatch prompt cannot update its instructions. `launchId` is a one-time dispatch selector against the authenticated parent, runtime, and target. It is not a credential and not a distributed authority graph. Do not invent a `hive_launch_id`.
-- Every Forager lane, including diagnosis-only work, needs a prepared launch in an isolated worktree. Use `hive_worktree_start` for managed feature tasks and the ad-hoc worktree tools for isolated non-feature work. `hive_existing_workspace_start` is unavailable. Direct checkout work is unmanaged OpenCode work, not a Hive placement. Preparation, claim, and authority resolution validate real paths and Git metadata; linked worktrees, managed aliases, and malformed metadata are denied. Runtime binds immutable instructions to the authenticated parent, native call, child, selected Forager-derived agent, and exact worktree identity. Two executions conflict when their exact registered worktree identity sets intersect. Composite claims cover the explicit registered worktree set. Generic ancestor or descendant filesystem containment is not the conflict model. Unused preparation expires after five minutes. Unobserved native execution quarantines only the affected worktree. Ordinary Scout, advisor, and reviewer packets still go in `task.prompt` and omit `hive_launch_id`. Launch admission operates within one OpenCode runtime. Cross-process exclusivity is unsupported: independent OpenCode processes sharing a project do not get a complete exclusivity promise.
+- Returns the durable attempt ID, exact scope and placement, task/context references, arm expiry, and lifecycle facts. Native task arguments remain unchanged.
+- The next Forager-derived native call from that primary consumes the sole arm and persists exact parent/call attachment before dispatch. Non-Forager calls do not consume it. Missing or ambiguous arms fail loudly.
+- Worktree placement validates exact Git registration and holds claims through `stopped`; in-place placement is cooperative and creates no filesystem exclusion claim. Cross-process exclusivity is unsupported.
 - Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. Retry after confirmed termination may reuse the same worktree. Retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
-- Native `general` is a rare capability exception requiring a specific nonblank `hive_capability_reason` and no `hive_launch_id`. Other targets must omit the reason. Runtime records the reason in the description and durable parent/call admission before stripping it from native arguments. The declaration does not prove a capability gap. General has ordinary tools only, no Hive authority, recursion, or questions. Helper calls retain bounded operational permissions. Neither call is a managed placement, and neither recreates existing-workspace execution.
-- Worker-side `hive_worktree_commit` remains for managed feature tasks and is authorized by the live attempt association. The originating primary cannot commit while that attempt is dispatched; the bound worker still can. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation.
+- Native `general` is an ordinary unmanaged delegation. It consumes no Forager arm and receives no Hive claim or lifecycle authority.
+- Workers have no lifecycle mutation or commit tool. They return one terminal handoff; the originating primary calls `hive_execution_finish` only after exact stop evidence.
 - Every native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches.
 - Do not pass `task_id` to `task()`. Returned task IDs are observe-only handles for background management and read-only runtime-visible session inspection with `hive_task_trace`; they are not inputs for session continuation. Recovery context belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
 - The `question` tool is reserved for primary sessions. Subagents return required operator clarification as an exact terminal-response question for their parent orchestrator.
 - A blocked feature continuation starts a new worker session in the same worktree with the operator decision. Failed or retry work starts a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation.
 - One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable.
-- `hive_worktree_start` and `hive_worktree_create` preflight failures report the shared recovery fields instead of launch payloads ([Recovery fields and failure classification](#recovery-fields-and-failure-classification)).
+- Preparation failures return structured scope/placement recovery guidance and never return a generated native-task payload.
 
-### Ad-hoc Worktree (5 tools)
+### Ad-hoc Worktree
 
 These tools are for isolated ad-hoc orchestration work. They operate on `.hive/.worktrees/adhoc/<runId>` and do not create feature/task records. Ad-hoc runs do not appear in `hive_status`.
 
 | Tool | Purpose |
 |------|---------|
-| `hive_adhoc_worktree_create` | Create an isolated ad-hoc worktree; returns `runId`, `workspacePath`, and `branch`, and optionally the first prepared Forager launch |
-| `hive_adhoc_worktree_start` | Prepare a fresh Forager launch for an existing ad-hoc run (`runId`, `workerInstructions`) |
-| `hive_adhoc_worktree_commit` | Commit changes in the ad-hoc worktree for a given `runId` |
 | `hive_adhoc_merge` | Merge the ad-hoc branch into the current branch |
 | `hive_adhoc_cleanup` | Remove the ad-hoc worktree and branch |
 
 #### Ad-hoc worktree input/output notes
 
 - For ad-hoc work, use multiple fresh one-goal launches on worktrees whose registered identities do not intersect, or sequence writers that share a worktree. Declared file ownership is not a concurrency guarantee. Do not use a returned task ID to continue a prior session.
-- `hive_adhoc_worktree_create` returns `runId`, `workspacePath`, and `branch`. It accepts optional `runId`, `label`, `baseBranch`, `repoIds`, `autoSpawnWorker`, and `workerInstructions`; `repoIds` selects manifest-backed composite workspaces. On non-git project roots without a project repository manifest, it returns `reason: "repo_manifest_required"` before any git command.
-- `autoSpawnWorker` defaults to `true`. Create then prepares the first Forager launch: the preparation response includes `launchId`; nested `taskToolCall.hive_launch_id` and, when the background gate is open, `backgroundTaskCall.hive_launch_id` carry that same selector. Spread the nested call object into `task()`; do not pass `launchId` as a `task()` argument. `launchId` is a one-time dispatch selector. With the background gate closed, launch the blocking `taskToolCall`. In background-enabled sessions, use blocking when the next step depends on the worker and `backgroundTaskCall` only for independent lanes. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only worktrees; the response sets `launchMode: "suppressed"` and omits launch payloads.
-- A setup-only `autoSpawnWorker:false` call creates the workspace and no worker reservation. Prepare a Forager later with `hive_adhoc_worktree_start({ runId, workerInstructions })` on that same run. Worker instructions are self-contained and frozen per attempt. Retry after confirmed termination may reuse the same `runId` worktree; do not discard failed work by default. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. `hive_adhoc_worktree_start` on an unobserved run is denied (`unobserved and cannot be reused` / `workspace_conflict_denied`).
-- `hive_adhoc_worktree_commit` requires `runId`, `workspacePath`, `branch`, and a structured `message`; `workspacePath` and `branch` must match the run returned by create.
+- `hive_execution_prepare` creates or reuses the ad-hoc worktree and returns `runId`, exact placement, and attempt identity. `repoIds` selects manifest-backed composite workspaces. Non-git roots require a repository manifest for worktree placement.
+- Prepare and finalize ad-hoc work through `hive_execution_prepare` and `hive_execution_finish`; commit receipts use the same crash-safe journal as feature tasks.
 - `hive_adhoc_merge` defaults to `squash`. Both `squash` and normal `merge` require an explicit polished aggregate `message` with the same subject, separator, and body structure.
 - `rebase` is an explicit history-preservation exception, accepts no aggregate message, and validates the exact raw message of every source commit before mutation. Normal merge performs the same source validation.
 - `hive_adhoc_merge` returns `commitMessage` when it creates a merge/squash commit.
@@ -191,19 +173,19 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 - With the env gate unset, the background management tools return `background_tools_disabled`. Primary agents keep normal blocking `task()` wait mode, and no background appendix is injected.
 - With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active. This is experimental-gate behavior, not the default contract.
 - Gate-open delegation uses lane kind to choose how much management is required. Exploratory/read-only and review lanes are lightweight background candidates. Writing/change and execution lanes require explicit state tracking, verification routing, unresolved-lane checks before dependent decisions, and integration control. Declared file ownership is tracking metadata, not a concurrency guarantee. Concurrency exclusion is exact registered worktree identity.
-- Every delegated lane needs a context packet: objective, known facts, relevant paths or references, constraints, prior failures, expected output, and where to find missing context. Put ad-hoc Forager instructions in `workerInstructions` at create or start. Persist or supply feature Forager context through supported prep inputs before Hive generates the immutable assignment. Ordinary Scout, advisor, and reviewer packets still go in `task.prompt`. Editing a prepared Forager dispatch prompt cannot update its instructions.
+- Every delegated lane needs a context packet: objective, known facts, relevant paths or references, constraints, prior failures, expected output, and where to find missing context. Put that packet directly in the ordinary native task prompt after preparation. Hive appends the authenticated scope and standing-constraint snapshot.
 - Primary orchestrators choose specialists from built-in and custom agent descriptors. Do not add fixed routing tables; use the descriptor that best matches the lane.
 - Ad-hoc orchestration works in both gate-closed and gate-open sessions. Non-trivial non-feature work should be decomposed, routed, tracked, verified, and integrated like orchestration, using ad-hoc worktrees for implementation branches when needed.
 - In gate-open sessions, launch native background tasks, inspect the scoped board with `hive_background_status`, wait for native completion notifications before dependent decisions, refresh `hive_background_status`, and reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`.
 - `hive_background_status` and reconcile responses include `recommendedNextAction` guidance and may set `requiresHiveStatusRefresh` after reconciliation. Treat these as board-local scheduler hints. They do not predict task merge readiness; use `hive_status` for task/worktree-aware state before merge decisions.
-- A `backgroundTaskCall` returned from `hive_worktree_start` is launch guidance, not board state. Until the parent actually launches the native background task, no pending background board entry exists.
+- Preparing an execution does not create background board state. Board state begins only when the parent launches the ordinary native background task.
 - If `hive_background_status` returns `schedulerGuidance.reason: wait_for_native_completion_notification`, do not refresh repeatedly. Wait for OpenCode's native completion notification, continue unrelated foreground work, or cancel only if the lane is stale, wrong, or no longer needed.
 - Prompt acknowledgment only means Hive showed the terminal result to the parent session. It does not clear `terminalUnreconciled`; the agent still needs explicit reconciliation after consuming or ignoring the result.
 - Reconciled and ignored terminal jobs are archived by the background tools and hidden from normal status output. Do not edit `.hive/background-jobs.json` directly.
 - Subagents must not start background tasks or manage the background board.
 - Returned background task IDs are observe-only board handles for status, reconcile, and cancel. Never pass `task_id` to `task()` or treat it as an input for session continuation.
 - Cancellation is not rollback. `hive_background_cancel` does not revert files, branches, worktrees, commits, or task reports; it only records a cancellation request and any confirmed runtime cancellation. Cancel is unavailable without a real native identity. Cancellation is owner-scoped: another primary must not automatically terminate another primary's child. Cancel acknowledgement is not proof of termination; live claims remain until termination is observed. Cleanup and archival never imply execution cancellation.
-- The board is observational bookkeeping. `hive_background_status` exposes board rows, including `launchId`; `hive_status` is not that surface. Do not invent native task IDs. Exact later callbacks can update board visibility; they do not settle an ExecutionAttempt. Reconcile and ignore archive the board row. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace. Two executions conflict when exact registered worktree identity sets intersect. TTL sweeps unused `launchId` preparations only.
+- The board is observational bookkeeping; `hive_status` is not that surface. Do not invent native task IDs. Exact callbacks can update board visibility and provide authenticated stop evidence, but reconciliation and ignore only archive board rows. They do not release an execution claim or authorize retry in the same workspace.
 - If a background lane cannot be resumed safely: retry after confirmed termination may reuse the same worktree, and retry while termination is unobserved supersedes that task onto a fresh `attemptSlot` worktree; the previous worktree stays claimed. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Ignoring stale board bookkeeping does not authorize that retry. Escalate a concrete blocker to the operator when needed.
 
 ### Runtime Session Inspection (2 tools)

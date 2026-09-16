@@ -407,6 +407,31 @@ export interface ExecutionStopEvidence {
   nativeTaskId?: string;
 }
 
+export type ExecutionFinalizationStatus = 'completed' | 'partial' | 'failed' | 'blocked' | 'cancelled';
+
+export interface ExecutionFinalizationRepositoryReceipt {
+  id: string;
+  path: string;
+  baselineHead?: string;
+  expectedTree?: string;
+  result?: 'committed' | 'no_changes';
+  commitSha?: string;
+}
+
+export interface ExecutionFinalizationReceipt {
+  operationId: string;
+  intentHash: string;
+  expectedTaskAttempt?: number;
+  reportInputHash: string;
+  status: ExecutionFinalizationStatus;
+  summary: string;
+  blocker?: unknown;
+  message?: string;
+  repositories: ExecutionFinalizationRepositoryReceipt[];
+  report?: { locator: string; contentHash: string };
+  disposition?: { applied: boolean; currentTaskUnchanged?: boolean };
+}
+
 export interface ExecutionAttempt {
   id: string;
   kind: ExecutionAttemptKind;
@@ -423,9 +448,11 @@ export interface ExecutionAttempt {
   native?: ExecutionNativeAttachment;
   stopEvidence?: ExecutionStopEvidence;
   observedOutcome?: ExecutionObservedOutcome;
+  finalization?: ExecutionFinalizationReceipt;
+  /** Preserved only on migrated settled history. New finalizations use finalization.report. */
   reportLocator?: string;
+  /** Preserved only on migrated settled history. New finalizations use finalization.report. */
   reportContentHash?: string;
-  handoffOutcome?: ExecutionObservedOutcome;
   supersededBy?: string;
   createdAt: string;
   updatedAt: string;

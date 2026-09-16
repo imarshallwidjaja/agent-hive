@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import simpleGit from 'simple-git';
 import { ExecutionAttemptService } from './executionAttemptService.js';
+import { ExecutionFinalizationService, type ExecutionFinalizationCheckpoint } from './executionFinalizationService.js';
+import { TaskService } from './taskService.js';
 import { getExecutionAttemptsPath, getGlobalSessionsPath } from '../utils/paths.js';
 import type { NativeTaskLease, TaskStatus } from '../types.js';
 
@@ -27,6 +30,17 @@ function worktree(name: string): string {
   const directory = path.join(TEST_DIR, '.hive', '.worktrees', name, '01-task');
   fs.mkdirSync(directory, { recursive: true });
   return fs.realpathSync(directory);
+}
+
+async function initializeRepository(directory: string): Promise<void> {
+  fs.mkdirSync(directory, { recursive: true });
+  const git = simpleGit(directory);
+  await git.init();
+  await git.addConfig('user.email', 'hive@example.test');
+  await git.addConfig('user.name', 'Hive Test');
+  fs.writeFileSync(path.join(directory, 'base.txt'), 'base\n');
+  await git.add('-A');
+  await git.commit('test: initialize repository\n\nCreate the finalization test baseline.');
 }
 
 describe('ExecutionAttemptService armed native attachment', () => {
@@ -265,6 +279,12 @@ describe('ExecutionAttemptService armed native attachment', () => {
     service.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
     expect(service.getAttempt(attempt.id)?.phase).toBe('stopped');
     expect(() => service.assertWorkspacesIdle([identity])).toThrow(/claimed/);
+    service.beginFinalization(attempt.id, {
+      operationId: 'operation-quarantined', intentHash: 'intent-quarantined', reportInputHash: 'input-quarantined',
+      status: 'completed', summary: 'Complete', repositories: [],
+    });
+    service.recordFinalizationReport(attempt.id, 'report.md', 'hash');
+    service.recordFinalizationDisposition(attempt.id, { applied: true });
     service.finalize(attempt.id, 'completed');
     service.assertWorkspacesIdle([identity]);
   });
@@ -363,36 +383,7 @@ describe('ExecutionAttemptService armed native attachment', () => {
     expect(service.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true })?.phase).toBe('stopped');
   });
 
-  it('persists blocked, failed, and partial bridge dispositions through finalization', () => {
-    for (const outcome of ['blocked', 'failed', 'partial'] as const) {
-      const attempt = service.arm({
-        kind: 'adhoc',
-        runId: `handoff-${outcome}`,
-        originatingPrimarySession: `primary-${outcome}`,
-        placement: { kind: 'in_place', directory: TEST_DIR },
-      }).attempt;
-      service.attachNext({
-        originatingPrimarySession: `primary-${outcome}`,
-        nativeCallId: `call-${outcome}`,
-        selectedAgent: 'forager-worker',
-        background: false,
-      });
-      service.recordHandoff(attempt.id, { outcome });
-      const stopped = service.observeBlockingStop({
-        originatingPrimarySession: `primary-${outcome}`,
-        nativeCallId: `call-${outcome}`,
-        outputDefined: true,
-      })!;
-      service.finalize(stopped.id, stopped.handoffOutcome!);
-      expect(service.getAttempt(attempt.id)).toMatchObject({
-        phase: 'finalized',
-        handoffOutcome: outcome,
-        observedOutcome: outcome,
-      });
-    }
-  });
-
-  it('rejects handoff mutation after native stop while retaining the worktree claim', () => {
+  it('retains a stopped worktree claim until every finalization receipt is durable', () => {
     const identity = worktree('stopped-handoff');
     const attempt = service.arm({
       kind: 'task',
@@ -418,9 +409,24 @@ describe('ExecutionAttemptService armed native attachment', () => {
       outputDefined: true,
     });
 
-    expect(() => service.recordHandoff(attempt.id, { outcome: 'completed' })).toThrow(/not attached/i);
+    const receipt = {
+      operationId: 'operation-a',
+      intentHash: 'intent-a',
+      reportInputHash: 'report-input-a',
+      status: 'completed' as const,
+      summary: 'Complete',
+      message: 'feat: complete task\n\nFinish the managed task.',
+      repositories: [{ id: 'root', path: identity }],
+    };
+    service.beginFinalization(attempt.id, receipt);
+    service.recordRepositoryPreparation(attempt.id, 'root', 'baseline', 'tree');
+    service.recordRepositoryResult(attempt.id, 'root', 'committed', 'commit');
+    service.recordFinalizationReport(attempt.id, 'report.md', 'hash');
+    service.recordFinalizationDisposition(attempt.id, { applied: true });
     expect(service.getAttempt(attempt.id)).toMatchObject({ phase: 'stopped' });
     expect(() => service.assertWorkspacesIdle([identity])).toThrow(/claimed/i);
+    service.finalize(attempt.id, 'completed');
+    service.assertWorkspacesIdle([identity]);
   });
 
   it('requires exact structured background identity', () => {
@@ -540,5 +546,229 @@ describe('ExecutionAttemptService armed native attachment', () => {
       },
       native: { selectedAgent: 'custom-forager', childSessionId: 'legacy-child' },
     });
+  });
+});
+
+describe('ExecutionFinalizationService crash recovery', () => {
+  afterEach(cleanup);
+
+  async function stoppedTask(root: string, repository: string): Promise<{ attempts: ExecutionAttemptService; attemptId: string }> {
+    setupTask('feature-a', '01-task');
+    await initializeRepository(repository);
+    const attempts = new ExecutionAttemptService(root, 'runtime-finalization');
+    const attempt = attempts.arm({
+      kind: 'task',
+      featureName: 'feature-a',
+      taskFolder: '01-task',
+      originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [fs.realpathSync(repository)], workspacePath: fs.realpathSync(repository) },
+    }).attempt;
+    attempts.attachNext({
+      originatingPrimarySession: 'primary-a',
+      nativeCallId: 'call-a',
+      selectedAgent: 'forager-worker',
+      background: false,
+    });
+    attempts.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
+    return { attempts, attemptId: attempt.id };
+  }
+
+  it('resumes idempotently after failure injection at every finalization checkpoint', async () => {
+    const checkpoints: ExecutionFinalizationCheckpoint[] = [
+      'before_intent',
+      'after_intent',
+      'after_repository_preparation:root',
+      'after_repository_commit:root',
+      'after_repository_receipt:root',
+      'after_report_write',
+      'after_report_receipt',
+      'after_task_status',
+      'after_disposition',
+      'before_release',
+    ];
+    for (const checkpoint of checkpoints) {
+      cleanup();
+      fs.mkdirSync(TEST_DIR, { recursive: true });
+      const repository = path.join(TEST_DIR, 'repo');
+      const { attempts, attemptId } = await stoppedTask(TEST_DIR, repository);
+      fs.writeFileSync(path.join(repository, 'change.txt'), `${checkpoint}\n`);
+      let injected = false;
+      const input = {
+        attemptId,
+        originatingPrimarySession: 'primary-a',
+        status: 'completed' as const,
+        summary: 'Implemented crash-safe finalization.',
+        message: 'feat: finalize execution\n\nPersist Git and report receipts before releasing the claim.',
+      };
+      const failing = new ExecutionFinalizationService(TEST_DIR, {
+        checkpoint: current => {
+          if (!injected && current === checkpoint) {
+            injected = true;
+            throw new Error(`injected:${checkpoint}`);
+          }
+        },
+      }, attempts, new TaskService(TEST_DIR));
+      await expect(failing.finish(input)).rejects.toThrow(`injected:${checkpoint}`);
+      expect(attempts.getAttempt(attemptId)?.phase).not.toBe('finalized');
+
+      const recovered = await new ExecutionFinalizationService(
+        TEST_DIR,
+        {},
+        attempts,
+        new TaskService(TEST_DIR),
+      ).finish(input);
+      expect(recovered.attempt).toMatchObject({ phase: 'finalized', observedOutcome: 'completed' });
+      expect((await simpleGit(repository).log()).all).toHaveLength(2);
+      expect(new TaskService(TEST_DIR).get('feature-a', '01-task')?.status).toBe('done');
+    }
+  });
+
+  it('rejects active, foreign-primary, and ambiguous-HEAD finalization', async () => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    const repository = path.join(TEST_DIR, 'repo');
+    setupTask('feature-a', '01-task');
+    await initializeRepository(repository);
+    const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-finalization');
+    const attempt = attempts.arm({
+      kind: 'task', featureName: 'feature-a', taskFolder: '01-task', originatingPrimarySession: 'primary-a',
+      placement: { kind: 'worktree', workspaceIdentities: [fs.realpathSync(repository)], workspacePath: fs.realpathSync(repository) },
+    }).attempt;
+    attempts.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+    const service = new ExecutionFinalizationService(TEST_DIR, {}, attempts, new TaskService(TEST_DIR));
+    const input = {
+      attemptId: attempt.id,
+      originatingPrimarySession: 'primary-a',
+      status: 'completed' as const,
+      summary: 'Complete.',
+      message: 'feat: complete task\n\nCreate the intended task commit.',
+    };
+    await expect(service.finish(input)).rejects.toThrow(/stopped evidence/i);
+    attempts.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
+    await expect(service.finish({ ...input, originatingPrimarySession: 'primary-b' })).rejects.toThrow(/originating primary/i);
+    fs.writeFileSync(path.join(repository, 'change.txt'), 'change\n');
+    const failing = new ExecutionFinalizationService(TEST_DIR, {
+      checkpoint: current => {
+        if (current === 'after_repository_preparation:root') throw new Error('stop after preparation');
+      },
+    }, attempts, new TaskService(TEST_DIR));
+    await expect(failing.finish(input)).rejects.toThrow(/stop after preparation/);
+    fs.writeFileSync(path.join(repository, 'other.txt'), 'other\n');
+    await simpleGit(repository).add('-A').commit('test: move head\n\nCreate an unrelated conflicting commit.');
+    await expect(service.finish(input)).rejects.toThrow(/ambiguously/i);
+    expect(attempts.getAttempt(attempt.id)?.phase).toBe('stopped');
+  });
+
+  it('adopts a composite repository commit without rolling back or duplicating it', async () => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    setupTask('feature-a', '01-task');
+    const api = path.join(TEST_DIR, 'repos', 'api');
+    const web = path.join(TEST_DIR, 'repos', 'web');
+    await initializeRepository(api);
+    await initializeRepository(web);
+    const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-finalization');
+    const attempt = attempts.arm({
+      kind: 'task', featureName: 'feature-a', taskFolder: '01-task', originatingPrimarySession: 'primary-a',
+      placement: {
+        kind: 'worktree',
+        workspaceIdentities: [fs.realpathSync(api), fs.realpathSync(web)],
+        workspacePath: fs.realpathSync(TEST_DIR),
+      },
+    }).attempt;
+    attempts.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+    attempts.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
+    fs.writeFileSync(path.join(api, 'api.txt'), 'api\n');
+    fs.writeFileSync(path.join(web, 'web.txt'), 'web\n');
+    const input = {
+      attemptId: attempt.id,
+      originatingPrimarySession: 'primary-a',
+      status: 'completed' as const,
+      summary: 'Composite finalization complete.',
+      message: 'feat: finalize composite work\n\nCommit each repository with durable adoption receipts.',
+    };
+    const failing = new ExecutionFinalizationService(TEST_DIR, {
+      checkpoint: checkpoint => {
+        if (checkpoint === 'after_repository_commit:api') throw new Error('crash after api commit');
+      },
+    }, attempts, new TaskService(TEST_DIR));
+    await expect(failing.finish(input)).rejects.toThrow(/crash after api commit/);
+    expect((await simpleGit(api).log()).all).toHaveLength(2);
+    expect((await simpleGit(web).log()).all).toHaveLength(1);
+
+    await new ExecutionFinalizationService(TEST_DIR, {}, attempts, new TaskService(TEST_DIR)).finish(input);
+    expect((await simpleGit(api).log()).all).toHaveLength(2);
+    expect((await simpleGit(web).log()).all).toHaveLength(2);
+    expect(attempts.getAttempt(attempt.id)?.finalization?.repositories).toEqual([
+      expect.objectContaining({ id: 'api', result: 'committed' }),
+      expect.objectContaining({ id: 'web', result: 'committed' }),
+    ]);
+  });
+
+  it('skips Git for in-place and blocked attempts and preserves stale task status', async () => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    setupTask('feature-a', '01-task');
+    const attempts = new ExecutionAttemptService(TEST_DIR, 'runtime-finalization');
+    const stale = attempts.arm({
+      kind: 'task', featureName: 'feature-a', taskFolder: '01-task', originatingPrimarySession: 'primary-a',
+      placement: { kind: 'in_place', directory: TEST_DIR },
+    }).attempt;
+    attempts.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+    attempts.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
+    const statusPath = path.join(TEST_DIR, '.hive', 'features', 'feature-a', 'tasks', '01-task', 'status.json');
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+    status.workerAttempt += 1;
+    status.status = 'in_progress';
+    fs.writeFileSync(statusPath, JSON.stringify(status, null, 2));
+    const finalizer = new ExecutionFinalizationService(TEST_DIR, {}, attempts, new TaskService(TEST_DIR));
+    await expect(finalizer.finish({
+      attemptId: stale.id,
+      originatingPrimarySession: 'primary-a',
+      status: 'blocked',
+      summary: 'Need operator input.',
+      blocker: { reason: 'Decision required' },
+      message: 'fix: forbidden\n\nThis message must be rejected.',
+    })).rejects.toThrow(/does not accept/i);
+    const result = await finalizer.finish({
+      attemptId: stale.id,
+      originatingPrimarySession: 'primary-a',
+      status: 'blocked',
+      summary: 'Need operator input.',
+      blocker: { reason: 'Decision required' },
+    });
+    expect(result.currentTaskUnchanged).toBe(true);
+    expect(new TaskService(TEST_DIR).get('feature-a', '01-task')?.status).toBe('in_progress');
+    expect(result.attempt.finalization?.repositories).toEqual([]);
+    expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'features', 'feature-a', 'tasks', '01-task', 'report.md'))).toBe(false);
+  });
+
+  it('records blocked, partial, failed, and cancelled task dispositions', async () => {
+    for (const disposition of ['blocked', 'partial', 'failed', 'cancelled'] as const) {
+      cleanup();
+      fs.mkdirSync(TEST_DIR, { recursive: true });
+      setupTask('feature-a', '01-task');
+      const attempts = new ExecutionAttemptService(TEST_DIR, `runtime-${disposition}`);
+      const attempt = attempts.arm({
+        kind: 'task', featureName: 'feature-a', taskFolder: '01-task', originatingPrimarySession: 'primary-a',
+        placement: { kind: 'in_place', directory: TEST_DIR },
+      }).attempt;
+      attempts.attachNext({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', selectedAgent: 'forager-worker', background: false });
+      attempts.observeBlockingStop({ originatingPrimarySession: 'primary-a', nativeCallId: 'call-a', outputDefined: true });
+      const result = await new ExecutionFinalizationService(
+        TEST_DIR,
+        {},
+        attempts,
+        new TaskService(TEST_DIR),
+      ).finish({
+        attemptId: attempt.id,
+        originatingPrimarySession: 'primary-a',
+        status: disposition,
+        summary: `${disposition} disposition.`,
+        ...(disposition === 'blocked' ? { blocker: { reason: 'Decision required' } } : {}),
+      });
+      expect(result.attempt).toMatchObject({ phase: 'finalized', observedOutcome: disposition });
+      expect(new TaskService(TEST_DIR).get('feature-a', '01-task')?.status).toBe(disposition);
+    }
   });
 });

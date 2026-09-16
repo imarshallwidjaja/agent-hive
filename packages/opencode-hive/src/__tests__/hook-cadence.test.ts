@@ -380,37 +380,14 @@ describe('HIVE_SYSTEM_PROMPT — no broad worker-startup reinjection', () => {
     expect(HIVE_SYSTEM_PROMPT).not.toMatch(/use hive_plan_read to see plan comments/i);
   });
 
-  it('retains the hive_worktree_commit vs hive_merge distinction note', () => {
-    expect(HIVE_SYSTEM_PROMPT).toMatch(/hive_worktree_commit/);
+  it('separates primary finalization from merge', () => {
+    expect(HIVE_SYSTEM_PROMPT).toMatch(/hive_execution_finish/);
     expect(HIVE_SYSTEM_PROMPT).toMatch(/hive_merge/);
+    expect(HIVE_SYSTEM_PROMPT).not.toMatch(/hive_worktree_commit/);
   });
 
   it('states which orchestrators are never native task targets', () => {
     expect(HIVE_SYSTEM_PROMPT).toContain('`hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only');
     expect(HIVE_SYSTEM_PROMPT).toContain('`architect-planner` remains callable as a child');
-  });
-});
-
-describe('hive_worktree_commit error guidance — no out-of-surface tool references for Forager', () => {
-  it('task_not_found nextAction does not reference hive_status', async () => {
-    const { default: plugin } = await import('../index.js');
-    const repoRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
-    const ctx = {
-      directory: repoRoot,
-      worktree: repoRoot,
-      serverUrl: new URL('http://localhost:1'),
-      project: { id: 'test', worktree: repoRoot, time: { created: Date.now() } },
-      client: {} as any,
-      $: {} as any,
-    };
-    const hooks = await plugin(ctx as any);
-    const toolContext = { sessionID: 'sess_test', messageID: 'msg_test', agent: 'forager-worker', abort: new AbortController().signal };
-    const raw = await hooks.tool!.hive_worktree_commit.execute(
-      { task: 'nonexistent-task', summary: 'test', status: 'completed', feature: 'nonexistent-feature' },
-      toolContext,
-    );
-    const result = JSON.parse(raw as string) as { reason?: string; nextAction?: string };
-    expect(result.reason).toBe('task_not_found');
-    expect(result.nextAction).not.toMatch(/hive_status/);
   });
 });

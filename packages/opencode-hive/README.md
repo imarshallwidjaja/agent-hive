@@ -5,7 +5,7 @@
 
 OpenCode workflow plugin for plan-first development: feature plans, approval gates, isolated git worktrees, durable `.hive/` state, and optional review commands.
 
-Requires **OpenCode >= 1.18.30** (native `tool.definition` and Forager `hive_launch_id`). Open your project and ask Hive to work.
+Requires **OpenCode >= 1.18.30** for native task attachment hooks. Open your project and ask Hive to work.
 
 Human onboarding starts in the [root README](../../README.md). This README is the detailed npm and operator reference.
 
@@ -48,8 +48,8 @@ Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"ag
 2. **Write plan** - `hive_plan_write` / `hive_plan_patch`
 3. **Human review** - comments and chat
 4. **Approve + sync** - `hive_plan_approve`, then `hive_tasks_sync`
-5. **Execute** - `hive_worktree_start` launches workers in isolated worktrees
-6. **Commit task branch** - `hive_worktree_commit` (does not merge)
+5. **Prepare + execute** - `hive_execution_prepare`, then one ordinary native Forager call
+6. **Finalize** - the originating primary calls `hive_execution_finish` after exact native stop evidence
 7. **Merge** - `hive_merge` integrates completed task branches
 8. **Complete feature** - `hive_feature_complete` when done
 
@@ -267,15 +267,14 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 | `hive_task_create` | Create a manual task with explicit `dependsOn` and optional structured metadata |
 | `hive_task_update` | Update task status/summary |
 
-### Worktree
+### Execution And Worktree
 | Tool | Description |
 |------|-------------|
-| `hive_worktree_start` | Start normal work on task (creates worktree) |
-| `hive_worktree_create` | Launch blocked-task continuation in existing worktree |
-| `hive_worktree_commit` | Complete task (applies changes) |
+| `hive_execution_prepare` | Arm the next task or ad-hoc Forager call for worktree or in-place placement |
+| `hive_execution_finish` | Checkpoint commits, immutable report, disposition, and final release from the originating primary |
 | `hive_worktree_discard` | Abort task (discard changes) |
 
-In gate-open sessions, `hive_worktree_start` may return a `backgroundTaskCall` for independent work. That output is launch guidance only; Hive does not create pending background board state until the parent actually starts the native background task. Use the normal blocking call when the next meaningful step depends on the worker result.
+After `hive_execution_prepare`, issue one ordinary native Forager call. Blocking and background calls use the native task shape unchanged; exact parent/call attachment persists before dispatch.
 
 Reused task worktrees must have exact Git registration before launch. Hive discovers each Git common directory only from the currently trusted topology-resolved repository, then validates the local `.git` pointer, containment without symlink escape, selected `commondir`, and exact `gitdir` backlink before running Git in the worktree. Linked manifest repositories may use a common directory outside the project root. A sibling or old administration entry is rejected even when it belongs to the same repository; Hive does not follow the mismatched backlink or repair Git metadata automatically.
 
@@ -292,15 +291,15 @@ When a task branch has no net tracked changes to integrate, `hive_merge` reports
 
 Use ad-hoc orchestration when you need isolation, delegation, verification, and merge without a feature, plan, or task record. Dedicated mode uses `hive-builder`; unified mode can use `hive-master`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#ad-hoc-lifecycle-hive-builder).
 
-The ad-hoc orchestrator uses `hive_adhoc_*` tools for isolated non-feature work under `.hive/.worktrees/adhoc/<runId>`. These runs do not create feature/task records and do not appear in `hive_status`. `hive_adhoc_worktree_create` creates the workspace and, unless `autoSpawnWorker: false`, prepares the first Forager launch. `hive_adhoc_worktree_start({ runId, workerInstructions })` prepares a fresh attempt on that run. Gate-closed sessions return blocking `taskToolCall`; gate-open sessions also return `backgroundTaskCall` (same `hive_launch_id`, plus `background: true`). Spread the returned call object so `hive_launch_id` is preserved; do not invent one. `launchId` is a one-time dispatch selector. Set `autoSpawnWorker` to `false` only for inspection, routing, or setup-only worktrees. Retry after confirmed termination may reuse the same `runId` worktree; do not discard failed work by default. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. `hive_adhoc_worktree_start` on an unobserved run is denied (`unobserved and cannot be reused` / `workspace_conflict_denied`). See `docs/HIVE-TOOLS.md` for the full tool contracts.
+The ad-hoc orchestrator prepares isolated non-feature work with `hive_execution_prepare({ scope: { kind: "adhoc" }, placement: { kind: "worktree" } })`. These runs do not create feature/task records and do not appear in `hive_status`. The response supplies the `runId` and placement; the next ordinary native Forager call attaches to that arm. Retry after confirmed finalization may reuse the same run. Unobserved or stopped-but-unfinalized execution retains its claim. See `docs/HIVE-TOOLS.md` for the full contracts.
 
 Session state or `todowrite` is sufficient only for a single-lane, single-dispatch blocking job expected to finish in one turn. Every multi-lane, dependency-wave, background, expected multi-attempt, or otherwise multi-turn batch creates one project-scoped `kind: "evidence"` ledger before its first delegated dispatch, named `adhoc-lanes-<purpose>-<UTC timestamp>` with a filename-safe compact current UTC value. Record the exact name in session/todowrite and compaction handoffs. No worktree is needed to create the ledger or run a read-only first wave. Evidence ledgers are absent from durable-only catalog results, so recovery uses `hive_context_read({ scope: "project", view: "summary" })`, then a named hash-guarded read reconciled against runtime tool results, observed native state, and background board state when applicable. Append transitions. Archive only after every lane closes and the full integrated canonical verification result is recorded and passing. Failed final verification, failed cleanup, or uncertain execution leaves exact identifiers, evidence, and the next recovery action in the unarchived ledger.
 
 Feature escalation is advisory. If the operator rejects it, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. Ask any remaining concrete blocking question before preparing workers.
 
-Forager is an execution role. Isolated worktrees are the managed placement (`hive_worktree_start` for feature tasks, `hive_adhoc_*` for non-feature work). `hive_existing_workspace_start` is unavailable. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement.
+Forager is an execution role. `hive_execution_prepare` selects worktree or in-place placement for feature and ad-hoc scopes. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement.
 
-Use native `general` only for a rare capability exception, with a specific nonblank `hive_capability_reason` and no `hive_launch_id`. The reason appears in the description and durable admission record, then is stripped before native dispatch. It declares a need without proving a capability gap or granting Hive authority. General has ordinary tools only and cannot delegate or ask questions. Native helpers retain bounded operational permissions. Neither call is a managed placement.
+Native `general` is an ordinary unmanaged delegation and never consumes a Forager arm or gains Hive lifecycle authority. General has ordinary tools only and cannot delegate or ask questions. Native helpers retain bounded operational permissions. Neither call is a managed placement.
 
 ### Background Orchestration
 
@@ -329,12 +328,10 @@ Primary orchestrators can inspect any explicitly identified native OpenCode sess
 If you see repeated retries around `continueFrom: "blocked"`, use this protocol. That tool launches a new worker session in the same worktree; it does not continue the previous session:
 
 1. Call `hive_status()` first.
-2. If status is `pending` or `in_progress`, start normally with:
-   - `hive_worktree_start({ feature, task })`
-3. Only use blocked continuation when status is exactly `blocked`:
-   - `hive_worktree_create({ task, continueFrom: "blocked", decision })`
+2. If status is `pending` or `in_progress`, call `hive_execution_prepare` for the task.
+3. If status is `blocked`, record the operator decision and pass `scope.continueFromBlocked: true` to `hive_execution_prepare`.
 
-Do not retry the same blocked-continuation call on non-blocked statuses; re-check `hive_status()` and use `hive_worktree_start` for normal starts.
+Do not request blocked continuation on non-blocked statuses; re-check `hive_status()` and prepare normally.
 
 #### Using with DCP plugin
 
@@ -344,7 +341,7 @@ When using Dynamic Context Pruning (DCP), use a Hive-safe config in `~/.config/o
 - `manualMode.automaticStrategies: false`
 - `turnProtection.enabled: true` with `turnProtection.turns: 12`
 - `tools.settings.nudgeEnabled: false`
-- protect key tools in `tools.settings.protectedTools` (at least: `hive_status`, `hive_worktree_start`, `hive_worktree_create`, `hive_worktree_commit`, `hive_worktree_discard`, `question`)
+- protect key tools in `tools.settings.protectedTools` (at least: `hive_status`, `hive_execution_prepare`, `hive_execution_finish`, `hive_worktree_discard`, `question`)
 - disable aggressive auto strategies:
   - `strategies.deduplication.enabled: false`
   - `strategies.supersedeWrites.enabled: false`
@@ -380,12 +377,7 @@ Long task summaries use explicit `...[truncated]` markers and report paths. Cata
 
 ### Observability
 
-`hive_worktree_start` and blocked-resume `hive_worktree_create` output include metadata fields:
-
-- **`promptMeta`**: Character counts for plan, previousTasks, spec, and workerPrompt. `contextChars` remains in the payload for compatibility and is `0` because supporting knowledge is delivered through live catalogs instead of inlined bodies.
-- **`payloadMeta`**: JSON payload size, whether prompt is inlined or referenced by file
-- **`budgetApplied`**: Task-summary limits and tasks included/dropped
-- **`warnings`**: Array of threshold exceedances with severity levels (info/warning/critical)
+`hive_execution_prepare` returns the durable attempt ID, exact scope and placement, relevant references, arm expiry, and lifecycle facts. It does not return a generated native-task payload or selector.
 
 ### Prompt Files
 

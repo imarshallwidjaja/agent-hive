@@ -410,231 +410,48 @@ describe('hive_execution_prepare ad-hoc placement', () => {
     }
   });
 
-  it('fences armed ad-hoc commits and releases the workspace after finalization', async () => {
+  it('finalizes stopped ad-hoc work only from the originating primary', async () => {
     initGit(TEST_ROOT);
-    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-armed');
+    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-finalize');
     const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
-      scope: { kind: 'adhoc', runId: 'armed-fence' },
+      scope: { kind: 'adhoc', runId: 'primary-finalize' },
       placement: { kind: 'worktree' },
     }, context) as string);
-    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'armed.txt'), 'armed\n');
-    const headBefore = execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim();
+    const args = { subagent_type: 'forager-worker', description: 'Edit worktree', prompt: 'Do it.', background: false };
+    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-finalize' }, { args });
+    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'finalized.txt'), 'finalized\n');
 
-    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
-      runId: 'armed-fence',
-      workspacePath: prepared.placement.workspacePath,
-      branch: prepared.placement.branch,
-      message: 'test: reject armed mutation\n\nProve that an armed execution retains its writer fence.',
+    const active = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Complete.',
+      message: 'test: finalize ad-hoc execution\n\nCommit only after exact native stop evidence.',
     }, context) as string);
-    expect(denied).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
-    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
+    expect(active).toMatchObject({ success: false, reason: 'execution_finalization_failed', phase: 'attached' });
 
+    new ExecutionAttemptService(TEST_ROOT).observeBlockingStop({
+      originatingPrimarySession: context.sessionID,
+      nativeCallId: 'call-finalize',
+      outputDefined: true,
+    });
+    const worker = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Complete.',
+      message: 'test: finalize ad-hoc execution\n\nCommit only after exact native stop evidence.',
+    }, { ...context, sessionID: 'worker-finalize', agent: 'forager-worker' }) as string);
+    expect(worker).toMatchObject({ success: false, reason: 'primary_required' });
+
+    const finalized = JSON.parse(await hooks.tool!.hive_execution_finish.execute({
+      attemptId: prepared.attemptId,
+      status: 'completed',
+      summary: 'Complete.',
+      message: 'test: finalize ad-hoc execution\n\nCommit only after exact native stop evidence.',
+    }, context) as string);
+    expect(finalized).toMatchObject({ success: true, phase: 'finalized', status: 'completed' });
     expect(new ExecutionAttemptService(TEST_ROOT).getAttempt(prepared.attemptId)).toMatchObject({
       phase: 'finalized',
-      observedOutcome: 'not_started',
-    });
-    const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
-      runId: 'armed-fence',
-      workspacePath: prepared.placement.workspacePath,
-      branch: prepared.placement.branch,
-      message: 'test: commit after finalized arm\n\nConfirm finalization releases the exact workspace fence.',
-    }, context) as string);
-    expect(committed.success).toBe(true);
-  });
-
-  it('fences stopped ad-hoc commits and limits finalized recovery to the originating primary', async () => {
-    initGit(TEST_ROOT);
-    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-stopped');
-    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
-      scope: { kind: 'adhoc', runId: 'stopped-fence' },
-      placement: { kind: 'worktree' },
-    }, context) as string);
-    const args = { subagent_type: 'forager-worker', description: 'Stop before commit', prompt: 'Do it.', background: false };
-    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-stopped' }, { args });
-    const attempts = new ExecutionAttemptService(TEST_ROOT);
-    attempts.bindNativeChild({
-      originatingPrimarySession: context.sessionID,
-      nativeCallId: 'call-stopped',
-      nativeChildSessionId: 'child-stopped',
-    });
-    attempts.observeBlockingStop({
-      originatingPrimarySession: context.sessionID,
-      nativeCallId: 'call-stopped',
-      outputDefined: true,
-    });
-    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'stopped.txt'), 'stopped\n');
-    const headBefore = execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim();
-    const childContext = { ...context, sessionID: 'child-stopped', agent: 'forager-worker' };
-
-    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
-      runId: 'stopped-fence',
-      workspacePath: prepared.placement.workspacePath,
-      branch: prepared.placement.branch,
-      message: 'test: reject stopped mutation\n\nProve that stop evidence alone does not release the workspace fence.',
-    }, childContext) as string);
-    expect(denied).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
-    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
-
-    attempts.finalize(prepared.attemptId, 'completed');
-    const finalizedChild = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
-      runId: 'stopped-fence',
-      workspacePath: prepared.placement.workspacePath,
-      branch: prepared.placement.branch,
-      message: 'test: reject finalized child mutation\n\nConfirm finalization does not grant claim-free worker authority.',
-    }, childContext) as string);
-    expect(finalizedChild).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
-    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
-
-    const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
-      runId: 'stopped-fence',
-      workspacePath: prepared.placement.workspacePath,
-      branch: prepared.placement.branch,
-      message: 'test: commit after stopped finalization\n\nConfirm the originating primary can recover the finalized workspace.',
-    }, context) as string);
-    expect(committed.success).toBe(true);
-  });
-
-  it('allows an attached ad-hoc handoff only from the exact bound child and placement', async () => {
-    initGit(TEST_ROOT);
-    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-attached-child');
-    const prepared = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
-      scope: { kind: 'adhoc', runId: 'attached-child' },
-      placement: { kind: 'worktree' },
-    }, context) as string);
-    const args = { subagent_type: 'forager-worker', description: 'Commit from bound child', prompt: 'Do it.', background: false };
-    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-attached-child' }, { args });
-    const attempts = new ExecutionAttemptService(TEST_ROOT);
-    attempts.bindNativeChild({
-      originatingPrimarySession: context.sessionID,
-      nativeCallId: 'call-attached-child',
-      nativeChildSessionId: 'child-attached',
-    });
-    fs.writeFileSync(path.join(prepared.placement.workspacePath, 'attached.txt'), 'attached\n');
-    const headBefore = execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim();
-    const handoff = {
-      runId: 'attached-child',
-      workspacePath: prepared.placement.workspacePath,
-      branch: prepared.placement.branch,
-      message: 'test: authenticate ad-hoc handoff\n\nCommit only from the exact attached child.',
-    };
-
-    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute(
-      handoff,
-      { ...context, sessionID: 'other-child', agent: 'forager-worker' },
-    ) as string);
-    expect(denied).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
-    expect(execSync('git rev-parse HEAD', { cwd: prepared.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
-
-    const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute(
-      handoff,
-      { ...context, sessionID: 'child-attached', agent: 'forager-worker' },
-    ) as string);
-    expect(committed.success).toBe(true);
-    expect(attempts.getAttempt(prepared.attemptId)).toMatchObject({ phase: 'attached', handoffOutcome: 'completed' });
-  });
-
-  it('denies run B child from mutating finalized run A', async () => {
-    initGit(TEST_ROOT);
-    const { hooks, context: runAContext } = await hooksFor(TEST_ROOT, 'primary-run-a');
-    const runA = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
-      scope: { kind: 'adhoc', runId: 'finalized-run-a' },
-      placement: { kind: 'worktree' },
-    }, runAContext) as string);
-    const runAArgs = { subagent_type: 'forager-worker', description: 'Finalize run A', prompt: 'Do it.', background: false };
-    await hooks['tool.execute.before']!({ tool: 'task', sessionID: runAContext.sessionID, callID: 'call-run-a' }, { args: runAArgs });
-    const attempts = new ExecutionAttemptService(TEST_ROOT);
-    attempts.bindNativeChild({
-      originatingPrimarySession: runAContext.sessionID,
-      nativeCallId: 'call-run-a',
-      nativeChildSessionId: 'child-run-a',
-    });
-    attempts.observeBlockingStop({
-      originatingPrimarySession: runAContext.sessionID,
-      nativeCallId: 'call-run-a',
-      outputDefined: true,
-    });
-    attempts.finalize(runA.attemptId, 'completed');
-
-    await hooks['chat.message']?.({ sessionID: 'primary-run-b', agent: 'hive-master' }, {
-      message: { agent: 'hive-master' }, parts: [],
-    } as any);
-    const runBContext = { ...runAContext, sessionID: 'primary-run-b' };
-    const runB = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
-      scope: { kind: 'adhoc', runId: 'attached-run-b' },
-      placement: { kind: 'worktree' },
-    }, runBContext) as string);
-    const runBArgs = { subagent_type: 'forager-worker', description: 'Attach run B', prompt: 'Do it.', background: false };
-    await hooks['tool.execute.before']!({ tool: 'task', sessionID: runBContext.sessionID, callID: 'call-run-b' }, { args: runBArgs });
-    attempts.bindNativeChild({
-      originatingPrimarySession: runBContext.sessionID,
-      nativeCallId: 'call-run-b',
-      nativeChildSessionId: 'child-run-b',
-    });
-
-    fs.writeFileSync(path.join(runA.placement.workspacePath, 'run-a.txt'), 'must remain uncommitted\n');
-    const headBefore = execSync('git rev-parse HEAD', { cwd: runA.placement.workspacePath, encoding: 'utf8' }).trim();
-    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
-      runId: 'finalized-run-a',
-      workspacePath: runA.placement.workspacePath,
-      branch: runA.placement.branch,
-      message: 'test: reject cross-run mutation\n\nA child bound to run B must not commit finalized run A.',
-    }, { ...runBContext, sessionID: 'child-run-b', agent: 'forager-worker' }) as string);
-
-    expect(denied).toMatchObject({ success: false, reason: 'workspace_conflict_denied', mutation: 'none' });
-    expect(execSync('git rev-parse HEAD', { cwd: runA.placement.workspacePath, encoding: 'utf8' }).trim()).toBe(headBefore);
-    expect(attempts.getAttempt(runA.attemptId)).toMatchObject({
-      phase: 'finalized',
-      originatingPrimarySession: runAContext.sessionID,
-    });
-    expect(attempts.getAttempt(runB.attemptId)).toMatchObject({
-      phase: 'attached',
-      native: { childSessionId: 'child-run-b' },
-    });
-  });
-
-  it('denies run B child from mutating an attemptless run A', async () => {
-    initGit(TEST_ROOT);
-    const { hooks, context } = await hooksFor(TEST_ROOT, 'primary-attemptless');
-    const worktrees = new AdhocWorktreeService({
-      baseDir: TEST_ROOT,
-      hiveDir: path.join(TEST_ROOT, '.hive'),
-      repositoryResolver: { resolveRepositories: () => [] },
-    });
-    const runA = await worktrees.create({ runId: 'attemptless-run-a' });
-    const runB = JSON.parse(await hooks.tool!.hive_execution_prepare.execute({
-      scope: { kind: 'adhoc', runId: 'attached-run-b' },
-      placement: { kind: 'worktree' },
-    }, context) as string);
-    const args = { subagent_type: 'forager-worker', description: 'Attach run B', prompt: 'Do it.', background: false };
-    await hooks['tool.execute.before']!({ tool: 'task', sessionID: context.sessionID, callID: 'call-attemptless-run-b' }, { args });
-    const attempts = new ExecutionAttemptService(TEST_ROOT);
-    attempts.bindNativeChild({
-      originatingPrimarySession: context.sessionID,
-      nativeCallId: 'call-attemptless-run-b',
-      nativeChildSessionId: 'child-attemptless-run-b',
-    });
-
-    fs.writeFileSync(path.join(runA.path, 'attemptless.txt'), 'must remain uncommitted\n');
-    const headBefore = execSync('git rev-parse HEAD', { cwd: runA.path, encoding: 'utf8' }).trim();
-    const statusBefore = execSync('git status --porcelain', { cwd: runA.path, encoding: 'utf8' });
-    const denied = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({
-      runId: runA.runId,
-      workspacePath: runA.path,
-      branch: runA.branch,
-      message: 'test: reject attemptless mutation\n\nAn attached child for run B must not authorize run A.',
-    }, { ...context, sessionID: 'child-attemptless-run-b', agent: 'forager-worker' }) as string);
-
-    expect(denied).toMatchObject({
-      success: false,
-      reason: 'workspace_conflict_denied',
-      mutation: 'none',
-      runId: runA.runId,
-    });
-    expect(execSync('git rev-parse HEAD', { cwd: runA.path, encoding: 'utf8' }).trim()).toBe(headBefore);
-    expect(execSync('git status --porcelain', { cwd: runA.path, encoding: 'utf8' })).toBe(statusBefore);
-    expect(attempts.getAttempt(runB.attemptId)).toMatchObject({
-      phase: 'attached',
-      native: { childSessionId: 'child-attemptless-run-b' },
+      finalization: { repositories: [{ id: 'root', result: 'committed' }] },
     });
   });
 

@@ -15,8 +15,13 @@ export type {
   BindNativeChildInput,
   ObserveBlockingStopInput,
   ObserveBackgroundStopInput,
-  FinalizeExecutionAttemptInput,
 } from './executionAttemptService.js';
+export { ExecutionFinalizationService } from './executionFinalizationService.js';
+export type {
+  ExecutionFinishInput,
+  ExecutionFinishResult,
+  ExecutionFinalizationCheckpoint,
+} from './executionFinalizationService.js';
 export { WorktreeService, createWorktreeService } from './worktreeService.js';
 export type {
   WorktreeInfo,

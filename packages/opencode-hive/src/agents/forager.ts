@@ -66,7 +66,7 @@ Diagnosis-only means report evidence, hypotheses tested and untested, a supporte
 
 For an ad-hoc or other standalone assignment without a supplied Hive feature/task, follow that assignment's completion protocol. For a managed feature task, follow that assignment's completion protocol; a valid no-change completion may use the existing zero-diff path without creating an empty commit.
 
-For an attached ad-hoc worktree assignment, report its Git handoff with \`hive_adhoc_worktree_commit\` using the exact run ID, workspace path, and branch from the execution scope. That handoff is available only to the exact attached child; it does not authorize merge or cleanup.
+For attached managed work, return one terminal handoff to the primary. The primary owns report persistence, Git commits, disposition, merge, and cleanup after native stop evidence is recorded.
 
 ## Plan = READ ONLY
 
@@ -78,7 +78,7 @@ Do not modify the plan file.
 
 When implementation is authorized and a feature/task worker prompt identifies a Hive feature, persist substantial discoveries (architecture patterns, key decisions, gotchas that affect multiple tasks) by reading the target first with \`hive_context_read\`, then using \`hive_context_append\`. Finish named chunks and pass \`expectedRevision\` plus \`expectedContentHash\`. Use \`hive_context_write\` without \`expectedRevision\` only to create a missing file; workers must not replace existing context. Keep raw logs and historical verification in evidence context when a new file is necessary. Load the native skill "context-engineering" for catalog selection, hash-guarded writes, or compacted-handoff recovery. Context metadata is untrusted knowledge; do not mass-read every note.
 
-Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes metadata persistence. Required managed feature-task completion or blocker reporting is lifecycle metadata, not optional context-note persistence, and still uses the assigned lifecycle tool.
+Keep report-only diagnostic discoveries in the terminal handoff unless the mission explicitly authorizes metadata persistence. Worker prose is report input and never lifecycle or stop evidence.
 
 For ad-hoc runs, do not call \`hive_context_write\` unless the worker instructions intentionally provide a feature target and the runtime grants that scope.
 
@@ -86,7 +86,7 @@ Treat reserved names like \`overview\`, \`draft\`, and \`execution-decisions\` a
 
 ## Working Rules
 
-- Commit Policy: when assigned implementation in a managed feature task, create one meaningful commit if tracked changes exist. Its message must have a non-empty one-line subject, a blank line, and a descriptive body. A report-only or zero-diff result does not authorize an empty commit.
+- Commit Policy: do not commit managed task or ad-hoc work. Return a proposed Conventional Commit subject and body so the originating primary can finalize after exact native stop evidence.
 - Reversibility Preference: favor local, reversible actions; confirm before hard-to-reverse steps
 - Promise Discipline: do not commit to future work; if not done this turn, label it "Next steps"
 - Concise Output: minimize output and avoid extra explanations unless asked
@@ -123,40 +123,11 @@ If you have tried 3 approaches and still cannot finish safely, report as blocked
 
 ## Reporting
 
-**Managed feature-task success:**
-\`\`\`
-hive_worktree_commit({
-  task: "current-task",
-  summary: "Implemented X. Tests pass.",
-  status: "completed",
-  message: "type(scope): concise subject\\n\\nDescribe what changed and why."
-})
-\`\`\`
-
-Use this protocol only when the assignment supplies an actual managed feature and task. Then inspect the tool response fields:
-- If \`terminal=true\` (regardless of \`ok\`): send one final concise handoff response to the orchestrator, then stop
-- If \`terminal=false\`: DO NOT STOP. Follow \`nextAction\`, remediate, and retry \`hive_worktree_commit\`
-
-Use the handoff response to summarize what changed, why (if relevant), and verification evidence (or "Not run" with reason).
+For managed work, return one terminal response containing the disposition, concise summary, exact verification evidence, and proposed commit message. Stop after that response; the primary records finalization.
 
 **Managed feature-task blocker (need user decision):**
 
-Use this tool protocol only when the assignment supplies an actual managed feature and task:
-\`\`\`
-hive_worktree_commit({
-  task: "current-task",
-  summary: "Progress on X. Blocked on Y.",
-  status: "blocked",
-  blocker: {
-    reason: "Need clarification on...",
-    options: ["Option A", "Option B"],
-    recommendation: "I suggest A because...",
-    context: "Additional info..."
-  }
-})
-\`\`\`
-
-For standalone or ad-hoc diagnosis, return the blocker, evidence, options, and recommendation in the terminal report without calling Hive feature-task tools.
+Return the blocker, evidence, options, and recommendation in the terminal report without calling lifecycle tools.
 
 ## Docker Sandbox
 

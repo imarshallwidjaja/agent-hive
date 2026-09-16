@@ -548,11 +548,11 @@ describe('Forager verification and tool-scope clarity', () => {
     expect(FORAGER_BEE_PROMPT).toContain('managed feature task');
     expect(FORAGER_BEE_PROMPT).toContain('only when the mission authorizes implementation');
     expect(FORAGER_BEE_PROMPT).toContain('Never revert unrelated or user changes');
-    expect(FORAGER_BEE_PROMPT).toContain('standalone or ad-hoc diagnosis');
-    expect(FORAGER_BEE_PROMPT).toContain('without calling Hive feature-task tools');
+    expect(FORAGER_BEE_PROMPT).toContain('Return the blocker, evidence, options, and recommendation');
+    expect(FORAGER_BEE_PROMPT).toContain('without calling lifecycle tools');
     expect(FORAGER_BEE_PROMPT).toContain('Keep report-only diagnostic discoveries in the terminal handoff');
     expect(FORAGER_BEE_PROMPT).toContain('unless the mission explicitly authorizes metadata persistence');
-    expect(FORAGER_BEE_PROMPT).toContain('completion or blocker reporting is lifecycle metadata');
+    expect(FORAGER_BEE_PROMPT).toContain('Worker prose is report input and never lifecycle or stop evidence');
   });
 
   it('defers tool scope to worker prompt', () => {
@@ -1352,9 +1352,8 @@ describe('Forager (Worker/Coder) prompt', () => {
   });
 
   it('requires one meaningful managed-task commit with a subject and body when changes exist', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('one meaningful commit if tracked changes exist');
-    expect(FORAGER_BEE_PROMPT).toContain('subject, a blank line, and a descriptive body');
-    expect(FORAGER_BEE_PROMPT).toContain('message: "type(scope): concise subject\\n\\nDescribe what changed and why."');
+    expect(FORAGER_BEE_PROMPT).toContain('do not commit managed task or ad-hoc work');
+    expect(FORAGER_BEE_PROMPT).toContain('proposed Conventional Commit subject and body');
   });
 
   it('contains resolve before blocking', () => {
@@ -1366,18 +1365,16 @@ describe('Forager (Worker/Coder) prompt', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Completion Checklist');
   });
 
-  it('requires terminal commit result before stopping', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('regardless of `ok`');
-    expect(FORAGER_BEE_PROMPT).toContain('terminal');
-    expect(FORAGER_BEE_PROMPT).toContain('DO NOT STOP');
+  it('requires one terminal handoff without worker finalization', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('return one terminal response');
+    expect(FORAGER_BEE_PROMPT).toContain('the primary records finalization');
+    expect(FORAGER_BEE_PROMPT).not.toContain('hive_worktree_commit');
   });
 
-  it('requires a final concise handoff response after terminal commit', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('send one final concise handoff response');
-    expect(FORAGER_BEE_PROMPT).toContain('to the orchestrator');
-    expect(FORAGER_BEE_PROMPT).toContain('what changed');
-    expect(FORAGER_BEE_PROMPT).toContain('why (if relevant)');
-    expect(FORAGER_BEE_PROMPT).toContain('verification evidence');
+  it('requires a final concise handoff response for primary finalization', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('one terminal response');
+    expect(FORAGER_BEE_PROMPT).toContain('concise summary');
+    expect(FORAGER_BEE_PROMPT).toContain('exact verification evidence');
     expect(FORAGER_BEE_PROMPT).not.toContain('stop and hand off to orchestrator');
     expect(FORAGER_BEE_PROMPT).not.toContain('Do NOT respond further');
   });
@@ -1903,7 +1900,8 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
   it('uses the execution preparation surface with explicit ad-hoc completion tools', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_existing_workspace_start');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_execution_prepare');
-    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_commit');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_execution_finish');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_adhoc_worktree_commit');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_merge');
     expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_cleanup');
     expect(HIVE_BUILDER_PROMPT).toContain('workspacePath');

@@ -661,6 +661,33 @@ export class TaskService {
     }
   }
 
+  finalizeWorkerAttempt(
+    featureName: string,
+    taskFolder: string,
+    taskAttempt: number,
+    updates: Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff'>> & { blocker?: unknown },
+    lockOptions?: LockOptions,
+  ): { applied: boolean; status: TaskStatus } {
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
+    if (!fileExists(statusPath)) throw new Error(`Task '${taskFolder}' not found`);
+    const release = acquireLockSync(statusPath, lockOptions);
+    try {
+      const current = readJson<TaskStatus>(statusPath);
+      if (!current) throw new Error(`Task '${taskFolder}' not found`);
+      if (current.workerAttempt !== taskAttempt) return { applied: false, status: current };
+      const updated = {
+        ...current,
+        ...updates,
+        schemaVersion: TASK_STATUS_SCHEMA_VERSION,
+      } as TaskStatus;
+      if (updates.status === 'done' && current.status !== 'done') updated.completedAt = this.now().toISOString();
+      writeJsonAtomic(statusPath, updated);
+      return { applied: true, status: updated };
+    } finally {
+      release();
+    }
+  }
+
   /**
    * Patch only background-owned fields without clobbering completion-owned fields.
    * Safe for concurrent use by background workers.

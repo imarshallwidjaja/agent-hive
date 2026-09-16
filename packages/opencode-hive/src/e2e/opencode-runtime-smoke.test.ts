@@ -1675,20 +1675,22 @@ Test compaction resume flow.
     const worktreePath = worktreeResult.placement!.workspacePath!;
     fs.writeFileSync(path.join(worktreePath, "change.txt"), "compaction resume test\n");
 
-    const commitRaw = await hooks.tool!.hive_worktree_commit.execute(
+    await hooks['tool.execute.after']!({
+      tool: 'task', sessionID: parentContext.sessionID, callID: 'call-compaction-worker', args: taskArgs,
+    } as any, { title: '', output: 'Compaction task complete.', metadata: { sessionId: workerContext.sessionID } });
+    const commitRaw = await hooks.tool!.hive_execution_finish.execute(
       {
-        feature: "compaction-test-feature",
-        task: "01-compaction-task",
+        attemptId: worktreeResult.attemptId,
         status: "completed",
         summary: "Compaction resume test complete. Tests pass (bun test).",
         message: "test: record compaction resume flow\n\nRecord the verified compaction resume behavior.",
       },
-      workerContext,
+      parentContext,
     );
-    const commitResult = JSON.parse(commitRaw as string) as { ok: boolean; terminal: boolean; status: string };
+    const commitResult = JSON.parse(commitRaw as string) as { success: boolean; phase: string; status: string };
 
-    expect(commitResult.ok).toBe(true);
-    expect(commitResult.terminal).toBe(true);
+    expect(commitResult.success).toBe(true);
+    expect(commitResult.phase).toBe('finalized');
     expect(commitResult.status).toBe("completed");
   });
 

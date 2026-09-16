@@ -14,6 +14,8 @@ import type {
   ExecutionAttempt,
   ExecutionAttemptsJson,
   ExecutionObservedOutcome,
+  ExecutionFinalizationReceipt,
+  ExecutionFinalizationRepositoryReceipt,
   ExecutionPlacement,
   NativeTaskLease,
   WorkspaceCleanupReservation,
@@ -85,12 +87,6 @@ export interface ObserveBackgroundStopInput {
   nativeCallId: string;
   nativeTaskId: string;
   state: 'completed' | 'error' | 'cancelled';
-}
-
-export interface FinalizeExecutionAttemptInput {
-  reportLocator?: string;
-  reportContentHash?: string;
-  outcome?: ExecutionObservedOutcome;
 }
 
 interface LegacyExecutionAttempt {
@@ -320,16 +316,15 @@ export class ExecutionAttemptService {
     });
   }
 
-  finalize(
-    attemptId: string,
-    outcome: ExecutionObservedOutcome,
-    extras: FinalizeExecutionAttemptInput = {},
-  ): ExecutionAttempt {
+  finalize(attemptId: string, outcome: ExecutionObservedOutcome): ExecutionAttempt {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
       if (attempt.phase === 'finalized') return structuredClone(attempt);
       if (attempt.phase !== 'stopped') throw new Error(`Execution attempt ${attempt.id} has not stopped`);
-      this.finalizeRecord(attempt, outcome, extras);
+      if (!attempt.finalization?.report || !attempt.finalization.disposition) {
+        throw new Error(`Execution attempt ${attempt.id} finalization is incomplete`);
+      }
+      this.finalizeRecord(attempt, outcome);
       return structuredClone(attempt);
     });
   }
@@ -394,15 +389,80 @@ export class ExecutionAttemptService {
     return structuredClone(this.readStore().attempts);
   }
 
-  recordHandoff(attemptId: string, extras: FinalizeExecutionAttemptInput): ExecutionAttempt {
+  currentTaskAttempt(featureName: string, taskFolder: string): ExecutionAttempt | undefined {
+    const store = this.readStore();
+    const id = store.currentTaskAttempts?.[taskPointerKey(featureName, taskFolder)];
+    const attempt = id ? store.attempts.find(candidate => candidate.id === id) : undefined;
+    return attempt ? structuredClone(attempt) : undefined;
+  }
+
+  beginFinalization(attemptId: string, receipt: ExecutionFinalizationReceipt): ExecutionAttempt {
     return this.withStore(store => {
       const attempt = this.requireAttempt(store, attemptId);
-      if (attempt.phase !== 'attached') throw new Error(`Execution attempt ${attempt.id} is not attached`);
-      if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
-      if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
-      if (extras.outcome) attempt.handoffOutcome = extras.outcome;
+      if (attempt.phase !== 'stopped') throw new Error(`Execution attempt ${attempt.id} has not stopped`);
+      if (attempt.finalization) {
+        if (attempt.finalization.intentHash !== receipt.intentHash) {
+          throw new Error(`Execution attempt ${attempt.id} already has a different immutable finalization intent`);
+        }
+        return structuredClone(attempt);
+      }
+      attempt.finalization = structuredClone(receipt);
       attempt.updatedAt = new Date().toISOString();
       return structuredClone(attempt);
+    });
+  }
+
+  recordRepositoryPreparation(
+    attemptId: string,
+    repositoryId: string,
+    baselineHead: string,
+    expectedTree: string,
+  ): ExecutionAttempt {
+    return this.updateFinalization(attemptId, receipt => {
+      const repository = this.requireFinalizationRepository(receipt, repositoryId);
+      if (repository.baselineHead && (repository.baselineHead !== baselineHead || repository.expectedTree !== expectedTree)) {
+        throw new Error(`Repository ${repositoryId} preparation conflicts with its durable finalization receipt`);
+      }
+      repository.baselineHead = baselineHead;
+      repository.expectedTree = expectedTree;
+    });
+  }
+
+  recordRepositoryResult(
+    attemptId: string,
+    repositoryId: string,
+    result: 'committed' | 'no_changes',
+    commitSha: string,
+  ): ExecutionAttempt {
+    return this.updateFinalization(attemptId, receipt => {
+      const repository = this.requireFinalizationRepository(receipt, repositoryId);
+      if (!repository.baselineHead || !repository.expectedTree) throw new Error(`Repository ${repositoryId} has no preparation receipt`);
+      if (repository.result && (repository.result !== result || repository.commitSha !== commitSha)) {
+        throw new Error(`Repository ${repositoryId} result conflicts with its durable finalization receipt`);
+      }
+      repository.result = result;
+      repository.commitSha = commitSha;
+    });
+  }
+
+  recordFinalizationReport(attemptId: string, locator: string, contentHash: string): ExecutionAttempt {
+    return this.updateFinalization(attemptId, receipt => {
+      if (receipt.report && (receipt.report.locator !== locator || receipt.report.contentHash !== contentHash)) {
+        throw new Error('Finalization report conflicts with its durable receipt');
+      }
+      receipt.report = { locator, contentHash };
+    });
+  }
+
+  recordFinalizationDisposition(
+    attemptId: string,
+    disposition: { applied: boolean; currentTaskUnchanged?: boolean },
+  ): ExecutionAttempt {
+    return this.updateFinalization(attemptId, receipt => {
+      if (receipt.disposition && JSON.stringify(receipt.disposition) !== JSON.stringify(disposition)) {
+        throw new Error('Finalization disposition conflicts with its durable receipt');
+      }
+      receipt.disposition = disposition;
     });
   }
 
@@ -425,7 +485,6 @@ export class ExecutionAttemptService {
   private finalizeRecord(
     attempt: ExecutionAttempt,
     outcome: ExecutionObservedOutcome,
-    extras: FinalizeExecutionAttemptInput = {},
   ): void {
     const now = new Date().toISOString();
     attempt.phase = 'finalized';
@@ -434,9 +493,29 @@ export class ExecutionAttemptService {
     attempt.updatedAt = now;
     delete attempt.armRuntimeId;
     delete attempt.expiresAt;
-      if (extras.reportLocator) attempt.reportLocator = extras.reportLocator;
-      if (extras.reportContentHash) attempt.reportContentHash = extras.reportContentHash;
-      if (extras.outcome) attempt.handoffOutcome = extras.outcome;
+  }
+
+  private updateFinalization(
+    attemptId: string,
+    update: (receipt: ExecutionFinalizationReceipt) => void,
+  ): ExecutionAttempt {
+    return this.withStore(store => {
+      const attempt = this.requireAttempt(store, attemptId);
+      if (attempt.phase !== 'stopped') throw new Error(`Execution attempt ${attempt.id} has not stopped`);
+      if (!attempt.finalization) throw new Error(`Execution attempt ${attempt.id} has no finalization intent`);
+      update(attempt.finalization);
+      attempt.updatedAt = new Date().toISOString();
+      return structuredClone(attempt);
+    });
+  }
+
+  private requireFinalizationRepository(
+    receipt: ExecutionFinalizationReceipt,
+    repositoryId: string,
+  ): ExecutionFinalizationRepositoryReceipt {
+    const repository = receipt.repositories.find(candidate => candidate.id === repositoryId);
+    if (!repository) throw new Error(`Unknown finalization repository ${repositoryId}`);
+    return repository;
   }
 
   private hasPersistableState(store: ExecutionAttemptsJson): boolean {

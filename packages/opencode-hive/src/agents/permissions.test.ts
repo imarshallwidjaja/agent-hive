@@ -2138,7 +2138,7 @@ describe('Agent permissions', () => {
     expect(helper?.tools?.['hive_task_update']).toBe(false);
     expect(helper?.tools?.['hive_plan_read']).toBeUndefined();
     expect(helper?.tools?.['hive_tasks_sync']).toBe(false);
-    expect(helper?.tools?.['hive_worktree_commit']).toBe(false);
+    expect(helper?.tools?.['hive_execution_finish']).toBe(false);
     expect(helper?.permission?.task).toBe('deny');
     expect(helper?.permission?.delegate).toBe('deny');
     expect(helper?.permission?.skill).toBe('allow');
@@ -2222,18 +2222,17 @@ describe('Per-agent tool filtering', () => {
     return opencodeConfig.agent ?? {};
   }
 
-  it('forager has feature and ad-hoc handoff tools allowed while integration stays disabled', async () => {
+  it('forager has no lifecycle or integration tools', async () => {
     const agents = await buildConfig('unified');
     expect(agents['forager-worker']?.prompt).toBeUndefined();
     const foragerTools = agents['forager-worker']?.tools;
     expect(foragerTools).toBeTruthy();
-    expect(foragerTools!['hive_worktree_commit']).toBeUndefined();
-    expect(foragerTools!['hive_adhoc_worktree_commit']).toBeUndefined();
+    expect(foragerTools!['hive_execution_finish']).toBe(false);
     expect(foragerTools!['hive_merge']).toBe(false);
     expect(foragerTools!['hive_tasks_sync']).toBe(false);
   });
 
-  it('configured Forager derivatives inherit both authenticated handoff tools', async () => {
+  it('configured Forager derivatives cannot finalize execution', async () => {
     const agents = await buildConfig('unified', {
       'configured-forager': {
         baseAgent: 'forager-worker',
@@ -2241,27 +2240,26 @@ describe('Per-agent tool filtering', () => {
       },
     });
     const tools = agents['configured-forager']?.tools;
-    expect(tools?.['hive_worktree_commit']).toBeUndefined();
-    expect(tools?.['hive_adhoc_worktree_commit']).toBeUndefined();
+    expect(tools?.['hive_execution_finish']).toBe(false);
     expect(tools?.['hive_adhoc_merge']).toBe(false);
   });
 
-  it('forager tool list keeps its worktree tools and universal metadata inspection tools', async () => {
+  it('forager tool list keeps context tools but no finalization authority', async () => {
     const agents = await buildConfig('unified');
     const foragerTools = agents['forager-worker']?.tools;
     expect(foragerTools).toBeTruthy();
     expect(foragerTools!['hive_status']).toBeUndefined();
     expect(foragerTools!['hive_plan_read']).toBeUndefined();
-    expect(foragerTools!['hive_worktree_commit']).toBeUndefined();
+    expect(foragerTools!['hive_execution_finish']).toBe(false);
     expect(foragerTools!['hive_context_write']).toBeUndefined();
     expect(foragerTools![removedHiveSkillTool]).toBeUndefined();
   });
 
-  it('scout has only read-only hive tools (no worktree_commit, no merge)', async () => {
+  it('scout has only read-only hive tools (no execution_finish, no merge)', async () => {
     const agents = await buildConfig('unified');
     const scoutTools = agents['scout-researcher']?.tools;
     expect(scoutTools).toBeTruthy();
-    expect(scoutTools!['hive_worktree_commit']).toBe(false);
+    expect(scoutTools!['hive_execution_finish']).toBe(false);
     expect(scoutTools!['hive_merge']).toBe(false);
     expect(scoutTools!['hive_plan_read']).toBeUndefined();
     expect(scoutTools!['hive_context_write']).toBeUndefined();
@@ -9038,17 +9036,17 @@ describe('Per-agent tool filtering', () => {
     expect(architectTools).toBeTruthy();
     expect(architectTools!['hive_plan_write']).toBeUndefined();
     expect(architectTools!['hive_plan_patch']).toBeUndefined();
-    expect(architectTools!['hive_worktree_commit']).toBe(false);
+    expect(architectTools!['hive_execution_finish']).toBe(false);
     expect(architectTools!['hive_merge']).toBe(false);
   });
 
-  it('swarm has orchestration tools but no plan_write or worktree_commit', async () => {
+  it('swarm has orchestration and primary finalization tools but no plan_write', async () => {
     const agents = await buildConfig('dedicated');
     const swarmTools = agents['swarm-orchestrator']?.tools;
     expect(swarmTools).toBeTruthy();
     expect(swarmTools!['hive_plan_write']).toBe(false);
     expect(swarmTools!['hive_plan_patch']).toBe(false);
-    expect(swarmTools!['hive_worktree_commit']).toBe(false);
+    expect(swarmTools!['hive_execution_finish']).toBeUndefined();
     expect(swarmTools!['hive_merge']).toBeUndefined();
     expect(swarmTools!['hive_plan_approve']).toBeUndefined();
   });
@@ -9103,7 +9101,9 @@ describe('Per-agent tool filtering', () => {
       'hive_existing_workspace_start',
       'hive_worktree_start',
       'hive_worktree_create',
+      'hive_worktree_commit',
       'hive_adhoc_worktree_create',
+      'hive_adhoc_worktree_commit',
     ];
     for (const agents of [await buildConfig('unified'), await buildConfig('dedicated')]) {
       for (const agent of Object.values(agents)) {
@@ -9129,7 +9129,7 @@ describe('Per-agent tool filtering', () => {
     });
   });
 
-  it('hive-builder gets armed execution, ad-hoc handoff, and repository tools without feature planning tools', async () => {
+  it('hive-builder gets armed execution, primary finalization, and repository tools without feature planning tools', async () => {
     const agents = await buildConfig('unified');
     const builder = agents['hive-builder'];
     expect(builder).toBeTruthy();
@@ -9138,7 +9138,7 @@ describe('Per-agent tool filtering', () => {
     expect(tools).toBeTruthy();
     // Allowed (entries absent = allowed)
     expect(tools['hive_execution_prepare']).toBeUndefined();
-    expect(tools['hive_adhoc_worktree_commit']).toBeUndefined();
+    expect(tools['hive_execution_finish']).toBeUndefined();
     expect(tools['hive_adhoc_merge']).toBeUndefined();
     expect(tools['hive_adhoc_cleanup']).toBeUndefined();
     expect(tools['hive_repositories_status']).toBeUndefined();
@@ -9154,7 +9154,6 @@ describe('Per-agent tool filtering', () => {
     expect(tools['hive_constraints_set']).toBeUndefined();
     expect(tools['hive_context_write']).toBeUndefined();
     // Disabled feature lifecycle and planning tools
-    expect(tools['hive_worktree_commit']).toBe(false);
     expect(tools['hive_merge']).toBe(false);
     expect(tools['hive_status']).toBeUndefined();
     expect(tools['hive_feature_create']).toBe(false);
@@ -9168,11 +9167,11 @@ describe('Per-agent tool filtering', () => {
     expect(builder!.permission?.todoread).toBe('allow');
   });
 
-  it('hive-helper keeps ad-hoc handoff and integration tools disabled', async () => {
+  it('hive-helper keeps finalization and ad-hoc integration tools disabled', async () => {
     const agents = await buildConfig('unified');
     const helperTools = agents['hive-helper']?.tools;
     expect(helperTools).toBeTruthy();
-    expect(helperTools!['hive_adhoc_worktree_commit']).toBe(false);
+    expect(helperTools!['hive_execution_finish']).toBe(false);
     expect(helperTools!['hive_adhoc_merge']).toBe(false);
     expect(helperTools!['hive_adhoc_cleanup']).toBe(false);
   });
