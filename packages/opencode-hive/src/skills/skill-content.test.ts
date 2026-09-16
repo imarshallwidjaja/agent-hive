@@ -641,6 +641,23 @@ describe('skill content', () => {
     expect(skill!.template).toContain('cannot reuse that run');
   });
 
+  it('includes every native-required field in managed Forager examples', () => {
+    let exampleCount = 0;
+
+    for (const skill of BUILTIN_SKILLS) {
+      for (const match of skill.template.matchAll(/(?:await\s+)?task\(\{([\s\S]*?)\}\)/g)) {
+        const fields = match[1];
+        if (!fields.includes('forager-worker')) continue;
+        exampleCount += 1;
+        expect(fields, skill.name).toMatch(/\bsubagent_type\s*:/);
+        expect(fields, skill.name).toMatch(/\bdescription\s*:/);
+        expect(fields, skill.name).toMatch(/\bprompt\s*:/);
+      }
+    }
+
+    expect(exampleCount).toBeGreaterThan(0);
+  });
+
   it('cuts removed launch fields and states general/helper ownership on dispatch skills', () => {
     const removed = [
       'hive_capability_reason',

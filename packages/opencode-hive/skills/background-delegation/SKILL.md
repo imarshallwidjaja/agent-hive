@@ -80,7 +80,7 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 
 1. Consume the owning workflow's ready lanes, delegation kinds, ownership boundaries, and safe independent foreground work.
 2. Build the context packet for each supplied lane without changing its boundary.
-3. Every Forager lane, including report-only diagnosis, needs one armed execution. Call `hive_execution_prepare` with the exact task or ad-hoc scope and placement, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. The runtime attaches that call and appends the canonical execution scope to its prompt. Unused arms expire after five minutes; an unobserved ExecutionAttempt keeps a live claim on only that worktree. Retry after confirmed termination may reuse the same worktree. Attached or uncertain feature-task scopes remain quarantined, and preparation stays denied until supported lifecycle recovery establishes termination. Do not invent an alternate placement while the prior writer may still be live. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Ordinary Scout, advisor, and reviewer calls do not require an armed execution.
+3. Every Forager lane, including report-only diagnosis, needs one armed execution. Call `hive_execution_prepare` with the exact task or ad-hoc scope and placement, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. The runtime attaches that call and appends the canonical execution scope to its prompt. Unused arms expire after five minutes; an unobserved ExecutionAttempt keeps a live claim on only that worktree. Retry after confirmed termination may reuse the same worktree. Attached or uncertain feature-task scopes remain quarantined, and preparation stays denied until exact supported stop or finalization evidence is recorded. Do not invent an alternate feature-task placement while the prior writer may still be live. For ad-hoc work, retry after confirmed termination may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree without copying mutable progress from the uncertain run. Ordinary Scout, advisor, and reviewer calls do not require an armed execution.
 4. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 5. Follow `recommendedNextAction` from `hive_background_status` when present; use `nextActions` and `orchestrationBurden` as supporting detail for visible lanes and operator reporting. Treat `waitingForNativeCompletion` as wait-only state; an empty `jobs` list is not proof that no native background work exists.
 6. Continue only foreground work that does not depend on the background result.
@@ -100,6 +100,7 @@ hive_execution_prepare({
 });
 await task({
   subagent_type: 'forager-worker',
+  description: 'Implement the prepared ad-hoc change',
   prompt: 'Concrete work with done criteria',
 });
 ```
@@ -113,6 +114,7 @@ hive_execution_prepare({
 });
 await task({
   subagent_type: 'forager-worker',
+  description: 'Retry the prepared ad-hoc change',
   prompt: 'Self-contained retry with done criteria',
 });
 ```
@@ -128,6 +130,7 @@ hive_execution_prepare({
 });
 const { task_id } = task({
   subagent_type: 'forager-worker',
+  description: 'Implement the independent ad-hoc change',
   prompt: 'Concrete independent work with done criteria',
   background: true,
 });

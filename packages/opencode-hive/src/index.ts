@@ -345,7 +345,6 @@ import {
   getTaskReportPath,
   normalizePath,
   readText,
-  renderAggregateBranchDiff,
   resolveFeatureDirectoryName,
   applyTaskBudget,
   DEFAULT_BUDGET,
@@ -364,7 +363,6 @@ import {
   type MergeCleanupBlock,
   type PlanPatchOperation,
   type TaskAggregateBranchDiff,
-  type BudgetedTask,
   type TruncationEvent,
   type ContextReadSummary,
   type WorkerAssignmentDescriptor,
@@ -2569,39 +2567,6 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
     report: normalizePath(path.relative(directory, reportPath)),
   });
 
-  const renderCompletedTask = (completed: BudgetedTask): string => [
-    `- ${completed.name}: ${completed.summary}`,
-    ...(completed.aggregateBranchDiff
-      ? [`  ${renderAggregateBranchDiff(completed.aggregateBranchDiff)}`]
-      : []),
-  ].join('\n');
-
-  const buildManualLaunchSpec = (
-    manualSpec: string,
-    completedTasks: BudgetedTask[],
-  ): string => {
-    const supplementSections: string[] = [];
-    if (completedTasks.length > 0) {
-      supplementSections.push(
-        [
-          '### Completed Task Context',
-          '',
-          ...completedTasks.map(renderCompletedTask),
-        ].join('\n'),
-      );
-    }
-    if (supplementSections.length === 0) return manualSpec;
-    return [
-      manualSpec,
-      '',
-      '## Runtime-Injected Launch Supplement',
-      '',
-      'The runtime generated this ephemeral context for the current launch. It is not part of the persisted manual mission.',
-      '',
-      supplementSections.join('\n\n'),
-    ].join('\n');
-  };
-
   type WritableLaunchTarget = {
     label: string;
     projectRoot: string;
@@ -2667,8 +2632,12 @@ To unblock: Remove .hive/features/${featureDir}/BLOCKED`;
         `Cannot mutate or prepare another writer for ${target.label}: ${detail}`,
         true,
         sessionID
-          ? `Inspect the exact native session with hive_task_trace({ task_id: "${sessionID}" }); cancel it if still active, then retry after terminal evidence is available.`
-          : 'Execution identity is unknown. Inspect or cancel the exact native task call recorded for this target; if native evidence is unavailable, use a fresh isolated workspace. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.',
+          ? `Inspect the exact native session with hive_task_trace({ task_id: "${sessionID}" }); cancel it if still active, then retry only after exact supported stop or finalization evidence is recorded.`
+          : target.task
+            ? 'Execution identity is unknown. Keep this feature-task worktree quarantined until exact supported stop or finalization evidence is recorded. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.'
+            : target.runId
+              ? 'Execution identity is unknown. Keep this ad-hoc run quarantined; retry in a new ad-hoc run and worktree without copying mutable progress from this run. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.'
+              : 'Execution identity is unknown. Preserve the claimed workspace until exact supported stop or finalization evidence is recorded. Elapsed time, plugin restart, and archived bookkeeping do not prove execution stopped.',
       )),
       ...(attemptId ? { attemptId } : {}),
     }));

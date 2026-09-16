@@ -174,6 +174,8 @@ describe('managed execution attachment', () => {
     expect(args.prompt).toContain('Use the task spec.');
     expect(args.prompt).toContain('Feature: feature-a');
     expect(args.prompt).toContain('Task spec:');
+    expect(args.prompt).toContain('report and commit through hive_worktree_commit');
+    expect(args.prompt).toContain('the primary owns both');
     expect(new ExecutionAttemptService(root).getAttempt(prepared.attemptId)?.phase).toBe('attached');
   });
 
@@ -476,6 +478,8 @@ describe('managed execution attachment', () => {
       }, context) as string);
       const args = { subagent_type: 'configured-forager', description: 'Ad-hoc change', prompt: 'Do it.', background: false };
       await hooks['tool.execute.before']!({ tool: 'task', sessionID: 'primary', callID: 'call-adhoc' }, { args });
+      expect(args.prompt).toContain('report and commit through hive_adhoc_worktree_commit');
+      expect(args.prompt).toContain('the primary owns both');
       await bindChild(hooks, parents, 'primary', 'call-adhoc', 'child-adhoc', 'configured-forager');
       fs.writeFileSync(path.join(prepared.placement.workspacePath, 'adhoc-result.txt'), 'ad-hoc result\n');
       const committed = JSON.parse(await hooks.tool!.hive_adhoc_worktree_commit.execute({

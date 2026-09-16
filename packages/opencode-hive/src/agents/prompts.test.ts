@@ -1877,13 +1877,16 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       for (const symbol of removed) expect(prompt, `${name}: ${symbol}`).not.toContain(symbol);
     }
     expect(QUEEN_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
-    expect(QUEEN_BEE_PROMPT).toContain('preparation stays denied until supported lifecycle recovery establishes termination');
+    expect(QUEEN_BEE_PROMPT).toContain('preparation stays denied until exact supported stop or finalization evidence is recorded');
+    expect(QUEEN_BEE_PROMPT).toContain('generic terminal session status alone does not prove stop');
+    expect(QUEEN_BEE_PROMPT).toContain('Exact blocking task return or an authenticated native background completion notification');
     expect(QUEEN_BEE_PROMPT).toContain('cannot reuse that run');
     expect(SWARM_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
     expect(SWARM_BEE_PROMPT).toContain('preparation stays denied until supported lifecycle recovery establishes termination');
     expect(SWARM_BEE_PROMPT).toContain('cannot reuse that run');
     expect(HIVE_BUILDER_PROMPT).toContain('Retry after confirmed termination may reuse the same `runId` worktree');
     expect(HIVE_BUILDER_PROMPT).toContain('cannot reuse that run');
+    expect(QUEEN_BEE_PROMPT).toContain('without copying mutable progress from the uncertain run');
     expect(HIVE_BUILDER_PROMPT).not.toContain('supersede onto a fresh `attemptSlot` worktree');
     expect(QUEEN_BEE_PROMPT).toContain('then dispatch one unchanged native Forager `task()` call');
   });

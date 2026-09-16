@@ -32,10 +32,13 @@ describe('managed prompt blocks', () => {
   });
 
   it('describes in-place handoff as report-only', () => {
-    expect(buildExecutionScopeBlock({
+    const block = buildExecutionScopeBlock({
       kind: 'task', featureName: 'feature', taskFolder: '01-task',
       placement: { kind: 'in_place', directory: '/tmp/live' },
-    })).toContain('without a commit message');
+    });
+
+    expect(block).toContain('without a commit message');
+    expect(block).not.toContain('hive_worktree_commit');
   });
 
   it('directs ad-hoc in-place workers to a terminal prose handoff', () => {
@@ -46,5 +49,27 @@ describe('managed prompt blocks', () => {
 
     expect(block).toContain('terminal prose handoff');
     expect(block).not.toContain('task handoff tool');
+  });
+
+  it('directs feature worktree workers through the temporary commit bridge', () => {
+    const block = buildExecutionScopeBlock({
+      kind: 'task', featureName: 'feature', taskFolder: '01-task',
+      placement: { kind: 'worktree', workspacePath: '/tmp/feature-worktree' },
+    });
+
+    expect(block).toContain('report and commit through hive_worktree_commit');
+    expect(block).toContain('the primary owns both');
+    expect(block).not.toContain('hive_adhoc_worktree_commit');
+  });
+
+  it('directs ad-hoc worktree workers through the temporary commit bridge', () => {
+    const block = buildExecutionScopeBlock({
+      kind: 'adhoc', runId: 'adhoc-run',
+      placement: { kind: 'worktree', workspacePath: '/tmp/adhoc-worktree' },
+    });
+
+    expect(block).toContain('report and commit through hive_adhoc_worktree_commit');
+    expect(block).toContain('the primary owns both');
+    expect(block).not.toContain('hive_worktree_commit.');
   });
 });

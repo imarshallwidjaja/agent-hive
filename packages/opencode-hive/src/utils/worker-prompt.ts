@@ -30,7 +30,9 @@ export function buildExecutionScopeBlock(input: ExecutionScopeBlockInput): strin
     ? `Task spec: .hive/features/${input.featureName}/tasks/${input.taskFolder}/spec.md\nFeature context: .hive/features/${input.featureName}/context/`
     : 'Managed context: project scope only unless the authenticated execution has a feature binding.';
   const placement = input.placement.kind === 'worktree'
-    ? 'Placement: registered Git worktree. The primary owns finalization, commit, merge, and cleanup.'
+    ? input.kind === 'task'
+      ? 'Placement: registered Git worktree. For the temporary worker bridge, report and commit through hive_worktree_commit. That handoff does not authorize merge or cleanup; the primary owns both.'
+      : 'Placement: registered Git worktree. For the temporary worker bridge, report and commit through hive_adhoc_worktree_commit. That handoff does not authorize merge or cleanup; the primary owns both.'
     : input.kind === 'task'
       ? 'Placement: live in-place directory. Changes are immediately visible; Hive provides no filesystem confinement, staging, rollback, commit, or merge guarantee. For the temporary worker bridge, report through the task handoff tool without a commit message; Hive records disposition without running Git.'
       : 'Placement: live in-place directory. Changes are immediately visible; Hive provides no filesystem confinement, staging, rollback, commit, or merge guarantee. Return the outcome and verification evidence in your terminal prose handoff to the primary.';
