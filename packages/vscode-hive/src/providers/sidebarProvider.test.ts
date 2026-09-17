@@ -634,7 +634,7 @@ describe('HiveSidebarProvider', () => {
     new FeatureService(testRoot).create('mirror');
     fs.writeFileSync(path.join(hiveCore.getFeaturePath(testRoot, 'mirror'), 'sessions.json'), JSON.stringify({ sessions: [{ sessionId: 'mirror-only', standingConstraints: 'hidden mirror' }] }));
     service.trackGlobal('empty');
-    service.trackGlobal('chosen', { agent: 'hive', sessionKind: 'primary', directivePrompt: 'SECRET-DIRECTIVE', workerPromptPath: '/SECRET-PATH', directiveRecoveryState: 'available', standingConstraintEntries: [{ id: 'stable-id', text: 'Keep this scope' }], standingConstraintsRevision: 4 } as any);
+    service.trackGlobal('chosen', { agent: 'hive', sessionKind: 'primary', directivePrompt: 'SECRET-DIRECTIVE', workerPromptPath: '/SECRET-PATH', directiveRecoveryState: 'available', standingConstraintEntries: [{ id: 'legacy', text: 'Keep this scope' }], standingConstraintsRevision: 4 } as any);
     const registryPath = hiveCore.getGlobalSessionsPath(testRoot);
     const before = fs.readFileSync(registryPath, 'utf8');
     await provider.inspect();
@@ -646,7 +646,7 @@ describe('HiveSidebarProvider', () => {
     expect(ui.pickItems[0].detail).toContain('ID: chosen');
     const uri = ui.shown[0].uri;
     const content = provider.provideTextDocumentContent(uri);
-    expect(content).toContain('stable-id');
+    expect(content).toContain('legacy');
     expect(content).toContain('Revision: 4');
     expect(content).toContain('15/8000');
     expect(content).not.toContain('SECRET');

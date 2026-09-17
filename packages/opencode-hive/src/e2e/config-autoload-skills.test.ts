@@ -410,7 +410,7 @@ describe('config hook autoLoadSkills guidance', () => {
 
     expect(hiveMasterPrompt).toContain('## Configured Auto-Load Skills');
     expect(hiveMasterPrompt).toContain('load `orchestrating-ad-hoc-work`');
-    expect(hiveMasterPrompt).toContain('before any ad-hoc worktree preparation');
+    expect(hiveMasterPrompt).toContain('before any ad-hoc worktree create or delegated dispatch');
     expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
     expect(builderGuidance).toContain(skillToolCall('verification'));
@@ -418,7 +418,7 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(builderGuidance).not.toContain(skillToolCall('orchestrating-ad-hoc-work'));
     expect(builderGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(builderPrompt).toContain('load `orchestrating-ad-hoc-work`');
-    expect(builderPrompt).toContain('before any ad-hoc worktree preparation');
+    expect(builderPrompt).toContain('before any ad-hoc worktree create or delegated dispatch');
     expect(builderPrompt).not.toContain(parallelExplorationSkill.template);
     expect(builderPrompt).not.toContain(adHocOrchestrationSkill.template);
     expect(builderPrompt).not.toContain('hive_worktree_start');

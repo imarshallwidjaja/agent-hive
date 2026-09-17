@@ -56,6 +56,9 @@ describe('coordinated runtime hard cut', () => {
     await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent', callID: 'call-a' } as any, output);
     expect(output.args.prompt.startsWith('AUTHORED PREFIX')).toBe(true);
     expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-a"}');
+    expect(output.args.prompt).toContain('## Standing Constraints');
+    expect(output.args.prompt).toContain('Session constraints (revision 1)');
+    expect(output.args.prompt).toContain('Feature constraints for "feature-a" (revision 1)');
     expect(output.args.prompt).toContain('Keep session behavior.');
     expect(output.args.prompt).toContain('Keep feature behavior.');
 
@@ -80,6 +83,25 @@ describe('coordinated runtime hard cut', () => {
     const stored = new SessionService(root).getGlobal('child-null')!;
     expect(Object.prototype.hasOwnProperty.call(stored, 'featureName')).toBe(true);
     expect(stored.featureName).toBeNull();
+  });
+
+  it('captures the same sole-live fallback used by feature tools', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    await loaded.tool!.hive_feature_create.execute({ name: 'sole-live' }, context('creator'));
+    const output = { args: { subagent_type: 'scout-researcher', prompt: 'Inspect.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'unbound', callID: 'sole-call' } as any, output);
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"sole-live"}');
+  });
+
+  it('captures an effective null route when no feature fallback exists', async () => {
+    const { root, hooks } = createRuntime();
+    const loaded = await hooks;
+    const output = { args: { subagent_type: 'scout-researcher', prompt: 'Inspect.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'unbound', callID: 'no-feature' } as any, output);
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":null}');
+    await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'unbound', callID: 'no-feature', args: output.args } as any, { metadata: { sessionId: 'child-no-feature' } } as any);
+    expect(new SessionService(root).getGlobal('child-no-feature')).toMatchObject({ featureName: null });
   });
 
   it('binds the same complete snapshot when the after hook arrives before the event hook', async () => {
@@ -145,7 +167,9 @@ describe('coordinated runtime hard cut', () => {
     expect(HIVE_TOOL_NAMES).toHaveLength(37);
     expect(allowed('hive-master', 'hive_worktree_merge')).toBe(true);
     expect(allowed('architect-planner', 'hive_worktree_merge')).toBe(false);
+    expect(allowed('architect-planner', 'hive_worktree_create')).toBe(false);
     expect(allowed('architect-planner', 'hive_plan_write')).toBe(true);
+    expect(config.agent['architect-planner'].permission.task).toBe('allow');
     expect(allowed('forager-worker', 'hive_task_update')).toBe(true);
     expect(allowed('forager-worker', 'hive_constraints_add')).toBe(false);
     expect(allowed('forager-worker', 'hive_context_archive')).toBe(false);
@@ -158,7 +182,67 @@ describe('coordinated runtime hard cut', () => {
     expect(allowed('dash-reviewer', 'hive_worktree_merge')).toBe(false);
     expect(config.agent['dash-reviewer'].permission.task).toBe('allow');
     expect(allowed('hive-helper', 'hive_worktree_merge')).toBe(true);
+    expect(allowed('hive-helper', 'hive_task_create')).toBe(true);
+    expect(allowed('hive-helper', 'hive_adhoc_worktree_merge')).toBe(false);
     expect(allowed('hive-helper', 'hive_plan_write')).toBe(false);
+  });
+
+  it('allows the primary architect to delegate while a delegated architect child cannot recurse', async () => {
+    const { sessions, hooks } = createRuntime();
+    const loaded = await hooks;
+
+    await loaded['chat.message']!({ sessionID: 'arch-primary', agent: 'architect-planner' } as any, { message: {}, parts: [] } as any);
+    const primaryCall = { args: { subagent_type: 'scout-researcher', description: 'Research', prompt: 'Research the plan.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'arch-primary', callID: 'arch-primary-call' } as any, primaryCall);
+    expect(primaryCall.args.prompt).toContain('<!-- hive-route-snapshot:start -->');
+
+    await loaded.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'arch-primary', callID: 'arch-primary-call', metadata: { sessionId: 'arch-child-observed' }, state: { input: { subagent_type: 'architect-planner' } } } } } } as any);
+    const observedChildCall = { args: { subagent_type: 'scout-researcher', description: 'Research', prompt: 'Nested research.' } };
+    await expect(loaded['tool.execute.before']!({ tool: 'task', sessionID: 'arch-child-observed', callID: 'arch-child-observed-call' } as any, observedChildCall)).rejects.toThrow(/architect-planner is a terminal planning child/);
+
+    sessions.set('arch-child-native', { id: 'arch-child-native', parentID: 'arch-primary' });
+    await loaded['chat.message']!({ sessionID: 'arch-child-native', agent: 'architect-planner' } as any, { message: {}, parts: [] } as any);
+    const nativeChildCall = { args: { subagent_type: 'scout-researcher', description: 'Research', prompt: 'Nested research.' } };
+    await expect(loaded['tool.execute.before']!({ tool: 'task', sessionID: 'arch-child-native', callID: 'arch-child-native-call' } as any, nativeChildCall)).rejects.toThrow(/architect-planner is a terminal planning child/);
+  });
+
+  it('injects each full agent prompt through exactly one path', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const config: any = {};
+    await loaded.config!(config);
+    expect(config.agent['hive-master'].prompt).toBeUndefined();
+    const hiveOutput = { system: ['provider'] };
+    await loaded['experimental.chat.system.transform']!({ sessionID: 'primary', agent: 'hive-master' } as any, hiveOutput);
+    expect(hiveOutput.system[0].split('# Hive (Hybrid)').length - 1).toBe(1);
+    expect(config.agent['scout-researcher'].prompt).toContain('# Scout');
+    const scoutOutput = { system: ['provider'] };
+    await loaded['experimental.chat.system.transform']!({ sessionID: 'scout', agent: 'scout-researcher' } as any, scoutOutput);
+    expect(scoutOutput.system[0]).toBe('provider');
+  });
+
+  it('continues named context reads with opaque snapshot-validated cursors', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('context-reader');
+    const content = `---\ndescription: Large test context\nread_when: Read during continuation tests.\nowner: test\nreview_after: 2099-01-01\n---\n\n${'x'.repeat(10_000)}`;
+    await loaded.tool!.hive_context_write.execute({ scope: 'project', name: 'large', content }, caller);
+    const first = JSON.parse(await loaded.tool!.hive_context_read.execute({ scope: 'project', name: 'large', maxBytes: 4_096 }, caller));
+    expect(first.complete).toBe(false);
+    expect(first.nextCursor).toBeString();
+    const second = JSON.parse(await loaded.tool!.hive_context_read.execute({ scope: 'project', name: 'large', cursor: first.nextCursor, maxBytes: 4_096 }, caller));
+    expect(second.range.startByte).toBe(first.range.endByte);
+
+    await loaded.tool!.hive_context_append.execute({ scope: 'project', name: 'large', content: 'changed', expectedRevision: first.revision, expectedContentHash: first.file.contentHash }, caller);
+    await expect(loaded.tool!.hive_context_read.execute({ scope: 'project', name: 'large', cursor: first.nextCursor, maxBytes: 4_096 }, caller)).rejects.toThrow(/cursor|changed/i);
+  });
+
+  it('requires context task metadata to name an existing task folder', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('context-task');
+    await loaded.tool!.hive_feature_create.execute({ name: 'context-feature' }, caller);
+    await expect(loaded.tool!.hive_context_write.execute({ name: 'notes', content: 'body', task: 'missing' }, caller)).rejects.toThrow(/does not exist/);
   });
 
   it('ignores malformed legacy execution-attempt state during startup and status', async () => {

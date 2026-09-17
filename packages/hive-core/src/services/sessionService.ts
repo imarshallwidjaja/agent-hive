@@ -250,36 +250,6 @@ export class SessionService {
     });
   }
 
-  copySessionOrigin(sessionId: string, sourceSessionId: string): SessionInfo {
-    return this.updateGlobalSessions((data) => {
-      const source = data.sessions.find(candidate => candidate.sessionId === sourceSessionId);
-      if (!source) throw new SessionContinuityError('missing_origin', 'missing generic duplicate source');
-      if (sessionId === sourceSessionId) {
-        throw new SessionContinuityError('invalid_origin', 'invalid immutable generic duplicate origin');
-      }
-      const sourceConstraints = this.standingConstraintRegister(source);
-      const current = this.getOrCreateGlobalSession(data, sessionId);
-      const identity = {
-        agent: source?.agent, baseAgent: source?.baseAgent, sessionKind: source?.sessionKind,
-        projectRoot: source?.projectRoot, featureName: source?.featureName,
-        duplicatedFromSessionId: sourceSessionId,
-      };
-      if (current.parentSessionId !== undefined || current.taskFolder !== undefined || current.adHocRunId !== undefined
-        || Object.entries(identity).some(([key, value]) =>
-          current[key as keyof SessionInfo] !== undefined && current[key as keyof SessionInfo] !== value)) {
-        throw new Error('assignment_recovery_error: immutable duplicate recipient identity mismatch');
-      }
-      if (current.duplicatedFromSessionId === sourceSessionId) return { ...current };
-      this.applySessionPatch(current, {
-        ...identity,
-        directivePrompt: source.directivePrompt,
-        replayDirectivePending: source.replayDirectivePending,
-      });
-      this.persistStandingConstraintRegister(current, sourceConstraints);
-      return { ...current };
-    });
-  }
-
   listGlobal(): SessionInfo[] {
     return this.getGlobalSessions().sessions;
   }

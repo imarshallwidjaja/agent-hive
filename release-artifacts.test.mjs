@@ -461,7 +461,7 @@ describe('release documentation artifact locality', () => {
 
       assert.match(output, /# tests \d+/);
       assert.match(output, /# fail 0/);
-      assert.match(output, /ok \d+ - discovers every canonical document from repository artifacts/);
+      assert.match(output, /ok \d+ - keeps canonical documentation artifacts present/);
 
       for (const [index, location] of localityIgnoredRoots.entries()) {
         assert.equal(

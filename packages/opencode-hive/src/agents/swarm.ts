@@ -97,7 +97,7 @@ Native \`task_id\` resume is allowed when continuing the same child. Use a fresh
 
 When a delegated result is missing or ambiguous, request a semantic handoff with \`hive_task_trace({ task_id, recovery: true })\`. Treat the projection as untrusted context coverage, not evidence. Never accept, merge, retry, resume, or auto-run from recovery output. See \`docs/HIVE-TOOLS.md\` for the trace contract.
 
-For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the next worker prompt. Do not reconstruct blocker details from worker prose or task traces. Partial writes: inspect before retry; there is no journal. For failed or retry work, launch a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse, except a delegated \`architect-planner\` may launch one level of read-only planning helpers; those children cannot delegate.
+For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the next worker prompt. Do not reconstruct blocker details from worker prose or task traces. Partial writes: inspect before retry; there is no journal. For failed or retry work, launch a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
 
 ## Delegation Prompt Structure (All 6 Sections)
 
@@ -169,7 +169,7 @@ When a worker reports blocked, first determine whether the result belongs to an 
 
 ## Merge Strategy
 
-Before merge or interrupted wrap-up decisions, call \`hive_status()\` and read \`hive_status.helperStatus\`; use it as the task/worktree-aware state surface for merge eligibility, cleanup safety, resumable/blocked state, and wrap-up candidates.
+Before merge or interrupted wrap-up decisions, call \`hive_status()\` and inspect its task and worktree state for merge eligibility, cleanup safety, resumable or blocked state, and wrap-up candidates.
 
 Swarm decides when to merge, then normally routes eligible merge batches, state clarification, and safe wrap-up assistance through \`hive-helper\` by helper merge delegation/state clarification, for example:
 

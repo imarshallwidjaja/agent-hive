@@ -380,14 +380,15 @@ describe('HIVE_SYSTEM_PROMPT — no broad worker-startup reinjection', () => {
     expect(HIVE_SYSTEM_PROMPT).not.toMatch(/use hive_plan_read to see plan comments/i);
   });
 
-  it('separates primary finalization from merge', () => {
-    expect(HIVE_SYSTEM_PROMPT).toMatch(/hive_execution_finish/);
-    expect(HIVE_SYSTEM_PROMPT).toMatch(/hive_merge/);
+  it('does not restore removed execution lifecycle tools', () => {
+    expect(HIVE_SYSTEM_PROMPT).not.toMatch(/hive_execution_finish/);
+    expect(HIVE_SYSTEM_PROMPT).not.toMatch(/hive_merge/);
     expect(HIVE_SYSTEM_PROMPT).not.toMatch(/hive_worktree_commit/);
   });
 
   it('states which orchestrators are never native task targets', () => {
     expect(HIVE_SYSTEM_PROMPT).toContain('`hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only');
-    expect(HIVE_SYSTEM_PROMPT).toContain('`architect-planner` remains callable as a child');
+    expect(HIVE_SYSTEM_PROMPT).toContain('`architect-planner` remains a valid child target');
+    expect(HIVE_SYSTEM_PROMPT).toContain('every subagent is terminal');
   });
 });

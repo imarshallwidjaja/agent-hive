@@ -167,7 +167,7 @@ describe('e2e: published custom-agent docs example', () => {
     expect(reviewerSecurity.variant).toBeUndefined();
     expect(reviewerSecurity.description).toBe('Use for review passes focused on auth, permissions, secret handling, injection risk, or other security-sensitive changes.');
 
-    expect(opencodeConfig.agent['hive-master']).toBeUndefined();
+    expect(opencodeConfig.agent['hive-master']?.description).toBe('Planner + orchestrator. Detects phase, loads skills on-demand.');
     expect(foragerUi.prompt).toBeUndefined();
     const architectPrompt = opencodeConfig.agent['architect-planner']?.prompt as string;
     expect(architectPrompt).toContain('## Configured Custom Subagents and Built-In Defaults');

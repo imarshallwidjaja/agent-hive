@@ -204,7 +204,7 @@ Call `hive_context_read` before replacement, append, or archive. Existing-conten
 
 Scope is `session` (default) or `feature`. Add only durable operator directives, not every user message, example, or task-local request. Store the operator's own wording. Call `hive_constraints_read` before correcting or removing an entry. Call `hive_constraints_clear` only when the operator explicitly requests a whole-register clear. Blank additions and replacements, missing IDs, stale revisions, and aggregate content over 8000 UTF-16 code units are rejected. Identical repeated additions are idempotent.
 
-Only primaries can add, edit, or clear constraints. Workers receive the injected register and may read it. That is tool exposure, not a semantic runtime gate. Inherited session and feature labels travel with the child captured at dispatch. If they conflict, the agent surfaces the conflict. Do not promote context files into constraints. Injection is skipped for `/dash-review` and `/vuln-review` lanes.
+Only primaries can add, edit, or clear constraints. Workers receive the injected register and may read it. That is tool exposure, not a semantic runtime gate. Inherited session and feature labels travel with every child captured at dispatch, including review children. If they conflict, the agent surfaces the conflict. Do not promote context files into constraints.
 
 ## Status (1 tool)
 

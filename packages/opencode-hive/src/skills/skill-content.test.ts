@@ -756,7 +756,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('hive_adhoc_worktree_create');
     expect(skill!.template).toContain('Reconcile each board row exactly once');
     expect(skill!.template).toContain("subagent_type: 'forager-worker'");
-    expect(skill!.template).toContain('Only a delegated `architect-planner` may call `task()` from a subagent session');
+    expect(skill!.template).toContain('Nested delegation from any subagent session');
     expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
     expect(skill!.template).toContain('waitingForNativeCompletion');
     expect(skill!.template).toContain('completionNotificationsPending > 0');

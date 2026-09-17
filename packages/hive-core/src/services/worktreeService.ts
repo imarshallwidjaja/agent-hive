@@ -49,7 +49,7 @@ export interface WorktreeInfo {
   baseCommits?: Record<string, string>;
   baseCommit?: string;
   clean?: boolean;
-  attemptSlot?: string;
+  candidate?: string;
 }
 
 export interface DiffResult {
@@ -458,7 +458,7 @@ export class WorktreeService {
       || attemptSlot.includes('--') || attemptSlot.includes('/') || attemptSlot.includes('\\')
       || attemptSlot.includes('\0') || attemptSlot.includes('..')
       || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(attemptSlot)) {
-      throw new Error(`Invalid worktree attemptSlot: ${JSON.stringify(attemptSlot)}`);
+      throw new Error(`Invalid worktree candidate: ${JSON.stringify(attemptSlot)}`);
     }
     return attemptSlot;
   }
@@ -651,7 +651,7 @@ export class WorktreeService {
       feature,
       step,
       mode: 'legacy',
-      ...(attemptSlot !== undefined ? { attemptSlot } : {}),
+      ...(attemptSlot !== undefined ? { candidate: attemptSlot } : {}),
     };
   }
 
@@ -762,7 +762,7 @@ export class WorktreeService {
           }),
         ),
         baseCommits,
-        ...(attemptSlot !== undefined ? { attemptSlot } : {}),
+        ...(attemptSlot !== undefined ? { candidate: attemptSlot } : {}),
       };
       await writeWorkspaceJsonAtomic(this.getWorkspaceManifestPath(feature, step, attemptSlot), manifest);
 
@@ -829,7 +829,7 @@ export class WorktreeService {
         workspacePath: compositeRoot,
         repos,
         baseCommits,
-        ...(attemptSlot !== undefined ? { attemptSlot } : {}),
+        ...(attemptSlot !== undefined ? { candidate: attemptSlot } : {}),
       };
     }
 
@@ -865,7 +865,7 @@ export class WorktreeService {
       step,
       mode: 'legacy',
       ...(metadata ? { baseCommit: metadata.baseCommit } : {}),
-      ...(attemptSlot !== undefined ? { attemptSlot } : {}),
+      ...(attemptSlot !== undefined ? { candidate: attemptSlot } : {}),
     };
   }
 

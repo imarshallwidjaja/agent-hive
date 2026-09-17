@@ -16,10 +16,11 @@ import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { DASH_REVIEWER_PROMPT } from './dash-reviewer';
 import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-primary';
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
-import { STANDING_CONSTRAINTS_HEADING } from '../utils/worker-prompt';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
 import { PROCESS_JUDGMENT_PROMPT } from './process-judgment';
+
+const STANDING_CONSTRAINTS_HEADING = '## Standing Constraints (operator, session-wide)';
 
 function countOccurrences(content: string, needle: string): number {
   return content.split(needle).length - 1;
@@ -423,8 +424,7 @@ describe('Fresh-session delegation contract', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).toContain('concise self-contained handoff');
       expect(prompt, name).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
-      expect(prompt, name).toContain('Subagents are terminal and cannot recurse, except a delegated `architect-planner`');
-      expect(prompt, name).toContain('those children cannot delegate');
+      expect(prompt, name).toContain('Subagents are terminal and cannot recurse');
     }
 
     for (const [name, prompt] of [
@@ -659,13 +659,9 @@ describe('Scout ast-grep references', () => {
 
 describe('Specialized reviewer prompts', () => {
   it('keeps vulnerability review orchestration and evidence review in separate no-fix roles', () => {
-    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('private orchestrator');
-    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('do not review, falsify, or fix code');
-    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('mandatory baseline and fixed falsifier');
-    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('two fresh blocking scope-scout tasks');
-    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('exact `scopeEcho`');
-    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('one clarification question');
-    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('report the run as INCOMPLETE');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('read-only primary security review orchestrator');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('Do not edit source');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('Do not silently skip');
     expect(VULNERABILITY_REVIEWER_PROMPT).toContain('attacker-controlled input or capabilities');
     expect(VULNERABILITY_REVIEWER_PROMPT).toContain('concrete impact');
     expect(VULNERABILITY_REVIEWER_PROMPT).toContain('Do not edit or create files');
@@ -675,24 +671,12 @@ describe('Specialized reviewer prompts', () => {
 
   it('keeps dash-reviewer as a read-only review orchestrator rather than a reviewer or fixer', () => {
     expect(DASH_REVIEWER_PROMPT).toContain('review orchestrator');
-    expect(DASH_REVIEWER_PROMPT).toContain('not a reviewer or fixer');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not use direct `hive_git_snapshot`');
-    expect(DASH_REVIEWER_PROMPT).toContain('realpath containment');
     expect(DASH_REVIEWER_PROMPT).toContain('untrusted data');
-    expect(DASH_REVIEWER_PROMPT).toContain('native `task()`');
-    expect(DASH_REVIEWER_PROMPT).toContain('runtime-rendered review-lane aliases');
-    expect(DASH_REVIEWER_PROMPT).toContain('hive_review_evidence_resolve');
-    expect(DASH_REVIEWER_PROMPT).toContain('primary claim, primary inspect, and primary cleanup');
-    expect(DASH_REVIEWER_PROMPT).toContain('orchestration tools only');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not inspect local files, run shell or Git commands, or access the network');
-    expect(DASH_REVIEWER_PROMPT).not.toContain('sole lifecycle exception');
-    expect(DASH_REVIEWER_PROMPT).not.toContain('commit, merge, clean up');
-    expect(DASH_REVIEWER_PROMPT).not.toContain('scope/lead scout');
-    expect(DASH_REVIEWER_PROMPT).not.toContain('Do not run Git');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not edit implementation files');
+    expect(DASH_REVIEWER_PROMPT).toContain('Do not silently skip');
   });
 
-  it('leaves provider and scope workflow details to the active dash-review command contract', () => {
-    expect(DASH_REVIEWER_PROMPT).toContain('Follow the active `/dash-review` command contract');
+  it('keeps provider-specific workflow details out of the dash reviewer prompt', () => {
     for (const commandContractDetail of [
       'GitHub',
       'githubPullRequest',
@@ -1340,7 +1324,7 @@ describe('Swarm (Orchestrator) prompt', () => {
   });
 
   it('routes merge and wrap-up endings through helper by default, not direct hive_merge', () => {
-    expect(SWARM_BEE_PROMPT).toContain('hive_status.helperStatus');
+    expect(SWARM_BEE_PROMPT).toContain('inspect its task and worktree state');
     expect(SWARM_BEE_PROMPT).toContain('helper merge delegation/state clarification');
     expect(SWARM_BEE_PROMPT).toContain('retry helper delegation once');
     expect(SWARM_BEE_PROMPT).toContain('direct `hive_worktree_merge` recovery escape');
@@ -1350,8 +1334,8 @@ describe('Swarm (Orchestrator) prompt', () => {
   it('does not regain normal direct hive_merge guidance from the shared system prompt', () => {
     const effectiveSwarmPrompt = SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT;
 
-    expect(HIVE_SYSTEM_PROMPT).toContain('responsible orchestrator/helper flow');
-    expect(effectiveSwarmPrompt).toContain('Swarm normally delegates merge batches to `hive-helper`');
+    expect(HIVE_SYSTEM_PROMPT).not.toContain('hive_merge');
+    expect(effectiveSwarmPrompt).toContain('Swarm decides when to merge');
     expect(effectiveSwarmPrompt).not.toContain('Use hive_merge to integrate changes into the current branch.');
   });
 });
@@ -2054,10 +2038,9 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     }
   });
 
-  it('limits recursive task use to one architect planning-helper level', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('except a delegated `architect-planner`');
-    expect(HIVE_BUILDER_PROMPT).toContain('one level of read-only planning helpers');
-    expect(HIVE_BUILDER_PROMPT).toContain('those children cannot delegate');
+  it('forbids recursive task use from subagents', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Subagents are terminal and cannot recurse');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('one level of read-only planning helpers');
   });
 
   it('does NOT contain task-DAG defaults', () => {

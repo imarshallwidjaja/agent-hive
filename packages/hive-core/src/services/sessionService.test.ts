@@ -35,76 +35,6 @@ describe('SessionService', () => {
     cleanup();
   });
 
-  describe('generic origin copy', () => {
-    it('ignores stale generated-assignment JSON without copying it as authority', () => {
-      setupFeature('feature');
-      service.trackGlobal('source', { sessionKind: 'primary', taskFolder: 'stale' });
-      service.setFeatureRoute('source', 'feature');
-      const registryPath = getGlobalSessionsPath(PROJECT_ROOT);
-      const data = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-      Object.assign(data.sessions.find((session: any) => session.sessionId === 'source'), {
-        workerAssignment: { malformed: true },
-        assignmentSourceSessionId: 'old-source',
-        workerPromptPath: '/stale',
-      });
-      fs.writeFileSync(registryPath, JSON.stringify(data));
-
-      const copied = service.copySessionOrigin('recipient', 'source');
-      expect(copied.featureName).toBe('feature');
-      expect(copied.taskFolder).toBeUndefined();
-      expect(copied).not.toHaveProperty('workerAssignment');
-      expect(copied).not.toHaveProperty('assignmentSourceSessionId');
-      expect(copied).not.toHaveProperty('workerPromptPath');
-    });
-
-    it('rejects a missing origin without creating a recipient', () => {
-      service.trackGlobal('existing');
-      const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
-      expect(() => service.copySessionOrigin('recipient', 'missing')).toThrow(/assignment_recovery_error: missing generic duplicate source/);
-      expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
-    });
-    it.each([
-      { parentSessionId: 'parent' },
-      { sessionKind: 'task-worker' as const },
-      { featureName: 'other-feature' },
-      { duplicatedFromSessionId: 'other-source' },
-    ])('preserves registry bytes for a conflicting recipient (%j)', (identity) => {
-      setupFeature('source-feature');
-      setupFeature('other-feature');
-      service.trackGlobal('source', { sessionKind: 'primary' });
-      service.setFeatureRoute('source', 'source-feature');
-      service.trackGlobal('recipient', identity);
-      const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
-      expect(() => service.copySessionOrigin('recipient', 'source')).toThrow(/immutable/);
-      expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
-    });
-
-    it('copies non-worker identity and constraints once without inheriting parentage', () => {
-      service.trackGlobal('source', { agent: 'scout-researcher', baseAgent: 'scout-researcher', sessionKind: 'subagent', parentSessionId: 'parent' });
-      service.addStandingConstraint('source', 'Keep this directive');
-      const copied = service.copySessionOrigin('recipient', 'source');
-      expect(copied).toMatchObject({ sessionKind: 'subagent', duplicatedFromSessionId: 'source' });
-      expect(copied.parentSessionId).toBeUndefined();
-      expect(copied.standingConstraintEntries).toEqual(service.getGlobal('source')!.standingConstraintEntries);
-      const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
-      expect(service.copySessionOrigin('recipient', 'source')).toEqual(copied);
-      expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
-    });
-
-    it('preserves an explicit featureless route and empty constraint register', () => {
-      service.trackGlobal('source', {
-        featureName: null,
-        standingConstraintEntries: [],
-        standingConstraintsRevision: 0,
-      });
-
-      const copied = service.copySessionOrigin('recipient', 'source');
-
-      expect(copied).toMatchObject({ featureName: null, standingConstraintEntries: [], standingConstraintsRevision: 0 });
-      expect(copied).toHaveProperty('featureName');
-    });
-  });
-
   describe('existing per-feature behavior', () => {
     it('tracks a session for a feature', () => {
       setupFeature('my-feature');
@@ -421,21 +351,6 @@ describe('SessionService', () => {
         standingConstraints: 'Alpha\n\nBeta',
         standingConstraintsRevision: 5,
       });
-    });
-
-    it('validates legacy constraints before copying them', () => {
-      service.trackGlobal('valid-source', { standingConstraints: 'A'.repeat(8000) });
-      expect(service.copySessionOrigin('valid-copy', 'valid-source').standingConstraints).toHaveLength(8000);
-
-      service.trackGlobal('invalid-source');
-      const globalPath = getGlobalSessionsPath(PROJECT_ROOT);
-      const data = JSON.parse(fs.readFileSync(globalPath, 'utf8'));
-      data.sessions.find((session: { sessionId: string }) => session.sessionId === 'invalid-source').standingConstraints = 'A'.repeat(STANDING_CONSTRAINTS_MAX_CHARS + 1);
-      fs.writeFileSync(globalPath, JSON.stringify(data));
-      const before = fs.readFileSync(globalPath);
-      expect(() => service.copySessionOrigin('invalid-copy', 'invalid-source')).toThrow(/over the 8000 character cap/);
-      expect(service.getGlobal('invalid-copy')).toBeUndefined();
-      expect(fs.readFileSync(globalPath)).toEqual(before);
     });
 
     it('keeps revision history after explicit whole-register clear', () => {

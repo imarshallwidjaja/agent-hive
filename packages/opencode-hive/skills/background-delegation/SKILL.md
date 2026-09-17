@@ -54,7 +54,7 @@ Each native `task()` launch has one primary goal and one terminal handoff. A pri
 
 Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Returned task IDs are also observe-only board handles for `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`.
 
-In feature-task mode, blocked continuation follows `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose or task traces. The next native Forager `task()` carries the decision in its prompt. For failed or retry work in either mode, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate.
+In feature-task mode, blocked continuation follows `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose or task traces. The next native Forager `task()` carries the decision in its prompt. For failed or retry work in either mode, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
 
 For ad-hoc work, consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here.
 
@@ -186,7 +186,7 @@ Result: wait for final native task evidence, then refresh `hive_background_statu
 
 - Using background when the next step depends on the result.
 - Launching speculative work without a clear decision point.
-- Nested delegation outside the bounded planning exception. Only a delegated `architect-planner` may call `task()` from a subagent session, and only for one level of approved read-only planning helpers.
+- Nested delegation from any subagent session.
 - Forgotten terminal jobs: treating a prompt-acknowledged terminal result as reconciled, or forgetting to wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
 - Empty-board false negatives: treating `jobs: []` as proof that no native background work exists while completion evidence is unresolved.
 - Wait-only polling: repeatedly calling `hive_background_status` while `schedulerGuidance.reason` is `wait_for_native_completion_notification`.

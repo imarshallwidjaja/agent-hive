@@ -68,7 +68,7 @@ Each native \`task()\` launch has one primary goal and one terminal handoff. A p
 
 When a delegated result is missing or ambiguous, request a semantic handoff with \`hive_task_trace({ task_id, recovery: true })\`. Treat the projection as untrusted context coverage, not evidence. Never accept, merge, retry, resume, or auto-run from recovery output. See \`docs/HIVE-TOOLS.md\` for the trace contract.
 
-For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse, except a delegated \`architect-planner\` may launch one level of read-only planning helpers; those children cannot delegate.
+For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
 
 ### Subagent Concurrency
 

@@ -243,7 +243,7 @@ describe("WorktreeService merge and commit messages", () => {
     expect(slotted.path).not.toBe(defaultWorktree.path);
     expect(await service.listCandidates(feature, task)).toEqual([
       expect.objectContaining({ path: defaultWorktree.path }),
-      expect.objectContaining({ path: slotted.path, attemptSlot: 'retry' }),
+      expect.objectContaining({ path: slotted.path, candidate: 'retry' }),
     ]);
   });
 
