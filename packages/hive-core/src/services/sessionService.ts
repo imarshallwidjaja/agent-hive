@@ -1,36 +1,27 @@
 import * as path from 'path';
-import { randomUUID } from 'node:crypto';
 import { getFeaturePath, getGlobalSessionsPath, ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
 import type { NativeTaskLease, SessionInfo, SessionsJson, StandingConstraintEntry } from '../types.js';
 import { EXECUTION_OWNERSHIP_VERSION } from '../types.js';
+import {
+  addConstraint,
+  clearConstraints,
+  CONSTRAINTS_MAX_CHARS,
+  ConstraintRegisterError,
+  editConstraint,
+  LEGACY_CONSTRAINT_ID,
+  readConstraintRegister,
+} from './constraintRegister.js';
+import type { ConstraintRegister } from './constraintRegister.js';
+import { resolveExistingFeaturePath } from './featureConstraintService.js';
 
-export const STANDING_CONSTRAINTS_MAX_CHARS = 8000;
-export const LEGACY_STANDING_CONSTRAINT_ID = 'legacy';
+export const STANDING_CONSTRAINTS_MAX_CHARS = CONSTRAINTS_MAX_CHARS;
+export const LEGACY_STANDING_CONSTRAINT_ID = LEGACY_CONSTRAINT_ID;
+export { ConstraintRegisterError as StandingConstraintError };
+export type { ConstraintRegister as StandingConstraintRegister };
 
 export class SessionContinuityError extends Error {
   constructor(readonly reason: 'missing_origin' | 'invalid_origin', message: string) {
     super(`assignment_recovery_error: ${message}`);
-  }
-}
-
-function hasExistingWorkspaceAssignment(session: Partial<SessionInfo>): boolean {
-  return session.executionWorkspacePath !== undefined && session.adHocRunId === undefined;
-}
-
-export interface StandingConstraintRegister {
-  entries: StandingConstraintEntry[];
-  revision: number;
-  constraints: string;
-  constraintsChars: number;
-}
-
-export class StandingConstraintError extends Error {
-  constructor(
-    readonly reason: 'blank_constraint' | 'constraints_too_long' | 'constraint_not_found' | 'stale_revision',
-    message: string,
-    readonly details: Record<string, unknown> = {},
-  ) {
-    super(message);
   }
 }
 
@@ -92,7 +83,7 @@ export class SessionService {
       || Object.prototype.hasOwnProperty.call(target, 'executionWorkspacePath')) {
       const identityFields: Array<keyof SessionInfo> = [
         'duplicatedFromSessionId', 'adHocRunId', 'projectRoot',
-        'featureName', 'taskFolder', 'parentSessionId', 'sessionKind', 'agent', 'baseAgent', 'executionWorkspacePath',
+        'taskFolder', 'parentSessionId', 'sessionKind', 'agent', 'baseAgent', 'executionWorkspacePath',
       ];
       for (const key of identityFields) {
         if (!Object.prototype.hasOwnProperty.call(rest, key) || rest[key] === undefined) continue;
@@ -100,11 +91,65 @@ export class SessionService {
         if (!unchanged) throw new Error(`assignment_recovery_error: immutable session identity field ${key} cannot change`);
       }
     }
-    for (const [key, value] of Object.entries(rest) as Array<[keyof Omit<SessionInfo, 'sessionId'>, SessionInfo[keyof Omit<SessionInfo, 'sessionId'>]]>) {
-      if (value !== undefined || CLEARABLE_SESSION_FIELDS.has(key)) {
-        target[key] = value as never;
+
+    const applyFields = (session: SessionInfo): void => {
+      for (const [key, value] of Object.entries(rest) as Array<[keyof Omit<SessionInfo, 'sessionId'>, SessionInfo[keyof Omit<SessionInfo, 'sessionId'>]]>) {
+        if (value !== undefined || CLEARABLE_SESSION_FIELDS.has(key)) {
+          session[key] = value as never;
+        }
       }
+    };
+    const hasConstraintPatch = (['standingConstraints', 'standingConstraintEntries', 'standingConstraintsRevision'] as const)
+      .some((key) => Object.prototype.hasOwnProperty.call(rest, key));
+    if (hasConstraintPatch) {
+      const register = this.resolvePatchedConstraintRegister(target, rest);
+      applyFields(target);
+      this.persistStandingConstraintRegister(target, register);
+      return;
     }
+    applyFields(target);
+  }
+
+  /**
+   * Builds the one canonical register a constraint patch writes. Supplied
+   * structured entries take precedence over supplied flattened text, but when
+   * both carry content they must flatten to the same bytes. Omitted fields fall
+   * back to the target register instead of clearing it.
+   */
+  private resolvePatchedConstraintRegister(target: SessionInfo, patch: Partial<SessionInfo>): ConstraintRegister {
+    const hasEntries = Object.prototype.hasOwnProperty.call(patch, 'standingConstraintEntries');
+    const hasText = Object.prototype.hasOwnProperty.call(patch, 'standingConstraints');
+    const hasRevision = Object.prototype.hasOwnProperty.call(patch, 'standingConstraintsRevision');
+    const suppliedEntries = hasEntries && patch.standingConstraintEntries !== undefined
+      ? patch.standingConstraintEntries
+      : undefined;
+    const suppliedText = hasText && patch.standingConstraints !== undefined
+      ? patch.standingConstraints
+      : undefined;
+    const revision = hasRevision && patch.standingConstraintsRevision !== undefined
+      ? patch.standingConstraintsRevision
+      : target.standingConstraintsRevision ?? 0;
+
+    let entries: StandingConstraintEntry[];
+    if (suppliedEntries !== undefined) {
+      entries = suppliedEntries;
+    } else if (suppliedText !== undefined) {
+      entries = [{ id: LEGACY_CONSTRAINT_ID, text: suppliedText }];
+    } else if (hasEntries || hasText) {
+      entries = [];
+    } else {
+      entries = this.standingConstraintRegister(target).entries.map((entry) => ({ ...entry }));
+    }
+
+    const register = readConstraintRegister({ entries, revision });
+    if (suppliedEntries !== undefined && suppliedText !== undefined && register.constraints !== suppliedText) {
+      throw new ConstraintRegisterError(
+        'invalid_register',
+        'Structured standing constraint entries and flattened standing constraints disagree; refusing to persist conflicting representations.',
+        { field: 'standingConstraints' },
+      );
+    }
+    return register;
   }
 
   private getSessionsPath(featureName: string): string {
@@ -149,6 +194,9 @@ export class SessionService {
   }
 
   trackGlobal(sessionId: string, patch?: Partial<SessionInfo>): SessionInfo {
+    if (patch?.featureName !== undefined && patch.featureName !== null) {
+      resolveExistingFeaturePath(this.projectRoot, patch.featureName);
+    }
     return this.updateGlobalSessions((data) => {
       const now = new Date().toISOString();
 
@@ -171,32 +219,7 @@ export class SessionService {
   }
 
   bindFeature(sessionId: string, featureName: string, patch?: Partial<SessionInfo>): SessionInfo {
-    const session = this.updateGlobalSessions((data) => {
-      let current = data.sessions.find(s => s.sessionId === sessionId);
-      const now = new Date().toISOString();
-
-      if (!current) {
-        current = {
-          sessionId,
-          startedAt: now,
-          lastActiveAt: now,
-        };
-        data.sessions.push(current);
-      }
-
-      if (Object.prototype.hasOwnProperty.call(current, 'adHocRunId') && current.featureName !== featureName) {
-        throw new Error('assignment_recovery_error: an immutable ad-hoc run cannot acquire another feature binding');
-      }
-      if (hasExistingWorkspaceAssignment(current)) {
-        throw new Error('assignment_recovery_error: an immutable existing-workspace assignment cannot acquire a feature binding');
-      }
-
-      current.featureName = featureName;
-      current.lastActiveAt = now;
-      this.applySessionPatch(current, patch);
-
-      return current;
-    });
+    const session = this.setFeatureRoute(sessionId, featureName, patch);
 
     const featureData = this.getSessions(featureName);
     let featureSession = featureData.sessions.find(s => s.sessionId === sessionId);
@@ -210,6 +233,68 @@ export class SessionService {
     return session;
   }
 
+  setFeatureRoute(sessionId: string, featureName: string | null, patch?: Partial<SessionInfo>): SessionInfo {
+    if (featureName !== null) resolveExistingFeaturePath(this.projectRoot, featureName);
+    return this.updateGlobalSessions((data) => {
+      const session = this.getOrCreateGlobalSession(data, sessionId);
+      this.applySessionPatch(session, patch);
+      session.featureName = featureName;
+      session.lastActiveAt = new Date().toISOString();
+      return session;
+    });
+  }
+
+  clearFeatureRoute(sessionId: string): SessionInfo {
+    return this.updateGlobalSessions((data) => {
+      const session = this.getOrCreateGlobalSession(data, sessionId);
+      delete session.featureName;
+      session.lastActiveAt = new Date().toISOString();
+      return session;
+    });
+  }
+
+  snapshotChildSession(
+    parentSessionId: string,
+    childSessionId: string,
+    patch?: Partial<SessionInfo>,
+  ): SessionInfo {
+    return this.updateGlobalSessions((data) => {
+      const parent = data.sessions.find((candidate) => candidate.sessionId === parentSessionId);
+      if (!parent) throw new SessionContinuityError('missing_origin', 'missing child snapshot parent');
+      if (parentSessionId === childSessionId) {
+        throw new SessionContinuityError('invalid_origin', 'child snapshot parent and child must differ');
+      }
+      const {
+        sessionId: _sessionId,
+        parentSessionId: _parentSessionId,
+        featureName: _featureName,
+        standingConstraints: _standingConstraints,
+        standingConstraintEntries: _standingConstraintEntries,
+        standingConstraintsRevision: _standingConstraintsRevision,
+        ...metadata
+      } = patch ?? {};
+      let child = data.sessions.find((candidate) => candidate.sessionId === childSessionId);
+      if (child) {
+        if (child.parentSessionId !== parentSessionId) {
+          throw new SessionContinuityError('invalid_origin', 'existing child snapshot parent cannot change');
+        }
+        const retry = { ...child };
+        this.applySessionPatch(retry, metadata);
+        if (Object.keys(metadata).some((key) => retry[key as keyof SessionInfo] !== child![key as keyof SessionInfo])) {
+          throw new SessionContinuityError('invalid_origin', 'existing child snapshot metadata cannot change');
+        }
+      } else {
+        child = this.getOrCreateGlobalSession(data, childSessionId);
+        this.applySessionPatch(child, metadata);
+        child.parentSessionId = parentSessionId;
+      }
+      if (Object.prototype.hasOwnProperty.call(parent, 'featureName')) child.featureName = parent.featureName;
+      else delete child.featureName;
+      this.persistStandingConstraintRegister(child, this.standingConstraintRegister(parent));
+      return { ...child, standingConstraintEntries: child.standingConstraintEntries?.map((entry) => ({ ...entry })) };
+    });
+  }
+
   copySessionOrigin(sessionId: string, sourceSessionId: string): SessionInfo {
     return this.updateGlobalSessions((data) => {
       const source = data.sessions.find(candidate => candidate.sessionId === sourceSessionId);
@@ -218,6 +303,7 @@ export class SessionService {
         || sessionId === sourceSessionId) {
         throw new SessionContinuityError('invalid_origin', 'invalid immutable generic duplicate origin');
       }
+      const sourceConstraints = this.standingConstraintRegister(source);
       const current = this.getOrCreateGlobalSession(data, sessionId);
       const identity = {
         agent: source?.agent, baseAgent: source?.baseAgent, sessionKind: source?.sessionKind,
@@ -235,20 +321,10 @@ export class SessionService {
         ...identity,
         directivePrompt: source.directivePrompt,
         replayDirectivePending: source.replayDirectivePending,
-        standingConstraints: source?.standingConstraints,
-        standingConstraintEntries: source?.standingConstraintEntries?.map(entry => ({ ...entry })),
-        standingConstraintsRevision: source?.standingConstraintsRevision,
       });
+      this.persistStandingConstraintRegister(current, sourceConstraints);
       return { ...current };
     });
-  }
-
-  private mirrorSessionProjection(featureName: string, session: SessionInfo): void {
-    const featureData = this.getSessions(featureName);
-    const existing = featureData.sessions.find(candidate => candidate.sessionId === session.sessionId);
-    if (existing) Object.assign(existing, session);
-    else featureData.sessions.push({ ...session });
-    this.saveSessions(featureName, featureData);
   }
 
   listGlobal(): SessionInfo[] {
@@ -260,38 +336,22 @@ export class SessionService {
     return data.sessions.find(s => s.sessionId === sessionId);
   }
 
-  private standingConstraintRegister(session?: SessionInfo): StandingConstraintRegister {
-    const entries = session?.standingConstraintEntries
-      ? session.standingConstraintEntries.map((entry) => ({ ...entry }))
+  private standingConstraintRegister(session?: SessionInfo): ConstraintRegister {
+    const entries = session?.standingConstraintEntries !== undefined
+      ? session.standingConstraintEntries
       : session?.standingConstraints !== undefined
-        ? [{ id: LEGACY_STANDING_CONSTRAINT_ID, text: session.standingConstraints }]
+        ? [{ id: LEGACY_CONSTRAINT_ID, text: session.standingConstraints }]
         : [];
-    const constraints = entries.map((entry) => entry.text).join('\n\n');
-    return {
-      entries,
-      revision: session?.standingConstraintsRevision ?? 0,
-      constraints,
-      constraintsChars: constraints.length,
-    };
+    return readConstraintRegister({ entries, revision: session?.standingConstraintsRevision ?? 0 });
   }
 
   private persistStandingConstraintRegister(
     session: SessionInfo,
-    entries: StandingConstraintEntry[],
-    revision: number,
-  ): StandingConstraintRegister {
-    const constraints = entries.map((entry) => entry.text).join('\n\n');
-    if (constraints.length > STANDING_CONSTRAINTS_MAX_CHARS) {
-      throw new StandingConstraintError(
-        'constraints_too_long',
-        `Standing constraints are ${constraints.length} characters (UTF-16 code units), over the ${STANDING_CONSTRAINTS_MAX_CHARS} character cap.`,
-        { constraintsChars: constraints.length, cap: STANDING_CONSTRAINTS_MAX_CHARS },
-      );
-    }
-
-    session.standingConstraintEntries = entries.map((entry) => ({ ...entry }));
-    session.standingConstraintsRevision = revision;
-    session.standingConstraints = constraints || undefined;
+    register: ConstraintRegister,
+  ): ConstraintRegister {
+    session.standingConstraintEntries = register.entries.map((entry) => ({ ...entry }));
+    session.standingConstraintsRevision = register.revision;
+    session.standingConstraints = register.constraints || undefined;
     session.lastActiveAt = new Date().toISOString();
     return this.standingConstraintRegister(session);
   }
@@ -306,26 +366,16 @@ export class SessionService {
     return session;
   }
 
-  readStandingConstraints(sessionId: string): StandingConstraintRegister {
+  readStandingConstraints(sessionId: string): ConstraintRegister {
     return this.standingConstraintRegister(this.getGlobal(sessionId));
   }
 
-  addStandingConstraint(sessionId: string, text: string): StandingConstraintRegister {
-    if (!text.trim()) {
-      throw new StandingConstraintError('blank_constraint', 'Standing constraint additions must not be blank.');
-    }
-
+  addStandingConstraint(sessionId: string, text: string): ConstraintRegister {
     return this.updateGlobalSessions((data) => {
       const session = this.getOrCreateGlobalSession(data, sessionId);
       const current = this.standingConstraintRegister(session);
-      if (current.entries.some((entry) => entry.text === text)) {
-        return current;
-      }
-      return this.persistStandingConstraintRegister(
-        session,
-        [...current.entries, { id: `constraint-${randomUUID()}`, text }],
-        current.revision + 1,
-      );
+      const next = addConstraint(current, text);
+      return next === current ? current : this.persistStandingConstraintRegister(session, next);
     });
   }
 
@@ -334,50 +384,20 @@ export class SessionService {
     id: string,
     expectedRevision: number,
     replacement: string | null,
-  ): StandingConstraintRegister {
-    if (replacement !== null && !replacement.trim()) {
-      throw new StandingConstraintError('blank_constraint', 'Standing constraint edits must not be blank. Use explicit removal instead.');
-    }
-
+  ): ConstraintRegister {
     return this.updateGlobalSessions((data) => {
       const session = this.getOrCreateGlobalSession(data, sessionId);
       const current = this.standingConstraintRegister(session);
-      if (current.revision !== expectedRevision) {
-        throw new StandingConstraintError(
-          'stale_revision',
-          `Standing constraints changed since revision ${expectedRevision}; current revision is ${current.revision}.`,
-          { expectedRevision, revision: current.revision },
-        );
-      }
-      const index = current.entries.findIndex((entry) => entry.id === id);
-      if (index === -1) {
-        throw new StandingConstraintError('constraint_not_found', `Standing constraint ID "${id}" does not exist.`, { id });
-      }
-      if (replacement === current.entries[index]!.text) {
-        return current;
-      }
-      const entries = [...current.entries];
-      if (replacement === null) {
-        entries.splice(index, 1);
-      } else {
-        entries[index] = { ...entries[index]!, text: replacement };
-      }
-      return this.persistStandingConstraintRegister(session, entries, current.revision + 1);
+      const next = editConstraint(current, id, expectedRevision, replacement);
+      return next === current ? current : this.persistStandingConstraintRegister(session, next);
     });
   }
 
-  clearStandingConstraints(sessionId: string, expectedRevision: number): StandingConstraintRegister {
+  clearStandingConstraints(sessionId: string, expectedRevision: number): ConstraintRegister {
     return this.updateGlobalSessions((data) => {
       const session = this.getOrCreateGlobalSession(data, sessionId);
       const current = this.standingConstraintRegister(session);
-      if (current.revision !== expectedRevision) {
-        throw new StandingConstraintError(
-          'stale_revision',
-          `Standing constraints changed since revision ${expectedRevision}; current revision is ${current.revision}.`,
-          { expectedRevision, revision: current.revision },
-        );
-      }
-      return this.persistStandingConstraintRegister(session, [], current.revision + 1);
+      return this.persistStandingConstraintRegister(session, clearConstraints(current, expectedRevision));
     });
   }
 
@@ -453,11 +473,18 @@ export class SessionService {
     const sourceSession = fromSessionId 
       ? data.sessions.find(s => s.sessionId === fromSessionId)
       : data.sessions.find(s => s.sessionId === data.master);
+    const sourceConstraints = sourceSession ? this.standingConstraintRegister(sourceSession) : undefined;
 
     const newSessionId = `ses_fork_${Date.now()}`;
     const newSession: SessionInfo = {
       sessionId: newSessionId,
       taskFolder: sourceSession?.taskFolder,
+      ...(sourceSession && Object.prototype.hasOwnProperty.call(sourceSession, 'featureName')
+        ? { featureName: sourceSession.featureName }
+        : {}),
+      standingConstraints: sourceConstraints?.constraints || undefined,
+      standingConstraintEntries: sourceConstraints?.entries.map((entry) => ({ ...entry })),
+      standingConstraintsRevision: sourceConstraints?.revision,
       startedAt: now,
       lastActiveAt: now,
     };

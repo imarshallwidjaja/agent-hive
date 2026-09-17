@@ -265,7 +265,7 @@ export interface SessionInfo {
   sessionId: string;
   parentSessionId?: string;
   duplicatedFromSessionId?: string;
-  featureName?: string;
+  featureName?: string | null;
   taskFolder?: string;
   projectRoot?: string;
   adHocRunId?: string;

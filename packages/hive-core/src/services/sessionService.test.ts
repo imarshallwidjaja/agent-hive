@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { SessionService, SessionContinuityError } from './sessionService.js';
+import { SessionService, SessionContinuityError, STANDING_CONSTRAINTS_MAX_CHARS } from './sessionService.js';
 import { getGlobalSessionsPath } from '../utils/paths.js';
 
 const TEST_DIR = '/tmp/hive-core-sessionservice-test-' + process.pid;
@@ -117,7 +117,9 @@ describe('SessionService', () => {
 
   describe('generic origin copy', () => {
     it('ignores stale generated-assignment JSON without copying it as authority', () => {
-      service.trackGlobal('source', { sessionKind: 'primary', featureName: 'feature', taskFolder: 'stale' });
+      setupFeature('feature');
+      service.trackGlobal('source', { sessionKind: 'primary', taskFolder: 'stale' });
+      service.setFeatureRoute('source', 'feature');
       const registryPath = getGlobalSessionsPath(PROJECT_ROOT);
       const data = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
       Object.assign(data.sessions.find((session: any) => session.sessionId === 'source'), {
@@ -147,7 +149,10 @@ describe('SessionService', () => {
       { featureName: 'other-feature' },
       { duplicatedFromSessionId: 'other-source' },
     ])('preserves registry bytes for a conflicting recipient (%j)', (identity) => {
-      service.trackGlobal('source', { sessionKind: 'primary', featureName: 'source-feature' });
+      setupFeature('source-feature');
+      setupFeature('other-feature');
+      service.trackGlobal('source', { sessionKind: 'primary' });
+      service.setFeatureRoute('source', 'source-feature');
       service.trackGlobal('recipient', identity);
       const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
       expect(() => service.copySessionOrigin('recipient', 'source')).toThrow(/immutable/);
@@ -165,6 +170,19 @@ describe('SessionService', () => {
       expect(service.copySessionOrigin('recipient', 'source')).toEqual(copied);
       expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
     });
+
+    it('preserves an explicit featureless route and empty constraint register', () => {
+      service.trackGlobal('source', {
+        featureName: null,
+        standingConstraintEntries: [],
+        standingConstraintsRevision: 0,
+      });
+
+      const copied = service.copySessionOrigin('recipient', 'source');
+
+      expect(copied).toMatchObject({ featureName: null, standingConstraintEntries: [], standingConstraintsRevision: 0 });
+      expect(copied).toHaveProperty('featureName');
+    });
   });
 
   describe('existing per-feature behavior', () => {
@@ -181,6 +199,44 @@ describe('SessionService', () => {
       const found = service.get('my-feature', 'sess-existing');
       expect(found?.sessionId).toBe('sess-existing');
     });
+
+    it('fork preserves explicit featureless routing and an empty constraint register', () => {
+      setupFeature('my-feature');
+      const sessionsPath = path.join(TEST_DIR, '.hive', 'features', 'my-feature', 'sessions.json');
+      fs.writeFileSync(sessionsPath, JSON.stringify({
+        sessions: [{
+          sessionId: 'source',
+          featureName: null,
+          standingConstraintEntries: [],
+          standingConstraintsRevision: 0,
+          startedAt: 'start',
+          lastActiveAt: 'start',
+        }],
+      }));
+
+      expect(service.fork('my-feature', 'source')).toMatchObject({
+        featureName: null,
+        standingConstraintEntries: [],
+        standingConstraintsRevision: 0,
+      });
+    });
+
+    it('rejects a corrupt source without writing a fork', () => {
+      setupFeature('my-feature');
+      const sessionsPath = path.join(TEST_DIR, '.hive', 'features', 'my-feature', 'sessions.json');
+      fs.writeFileSync(sessionsPath, JSON.stringify({
+        sessions: [{
+          sessionId: 'source',
+          standingConstraints: 'A'.repeat(STANDING_CONSTRAINTS_MAX_CHARS + 1),
+          startedAt: 'start',
+          lastActiveAt: 'start',
+        }],
+      }));
+      const before = fs.readFileSync(sessionsPath);
+
+      expect(() => service.fork('my-feature', 'source')).toThrow(/over the 8000 character cap/);
+      expect(fs.readFileSync(sessionsPath)).toEqual(before);
+    });
   });
 
   describe('listGlobal', () => {
@@ -193,7 +249,7 @@ describe('SessionService', () => {
     it('uses only the authoritative registry and returns detached records', () => {
       setupFeature('mirror');
       fs.writeFileSync(path.join(PROJECT_ROOT, '.hive/features/mirror/sessions.json'), JSON.stringify({ sessions: [{ sessionId: 'mirror-only' }] }));
-      service.trackGlobal('global', { standingConstraintEntries: [{ id: 'one', text: 'Keep scope' }] });
+      service.trackGlobal('global', { standingConstraintEntries: [{ id: 'legacy', text: 'Keep scope' }] });
       const sessions = service.listGlobal();
       expect(sessions.map(session => session.sessionId)).toEqual(['global']);
       sessions[0].standingConstraintEntries![0].text = 'Changed';
@@ -301,6 +357,26 @@ describe('SessionService', () => {
       expect(service.getGlobal('sess-constraints-clear')?.standingConstraints).toBeUndefined();
     });
 
+    it('rejects malformed constraint patches without changing the registry', () => {
+      service.trackGlobal('sess-invalid-patch', { agent: 'hive-master' });
+      const globalPath = getGlobalSessionsPath(PROJECT_ROOT);
+      const before = fs.readFileSync(globalPath);
+
+      expect(() => service.trackGlobal('sess-invalid-patch', {
+        standingConstraintEntries: [{ id: 'legacy', text: '  ' }],
+        standingConstraintsRevision: 1,
+      })).toThrow(/non-blank/);
+      expect(fs.readFileSync(globalPath)).toEqual(before);
+
+      expect(() => service.trackGlobal('sess-invalid-patch', {
+        standingConstraints: 'A'.repeat(STANDING_CONSTRAINTS_MAX_CHARS + 1),
+      })).toThrow(/over the 8000 character cap/);
+      expect(fs.readFileSync(globalPath)).toEqual(before);
+
+      expect(() => service.trackGlobal('sess-invalid-patch', { standingConstraints: null as any })).toThrow(/non-blank/);
+      expect(fs.readFileSync(globalPath)).toEqual(before);
+    });
+
     it('preserves earlier global sessions across successive writes', () => {
       service.trackGlobal('sess-a', { agent: 'hive-master', sessionKind: 'primary' });
       service.trackGlobal('sess-b', { agent: 'forager-worker', sessionKind: 'task-worker' });
@@ -357,6 +433,14 @@ describe('SessionService', () => {
       expect(service.readStandingConstraints('sess-atomic')).toEqual(current);
     });
 
+    it('accepts exactly the UTF-16 cap and rejects one code unit more', () => {
+      expect(service.addStandingConstraint('sess-cap', 'A'.repeat(STANDING_CONSTRAINTS_MAX_CHARS)))
+        .toMatchObject({ constraintsChars: STANDING_CONSTRAINTS_MAX_CHARS });
+      expect(() => service.addStandingConstraint('sess-over-cap', 'A'.repeat(STANDING_CONSTRAINTS_MAX_CHARS + 1)))
+        .toThrow(/over the 8000 character cap/);
+      expect(service.getGlobal('sess-over-cap')).toBeUndefined();
+    });
+
     it('reads legacy strings as one deterministic entry and migrates them on mutation', () => {
       service.trackGlobal('sess-legacy', { standingConstraints: 'Legacy verbatim text.' });
 
@@ -376,6 +460,62 @@ describe('SessionService', () => {
         expect.objectContaining({ text: 'New text.' }),
       ]);
       expect(added.revision).toBe(1);
+    });
+
+    it('rejects disagreeing structured and flattened constraint patches before writing', () => {
+      service.trackGlobal('sess-conflict', { agent: 'hive-master' });
+      const globalPath = getGlobalSessionsPath(PROJECT_ROOT);
+      const before = fs.readFileSync(globalPath);
+
+      expect(() => service.trackGlobal('sess-conflict', {
+        standingConstraintEntries: [{ id: 'legacy', text: 'Structured text.' }],
+        standingConstraints: 'Different flattened text.',
+        standingConstraintsRevision: 1,
+      })).toThrow(/disagree/);
+      expect(fs.readFileSync(globalPath)).toEqual(before);
+      expect(service.readStandingConstraints('sess-conflict')).toMatchObject({ entries: [], revision: 0 });
+
+      expect(() => service.trackGlobal('sess-conflict', {
+        standingConstraintEntries: [],
+        standingConstraints: 'Orphaned flattened text.',
+      })).toThrow(/disagree/);
+      expect(fs.readFileSync(globalPath)).toEqual(before);
+    });
+
+    it('persists one canonical register from agreeing representations and preserves entries on revision-only patches', () => {
+      service.trackGlobal('sess-canonical', { standingConstraints: 'Alpha' });
+      const agreed = service.trackGlobal('sess-canonical', {
+        standingConstraintEntries: [{ id: 'legacy', text: 'Alpha\n\nBeta' }],
+        standingConstraints: 'Alpha\n\nBeta',
+        standingConstraintsRevision: 3,
+      });
+      expect(agreed).toMatchObject({
+        standingConstraintEntries: [{ id: 'legacy', text: 'Alpha\n\nBeta' }],
+        standingConstraints: 'Alpha\n\nBeta',
+        standingConstraintsRevision: 3,
+      });
+
+      const revisionOnly = service.trackGlobal('sess-canonical', { standingConstraintsRevision: 5 });
+      expect(revisionOnly).toMatchObject({
+        standingConstraintEntries: [{ id: 'legacy', text: 'Alpha\n\nBeta' }],
+        standingConstraints: 'Alpha\n\nBeta',
+        standingConstraintsRevision: 5,
+      });
+    });
+
+    it('validates legacy constraints before copying them', () => {
+      service.trackGlobal('valid-source', { standingConstraints: 'A'.repeat(8000) });
+      expect(service.copySessionOrigin('valid-copy', 'valid-source').standingConstraints).toHaveLength(8000);
+
+      service.trackGlobal('invalid-source');
+      const globalPath = getGlobalSessionsPath(PROJECT_ROOT);
+      const data = JSON.parse(fs.readFileSync(globalPath, 'utf8'));
+      data.sessions.find((session: { sessionId: string }) => session.sessionId === 'invalid-source').standingConstraints = 'A'.repeat(STANDING_CONSTRAINTS_MAX_CHARS + 1);
+      fs.writeFileSync(globalPath, JSON.stringify(data));
+      const before = fs.readFileSync(globalPath);
+      expect(() => service.copySessionOrigin('invalid-copy', 'invalid-source')).toThrow(/over the 8000 character cap/);
+      expect(service.getGlobal('invalid-copy')).toBeUndefined();
+      expect(fs.readFileSync(globalPath)).toEqual(before);
     });
 
     it('keeps revision history after explicit whole-register clear', () => {
@@ -456,6 +596,103 @@ describe('SessionService', () => {
 
   });
 
+  describe('feature routing snapshots', () => {
+    it('distinguishes unset, selected, and explicitly featureless routes', () => {
+      setupFeature('feature-a');
+      expect(service.trackGlobal('route').featureName).toBeUndefined();
+      expect(service.setFeatureRoute('route', 'feature-a').featureName).toBe('feature-a');
+      expect(service.setFeatureRoute('route', null)).toMatchObject({ featureName: null });
+      const cleared = service.clearFeatureRoute('route');
+      expect(cleared.featureName).toBeUndefined();
+      expect(cleared).not.toHaveProperty('featureName');
+    });
+
+    it('validates selected features without creating missing feature paths', () => {
+      expect(() => service.setFeatureRoute('route', '../missing')).toThrow("Feature '../missing' not found");
+      expect(() => service.trackGlobal('route', { featureName: '../missing' })).toThrow("Feature '../missing' not found");
+      expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'features'))).toBe(false);
+      expect(service.getGlobal('route')).toBeUndefined();
+    });
+
+    it('snapshots parent route and session constraints independently', () => {
+      setupFeature('feature-a');
+      setupFeature('feature-b');
+      service.setFeatureRoute('parent', 'feature-a');
+      service.addStandingConstraint('parent', 'Parent A');
+
+      const child = service.snapshotChildSession('parent', 'child', { agent: 'forager-worker' });
+      service.setFeatureRoute('parent', 'feature-b');
+      service.editStandingConstraint(
+        'parent',
+        service.readStandingConstraints('parent').entries[0]!.id,
+        service.readStandingConstraints('parent').revision,
+        'Parent B',
+      );
+
+      expect(child).toMatchObject({ parentSessionId: 'parent', featureName: 'feature-a', standingConstraints: 'Parent A' });
+      expect(service.getGlobal('child')).toMatchObject({ featureName: 'feature-a', standingConstraints: 'Parent A' });
+      expect(service.getGlobal('parent')).toMatchObject({ featureName: 'feature-b', standingConstraints: 'Parent B' });
+    });
+
+    it('persists null routes and empty constraint snapshots without changing old leases', () => {
+      const sessionsPath = getGlobalSessionsPath(PROJECT_ROOT);
+      fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
+      const lease = { parentSessionId: 'old', callId: 'call', agent: 'general', projectRoot: PROJECT_ROOT, resourcePaths: [PROJECT_ROOT], runtimeId: 'runtime' };
+      fs.writeFileSync(sessionsPath, JSON.stringify({
+        sessions: [{ sessionId: 'parent', featureName: null, standingConstraintEntries: [], standingConstraintsRevision: 0, startedAt: 'start', lastActiveAt: 'start' }],
+        nativeTaskLeases: [lease],
+      }));
+
+      service.setFeatureRoute('parent', null);
+      const added = service.addStandingConstraint('parent', 'Temporary');
+      service.clearStandingConstraints('parent', added.revision);
+      const child = service.snapshotChildSession('parent', 'child');
+
+      expect(child).toMatchObject({ featureName: null, standingConstraintEntries: [], standingConstraintsRevision: 2 });
+      expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).nativeTaskLeases).toEqual([lease]);
+    });
+
+    it('allows same-parent retries to refresh snapshots without changing child metadata', () => {
+      setupFeature('feature-a');
+      setupFeature('feature-b');
+      service.setFeatureRoute('parent', 'feature-a');
+      service.addStandingConstraint('parent', 'Parent A');
+      service.snapshotChildSession('parent', 'child', {
+        adHocRunId: 'run-1',
+        executionWorkspacePath: '/workspace',
+        agent: 'forager-worker',
+      });
+
+      service.setFeatureRoute('parent', 'feature-b');
+      service.clearStandingConstraints('parent', 1);
+      const retried = service.snapshotChildSession('parent', 'child', {
+        adHocRunId: 'run-1',
+        executionWorkspacePath: '/workspace',
+        agent: 'forager-worker',
+      });
+
+      expect(retried).toMatchObject({
+        parentSessionId: 'parent',
+        featureName: 'feature-b',
+        standingConstraintEntries: [],
+        adHocRunId: 'run-1',
+        executionWorkspacePath: '/workspace',
+      });
+      expect(() => service.snapshotChildSession('parent', 'child', { adHocRunId: 'run-2' })).toThrow(/immutable|metadata cannot change/);
+      expect(service.getGlobal('child')).toMatchObject({ adHocRunId: 'run-1', executionWorkspacePath: '/workspace' });
+    });
+
+    it('rejects a different snapshot parent before changing the existing child', () => {
+      service.trackGlobal('parent-a');
+      service.trackGlobal('parent-b');
+      service.snapshotChildSession('parent-a', 'child', { agent: 'forager-worker' });
+      const before = fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8');
+
+      expect(() => service.snapshotChildSession('parent-b', 'child', { agent: 'other' })).toThrow(/parent cannot change/);
+      expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
+    });
+  });
+
   describe('delegated session identity', () => {
     it('keeps duplicate source immutable and permits identical retries', () => {
       service.trackGlobal('fork', { duplicatedFromSessionId: 'source' });
@@ -466,13 +703,20 @@ describe('SessionService', () => {
       expect(service.getGlobal('fork')).toEqual(before);
     });
 
-    it('keeps authenticated ad-hoc run identity immutable across ordinary patches and feature binding', () => {
+    it('keeps authenticated ad-hoc run identity immutable while allowing simple feature routing', () => {
       const bound = service.trackGlobal('adhoc', { parentSessionId: 'parent', adHocRunId: 'run-1', projectRoot: PROJECT_ROOT, agent: 'forager-worker', sessionKind: 'task-worker' });
       for (const patch of [{ adHocRunId: 'run-2' }, { projectRoot: '/relocated' }, { parentSessionId: 'other' }, { sessionKind: 'subagent' as const }]) {
         expect(() => service.trackGlobal('adhoc', patch)).toThrow(/immutable/);
       }
-      expect(() => service.bindFeature('adhoc', 'other-feature')).toThrow(/immutable/);
-      expect(service.getGlobal('adhoc')).toEqual(bound);
+      setupFeature('other-feature');
+      expect(service.bindFeature('adhoc', 'other-feature').featureName).toBe('other-feature');
+      expect(service.getGlobal('adhoc')).toMatchObject({
+        sessionId: bound.sessionId,
+        parentSessionId: bound.parentSessionId,
+        adHocRunId: bound.adHocRunId,
+        projectRoot: bound.projectRoot,
+        featureName: 'other-feature',
+      });
     });
     it('keeps leftover persisted existing-workspace identity immutable without granting feature or copy authority', () => {
       const bound = service.trackGlobal('existing-workspace', {
@@ -491,9 +735,16 @@ describe('SessionService', () => {
       ]) {
         expect(() => service.trackGlobal('existing-workspace', patch)).toThrow(/immutable/);
       }
-      expect(() => service.bindFeature('existing-workspace', 'other-feature')).toThrow(/immutable/);
+      setupFeature('other-feature');
+      expect(service.bindFeature('existing-workspace', 'other-feature').featureName).toBe('other-feature');
       expect(() => service.copySessionOrigin('copy', 'existing-workspace')).toThrow(/invalid immutable generic duplicate origin/);
-      expect(service.getGlobal('existing-workspace')).toEqual(bound);
+      expect(service.getGlobal('existing-workspace')).toMatchObject({
+        sessionId: bound.sessionId,
+        parentSessionId: bound.parentSessionId,
+        executionWorkspacePath: bound.executionWorkspacePath,
+        projectRoot: bound.projectRoot,
+        featureName: 'other-feature',
+      });
     });
   });
 

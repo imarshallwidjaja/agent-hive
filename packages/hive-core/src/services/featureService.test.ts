@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { FeatureService } from './featureService';
+import { FeatureConstraintService } from './featureConstraintService.js';
+import { ConstraintRegisterError } from './constraintRegister.js';
 
 const TEST_DIR = `/tmp/hive-core-featureservice-test-${process.pid}`;
 
@@ -164,5 +166,79 @@ describe('FeatureService', () => {
     expect(() => service.updateStatus('terminal-feature', 'planning')).toThrow(/cannot be reopened/i);
     expect(() => service.archive('terminal-feature')).toThrow(/cannot be archived/i);
     expect(service.get('terminal-feature')).toEqual(before);
+  });
+});
+
+describe('FeatureConstraintService', () => {
+  let service: FeatureConstraintService;
+
+  beforeEach(() => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    service = new FeatureConstraintService(TEST_DIR);
+  });
+
+  afterEach(cleanup);
+
+  it('reads an absent register as revision zero without creating a file', () => {
+    const featurePath = setupFeature('constraints');
+
+    expect(service.read('constraints')).toEqual({ entries: [], revision: 0, constraints: '', constraintsChars: 0 });
+    expect(fs.existsSync(path.join(featurePath, 'constraints.json'))).toBe(false);
+  });
+
+  it('preserves stable IDs, exact-add deduplication, revisions, edits, and clears', () => {
+    setupIndexedFeature('01_constraints', 'constraints');
+    const first = service.add('constraints', 'Keep this verbatim.');
+    const duplicate = service.add('constraints', 'Keep this verbatim.');
+    expect(duplicate).toEqual(first);
+
+    const edited = service.edit('constraints', first.entries[0]!.id, first.revision, 'Keep this corrected.');
+    expect(edited.entries[0]!.id).toBe(first.entries[0]!.id);
+    expect(edited).toMatchObject({ revision: 2, constraints: 'Keep this corrected.' });
+    expect(() => service.edit('constraints', first.entries[0]!.id, first.revision, 'stale')).toThrow();
+
+    const cleared = service.clear('constraints', edited.revision);
+    expect(cleared).toMatchObject({ entries: [], revision: 3, constraints: '' });
+    expect(service.read('constraints')).toEqual(cleared);
+  });
+
+  it('rejects blank, over-cap, missing-feature, and ambiguous namespace mutations', () => {
+    setupFeature('constraints');
+    expect(() => service.add('constraints', '  ')).toThrow();
+    service.add('constraints', 'A');
+    expect(() => service.add('constraints', 'B'.repeat(8000))).toThrow();
+    expect(service.read('constraints')).toMatchObject({ revision: 1, constraints: 'A' });
+    expect(() => service.read('missing')).toThrow("Feature 'missing' not found");
+
+    setupIndexedFeature('01_duplicate', 'constraints');
+    expect(() => service.read('constraints')).toThrow('multiple entries');
+  });
+
+  it.each([
+    null,
+    {},
+    { entries: {}, revision: 0 },
+    { entries: [], revision: -1 },
+    { entries: [], revision: 1.5 },
+    { entries: [{ id: 'legacy' }], revision: 0 },
+    { entries: [{ id: 'legacy', text: '' }], revision: 0 },
+    { entries: [{ id: 'legacy', text: 1 }], revision: 0 },
+    { entries: [{ id: 'bad', text: 'Valid text' }], revision: 0 },
+    { entries: [{ id: 'legacy', text: 'A' }, { id: 'legacy', text: 'B' }], revision: 0 },
+  ])('rejects a corrupt persisted constraint register without changing it (%j)', (stored) => {
+    const featurePath = setupFeature('constraints');
+    const constraintsPath = path.join(featurePath, 'constraints.json');
+    fs.writeFileSync(constraintsPath, JSON.stringify(stored));
+    const before = fs.readFileSync(constraintsPath);
+
+    try {
+      service.read('constraints');
+      throw new Error('Expected corrupt register to be rejected');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConstraintRegisterError);
+      expect((error as ConstraintRegisterError).reason).toBe('invalid_register');
+    }
+    expect(fs.readFileSync(constraintsPath)).toEqual(before);
   });
 });

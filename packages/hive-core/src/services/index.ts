@@ -1,4 +1,10 @@
 export { FeatureService } from './featureService.js';
+export { FeatureConstraintService } from './featureConstraintService.js';
+export {
+  CONSTRAINTS_MAX_CHARS,
+  ConstraintRegisterError,
+} from './constraintRegister.js';
+export type { ConstraintRegister } from './constraintRegister.js';
 export { PlanService } from './planService.js';
 export { TaskService, TaskUpdatePersistenceError } from './taskService.js';
 export type { SyncOptions, TaskUpdateInput, TaskUpdateResult } from './taskService.js';
