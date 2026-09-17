@@ -69,6 +69,40 @@ describe('coordinated runtime hard cut', () => {
     expect(new SessionService(root).getGlobal('parent')?.featureName).toBe('feature-b');
   });
 
+  it('dispatches a stored indexed directory alias with feature constraints', async () => {
+    const { root, sessions, hooks } = createRuntime();
+    const featureAlias = '03_dagster-product-lifecycle';
+    fs.mkdirSync(path.join(root, '.hive', 'features', featureAlias), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.hive', 'features', featureAlias, 'feature.json'),
+      JSON.stringify({ name: 'dagster-product-lifecycle', status: 'executing', createdAt: new Date().toISOString() }),
+    );
+    const loaded = await hooks;
+    const parent = context('parent-legacy');
+    await loaded.tool!.hive_feature_select.execute({ feature: featureAlias }, parent);
+    await loaded.tool!.hive_constraints_add.execute(
+      { scope: 'feature', feature: featureAlias, constraints: 'Keep legacy routing.' },
+      parent,
+    );
+
+    const output = { args: { subagent_type: 'forager-worker', prompt: 'Run.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent-legacy', callID: 'call-legacy' } as any, output);
+
+    expect(output.args.prompt).toContain(`Feature constraints for "${featureAlias}"`);
+    expect(output.args.prompt).toContain('Keep legacy routing.');
+    sessions.set('child-legacy', { id: 'child-legacy', parentID: 'parent-legacy' });
+    await loaded.event!({ event: { type: 'message.part.updated', properties: { part: {
+      type: 'tool',
+      tool: 'task',
+      sessionID: 'parent-legacy',
+      callID: 'call-legacy',
+      metadata: { sessionId: 'child-legacy' },
+      state: { input: output.args },
+    } } } } as any);
+
+    expect(new SessionService(root).getGlobal('child-legacy')?.featureName).toBe(featureAlias);
+  });
+
   it('preserves an explicit null route for a dispatched child', async () => {
     const { root, sessions, hooks } = createRuntime();
     const loaded = await hooks;

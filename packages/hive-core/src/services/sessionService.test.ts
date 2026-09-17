@@ -13,12 +13,12 @@ function cleanup() {
   }
 }
 
-function setupFeature(featureName: string): void {
-  const featurePath = path.join(TEST_DIR, '.hive', 'features', featureName);
+function setupFeature(directoryName: string, logicalName = directoryName): void {
+  const featurePath = path.join(TEST_DIR, '.hive', 'features', directoryName);
   fs.mkdirSync(featurePath, { recursive: true });
   fs.writeFileSync(
     path.join(featurePath, 'feature.json'),
-    JSON.stringify({ name: featureName, status: 'executing', createdAt: new Date().toISOString() })
+    JSON.stringify({ name: logicalName, status: 'executing', createdAt: new Date().toISOString() })
   );
 }
 
@@ -447,6 +447,15 @@ describe('SessionService', () => {
       expect(() => service.trackGlobal('route', { featureName: '../missing' })).toThrow("Feature '../missing' not found");
       expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'features'))).toBe(false);
       expect(service.getGlobal('route')).toBeUndefined();
+    });
+
+    it('stores an indexed directory alias as the session route', () => {
+      setupFeature('03_dagster-product-lifecycle', 'dagster-product-lifecycle');
+
+      const session = service.setFeatureRoute('route', '03_dagster-product-lifecycle');
+
+      expect(session.featureName).toBe('03_dagster-product-lifecycle');
+      expect(service.getGlobal('route')?.featureName).toBe('03_dagster-product-lifecycle');
     });
 
     it('snapshots parent route and session constraints independently', () => {

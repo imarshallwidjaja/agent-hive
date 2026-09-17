@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import type { FeatureJson } from '../types.js';
 import {
   acquireLockSync,
+  FEATURE_NAME_PATTERN,
   fileExists,
   getFeaturesPath,
   listFeatureDirectories,
@@ -18,16 +19,18 @@ import {
 import type { ConstraintRegister } from './constraintRegister.js';
 
 export function resolveExistingFeaturePath(projectRoot: string, featureName: string): string {
-  const matches = listFeatureDirectories(projectRoot).filter((entry) => entry.logicalName === featureName);
+  const matches = listFeatureDirectories(projectRoot).filter((entry) => {
+    const feature = readJson<FeatureJson>(path.join(getFeaturesPath(projectRoot), entry.directoryName, 'feature.json'));
+    return typeof feature?.name === 'string'
+      && FEATURE_NAME_PATTERN.test(feature.name)
+      && (entry.directoryName === featureName || feature.name === featureName);
+  });
   if (matches.length !== 1) {
     throw new Error(matches.length === 0
       ? `Feature '${featureName}' not found`
       : `Feature namespace contains multiple entries named '${featureName}'`);
   }
-  const featurePath = path.join(getFeaturesPath(projectRoot), matches[0]!.directoryName);
-  const feature = readJson<FeatureJson>(path.join(featurePath, 'feature.json'));
-  if (feature?.name !== featureName) throw new Error(`Feature '${featureName}' not found`);
-  return featurePath;
+  return path.join(getFeaturesPath(projectRoot), matches[0]!.directoryName);
 }
 
 export class FeatureConstraintService {

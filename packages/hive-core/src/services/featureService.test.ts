@@ -24,7 +24,7 @@ function setupFeature(featureName: string): string {
   return featurePath;
 }
 
-function setupIndexedFeature(directoryName: string, logicalName: string): string {
+function setupIndexedFeature(directoryName: string, logicalName: string): void {
   const featurePath = path.join(TEST_DIR, '.hive', 'features', directoryName);
   fs.mkdirSync(path.join(featurePath, 'context'), { recursive: true });
   fs.writeFileSync(
@@ -32,7 +32,6 @@ function setupIndexedFeature(directoryName: string, logicalName: string): string
     JSON.stringify({ name: logicalName, status: 'planning', createdAt: new Date().toISOString() })
   );
   fs.writeFileSync(path.join(featurePath, 'plan.md'), '# Plan\n');
-  return featurePath;
 }
 
 describe('FeatureService', () => {
@@ -211,6 +210,31 @@ describe('FeatureConstraintService', () => {
     const cleared = service.clear('constraints', edited.revision);
     expect(cleared).toMatchObject({ entries: [], revision: 3, constraints: '' });
     expect(service.read('constraints')).toEqual(cleared);
+  });
+
+  it('resolves an indexed directory alias for feature constraints', () => {
+    setupIndexedFeature('03_dagster-product-lifecycle', 'dagster-product-lifecycle');
+
+    expect(service.add('03_dagster-product-lifecycle', 'Keep the legacy route.')).toMatchObject({
+      entries: [{ text: 'Keep the legacy route.' }],
+      revision: 1,
+    });
+  });
+
+  it('rejects a physical-directory and logical-name namespace collision', () => {
+    setupIndexedFeature('01_alpha', 'beta');
+    setupIndexedFeature('beta', 'gamma');
+
+    expect(() => service.read('beta')).toThrow('multiple entries');
+  });
+
+  it('requires readable feature metadata with a valid logical name', () => {
+    fs.mkdirSync(path.join(TEST_DIR, '.hive', 'features', '04_missing-metadata'), { recursive: true });
+    expect(() => service.read('04_missing-metadata')).toThrow("Feature '04_missing-metadata' not found");
+
+    setupIndexedFeature('05_invalid-metadata', '../escape');
+    expect(() => service.read('../escape')).toThrow("Feature '../escape' not found");
+    expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'escape'))).toBe(false);
   });
 
   it('rejects blank, over-cap, missing-feature, and ambiguous namespace mutations', () => {
