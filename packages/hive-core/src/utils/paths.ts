@@ -207,15 +207,15 @@ export interface LockOptions {
   timeout?: number;
   /** Time between lock acquisition attempts (ms). Default: 50 */
   retryInterval?: number;
-  /** Time after which a stale lock is broken (ms). Default: 30000 */
-  staleLockTTL?: number;
+  /** Retained for source compatibility. Locks require explicit manual recovery. */
+  staleLockTTL?: number | null;
 }
 
 /** Default lock options */
 const DEFAULT_LOCK_OPTIONS: Required<LockOptions> = {
   timeout: 5000,
   retryInterval: 50,
-  staleLockTTL: 30000,
+  staleLockTTL: null,
 };
 
 /**
@@ -228,13 +228,15 @@ export function getLockPath(filePath: string): string {
 /**
  * Check if a lock file is stale (older than TTL)
  */
-function isLockStale(lockPath: string, staleTTL: number): boolean {
+function describeLockHolder(lockPath: string): string {
   try {
-    const stat = fs.statSync(lockPath);
-    const age = Date.now() - stat.mtimeMs;
-    return age > staleTTL;
+    const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid?: unknown; timestamp?: unknown };
+    const details = [];
+    if (typeof parsed.pid === 'number') details.push(`holder pid ${parsed.pid}`);
+    if (typeof parsed.timestamp === 'string') details.push(`acquired ${parsed.timestamp}`);
+    return details.length > 0 ? `; ${details.join(', ')}` : '';
   } catch {
-    return true; // If we can't read it, treat as stale
+    return '';
   }
 }
 
@@ -285,25 +287,14 @@ export async function acquireLock(
         // Parent directory can be transiently unavailable on some filesystems.
         // Recreate and retry until timeout.
         ensureDir(lockDir);
-      } else if (error.code === 'EEXIST') {
-        // Lock exists - check if stale
-        if (isLockStale(lockPath, opts.staleLockTTL)) {
-          try {
-            fs.unlinkSync(lockPath);
-            continue; // Retry immediately after breaking stale lock
-          } catch {
-            // Another process might have removed it, continue
-          }
-        }
-      } else {
+      } else if (error.code !== 'EEXIST') {
         throw error; // Unexpected error
       }
 
       // Check timeout
       if (Date.now() - startTime >= opts.timeout) {
         throw new Error(
-          `Failed to acquire lock on ${filePath} after ${opts.timeout}ms. ` +
-          `Lock file: ${lockPath}`
+          `Failed to acquire lock ${lockPath} after ${opts.timeout}ms${describeLockHolder(lockPath)}. Manual recovery is required if the owner is no longer running.`
         );
       }
 
@@ -352,23 +343,13 @@ export function acquireLockSync(
         // Parent directory can be transiently unavailable on some filesystems.
         // Recreate and retry until timeout.
         ensureDir(lockDir);
-      } else if (error.code === 'EEXIST') {
-        if (isLockStale(lockPath, opts.staleLockTTL)) {
-          try {
-            fs.unlinkSync(lockPath);
-            continue;
-          } catch {
-            // Continue
-          }
-        }
-      } else {
+      } else if (error.code !== 'EEXIST') {
         throw error;
       }
 
       if (Date.now() - startTime >= opts.timeout) {
         throw new Error(
-          `Failed to acquire lock on ${filePath} after ${opts.timeout}ms. ` +
-          `Lock file: ${lockPath}`
+          `Failed to acquire lock ${lockPath} after ${opts.timeout}ms${describeLockHolder(lockPath)}. Manual recovery is required if the owner is no longer running.`
         );
       }
 

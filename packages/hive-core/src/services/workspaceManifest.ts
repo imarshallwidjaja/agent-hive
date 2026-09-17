@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { writeJsonAtomicDurable } from '../utils/paths.js';
 
 export interface WorkspaceManifestEntry {
   path: string;
@@ -13,7 +14,7 @@ interface WorkspaceManifestBase {
   schemaVersion: 1;
   repos: Record<string, WorkspaceManifestEntry>;
   baseCommits: Record<string, string>;
-  createdAt: string;
+  createdAt?: string;
 }
 
 export interface TaskWorkspaceManifest extends WorkspaceManifestBase {
@@ -33,6 +34,19 @@ export interface ReviewWorkspaceManifest extends WorkspaceManifestBase {
 }
 
 export type CompositeWorkspaceManifest = TaskWorkspaceManifest | AdhocWorkspaceManifest | ReviewWorkspaceManifest;
+
+export interface SingleWorkspaceMetadata {
+  schemaVersion: 1;
+  mode: 'single' | 'adhoc-single';
+  worktreePath: string;
+  repositoryPath: string;
+  branch: string;
+  baseCommit: string;
+  createdAt?: string;
+  feature?: string;
+  task?: string;
+  runId?: string;
+}
 
 const SAFE_REPOSITORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -100,5 +114,55 @@ export async function readCompositeWorkspaceManifest(workspaceRoot: string): Pro
     throw error;
   }
 
-  return parseCompositeWorkspaceManifest(JSON.parse(raw), manifestPath);
+  try {
+    return parseCompositeWorkspaceManifest(JSON.parse(raw), manifestPath);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`Invalid JSON in composite workspace manifest ${manifestPath}: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+export async function readSingleWorkspaceMetadata(metadataPath: string): Promise<SingleWorkspaceMetadata | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(metadataPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  let value: Partial<SingleWorkspaceMetadata>;
+  try {
+    value = JSON.parse(raw) as Partial<SingleWorkspaceMetadata>;
+  } catch (error) {
+    throw new Error(`Invalid JSON in single workspace metadata ${metadataPath}: ${(error as Error).message}`);
+  }
+  if (
+    value.schemaVersion !== 1
+    || (value.mode !== 'single' && value.mode !== 'adhoc-single')
+    || typeof value.worktreePath !== 'string'
+    || typeof value.repositoryPath !== 'string'
+    || typeof value.branch !== 'string'
+    || typeof value.baseCommit !== 'string'
+  ) {
+    throw new Error(`Invalid single workspace metadata: ${metadataPath}`);
+  }
+  return value as SingleWorkspaceMetadata;
+}
+
+export async function writeWorkspaceJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  try {
+    const finalStat = await fs.lstat(filePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (finalStat?.isSymbolicLink()) {
+      throw new Error(`Refusing to replace workspace metadata symlink: ${filePath}`);
+    }
+    writeJsonAtomicDurable(filePath, value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to write workspace metadata at ${filePath}: ${message}`, { cause: error });
+  }
 }

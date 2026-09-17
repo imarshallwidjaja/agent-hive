@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fsSync from "fs";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -207,6 +208,13 @@ describe("WorktreeService merge and commit messages", () => {
     expect(worktree.path).toBe(path.join(repoPath, ".hive", ".worktrees", "test-feature", "01-test-task"));
     expect(worktree.branch).toBe("hive/test-feature/01-test-task");
     expect(await service.get("test-feature", "01-test-task")).not.toBeNull();
+    expect(JSON.parse(await fs.readFile(`${worktree.path}.json`, 'utf8'))).toMatchObject({
+      schemaVersion: 1,
+      mode: 'single',
+      feature: 'test-feature',
+      task: '01-test-task',
+      baseCommit: worktree.commit,
+    });
   });
 
   it("places a slotted attempt at a distinct path and branch without changing the default location", async () => {
@@ -233,6 +241,39 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await service.get(feature, task)).toMatchObject({ path: defaultWorktree.path, branch: defaultWorktree.branch });
     expect(await service.get(feature, task, "retry")).toMatchObject({ path: slotted.path, branch: slotted.branch });
     expect(slotted.path).not.toBe(defaultWorktree.path);
+    expect(await service.listCandidates(feature, task)).toEqual([
+      expect.objectContaining({ path: defaultWorktree.path }),
+      expect.objectContaining({ path: slotted.path, attemptSlot: 'retry' }),
+    ]);
+  });
+
+  it('refuses removal when the worktree contains untracked content', async () => {
+    const { repoPath } = await createTempRepo();
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const worktree = await service.create('test-feature', '01-test-task');
+    await fs.writeFile(path.join(worktree.path, 'untracked.log'), 'keep me\n', 'utf-8');
+
+    const inspected = await service.inspect('test-feature', '01-test-task');
+    const removed = await service.remove('test-feature', '01-test-task');
+
+    expect(inspected?.clean).toBe(false);
+    expect(removed.cleanup.worktreeRemoval.status).toBe('failed');
+    expect(await fs.readFile(path.join(worktree.path, 'untracked.log'), 'utf-8')).toBe('keep me\n');
+  });
+
+  it('lets native Git removal handle ignored-only generated content', async () => {
+    const { repoPath } = await createTempRepo();
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const worktree = await service.create('test-feature', '01-test-task');
+    await fs.writeFile(path.join(worktree.path, '.gitignore'), 'ignored.log\n', 'utf-8');
+    await commitTaskChanges(service, 'test-feature', '01-test-task', testCommitMessage('chore: ignore generated log'));
+    await fs.writeFile(path.join(worktree.path, 'ignored.log'), 'generated\n', 'utf-8');
+
+    const removed = await service.remove('test-feature', '01-test-task');
+
+    expect(removed.cleanup.worktreeRemoval).toMatchObject({ status: 'succeeded' });
+    expect(await pathExists(worktree.path)).toBe(false);
+    expect(await pathExists(path.join(worktree.path, 'ignored.log'))).toBe(false);
   });
 
   it("commits, diffs, and removes a slotted worktree without touching the default worktree", async () => {
@@ -525,6 +566,75 @@ describe("WorktreeService merge and commit messages", () => {
     });
     expect(await pathExists(fixture.worktreePath)).toBe(false);
     expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(false);
+  });
+
+  it('keeps an advanced task branch when it moves between validation and compare-and-delete', async () => {
+    const fixture = await createCommittedFixture();
+    const branch = 'hive/test-feature/01-test-task';
+    const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+    let advanced: string | undefined;
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = originalGetGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return async (args: string[]) => {
+            if (args[0] === 'update-ref' && args[1] === '-d') {
+              advanced = (await fixture.repoGit.revparse(['HEAD'])).trim();
+              await target.raw(['update-ref', args[2]!, advanced, args[3]!]);
+            }
+            return target.raw(args);
+          };
+        },
+      });
+    });
+    let result;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+        cleanup: 'worktree+branch',
+      });
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(result.cleanup.branchDeletion.status).toBe('failed');
+    expect((await fixture.repoGit.revparse([branch])).trim()).toBe(advanced!);
+  });
+
+  it('reports rollback failure instead of aborted when Git conflict state remains active', async () => {
+    const fixture = await createConflictingFixture();
+    const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = originalGetGit(cwd);
+      if (cwd && cwd !== fixture.repoPath) return git;
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return (args: string[]) => {
+            if ((args[0] === 'merge' && args[1] === '--abort') || (args[0] === 'reset' && args[1] === '--merge')) {
+              return Promise.reject(new Error('simulated rollback failure'));
+            }
+            return target.raw(args);
+          };
+        },
+      });
+    });
+    let result;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    } finally {
+      gitSpy.mockRestore();
+      await fixture.repoGit.raw(['merge', '--abort']).catch(() => {});
+    }
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'ROLLBACK_FAILED',
+      conflictState: 'none',
+      mutation: 'unknown',
+      action: 'manual_recovery',
+    });
+    expect(result.error).toMatch(/operation remains active|simulated rollback failure/);
   });
 
   it('does not roll back a completed integration when the requested cleanup throws', async () => {
@@ -867,11 +977,12 @@ describe("WorktreeService merge and commit messages", () => {
   it('blocks direct branch deletion when the task branch has unmerged commits', async () => {
     const fixture = await createCommittedFixture();
 
-    await expect(fixture.service.remove(fixture.feature, fixture.task, true)).rejects.toThrow(
-      /unmerged commits|hive_merge|discard/i,
-    );
+    const result = await fixture.service.remove(fixture.feature, fixture.task, true);
 
-    expect(await pathExists(fixture.worktreePath)).toBe(true);
+    expect(result.cleanup.worktreeRemoval.status).toBe('succeeded');
+    expect(result.cleanup.branchDeletion.status).toBe('failed');
+    expect(result.cleanup.branchDeletion.error).toMatch(/unmerged commits|hive_merge|discard/i);
+    expect(await pathExists(fixture.worktreePath)).toBe(false);
     expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(true);
   });
 
@@ -1060,14 +1171,14 @@ describe("WorktreeService composite workspaces", () => {
       expect(wt.baseCommits![id]).toBe(wt.repos![id].commit);
     }
 
-    // Persisted base commits in task status
+    // Worktree creation must not mutate task lifecycle state.
     const statusRaw = await fs.readFile(
       path.join(fx.projectRoot, '.hive', 'features', `01_${fx.feature}`, 'tasks', fx.task, 'status.json'),
       'utf-8',
     );
     const status = JSON.parse(statusRaw);
-    expect(status.baseCommits).toEqual(wt.baseCommits);
-    expect(status.baseCommit).toBe(wt.baseCommits!['api']);
+    expect(status.baseCommits).toBeUndefined();
+    expect(status.baseCommit).toBeUndefined();
   });
 
   it("aggregate get returns composite info matching create()", async () => {
@@ -1261,11 +1372,12 @@ describe("WorktreeService composite workspaces", () => {
     try {
       await expect(invoke(fixture)).rejects.toThrow(/administration entry is outside the trusted Git common directory/);
       expect(forbiddenAccess).toEqual([]);
-      expect(gitCalls).toEqual([{
+      expect(gitCalls[0]).toEqual({
         cwd: fixture.repoPath,
         method: 'raw',
         args: [['rev-parse', '--git-common-dir']],
-      }]);
+      });
+      expect(gitCalls.every((call) => call.cwd === fixture.repoPath)).toBe(true);
     } finally {
       fsSpies.forEach(spy => spy.mockRestore());
       gitSpy.mockRestore();
@@ -1414,6 +1526,37 @@ describe("WorktreeService composite workspaces", () => {
     expect(await pathExists(path.join(projectRoot, '.hive', '.worktrees', feature, task))).toBe(false);
   });
 
+  it('retries composite creation after a pre-publication manifest failure', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const compositeRoot = path.join(fx.projectRoot, '.hive', '.worktrees', fx.feature, fx.task);
+    const manifestPath = path.join(compositeRoot, 'workspace.json');
+    const originalRename = fsSync.renameSync;
+    let failPublication = true;
+    const renameSpy = spyOn(fsSync, 'renameSync').mockImplementation(((source, destination) => {
+      if (failPublication && String(destination) === manifestPath) {
+        failPublication = false;
+        const error = new Error('simulated manifest publication failure');
+        throw error;
+      }
+      return originalRename(source, destination);
+    }) as typeof fsSync.renameSync);
+
+    try {
+      await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow(
+        /simulated manifest publication failure/,
+      );
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(await pathExists(compositeRoot)).toBe(false);
+    expect(await branchExists(fx.repos.api.git, `hive/api/${fx.feature}/${fx.task}`)).toBe(false);
+
+    const retry = await fx.service.create(fx.feature, fx.task);
+    expect(retry.mode).toBe('composite');
+    expect(await pathExists(retry.path)).toBe(true);
+  });
+
   it("hasUncommittedChanges returns true when any composite repo has changes", async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const wt = await fx.service.create(fx.feature, fx.task);
@@ -1542,6 +1685,19 @@ describe("WorktreeService composite workspaces", () => {
     expect(await pathExists(wt.path)).toBe(false);
   });
 
+  it('does not claim a stale candidate was removed when its root remains', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+
+    await fs.rm(wt.repos!['web-ui'].path, { recursive: true, force: true });
+    await fs.writeFile(path.join(wt.path, 'keep.txt'), 'preserve\n', 'utf-8');
+
+    const result = await fx.service.cleanup(fx.feature);
+
+    expect(result.removed).not.toContain(wt.path);
+    expect(await pathExists(wt.path)).toBe(true);
+  });
+
   it("remove reports per-step cleanup status for a composite workspace", async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const wt = await fx.service.create(fx.feature, fx.task);
@@ -1558,6 +1714,47 @@ describe("WorktreeService composite workspaces", () => {
     expect(result.cleanup.branchDeletion.status).toBe('succeeded');
     expect(result.cleanup.prune.status).toBe('succeeded');
     expect(await pathExists(wt.path)).toBe(false);
+  });
+
+  it('preserves a composite manifest when branch deletion fails, then retries after worktrees are absent', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    const manifestPath = path.join(wt.path, 'workspace.json');
+    const originalGetGit = (fx.service as any).getGit.bind(fx.service);
+    let failBranchDeletion = true;
+    const gitSpy = spyOn(fx.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = originalGetGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key === 'raw') {
+            return (args: string[]) => args[0] === 'update-ref' && args[1] === '-d' && failBranchDeletion
+              ? Promise.reject(new Error('simulated branch deletion failure'))
+              : target.raw(args);
+          }
+          return Reflect.get(target, key);
+        },
+      });
+    });
+
+    let first;
+    try {
+      first = await fx.service.remove(fx.feature, fx.task, true);
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(first.cleanup.branchDeletion.status).toBe('failed');
+    expect(await pathExists(wt.path)).toBe(true);
+    expect(await pathExists(manifestPath)).toBe(true);
+    expect(await pathExists(wt.repos!.api.path)).toBe(false);
+    expect(await pathExists(wt.repos!['web-ui'].path)).toBe(false);
+
+    failBranchDeletion = false;
+    const retry = await fx.service.remove(fx.feature, fx.task, true);
+    expect(retry.cleanup).toMatchObject({ requested: 'worktree+branch', outcome: 'complete' });
+    expect(await pathExists(wt.path)).toBe(false);
+    expect(await branchExists(fx.repos.api.git, wt.repos!.api.branch)).toBe(false);
+    expect(await branchExists(fx.repos['web-ui'].git, wt.repos!['web-ui'].branch)).toBe(false);
   });
 
   it("remove reports not_requested for branch deletion and an already absent worktree", async () => {
@@ -1644,6 +1841,32 @@ describe("WorktreeService composite diff aggregation", () => {
     expect(diff.hasDiff).toBe(true);
     expect(diff.repos).toBeUndefined();
     expect(diff.filesChanged).toContain('legacy-change.txt');
+  });
+
+  it('rejects an unusable sidecar baseline instead of silently diffing HEAD~1', async () => {
+    const fx = await createFixture();
+    const metadataPath = `${fx.worktreePath}.json`;
+    const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+    metadata.baseCommit = 'not-a-commit';
+    await fs.writeFile(metadataPath, JSON.stringify(metadata));
+
+    await expect(fx.service.getDiff(fx.feature, fx.task)).rejects.toThrow(
+      new RegExp(`Failed to diff workspace .* from baseline not-a-commit`),
+    );
+  });
+
+  it('uses the legacy task status baseline when no sidecar exists', async () => {
+    const fx = await createFixture();
+    const baseCommit = (await fx.repoGit.revparse(['HEAD'])).trim();
+    await fs.unlink(`${fx.worktreePath}.json`);
+    const statusPath = path.join(fx.repoPath, '.hive', 'features', fx.feature, 'tasks', fx.task, 'status.json');
+    await fs.mkdir(path.dirname(statusPath), { recursive: true });
+    await fs.writeFile(statusPath, JSON.stringify({ baseCommit }));
+    await fs.writeFile(path.join(fx.worktreePath, 'legacy-status.txt'), 'change\n');
+
+    const diff = await fx.service.getDiff(fx.feature, fx.task);
+
+    expect(diff.filesChanged).toContain('legacy-status.txt');
   });
 });
 
@@ -1990,6 +2213,8 @@ describe("WorktreeService composite merge aggregation", () => {
     });
     expect(result.repos!.api).toMatchObject({ success: true, merged: true });
     expect(result.repos!['web-ui']).toMatchObject({ success: false, merged: false, conflictState: 'aborted' });
+    expect(result.repos!.api.operationStatus).toBe('success');
+    expect(result.repos!['web-ui'].operationStatus).toBe('failed');
     expect((await fx.repos.api.git.revparse(['HEAD'])).trim()).not.toBe(before.api);
     expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(before.web);
     expect((await fx.repos['web-ui'].git.status()).isClean()).toBe(true);
@@ -2089,6 +2314,39 @@ describe("WorktreeService composite merge aggregation", () => {
     for (const id of ['api', 'web-ui']) {
       expect(await branchExists(fx.repos[id].git, `hive/${id}/${fx.feature}/${fx.task}`)).toBe(false);
     }
+  });
+
+  it('skips all task-composite cleanup when an earlier target moves after integration', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'api.txt', 'api\n');
+    await commitChangeInRepo(fx, 'web-ui', 'web.txt', 'web\n');
+    const original = (fx.service as any).mergeOneRepo.bind(fx.service);
+    let calls = 0;
+    const mergeSpy = spyOn(fx.service as any, 'mergeOneRepo').mockImplementation(async (...args: any[]) => {
+      const result = await original(...args);
+      calls += 1;
+      if (calls === 2) {
+        await fs.writeFile(path.join(fx.repos.api.path, 'target-race.txt'), 'race\n');
+        await fx.repos.api.git.add('-A');
+        await fx.repos.api.git.commit(testCommitMessage('chore: advance target during cleanup handoff'));
+      }
+      return result;
+    });
+    let result;
+    try {
+      result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+        cleanup: 'worktree+branch',
+      });
+    } finally {
+      mergeSpy.mockRestore();
+    }
+
+    expect(result.cleanup.outcome).toBe('failed');
+    expect(result.repos!.api.cleanup.worktreeRemoval.status).toBe('not_attempted');
+    expect(result.repos!['web-ui'].cleanup.worktreeRemoval.status).toBe('not_attempted');
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect(await pathExists(created.repos!['web-ui'].path)).toBe(true);
   });
 
   it("populates per-repo cleanup fields when cleanup=worktree+branch and aggregates them at top level", async () => {

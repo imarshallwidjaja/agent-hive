@@ -99,26 +99,37 @@ describe("Atomic + Locked JSON Utilities", () => {
       release();
     });
 
-    it("breaks stale lock after TTL", async () => {
+    it("never age-steals a lock and reports its holder for manual recovery", async () => {
       const filePath = path.join(TEST_DIR, "lock-stale.json");
       const lockPath = getLockPath(filePath);
 
       // Create a stale lock manually
-      fs.writeFileSync(lockPath, JSON.stringify({ pid: 99999, stale: true }));
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 99999, timestamp: '2026-09-17T01:00:00.000Z' }));
       // Set mtime to past
       const pastTime = new Date(Date.now() - 60000);
       fs.utimesSync(lockPath, pastTime, pastTime);
 
-      // Should break stale lock and acquire
-      const release = await acquireLock(filePath, { staleLockTTL: 1000 });
-
+      await expect(acquireLock(filePath, {
+        timeout: 50,
+        retryInterval: 5,
+        staleLockTTL: 1000,
+      })).rejects.toThrow(new RegExp(`${lockPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*holder pid 99999.*2026-09-17T01:00:00.000Z`));
       expect(fs.existsSync(lockPath)).toBe(true);
+    });
 
-      // Verify it's our lock (has current timestamp)
-      const lockContent = JSON.parse(fs.readFileSync(lockPath, "utf-8"));
-      expect(lockContent.pid).toBe(process.pid);
+    it('does not age-steal an operation lock when staleLockTTL is null', async () => {
+      const filePath = path.join(TEST_DIR, 'lock-no-age-steal.json');
+      const lockPath = getLockPath(filePath);
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 99999 }));
+      const pastTime = new Date(Date.now() - 60000);
+      fs.utimesSync(lockPath, pastTime, pastTime);
 
-      release();
+      await expect(acquireLock(filePath, {
+        timeout: 50,
+        retryInterval: 5,
+        staleLockTTL: null,
+      })).rejects.toThrow(/Failed to acquire lock/);
+      expect(fs.existsSync(lockPath)).toBe(true);
     });
   });
 

@@ -3,12 +3,13 @@ import * as path from "path";
 import simpleGit, { SimpleGit } from "simple-git";
 import type { ResolvedRepository, TaskStatus } from "../types.js";
 import { normalizeCommitMessage } from '../utils/mergeMessage.js';
-import { resolveFeatureDirectoryName } from "../utils/paths.js";
+import { acquireLock, resolveFeatureDirectoryName } from "../utils/paths.js";
+import { createHash } from 'crypto';
 import type {
   TaskWorkspaceManifest as WorkspaceManifest,
-  WorkspaceManifestEntry,
+  SingleWorkspaceMetadata,
 } from './workspaceManifest.js';
-import { readCompositeWorkspaceManifest } from './workspaceManifest.js';
+import { readCompositeWorkspaceManifest, readSingleWorkspaceMetadata, writeWorkspaceJsonAtomic } from './workspaceManifest.js';
 import {
   buildCleanupOutcome,
   classifyThrownWorktreeError,
@@ -33,6 +34,7 @@ export interface WorktreeRepoInfo {
   path: string;
   branch: string;
   commit: string;
+  clean?: boolean;
 }
 
 export interface WorktreeInfo {
@@ -45,6 +47,9 @@ export interface WorktreeInfo {
   workspacePath?: string;
   repos?: Record<string, WorktreeRepoInfo>;
   baseCommits?: Record<string, string>;
+  baseCommit?: string;
+  clean?: boolean;
+  attemptSlot?: string;
 }
 
 export interface DiffResult {
@@ -74,6 +79,9 @@ export interface ApplyResult {
 export interface MergeOptions {
   preserveConflicts?: boolean;
   cleanup?: 'none' | 'worktree' | 'worktree+branch';
+  /** Exact source commits to integrate. A moved source is rejected before mutation. */
+  sourceCommit?: string;
+  sourceCommits?: Record<string, string>;
 }
 
 export interface MergeResult {
@@ -130,6 +138,7 @@ export interface RepoMergeResult {
   mutation: WorktreeMutationState;
   retryable: boolean;
   action: WorktreeRecoveryAction;
+  operationStatus?: 'success' | 'failed' | 'not_attempted';
 }
 
 export interface RepositoryResolver {
@@ -149,8 +158,9 @@ export interface WorktreeConfig {
   taskRepoResolver?: TaskRepoResolver | ((feature: string, step: string) => string[] | undefined);
 }
 
-interface RemoveOptions {
-  allowUnmergedCommits?: boolean;
+export interface WorktreeRemoveOptions {
+  /** Explicitly discard an unintegrated branch. Never implied by normal cleanup. */
+  discard?: boolean;
 }
 
 function cleanupStepDone(step: CleanupStepOutcome): boolean {
@@ -276,6 +286,74 @@ export class WorktreeService {
 
   private getGit(cwd?: string): SimpleGit {
     return simpleGit(cwd || this.config.baseDir);
+  }
+
+  private async withRepositoryLocks<T>(repositoryPaths: string[], operation: () => Promise<T>): Promise<T> {
+    const commonDirectories = [...new Set(await Promise.all(
+      repositoryPaths.map((repositoryPath) => this.trustedGitCommonDirectory(repositoryPath)),
+    ))].sort();
+    const releases: Array<() => void> = [];
+    try {
+      for (const commonDirectory of commonDirectories) {
+        const key = createHash('sha256').update(commonDirectory).digest('hex');
+        releases.push(await acquireLock(path.join(this.config.hiveDir, '.operation-locks', key), {
+          staleLockTTL: null,
+        }));
+      }
+      return await operation();
+    } finally {
+      for (const release of releases.reverse()) release();
+    }
+  }
+
+  private async isCompletelyClean(git: SimpleGit): Promise<boolean> {
+    return (await git.raw(['status', '--porcelain=v1', '--ignored'])).trim() === '';
+  }
+
+  private async isGitClean(git: SimpleGit): Promise<boolean> {
+    return (await git.raw(['status', '--porcelain=v1'])).trim() === '';
+  }
+
+  private async removeEmptyWorkspaceRoot(workspaceRoot: string): Promise<void> {
+    const reposPath = path.join(workspaceRoot, 'repos');
+    const remaining = await fs.readdir(reposPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    if (remaining.length > 0) throw new Error(`Composite workspace still contains repositories: ${remaining.join(', ')}`);
+    const entries = await fs.readdir(workspaceRoot).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    if (entries.length === 0) return;
+    const unexpected = entries.filter((entry) => entry !== 'repos' && entry !== 'workspace.json');
+    if (unexpected.length > 0) throw new Error(`Composite workspace contains unexpected entries: ${unexpected.join(', ')}`);
+    await fs.rmdir(reposPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    const manifestPath = path.join(workspaceRoot, 'workspace.json');
+    const heldManifestPath = `${workspaceRoot}.workspace.json.cleanup-${process.pid}-${Date.now()}`;
+    let manifestHeld = false;
+    await fs.rename(manifestPath, heldManifestPath).then(() => {
+      manifestHeld = true;
+    }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    try {
+      await fs.rmdir(workspaceRoot);
+    } catch (error) {
+      if (manifestHeld) {
+        await fs.rename(heldManifestPath, manifestPath).catch((restoreError: unknown) => {
+          throw new Error(`Composite root removal failed and manifest restore failed: ${(error as Error).message}; ${(restoreError as Error).message}`);
+        });
+      }
+      throw error;
+    }
+    if (manifestHeld) {
+      await fs.unlink(heldManifestPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
   }
 
   private isContained(root: string, candidate: string): boolean {
@@ -422,6 +500,10 @@ export class WorktreeService {
     return path.join(this.getCompositeRoot(feature, step, attemptSlot), 'workspace.json');
   }
 
+  private getSingleMetadataPath(feature: string, step: string, attemptSlot?: string): string {
+    return `${this.getWorktreePath(feature, step, attemptSlot)}.json`;
+  }
+
   private async getStepStatusPath(feature: string, step: string): Promise<string> {
     const featureDir = resolveFeatureDirectoryName(this.config.baseDir, feature);
     const featurePath = path.join(this.config.hiveDir, "features", featureDir);
@@ -500,10 +582,17 @@ export class WorktreeService {
 
   async create(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<WorktreeInfo> {
     const composite = await this.isCompositeTask(feature, step);
-    if (composite) {
-      return this.createComposite(feature, step, composite.repos, composite.repoIds, baseBranch, attemptSlot);
+    const targetPath = composite
+      ? this.getCompositeRoot(feature, step, attemptSlot)
+      : this.getWorktreePath(feature, step, attemptSlot);
+    await this.assertNoSymlinkComponents(path.parse(targetPath).root, targetPath, true);
+    if (composite && await this.readWorkspaceManifest(feature, step, attemptSlot)) {
+      await this.get(feature, step, attemptSlot);
     }
-    return this.createLegacy(feature, step, baseBranch, attemptSlot);
+    const repositories = composite ? composite.repos.map((repository) => repository.path) : [this.config.baseDir];
+    return this.withRepositoryLocks(repositories, () => composite
+      ? this.createComposite(feature, step, composite.repos, composite.repoIds, baseBranch, attemptSlot)
+      : this.createLegacy(feature, step, baseBranch, attemptSlot));
   }
 
   private async createLegacy(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<WorktreeInfo> {
@@ -534,6 +623,26 @@ export class WorktreeService {
     const worktreeGit = this.getGit(worktreePath);
     await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
     const commit = (await worktreeGit.revparse(["HEAD"])).trim();
+    const metadata: SingleWorkspaceMetadata = {
+      schemaVersion: 1,
+      mode: 'single',
+      feature,
+      task: step,
+      worktreePath,
+      repositoryPath: this.config.baseDir,
+      branch: branchName,
+      baseCommit: commit,
+    };
+    try {
+      await writeWorkspaceJsonAtomic(this.getSingleMetadataPath(feature, step, attemptSlot), metadata);
+    } catch (error) {
+      const removed = await git.raw(['worktree', 'remove', worktreePath]).then(() => true).catch(() => false);
+      if (removed) {
+        await git.raw(['worktree', 'prune']).catch(() => {});
+        await this.deleteBranchStep(git, branchName, commit);
+      }
+      throw error;
+    }
 
     return {
       path: worktreePath,
@@ -542,6 +651,7 @@ export class WorktreeService {
       feature,
       step,
       mode: 'legacy',
+      ...(attemptSlot !== undefined ? { attemptSlot } : {}),
     };
   }
 
@@ -598,16 +708,15 @@ export class WorktreeService {
           );
         }
       } catch (e: unknown) {
-        const msg = (e as { message?: string }).message ?? '';
-        if (msg.includes('Branch collision')) throw e;
-        // ignore: unable to list branches (e.g., empty repo)
+        if ((e as Error).message.startsWith('Branch collision:')) throw e;
+        throw new Error(`Failed to inspect branch ${branchName} in repo ${repoId}: ${(e as Error).message}`, { cause: e });
       }
     }
 
     await fs.mkdir(compositeRoot, { recursive: true });
     await fs.mkdir(path.join(compositeRoot, 'repos'), { recursive: true });
 
-    const createdRepos: Array<{ repoId: string; repoPath: string; branchName: string; git: SimpleGit }> = [];
+    const createdRepos: Array<{ repoId: string; branchName: string; git: SimpleGit; commit: string }> = [];
     const repoInfos: Record<string, WorktreeRepoInfo> = {};
     const baseCommits: Record<string, string> = {};
 
@@ -626,8 +735,7 @@ export class WorktreeService {
         } catch (createError) {
           throw new Error(`Failed to create worktree for repo ${repoId}: ${createError}`);
         }
-        createdRepos.push({ repoId, repoPath: repo.path, branchName, git: repoGit });
-
+        createdRepos.push({ repoId, branchName, git: repoGit, commit: base });
         await this.validateExactWorktreeRegistration(repoWtPath, repo.path, repoId);
         const wtGit = this.getGit(repoWtPath);
         const commit = (await wtGit.revparse(["HEAD"])).trim();
@@ -654,17 +762,9 @@ export class WorktreeService {
           }),
         ),
         baseCommits,
-        createdAt: new Date().toISOString(),
+        ...(attemptSlot !== undefined ? { attemptSlot } : {}),
       };
-      await fs.writeFile(
-        this.getWorkspaceManifestPath(feature, step, attemptSlot),
-        JSON.stringify(manifest, null, 2),
-        'utf-8',
-      );
-
-      // Persist base commits to task status. Failures here must fail creation
-      // and trigger rollback so callers don't proceed without baseCommits.
-      await this.persistBaseCommits(feature, step, baseCommits, repoIds[0]);
+      await writeWorkspaceJsonAtomic(this.getWorkspaceManifestPath(feature, step, attemptSlot), manifest);
 
       const first = repoInfos[repoIds[0]];
       return {
@@ -681,47 +781,16 @@ export class WorktreeService {
     } catch (createError) {
       // Rollback created per-repo worktrees and branches
       for (const created of createdRepos) {
-        try {
-          await created.git.raw(["worktree", "remove", this.getRepoWorktreePath(feature, step, created.repoId, attemptSlot), "--force"]);
-        } catch {
-          await fs.rm(this.getRepoWorktreePath(feature, step, created.repoId, attemptSlot), { recursive: true, force: true }).catch(() => {});
-        }
+        const removed = await created.git.raw(["worktree", "remove", this.getRepoWorktreePath(feature, step, created.repoId, attemptSlot)])
+          .then(() => true).catch(() => false);
         try {
           await created.git.raw(["worktree", "prune"]);
         } catch {}
-        try {
-          await created.git.deleteLocalBranch(created.branchName, true);
-        } catch {}
+        if (removed) await this.deleteBranchStep(created.git, created.branchName, created.commit);
       }
-      await fs.rm(compositeRoot, { recursive: true, force: true }).catch(() => {});
+      await this.removeEmptyWorkspaceRoot(compositeRoot);
       throw createError;
     }
-  }
-
-  private async persistBaseCommits(
-    feature: string,
-    step: string,
-    baseCommits: Record<string, string>,
-    firstRepoId: string,
-  ): Promise<void> {
-    const statusPath = await this.getStepStatusPath(feature, step);
-    let current: Record<string, unknown> = {};
-    try {
-      const raw = await fs.readFile(statusPath, 'utf-8');
-      current = JSON.parse(raw);
-    } catch (e: unknown) {
-      const err = e as NodeJS.ErrnoException;
-      // Tolerate only a missing status file; surface any other read/parse error.
-      if (!err || err.code !== 'ENOENT') {
-        throw new Error(
-          `Failed to read task status at ${statusPath} while persisting base commits: ${(e as Error).message}`,
-        );
-      }
-    }
-    current.baseCommits = baseCommits;
-    current.baseCommit = baseCommits[firstRepoId];
-    await fs.mkdir(path.dirname(statusPath), { recursive: true });
-    await fs.writeFile(statusPath, JSON.stringify(current, null, 2), 'utf-8');
   }
 
   private async readWorkspaceManifest(feature: string, step: string, attemptSlot?: string): Promise<WorkspaceManifest | null> {
@@ -760,6 +829,7 @@ export class WorktreeService {
         workspacePath: compositeRoot,
         repos,
         baseCommits,
+        ...(attemptSlot !== undefined ? { attemptSlot } : {}),
       };
     }
 
@@ -776,6 +846,17 @@ export class WorktreeService {
     await this.validateWorktreeBranch(worktreePath, branchName, 'legacy');
     const worktreeGit = this.getGit(worktreePath);
     const commit = (await worktreeGit.revparse(["HEAD"])).trim();
+    const metadata = await readSingleWorkspaceMetadata(this.getSingleMetadataPath(feature, step, attemptSlot));
+    if (metadata && (
+      metadata.mode !== 'single'
+      || metadata.feature !== feature
+      || metadata.task !== step
+      || path.resolve(metadata.worktreePath) !== path.resolve(worktreePath)
+      || path.resolve(metadata.repositoryPath) !== path.resolve(this.config.baseDir)
+      || metadata.branch !== branchName
+    )) {
+      throw new WorktreeLinkageError('Worktree linkage preflight failed: single workspace metadata does not match the requested task worktree');
+    }
     return {
       path: worktreePath,
       branch: branchName,
@@ -783,7 +864,35 @@ export class WorktreeService {
       feature,
       step,
       mode: 'legacy',
+      ...(metadata ? { baseCommit: metadata.baseCommit } : {}),
+      ...(attemptSlot !== undefined ? { attemptSlot } : {}),
     };
+  }
+
+  /** Inspect one explicit workspace candidate, including ignored-file dirt. */
+  async inspect(feature: string, step: string, attemptSlot?: string): Promise<WorktreeInfo | null> {
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
+    const repositories = manifest
+      ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
+      : [this.config.baseDir];
+    return this.withRepositoryLocks(repositories, async () => {
+      const info = await this.get(feature, step, attemptSlot);
+      if (!info) return null;
+      if (info.repos) {
+        for (const repo of Object.values(info.repos)) repo.clean = await this.isCompletelyClean(this.getGit(repo.path));
+        info.clean = Object.values(info.repos).every((repo) => repo.clean === true);
+      } else {
+        info.clean = await this.isCompletelyClean(this.getGit(info.path));
+      }
+      return info;
+    });
+  }
+
+  /** Return every old/default/slotted candidate; callers must select one explicitly. */
+  async listCandidates(feature: string, step: string): Promise<WorktreeInfo[]> {
+    return (await this.list(feature))
+      .filter((candidate) => candidate.step === step)
+      .sort((left, right) => left.path.localeCompare(right.path));
   }
 
   async getDiff(feature: string, step: string, baseCommit?: string, attemptSlot?: string): Promise<DiffResult> {
@@ -839,7 +948,7 @@ export class WorktreeService {
     };
   }
 
-  private async diffOneRepo(repoWtPath: string, baseCommit?: string): Promise<RepoDiffResult> {
+  private async diffOneRepo(repoWtPath: string, baseCommit: string): Promise<RepoDiffResult> {
     const empty: RepoDiffResult = {
       hasDiff: false,
       diffContent: '',
@@ -855,23 +964,14 @@ export class WorktreeService {
     }
 
     const git = this.getGit(repoWtPath);
-    const base = baseCommit || 'HEAD~1';
-
     try {
+      const base = (await git.revparse(['--verify', `${baseCommit}^{commit}`])).trim();
+      await git.raw(['merge-base', '--is-ancestor', base, 'HEAD']).catch(() => {
+        throw new Error(`Workspace baseline ${baseCommit} is not an ancestor of HEAD in ${repoWtPath}`);
+      });
       await git.raw(['add', '-A']);
-      const status = await git.status();
-      const hasStaged = status.staged.length > 0;
-
-      let diffContent = '';
-      let stat = '';
-
-      if (hasStaged) {
-        diffContent = await git.diff(['--cached']);
-        stat = diffContent ? await git.diff(['--cached', '--stat']) : '';
-      } else {
-        diffContent = await git.diff([`${base}..HEAD`]).catch(() => '');
-        stat = diffContent ? await git.diff([`${base}..HEAD`, '--stat']) : '';
-      }
+      const diffContent = await git.diff(['--cached', base]);
+      const stat = diffContent ? await git.diff(['--cached', base, '--stat']) : '';
 
       const statLines = stat.split('\n').filter(l => l.trim());
       const filesChanged = statLines
@@ -889,8 +989,8 @@ export class WorktreeService {
         insertions: insertMatch ? parseInt(insertMatch[1], 10) : 0,
         deletions: deleteMatch ? parseInt(deleteMatch[1], 10) : 0,
       };
-    } catch {
-      return empty;
+    } catch (error) {
+      throw new Error(`Failed to diff workspace ${repoWtPath} from baseline ${baseCommit}: ${(error as Error).message}`, { cause: error });
     }
   }
 
@@ -899,11 +999,20 @@ export class WorktreeService {
 
     let base = baseCommit;
     if (!base) {
+      base = (await readSingleWorkspaceMetadata(this.getSingleMetadataPath(feature, step, attemptSlot)))?.baseCommit;
+    }
+    if (!base) {
       try {
         const status = JSON.parse(await fs.readFile(statusPath, "utf-8"));
         base = status.baseCommit;
-      } catch {}
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw new Error(`Failed to read legacy workspace baseline from ${statusPath}: ${(error as Error).message}`, { cause: error });
+        }
+      }
     }
+
+    if (!base) throw new Error(`Workspace baseline is unavailable for ${feature}/${step}`);
 
     return this.diffOneRepo(this.getWorktreePath(feature, step, attemptSlot), base);
   }
@@ -1009,14 +1118,34 @@ export class WorktreeService {
     feature: string,
     step: string,
     deleteBranch = false,
-    options: RemoveOptions = {},
+    options: WorktreeRemoveOptions = {},
     attemptSlot?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
-    await this.get(feature, step, attemptSlot);
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
+    const repositories = manifest
+      ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
+      : [this.config.baseDir];
+    return this.withRepositoryLocks(repositories, () => this.removeUnlocked(
+      feature,
+      step,
+      deleteBranch,
+      options,
+      attemptSlot,
+    ));
+  }
+
+  private async removeUnlocked(
+    feature: string,
+    step: string,
+    deleteBranch = false,
+    options: WorktreeRemoveOptions = {},
+    attemptSlot?: string,
+  ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
     const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
       return this.removeComposite(feature, step, manifest, deleteBranch, options, attemptSlot);
     }
+    await this.get(feature, step, attemptSlot);
     return this.removeLegacy(feature, step, deleteBranch, options, attemptSlot);
   }
 
@@ -1024,25 +1153,42 @@ export class WorktreeService {
     feature: string,
     step: string,
     deleteBranch: boolean,
-    options: RemoveOptions = {},
+    options: WorktreeRemoveOptions = {},
     attemptSlot?: string,
+    expectedBranchCommit?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
     const worktreePath = this.getWorktreePath(feature, step, attemptSlot);
     const branchName = this.getLegacyBranchName(feature, step, attemptSlot);
     const git = this.getGit();
 
-    if (deleteBranch) {
-      await this.assertBranchDeletionSafe(git, branchName, options.allowUnmergedCommits === true);
+    let branchPreparationError: string | undefined;
+    let pinnedBranchCommit = expectedBranchCommit;
+    if (deleteBranch && !pinnedBranchCommit) {
+      try {
+        pinnedBranchCommit = await this.prepareBranchDeletion(git, branchName, options.discard === true);
+      } catch (error) {
+        branchPreparationError = (error as Error).message;
+      }
     }
 
     const requested = deleteBranch ? 'worktree+branch' : 'worktree';
+    const worktreeRemoval = await this.removeWorktreeStep(git, worktreePath);
     const outcome = buildCleanupOutcome(requested, {
-      worktreeRemoval: await this.removeWorktreeStep(git, worktreePath),
+      worktreeRemoval,
       prune: await this.pruneWorktreesStep(git),
       branchDeletion: deleteBranch
-        ? await this.deleteBranchStep(git, branchName)
+        ? branchPreparationError
+          ? { status: 'failed', error: branchPreparationError }
+          : cleanupStepDone(worktreeRemoval)
+          ? await this.deleteBranchStep(git, branchName, pinnedBranchCommit)
+          : { status: 'not_attempted' }
         : { status: 'not_requested' },
     });
+    if (cleanupStepDone(outcome.worktreeRemoval)) {
+      await fs.unlink(this.getSingleMetadataPath(feature, step, attemptSlot)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
     return mergeCleanupResult(outcome);
   }
 
@@ -1051,11 +1197,25 @@ export class WorktreeService {
     step: string,
     manifest: WorkspaceManifest,
     deleteBranch: boolean,
-    options: RemoveOptions = {},
+    options: WorktreeRemoveOptions = {},
     attemptSlot?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
     const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
     const reposById = this.trustedRepositoriesForManifest(manifest);
+
+    // A retry may find a repo worktree already removed. Validate every remaining
+    // link before mutating any repository, but do not require the link to exist.
+    for (const [repoId, entry] of Object.entries(manifest.repos)) {
+      const repositoryPath = reposById.get(repoId)!.path;
+      const branchName = this.getRepoBranchName(repoId, feature, step, attemptSlot);
+      if (entry.branch !== branchName) {
+        throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repoId}: manifest branch does not match the canonical task branch`);
+      }
+      const repoWtPath = this.getRepoWorktreePath(feature, step, repoId, attemptSlot);
+      if (await this.isPathAbsent(repoWtPath)) continue;
+      await this.validateExactWorktreeRegistration(repoWtPath, repositoryPath, repoId);
+      await this.validateWorktreeBranch(repoWtPath, branchName, repoId);
+    }
 
     const perRepo: Array<{ repoId: string; cleanup: WorktreeCleanupOutcome }> = [];
     for (const [repoId, entry] of Object.entries(manifest.repos)) {
@@ -1063,7 +1223,7 @@ export class WorktreeService {
       const perRepoResult = await this.removeCompositeRepo(
         feature,
         step,
-        entry,
+        repoId,
         repositoryPath,
         deleteBranch,
         options,
@@ -1074,11 +1234,13 @@ export class WorktreeService {
 
     // Clean up the composite root directory itself
     let rootFailure: { cause: string } | undefined;
-    try {
-      await fs.rm(compositeRoot, { recursive: true, force: true });
-    } catch (error: unknown) {
-      const err = error as { message?: string };
-      rootFailure = { cause: err.message || 'composite root removal failed' };
+    if (perRepo.every(({ cleanup }) => cleanup.outcome === 'complete')) {
+      try {
+        await this.removeEmptyWorkspaceRoot(compositeRoot);
+      } catch (error: unknown) {
+        const err = error as { message?: string };
+        rootFailure = { cause: err.message || 'composite root removal failed' };
+      }
     }
 
     const outcome = combineRepoCleanupOutcomes(
@@ -1089,24 +1251,25 @@ export class WorktreeService {
     return mergeCleanupResult(outcome);
   }
 
-  private async assertBranchDeletionSafe(git: SimpleGit, branchName: string, allowUnmergedCommits: boolean): Promise<void> {
-    if (allowUnmergedCommits) {
-      return;
-    }
-
-    const branches = await git.branch();
-    if (!branches.all.includes(branchName)) {
-      return;
-    }
-
-    const currentBranch = branches.current;
-    if (!currentBranch) {
-      throw new Error(`Refusing to delete branch ${branchName}: current branch could not be determined. Merge with hive_merge, keep the branch, or use an explicit discard path.`);
-    }
-
-    const unmergedCount = Number((await git.raw(['rev-list', '--count', `${currentBranch}..${branchName}`])).trim());
-    if (unmergedCount > 0) {
-      throw new Error(`Refusing to delete branch ${branchName}: ${unmergedCount} unmerged commits would be discarded. Merge with hive_merge, keep the branch, or use an explicit discard path.`);
+  private async prepareBranchDeletion(git: SimpleGit, branchName: string, allowUnmergedCommits: boolean): Promise<string | undefined> {
+    const ref = `refs/heads/${branchName}`;
+    try {
+      const expected = (await git.revparse([ref])).trim();
+      if (!allowUnmergedCommits) {
+        const currentBranch = (await git.branch()).current;
+        if (!currentBranch) {
+          throw new Error(`Refusing to delete branch ${branchName}: current branch could not be determined. Merge first, keep the branch, or use explicit discard.`);
+        }
+        const unmergedCount = Number((await git.raw(['rev-list', '--count', `${currentBranch}..${expected}`])).trim());
+        if (unmergedCount > 0) {
+          throw new Error(`Refusing to delete branch ${branchName}: ${unmergedCount} unmerged commits would be discarded. Merge first, keep the branch, or use explicit discard.`);
+        }
+      }
+      return expected;
+    } catch (error) {
+      const message = (error as Error).message;
+      if (/unknown revision|ambiguous argument|Needed a single revision/.test(message)) return undefined;
+      throw error;
     }
   }
 
@@ -1138,6 +1301,13 @@ export class WorktreeService {
       });
 
       for (const entry of steps) {
+        const entryPath = path.join(featurePath, entry);
+        const entryStat = await fs.lstat(entryPath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        });
+        if (entryStat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${entryPath})`);
+        if (!entryStat?.isDirectory()) continue;
         const { step, attemptSlot } = this.parseWorktreeStepDirectory(entry);
         const info = await this.get(feat, step, attemptSlot);
         if (info) {
@@ -1150,6 +1320,11 @@ export class WorktreeService {
   }
 
   async cleanup(feature?: string): Promise<{ removed: string[]; pruned: boolean }> {
+    const repositories = this.resolveRepositories()?.map((repository) => repository.path) ?? [this.config.baseDir];
+    return this.withRepositoryLocks(repositories, () => this.cleanupUnlocked(feature));
+  }
+
+  private async cleanupUnlocked(feature?: string): Promise<{ removed: string[]; pruned: boolean }> {
     const removed: string[] = [];
 
     const worktreesDir = this.getWorktreesDir();
@@ -1196,8 +1371,8 @@ export class WorktreeService {
             }
           }
           if (stale) {
-            await this.removeComposite(feat, step, manifest, false, {}, attemptSlot);
-            removed.push(worktreePath);
+            const cleanup = await this.removeComposite(feat, step, manifest, false, {}, attemptSlot);
+            if (cleanup.worktreeRemoved && await this.isPathAbsent(worktreePath)) removed.push(worktreePath);
           }
           continue;
         }
@@ -1207,8 +1382,8 @@ export class WorktreeService {
           const worktreeGit = this.getGit(worktreePath);
           await worktreeGit.revparse(["HEAD"]);
         } catch {
-          await this.removeLegacy(feat, step, false, {}, attemptSlot);
-          removed.push(worktreePath);
+          const cleanup = await this.removeLegacy(feat, step, false, {}, attemptSlot);
+          if (cleanup.worktreeRemoved && await this.isPathAbsent(worktreePath)) removed.push(worktreePath);
         }
       }
     }
@@ -1291,6 +1466,33 @@ export class WorktreeService {
     options: MergeOptions = {},
     attemptSlot?: string,
   ): Promise<MergeResult> {
+    try {
+      const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
+      const repositories = manifest
+        ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
+        : [this.config.baseDir];
+      return await this.withRepositoryLocks(repositories, () => this.mergeUnlocked(
+        feature,
+        step,
+        strategy,
+        message,
+        options,
+        attemptSlot,
+      ));
+    } catch (error) {
+      const reasonCode = classifyThrownWorktreeError(error) ?? 'GIT_OPERATION_FAILED';
+      return mergeFailure(strategy, reasonCode, error instanceof Error ? error.message : String(error), { partial: false });
+    }
+  }
+
+  private async mergeUnlocked(
+    feature: string,
+    step: string,
+    strategy: "merge" | "squash" | "rebase",
+    message: string | undefined,
+    options: MergeOptions,
+    attemptSlot?: string,
+  ): Promise<MergeResult> {
     const cleanupMode = options.cleanup ?? 'none';
     const preserveConflicts = options.preserveConflicts ?? false;
 
@@ -1326,6 +1528,7 @@ export class WorktreeService {
       return this.mergeComposite(feature, step, manifest, strategy, message, {
         cleanup: cleanupMode,
         preserveConflicts,
+        sourceCommits: options.sourceCommits,
       }, attemptSlot);
     }
 
@@ -1337,7 +1540,9 @@ export class WorktreeService {
       message,
       preserveConflicts,
       cleanupMode,
-      cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch, { allowUnmergedCommits: true }, attemptSlot),
+      sourceCommit: options.sourceCommit ?? registered.commit,
+      sourceWorktreePath: registered.path,
+      cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch, {}, attemptSlot, options.sourceCommit ?? registered.commit),
     });
     return {
       success: repoResult.success,
@@ -1367,11 +1572,17 @@ export class WorktreeService {
     manifest: WorkspaceManifest,
     strategy: "merge" | "squash" | "rebase",
     message: string | undefined,
-    options: { cleanup: 'none' | 'worktree' | 'worktree+branch'; preserveConflicts: boolean },
+    options: {
+      cleanup: 'none' | 'worktree' | 'worktree+branch';
+      preserveConflicts: boolean;
+      sourceCommits?: Record<string, string>;
+    },
     attemptSlot?: string,
   ): Promise<MergeResult> {
     const repoIds = Object.keys(manifest.repos).sort();
     const trustedById = this.trustedRepositoriesForManifest(manifest);
+    const pinnedSourceCommits: Record<string, string> = {};
+    const expectedTargetCommits: Record<string, string> = {};
 
     const preflightFailure = (repoId: string, reason: string, reasonCode: WorktreeReasonCode): MergeResult =>
       mergeFailure(strategy, reasonCode, `${repoId}: ${reason}`, { partial: false });
@@ -1381,6 +1592,11 @@ export class WorktreeService {
       const entry = manifest.repos[repoId];
       const repoRoot = trustedById.get(repoId)!.path;
       const repoGit = this.getGit(repoRoot);
+      const repoWtPath = path.join(this.getCompositeRoot(feature, step, attemptSlot), entry.path);
+      const expectedBranch = this.getRepoBranchName(repoId, feature, step, attemptSlot);
+      if (entry.branch !== expectedBranch) {
+        return preflightFailure(repoId, 'manifest branch does not match the canonical task branch', 'WORKSPACE_TOPOLOGY_MISMATCH');
+      }
 
       // Branch must exist in the source repo
       try {
@@ -1391,6 +1607,16 @@ export class WorktreeService {
       } catch (e: unknown) {
         const msg = (e as { message?: string }).message ?? 'unable to list branches';
         return preflightFailure(repoId, msg, 'GIT_OPERATION_FAILED');
+      }
+
+      pinnedSourceCommits[repoId] = options.sourceCommits?.[repoId]
+        ?? (await this.getGit(repoWtPath).revparse(['HEAD'])).trim();
+      const sourceBranchHead = (await repoGit.revparse([entry.branch])).trim();
+      if (sourceBranchHead !== pinnedSourceCommits[repoId]) {
+        return preflightFailure(repoId, `source branch moved from pinned commit ${pinnedSourceCommits[repoId]} to ${sourceBranchHead}`, 'GIT_OPERATION_FAILED');
+      }
+      if (!(await this.isGitClean(this.getGit(repoWtPath)))) {
+        return preflightFailure(repoId, 'source worktree has tracked or untracked changes', 'TARGET_DIRTY');
       }
 
       // Source repo target must be clean
@@ -1464,9 +1690,14 @@ export class WorktreeService {
         message,
         preserveConflicts: options.preserveConflicts,
         cleanupMode: 'none', // defer cleanup until after all repos succeed
+        sourceCommit: pinnedSourceCommits[repoId],
+        sourceWorktreePath: path.join(this.getCompositeRoot(feature, step, attemptSlot), entry.path),
         cleanupFn: async () => mergeCleanupResult(noCleanupRequested()),
       });
-      repos[repoId] = repoResult;
+      repos[repoId] = {
+        ...repoResult,
+        operationStatus: repoResult.success ? 'success' : 'failed',
+      };
       if (repoResult.merged) {
         for (const f of repoResult.filesChanged) flattenedFiles.push(`${repoId}:${f}`);
       }
@@ -1478,6 +1709,8 @@ export class WorktreeService {
         lastConflictState = repoResult.conflictState;
         break;
       }
+
+      expectedTargetCommits[repoId] = (await repoGit.revparse(['HEAD'])).trim();
 
       if (!repoResult.merged) {
         if (repoResult.reasonCode === 'NO_TRACKED_CHANGES') {
@@ -1495,6 +1728,12 @@ export class WorktreeService {
     }
 
     if (stoppedRepoId !== undefined) {
+      for (const repoId of repoIds.slice(repoIds.indexOf(stoppedRepoId) + 1)) {
+        repos[repoId] = {
+          ...mergeRepoFailure('GIT_OPERATION_FAILED', `Not attempted after repository ${stoppedRepoId} failed`),
+          operationStatus: 'not_attempted',
+        };
+      }
       // Stop: do not rollback earlier successful repo merges
       const partial = anyActualMerge;
       const stopped = repos[stoppedRepoId];
@@ -1518,29 +1757,52 @@ export class WorktreeService {
     if (options.cleanup !== 'none') {
       const deleteBranch = options.cleanup === 'worktree+branch';
       const perRepo: Array<{ repoId: string; cleanup: WorktreeCleanupOutcome }> = [];
+      let identityFailure: { repoId: string; cause: string } | undefined;
       for (const repoId of repoIds) {
-        const entry = manifest.repos[repoId];
-        const repoRoot = trustedById.get(repoId)!.path;
-        const repoCleanup = await this.removeCompositeRepo(
-          feature,
-          step,
-          entry,
-          repoRoot,
-          deleteBranch,
-          { allowUnmergedCommits: true },
-          attemptSlot,
-        );
+        const repoGit = this.getGit(trustedById.get(repoId)!.path);
+        try {
+          const source = (await repoGit.revparse([manifest.repos[repoId].branch])).trim();
+          const target = (await repoGit.revparse(['HEAD'])).trim();
+          if (source !== pinnedSourceCommits[repoId] || target !== expectedTargetCommits[repoId]) {
+            identityFailure = { repoId, cause: `source or target moved before cleanup (source ${source}, target ${target})` };
+            break;
+          }
+        } catch (error) {
+          identityFailure = { repoId, cause: `source or target could not be read before cleanup: ${(error as Error).message}` };
+          break;
+        }
+      }
+      for (const repoId of repoIds) {
+        const repoCleanup = identityFailure
+          ? buildCleanupOutcome(options.cleanup, {
+            worktreeRemoval: { status: 'not_attempted' },
+            branchDeletion: deleteBranch ? { status: 'not_attempted' } : { status: 'not_requested' },
+            prune: { status: 'not_attempted' },
+            failures: [{ step: 'identity-recheck', repoId: identityFailure.repoId, cause: identityFailure.cause }],
+          })
+          : await this.removeCompositeRepo(
+            feature,
+            step,
+            repoId,
+            trustedById.get(repoId)!.path,
+            deleteBranch,
+            {},
+            attemptSlot,
+            pinnedSourceCommits[repoId],
+          );
         repos[repoId].cleanup = toMergeCleanupBlock(repoCleanup);
         perRepo.push({ repoId, cleanup: repoCleanup });
       }
       // Tear down the composite root after per-repo cleanup.
       const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
       let rootFailure: { cause: string } | undefined;
-      try {
-        await fs.rm(compositeRoot, { recursive: true, force: true });
-      } catch (error: unknown) {
-        const err = error as { message?: string };
-        rootFailure = { cause: err.message || 'composite root removal failed' };
+      if (!identityFailure && perRepo.every(({ cleanup }) => cleanup.outcome === 'complete')) {
+        try {
+          await this.removeEmptyWorkspaceRoot(compositeRoot);
+        } catch (error: unknown) {
+          const err = error as { message?: string };
+          rootFailure = { cause: err.message || 'composite root removal failed' };
+        }
       }
       cleanup = combineRepoCleanupOutcomes(options.cleanup, perRepo, rootFailure);
     }
@@ -1615,25 +1877,36 @@ export class WorktreeService {
   private async removeCompositeRepo(
     feature: string,
     step: string,
-    entry: WorkspaceManifestEntry,
+    repoId: string,
     repositoryPath: string,
     deleteBranch: boolean,
-    options: RemoveOptions = {},
+    options: WorktreeRemoveOptions = {},
     attemptSlot?: string,
+    expectedBranchCommit?: string,
   ): Promise<WorktreeCleanupOutcome> {
-    const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
-    const repoWtPath = path.join(compositeRoot, entry.path);
+    const repoWtPath = this.getRepoWorktreePath(feature, step, repoId, attemptSlot);
     const repoGit = this.getGit(repositoryPath);
+    const branchName = this.getRepoBranchName(repoId, feature, step, attemptSlot);
 
-    if (deleteBranch) {
-      await this.assertBranchDeletionSafe(repoGit, entry.branch, options.allowUnmergedCommits === true);
+    let branchPreparationError: string | undefined;
+    let pinnedBranchCommit = expectedBranchCommit;
+    if (deleteBranch && !pinnedBranchCommit) {
+      try {
+        pinnedBranchCommit = await this.prepareBranchDeletion(repoGit, branchName, options.discard === true);
+      } catch (error) {
+        branchPreparationError = (error as Error).message;
+      }
     }
-
+    const worktreeRemoval = await this.removeWorktreeStep(repoGit, repoWtPath);
     return buildCleanupOutcome(deleteBranch ? 'worktree+branch' : 'worktree', {
-      worktreeRemoval: await this.removeWorktreeStep(repoGit, repoWtPath),
+      worktreeRemoval,
       prune: await this.pruneWorktreesStep(repoGit),
       branchDeletion: deleteBranch
-        ? await this.deleteBranchStep(repoGit, entry.branch)
+        ? branchPreparationError
+          ? { status: 'failed', error: branchPreparationError }
+          : cleanupStepDone(worktreeRemoval)
+          ? await this.deleteBranchStep(repoGit, branchName, pinnedBranchCommit)
+          : { status: 'not_attempted' }
         : { status: 'not_requested' },
     });
   }
@@ -1651,18 +1924,17 @@ export class WorktreeService {
 
     let gitError: string | undefined;
     try {
-      await git.raw(['worktree', 'remove', worktreePath, '--force']);
-      return { status: 'succeeded' };
-    } catch (error: unknown) {
-      gitError = (error as { message?: string }).message;
-    }
-    try {
-      await fs.rm(worktreePath, { recursive: true, force: true });
+      // Git's normal non-force removal ignores ignored-only generated content,
+      // while still refusing modified or untracked user data.
+      if (!(await this.isGitClean(this.getGit(worktreePath)))) {
+        return { status: 'failed', error: `Refusing to remove dirty worktree ${worktreePath}` };
+      }
+      await git.raw(['worktree', 'remove', worktreePath]);
       return { status: 'succeeded' };
     } catch (error: unknown) {
       const err = error as { message?: string };
-      const cause = err.message || 'worktree removal failed';
-      return { status: 'failed', error: gitError ? `${cause} (git: ${gitError})` : cause };
+      gitError = err.message || 'worktree removal failed';
+      return { status: 'failed', error: gitError };
     }
   }
 
@@ -1680,17 +1952,27 @@ export class WorktreeService {
    * Delete one branch. Reports already_absent when the branch is already gone
    * so a partially repeated cleanup still describes reality.
    */
-  private async deleteBranchStep(git: SimpleGit, branchName: string): Promise<CleanupStepOutcome> {
-    const present = await git.branch()
-      .then((branches) => branches.all.includes(branchName))
-      .catch(() => true);
-    if (!present) return { status: 'already_absent' };
+  private async deleteBranchStep(git: SimpleGit, branchName: string, expectedOldOid?: string): Promise<CleanupStepOutcome> {
+    if (!expectedOldOid) return { status: 'already_absent' };
     try {
-      await git.deleteLocalBranch(branchName, true);
+      const checkedOut = (await git.raw(['worktree', 'list', '--porcelain']))
+        .split('\n')
+        .some((line) => line === `branch refs/heads/${branchName}`);
+      if (checkedOut) return { status: 'failed', error: `Refusing to delete checked-out branch ${branchName}` };
+      await git.raw(['update-ref', '-d', `refs/heads/${branchName}`, expectedOldOid]);
       return { status: 'succeeded' };
     } catch (error: unknown) {
-      const err = error as { message?: string };
-      return { status: 'failed', error: err.message || 'branch deletion failed' };
+      return { status: 'failed', error: (error as Error).message || 'branch compare-and-delete failed' };
+    }
+  }
+
+  private async isPathAbsent(targetPath: string): Promise<boolean> {
+    try {
+      await fs.lstat(targetPath);
+      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      throw error;
     }
   }
 
@@ -1701,9 +1983,11 @@ export class WorktreeService {
     message: string | undefined;
     preserveConflicts: boolean;
     cleanupMode: 'none' | 'worktree' | 'worktree+branch';
+    sourceCommit: string;
+    sourceWorktreePath: string;
     cleanupFn: (deleteBranch: boolean) => Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }>;
   }): Promise<RepoMergeResult> {
-    const { git, branchName, strategy, message, preserveConflicts, cleanupMode, cleanupFn } = opts;
+    const { git, branchName, strategy, message, preserveConflicts, cleanupMode, cleanupFn, sourceCommit, sourceWorktreePath } = opts;
 
     let startingHead: string | undefined;
     // Set immediately before a requested cleanup call in each success path to
@@ -1712,6 +1996,22 @@ export class WorktreeService {
     // not be rolled back.
     let cleanupFailureMutation: WorktreeMutationState | undefined;
     let verificationFailure = false;
+    const cleanupWithIdentityRecheck = async (expectedTarget: string): Promise<WorktreeCleanupOutcome> => {
+      if (cleanupMode === 'none') return noCleanupRequested();
+      let identityMatches = false;
+      try {
+        const currentTarget = (await git.revparse(['HEAD'])).trim();
+        const currentSource = (await git.revparse([branchName])).trim();
+        identityMatches = currentTarget === expectedTarget && currentSource === sourceCommit;
+      } catch {}
+      if (identityMatches) return (await cleanupFn(cleanupMode === 'worktree+branch')).cleanup;
+      return buildCleanupOutcome(cleanupMode, {
+        worktreeRemoval: { status: 'not_attempted' },
+        branchDeletion: { status: 'not_attempted' },
+        prune: { status: 'not_attempted' },
+        failures: [{ step: 'identity-recheck', cause: 'Source or target moved or could not be read after integration; cleanup was skipped' }],
+      });
+    };
 
     try {
       const branches = await git.branch();
@@ -1720,6 +2020,13 @@ export class WorktreeService {
       }
 
       const currentBranch = branches.current;
+      const actualSourceCommit = (await git.revparse([branchName])).trim();
+      if (actualSourceCommit !== sourceCommit) {
+        return mergeRepoFailure('GIT_OPERATION_FAILED', `Source ${branchName} moved from pinned commit ${sourceCommit} to ${actualSourceCommit}`);
+      }
+      if (!(await this.isGitClean(this.getGit(sourceWorktreePath)))) {
+        return mergeRepoFailure('TARGET_DIRTY', `Source worktree ${sourceWorktreePath} has tracked or untracked changes`);
+      }
 
       const repoRoot = (await git.raw(['rev-parse', '--show-toplevel'])).trim();
       const stateChecks: Array<{ name: string; label: string }> = [
@@ -1748,16 +2055,14 @@ export class WorktreeService {
       // Endpoint comparison only decides whether there is anything to
       // integrate. It is not the reported delta: it can include files that
       // only the target changed after the source branch forked.
-      const candidateFiles = (await git.diff([startingHead, branchName, '--name-only']))
+      const candidateFiles = (await git.diff([startingHead, sourceCommit, '--name-only']))
         .split('\n')
         .map(l => l.trim())
         .filter(Boolean);
 
       if (candidateFiles.length === 0) {
         cleanupFailureMutation = 'none';
-        const cleanup = cleanupMode === 'none'
-          ? noCleanupRequested()
-          : (await cleanupFn(cleanupMode === 'worktree+branch')).cleanup;
+        const cleanup = await cleanupWithIdentityRecheck(startingHead);
         return {
           success: true,
           merged: false,
@@ -1790,7 +2095,7 @@ export class WorktreeService {
         }
       }
       if (strategy !== 'squash') {
-        const sourceError = await this.validateSourceCommitMessages(git, currentBranch, branchName);
+        const sourceError = await this.validateSourceCommitMessages(git, currentBranch, sourceCommit);
         if (sourceError) return mergeRepoFailure('INVALID_COMMIT_MESSAGE', sourceError);
       }
 
@@ -1798,7 +2103,7 @@ export class WorktreeService {
       let conflicts: string[] = [];
       let createdCommitMessage: string | undefined;
       if (strategy === 'squash') {
-        await git.raw(['merge', '--squash', branchName]);
+        await git.raw(['merge', '--squash', sourceCommit]);
         await git.commit(commitMessage!);
         finalHead = (await git.revparse(['HEAD'])).trim();
         if (finalHead === startingHead) throw new Error('Failed to create squash commit');
@@ -1809,7 +2114,7 @@ export class WorktreeService {
           throw verificationError;
         }
       } else if (strategy === 'rebase') {
-        const sourceHashesOutput = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${branchName}`])).trim();
+        const sourceHashesOutput = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${sourceCommit}`])).trim();
         const sourceHashes = sourceHashesOutput ? sourceHashesOutput.split('\n').filter(Boolean) : [];
         for (const hash of sourceHashes) {
           await git.raw(['cherry-pick', hash]);
@@ -1823,7 +2128,7 @@ export class WorktreeService {
         }
         finalHead = (await git.revparse(['HEAD'])).trim();
       } else {
-        const result = await git.merge([branchName, '--no-ff', '-m', commitMessage!]);
+        const result = await git.merge([sourceCommit, '--no-ff', '-m', commitMessage!]);
         finalHead = (await git.revparse(['HEAD'])).trim();
         if (result.failed || finalHead === startingHead) throw new Error('Failed to create merge commit');
         try {
@@ -1839,9 +2144,7 @@ export class WorktreeService {
       // leaves the target at its starting commit and is a successful no-op.
       if (finalHead === startingHead) {
         cleanupFailureMutation = 'none';
-        const cleanup = cleanupMode === 'none'
-          ? noCleanupRequested()
-          : (await cleanupFn(cleanupMode === 'worktree+branch')).cleanup;
+        const cleanup = await cleanupWithIdentityRecheck(startingHead);
         return {
           success: true,
           merged: false,
@@ -1859,9 +2162,7 @@ export class WorktreeService {
 
       const observedFiles = await this.observedDeltaFiles(git, startingHead, finalHead);
       cleanupFailureMutation = 'applied';
-      const cleanup = cleanupMode === 'none'
-        ? noCleanupRequested()
-        : (await cleanupFn(cleanupMode === 'worktree+branch')).cleanup;
+      const cleanup = await cleanupWithIdentityRecheck(finalHead);
       return {
         success: true,
         merged: true,
@@ -1888,21 +2189,33 @@ export class WorktreeService {
       const preserveConflictState = isConflict && preserveConflicts;
       let rollbackError: string | undefined;
 
-      if (!preserveConflictState && startingHead) {
+      if (!preserveConflictState && startingHead && isConflict) {
         if (strategy === 'merge') {
           await git.raw(['merge', '--abort']).catch(() => {});
         } else if (strategy === 'rebase') {
           await git.raw(['cherry-pick', '--abort']).catch(() => {});
         }
-        try {
-          await git.raw(['reset', '--hard', startingHead]);
-        } catch (restoreError: unknown) {
-          rollbackError = (restoreError as { message?: string }).message ?? 'reset failed';
+        await git.raw(['reset', '--merge', startingHead]).catch((error: unknown) => {
+          rollbackError = (error as { message?: string }).message ?? 'reset --merge failed';
+        });
+        const restoredHead = (await git.revparse(['HEAD']).catch(() => '')).trim();
+        if (restoredHead !== startingHead) rollbackError = 'Git abort did not restore the original target HEAD';
+      } else if (!preserveConflictState && startingHead) {
+        await git.raw(['reset', '--merge', startingHead]).catch((error: unknown) => {
+          rollbackError = (error as { message?: string }).message ?? 'reset --merge failed';
+        });
+      }
+
+      if (!preserveConflictState && startingHead && !rollbackError) {
+        const repoRoot = (await git.raw(['rev-parse', '--show-toplevel']).catch(() => '')).trim();
+        const activeStates: string[] = [];
+        for (const name of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'rebase-merge', 'rebase-apply']) {
+          const statePath = await this.resolveGitPath(git, repoRoot, name);
+          if (await fs.access(statePath).then(() => true).catch(() => false)) activeStates.push(name);
         }
-        try {
-          await git.raw(['clean', '-fd']);
-        } catch (cleanError: unknown) {
-          rollbackError ??= (cleanError as { message?: string }).message ?? 'clean failed';
+        const remainingConflicts = await this.getActiveConflictFiles(git);
+        if (activeStates.length > 0 || remainingConflicts.length > 0) {
+          rollbackError = `Git operation remains active after abort/reset${activeStates.length > 0 ? `: ${activeStates.join(', ')}` : ''}`;
         }
       }
 
