@@ -1,5 +1,9 @@
 # Releasing Arkive Packages
 
+## Upgrade note
+
+Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.
+
 This fork's release workflow builds the shared `hive-core` package, builds and tests `packages/opencode-hive` and `packages/vscode-hive`, publishes `oc-arkive` to npm, attaches `vscode-arkive.vsix` to the GitHub Release, and creates the GitHub Release from the matching release note file.
 
 The `Release` workflow publishes only on tags matching `v*`. Manual `workflow_dispatch` runs default to `rehearse`: they build and test the candidate without publishing to npm or creating a GitHub Release. Recovery mode is only for existing `vX.Y.Z` tags and reuses that tagged commit.

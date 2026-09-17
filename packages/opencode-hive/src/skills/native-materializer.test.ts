@@ -219,7 +219,7 @@ description: Parsed description
     expect(parsed!.description.startsWith('Use when ')).toBe(true);
     expect(parsed!.description).toContain('Agent Hive');
     expect(parsed!.content).toContain('untrusted knowledge');
-    expect(parsed!.content).toContain('Exact-worktree registration');
+    expect(parsed!.content).toContain('Foragers and reviewers write feature and project context through that hash check');
   });
 });
 

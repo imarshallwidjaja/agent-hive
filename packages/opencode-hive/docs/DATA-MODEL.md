@@ -6,8 +6,7 @@
 .hive/
 ├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
 ├── sessions.json              # Optional top-level session index (when used)
-├── execution-attempts.json    # ExecutionAttempt history (dispatch/recovery; not liveness proof)
-├── background-jobs.json       # Background board (observational bookkeeping, not an ownership registry)
+├── background-jobs.json       # Background board (observational bookkeeping)
 ├── context/                    # Project-wide managed knowledge
 │   ├── index.json              # Schema-v1 operational index
 │   └── {name}.md               # Raw Markdown with discovery frontmatter
@@ -30,17 +29,12 @@
             └── {NN-task-name}/
                 ├── status.json  # Task state + metadata
                 ├── spec.md      # Task context and requirements
-                ├── report.md    # Latest report plus immutable-history link
-                └── reports/
-                    └── finalization-{operationId}.md # Immutable receipt
-
-.hive/execution-reports/
-    └── finalization-{operationId}.md # Ad-hoc immutable receipt
+                └── reports/     # Numeric report history; latest is also on status.json
 
 .hive/.worktrees/              # Isolated git worktrees
     ├── {feature}/{task}/       # Task-backed: full repo copy for safe execution
     └── adhoc/
-        └── {runId}/            # Ad-hoc: isolated orchestration worktree
+        └── {runId}/            # Ad-hoc: temporary workspace metadata only
                                 #   No feature/task records, not in hive_status
                                 #   Composite: adhoc/{runId}/repos/{repoId}/
 ```
@@ -49,23 +43,17 @@ Runtime Agent Hive configuration is **not** stored under `.hive/`. It lives only
 
 Single-repo projects use the git root directly; multi-repo topology, when needed, is stored in this manifest.
 
-## Execution attempts and live claims
+## Execution records
 
-`.hive/execution-attempts.json` stores **ExecutionAttempt** history. An ExecutionAttempt is the dispatch and recovery record for a managed feature-task or ad-hoc launch. Its lifecycle is `armed` -> `attached` -> `stopped` -> `finalized`. A record holds the attempt id, task or ad-hoc run identity, originating primary session, discriminated `worktree | in_place` placement, exact workspace identity for worktree claims, branch and base commit where applicable, parent/call/child identities, stop evidence, and finalization receipts.
+Task status and reports are the execution record. There is no attempt ledger. Old `execution-attempts.json` and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.
 
-A **live claim** maps exact worktree identity to the active attempt ID. In-place placement creates no exclusive filesystem claim. Composite claims cover the explicit registered worktree set. Two executions conflict when those identity sets intersect. One exact registered worktree may have only one managed writer at a time.
+`.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution.
 
-Persisted history is not proof that an execution is still alive. After restart, unattached arms close as `not_started` because no native call could have crossed the durable attachment boundary; attached attempts remain quarantined until exact stop evidence arrives. Migrated dispatched attempts are attached with `background: 'unknown'` unless one exact board record correlates the parent session, native call, and native task identity and therefore proves `background: true`. Board records never prove blocking mode; unmatched migrated attempts remain unknown. Unknown mode accepts only exact structured background terminal evidence. Unrelated worktrees may proceed. Uncertain workspaces are preserved; they are not reset, copied, or deleted to recover.
-
-A feature-task worktree remains quarantined through `stopped` until the originating primary finalizes it. An unobserved feature-task execution cannot be moved to an alternate placement or force-discarded. For ad-hoc work, retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree.
-
-`.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It is not an ownership registry. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace.
-
-One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory` on `.hive/execution-attempts.json`. Exact worktree-path, non-placeholder, non-capability leases become unobserved attached ExecutionAttempt claims once. Migrated dispatched attempts and unmatched migrated leases stay `background: 'unknown'` unless one exact board record correlates the parent session, native call, and native task identity and therefore proves `background: true`. Board records never prove blocking mode; unmatched migrated attempts remain unknown. This is not an ongoing second admission API. After migration, `sessions.json` does not keep `nativeTaskLeases` as a live sibling.
+Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
 
 ## Prompt Files
 
-`hive_execution_prepare` records scope and placement and returns lifecycle facts only. The primary authors the native Forager prompt. The native before-hook appends authenticated execution scope and the dispatch-time standing-constraint snapshot to the caller-authored prompt without replacing it. Standing constraints are operator directives, not tool permissions.
+The primary authors the native Forager prompt. The runtime appends concise project, feature, and session constraints without replacing caller prompt bytes. Standing constraints are operator directives, not tool permissions.
 
 ## Reserved Overview Convention
 
@@ -141,11 +129,13 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 | `origin` | string | `"plan"` (from plan.md) or `"manual"` (manually created) |
 | `planTitle` | string? | Task title from plan.md |
 | `summary` | string? | Execution summary |
+| `report` | string? | Latest report string |
+| `reports` | string[]? | Numeric report history |
 | `startedAt` | string? | ISO timestamp when task started |
 | `completedAt` | string? | ISO timestamp when task completed |
 | `baseCommit` | string? | Git commit hash at task start |
 | `subtasks` | object[]? | Optional nested subtask state when a task is decomposed during execution. |
-| `workerAttempt` | number? | Monotonic task generation used for stale-attempt compare-and-swap during finalization. Native worker identity lives only on the current `ExecutionAttempt`. |
+| `workerAttempt` | number? | Optional generation counter for the current worker pass. |
 | `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). A task is runnable only when every dependency is `done`. Plan tasks resolve this from `plan.md` `Depends on:` annotations during `hive_tasks_sync`; manual tasks persist an explicit array and default to `[]`. |
 | `metadata` | object? | Structured manual-task metadata used to generate `spec.md`. Omitted for normal plan-backed tasks. |
 
@@ -194,7 +184,7 @@ hive_tasks_sync({ refreshPending: true })
 - Deletes pending plan-backed tasks removed from `plan.md`
 - Preserves manual tasks and any task with execution history (`in_progress`, `done`, `blocked`, `failed`, `partial`)
 
-Ad-hoc orchestration uses `hive_execution_prepare` and `hive_execution_finish`, followed by `hive_adhoc_merge` and `hive_adhoc_cleanup` for Git worktree placement. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
+Ad-hoc orchestration uses `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup` for Git worktree placement. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
 
 For the issue-72 `3b` / `3c` scenario, treat `helperStatus` and live worktree/task state as the bounded truth surface: ask for a locally testable state or interrupted-state wrap-up summary first, create a safe manual follow-up only when it can append after the approved DAG, and amend `plan.md` instead of inventing intermediate numbering.
 
@@ -239,8 +229,10 @@ Each entry in `tasks.list` includes:
 - `summary` (string | null)
 - `dependsOn` (string[] | null, raw dependency metadata from `status.json`)
 - `blocker` (`TaskBlocker`, optional and present only while `status` is `blocked`)
+- `report` (string | null, latest report)
+- `reports` (numeric history of report strings)
 
-`TaskBlocker` contains a required nonblank `reason` and optional `options`, `recommendation`, and `context`. Blocked continuation requires this value to match the current finalized blocked execution receipt exactly. Every non-blocked transition and every new attempt allocation removes it.
+`TaskBlocker` contains a required nonblank `reason` and optional `options`, `recommendation`, and `context`. An explicit status leaving blocked clears the blocker.
 
 ### Runnable and Blocked
 
@@ -343,16 +335,10 @@ Canonical session bindings live in project `.hive/sessions.json`. Feature-local 
 
 `standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
 
-Task `status.json` records the current worker generation and finalized disposition from `hive_execution_finish`. `ExecutionAttempt.native` is the sole managed execution authority. Stale generated-assignment keys in older JSON are ignored rather than interpreted as authority.
+Task `status.json` records status, summary, blocker, and report history from `hive_task_update`. Stale generated-assignment keys in older JSON are ignored.
 
-Every catalog delivery and compaction replay revalidates the current runtime root and authenticated session/execution identity. Root relocation or an exact identity mismatch fails explicitly. Recovery creates a fresh attempt and child at the newly trusted root; it never edits old session or execution records in place.
+`standingConstraintEntries` may be session-scoped or feature-scoped. Inherited session and feature labels travel with the child captured at dispatch.
 
-Once an ad-hoc run or execution workspace is bound, ordinary session patches cannot change its root, task, feature, parent, or agent classification. Dispatch and compaction use the authenticated `ExecutionAttempt` scope. Agent-supplied metadata is never authoritative execution identity. Do not treat placeholders such as `forager-child` as live owners, and do not treat a `ses_` prefix as identity validation.
+## Compatibility
 
-One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, and stores them as `nativeTaskLeaseHistory`. Exact worktree-path, non-placeholder, non-capability leases become unobserved attached ExecutionAttempt claims once with fail-closed `background: 'unknown'` unless exact board evidence classifies the launch. This is not an ongoing second admission API. Live claims live with ExecutionAttempt records, not with a lease array on `sessions.json`.
-
-## Migration from Legacy
-
-Previous versions used `execution/` directory with step-based JSON files.
-Current version uses `tasks/` with folder-per-task structure containing
-`status.json`, `spec.md`, and `report.md`.
+Old attempt and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable. There is no user-facing migration ceremony.

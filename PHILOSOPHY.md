@@ -30,7 +30,7 @@ Aligned with the project agent guidelines:
 | Operator | Approves plans, answers blockers, accepts merges and risk |
 | Planner / hybrid primary | Discovers requirements, writes `plan.md`, does not silently skip approval |
 | Orchestrator / hybrid primary | Syncs tasks, launches workers, merges, tracks status |
-| Worker | Implements one task in its prepared worktree or explicit in-place directory against `spec.md` and the primary-authored native prompt |
+| Worker | Implements one task in its assigned worktree or explicit in-place directory against `spec.md` and the primary-authored native prompt |
 | Researchers and reviewers | Read-only or bounded review seats; they do not own the feature lifecycle |
 | `.hive/` | Shared durable state: plans, tasks, reports, session recovery metadata |
 

@@ -9,32 +9,25 @@ description: "Agent Hive workflow skill for coordinating independent Hive subage
 
 When you have multiple unrelated failures (different test files, different subsystems, different bugs), investigating them sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Dispatch one fresh subagent session per independent primary goal. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
+**Core principle:** Dispatch one independent primary goal per native `task()` launch. Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
 
 ### Worktree Concurrency & Sequencing
 - **One writer per worktree:** A single worktree has exactly one active writer at a time.
 - **Parallel writes across worktrees:** You can dispatch writing workers in parallel ONLY if each worker runs in its own distinct worktree (distinct feature tasks or distinct ad-hoc `runId`s).
-- **Sequential passes within a worktree:** If multiple tasks or bug fixes target the SAME worktree, sequence them: `prepare` -> `dispatch the unchanged native call` -> `wait for completion` -> `hive_execution_finish` -> `prepare again`.
+- **Sequential passes within a worktree:** If multiple tasks or bug fixes target the SAME worktree, sequence them: create or reuse the worktree -> dispatch the native call -> wait for completion -> record status -> next pass.
 - **Read-only fan-out:** Scouts and reviewers do not write code and can run concurrently anywhere.
 
 When `## Background-First Orchestration` is present, load `background-delegation` for scheduler and wait-mode decisions. This skill covers task independence, scope, and prompt quality; the background skill governs whether each independent lane runs blocking or background.
 
 ## Workflow Mode
 
-In feature-task mode, use the prerequisites below. In Hive Builder or unified Hive ad-hoc mode, load `orchestrating-ad-hoc-work`; that skill owns decomposition, the lane inventory, dependency waves, resource ownership, and integration order. This skill retains only common fan-out mechanics, the fresh-session contract, and one-writer/worktree rules.
+In feature-task mode, use the prerequisites below. In Hive Builder or unified Hive ad-hoc mode, load `orchestrating-ad-hoc-work`; that skill owns decomposition, the lane inventory, dependency waves, resource ownership, and integration order. This skill retains only common fan-out mechanics, the one-goal contract, and one-writer/worktree rules.
 
-## Feature-Task Prerequisite: Check Runnable Tasks
+## Feature-Task Sequencing
 
-In feature-task mode, before dispatching, use `hive_status()` to get the **runnable** list — tasks whose dependencies are all satisfied.
+In feature-task mode, use `hive_status()` to see dependencies and the runnable list. Dependencies guide sequencing; they are not a dispatch admission gate. Structural missing refs and cycles remain invalid.
 
-**Only dispatch tasks that are runnable.** Never start tasks with unmet dependencies.
-
-Only `done` satisfies dependencies (not `blocked`, `failed`, `partial`, `cancelled`).
-
-**Feature-task operator choice:**
-- Use `question()`: "These tasks are runnable and independent: [list]. Execute in parallel?"
-- Record the decision with `hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })`
-- Proceed only after operator approval
+When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees. Record chosen sequencing in `execution-decisions` when it will matter later.
 
 ## When to Use
 
@@ -88,31 +81,31 @@ Each agent gets:
 - **Constraints:** Don't change other code
 - **Expected output:** Summary of what you found and fixed
 
-Each native `task()` launch has one primary goal and one terminal handoff. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body. Never pass `task_id` to `task()` or send a follow-up prompt to a completed, failed, or blocked session. Returned task IDs are observe-only board handles for status, reconcile, and cancel.
+Each native `task()` launch has one primary goal and one terminal handoff. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body. Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Returned task IDs are also observe-only board handles for status, reconcile, and cancel.
 
 In feature-task mode, one implementation assignment normally maps to one numbered task; an independently verifiable new deliverable requires a DAG amendment or append-only manual task. In ad-hoc mode, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
 ### 3. Dispatch in Parallel
 
-The example below is feature-task mode. In ad-hoc mode, consume the ready wave and prepared runs from `orchestrating-ad-hoc-work`.
+The example below is feature-task mode. In ad-hoc mode, consume the ready wave from `orchestrating-ad-hoc-work`.
 
 ```typescript
 // Gate-open only: use background: true when independent foreground work can continue.
-hive_execution_prepare({ scope: { kind: "task", task: "01-fix-abort-tests" }, placement: { kind: "worktree" } })
+hive_worktree_create({ task: "01-fix-abort-tests" })
 task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Fix abort tests", background: true })
-hive_execution_prepare({ scope: { kind: "task", task: "02-fix-batch-tests" }, placement: { kind: "worktree" } })
+hive_worktree_create({ task: "02-fix-batch-tests" })
 task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Fix batch tests", background: true })
 
 // Blocking alternative, including every gate-closed session:
-hive_execution_prepare({ scope: { kind: "task", task: "03-fix-cleanup-tests" }, placement: { kind: "worktree" } })
+hive_worktree_create({ task: "03-fix-cleanup-tests" })
 await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Fix cleanup tests" })
 ```
 
-Independent Forager worktrees may be prepared and dispatched under one parent. Call `hive_execution_prepare` with the exact task or ad-hoc scope and placement, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Two executions conflict when their exact worktree identity sets intersect. A live claim blocks conflicting preparation, dispatch, and lifecycle mutation of that worktree identity. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch and do not require an armed execution.
+Independent Forager worktrees may be created and dispatched under one parent. Call `hive_worktree_create` or `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
 
-Use Forager-derived workers for delegated execution. A rare native `general` exception is an ordinary `task()` call: it consumes no arm and gains no Hive claim, managed context, or lifecycle authority. General receives ordinary tools only, no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Helper and general calls use a runtime-local parent/call/child bind for Hive-tool authentication; they do not take a live claim on a worktree or the project root. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Managed placement is a registered worktree or an explicit in-place directory. Only worktrees provide isolation and Git integration; in-place work is cooperative and has no exclusion, commit, merge, cleanup, or rollback. Direct checkout work is unmanaged OpenCode work, not a Hive placement.
+Use Forager-derived workers for delegated execution. A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
 
-Recover native binding from exact parent/call metadata only; never guess the latest child or infer ownership from prose. Preserve the workspace while a writer may still be live, and never copy its mutable progress. A worktree claim remains held through `stopped` until `hive_execution_finish` reaches `finalized`. Attached or uncertain feature-task scopes remain quarantined until authenticated stop evidence and primary finalization. Do not invent an alternate feature-task placement while the prior writer may still be live. For ad-hoc work, retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree without copying mutable progress from the uncertain run. Archive, restart, and preparation expiry do not release uncertain execution. See `background-delegation` for board recovery.
+See `background-delegation` for board recovery.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
 
 ```typescript
@@ -127,8 +120,8 @@ Choose the best-fit available descriptor for the requested output. Scout is for 
 When agents return:
 - Read each summary
 - Verify fixes don't conflict
-- In feature-task mode, follow the feature workflow's verification and `hive_merge` lifecycle.
-- In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`, which owns review gates, primary-only `hive_execution_finish`, deterministic integration, full integrated-batch verification, and `hive_adhoc_merge`.
+- In feature-task mode, follow the feature workflow's verification and `hive_worktree_merge` lifecycle.
+- In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`, which owns review gates, deterministic integration, full integrated-batch verification, and `hive_adhoc_worktree_merge`.
 
 ## Agent Prompt Structure
 

@@ -27,7 +27,7 @@ Review -> `plan-reviewer` / `code-reviewer` / `approach-advisor`
 | `swarm-orchestrator` | Dedicated primary | Orchestration |
 | `hive-builder` | Primary in both modes | Ad-hoc orchestration |
 | `scout-researcher` | Subagent in both modes | Exploration, research, and retrieval |
-| `forager-worker` | Subagent in both modes | Executes tasks in the placement selected by `hive_execution_prepare` |
+| `forager-worker` | Subagent in both modes | Executes tasks in the chosen workspace |
 | `hive-helper` | Subagent in both modes | Bounded merge recovery, state clarification, and safe manual follow-up |
 | `plan-reviewer` | Subagent in both modes | Plan readiness review |
 | `code-reviewer` | Subagent in both modes | Implementation review against plan |
@@ -256,13 +256,13 @@ hive_tasks_sync()
 
 Choose the placement before dispatch:
 
-- `worktree` uses an exact registered Git worktree identity. After stop evidence, `hive_execution_finish` may commit changes; `hive_merge` integrates the finalized task.
-- `in_place` uses one resolved absolute existing directory. It is cooperative live editing with no Hive filesystem exclusion, Git isolation, rollback, commit, merge, or cleanup.
+- A Git worktree uses `hive_worktree_create`. After the worker returns, `hive_task_update` records status; `hive_worktree_merge` integrates the branch.
+- In-place work edits a live directory. It has no Hive filesystem exclusion, Git isolation, rollback, commit, merge, or cleanup.
 
 Worktree flow:
 
 ```
-hive_execution_prepare({ scope: { kind: "task", task: "01-task-name" }, placement: { kind: "worktree" } })
+hive_worktree_create({ task: "01-task-name" })
 task({
   subagent_type: "forager-worker",
   description: "Implement 01-task-name",
@@ -271,15 +271,14 @@ task({
   ↓
 [Worker implements in worktree and returns one terminal handoff]
   ↓
-hive_execution_finish({ attemptId, status: "completed", summary, message })
+hive_task_update({ task: "01-task-name", status: "done", summary, report })
   ↓
-hive_merge({ task: "01-task-name", strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
+hive_worktree_merge({ task: "01-task-name", strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
 ```
 
 In-place flow:
 
 ```
-hive_execution_prepare({ scope: { kind: "task", task: "01-task-name" }, placement: { kind: "in_place", directory: "/absolute/existing/directory" } })
 task({
   subagent_type: "forager-worker",
   description: "Implement 01-task-name",
@@ -288,38 +287,24 @@ task({
   ↓
 [Worker edits the live directory and returns one terminal handoff]
   ↓
-hive_execution_finish({ attemptId, status: "completed", summary })
+hive_task_update({ task: "01-task-name", status: "done", summary, report })
   ↓
 [Primary verifies the live target; no Hive merge or cleanup]
 hive_status()
 ```
 
-After exact native stop evidence, call `hive_execution_finish` before `hive_status()` or any continuation. Failed or partial recovery without exact stop evidence must trace or wait and keep the placement quarantined; do not finish or prepare a retry. Only a stopped attempt may be finalized. If blocked disposition is visible before execution finalization completes, retry the identical finish input before asking for a decision. Blocked continuation requires the current finalized blocked receipt, task generation, and persisted `hive_status` blocker to match exactly; legacy or inconsistent state requires out-of-band repair or retirement. Never reconstruct blocker details from worker prose or task traces. Blocked task continuation must reuse the prior finalized placement: exact registered worktree identities for `worktree`, or the exact resolved directory for `in_place`. Only finalized worktree attempts can be merged or cleaned up. Before switching an ad-hoc `runId` from worktree to in-place placement, merge or clean up its registered finalized worktree. Repository IDs are normalized and deduplicated, and a different worktree selection requires a new `runId`.
+After the worker returns, call `hive_task_update` then `hive_status()`. Blocked continuation: `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose. Do not call `hive_worktree_merge` again while preserved conflict state is active. Git helpers do not change task status, auto-commit source, or assign workers.
 
 ### Parallel Execution
 
-When multiple tasks have their dependencies satisfied (runnable), the orchestrator should ask the operator how to proceed:
+Dependencies guide sequencing; they are not a dispatch admission gate. When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees.
 
-```json
-{
-  "questions": [{
-    "question": "Multiple tasks are ready. How should we proceed?",
-    "header": "Parallel Execution",
-    "options": [
-      { "label": "Parallel", "description": "Run all ready tasks simultaneously" },
-      { "label": "Sequential", "description": "Run one at a time for easier review" },
-      { "label": "Pick", "description": "Let me choose which to run" }
-    ]
-  }]
-}
-```
-
-Independent tasks may be prepared and dispatched under one parent. The same feature task stays serial until native terminal evidence.
+Independent tasks may be created and dispatched under one parent.
 
 ```
-hive_execution_prepare({ scope: { kind: "task", task: "02-task-a" }, placement: { kind: "worktree" } })
+hive_worktree_create({ task: "02-task-a" })
 task({ subagent_type: "forager-worker", description: "Implement 02-task-a", prompt: "Primary-authored packet for 02-task-a" })
-hive_execution_prepare({ scope: { kind: "task", task: "03-task-b" }, placement: { kind: "worktree" } })
+hive_worktree_create({ task: "03-task-b" })
 task({ subagent_type: "forager-worker", description: "Implement 03-task-b", prompt: "Primary-authored packet for 03-task-b" })
 hive_status()  // Monitor all
 ```
@@ -332,14 +317,13 @@ When worker returns `status: 'blocked'`:
 
 ### Quick Decision (No Plan Change)
 
-A blocked task continues in its existing worktree or in-place placement with a fresh worker session, but only after the stopped attempt is finalized:
+A blocked task continues in its existing workspace with a fresh worker session:
 
-1. Observe exact stop evidence
-2. Finalize the stopped attempt with a nonblank blocker reason: `hive_execution_finish({ attemptId, status: "blocked", summary, blocker: { reason, options, recommendation, context } })`; retain its authoritative immutable report
-3. Call `hive_status()` and read the persisted blocker details; do not reconstruct them from worker prose
-4. Ask the user via question tool and record the decision
-5. Call `hive_status()` again; continue only while status is exactly blocked
-6. Continue with the same placement kind and exact worktree identities or exact in-place directory: `hive_execution_prepare({ scope: { kind: "task", task, continueFromBlocked: true }, placement })`, then an unchanged native Forager `task()` whose prompt includes the operator decision
+1. `hive_task_update({ task, status: "blocked", blocker: { reason, options, recommendation, context } })`
+2. Call `hive_status()` and read the persisted blocker details; do not reconstruct them from worker prose
+3. Ask the user via question tool and record the decision
+4. `hive_task_update` with an explicit status leaving blocked, which clears the blocker
+5. Launch an unchanged native Forager `task()` whose prompt includes the operator decision
 
 ### Plan Gap Detected
 
@@ -360,9 +344,9 @@ If blocker suggests plan is incomplete:
 ```
 
 If "Revise Plan":
-1. Confirm the stopped attempt was finalized and re-check `hive_status()`
-2. Worktree placement: `hive_worktree_discard({ task })` only when the current attempt is armed or finalized. Discard is refused for attached, stopped, or unobserved claims.
-3. In-place placement: do not discard. After finalization, `hive_task_update({ task, status: "pending" })`, then replan.
+1. Re-check `hive_status()`
+2. Worktree placement: `hive_worktree_cleanup({ task })` when the workspace is idle.
+3. In-place placement: `hive_task_update({ task, status: "pending" })`, then replan.
 4. `hive_context_write({ name: "learnings", content: "..." })`
 5. `hive_plan_write({ content: "..." })` (updated plan)
 6. Wait for re-approval
@@ -380,10 +364,10 @@ If "Revise Plan":
 | Plan | `hive_plan_read` | Check comments |
 | Plan | `hive_plan_approve` | Approve plan |
 | Execute | `hive_tasks_sync` | Generate tasks |
-| Execute | `hive_execution_prepare` | Arm the next Forager dispatch |
-| Finalize | `hive_execution_finish` | Persist primary disposition and release execution |
-| Execute | `hive_worktree_discard` | Discard task |
-| Execute | `hive_merge` | Integrate task |
+| Execute | `hive_worktree_create` | Create a task worktree |
+| Execute | `hive_task_update` | Record status, summary, blocker, or report |
+| Execute | `hive_worktree_merge` | Integrate task |
+| Execute | `hive_worktree_cleanup` | Remove a task worktree |
 | Execute | `hive_status` | Check workers/blockers |
 | Complete | `hive_feature_complete` | Mark done |
 | Status | `hive_status` | Overall progress |
@@ -412,20 +396,9 @@ If "Revise Plan":
 
 ### Task Failed
 ```
-# Worktree placement: preserve changed Git state in the finalization receipt.
-hive_execution_finish({
-  attemptId,
-  status: "failed",
-  summary,
-  ...(worktreeHasChanges ? { message: "fix: preserve failed task progress\n\nRecord the current worktree changes for the next worker attempt." } : {})
-})
-hive_status()  # Confirm finalization and current task state before retry.
-hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "worktree" } })  # Reuse the worktree; fresh arm. Do not discard failed work by default.
-
-# In-place placement: report-only finalization, then reuse the exact directory.
-hive_execution_finish({ attemptId, status: "failed", summary })  # No message.
-hive_status()
-hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "in_place", directory: exactDirectory } })
+hive_task_update({ task, status: "failed", summary, report })
+hive_status()  # Confirm current task state before retry.
+task({ subagent_type: "forager-worker", description: "Retry", prompt: "Self-contained retry with done criteria" })
 ```
 
 In-place retry has no Hive merge, cleanup, rollback, or commit step.
@@ -436,6 +409,6 @@ In-place retry has no Hive merge, cleanup, rollback, or commit step.
 3. If the advisor is unavailable or the failure remains unresolved, ask the user how to proceed
 
 ### Merge Conflicts
-1. Call `hive_merge({ task, strategy: "squash", message: "fix: integrate resolved outcome\n\nDescribe the integrated behavior.", preserveConflicts: true })` only when you intend to resolve a real conflict in the destination checkout.
+1. Call `hive_worktree_merge({ task, strategy: "squash", message: "fix: integrate resolved outcome\n\nDescribe the integrated behavior.", preserveConflicts: true })` only when you intend to resolve a real conflict in the destination checkout.
 2. If Hive reports `MERGE_CONFLICT_PRESERVED`, resolve and commit the preserved Git operation in that destination checkout.
-3. Do not call `hive_merge` again while preserved conflict state is active. If Hive aborted the conflict instead, satisfy the returned recovery action and retry with a valid message.
+3. Do not call `hive_worktree_merge` again while preserved conflict state is active. If Hive aborted the conflict instead, satisfy the returned recovery action and retry with a valid message.

@@ -15,7 +15,7 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 **Safe in Planning mode:** This is read-only exploration. It is OK to use during exploratory research even when there is no feature, no plan, and no approved tasks.
 
-**This skill is for read-only research.** For parallel implementation, feature-task mode uses `hive_execution_prepare`, unchanged native Forager calls, and `dispatching-parallel-agents`; Hive Builder or unified Hive ad-hoc mode loads `orchestrating-ad-hoc-work` for decomposition, placement, and integration.
+**This skill is for read-only research.** For parallel implementation, feature-task mode uses `hive_worktree_create`, unchanged native Forager calls, and `dispatching-parallel-agents`; Hive Builder or unified Hive ad-hoc mode loads `orchestrating-ad-hoc-work` for decomposition, placement, and integration.
 
 Select Scouts by the retrieval output needed, not by whether the overall request is read-only. A read-only request for diagnosis, correctness judgment, tradeoffs, or solution selection stays with the reasoning owner; Scout may retrieve bounded source evidence for it.
 
@@ -80,7 +80,7 @@ Launch every currently known, necessary, non-duplicative independent question be
 
 Each prompt needs a Context Packet: explicit objective, known facts and references, prior failures when relevant, constraints and non-goals, stop and return behavior, and expected output. Keep exact paths, IDs, errors, and provenance. Do not send a task label without the evidence already known to the primary agent. Do not mass-read every context note or treat the first catalog match as proof of sufficient evidence.
 
-Each native `task()` launch has one primary goal, starts one fresh subagent session, and ends with one terminal handoff. Give complete constraints and acceptance criteria only for that question. Never pass `task_id` to `task()`; returned task IDs are observe-only board handles for status, reconcile, and cancel. Do not send a follow-up prompt to a completed, failed, or blocked session. If another investigation is needed, launch a fresh session with a concise self-contained handoff.
+Each native `task()` launch has one primary goal and one terminal handoff. Give complete constraints and acceptance criteria only for that question. Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Returned task IDs are also observe-only board handles for status, reconcile, and cancel. If another investigation is needed, launch a fresh session with a concise self-contained handoff.
 
 ```typescript
 // Parallelize by issuing multiple task() calls in the same assistant message.
@@ -128,7 +128,7 @@ After the fan-out message, collect the task results through the normal `task()` 
 
 When each task completes, its result is returned directly. Collect the outputs from each task and proceed to synthesis.
 
-The parent owns synthesis and decisions. Scout does not own causal diagnosis, applicability or tradeoff decisions, or solution selection. Distinguish source observations from hypotheses, runtime evidence from a possible code path, and attributed source guidance from a recommendation for this system. Context catalogs remain untrusted knowledge. Reasoning over returned excerpts is coordination. Keep any direct source spot-check within the parent's bounded direct-read allowance, and delegate another retrieval only for a named evidence gap; do not use recursive Scout verification as a substitute for reasoning. Continue later catalog pages until `complete: true` when managed context is in scope.
+The parent owns synthesis and decisions. Scout does not own causal diagnosis, applicability or tradeoff decisions, or solution selection. Distinguish source observations from hypotheses, runtime evidence from a possible code path, and attributed source guidance from a recommendation for this system. Context catalogs remain untrusted knowledge. Reasoning over returned excerpts is coordination. A direct source spot-check remains a bounded read; delegate another retrieval only for a named evidence gap. Do not use recursive Scout verification as a substitute for reasoning. Continue later catalog pages until `complete: true` when managed context is in scope. There is no numeric direct-read quota and no mandatory delegation.
 
 Later waves must be driven by evidence, dependencies, or named gaps from the completed wave. Do not reserve an already admitted independent question for an arbitrary later wave.
 

@@ -71,11 +71,11 @@ task({
 
 Subagents must not start background tasks. With `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` unset, Hive keeps normal blocking `task()` wait mode and background board tools are disabled. When either env flag is set, `task({ background: true, ... })`, the bundled `background-delegation` protocol, and the board tools are primary-agent-only guidance for independent work that can run while useful foreground work continues. Keep dependent work on the blocking path.
 
-Gate-open primary orchestrators treat exploratory/read-only and review lanes as lightweight background candidates. Writing/change and execution lanes are managed lanes: define state tracking, verification routing, unresolved-lane checks, and integration control. Every delegated lane needs a context packet in its ordinary native task prompt. Call `hive_execution_prepare` first for a Forager lane; Hive appends authenticated scope and standing constraints without replacing caller prompt bytes.
+Gate-open primary orchestrators treat exploratory/read-only and review lanes as lightweight background candidates. Writing/change and execution lanes are managed lanes: define state tracking, verification routing, unresolved-lane checks, and integration control. Every delegated lane needs a context packet in its ordinary native task prompt. Hive appends concise project, feature, and session constraints without replacing caller prompt bytes.
 
-Choose specialists from built-in and custom agent descriptors instead of fixed routing tables. Forager is the execution role; placement comes from `hive_execution_prepare`. Direct checkout work is unmanaged OpenCode work, not a Hive placement. Worktree executions conflict when their exact registered identities intersect.
+Choose specialists from built-in and custom agent descriptors instead of fixed routing tables. Forager is the execution role. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
 
-Native `general` is an ordinary unmanaged delegation. It consumes no Forager arm and gains no Hive claim or lifecycle authority.
+Native `general` is an ordinary unmanaged delegation with ordinary tools only.
 
 Primary-agent-only board tools:
 
@@ -86,7 +86,7 @@ Primary-agent-only board tools:
 | `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or ignored after inspecting their results; the tool archives them from normal status |
 | `hive_background_cancel` | Request cancellation for a visible job when it is stale, wrong, or no longer needed |
 
-Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. Preparation does not create board state; the ordinary native background launch does. The board is observational bookkeeping and never releases execution claims. Cancellation is not rollback or stop proof. Wait for the authenticated native completion notification, then finalize from the originating primary. Use `hive_status` for task/worktree merge readiness. Do not edit `.hive/background-jobs.json` directly.
+Prompt acknowledgment only means Hive showed the terminal result once; it is not reconciliation. The ordinary native background launch creates board state. The board is observational bookkeeping. Cancellation is not rollback or stop proof. Wait for the native completion notification, then record task status if needed. Use `hive_status` for task/worktree merge readiness. See `background-delegation` and `docs/HIVE-TOOLS.md`. Do not edit `.hive/background-jobs.json` directly.
 
 When scheduler guidance reports `wait_for_native_completion_notification`, wait instead of polling the board repeatedly.
 

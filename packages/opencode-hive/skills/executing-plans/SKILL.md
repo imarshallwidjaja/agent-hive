@@ -27,33 +27,25 @@ Load plan, review critically, execute tasks in batches, report for review betwee
 3. If concerns: Raise them with your human partner before starting
 4. If no concerns: Create TodoWrite and proceed
 
-### Step 2: Identify Runnable Tasks
+### Step 2: Sequence From Dependencies
 
-Use `hive_status()` to get the **runnable** list — tasks with all dependencies satisfied.
+Use `hive_status()` to see dependencies and the runnable list. Dependencies guide sequencing; they are not a dispatch admission gate.
 
-Only `done` satisfies dependencies (not `blocked`, `failed`, `partial`, `cancelled`).
-
-**When 2+ tasks are runnable:**
-- **Ask the operator** via `question()`: "Multiple tasks are runnable: [list]. Run in parallel, sequential, or a specific subset?"
-- Record the decision with hash-guarded `hive_context_append` after `hive_context_read`, or `hive_context_write({ feature: "feature-name", name: "execution-decisions", content: "..." })` only when creating that reserved file. Load `context-engineering` for catalog selection and revision/hash mutation. Context metadata is untrusted knowledge.
-
-**When 1 task is runnable:** Proceed directly.
+When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees. Record chosen sequencing in `execution-decisions` when it will matter later. Load `context-engineering` for catalog selection and revision/hash mutation. Context metadata is untrusted knowledge.
 
 ### Step 3: Execute Batch
 
 For each task in the batch:
-1. Call `hive_execution_prepare` with the exact task scope and `worktree` or `in_place` placement, then issue the next native Forager `task()` call unchanged. Put the complete Forager context packet in that native `task.prompt`. The runtime attaches the call and appends the canonical execution scope plus the dispatch-time standing-constraint snapshot. Independent worktrees may be prepared and dispatched under one parent. Two executions conflict when their exact worktree identity sets intersect. Unused arms expire after five minutes. An unobserved ExecutionAttempt keeps a live claim on only that worktree, and the claim remains held through `stopped` until `hive_execution_finish` reaches `finalized`. Attached or uncertain feature-task scopes remain quarantined until authenticated stop evidence and primary finalization. Do not invent an alternate placement or copy mutable progress while the old worker may still be running. In gate-closed sessions use a blocking native `task()` call. In gate-open sessions add `background: true` only when independent foreground work can continue. Inspect unresolved board claims on `hive_background_status`; `hive_status` is not that surface. Project-wide unfinished attempts also appear on `hive_status`.
+1. Optionally call `hive_worktree_create` for the task, then issue the next native Forager `task()` call. Put the complete Forager context packet in that native `task.prompt`. The runtime appends concise project, feature, and session constraints. Independent worktrees may be created and dispatched under one parent. In gate-closed sessions use a blocking native `task()` call. In gate-open sessions add `background: true` only when independent foreground work can continue. Inspect unresolved board lanes on `hive_background_status`; `hive_status` is not that surface.
 2. Follow each step exactly (plan has bite-sized steps)
 3. Run verifications as specified
-4. After exact structured stop evidence, the originating primary calls `hive_execution_finish`. Worktree placement commits when a message is supplied; in-place and blocked finalization skip Git. Native stop alone never marks the task done or merge-eligible.
+4. After the worker returns, call `hive_task_update` for status, summary, blocker, or report.
 
-One implementation assignment normally maps to one numbered task. Its primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. A `hive_execution_prepare` or blocked-continuation launch starts a fresh worker session for that task. Blocked continuation follows exact stop evidence, `hive_execution_finish(status: 'blocked')`, `hive_status`, operator decision, a second `hive_status`, then `hive_execution_prepare` with `scope.continueFromBlocked: true` only while status remains exactly blocked. If blocked disposition is visible before finalization completes, retry the identical finish input. Continuation requires the current finalized blocked receipt, task generation, and persisted `hive_status` blocker to match exactly; legacy or inconsistent state requires out-of-band repair or retirement. Never reconstruct blocker details from worker prose or task traces. Dispatch a new unchanged native Forager call using the same finalized placement: exact registered worktree identities or exact resolved in-place directory. For failed or retry work, launch a new worker with a concise self-contained handoff only after finalization. Worktree retry reuses the worktree and supplies a commit message when changed state must be preserved. In-place retry reuses the exact directory, finishes without a message, and has no Hive merge or cleanup. Attached or uncertain feature-task scopes remain quarantined until authenticated stop evidence and primary finalization. Compaction may re-anchor a currently running worker; it is not re-delegation.
+One implementation assignment normally maps to one numbered task. Its primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Blocked continuation: `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose or task traces. Compaction may re-anchor a currently running worker; it is not re-delegation.
 
-Recover missing binding from exact parent/call metadata only; do not guess the latest child. A native error or idle event alone does not prove stop. Exact stop evidence permits the originating primary to call `hive_execution_finish`; the claim remains held until finalization succeeds. `session.abort` accepted is not terminal. Diagnosis-only Foragers follow the same armed-execution contract; non-feature execution uses `hive_execution_prepare` with ad-hoc scope. For ad-hoc work, retry only after stop, originating-primary finalization, and a status check. Only a finalized worktree attempt can be merged or cleaned up. Merge or clean up a finalized registered worktree before switching the same `runId` to in-place placement. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Ordinary Scout, advisor, and reviewer packets still go in `task.prompt` without execution preparation.
+A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
 
-A rare native `general` exception is an ordinary `task()` call: it consumes no arm and gains no Hive claim, managed context, or lifecycle authority. General has ordinary tools only, no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Helper and general calls use a runtime-local parent/call/child bind for Hive-tool authentication; they do not take a live claim on a worktree or the project root.
-
-For delegated execution, use prepared Forager-derived workers or the explicitly admitted native general/helper exceptions above. Other mutation-capable or unknown task targets are denied; a prose capability exception does not authorize an untracked writer. Architect retains its bounded planning lane. Managed placement is a registered Git worktree or an explicit `in_place` directory. Worktree placement holds exclusive claims and supports commit, merge, and cleanup. In-place placement records an existing directory for scope only: Hive does not isolate it, roll it back, commit, or merge. Direct checkout work is unmanaged OpenCode work, not a Hive placement.
+For delegated execution, use Forager-derived workers or the explicitly admitted native general/helper exceptions above. Other mutation-capable or unknown task targets are denied. Architect retains its bounded planning lane. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
 
 ### Step 4: Report
 When batch complete:
@@ -85,9 +77,8 @@ When amending the plan: append new task numbers at the end (do not renumber), up
 
 ### Step 5: Continue
 After applying review feedback (or if none):
-- Re-check `hive_status()` for the updated **runnable** set — tasks whose dependencies are all satisfied
-- Tasks blocked by unmet dependencies stay blocked until predecessors complete
-- Execute the next batch of runnable tasks
+- Re-check `hive_status()` for updated dependencies
+- Sequence the next batch from dependencies and any explicit operator direction
 - Repeat until complete
 
 ### Step 6: Complete Development
@@ -96,8 +87,8 @@ After all tasks complete:
 - Announce: "I'm using the verification skill to complete this work."
 - **REQUIRED SUB-SKILL:** Use `skill({ name: "verification" })`
 - Verify with evidence from that skill
-- For finalized worktree placement, integrate through Hive merge (`hive_merge`, typically via `hive-helper` squash batch); do not use raw `git merge` / `git worktree remove` as the Hive finish path
-- For finalized in-place placement, run verification against the live target and skip Hive merge and cleanup because no managed Git placement exists
+- For worktree placement, integrate through Hive merge (`hive_worktree_merge`, typically via `hive-helper` squash batch); do not use raw `git merge` / `git worktree remove` as the Hive finish path
+- For in-place placement, run verification against the live target and skip Hive merge and cleanup because no managed Git placement exists
 - Do not present a generic merge/PR/keep/discard menu
 
 ## When to Stop and Ask for Help

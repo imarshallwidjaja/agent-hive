@@ -161,13 +161,13 @@ describe('Process judgment prompt reach', () => {
     expect(ARCHITECT_BEE_PROMPT).not.toContain('Self-Clearance Check (After Every Exchange)');
     const phaseStart = QUEEN_BEE_PROMPT.indexOf('## Phase Detection (First Action)');
     const intentStart = QUEEN_BEE_PROMPT.indexOf('### Intent Classification');
-    const boundaryStart = QUEEN_BEE_PROMPT.indexOf('### Direct Work Boundary');
+    const boundaryStart = QUEEN_BEE_PROMPT.indexOf('### Direct vs Delegated Work');
     const intentSection = sectionBetween(
       QUEEN_BEE_PROMPT,
       '### Intent Classification',
       '### Canonical Delegation Threshold',
     );
-    const boundarySection = sectionBetween(QUEEN_BEE_PROMPT, '### Direct Work Boundary', '### Delegation');
+    const boundarySection = sectionBetween(QUEEN_BEE_PROMPT, '### Direct vs Delegated Work', '### Delegation');
 
     expect(phaseStart).toBeGreaterThanOrEqual(0);
     expect(phaseStart).toBeLessThan(intentStart);
@@ -176,17 +176,17 @@ describe('Process judgment prompt reach', () => {
       'A featureless implementation request such as "build X" or "implement X" enters Planning and creates the feature and plan before execution.',
     );
     expect(QUEEN_BEE_PROMPT.slice(phaseStart, intentStart)).toContain(
-      'The Direct Work Boundary applies only after routing',
+      'Direct work never bypasses plan-first routing',
     );
     expect(tableRow(intentSection, 'Trivial')).toMatch(
-      /After phase routing.*Direct Work Boundary.*featureless implementation enters Planning first/,
+      /After phase routing.*direct work or delegation.*featureless implementation enters Planning first/
     );
     expect(tableRow(intentSection, 'Simple')).toMatch(
-      /After phase routing.*Direct Work Boundary.*featureless implementation enters Planning first/,
+      /After phase routing.*direct work or delegation.*featureless implementation enters Planning first/
     );
-    expect(tableRow(intentSection, '"Quick change"')).toMatch(/only after phase routing/);
+    expect(tableRow(intentSection, '"Quick change"')).toMatch(/After phase routing/);
     expect(boundarySection).toMatch(
-      /After phase routing.*Authorized non-feature\/ad-hoc work remains eligible without feature state.*Feature implementation can use this boundary only after an approved plan has selected the work; it never selects or bypasses feature planning\./,
+      /After phase routing.*Feature implementation can use direct work only after an approved plan has selected the work; it never selects or bypasses feature planning\./,
     );
     expect(QUEEN_BEE_PROMPT).toContain('| No feature + plan or implementation requested | Planning | Create feature and plan; use Planning section |');
     expect(QUEEN_BEE_PROMPT).toContain('| User requests execution of an approved plan | Orchestration | Use Orchestration section |');
@@ -257,7 +257,9 @@ describe('Operator standing constraints prompt guidance', () => {
   ] as const;
 
   it('names the injected heading in reviewer and worker prompts', () => {
-    for (const [name, prompt] of [['Forager', FORAGER_BEE_PROMPT], ...constraintAwareReviewers] as const) {
+    expect(FORAGER_BEE_PROMPT).toContain('## Standing Constraints');
+    expect(FORAGER_BEE_PROMPT).not.toContain(STANDING_CONSTRAINTS_HEADING);
+    for (const [name, prompt] of constraintAwareReviewers) {
       expect(prompt, name).toContain(STANDING_CONSTRAINTS_HEADING);
     }
   });
@@ -270,6 +272,16 @@ describe('Operator standing constraints prompt guidance', () => {
     ] as const) {
       expect(prompt, name).not.toContain('hive_constraints_');
     }
+  });
+
+  it('lets Foragers write both context scopes through hash integrity and keeps Scout read-only', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('Foragers write feature and project context through hash integrity');
+    expect(FORAGER_BEE_PROMPT).toContain('Scout is read-only');
+    expect(FORAGER_BEE_PROMPT).not.toContain('Propose project-context updates');
+    expect(QUEEN_BEE_PROMPT).toContain('Foragers and reviewers write feature and project context through hash integrity');
+    expect(QUEEN_BEE_PROMPT).not.toContain('Workers propose project updates');
+    expect(SWARM_BEE_PROMPT).not.toContain('Workers propose project updates');
+    expect(SCOUT_BEE_PROMPT).toContain('Read with `hive_context_read` only');
   });
 
   it('guides orchestrators through add, read-before-edit, and explicit clear semantics', () => {
@@ -285,6 +297,8 @@ describe('Operator standing constraints prompt guidance', () => {
       expect(prompt, name).toContain('hive_constraints_clear');
       expect(prompt, name).toContain('every user message, example, or task-local request');
       expect(prompt, name).toContain('only when the operator explicitly requests a whole-register clear');
+      expect(prompt, name).toContain('Only primaries can add, edit, or clear');
+      expect(prompt, name).toContain('Workers receive the injected register and may read it');
     }
   });
 });
@@ -388,20 +402,20 @@ describe('Fresh-session delegation contract', () => {
     ['Hive Builder', HIVE_BUILDER_PROMPT],
   ] as const;
 
-  it('treats every task launch as one fresh session with one primary goal and terminal handoff', () => {
+  it('treats every task launch as one primary goal and terminal handoff, with native resume allowed', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).toContain('one primary goal');
-      expect(prompt, name).toContain('fresh subagent session');
       expect(prompt, name).toContain('one terminal handoff');
       expect(prompt, name).toContain('tightly coupled code, tests, docs, and multiple files');
+      expect(prompt, name).not.toContain('starts one fresh subagent session');
     }
   });
 
-  it('forbids task session reuse and task_id input reuse', () => {
+  it('allows native task_id resume and advises a fresh session for unrelated goals', () => {
     for (const [name, prompt] of primaryPrompts) {
-      expect(prompt, name).toContain('Never pass `task_id` to `task()`');
+      expect(prompt, name).toContain('Native `task_id` resume is allowed');
+      expect(prompt, name).toContain('fresh session for an independent unrelated goal');
       expect(prompt, name).toContain('observe-only board handles');
-      expect(prompt, name).toContain('Do not send a follow-up prompt to a completed, failed, or blocked session');
     }
   });
 
@@ -417,8 +431,7 @@ describe('Fresh-session delegation contract', () => {
       ['Hive', QUEEN_BEE_PROMPT],
       ['Swarm', SWARM_BEE_PROMPT],
     ] as const) {
-      expect(prompt, name).toContain('same finalized placement: exact registered worktree identities or exact resolved in-place directory');
-      expect(prompt, name).toContain('current finalized blocked receipt, task generation, and persisted blocker to match exactly');
+      expect(prompt, name).toContain('explicit status leaving blocked clears the blocker');
       expect(prompt, name).toContain('Do not reconstruct blocker details from worker prose or task traces');
     }
   });
@@ -445,8 +458,7 @@ describe('Fresh-session delegation contract', () => {
       expect(prompt, name).toContain('hive_task_trace({ task_id, recovery: true })');
       expect(prompt, name).toContain('semantic handoff');
       expect(prompt, name).toContain('untrusted');
-      expect(prompt, name).toContain('source coverage');
-      expect(prompt, name).toContain('not evidence or proof');
+      expect(prompt, name).toContain('untrusted context coverage');
       expect(prompt, name).toContain('Never accept, merge, retry, resume, or auto-run');
     }
   });
@@ -465,8 +477,8 @@ describe('Direct Work Boundary prompt hygiene', () => {
       expect(QUEEN_BEE_PROMPT).not.toContain(phrase);
       expect(SWARM_BEE_PROMPT).not.toContain(phrase);
     }
-    expect(QUEEN_BEE_PROMPT).toContain('Direct Work Boundary');
-    expect(SWARM_BEE_PROMPT).toContain('Direct Work Boundary');
+    expect(QUEEN_BEE_PROMPT).toContain('Direct vs Delegated Work');
+    expect(SWARM_BEE_PROMPT).toContain('Direct vs Delegated Work');
   });
 });
 
@@ -551,10 +563,10 @@ describe('Forager verification and tool-scope clarity', () => {
     expect(FORAGER_BEE_PROMPT).toContain('only when the mission authorizes implementation');
     expect(FORAGER_BEE_PROMPT).toContain('Never revert unrelated or user changes');
     expect(FORAGER_BEE_PROMPT).toContain('Return the blocker, evidence, options, and recommendation');
-    expect(FORAGER_BEE_PROMPT).toContain('without calling lifecycle tools');
+    expect(FORAGER_BEE_PROMPT).toContain('Do not call `hive_task_update` to leave blocked');
     expect(FORAGER_BEE_PROMPT).toContain('Keep report-only diagnostic discoveries in the terminal handoff');
     expect(FORAGER_BEE_PROMPT).toContain('unless the mission explicitly authorizes metadata persistence');
-    expect(FORAGER_BEE_PROMPT).toContain('Worker prose is report input and never lifecycle or stop evidence');
+    expect(FORAGER_BEE_PROMPT).toContain('Worker prose is report input');
   });
 
   it('defers tool scope to worker prompt', () => {
@@ -621,10 +633,9 @@ describe('Primary retrieval and reasoning ownership', () => {
       expect(prompt, name).toContain('independent useful retrieval slices together');
       expect(prompt, name).toContain('Do not impose numeric quotas or artificial fan-out');
       expect(prompt, name).toContain('Reasoning over returned excerpts is coordination');
-      expect(prompt, name).toContain('A direct source spot-check remains exactly one bounded read');
+      expect(prompt, name).toContain('A direct source spot-check remains a bounded read');
       expect(prompt, name).toContain('delegate additional retrieval only for a named evidence gap');
       expect(prompt, name).toContain('Do not recursively delegate Scout verification');
-      expect(prompt, name).toContain('debugging as a blanket exemption');
     }
   });
 
@@ -747,7 +758,7 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('shared write/runtime resources');
       expect(QUEEN_BEE_PROMPT).toContain('possible background execution');
       expect(QUEEN_BEE_PROMPT).toContain('more than one worker attempt or turn');
-      expect(QUEEN_BEE_PROMPT).toContain('before any ad-hoc worktree preparation');
+      expect(QUEEN_BEE_PROMPT).toContain('before any ad-hoc worktree create');
       expect(QUEEN_BEE_PROMPT).toContain('or delegated dispatch');
     });
 
@@ -780,29 +791,17 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('objective, known facts, references, prior failures, constraints, expected output');
     });
 
-    it('requires hive_status() before any blocked-continuation launch', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('call `hive_execution_finish` before `hive_status()`');
-      expect(QUEEN_BEE_PROMPT).toContain('second `hive_status()`');
-    });
-
-    it('allows blocked continuation only for exactly blocked tasks', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Use `scope.continueFromBlocked` only when status is exactly `blocked`');
+    it('records blocked status then clears the blocker on an explicit leaving status', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('hive_task_update');
+      expect(QUEEN_BEE_PROMPT).toContain('explicit status leaving blocked clears the blocker');
+      expect(QUEEN_BEE_PROMPT).toContain('question()');
       expect(QUEEN_BEE_PROMPT).not.toContain('continueFrom: "blocked"');
+      expect(QUEEN_BEE_PROMPT).not.toContain('continueFromBlocked');
     });
 
     it('describes both managed placements without claiming in-place isolation', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Managed placement is either a registered Git worktree or an explicit in-place directory');
-      expect(SWARM_BEE_PROMPT).toContain('Only worktrees provide isolation, commit, merge, and cleanup');
-      expect(SWARM_BEE_PROMPT).toContain('only worktrees carry exclusion and Git lifecycle');
-    });
-
-    it('forbids blocked-continuation loops on non-blocked statuses', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Never loop `scope.continueFromBlocked` on non-blocked statuses');
-    });
-
-    it('requires immediate status re-check before blocked continuation', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Before every blocked-continuation launch, call `hive_status()` immediately beforehand');
-      expect(QUEEN_BEE_PROMPT).toContain('verify the task is still exactly `blocked`');
+      expect(SWARM_BEE_PROMPT).toContain('Use a worktree when isolation or Git integration helps');
+      expect(SWARM_BEE_PROMPT).toContain('current checkout, a non-Git directory, or report-only');
     });
 
     it('treats terminal tool responses as non-retriable for same parameters', () => {
@@ -814,10 +813,9 @@ describe('Hive (Hybrid) prompt', () => {
     });
 
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('If status is not `blocked`');
-      expect(QUEEN_BEE_PROMPT).toContain('omit `scope.continueFromBlocked`');
-      expect(QUEEN_BEE_PROMPT).toContain('only for normal starts (`pending` / `in_progress`)');
-      expect(QUEEN_BEE_PROMPT).toContain('hive_execution_prepare');
+      expect(QUEEN_BEE_PROMPT).toContain('hive_task_update');
+      expect(QUEEN_BEE_PROMPT).toContain('hive_worktree_create');
+      expect(QUEEN_BEE_PROMPT).not.toContain('hive_execution_prepare');
     });
 
     it('documents plan-reviewer routing by closest task fit', () => {
@@ -1031,7 +1029,7 @@ describe('Architect (Planner) prompt', () => {
       'hive_context_append({ feature: "feature-name", name: "execution-decisions", expectedRevision, expectedContentHash, ... })',
     );
     expect(SWARM_BEE_PROMPT).toContain('Append execution decisions with `hive_context_append`');
-    expect(SCOUT_BEE_PROMPT).toContain('feature: "{feature-name}"');
+    expect(SCOUT_BEE_PROMPT).toContain('Scout is read-only');
     expect(QUEEN_BEE_PROMPT).toContain(
       'If multiple live features remain after path and session resolution',
     );
@@ -1054,7 +1052,7 @@ describe('Architect (Planner) prompt', () => {
     ] as const) {
       expect(prompt, name).toContain('pure final verification outside `## Tasks`');
       expect(prompt, name).toContain('## Final Verification');
-      expect(prompt, name).toContain('worktree-backed implementation/docs/test changes');
+      expect(prompt, name).toContain('implementation/docs/test changes');
     }
   });
 
@@ -1127,7 +1125,7 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('hive_repositories_status');
       expect(SWARM_BEE_PROMPT).toContain('hive_repositories_discover');
       expect(SWARM_BEE_PROMPT).toContain('hive_repositories_update');
-      expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_execution_prepare');
+      expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_worktree_create');
     });
 
     it('conditions context consolidation and stale-state checks on observable pressure and task state', () => {
@@ -1142,7 +1140,7 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('uses returned launch coordinates verbatim and tags task-specific durable writes', () => {
-      expect(SWARM_BEE_PROMPT).toContain('placement path, branch, and commit values returned by `hive_execution_prepare` verbatim');
+      expect(SWARM_BEE_PROMPT).toContain('placement path, branch, and commit values returned by `hive_worktree_create` or `hive_worktree_inspect` verbatim');
       expect(SWARM_BEE_PROMPT).toContain('never concatenate fields in prose');
       expect(SWARM_BEE_PROMPT).toContain('set its `task` metadata');
     });
@@ -1162,48 +1160,42 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('requires hive_status() before any blocked-continuation launch', () => {
-      expect(SWARM_BEE_PROMPT).toContain('call `hive_execution_finish` for the originating attempt before `hive_status()`');
-      expect(SWARM_BEE_PROMPT).toContain('second `hive_status()`');
+      expect(SWARM_BEE_PROMPT).toContain('hive_task_update');
+      expect(SWARM_BEE_PROMPT).toContain('question()');
     });
 
-    it('uses persisted finalization state as blocker authority', () => {
+    it('uses persisted blocker state as blocker authority', () => {
       for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
-        expect(prompt, name).toContain('retain its immutable `reportPath`');
-        expect(prompt, name).toContain('current finalized blocked receipt, task generation, and persisted blocker to match exactly');
-        expect(prompt, name).toContain('Legacy or inconsistent state requires out-of-band repair or retirement');
-        expect(prompt, name).toContain('`hive_status` and its persisted blocker');
+        expect(prompt, name).toContain('Do not reconstruct blocker details from worker prose or task traces');
+        expect(prompt, name).toContain('explicit status leaving blocked');
       }
     });
 
     it('requires stop evidence before failed or partial recovery', () => {
       for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
-        expect(prompt, name).toContain('Failed or partial recovery requires exact stop evidence');
-        expect(prompt, name).toContain('use `hive_task_trace`, wait when the execution may still be live');
-        expect(prompt, name).toContain('do not finish or prepare a retry');
-        expect(prompt, name).toContain('Retry a worktree placement on its existing worktree');
-        expect(prompt, name).toContain('Retry an in-place placement on its exact directory with report-only finish');
+        expect(prompt, name).toContain('hive_task_trace');
+        expect(prompt, name).toContain('concise self-contained handoff');
       }
     });
 
     it('allows blocked continuation only for exactly blocked tasks', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Use `scope.continueFromBlocked` only when status is exactly `blocked`');
+      expect(SWARM_BEE_PROMPT).toContain('explicit status leaving blocked');
       expect(SWARM_BEE_PROMPT).not.toContain('continueFrom: "blocked"');
     });
 
     it('requires immediate status re-check before each blocked continuation', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Before every blocked-continuation launch, call `hive_status()` immediately beforehand');
-      expect(SWARM_BEE_PROMPT).toContain('verify the task is still exactly `blocked`');
+      expect(SWARM_BEE_PROMPT).toContain('hive_task_update');
+      expect(SWARM_BEE_PROMPT).toContain('question()');
     });
 
     it('keeps standalone diagnostic and ad-hoc blockers out of managed continuation', () => {
       expect(SWARM_BEE_PROMPT).toContain('first determine whether the result belongs to an actual managed feature and task');
       expect(SWARM_BEE_PROMPT).toContain('A standalone diagnostic or ad-hoc blocker is a terminal report');
-      expect(SWARM_BEE_PROMPT).toContain('launch a NEW direct task without `task_id`');
-      expect(SWARM_BEE_PROMPT).toContain('never route it through managed status or worktree continuation');
     });
 
     it('forbids blocked-continuation loops on non-blocked statuses', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Never loop `scope.continueFromBlocked` on non-blocked statuses');
+      expect(SWARM_BEE_PROMPT).not.toContain('continueFrom: "blocked"');
+      expect(SWARM_BEE_PROMPT).toContain('explicit status leaving blocked');
     });
 
     it('clarifies terminal finality scope while allowing final natural-language handoff', () => {
@@ -1214,10 +1206,9 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('redirects non-blocked unresolved tasks to normal dispatch', () => {
-      expect(SWARM_BEE_PROMPT).toContain('If status is not `blocked`');
-      expect(SWARM_BEE_PROMPT).toContain('omit `scope.continueFromBlocked`');
-      expect(SWARM_BEE_PROMPT).toContain('only for normal starts (`pending` / `in_progress`)');
-      expect(SWARM_BEE_PROMPT).toContain('hive_execution_prepare');
+      expect(SWARM_BEE_PROMPT).toContain('hive_task_update');
+      expect(SWARM_BEE_PROMPT).toContain('hive_worktree_create');
+      expect(SWARM_BEE_PROMPT).not.toContain('hive_execution_prepare');
     });
 
     it('includes task() guidance for research fan-out', () => {
@@ -1352,7 +1343,7 @@ describe('Swarm (Orchestrator) prompt', () => {
     expect(SWARM_BEE_PROMPT).toContain('hive_status.helperStatus');
     expect(SWARM_BEE_PROMPT).toContain('helper merge delegation/state clarification');
     expect(SWARM_BEE_PROMPT).toContain('retry helper delegation once');
-    expect(SWARM_BEE_PROMPT).toContain('direct `hive_merge` recovery escape');
+    expect(SWARM_BEE_PROMPT).toContain('direct `hive_worktree_merge` recovery escape');
     expect(SWARM_BEE_PROMPT).not.toContain('merge (hive_merge)');
   });
 
@@ -1368,18 +1359,18 @@ describe('Swarm (Orchestrator) prompt', () => {
 describe('Forager (Worker/Coder) prompt', () => {
   it('targets feature learnings explicitly without implying ad-hoc context persistence', () => {
     expect(FORAGER_BEE_PROMPT).toContain('reading the target first with `hive_context_read`, then using `hive_context_append`');
-    expect(FORAGER_BEE_PROMPT).toContain('workers must not replace existing context');
+    expect(FORAGER_BEE_PROMPT).toContain('hash-guarded `hive_context_write` replacement');
     expect(FORAGER_BEE_PROMPT).not.toContain(
       'hive_context_write({ name: "learnings", content: "..." })',
     );
-    expect(FORAGER_BEE_PROMPT).toContain('For ad-hoc runs, do not call `hive_context_write` unless');
     expect(FORAGER_BEE_PROMPT).not.toContain('For existing-workspace assignments, managed context and Hive lifecycle tools are denied.');
-    expect(FORAGER_BEE_PROMPT).toContain('the runtime grants that scope');
+    expect(FORAGER_BEE_PROMPT).toContain('Foragers write feature and project context through hash integrity');
     expect(FORAGER_BEE_PROMPT).toContain('When implementation is authorized and a feature/task worker prompt identifies a Hive feature');
   });
 
   it('requires one meaningful managed-task commit with a subject and body when changes exist', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('do not commit managed task or ad-hoc work');
+    expect(FORAGER_BEE_PROMPT).toContain('Hive git helpers do not auto-commit source');
+    expect(FORAGER_BEE_PROMPT).toContain('An assignment may authorize an ordinary source Git commit');
     expect(FORAGER_BEE_PROMPT).toContain('proposed Conventional Commit subject and body');
   });
 
@@ -1394,7 +1385,7 @@ describe('Forager (Worker/Coder) prompt', () => {
 
   it('requires one terminal handoff without worker finalization', () => {
     expect(FORAGER_BEE_PROMPT).toContain('return one terminal response');
-    expect(FORAGER_BEE_PROMPT).toContain('the primary records finalization');
+    expect(FORAGER_BEE_PROMPT).toContain('the primary records task status');
     expect(FORAGER_BEE_PROMPT).not.toContain(['hive', 'worktree', 'commit'].join('_'));
   });
 
@@ -1453,9 +1444,9 @@ describe('Hive Helper prompt', () => {
     expect(HIVE_HELPER_PROMPT).toContain('never plans, orchestrates, or broadens the assignment');
   });
 
-  it('uses hive_merge first only for merge recovery and resolves preserved conflicts locally', () => {
-    expect(HIVE_HELPER_PROMPT).toContain('hive_merge');
-    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: call `hive_merge` first');
+  it('uses hive_worktree_merge first only for merge recovery and resolves preserved conflicts locally', () => {
+    expect(HIVE_HELPER_PROMPT).toContain('hive_worktree_merge');
+    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: call `hive_worktree_merge` first');
     expect(HIVE_HELPER_PROMPT).not.toContain('- use `hive_merge` first');
     expect(HIVE_HELPER_PROMPT).not.toContain('1. Call `hive_merge` first for the requested task branch.');
     expect(HIVE_HELPER_PROMPT).toContain("conflictState: 'preserved'");
@@ -1478,7 +1469,7 @@ describe('Hive Helper prompt', () => {
     expect(HIVE_HELPER_PROMPT).toContain('merged/state/task/blocker summary');
   });
 
-  it('requires explicit self-descriptive hive_merge messages', () => {
+  it('requires explicit self-descriptive hive_worktree_merge messages', () => {
     expect(HIVE_HELPER_PROMPT).toContain('Preserve one root commit per completed task');
     expect(HIVE_HELPER_PROMPT).toContain('Default to `strategy: "squash"`');
     expect(HIVE_HELPER_PROMPT).toContain('review and fix iterations into that squash commit');
@@ -1495,22 +1486,17 @@ describe('Hive Helper prompt', () => {
 describe('Scout (Explorer/Researcher) prompt', () => {
   it('has clean persistence example', () => {
     expect(SCOUT_BEE_PROMPT).not.toContain('Worker Prompt Builder');
-    expect(SCOUT_BEE_PROMPT).toContain('research-{topic}');
+    expect(SCOUT_BEE_PROMPT).toContain('Scout is read-only');
   });
 
   it('gives a durable-create example with frontmatter the runtime accepts', () => {
-    const example = SCOUT_BEE_PROMPT.match(/name: "research-\{topic\}",\s*content: "([\s\S]*?)"\s*\}\)/);
-    expect(example).not.toBeNull();
-    const metadata = parseContextMetadata(Buffer.from(example![1]!));
-    expect(metadata.warnings).toEqual([]);
-    expect(metadata.description).toBeTruthy();
-    expect(metadata.readWhen).toBeTruthy();
-    expect(() => assertRequiredContextMetadata(metadata, 'feature')).not.toThrow();
+    expect(SCOUT_BEE_PROMPT).toContain('Do not call `hive_context_write`');
+    expect(SCOUT_BEE_PROMPT).toContain('hive_context_read');
   });
 
   it('treats reserved context names as special-purpose files', () => {
     expect(SCOUT_BEE_PROMPT).toContain('reserved names like `overview`, `draft`, and `execution-decisions`');
-    expect(SCOUT_BEE_PROMPT).toContain('not for general research notes');
+    expect(SCOUT_BEE_PROMPT).toContain('only as read targets');
   });
 
   it('covers the sharpened operating contract with structural anchors', () => {
@@ -1669,12 +1655,9 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('Background Orchestration');
       expect(hiveToolsContent).toContain('native completion notifications');
       expect(hiveToolsContent).toContain('Cancellation is not rollback');
-      expect(hiveToolsContent).toContain('retry after finalization may reuse');
-      expect(hiveToolsContent).toContain('background feature-task lane cannot be resumed safely');
-      expect(hiveToolsContent).toContain('remains quarantined until authenticated stop evidence and primary finalization');
+      expect(hiveToolsContent).toContain('originating native parent and call');
+      expect(hiveToolsContent).toContain('Cancel acknowledgement does not prove the worker stopped');
       expect(hiveToolsContent).not.toContain('acknowledgeOrphanedAttempt');
-      expect(hiveToolsContent).toContain('cannot reuse that run');
-      expect(hiveToolsContent).toContain('Cross-process exclusivity is unsupported');
       expect(hiveToolsContent).not.toContain('task_status');
     });
 
@@ -1686,37 +1669,28 @@ describe('README.md documentation', () => {
     });
 
     it('documents finalized reports, absolute in-place paths, and the active tool inventory', () => {
-      expect(operatorGuideContent).toContain('reports/finalization-<operationId>.md');
+      expect(operatorGuideContent).toContain('hive_task_update');
       expect(operatorGuideContent).not.toContain('reports/<revision>.md');
-      expect(dataModelContent).toContain('`ExecutionAttempt.native` is the sole managed execution authority');
-      expect(hiveToolsContent).toContain('### Execution (3 tools)');
-      expect(hiveToolsContent).toContain('### Integration (3 tools)');
-      expect(hiveToolsContent).toContain('| **Total** | **33** |');
-      expect(hiveToolsContent).toContain('resolved absolute path to an existing directory');
-      expect(hiveToolsContent).toContain('Expand shell shorthand such as `~` before passing the tool argument');
+      expect(dataModelContent).toContain('Task status and reports are the execution record');
+      expect(hiveToolsContent).toContain('## Worktree families (8 tools)');
+      expect(hiveToolsContent).toContain('hive_worktree_create');
+      expect(hiveToolsContent).toContain('hive_adhoc_worktree_create');
       expect(hiveToolsContent).not.toContain('### Merge (1 tool)');
       expect(hiveToolsContent).not.toContain('acknowledgeOrphanedAttempt');
     });
 
     it('documents receipt-bound blocked continuation and placement-specific retry', () => {
-      expect(operatorGuideContent).toContain('current finalized blocked receipt');
-      expect(operatorGuideContent).toContain('repair or retire the inconsistent task state out of band');
-      expect(operatorGuideContent).toContain('In-place recovery has no Hive merge, cleanup, or rollback step');
-      expect(hiveToolsContent).toContain('retry the identical finish input');
-      expect(hiveToolsContent).toContain('Legacy or inconsistent blocked state has no normal continuation operation');
+      expect(operatorGuideContent).toContain('explicit status leaving blocked');
+      expect(hiveToolsContent).toContain('An explicit status leaving blocked clears the blocker');
       expect(dataModelContent).toContain('`blocker` (`TaskBlocker`, optional');
-      expect(dataModelContent).toContain('Every non-blocked transition and every new attempt allocation removes it');
+      expect(dataModelContent).toContain('An explicit status leaving blocked clears the blocker');
     });
 
     it('documents fail-closed migrated background mode classification', () => {
-      expect(dataModelContent).toContain('proves `background: true`');
-      expect(dataModelContent).toContain('Board records never prove blocking mode; unmatched migrated attempts remain unknown');
-      expect(dataModelContent).toContain('Unknown mode accepts only exact structured background terminal evidence');
-      expect(dataModelContent).toContain('parent session, native call, and native task identity');
-      expect(dataModelContent).not.toContain('No board match proves blocking mode');
-      expect(dataModelContent).not.toContain('one exact board record proves blocking or background mode');
-      expect(agentsContent).toContain('Board records never prove blocking mode; unmatched migrated attempts remain unknown');
-      expect(agentsContent).toContain('parent session, native call, and native task identity');
+      expect(dataModelContent).toContain('originating native parent and call');
+      expect(dataModelContent).toContain('Stale and unknown observations stay visible');
+      expect(agentsContent).toContain('originating native parent and call');
+      expect(agentsContent).toContain('Stale and unknown observations stay visible');
     });
 
     it('does not keep stale root README runtime counts', () => {
@@ -1766,33 +1740,20 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain('simplicity-reviewer');
     });
 
-    it('documents the expanded hive_merge contract', () => {
+    it('documents the expanded hive_worktree_merge contract', () => {
       expect(hiveToolsContent).toContain('preserveConflicts');
       expect(hiveToolsContent).toContain('cleanup');
-      expect(hiveToolsContent).toContain('conflictState');
-      expect(hiveToolsContent).toContain('worktreeRemoved');
-      expect(hiveToolsContent).toContain('branchDeleted');
-      expect(hiveToolsContent).toContain('pruned');
+      expect(hiveToolsContent).toContain('hive_worktree_merge');
       expect(hiveToolsContent).toContain('message');
     });
   });
 
   describe('private review runtime docs alignment', () => {
-    it('documents invocation-bound multi-kind evidence and frozen path capabilities', () => {
-      expect(readmeContent).toContain('`hive-dash-review-command/v3`');
-      expect(readmeContent).toContain('A PR fixes Git evidence');
-      expect(readmeContent).toContain('Artifact paths come only from the command packet');
-      expect(readmeContent).toContain('Review roles cannot call `hive_git_snapshot` directly');
-      expect(readmeContent).toContain('Inline and artifact evidence uses `ReviewEvidenceBundleService`');
-      expect(readmeContent).toContain('realpaths remain inside the claimed frozen workspace');
-      expect(readmeContent).toContain('this is name-based runtime trust, not a cryptographic caller identity');
-      expect(readmeContent).toContain('The scope researcher can call only `hive_repositories_status`, `hive_plan_read`, `hive_status`, `hive_review_evidence_resolve`, `hive_vulnerability_compare_report_read`, `hive_review_workspace_create`, `hive_review_workspace_cleanup`');
-      expect(readmeContent).toContain('vulnerability review accepts Git evidence only');
-      for (const content of [readmeContent, operatorGuideContent]) {
-        expect(content).toContain('32 files');
-        expect(content).toContain('16 MiB per file');
-        expect(content).toContain('32 MiB total');
-      }
+    it('documents thin ordinary review orchestrators over natural evidence', () => {
+      expect(operatorGuideContent).toContain('ordinary orchestrators over natural folders, inline text, or the current checkout');
+      expect(operatorGuideContent).toContain('hive_git_snapshot({ directory })');
+      expect(operatorGuideContent).toContain('ad-hoc worktree');
+      expect(hiveToolsContent).toContain('ordinary orchestrators over natural folders');
     });
   });
 
@@ -1935,7 +1896,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
 
   it('conditionally loads ad-hoc orchestration before preparing execution worktrees', () => {
     const triggerIndex = HIVE_BUILDER_PROMPT.indexOf('load `orchestrating-ad-hoc-work`');
-    const preparationIndex = HIVE_BUILDER_PROMPT.indexOf('hive_execution_prepare');
+    const preparationIndex = HIVE_BUILDER_PROMPT.indexOf('hive_adhoc_worktree_create');
 
     expect(triggerIndex).toBeGreaterThanOrEqual(0);
     expect(triggerIndex).toBeLessThan(preparationIndex);
@@ -1945,7 +1906,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('may use background execution');
     expect(HIVE_BUILDER_PROMPT).toContain('more than one worker attempt or turn');
     expect(HIVE_BUILDER_PROMPT).toContain('load `orchestrating-ad-hoc-work`');
-    expect(HIVE_BUILDER_PROMPT).toContain('before any ad-hoc worktree preparation');
+    expect(HIVE_BUILDER_PROMPT).toContain('before any ad-hoc worktree create');
     expect(HIVE_BUILDER_PROMPT).toContain('or delegated dispatch');
     expect(HIVE_BUILDER_PROMPT).toContain('one coherent lane is correct');
   });
@@ -1967,7 +1928,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('question()');
     expect(HIVE_BUILDER_PROMPT).toContain('advisory');
     expect(HIVE_BUILDER_PROMPT).toContain('continue ad-hoc only when material scope, contracts, and risks are otherwise resolved');
-    expect(HIVE_BUILDER_PROMPT).toContain('ask that concrete blocking question and do not prepare workers');
+    expect(HIVE_BUILDER_PROMPT).toContain('ask that concrete blocking question and do not create workers');
   });
 
   it('contains synthesis-before-delegation wording', () => {
@@ -1975,17 +1936,17 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('evidence');
     expect(HIVE_BUILDER_PROMPT).toContain('expected result');
     expect(HIVE_BUILDER_PROMPT).toContain('done criteria');
-    expect(HIVE_BUILDER_PROMPT).toContain('complete Forager context packet directly in the unchanged native `task.prompt`');
+    expect(HIVE_BUILDER_PROMPT).toContain('complete Forager context packet directly in the native `task.prompt`');
     expect(HIVE_BUILDER_PROMPT).toContain('Ordinary Scout, advisor, and reviewer packets also go in `task.prompt`');
   });
 
   it('uses the execution preparation surface with explicit ad-hoc completion tools', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('hive_existing_workspace_start');
-    expect(HIVE_BUILDER_PROMPT).toContain('hive_execution_prepare');
-    expect(HIVE_BUILDER_PROMPT).toContain('hive_execution_finish');
-    expect(HIVE_BUILDER_PROMPT).not.toContain(['hive', 'adhoc', 'worktree', 'commit'].join('_'));
-    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_merge');
-    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_cleanup');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_create');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_execution_prepare');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('hive_execution_finish');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_merge');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_cleanup');
     expect(HIVE_BUILDER_PROMPT).toContain('workspacePath');
     expect(HIVE_BUILDER_PROMPT).toContain('branch');
   });
@@ -2051,7 +2012,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     );
   });
 
-  it('documents armed native Forager attachment without removed launch authority', () => {
+  it('documents native Forager dispatch without removed launch authority', () => {
     const removed = [
       'launchId',
       ['hive', 'launch', 'id'].join('_'),
@@ -2060,8 +2021,6 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       ['background', 'Task', 'Call'].join(''),
       ['worker', 'Instructions'].join(''),
       ['hive', 'worktree', 'start'].join('_'),
-      ['hive', 'worktree', 'create'].join('_'),
-      ['hive', 'adhoc', 'worktree', 'create'].join('_'),
       ['hive', 'adhoc', 'worktree', 'start'].join('_'),
       'continueFrom: "blocked"',
       'pendingLaunches',
@@ -2072,33 +2031,13 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       ['Swarm', SWARM_BEE_PROMPT],
       ['Hive Builder', HIVE_BUILDER_PROMPT],
     ] as const) {
-      expect(prompt, name).toContain('including report-only diagnosis');
-      expect(prompt, name).toContain('hive_execution_prepare');
-      expect(prompt, name).toContain('hive_execution_finish');
-      expect(prompt, name).toContain('unchanged native');
-      expect(prompt, name).toContain('Unused arms expire after five minutes');
       expect(prompt, name).not.toContain('hive_existing_workspace_start');
+      expect(prompt, name).not.toContain('hive_execution_prepare');
+      expect(prompt, name).not.toContain('hive_execution_finish');
       for (const symbol of removed) expect(prompt, `${name}: ${symbol}`).not.toContain(symbol);
     }
-    expect(QUEEN_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
-    expect(QUEEN_BEE_PROMPT).toContain('preparation stays denied until authenticated stop evidence and primary finalization');
-    expect(QUEEN_BEE_PROMPT).toContain('generic terminal session status alone does not prove stop');
-    expect(QUEEN_BEE_PROMPT).toContain('Exact blocking task return or an authenticated native background completion notification');
-    expect(QUEEN_BEE_PROMPT).toContain('cannot reuse that run');
-    expect(SWARM_BEE_PROMPT).toContain('Attached or uncertain feature-task scopes remain quarantined');
-    expect(SWARM_BEE_PROMPT).toContain('preparation stays denied until authenticated stop evidence and primary finalization');
-    expect(SWARM_BEE_PROMPT).toContain('For ad-hoc work, retry after finalization may reuse the same `runId` worktree');
-    expect(SWARM_BEE_PROMPT).toContain('Retry while termination is unobserved cannot reuse that run; use a new ad-hoc `runId` and worktree');
-    expect(SWARM_BEE_PROMPT).toContain('without copying mutable progress from the uncertain run');
-    expect(HIVE_BUILDER_PROMPT).toContain('Retry after finalization may reuse the same `runId` worktree');
-    expect(HIVE_BUILDER_PROMPT).toContain('cannot reuse that run');
-    expect(QUEEN_BEE_PROMPT).toContain('without copying mutable progress from the uncertain run');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('supersede onto a fresh `attemptSlot` worktree');
-    expect(SWARM_BEE_PROMPT).toContain('claim remains held through `stopped` until `hive_execution_finish` reaches `finalized`');
-    expect(HIVE_BUILDER_PROMPT).toContain('claim remains held through `stopped` until `hive_execution_finish` reaches `finalized`');
-    expect(SWARM_BEE_PROMPT).not.toContain('Observed native termination settles the claim');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('Observed native termination settles the claim');
-    expect(QUEEN_BEE_PROMPT).toContain('then dispatch one unchanged native Forager `task()` call');
+    expect(QUEEN_BEE_PROMPT).toContain('hive_worktree_create');
+    expect(HIVE_BUILDER_PROMPT).toContain('hive_adhoc_worktree_create');
   });
 
   it('describes general and helper ownership without root reservation or capability fields', () => {
@@ -2108,10 +2047,8 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
       ['Hive Builder', HIVE_BUILDER_PROMPT],
     ] as const) {
       expect(prompt, name).toContain('ordinary `task()` call');
-      expect(prompt, name).toContain('consumes no arm');
-      expect(prompt, name).toContain('gains no Hive claim, managed context, or lifecycle authority');
+      expect(prompt, name).toContain('ordinary tools only');
       expect(prompt, name).toContain('Native helpers keep only their bounded operational permissions');
-      expect(prompt, name).toContain('they do not take a live claim on a worktree or the project root');
       expect(prompt, name).not.toContain(['hive', 'capability', 'reason'].join('_'));
       expect(prompt, name).not.toContain('reserve the active root');
     }
@@ -2157,11 +2094,8 @@ describe('Primary orchestration direct-work boundaries', () => {
       ['Swarm', SWARM_BEE_PROMPT],
       ['Hive Builder', HIVE_BUILDER_PROMPT],
     ] as const) {
-      expect(prompt, name).toContain('exactly one bounded read');
-      expect(prompt, name).toContain('exactly one bounded write/patch');
-      expect(prompt, name).toContain('one cheap final check');
-      expect(prompt, name).toContain('Anything requiring 2+ reads, 2+ patches, tests/debug loops');
-      expect(prompt, name).toContain('behavior-contract changes');
+      expect(prompt, name).toContain('There is no exact-one-read or exact-one-write quota');
+      expect(prompt, name).toContain('no blanket delegation quota');
     }
     for (const [name, prompt] of [
       ['Hive', QUEEN_BEE_PROMPT],

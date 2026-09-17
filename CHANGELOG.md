@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Managed execution uses exact registered worktree identity: multiple primaries may run on independent worktrees, one exact workspace has one managed writer, and unobserved execution quarantines only the affected worktree. Integration locking is operation-scoped. Background jobs remain observational bookkeeping, not ownership authority. Worktree and explicit in-place placements are armed through `hive_execution_prepare`; isolated worktrees are the managed Git placement. Cross-process exclusivity is unsupported.
-- The originating primary calls `hive_execution_finish` after exact native stop evidence. Worktree claims remain held through `stopped` until finalization. A finalized worktree may be reused only with its original repository selection. An attached, stopped, or otherwise unobserved feature-task attempt remains quarantined; an unobserved ad-hoc run cannot be reused and requires a new `runId` and worktree. Unused arms expire after five minutes.
+- Tool availability plus instructions govern action. Each tool validates its own operation. Task status and reports replace the attempt ledger. Public worktree families are `hive_worktree_create` / `inspect` / `merge` / `cleanup` and `hive_adhoc_worktree_*`. `hive_feature_select` routes context and constraints. Constraints accept `scope: session|feature`. Native `task_id` resume is allowed; use a fresh session for an independent unrelated goal.
+
+### Upgrade
+
+- Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread.
 
 ## [2.5.0] - 2026-09-08
 

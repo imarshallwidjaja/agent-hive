@@ -60,51 +60,6 @@ bun run build             # Build vscode-arkive VS Code extension
   - `PascalCase` for types, interfaces, classes
   - Descriptive function names (`readFeatureJson`, `ensureFeatureDir`)
 
-### TypeScript Patterns
-
-```typescript
-// Explicit type annotations
-interface FeatureInfo {
-  name: string;
-  path: string;
-  status: 'active' | 'completed';
-}
-
-// Classes for services
-export class FeatureService {
-  constructor(private readonly rootDir: string) {}
-  
-  async createFeature(name: string): Promise<FeatureInfo> {
-    // ...
-  }
-}
-
-// Async/await over raw promises
-async function loadConfig(): Promise<Config> {
-  const data = await fs.readFile(path, 'utf-8');
-  return JSON.parse(data);
-}
-```
-
-### File Organization
-
-```
-packages/
-├── hive-core/           # Shared logic (services, types, utils)
-│   └── src/
-│       ├── services/    # FeatureService, TaskService, PlanService, etc.
-│       ├── utils/       # paths.ts, detection.ts
-│       └── types.ts     # Shared type definitions
-├── opencode-hive/       # OpenCode plugin
-│   └── src/
-│       ├── agents/      # scout, swarm, hive, architect, forager, hygienic
-│       ├── mcp/         # websearch, grep-app, context7, ast-grep
-│       ├── tools/       # Hive tool implementations
-│       ├── hooks/       # Event hooks
-│       └── skills/      # Skill definitions
-└── vscode-hive/         # VS Code extension
-```
-
 ### Tests
 
 - Test files use `.test.ts` suffix
@@ -147,9 +102,9 @@ Require explicit dependency metadata for every generated subtask.
 5. **Batched Parallelism** - Delegate independent tasks to workers
 6. **Tests Define Done** - Workers do best-effort checks; orchestrator runs full test suite after batch merge
 7. **Review Integrated Security Boundaries** - Before completing security-sensitive work that spans tasks or lifecycle phases, adversarially review the merged implementation as a whole; task-local reviews and passing tests do not establish composition safety.
-8. **Iron Laws + Hard Gates** - Non-negotiable constraints per agent
+8. **Tool Exposure Governs Action** - Tool availability plus instructions govern agents; each tool validates its own operation
 9. **Cross-Model Prompts** — Agent prompts must work across all supported LLM providers. Use conditional triggers ("when X, do Y") instead of absolute mandates ("always do Y") or blanket defaults ("by default, do Y").
-10. **Deterministic Contracts Beat Soft Memory** — Prefer hard gates and deterministic tools over soft prompt-only memory when reliability matters.
+10. **Deterministic Contracts Beat Soft Memory** — Prefer hash-guarded tools and explicit schemas over prompt-only memory when reliability matters.
 
 ### Agent Roles
 
@@ -159,8 +114,8 @@ Require explicit dependency metadata for every generated subtask.
 | Architect | Plans features, interviews, writes plans. NEVER executes |
 | Swarm | Orchestrates execution. Delegates, spawns workers, verifies |
 | Hive Builder | Ad-hoc orchestrator for non-feature work; decomposes larger requests into coherent lane inventories and dependency waves, delegates non-trivial work, and tracks verification and integration. Parallel writers use distinct ad-hoc worktrees. Background mode only changes wait mode and board protocol. Available in both modes, not default |
-| Scout | Researches codebase + external docs/data |
-| Forager | Executes delegated work directly in the placement selected by `hive_execution_prepare` |
+| Scout | Researches codebase + external docs/data. Read-only |
+| Forager | Executes delegated work in the chosen workspace. Never delegates |
 | Hygienic | Reviews plan/code quality. OKAY/REJECT verdict |
 
 ### Data Model
@@ -172,14 +127,14 @@ Features stored in `.hive/features/<name>/`:
 .hive/features/my-feature/
 ├── feature.json       # Feature metadata
 ├── plan.md            # Execution plan (can include a readable design summary before ## Tasks)
-├── tasks/             # Per-task status.json, spec.md, and finalization reports
+├── tasks/             # Per-task status.json, spec.md, and reports
 └── context/           # Managed persistent context
     ├── index.json     # Revisioned kind and timestamp metadata
     ├── overview.md    # Reserved human-facing summary/history
     └── decisions.md   # Durable execution context
 ```
 
-Managed execution records live at `.hive/execution-attempts.json` (ExecutionAttempt history: `armed` -> `attached` -> `stopped` -> `finalized`). Worktree placement holds an exclusive claim through `stopped`; in-place placement records scope only and creates no filesystem exclusion. `.hive/background-jobs.json` is observational board bookkeeping, not an ownership registry. One-shot lease migration extracts leftover `sessions.json` `nativeTaskLeases`, deletes them from that file, stores them as `nativeTaskLeaseHistory`, and promotes exact worktree-path non-placeholder non-capability leases into unobserved attached ExecutionAttempt claims once. Migrated dispatched attempts and unmatched migrated leases stay `background: 'unknown'` unless one exact board record correlates the parent session, native call, and native task identity and therefore proves `background: true`. Board records never prove blocking mode; unmatched migrated attempts remain unknown. That is not an ongoing second admission API.
+Task status and reports are the execution record. There is no attempt ledger. Old attempt and lease files are unread. Useful plans, tasks, context, reports, and workspace files remain readable. `.hive/background-jobs.json` is observational board bookkeeping.
 
 ## Development Workflow
 
@@ -213,22 +168,18 @@ Use the utility functions from hive-core:
 ```typescript
 import { readJson, writeJson, fileExists, ensureDir } from './utils/fs.js';
 
-// Not: fs.readFileSync + JSON.parse
 const data = await readJson<Config>(path);
-
-// Not: fs.mkdirSync
 await ensureDir(dirPath);
 ```
 
 ### Error Handling
 
 ```typescript
-// Prefer explicit error handling
 try {
   const feature = await featureService.load(name);
   return { success: true, feature };
 } catch (error) {
-  return { 
+  return {
     error: `Failed to load feature: ${error.message}`,
     hint: 'Check that the feature exists'
   };
@@ -240,69 +191,63 @@ try {
 ```typescript
 import { getHiveDir, getFeatureDir } from './utils/paths.js';
 
-// Use path utilities, not string concatenation
 const hivePath = getHiveDir(rootDir);
 const featurePath = getFeatureDir(rootDir, featureName);
 ```
 
 ## Monorepo Structure
 
-This is a **bun workspaces** monorepo:
-
-```json
-{
-  "workspaces": ["packages/*"]
-}
-```
-
-- Dependencies are hoisted to root `node_modules/`
-- Each package has its own `package.json`
-- Run aggregate `build` and `test` scripts from the repository root. Run package-specific scripts and focused tests from the owning package directory.
+This is a **bun workspaces** monorepo. Dependencies are hoisted to root `node_modules/`. Each package has its own `package.json`. Run aggregate `build` and `test` scripts from the repository root. Run package-specific scripts and focused tests from the owning package directory.
 
 ## Hive - Feature Development System
 
-Plan-first development: Write plan → User reviews → Approve → Execute tasks
+Plan-first development: Write plan → User reviews → Approve → Execute tasks.
 
-### Hive Plugin Tools (33 standard + 7 workflow-only)
+Tool availability plus instructions govern action. Each tool validates its own operation.
+
+### Hive Plugin Tools
 
 | Domain | Tools |
 |--------|-------|
-| Feature | hive_feature_create, hive_feature_complete |
+| Feature | hive_feature_create, hive_feature_complete, hive_feature_select |
 | Repository Manifest | hive_repositories_status, hive_repositories_discover, hive_repositories_update |
 | Plan | hive_plan_write, hive_plan_patch, hive_plan_read, hive_plan_approve |
 | Task | hive_tasks_sync, hive_task_create, hive_task_update |
-| Execution | hive_execution_prepare, hive_execution_finish, hive_worktree_discard |
-| Integration | hive_merge, hive_adhoc_merge, hive_adhoc_cleanup |
+| Worktree | hive_worktree_create, hive_worktree_inspect, hive_worktree_merge, hive_worktree_cleanup |
+| Ad-hoc worktree | hive_adhoc_worktree_create, hive_adhoc_worktree_inspect, hive_adhoc_worktree_merge, hive_adhoc_worktree_cleanup |
 | Background Orchestration | hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel |
 | Runtime Session Inspection | hive_task_trace, hive_task_trace_content |
 | Context | hive_context_read, hive_context_write, hive_context_append, hive_context_archive |
 | Operator Constraints | hive_constraints_read, hive_constraints_add, hive_constraints_edit, hive_constraints_clear |
 | Status | hive_status |
-| Workflow-only Review | hive_git_snapshot, hive_review_evidence_resolve, hive_vulnerability_compare_report_read, hive_review_workspace_create, hive_review_workspace_claim, hive_review_workspace_inspect, hive_review_workspace_cleanup |
+| Snapshot | hive_git_snapshot (optional `directory`) |
 
-For `in_place` placement, `directory` must be a resolved absolute path to an existing directory. Expand shell shorthand such as `~` before calling the tool.
+Parent authors the native `task()` prompt. The runtime appends concise project, feature, and session constraints. Do not regenerate a native command payload.
 
-`hive_execution_prepare` arms exactly one next Forager dispatch for a task or ad-hoc scope. Placement is `worktree` (registered Git worktree with exclusive claims, commit, merge, and cleanup) or `in_place` (an explicit existing directory with no filesystem exclusion, rollback, commit, or merge). Preparation accepts no worker instructions, agent, or native task arguments. The primary then issues an unchanged native `task({ subagent_type, description, prompt, background? })` call. The before-hook consumes the sole arm, persists parent/call attachment, and appends a factual execution-scope footer plus the current standing-constraint snapshot without replacing the primary-authored prompt. A parent may hold only one undispatched arm; sequence `prepare A` then native Forager A, then `prepare B` then native Forager B. Parallel attached executions are allowed after each arm is consumed. `hive_existing_workspace_start` is unavailable. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement. In-place work is cooperative live editing: Hive does not promise confinement, private staging, or Git rollback.
+`hive_feature_select({ feature })` sets the active feature that routes context and constraints. `hive_feature_select({ feature: null })` clears it with no fallback. An explicit `feature` on a feature-scoped tool may select the current feature. Child capture is fixed at dispatch.
 
-Modern `hive_tasks_sync` reads numbered tasks only from `## Tasks`; pure suite or release checks belong in `## Final Verification` unless they write tracked artifacts. Feature-task worktrees appear in `hive_status`. Ad-hoc runs do not create feature/task records and do not appear there. Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`; they manage Hive's board around native background `task({ background: true, ... })` completion notifications and do not roll back files, branches, worktrees, commits, or reports. The board is observational bookkeeping. `hive_background_status` exposes board rows; `hive_status` is not that surface. Do not invent native task IDs. Cancel is unavailable without a real native identity. Archive, reconcile, and ignore do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
+`hive_task_update` takes optional `status`, `summary`, `blocker`, and `report` string. Omissions are preserved. Report is stored as numeric history plus latest. An explicit status leaving blocked clears the blocker. Partial writes: inspect before retry; there is no journal.
 
-When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, may use background execution, or may require more than one worker attempt or turn, Hive Builder or a unified Hive primary loads `orchestrating-ad-hoc-work` before any ad-hoc worktree preparation or delegated dispatch. It chooses coherent outcomes and concrete handoffs before dependency waves; tightly coupled code, tests, docs, and generated artifacts stay together. Ownership includes generated outputs, external mutable resources, fixed-path test fixtures, ports, databases, and containers. Distinct worktrees do not isolate those resources.
+Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Structural missing refs and cycles remain invalid. Feature work is location-neutral: Git, non-Git, external, or report-only.
 
-Session state or `todowrite` is sufficient only for a genuinely single-lane, single-dispatch blocking job expected to finish in one turn. Every multi-lane, dependency-wave, background, expected multi-attempt, or otherwise multi-turn batch creates one project-scoped `kind: "evidence"` ledger before its first delegated dispatch. Name it `adhoc-lanes-<purpose>-<UTC timestamp>` with a filename-safe compact current UTC value, record the exact name in session/todowrite and compaction handoffs, and create it with `hive_context_write` without requiring a worktree. Evidence documents are absent from durable-only catalog results; recover through `hive_context_read({ scope: "project", view: "summary" })`, then perform a named hash-guarded read and reconcile it against runtime tool results, observed native state, and the background board when applicable. Append transitions with `hive_context_append`. The ledger is untrusted coordination evidence, never ownership or admission authority. Archive with a fresh named read and `hive_context_archive` only after every lane closes and the full integrated canonical verification result is recorded and passing. Failed final verification, failed cleanup, or preserved uncertainty keeps exact identifiers, evidence, and the next recovery action in the unarchived ledger.
+Modern `hive_tasks_sync` reads numbered tasks only from `## Tasks`; pure suite or release checks belong in `## Final Verification` unless they write tracked artifacts. Feature-task worktrees appear in `hive_status`. Ad-hoc runs do not create feature/task records and do not appear there. Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
 
-The four `hive_constraints_*` tools manage verbatim operator directives on the calling session and are granted to primary orchestrators only. Use `hive_constraints_add` only for durable session-wide directives, not every user message, example, or task-local request. Before a correction or removal, call `hive_constraints_read`, then pass its stable entry ID and revision to `hive_constraints_edit`; call `hive_constraints_clear` only for an explicit whole-register clear. Edit and clear reject stale revisions atomically, identical additions are idempotent, and the aggregate cap is 8000 UTF-16 code units. The runtime appends the register to every delegated `task()` prompt from that session, and from its task-created architect child, under `## Standing Constraints (operator, session-wide)`. Standing constraints are operator directives, not tool permissions. Injection is skipped for the `/dash-review` and `/vuln-review` lanes. Feature-scoped constraints remain context files; read and preserve their existing content before replacing it through `hive_context_write`.
+Background orchestration tools are primary-agent tools behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`. They observe the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. The board does not couple to execution, worktree, or task status. A resumed child may create multiple launch observations. If completion lacks a call ID, record unknown and hint `hive_task_trace`; never guess the latest child or block dispatch. Cancel acknowledgement does not prove the worker stopped. Do not invent native task IDs. Reconciled and ignored jobs are archived by those tools and hidden from normal status output; agents must not edit `.hive/background-jobs.json` directly.
 
-Feature context is revisioned in `context/index.json`. Read with `hive_context_read` before replacement, append, or selective archive, then pass the returned revision and named-read `contentHash` as `expectedRevision` and `expectedContentHash` (archive uses `expectedContentHashes`). Non-reserved files are `durable` by default and enter worker/network context; `evidence` files remain available to explicit reads but are excluded from prompts. Select from the catalog by `description`/`read_when`; finish named chunks before whole-document replacement. Feature hygiene warnings begin strictly above 8 durable files or 40,000 UTF-16 units; project warnings begin strictly above 32 files or 160,000 units. These are review signals, not admission rejection. When they appear, load `context-engineering` and review; do not auto-consolidate, auto-promote, or archive on feature completion. `overview`, `draft`, and `execution-decisions` remain reserved and uncapped, and do not accept a caller-provided kind. Plan approval leaves draft cleanup explicit so archival failure cannot make a persisted approval appear unsuccessful. Project owner/date are accountability, not authority. Workers propose project updates and assignment conflicts to their parent. Tool schemas and recovery steps: `packages/opencode-hive/docs/HIVE-TOOLS.md` and `docs/OPERATOR-GUIDE.md`.
+When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, may use background execution, or may require more than one worker attempt or turn, Hive Builder or a unified Hive primary loads `orchestrating-ad-hoc-work` before any ad-hoc worktree create or delegated dispatch. It chooses coherent outcomes and concrete handoffs before dependency waves; tightly coupled code, tests, docs, and generated artifacts stay together. Ownership includes generated outputs, external mutable resources, fixed-path test fixtures, ports, databases, and containers. Distinct worktrees do not isolate those resources.
 
-The seven workflow-only tools are runtime-gated capabilities, not additional powers for standard roles. Review roles cannot call `hive_git_snapshot` directly; Stage A uses the one-shot `hive_review_evidence_resolve`. `/dash-review` accepts one Git, inline, or packet-fixed local-artifact kind. `/vuln-review` accepts Git only. Workspace create accepts only the invocation-bound resolution fingerprint plus the vulnerability source-resolution fingerprint when required.
+The four `hive_constraints_*` tools manage verbatim operator directives. Default scope is `session`; pass `scope: "feature"` for feature constraints. Use `hive_constraints_add` only for durable directives, not every user message, example, or task-local request. Before a correction or removal, call `hive_constraints_read`, then pass its stable entry ID and revision to `hive_constraints_edit`; call `hive_constraints_clear` only for an explicit whole-register clear. Edit and clear reject stale revisions atomically, identical additions are idempotent, and the aggregate cap is 8000 UTF-16 code units. Inherited session and feature labels travel with the child captured at dispatch. If they conflict, the agent surfaces the conflict. Do not promote context files into constraints. Only primaries can add, edit, or clear constraints. Workers receive the injected register and may read it. That is tool exposure, not a semantic runtime gate. Injection is skipped for the `/dash-review` and `/vuln-review` lanes.
 
-`hive_git_snapshot` is a low-level diagnostic rather than a normal agent interface. It is gated by a positive authorization decision that requires a non-empty authenticated agent and session identity, no review policy role, no active review invocation or consumer reservation, and no review-lane or frozen-workspace recipient status. Built-in Hive agents do not receive it in their allowlists, so direct use requires explicit custom exposure. It returns a versioned `hive-git-snapshot/v1` envelope: `ready` carries a snapshot whose `consistency: "validated"` asserts that changed paths, patch material, and fingerprint describe one validated generation, and `failed` carries structured codes, phases, and retry semantics. Capture is bracketed by a generation check that fails with `SOURCE_DRIFT` instead of returning material from two generations, and one 15-second operation deadline covers the whole capture. Shape, failure codes, per-section omissions, and hard limits: `packages/opencode-hive/docs/HIVE-TOOLS.md`.
+Feature context is revisioned in `context/index.json`. Read with `hive_context_read` before replacement, append, or selective archive, then pass the returned revision and named-read `contentHash` as `expectedRevision` and `expectedContentHash` (archive uses `expectedContentHashes`). Non-reserved files are `durable` by default and enter worker/network context; `evidence` files remain available to explicit reads but are excluded from prompts. Select from the catalog by `description`/`read_when`; finish named chunks before whole-document replacement. Feature hygiene warnings begin strictly above 8 durable files or 40,000 UTF-16 units; project warnings begin strictly above 32 files or 160,000 units. These are review signals, not admission rejection. When they appear, load `context-engineering` and review; do not auto-consolidate, auto-promote, or archive on feature completion. `overview`, `draft`, and `execution-decisions` remain reserved and uncapped, and do not accept a caller-provided kind. Plan approval leaves draft cleanup explicit so archival failure cannot make a persisted approval appear unsuccessful. Project owner/date are accountability, not authority. Foragers and reviewers write feature and project context through revision and content-hash checks. Scout is read-only. Archive is primary-only. Newer notes do not rewrite a running assignment. Tool schemas: `packages/opencode-hive/docs/HIVE-TOOLS.md` and `docs/OPERATOR-GUIDE.md`.
+
+`hive_git_snapshot` is a low-level diagnostic with an optional `directory` for a foreign checkout. It returns a versioned `hive-git-snapshot/v1` envelope. Shape, failure codes, per-section omissions, and hard limits: `packages/opencode-hive/docs/HIVE-TOOLS.md`.
 
 **Standard tool access is filtered per agent role:**
-- **Hive** — all 33 standard tools (hybrid agent)
+- **Hive** — standard tools (hybrid agent)
 - **Swarm, Architect, and Hive Builder** — all four context tools: read, write, append, and archive
-- **Forager and Scout** — context read, append, and write. Their prompts permit write only for explicit creation because tool permissions cannot constrain arguments; replacement still requires a revision at runtime.
-- **Review roles** — context read, append, and write where their existing persistence contract allows it; selective archive remains primary-orchestrator-only.
+- **Forager** — context read, append, and write for feature and project scope, including hash-guarded replacement
+- **Scout** — context read only
+- Archive is primary-only. Constraint mutation is primary-only; workers receive injection and may read. Platform permissions remain.
 
 Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `skills.urls`, or `.opencode`/`.claude` discovery), not through a Hive plugin tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered ahead of user paths.
 
@@ -314,82 +259,49 @@ Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `s
 3. User adds comments in VSCode → `hive_plan_read` to see them
 4. Revise plan → User approves
 5. `hive_tasks_sync()` - Generate tasks from plan
-6. `hive_execution_prepare({ scope: { kind: "task", task }, placement: { kind: "worktree" } })` → unchanged native Forager `task()` → structured stop → originating-primary `hive_execution_finish`
-7. `hive_merge(task[, strategy, message])` - Merge a finalized completed task branch (when ready)
-
-**Important:** `hive_execution_finish` records disposition and, for worktree placement, commits under the crash-safe journal. It does not merge. Use `hive_merge` to integrate. Worktrees persist until explicitly removed.
-`hive_worktree_discard` omits `attemptId` for the current task worktree, or accepts a finalized non-current attempt when removing historical worktree state. Discard is refused while the source worktree has an attached, stopped, or otherwise unobserved claim.
+6. Optionally `hive_worktree_create` then native Forager `task()`; or work in place / report-only
+7. `hive_task_update` records status, summary, blocker, or report
+8. `hive_worktree_merge` then `hive_worktree_cleanup` when a Git worktree was used
 
 `summary` remains task/report context; `message` controls git commit/merge text and is required whenever the operation creates a commit.
 Every created commit message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
 Feature and ad-hoc integration default to squash with an explicit polished aggregate message. Use rebase or normal merge only for intentionally structured history where every preserved source commit is independently valuable and satisfies the same message contract; normal merge also requires a valid aggregate message. Do not rely on generic hive/task/run IDs in project history.
-Do not provide a non-blank `message` when using `hive_merge(..., strategy: 'rebase')`.
+Do not provide a non-blank `message` when using rebase.
 
-If a completed task branch has no net tracked changes, `hive_merge` returns `success: true`, `merged: false`, `reasonCode: 'NO_TRACKED_CHANGES'`, and no `sha`; requested cleanup can still run when safe. Use `hive_status.helperStatus.mergeEligibility` as the task/worktree-aware state surface before merge or cleanup decisions. Merge requires finalized execution and every live source HEAD to equal the committed receipt SHA or the no-change baseline HEAD. Native stop alone is not merge eligibility. Integration locking is operation-scoped (source worktree, destination checkout, and composite repositories). Two integrations into the same destination checkout serialize. Integration is refused while the source worktree has an active writer. Unrelated worktrees may keep executing when source and destination do not conflict. `hive_execution_finish` persists intent first, then per-repository receipts, an immutable report, generation-guarded disposition, and `finalized` last; retry the same input after interruption. A commit can be adopted only when HEAD parent, tree, and exact message match the receipt.
+Git helpers do not change task status, auto-commit source, or assign workers. An assignment may authorize an ordinary source Git commit. Orchestration merge via `hive-helper` owns integration. Merge wants a clean source and dest pinned SHA. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch. Composite partial outcomes are not rolled back.
 
 ### Delegated Execution
 
-Multiple primary sessions in one project are supported through isolated worktrees. The same exact registered workspace may have only one managed writer at a time. Two executions conflict when their exact registered worktree identity sets intersect. Composite claims cover the explicit registered worktree set. Generic ancestor or descendant filesystem containment is not the conflict model. Declared file ownership is not a concurrency guarantee. Uncertainty quarantines only the affected worktree. Integration locking is operation-scoped. Background jobs are observational bookkeeping, not ownership authority. Cross-process process supervision is unsupported. `hive_existing_workspace_start` is unavailable.
+Parent chooses direct work, delegation, or a worktree from the situation. There is no exact-one-read or exact-one-write quota and no blanket delegation quota.
 
-Forager is the default execution role. Native `general` is an ordinary `task()` call: it consumes no arm and gains no Hive claim, managed context, or lifecycle authority. General has ordinary tools only, no Hive authority, recursion, or questions. Helper calls retain bounded operational permissions. Neither call is a managed placement.
+Forager is the default execution role. Native `general` is an ordinary `task()` call with ordinary tools only. Helper calls retain bounded operational permissions.
 
-Canonical Forager flow:
+Author the native Forager `task({ subagent_type, description, prompt, background? })` prompt. The runtime appends concise project, feature, and session constraints.
 
-1. `hive_execution_prepare` with exact task or ad-hoc scope and `worktree` or `in_place` placement. It returns `attemptId`, scope, placement facts, references, expiry, and lifecycle reminders. IDs returned here are Hive lifecycle selectors, never native task arguments.
-2. Issue one unchanged native Forager `task({ subagent_type, description, prompt, background? })`. The primary authors those fields. The runtime consumes the sole arm, persists parent/call attachment before dispatch continues, and appends execution scope plus the dispatch-time standing-constraint snapshot. Caller-supplied headings do not suppress real injection.
-3. Observe structured stop evidence for that exact parent/call. A blocking `task()` return with defined output is terminal. A background task is terminal only on an authenticated native completion notification for the stored task/job identity. Worker prose, board state, `task_status` samples, idle events, timeouts, undefined after-hook output, and cancel acknowledgement are not stop evidence.
-4. Originating primary calls `hive_execution_finish({ attemptId, status, summary, blocker?, message? })`. Blocked status requires `blocker.reason` to be nonblank; blocker data on other statuses is invalid. Worktree placement commits through the crash-safe journal when a message is supplied. In-place and blocked finalization reject commit messages and skip Git. Worker text is report input, not authorization to finish.
-5. Git integration remains explicit: `hive_merge` or `hive_adhoc_merge`, then cleanup. Merge requires finalized execution, matching receipt SHAs or no-change baselines, and no active source writer.
+Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal.
 
-Four placements use that same sequence:
-
-- Git feature task: prepare task/worktree, native Forager, stop, finish with report and commit, then `hive_merge`.
-- Git ad-hoc work: prepare ad-hoc/worktree, native Forager, stop, finish with report and commit, then `hive_adhoc_merge`.
-- Non-Git ad-hoc work: prepare ad-hoc/in-place for an explicit directory, native Forager with live-edit instructions, stop, finish with a report only.
-- Feature-scoped non-Git work: prepare task/in-place, native Forager, retain feature catalog/context access, stop, finish task state without Git.
-
-An ad-hoc run must merge or clean up its finalized registered worktree before switching to in-place placement. This keeps historical worktree integration reachable without introducing a second attempt-scoped integration API.
-
-Independent worktrees whose registered identities do not intersect may be prepared and dispatched under one parent. Starting the same task twice allocates atomically one active attempt; the second caller is rejected or returned the existing attempt. Unused arms expire after five minutes. Unobserved native execution quarantines only that worktree. Cancel acknowledgement is not proof of termination; live claims remain until termination is observed. There is no automatic claim release or force bypass.
-
-Recover missing native binding from exact parent/call metadata only; never guess the latest child or infer ownership from prose or placeholders such as `forager-child`. Do not treat a `ses_` prefix as identity validation. If native evidence cannot establish that the old execution stopped, the attempt is unobserved: preserve that workspace and do not reset, copy, or delete it. Never copy mutable progress from a potentially live writer. A feature-task worktree remains quarantined until authenticated stop evidence is recorded and the originating primary finalizes it. For ad-hoc work, retry after finalization may reuse the same `runId` worktree. Retry while termination is unobserved cannot reuse that run; start a new ad-hoc `runId` and worktree. Archive, reconcile, ignore, restart, and expiry do not settle an attempt or authorize retry in the same workspace.
-
-Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive placement. In-place placement does not isolate that directory from other processes.
-
-Ordinary Scout, advisor, and reviewer packets go in `task.prompt` and do not consume a Forager arm. Gate-closed sessions use blocking native `task()`. Gate-open sessions may add `background: true` only when independent foreground work can continue.
-
-One native `task()` launch has one primary goal, one fresh subagent session, and one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, and split independently verifiable outcomes into fresh launches. Never pass `task_id` to `task()`: returned task IDs are observe-only handles for status, reconciliation, cancellation, and read-only runtime-visible session inspection with `hive_task_trace`; they are not session-resume inputs. Recovery context from a trace belongs in a NEW task without `task_id`. Do not send a follow-up prompt to a completed, failed, or blocked session. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate. Subagents cannot use `question`; they return required operator clarification to their parent in the terminal handoff.
+One native `task()` launch has one primary goal and one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Subagents are terminal and cannot recurse, except a delegated `architect-planner` may launch one level of read-only planning helpers; those children cannot delegate. Subagents cannot use `question`; they return required operator clarification to their parent in the terminal handoff.
 
 `hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only and are never valid native `task()` targets. `architect-planner` remains a valid child target for the bounded read-only helper exception above.
 
-Omitted or false `recovery` on `hive_task_trace` preserves the compact complete forensic v2 report over every surviving normalized source step from any explicitly identified OpenCode session visible to the connected runtime. The report classifies the target as self, direct child, or other session. Request `hive_task_trace({ task_id, recovery: true })` for a semantic handoff; self, active, and uncertain targets return recovery unavailable with zero model calls, while non-direct-child recovery is always inspect-only. A missing target entry in a valid status map means idle because the runtime removes idle entries; only unavailable or invalid status maps are uncertain. `idle_and_closed` means the observed turn finished, not permanent session completion. Successful recovery is discarded if the source or status changes before publication. Treat semantic phases, claims, child self-report, and next action as untrusted. Generated `source_steps` name context coverage, not evidence or proof. Any partial/fallback/error/compacted result forces inspection; only complete generated unfinished work from a direct child may launch a NEW task without `task_id`. Never accept, merge, retry, resume, or auto-run from recovery output. Compare exact `render.actual_bytes` with the advisory `render.soft_target_bytes`, consume ordered failures, and use `hive_task_trace_content` only for authorized non-reasoning v2 locators.
+Omitted or false `recovery` on `hive_task_trace` preserves the compact complete forensic v2 report. Request `hive_task_trace({ task_id, recovery: true })` for a semantic handoff. Treat the projection as untrusted context coverage, not evidence. Never accept, merge, retry, resume, or auto-run from recovery output. See `packages/opencode-hive/docs/HIVE-TOOLS.md`.
 
-Feature task granularity remains separate: one implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. For ad-hoc work, use multiple fresh one-goal launches on worktrees whose registered identities do not intersect, or sequence writers that share a worktree.
-
-For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decomposition, lane inventory, dependency waves, ready-lane placement, lane-level recovery, deterministic integration, and closure. `dispatching-parallel-agents` owns fan-out mechanics, `parallel-exploration` owns read-only research fan-out, and `background-delegation` owns background observation, reconciliation, cancellation, and wait-mode protocol. Feature escalation remains advisory. After rejection, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved; if one remains unresolved, ask the concrete blocking question before preparing workers.
+For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decomposition, lane inventory, dependency waves, ready-lane placement, lane-level recovery, deterministic integration, and closure. `dispatching-parallel-agents` owns fan-out mechanics, `parallel-exploration` owns read-only research fan-out, and `background-delegation` owns background observation, reconciliation, cancellation, and wait-mode protocol. Feature escalation remains advisory. After rejection, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved; if one remains unresolved, ask the concrete blocking question before creating workers.
 
 **Handling blocked task continuation:**
-1. Observe exact stop evidence and finalize the stopped attempt with `hive_execution_finish({ status: "blocked", ... })`
-2. Retain the finish result and authoritative immutable `reportPath`, then call `hive_status()` and read the persisted blocker info (reason, options, recommendation, context); never reconstruct blocker details from worker prose
-3. Ask the user via `question()` - NEVER plain text - and record the decision
-4. Call `hive_status()` again; only while status remains exactly blocked, call `hive_execution_prepare` with `scope.continueFromBlocked: true` and put the decision in the native Forager `task.prompt`
+1. `hive_task_update` with blocked status and blocker
+2. Ask the user via `question()` - NEVER plain text
+3. `hive_task_update` with an explicit status leaving blocked, which clears the blocker
+4. Put the decision in the next worker prompt
 
-**CRITICAL**: Blocked continuation starts a NEW worker using the SAME finalized placement: exact registered worktree identities or exact resolved in-place directory.
-The previous worker's progress is preserved. The operator decision belongs in the fresh primary-authored native prompt.
+Configured reviewer descriptions guide selection. Explicit operator-required review targets must be honored. No agent may silently skip required configured review targets.
 
-Failed or partial recovery branches on exact stop evidence. If evidence is absent, inspect with `hive_task_trace`, wait when execution may still be live, and keep the placement quarantined; do not call `hive_execution_finish`, prepare a retry, or create an alternate placement. Only a stopped attempt may be finalized. After finalization and a fresh `hive_status()` check, failed or retry work may start with a new worker and a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation. After compaction, recover managed context with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Keep exact IDs. Do not replay historical assignment bodies.
-
-Root relocation: the old recipient remains denied. An authenticated primary at the newly trusted canonical root allocates a fresh task attempt and establishes a fresh authenticated child binding. Ad-hoc relocation requires a fresh authenticated run. Old persisted metadata remains inert history; never edit roots to rebind it, follow the stored former root, or suggest root migration/aliases. Seamless continuation is intentionally sacrificed. Exact-worktree registration is the Git integrity prerequisite, not trusted repository/common-directory containment alone. Direct the operator to prepare/recreate an independently valid workspace, then launch fresh. Do not rewrite `.git` or administration metadata, repair worktrees automatically, or treat error notices as empty catalogs. Never delete an index to restore classification. Details: `docs/OPERATOR-GUIDE.md` and `context-engineering`.
-
-No agent may silently skip required configured review targets.
+`/dash-review` and `/vuln-review` are ordinary orchestrators over natural folders, inline text, or the current checkout. Optional `hive_git_snapshot({ directory })` and an ad-hoc worktree cover a foreign PR or ref. Lanes are adaptive. Methods and prior-finding comparison remain.
 
 **After task() Returns:**
-- task() is BLOCKING by default — when it returns with defined output, that is structured stop evidence for the exact call
-- Originating primary calls `hive_execution_finish` before treating the task as complete or merge-eligible. Native stop alone never satisfies dependencies or integration.
-- Call `hive_status()` after finalization to check the new task state and find next runnable tasks
-- Prefer structured worker-result envelopes over free-form completion interpretation when extending worker/orchestrator flows
-- When opencode is launched with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`, primary agents may load and use the bundled `background-delegation` skill and call `task({ background: true, ... })` only for independent work where useful foreground work can continue. Use blocking native `task()` when the next meaningful step depends on the worker. Preparing an execution does not create background board state; board state begins only when the parent launches the ordinary native background task. Wait for the native completion notification and refresh `hive_background_status` before dependent decisions. If status returns wait-only scheduler guidance, do not refresh repeatedly until the native notification arrives or the lane becomes stale, wrong, or no longer needed. Treat `recommendedNextAction` and `requiresHiveStatusRefresh` as board-local scheduler hints, not merge readiness. Board rows may appear on `hive_background_status` without a native task ID; `hive_status` is not that surface. Exact later callbacks can update board visibility and provide authenticated stop evidence; they do not settle an ExecutionAttempt. Archive, reconcile, and ignore archive the board row and do not stop execution, release a workspace, settle an attempt, or authorize retry in the same workspace. TTL sweeps unused arms only. Cancellation is owner-scoped; cancel acknowledgement is not proof of termination.
-- The subagent depth and clarification contract above also applies to custom derived subagents.
+- task() is BLOCKING by default — when it returns with defined output, the worker is done for that call
+- Call `hive_task_update` as needed, then `hive_status()`
+- When the background experiment is enabled, load `background-delegation` for wait mode and board protocol. Cancel acknowledgement is not proof of termination.
 
 ### Sandbox Configuration
 

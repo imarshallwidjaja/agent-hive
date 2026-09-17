@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ## Requirements
 
-Managed Forager execution uses either an isolated Git `worktree` placement or an explicit existing `in_place` directory. Worktree placement provides managed Git commit and integration; in-place placement records disposition without Git isolation, rollback, commit, or merge. Direct foreground OpenCode work is unmanaged OpenCode work, not a Hive placement. See the [Operator Guide](docs/OPERATOR-GUIDE.md#execution-ownership) for admission, live claims, and recovery.
+Feature work is location-neutral: a Git worktree, the current checkout, a non-Git directory, or report-only. Worktree tools provide optional Git isolation and integration; they do not assign workers or change task status. See the [Operator Guide](docs/OPERATOR-GUIDE.md).
 
 - [OpenCode](https://opencode.ai) `>= 1.18.30` (peer dependency of `oc-arkive`; required for native `tool.definition` and task attachment hooks)
 - Worktree workflows require a project whose work resolves to one or more git repositories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
@@ -46,16 +46,13 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
    VS Code, add comments, and request changes until the plan is clear.
 3. Approve the plan with `/approve-sync-plan` or ask the agent to approve and
    sync it. Hive creates the executable task records.
-4. Start execution with `/start-execution`. The primary selects `worktree` or
-   `in_place` placement for each task, then tracks dependencies and progress.
-5. Each worker runs task-level, best-effort checks in its isolated Git worktree
-   or explicit in-place directory. After exact native stop evidence, the
-   originating primary calls `hive_execution_finish`. The operator/orchestrator
-   inspects completed worker output and the returned report path.
-6. Merge completed worktree task branches. An in-place task has no Hive Git
-   merge step.
-7. Run fresh build/test verification against the merged worktree result or the
-   live in-place target.
+4. Start execution with `/start-execution`. The primary chooses direct work,
+   delegation, or a worktree from the situation, then tracks dependencies and progress.
+5. Each worker runs task-level, best-effort checks. The primary
+   records status and reports with `hive_task_update`.
+6. Merge completed worktree task branches with `hive_worktree_merge`. In-place
+   or report-only work has no Hive Git merge step.
+7. Run fresh build/test verification against the merged result or the live target.
 8. Mark the feature complete only after that target verification passes.
 
 ## What you can run
@@ -66,15 +63,15 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
 | `/interview` | Clarify an idea toward a reliable implementation-brief handoff | `/interview <idea>` |
 | Feature | Plan review, task dependencies, isolated task worktrees, or a durable audit trail | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
-| `/dash-review` | Read-only Git, process/concept, or local-artifact review in one frozen workspace | `/dash-review [intent] [--artifact <file>]` |
-| `/vuln-review` | Authorized bounded static security review of one frozen snapshot | `/vuln-review [intent] [flags]` |
+| `/dash-review` | Read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
+| `/vuln-review` | Authorized bounded static security review | `/vuln-review [intent] [flags]` |
 
 By default (dedicated mode), `architect-planner` and `swarm-orchestrator` handle
 feature work and `hive-builder` handles ad-hoc work. Set `"agentMode": "unified"`
 for one hybrid `hive-master` that can coordinate both. `/dash-review` and
 `/vuln-review` always bind to separate review primaries.
 
-For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, either ad-hoc seat loads `orchestrating-ad-hoc-work` before worktree preparation or delegated dispatch. Every qualifying batch creates a timestamp-named project evidence ledger before its first dispatch without requiring a worktree. The ledger remains unarchived until every lane closes and the full integrated canonical verification result is recorded and passing; failed verification, cleanup, or uncertain execution records the next recovery action instead. Rejected feature escalation continues ad-hoc only after material scope, contracts, and risks are resolved.
+For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, either ad-hoc seat loads `orchestrating-ad-hoc-work` before worktree create or delegated dispatch. Rejected feature escalation continues ad-hoc only after material scope, contracts, and risks are resolved.
 
 ## Agents at a glance
 
@@ -89,7 +86,7 @@ are in both modes.
 | `hive-master` | Hybrid planner and orchestrator. Unified-mode default. |
 | `hive-builder` | Ad-hoc orchestrator. No feature or task DAG. |
 | `scout-researcher` | Retrieves bounded source evidence; does not own diagnosis, tradeoffs, or solution selection. |
-| `forager-worker` | Implements in the placement selected by `hive_execution_prepare`; diagnosis-only work is report-only. Never delegates. |
+| `forager-worker` | Implements in the chosen workspace; diagnosis-only work is report-only. Never delegates. |
 | `plan-reviewer` | Checks whether a plan is worker-executable. |
 | `code-reviewer` | Checks an implementation against the task or plan. |
 | `simplicity-reviewer` | Deletion-biased cleanup of a completed diff. |
