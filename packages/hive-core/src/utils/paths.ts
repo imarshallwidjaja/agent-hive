@@ -15,6 +15,14 @@ const STATUS_FILE = 'status.json';
 const REPORT_FILE = 'report.md';
 const APPROVED_FILE = 'APPROVED';
 
+export const FEATURE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+export function assertValidFeatureName(name: string): void {
+  if (!FEATURE_NAME_PATTERN.test(name)) {
+    throw new Error(`Invalid feature name: ${JSON.stringify(name)}`);
+  }
+}
+
 export function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, '/');
 }
@@ -29,10 +37,6 @@ export function getFeaturesPath(projectRoot: string): string {
 
 export function getGlobalSessionsPath(projectRoot: string): string {
   return path.join(getHivePath(projectRoot), 'sessions.json');
-}
-
-export function getExecutionAttemptsPath(projectRoot: string): string {
-  return path.join(getHivePath(projectRoot), 'execution-attempts.json');
 }
 
 export function getProjectContextPath(projectRoot: string): string {
@@ -86,6 +90,7 @@ export function listFeatureDirectories(projectRoot: string): FeatureDirectoryInf
 }
 
 export function resolveFeatureDirectoryName(projectRoot: string, featureName: string): string {
+  assertValidFeatureName(featureName);
   const directPath = path.join(getFeaturesPath(projectRoot), featureName);
   if (fs.existsSync(directPath)) {
     return featureName;
@@ -96,6 +101,7 @@ export function resolveFeatureDirectoryName(projectRoot: string, featureName: st
 }
 
 export function getNextIndexedFeatureDirectoryName(projectRoot: string, featureName: string): string {
+  assertValidFeatureName(featureName);
   const indexedEntries = listFeatureDirectories(projectRoot).filter((entry) => entry.index !== null);
   const nextIndex = indexedEntries.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
   return `${String(nextIndex).padStart(2, '0')}_${featureName}`;

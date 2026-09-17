@@ -167,7 +167,7 @@ describe('background task lifecycle hook support', () => {
     }
   });
 
-  it('rejects configured default primary task() calls with task_id when input.agent is omitted', async () => {
+  it('allows native same-child resume calls with task_id', async () => {
     const testRoot = `/tmp/hive-fresh-session-task-id-reject-${process.pid}`;
     const originalBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     fs.rmSync(testRoot, { recursive: true, force: true });
@@ -200,20 +200,21 @@ describe('background task lifecycle hook support', () => {
         { message: { agent: defaultAgent }, parts: [] } as never,
       );
 
-      await expect(
-        hooks['tool.execute.before']?.(
+      const resumed = {
+        args: {
+          description: 'Resume worker',
+          prompt: 'continue previous worker',
+          subagent_type: 'forager-worker',
+          task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
+          background: true,
+        },
+      };
+      await hooks['tool.execute.before']?.(
           { tool: 'task', sessionID: 'sess_primary_fresh', callID: 'call_resume' } as never,
-          {
-            args: {
-              description: 'Resume worker',
-              prompt: 'continue previous worker',
-              subagent_type: 'forager-worker',
-              task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
-              background: true,
-            },
-          } as never,
-        ),
-      ).rejects.toThrow(/fresh-session|task_id|new-launch|without task_id/i);
+          resumed as never,
+        );
+      expect(resumed.args.prompt).toContain('continue previous worker');
+      expect(resumed.args.prompt).toContain('Hive route snapshot');
 
       expect(fs.existsSync(path.join(testRoot, '.hive', 'background-jobs.json'))).toBe(false);
 
@@ -222,16 +223,19 @@ describe('background task lifecycle hook support', () => {
         { args: { task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' } } as never,
       );
 
-      await expect(hooks['tool.execute.before']?.(
+      const fresh = {
+        args: {
+          description: 'Hive: 01-first-task',
+          prompt: 'Follow instructions in @worker-prompt.md',
+          subagent_type: 'forager-worker',
+        },
+      };
+      await hooks['tool.execute.before']?.(
         { tool: 'task', sessionID: 'sess_primary_fresh', callID: 'call_fresh' } as never,
-        {
-          args: {
-            description: 'Hive: 01-first-task',
-            prompt: 'Follow instructions in @worker-prompt.md',
-            subagent_type: 'forager-worker',
-          },
-        } as never,
-      )).rejects.toThrow(/launch_binding_error[\s\S]*hive_execution_prepare/);
+        fresh as never,
+      );
+      expect(fresh.args.prompt).toContain('Follow instructions in @worker-prompt.md');
+      expect(fresh.args.prompt).toContain('Hive route snapshot');
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
       if (originalBackgroundEnv === undefined) {

@@ -12,9 +12,12 @@ import {
   readJson,
   writeJson,
   fileExists,
+  assertValidFeatureName,
 } from '../utils/paths.js';
 import type { FeatureJson, FeatureStatusType, TaskInfo, FeatureInfo, TaskStatus } from '../types.js';
 import { ReviewService } from './reviewService.js';
+
+export { FEATURE_NAME_PATTERN, assertValidFeatureName } from '../utils/paths.js';
 
 export class FeatureService {
   private reviewService: ReviewService;
@@ -30,6 +33,7 @@ export class FeatureService {
   }
 
   create(name: string, ticket?: string): FeatureJson {
+    assertValidFeatureName(name);
     const existingFeature = listFeatureDirectories(this.projectRoot).find((feature) => feature.logicalName === name);
     if (existingFeature) {
       throw new Error(`Feature '${name}' already exists`);

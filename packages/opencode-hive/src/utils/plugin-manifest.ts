@@ -22,6 +22,7 @@ export { HIVE_COMMANDS };
 
 export const HIVE_TOOL_NAMES = [
   'hive_feature_create',
+  'hive_feature_select',
   'hive_feature_complete',
   'hive_repositories_status',
   'hive_repositories_discover',
@@ -33,12 +34,14 @@ export const HIVE_TOOL_NAMES = [
   'hive_tasks_sync',
   'hive_task_create',
   'hive_task_update',
-  'hive_execution_prepare',
-  'hive_execution_finish',
-  'hive_worktree_discard',
-  'hive_merge',
-  'hive_adhoc_merge',
-  'hive_adhoc_cleanup',
+  'hive_worktree_create',
+  'hive_worktree_inspect',
+  'hive_worktree_merge',
+  'hive_worktree_cleanup',
+  'hive_adhoc_worktree_create',
+  'hive_adhoc_worktree_inspect',
+  'hive_adhoc_worktree_merge',
+  'hive_adhoc_worktree_cleanup',
   'hive_background_status',
   'hive_background_reconcile',
   'hive_background_reconcile_batch',
@@ -55,12 +58,6 @@ export const HIVE_TOOL_NAMES = [
   'hive_constraints_clear',
   'hive_status',
   'hive_git_snapshot',
-  'hive_review_evidence_resolve',
-  'hive_vulnerability_compare_report_read',
-  'hive_review_workspace_create',
-  'hive_review_workspace_claim',
-  'hive_review_workspace_inspect',
-  'hive_review_workspace_cleanup',
 ] as const;
 
 export const SUPPORTED_PLUGIN_HOOKS = [
@@ -69,7 +66,6 @@ export const SUPPORTED_PLUGIN_HOOKS = [
   'chat.message',
   'experimental.chat.system.transform',
   'experimental.chat.messages.transform',
-  'command.execute.before',
   'tool.execute.before',
   'tool.execute.after',
 ] as const;

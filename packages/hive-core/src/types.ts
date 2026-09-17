@@ -88,8 +88,6 @@ export interface TaskStatus {
   baseCommits?: Record<string, string>;
   repoIds?: string[];
   subtasks?: Subtask[];
-  /** Current worker launch generation (1-based), used for stale-attempt CAS. */
-  workerAttempt?: number;
   /**
    * Task dependencies expressed as task folder names (e.g., '01-setup', '02-core-api').
    * A task cannot start until all its dependencies have status 'done'.
@@ -269,8 +267,6 @@ export interface SessionInfo {
   taskFolder?: string;
   projectRoot?: string;
   adHocRunId?: string;
-  /** Immutable active workspace assigned to a delegated execution session. */
-  executionWorkspacePath?: string;
   agent?: string;
   baseAgent?: string;
   sessionKind?: SessionKind;
@@ -285,160 +281,9 @@ export interface SessionInfo {
   messageCount?: number;
 }
 
-export interface NativeTaskLease {
-  parentSessionId: string;
-  callId: string;
-  agent: string;
-  projectRoot: string;
-  resourcePaths: string[];
-  runtimeId: string;
-  capabilityReason?: string;
-  /** Ownership only; prepared runtime assignment provenance grants Forager authority. */
-  foragerLaunchId?: string;
-  childSessionId?: string;
-  terminal?: boolean;
-}
-
 export interface SessionsJson {
   master?: string;
   sessions: SessionInfo[];
-  nativeTaskLeases?: NativeTaskLease[];
-  /** Set to 2 after NativeTaskLease values are extracted into execution-attempts history. */
-  executionOwnershipVersion?: 2;
-}
-
-export const EXECUTION_ATTEMPTS_SCHEMA_VERSION = 2;
-export const EXECUTION_OWNERSHIP_VERSION = 2;
-export const ARMED_ATTEMPT_TTL_MS = 5 * 60 * 1000;
-export const PLACEHOLDER_NATIVE_CHILD_ID = 'forager-child';
-
-export type ExecutionAttemptKind = 'task' | 'adhoc';
-export type ExecutionAttemptPhase = 'armed' | 'attached' | 'stopped' | 'finalized';
-export type ExecutionObservedOutcome =
-  | 'not_started'
-  | 'completed'
-  | 'failed'
-  | 'partial'
-  | 'blocked'
-  | 'cancelled'
-  | 'superseded'
-  | 'expired';
-
-export type ExecutionPlacement =
-  | {
-      kind: 'worktree';
-      /** Exact registered worktree paths (realpath). Composite workspaces list every repo worktree. */
-      workspaceIdentities: string[];
-      /** Ordered repository identity captured when the placement is armed. */
-      repositories?: Array<{ id: string; path: string; branch: string }>;
-      workspacePath: string;
-      attemptSlot?: string;
-      branch?: string;
-      baseCommit?: string;
-    }
-  | {
-      kind: 'in_place';
-      /** Canonical existing directory. In-place placement does not establish an exclusion claim. */
-      directory: string;
-    };
-
-export interface ExecutionNativeAttachment {
-  parentSessionId: string;
-  callId: string;
-  selectedAgent: string;
-  /** Migrated launches remain unknown unless persisted native board identity proves background mode. */
-  background: boolean | 'unknown';
-  attachedAt: string;
-  childSessionId?: string;
-  constraintSnapshot?: {
-    sourceSessionId: string;
-    constraints?: string;
-    entries?: StandingConstraintEntry[];
-    revision?: number;
-  };
-}
-
-export interface ExecutionStopEvidence {
-  kind: 'blocking_after' | 'background_terminal' | 'tool_error';
-  observedAt: string;
-  state: 'completed' | 'error' | 'cancelled';
-  nativeTaskId?: string;
-}
-
-export type ExecutionFinalizationStatus = 'completed' | 'partial' | 'failed' | 'blocked' | 'cancelled';
-
-export interface ExecutionFinalizationRepositoryReceipt {
-  id: string;
-  path: string;
-  branch: string;
-  baselineHead?: string;
-  expectedTree?: string;
-  result?: 'committed' | 'no_changes';
-  commitSha?: string;
-}
-
-export interface ExecutionFinalizationReceipt {
-  operationId: string;
-  intentHash: string;
-  expectedTaskAttempt?: number;
-  reportInputHash: string;
-  status: ExecutionFinalizationStatus;
-  summary: string;
-  blocker?: TaskBlocker;
-  message?: string;
-  repositories: ExecutionFinalizationRepositoryReceipt[];
-  report?: { locator: string; contentHash: string };
-  disposition?: { applied: boolean };
-}
-
-export interface ExecutionAttempt {
-  id: string;
-  kind: ExecutionAttemptKind;
-  featureName?: string;
-  taskFolder?: string;
-  runId?: string;
-  originatingPrimarySession: string;
-  /** Current task generation allocated when the arm is created. */
-  taskAttempt?: number;
-  placement: ExecutionPlacement;
-  phase: ExecutionAttemptPhase;
-  armRuntimeId?: string;
-  expiresAt?: string;
-  native?: ExecutionNativeAttachment;
-  stopEvidence?: ExecutionStopEvidence;
-  observedOutcome?: ExecutionObservedOutcome;
-  finalization?: ExecutionFinalizationReceipt;
-  /** Preserved only on migrated settled history. New finalizations use finalization.report. */
-  reportLocator?: string;
-  /** Preserved only on migrated settled history. New finalizations use finalization.report. */
-  reportContentHash?: string;
-  supersededBy?: string;
-  createdAt: string;
-  updatedAt: string;
-  stoppedAt?: string;
-  finalizedAt?: string;
-}
-
-export interface ExecutionAttemptsJson {
-  schemaVersion: 2;
-  attempts: ExecutionAttempt[];
-  taskArmJournals?: TaskArmJournal[];
-  cleanupReservations?: WorkspaceCleanupReservation[];
-  nativeTaskLeaseHistory?: NativeTaskLease[];
-  /** Current dispatch pointer per feature/task. Late records on superseded attempts must not move this. */
-  currentTaskAttempts?: Record<string, string>;
-}
-
-export interface TaskArmJournal {
-  attempt: ExecutionAttempt;
-  previousStatus: TaskStatus;
-  previousAttemptId?: string;
-}
-
-export interface WorkspaceCleanupReservation {
-  id: string;
-  workspaceIdentities: string[];
-  runtimeId: string;
 }
 
 export type BackgroundJobRuntimeState = 'running' | 'completed' | 'error' | 'cancelled' | 'unknown';
@@ -564,8 +409,6 @@ export const DEFAULT_ROUTING_AGENT_DESCRIPTIONS: Record<CustomAgentBase, string>
 
 export const CUSTOM_AGENT_RESERVED_NAMES = [
   ...BUILT_IN_AGENT_NAMES,
-  '__hive_dash_review_primary',
-  '__hive_vulnerability_review_primary',
   '__hive_task_trace_summarizer',
   'hive',
   'architect',

@@ -35,86 +35,6 @@ describe('SessionService', () => {
     cleanup();
   });
 
-  it('peeks leftover native task leases without writing sessions.json', () => {
-    const lease = {
-      parentSessionId: 'parent',
-      callId: 'call',
-      agent: 'general',
-      projectRoot: PROJECT_ROOT,
-      resourcePaths: [PROJECT_ROOT],
-      runtimeId: 'runtime',
-      capabilityReason: 'Specialist capability',
-    };
-    const sessionsPath = getGlobalSessionsPath(PROJECT_ROOT);
-    fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
-    fs.writeFileSync(sessionsPath, JSON.stringify({ sessions: [], nativeTaskLeases: [lease] }, null, 2));
-    const before = fs.readFileSync(sessionsPath);
-
-    const peeked = service.peekNativeTaskLeases();
-    expect(peeked).toEqual([lease]);
-    peeked[0]!.callId = 'mutated';
-    expect(fs.readFileSync(sessionsPath)).toEqual(before);
-    expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).nativeTaskLeases).toEqual([lease]);
-  });
-
-  it('does not create sessions.json when peeking leases from a clean project', () => {
-    expect(service.peekNativeTaskLeases()).toEqual([]);
-    expect(fs.existsSync(getGlobalSessionsPath(PROJECT_ROOT))).toBe(false);
-  });
-
-  it('peeks an empty list when ownership is already version 2 and leases are absent', () => {
-    const sessionsPath = getGlobalSessionsPath(PROJECT_ROOT);
-    fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
-    fs.writeFileSync(sessionsPath, JSON.stringify({
-      sessions: [],
-      executionOwnershipVersion: 2,
-    }, null, 2));
-    const before = fs.readFileSync(sessionsPath);
-    expect(service.peekNativeTaskLeases()).toEqual([]);
-    expect(fs.readFileSync(sessionsPath)).toEqual(before);
-  });
-
-  it('extracts leftover native task leases once and clears them from sessions.json', () => {
-    const lease = {
-      parentSessionId: 'parent',
-      callId: 'call',
-      agent: 'general',
-      projectRoot: PROJECT_ROOT,
-      resourcePaths: [PROJECT_ROOT],
-      runtimeId: 'runtime',
-      capabilityReason: 'Specialist capability',
-    };
-    const foragerLease = {
-      parentSessionId: 'parent',
-      callId: 'forager-call',
-      agent: 'forager-worker',
-      projectRoot: PROJECT_ROOT,
-      resourcePaths: [PROJECT_ROOT],
-      runtimeId: 'runtime',
-      foragerLaunchId: 'prepared-launch',
-    };
-    const sessionsPath = getGlobalSessionsPath(PROJECT_ROOT);
-    fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
-    fs.writeFileSync(sessionsPath, JSON.stringify({ sessions: [], nativeTaskLeases: [lease, foragerLease] }, null, 2));
-
-    expect(service.extractNativeTaskLeases()).toEqual([lease, foragerLease]);
-    const stored = JSON.parse(fs.readFileSync(sessionsPath, 'utf8'));
-    expect(stored.nativeTaskLeases).toBeUndefined();
-    expect(stored.executionOwnershipVersion).toBe(2);
-    expect(service.extractNativeTaskLeases()).toEqual([]);
-    expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).nativeTaskLeases).toBeUndefined();
-
-    service.trackGlobal('parent', { sessionKind: 'primary' });
-    service.copySessionOrigin('copy', 'parent');
-    expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).nativeTaskLeases).toBeUndefined();
-    expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).executionOwnershipVersion).toBe(2);
-  });
-
-  it('does not create sessions.json when extracting leases from a clean project', () => {
-    expect(service.extractNativeTaskLeases()).toEqual([]);
-    expect(fs.existsSync(getGlobalSessionsPath(PROJECT_ROOT))).toBe(false);
-  });
-
   describe('generic origin copy', () => {
     it('ignores stale generated-assignment JSON without copying it as authority', () => {
       setupFeature('feature');
@@ -652,36 +572,6 @@ describe('SessionService', () => {
       expect(JSON.parse(fs.readFileSync(sessionsPath, 'utf8')).nativeTaskLeases).toEqual([lease]);
     });
 
-    it('allows same-parent retries to refresh snapshots without changing child metadata', () => {
-      setupFeature('feature-a');
-      setupFeature('feature-b');
-      service.setFeatureRoute('parent', 'feature-a');
-      service.addStandingConstraint('parent', 'Parent A');
-      service.snapshotChildSession('parent', 'child', {
-        adHocRunId: 'run-1',
-        executionWorkspacePath: '/workspace',
-        agent: 'forager-worker',
-      });
-
-      service.setFeatureRoute('parent', 'feature-b');
-      service.clearStandingConstraints('parent', 1);
-      const retried = service.snapshotChildSession('parent', 'child', {
-        adHocRunId: 'run-1',
-        executionWorkspacePath: '/workspace',
-        agent: 'forager-worker',
-      });
-
-      expect(retried).toMatchObject({
-        parentSessionId: 'parent',
-        featureName: 'feature-b',
-        standingConstraintEntries: [],
-        adHocRunId: 'run-1',
-        executionWorkspacePath: '/workspace',
-      });
-      expect(() => service.snapshotChildSession('parent', 'child', { adHocRunId: 'run-2' })).toThrow(/immutable|metadata cannot change/);
-      expect(service.getGlobal('child')).toMatchObject({ adHocRunId: 'run-1', executionWorkspacePath: '/workspace' });
-    });
-
     it('rejects a different snapshot parent before changing the existing child', () => {
       service.trackGlobal('parent-a');
       service.trackGlobal('parent-b');
@@ -690,61 +580,6 @@ describe('SessionService', () => {
 
       expect(() => service.snapshotChildSession('parent-b', 'child', { agent: 'other' })).toThrow(/parent cannot change/);
       expect(fs.readFileSync(getGlobalSessionsPath(PROJECT_ROOT), 'utf8')).toBe(before);
-    });
-  });
-
-  describe('delegated session identity', () => {
-    it('keeps duplicate source immutable and permits identical retries', () => {
-      service.trackGlobal('fork', { duplicatedFromSessionId: 'source' });
-      service.addStandingConstraint('fork', 'Keep me');
-      service.trackGlobal('fork', { duplicatedFromSessionId: 'source' });
-      const before = service.getGlobal('fork');
-      expect(() => service.trackGlobal('fork', { duplicatedFromSessionId: 'other', standingConstraints: 'Overwrite' })).toThrow(/immutable/);
-      expect(service.getGlobal('fork')).toEqual(before);
-    });
-
-    it('keeps authenticated ad-hoc run identity immutable while allowing simple feature routing', () => {
-      const bound = service.trackGlobal('adhoc', { parentSessionId: 'parent', adHocRunId: 'run-1', projectRoot: PROJECT_ROOT, agent: 'forager-worker', sessionKind: 'task-worker' });
-      for (const patch of [{ adHocRunId: 'run-2' }, { projectRoot: '/relocated' }, { parentSessionId: 'other' }, { sessionKind: 'subagent' as const }]) {
-        expect(() => service.trackGlobal('adhoc', patch)).toThrow(/immutable/);
-      }
-      setupFeature('other-feature');
-      expect(service.bindFeature('adhoc', 'other-feature').featureName).toBe('other-feature');
-      expect(service.getGlobal('adhoc')).toMatchObject({
-        sessionId: bound.sessionId,
-        parentSessionId: bound.parentSessionId,
-        adHocRunId: bound.adHocRunId,
-        projectRoot: bound.projectRoot,
-        featureName: 'other-feature',
-      });
-    });
-    it('keeps leftover persisted existing-workspace identity immutable without granting feature or copy authority', () => {
-      const bound = service.trackGlobal('existing-workspace', {
-        parentSessionId: 'parent',
-        projectRoot: PROJECT_ROOT,
-        executionWorkspacePath: PROJECT_ROOT,
-        agent: 'forager-worker',
-        baseAgent: 'forager-worker',
-        sessionKind: 'task-worker',
-      });
-      for (const patch of [
-        { executionWorkspacePath: '/other' },
-        { projectRoot: '/relocated' },
-        { parentSessionId: 'other' },
-        { sessionKind: 'subagent' as const },
-      ]) {
-        expect(() => service.trackGlobal('existing-workspace', patch)).toThrow(/immutable/);
-      }
-      setupFeature('other-feature');
-      expect(service.bindFeature('existing-workspace', 'other-feature').featureName).toBe('other-feature');
-      expect(() => service.copySessionOrigin('copy', 'existing-workspace')).toThrow(/invalid immutable generic duplicate origin/);
-      expect(service.getGlobal('existing-workspace')).toMatchObject({
-        sessionId: bound.sessionId,
-        parentSessionId: bound.parentSessionId,
-        executionWorkspacePath: bound.executionWorkspacePath,
-        projectRoot: bound.projectRoot,
-        featureName: 'other-feature',
-      });
     });
   });
 

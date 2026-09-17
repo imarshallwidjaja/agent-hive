@@ -1,7 +1,6 @@
 import * as path from 'path';
 import { getFeaturePath, getGlobalSessionsPath, ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
-import type { NativeTaskLease, SessionInfo, SessionsJson, StandingConstraintEntry } from '../types.js';
-import { EXECUTION_OWNERSHIP_VERSION } from '../types.js';
+import type { SessionInfo, SessionsJson, StandingConstraintEntry } from '../types.js';
 import {
   addConstraint,
   clearConstraints,
@@ -38,37 +37,6 @@ const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
 export class SessionService {
   constructor(private projectRoot: string) {}
 
-  /**
-   * Read leftover NativeTaskLease records without writing sessions.json.
-   * Does not create the file when it is missing.
-   */
-  peekNativeTaskLeases(): NativeTaskLease[] {
-    const globalPath = getGlobalSessionsPath(this.projectRoot);
-    if (!fileExists(globalPath)) return [];
-    const current = readJson<SessionsJson>(globalPath) || { sessions: [] };
-    return structuredClone(current.nativeTaskLeases ?? []);
-  }
-
-  /**
-   * One-shot cutover helper for ExecutionAttemptService.migrate().
-   * Returns leftover NativeTaskLease records and clears them from sessions.json.
-   */
-  extractNativeTaskLeases(): NativeTaskLease[] {
-    const globalPath = getGlobalSessionsPath(this.projectRoot);
-    if (!fileExists(globalPath)) return [];
-    const current = readJson<SessionsJson>(globalPath) || { sessions: [] };
-    if (current.nativeTaskLeases === undefined && current.executionOwnershipVersion === EXECUTION_OWNERSHIP_VERSION) {
-      return [];
-    }
-    return this.updateGlobalSessions(data => {
-      const leases = data.nativeTaskLeases ?? [];
-      const copy = structuredClone(leases);
-      delete data.nativeTaskLeases;
-      data.executionOwnershipVersion = EXECUTION_OWNERSHIP_VERSION;
-      return copy;
-    });
-  }
-
   private applySessionPatch(target: SessionInfo, patch?: Partial<SessionInfo>): void {
     if (!patch) {
       return;
@@ -79,19 +47,6 @@ export class SessionService {
       && target.duplicatedFromSessionId !== rest.duplicatedFromSessionId) {
       throw new Error('assignment_recovery_error: immutable duplicate source cannot change');
     }
-    if (Object.prototype.hasOwnProperty.call(target, 'adHocRunId')
-      || Object.prototype.hasOwnProperty.call(target, 'executionWorkspacePath')) {
-      const identityFields: Array<keyof SessionInfo> = [
-        'duplicatedFromSessionId', 'adHocRunId', 'projectRoot',
-        'taskFolder', 'parentSessionId', 'sessionKind', 'agent', 'baseAgent', 'executionWorkspacePath',
-      ];
-      for (const key of identityFields) {
-        if (!Object.prototype.hasOwnProperty.call(rest, key) || rest[key] === undefined) continue;
-        const unchanged = target[key] === rest[key];
-        if (!unchanged) throw new Error(`assignment_recovery_error: immutable session identity field ${key} cannot change`);
-      }
-    }
-
     const applyFields = (session: SessionInfo): void => {
       for (const [key, value] of Object.entries(rest) as Array<[keyof Omit<SessionInfo, 'sessionId'>, SessionInfo[keyof Omit<SessionInfo, 'sessionId'>]]>) {
         if (value !== undefined || CLEARABLE_SESSION_FIELDS.has(key)) {
@@ -299,8 +254,7 @@ export class SessionService {
     return this.updateGlobalSessions((data) => {
       const source = data.sessions.find(candidate => candidate.sessionId === sourceSessionId);
       if (!source) throw new SessionContinuityError('missing_origin', 'missing generic duplicate source');
-      if (Object.prototype.hasOwnProperty.call(source, 'executionWorkspacePath')
-        || sessionId === sourceSessionId) {
+      if (sessionId === sourceSessionId) {
         throw new SessionContinuityError('invalid_origin', 'invalid immutable generic duplicate origin');
       }
       const sourceConstraints = this.standingConstraintRegister(source);
@@ -311,7 +265,6 @@ export class SessionService {
         duplicatedFromSessionId: sourceSessionId,
       };
       if (current.parentSessionId !== undefined || current.taskFolder !== undefined || current.adHocRunId !== undefined
-        || current.executionWorkspacePath !== undefined
         || Object.entries(identity).some(([key, value]) =>
           current[key as keyof SessionInfo] !== undefined && current[key as keyof SessionInfo] !== value)) {
         throw new Error('assignment_recovery_error: immutable duplicate recipient identity mismatch');

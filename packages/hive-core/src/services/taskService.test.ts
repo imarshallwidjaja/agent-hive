@@ -252,7 +252,6 @@ describe("TaskService", () => {
         status: "blocked",
         summary: "Keep this summary",
         blocker: { reason: "Keep this blocker" },
-        workerAttempt: 4,
       });
       const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
       const reportsPath = path.join(taskPath, "reports");
@@ -271,7 +270,6 @@ describe("TaskService", () => {
       expect(second.status).toBe("blocked");
       expect(second.summary).toBe("Keep this summary");
       expect(second.blocker).toEqual({ reason: "Keep this blocker" });
-      expect(second.workerAttempt).toBe(4);
     });
 
     it("exports task update contracts from the package root", () => {
@@ -478,54 +476,6 @@ describe("TaskService", () => {
         expect(service.update(featureName, "01-test-task", { status }).blocker).toBeUndefined();
       },
     );
-  });
-
-  describe("worker attempt lifecycle", () => {
-    it("allocates sequential attempts under the status lock and preserves completion fields", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task", {
-        status: "failed",
-        summary: "Previous attempt failed",
-        completedAt: "2025-01-22T00:00:00Z",
-        workerAttempt: 1,
-      });
-
-      const first = service.allocateWorkerAttempt(featureName, "01-test-task");
-      const second = service.allocateWorkerAttempt(featureName, "01-test-task");
-
-      expect(first.attempt).toBe(2);
-      expect(second.attempt).toBe(3);
-      expect(second.status.status).toBe("failed");
-      expect(second.status.summary).toBe("Previous attempt failed");
-      expect(second.status.completedAt).toBe("2025-01-22T00:00:00Z");
-    });
-
-    it("clears blocker data when allocating a new worker attempt", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task", {
-        status: "blocked",
-        blocker: { reason: "Decision resolved" },
-      });
-
-      expect(service.allocateWorkerAttempt(featureName, "01-test-task").status.blocker).toBeUndefined();
-    });
-
-    it("clears blocker data when a worker finalizes with a non-blocked status", () => {
-      const featureName = "test-feature";
-      setupFeature(featureName);
-      setupTask(featureName, "01-test-task", {
-        status: "blocked",
-        blocker: { reason: "Stale decision" },
-        workerAttempt: 2,
-      });
-
-      const result = service.finalizeWorkerAttempt(featureName, "01-test-task", 2, { status: "failed" });
-
-      expect(result.applied).toBe(true);
-      expect(result.status.blocker).toBeUndefined();
-    });
   });
 
   describe("getRawStatus", () => {

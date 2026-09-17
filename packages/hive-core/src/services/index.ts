@@ -1,4 +1,4 @@
-export { FeatureService } from './featureService.js';
+export { FeatureService, FEATURE_NAME_PATTERN, assertValidFeatureName } from './featureService.js';
 export { FeatureConstraintService } from './featureConstraintService.js';
 export {
   CONSTRAINTS_MAX_CHARS,
@@ -9,25 +9,6 @@ export { PlanService } from './planService.js';
 export { TaskService, TaskUpdatePersistenceError } from './taskService.js';
 export type { SyncOptions, TaskUpdateInput, TaskUpdateResult } from './taskService.js';
 export { SubtaskService } from './subtaskService.js';
-export {
-  ExecutionAttemptService,
-  ExecutionPlacementMismatchError,
-  ExecutionScopeConflictError,
-} from './executionAttemptService.js';
-export type {
-  ArmExecutionAttemptInput,
-  ArmExecutionAttemptResult,
-  AttachExecutionAttemptInput,
-  BindNativeChildInput,
-  ObserveBlockingStopInput,
-  ObserveBackgroundStopInput,
-} from './executionAttemptService.js';
-export { ExecutionFinalizationService } from './executionFinalizationService.js';
-export type {
-  ExecutionFinishInput,
-  ExecutionFinishResult,
-  ExecutionFinalizationCheckpoint,
-} from './executionFinalizationService.js';
 export { WorktreeService, createWorktreeService } from './worktreeService.js';
 export type {
   WorktreeInfo,
@@ -39,6 +20,8 @@ export type {
   MergeCleanupBlock,
   RepoMergeResult,
   WorktreeConfig,
+  MergeOptions,
+  WorktreeRemoveOptions,
   RepositoryResolver,
   TaskRepoResolver,
 } from './worktreeService.js';
@@ -55,6 +38,7 @@ export type {
   AdhocRepoMergeResult,
   AdhocMergeCleanupBlock,
   AdhocCleanupResult,
+  AdhocCleanupOptions,
 } from './adhocWorktreeService.js';
 export {
   buildCleanupOutcome,
@@ -75,50 +59,6 @@ export type {
   WorktreeReasonCode,
   WorktreeRecoveryAction,
 } from './worktreeOutcome.js';
-export {
-  ReviewWorkspaceService,
-  REVIEW_WORKSPACE_METADATA_SCHEMA_VERSION,
-  LEGACY_REVIEW_WORKSPACE_SOURCE_FINGERPRINT_VERSION,
-  fingerprintReviewWorkspaceSourceScope,
-  fingerprintReviewWorkspaceVulnerabilityScope,
-} from './reviewWorkspaceService.js';
-export type {
-  ReviewWorkspaceConfig,
-  ReviewWorkspaceCreateOptions,
-  ReviewWorkspaceRepositoryInput,
-  ReviewWorkspaceRepositoryInfo,
-  ReviewWorkspaceInfo,
-  ReviewWorkspaceInspection,
-  ReviewWorkspaceCaller,
-  ReviewWorkspaceCleanupResult,
-  ReviewWorkspaceLease,
-  ReviewWorkspaceLeaseInput,
-  ReviewWorkspaceMaterializedEntryDescriptor,
-  ReviewWorkspaceSourceScope,
-  ReviewWorkspaceVulnerabilityScopeDescriptor,
-  ReviewWorkspaceWorkflow,
-} from './reviewWorkspaceService.js';
-export {
-  ReviewEvidenceBundleService,
-  REVIEW_EVIDENCE_BUNDLE_SCHEMA_VERSION,
-} from './reviewEvidenceBundleService.js';
-export type {
-  ReviewEvidenceBundleWorkflow,
-  ReviewEvidenceBundleKind,
-  ReviewEvidenceBundleCaller,
-  ReviewEvidenceBundleConfig,
-  ReviewEvidenceBundleItemInput,
-  ReviewEvidenceBundleInlineManifestItem,
-  ReviewEvidenceBundleArtifactManifestItem,
-  ReviewEvidenceBundleManifestItem,
-  ReviewEvidenceBundleManifest,
-  ReviewEvidenceBundleCreateOptions,
-  ReviewEvidenceBundleArtifactCapture,
-  ReviewEvidenceBundleInfo,
-  ReviewEvidenceBundleInspection,
-  ReviewEvidenceBundleAuthorizationRecovery,
-  ReviewEvidenceBundleCleanupResult,
-} from './reviewEvidenceBundleService.js';
 export {
   ContextService,
   ContextMutationError,

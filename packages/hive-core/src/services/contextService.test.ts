@@ -563,9 +563,9 @@ describe('ContextService managed context', () => {
     const stale = new Date(Date.now() - 60_000);
     fs.utimesSync(lockPath, stale, stale);
 
-    expect(() => service.create(boundary, 'other', durable('blocked'))).toThrow('reconcile');
+    expect(() => service.readSummary(boundary)).toThrow('reconcile');
     expect(fs.existsSync(markerPath)).toBe(true);
-    expect(fs.existsSync(lockPath)).toBe(false);
+    expect(fs.existsSync(lockPath)).toBe(true);
     expect(fs.readFileSync(destination, 'utf8')).toBe(durable(boundary));
     expect(fs.existsSync(path.join(featurePath, 'archive', 'context-index.json'))).toBe(false);
     expect(service.readRecoverySummary(boundary, { diagnosticMode: 'primary-management' })).toMatchObject({

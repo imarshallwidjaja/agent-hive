@@ -1957,8 +1957,8 @@ describe("AdhocWorktreeService linkage preflight", () => {
       foreignModeManifest.mode = "review-composite";
       await fs.writeFile(targetManifestPath, JSON.stringify(foreignModeManifest));
       before = await readPreserved();
-      await expect(fixture.service.get(target.runId)).rejects.toThrow(runIdentityError);
-      await expect(fixture.service.cleanup(target.runId, true)).rejects.toThrow(runIdentityError);
+      await expect(fixture.service.get(target.runId)).rejects.toThrow(/Invalid composite workspace manifest/);
+      await expect(fixture.service.cleanup(target.runId, true)).rejects.toThrow(/Invalid composite workspace manifest/);
 
       expect(forbiddenAccess).toEqual([]);
       expect(gitCalls).toEqual([]);

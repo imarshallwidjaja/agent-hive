@@ -31,8 +31,6 @@ export function shouldExecuteHook(
 export const HIVE_SYSTEM_PROMPT = `
 ## Hive — Active Session
 
-**Important:** only the originating primary calls \`hive_execution_finish\` after exact native stop evidence; workers return report input but cannot finalize or commit.
-Task branches are integrated by the responsible orchestrator/helper flow. Swarm normally delegates merge batches to \`hive-helper\`; direct \`hive_merge\` is a recovery escape when the active role allows it.
 \`hive-master\`, \`swarm-orchestrator\`, and \`hive-builder\` are primary-only and are never valid native \`task()\` targets. \`architect-planner\` remains callable as a child for its bounded read-only helper exception.
 `;
 

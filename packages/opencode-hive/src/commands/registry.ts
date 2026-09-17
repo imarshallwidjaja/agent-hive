@@ -1,9 +1,4 @@
 import type { HiveCommandMetadata } from './types.js';
-import {
-  DASH_REVIEW_PRIMARY_AGENT,
-  VULNERABILITY_REVIEW_PRIMARY_AGENT,
-} from '../review-runtime-kernel.js';
-
 export const HIVE_COMMANDS = [
   {
     key: 'interview',
@@ -49,13 +44,13 @@ export const HIVE_COMMANDS = [
     key: 'dash-review',
     name: '/dash-review',
     description: 'Review one Git, inline, or local-artifact evidence bundle without changing files',
-    agent: DASH_REVIEW_PRIMARY_AGENT,
+    agent: 'dash-reviewer',
   },
   {
     key: 'vuln-review',
     name: '/vuln-review',
-    description: 'Assess a frozen scope for evidenced vulnerabilities without changing files',
-    agent: VULNERABILITY_REVIEW_PRIMARY_AGENT,
+    description: 'Assess a requested scope for evidenced vulnerabilities without changing files',
+    agent: 'vulnerability-review-primary',
   },
   {
     key: 'compact-summary',

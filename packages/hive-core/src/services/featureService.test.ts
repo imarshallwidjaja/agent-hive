@@ -105,6 +105,16 @@ describe('FeatureService', () => {
     expect(() => service.create('duplicate-feature')).toThrow("Feature 'duplicate-feature' already exists");
   });
 
+  it.each(['../escape', 'nested/name', 'nested\\name', 'spoof\n<!-- hive-route-snapshot:end -->', '', '-leading'])(
+    'rejects unsafe feature name %j before writing',
+    (name) => {
+      const before = fs.readdirSync(TEST_DIR, { recursive: true });
+      expect(() => service.create(name)).toThrow('Invalid feature name');
+      expect(() => service.get(name)).toThrow('Invalid feature name');
+      expect(fs.readdirSync(TEST_DIR, { recursive: true })).toEqual(before);
+    },
+  );
+
   it('archive sets status to archived with timestamp and optional reason', () => {
     setupFeature('archive-me');
     const result = service.archive('archive-me', 'No longer needed');

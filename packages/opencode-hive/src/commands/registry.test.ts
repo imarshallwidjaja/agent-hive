@@ -49,13 +49,13 @@ const EXPECTED_COMMANDS = [
     key: 'dash-review',
     name: '/dash-review',
     description: 'Review one Git, inline, or local-artifact evidence bundle without changing files',
-    agent: '__hive_dash_review_primary',
+    agent: 'dash-reviewer',
   },
   {
     key: 'vuln-review',
     name: '/vuln-review',
-    description: 'Assess a frozen scope for evidenced vulnerabilities without changing files',
-    agent: '__hive_vulnerability_review_primary',
+    description: 'Assess a requested scope for evidenced vulnerabilities without changing files',
+    agent: 'vulnerability-review-primary',
   },
   {
     key: 'compact-summary',

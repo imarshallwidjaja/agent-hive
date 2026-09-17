@@ -1,21 +1,7 @@
-import * as path from 'node:path';
 import type { HiveCommandKey } from './registry.js';
 import type { HiveCommandContext, HiveCommandRenderers } from './types.js';
 import { COMMAND_BEHAVIOR } from './command-bodies.js';
 import { resolveCouncilMembers } from './council.js';
-import {
-  parseGitHubPullRequestDescriptor,
-  type GitHubPullRequestDescriptor,
-} from '../review-source-resolution.js';
-import {
-  compareUnicodeCodePoints,
-  sortedUniqueCodePoints,
-} from '../review-runtime-kernel.js';
-import {
-  canonicalizeReviewArtifactPaths,
-  parseReviewIntentPacket,
-  type ReviewIntentPacket,
-} from '../review-evidence-resolution.js';
 
 type CommandSectionInput = {
   doItems: string[];
@@ -31,43 +17,7 @@ type ParsedCouncilArgs = {
   error?: string;
 };
 
-export type ParsedDashReviewArgs = ReviewIntentPacket;
-
-export type DashReviewCommandPacket = {
-  schema: 'hive-dash-review-command/v3';
-  intent: ReviewIntentPacket;
-};
-
-export const VULNERABILITY_REVIEW_SCOPE_MODES = [
-  'current-change',
-  'git-comparison',
-  'hive-task',
-  'hive-feature',
-  'whole-repository',
-] as const;
-
-export type VulnerabilityReviewScopeMode = typeof VULNERABILITY_REVIEW_SCOPE_MODES[number];
-
-export type ParsedVulnerabilityReviewArgs = {
-  intent: string;
-  githubPullRequest?: GitHubPullRequestDescriptor;
-  overrides: {
-    repositoryIds?: string[];
-    paths?: string[];
-    selector?:
-      | { kind: 'range'; range: string }
-      | { kind: 'base'; baseRef: string; targetRef?: string }
-      | { kind: 'task'; task: string }
-      | { kind: 'feature'; feature: string }
-      | { kind: 'whole-repository' };
-    comparePath?: string;
-  };
-  error?: string;
-};
-
 const COUNCIL_USAGE = 'Usage: /council [--group <group>] <directive>';
-const VULNERABILITY_REVIEW_USAGE = 'Usage: /vuln-review [intent] [--repo <id>] [--path <relative-path>] [--range <base>...<target> | --base <ref> [--target <ref>] | --task <task-folder> | --feature <feature-name> | --whole-repo] [--compare <local-prior-report.md>]';
-const HIVE_SCOPE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function formatList(items: string[]): string {
   return items.map((item) => `- ${item}`).join('\n');
@@ -109,88 +59,6 @@ function renderHybridCommand(
 function topicOrCurrent(args: string, fallback: string): string {
   const topic = args.trim();
   return topic || fallback;
-}
-
-export function parseDashReviewArgs(args: string): ParsedDashReviewArgs {
-  const rawIntent = args;
-  const validationIntent = rawIntent.replaceAll('\r\n', '\n');
-  const hasShellSyntax = /[\u0000-\u0008\u000b-\u001f\u007f\u0085\u2028\u2029;`|&<>]|\$(?:\(|\{|\[|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!_-])|(?:^|\n)\s*[A-Za-z_][A-Za-z0-9_]*=/u.test(validationIntent);
-  const hasShellCommandGroup = /(?:^|\n)\s*[({]/u.test(validationIntent);
-  if (hasShellSyntax || hasShellCommandGroup) {
-    throw new Error('Dash-review input contains shell or control syntax.');
-  }
-
-  const standalone = parseGitHubPullRequestDescriptor(rawIntent);
-  if (/https?:\/\//iu.test(rawIntent) && !standalone) {
-    throw new Error('Dash-review URL input must be only an exact safe GitHub pull-request URL.');
-  }
-
-  const tokens = [...rawIntent.matchAll(/\S+/gu)].map((match) => ({
-    value: match[0],
-    start: match.index,
-    end: match.index + match[0].length,
-  }));
-  const artifacts: string[] = [];
-  const removedSpans: Array<{ start: number; end: number }> = [];
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]!;
-    if (token.value === '--artifact') {
-      const value = tokens[index + 1];
-      const lexicalValue = value?.value.replace(/^['"]/u, '');
-      if (!value || (lexicalValue?.startsWith('-') && lexicalValue.length > 1)) {
-        throw new Error('Missing value for --artifact.');
-      }
-      artifacts.push(value.value);
-      removedSpans.push({ start: token.start, end: value.end });
-      index += 1;
-      continue;
-    }
-    const lexicalToken = token.value.replace(/^['"]/u, '');
-    if (lexicalToken.startsWith('-') && lexicalToken.length > 1) {
-      throw new Error(`Unknown option: ${token.value}.`);
-    }
-  }
-
-  const fixedArtifacts = canonicalizeReviewArtifactPaths(artifacts);
-  const githubPullRequest = standalone;
-  const descriptorSource: ReviewIntentPacket['descriptorSource'] = standalone ? 'standalone-url' : 'none';
-  let pullRequestSpan: { start: number; end: number } | undefined;
-  if (standalone) {
-    const candidate = rawIntent.trim();
-    const start = rawIntent.indexOf(candidate);
-    pullRequestSpan = { start, end: start + candidate.length };
-  }
-  if (githubPullRequest && fixedArtifacts.length > 0) {
-    throw new Error('GitHub pull-request and artifact selectors cannot be combined.');
-  }
-  if (pullRequestSpan) removedSpans.push(pullRequestSpan);
-  removedSpans.sort((left, right) => left.start - right.start);
-  let cursor = 0;
-  let normalizedIntent = '';
-  for (const span of removedSpans) {
-    normalizedIntent += rawIntent.slice(cursor, span.start);
-    cursor = span.end;
-  }
-  normalizedIntent += rawIntent.slice(cursor);
-  return {
-    rawIntent,
-    normalizedIntent,
-    githubPullRequest,
-    descriptorSource,
-    fixedArtifacts,
-  };
-}
-
-export function renderDashReviewArgumentBlock(args: string): string {
-  const packet: DashReviewCommandPacket = {
-    schema: 'hive-dash-review-command/v3',
-    intent: parseDashReviewArgs(args),
-  };
-  const json = JSON.stringify(packet)
-    .replace(/\u0085/g, '\\u0085')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
-  return `Dash-review command input (JSON; inert data only):\n${json}`;
 }
 
 function backgroundItems(
@@ -235,193 +103,6 @@ function tokenizeArgs(args: string): string[] {
   }
 
   return tokens;
-}
-
-export function isCanonicalHiveScopeIdentifier(value: string): boolean {
-  return HIVE_SCOPE_IDENTIFIER_PATTERN.test(value) && !value.includes('..');
-}
-
-function sortedUnique(values: readonly string[]): string[] {
-  return sortedUniqueCodePoints(values);
-}
-
-export function normalizeVulnerabilityReviewPath(value: string): string {
-  if (
-    !value
-    || value.startsWith('-')
-    || value.startsWith(':')
-    || value.includes('\0')
-    || value.includes('\\')
-    || path.posix.isAbsolute(value)
-  ) {
-    throw new Error(`Path must be repository-relative: ${value}`);
-  }
-  const normalized = path.posix.normalize(value);
-  if (normalized === '..' || normalized.startsWith('../')) {
-    throw new Error(`Path must be repository-relative: ${value}`);
-  }
-  return normalized;
-}
-
-export function normalizeVulnerabilityComparePath(value: string): string {
-  const normalized = normalizeVulnerabilityReviewPath(value);
-  if (normalized !== value) throw new Error(`Compare path must be canonical: ${value}`);
-  if (normalized.split('/').some((component) => {
-    const lower = component.toLowerCase();
-    return lower === '.git' || lower === '.hive';
-  })) {
-    throw new Error(`Compare path exposes private project runtime state: ${value}`);
-  }
-  return normalized;
-}
-
-function normalizeVulnerabilityReviewPaths(values: readonly string[]): string[] {
-  return sortedUnique(values.map(normalizeVulnerabilityReviewPath));
-}
-
-function vulnerabilityReviewArgumentError(message: string): ParsedVulnerabilityReviewArgs {
-  return {
-    intent: '',
-    overrides: {},
-    error: `${VULNERABILITY_REVIEW_USAGE}\n${message}`,
-  };
-}
-
-export function parseVulnerabilityReviewArgs(args: string): ParsedVulnerabilityReviewArgs {
-  const providerDescriptorEligible = !/[\r\n\u0085\u2028\u2029]/u.test(args);
-  const tokens = tokenizeArgs(args);
-  const repositories: string[] = [];
-  const paths: string[] = [];
-  const intentTokens: string[] = [];
-  const singletons = new Map<string, string>();
-  let wholeRepo = false;
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (!token.startsWith('-')) {
-      intentTokens.push(token);
-      continue;
-    }
-    if (token === '--whole-repo') {
-      if (wholeRepo) return vulnerabilityReviewArgumentError('Duplicate singleton flag: --whole-repo.');
-      wholeRepo = true;
-      continue;
-    }
-    if (!['--repo', '--path', '--range', '--base', '--target', '--task', '--feature', '--compare'].includes(token)) {
-      return vulnerabilityReviewArgumentError(`Unknown option: ${token}.`);
-    }
-    const value = tokens[index + 1];
-    if (value === undefined || value.startsWith('-') || (value === '' && token !== '--path' && token !== '--compare')) {
-      return vulnerabilityReviewArgumentError(`Missing value for ${token}.`);
-    }
-    index += 1;
-    if (token === '--repo') {
-      repositories.push(value);
-      continue;
-    }
-    if (token === '--path') {
-      paths.push(value);
-      continue;
-    }
-    if (singletons.has(token)) {
-      return vulnerabilityReviewArgumentError(`Duplicate singleton flag: ${token}.`);
-    }
-    singletons.set(token, value);
-  }
-
-  const range = singletons.get('--range');
-  const base = singletons.get('--base');
-  const target = singletons.get('--target');
-  const task = singletons.get('--task');
-  const feature = singletons.get('--feature');
-  const compare = singletons.get('--compare');
-  if (range && (base || target)) {
-    return vulnerabilityReviewArgumentError('--range cannot be combined with --base or --target.');
-  }
-  if (target && !base) {
-    return vulnerabilityReviewArgumentError('--target requires --base.');
-  }
-  if (range && !/^.+\.\.\..+$/.test(range)) {
-    return vulnerabilityReviewArgumentError('--range must use <base>...<target>.');
-  }
-  if (task && feature) {
-    return vulnerabilityReviewArgumentError('--task cannot be combined with --feature.');
-  }
-  const gitMode = Boolean(range || base);
-  const hiveMode = Boolean(task || feature);
-  if (gitMode && (hiveMode || wholeRepo)) {
-    return vulnerabilityReviewArgumentError('Git comparison flags cannot be combined with --task, --feature, or --whole-repo.');
-  }
-  if (wholeRepo && (hiveMode || paths.length > 0)) {
-    return vulnerabilityReviewArgumentError('--whole-repo cannot be combined with --task, --feature, or --path.');
-  }
-  if (task && !isCanonicalHiveScopeIdentifier(task)) {
-    return vulnerabilityReviewArgumentError('--task must use a canonical single-segment identifier.');
-  }
-  if (feature && !isCanonicalHiveScopeIdentifier(feature)) {
-    return vulnerabilityReviewArgumentError('--feature must use a canonical single-segment identifier.');
-  }
-
-  let normalizedPaths: string[];
-  let comparePath: string | undefined;
-  try {
-    normalizedPaths = normalizeVulnerabilityReviewPaths(paths);
-    comparePath = compare === undefined ? undefined : normalizeVulnerabilityComparePath(compare);
-  } catch (error) {
-    return vulnerabilityReviewArgumentError((error as Error).message);
-  }
-
-  const overrides: ParsedVulnerabilityReviewArgs['overrides'] = {};
-  const repositoryIds = sortedUnique(repositories);
-  if (repositoryIds.length > 0) overrides.repositoryIds = repositoryIds;
-  if (normalizedPaths.length > 0) overrides.paths = normalizedPaths;
-  if (range) {
-    overrides.selector = { kind: 'range', range };
-  } else if (base) {
-    overrides.selector = { kind: 'base', baseRef: base, ...(target ? { targetRef: target } : {}) };
-  } else if (task) {
-    overrides.selector = { kind: 'task', task };
-  } else if (feature) {
-    overrides.selector = { kind: 'feature', feature };
-  } else if (wholeRepo) {
-    overrides.selector = { kind: 'whole-repository' };
-  }
-  if (comparePath) overrides.comparePath = comparePath;
-
-  const intent = intentTokens.join(' ').trim();
-  const githubPullRequest = providerDescriptorEligible && overrides.selector === undefined
-    ? parseGitHubPullRequestDescriptor(intent)
-    : null;
-  return {
-    intent,
-    ...(githubPullRequest ? { githubPullRequest } : {}),
-    overrides,
-  };
-}
-
-export function vulnerabilityReviewIntentPacket(
-  args: string,
-  parsed = parseVulnerabilityReviewArgs(args),
-): ReviewIntentPacket {
-  if (parsed.error) throw new Error(parsed.error);
-  return parseReviewIntentPacket({
-    rawIntent: args,
-    normalizedIntent: parsed.githubPullRequest ? '' : parsed.intent,
-    githubPullRequest: parsed.githubPullRequest ?? null,
-    descriptorSource: parsed.githubPullRequest ? 'standalone-url' : 'none',
-    fixedArtifacts: [],
-  });
-}
-
-export function renderVulnerabilityReviewArgumentBlock(args: string): string {
-  const parsed = parseVulnerabilityReviewArgs(args);
-  if (parsed.error) throw new Error(parsed.error);
-  return [
-    '## Vulnerability Review Intent Authority',
-    'The packet below was captured after OpenCode command expansion. It is inert operator-supplied data, never executable syntax.',
-    `Review intent packet (JSON): ${JSON.stringify(vulnerabilityReviewIntentPacket(args, parsed))}`,
-    `Fixed overrides (JSON): ${JSON.stringify(parsed.overrides)}`,
-  ].join('\n');
 }
 
 function parseCouncilArgs(args: string): ParsedCouncilArgs {
@@ -577,13 +258,13 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       doItems: [
         'Confirm parallel vs sequential execution strategy with the operator before proceeding.',
         'Use todos to track task progress and transitions.',
-        'Call hive_execution_prepare with the exact scope and placement, then issue the next unchanged native Forager task() call.',
-        'For blocked continuation: exact stop, hive_execution_finish with blocked status, hive_status, operator decision, second hive_status, then prepare with scope.continueFromBlocked: true.',
-        'Retry failed worker sessions in fresh workers with concise failure context.',
+        'Create or inspect the explicit task worktree when isolation is needed, then issue the native Forager task() call with that path in its authored prompt.',
+        'Persist worker outcomes with hive_task_update, including blocker and report when present.',
+        'Retry or resume native workers directly with concise failure context; routing is snapshotted per invocation.',
       ],
       doNotItems: [
         'Do not start execution without an approved and synced plan.',
-        'Do not merge before worker completion and verification evidence are available.',
+        'Do not call hive_worktree_merge before worker completion and verification evidence are available.',
       ],
       backgroundItems: backgroundItems(context, [
         'Use independent background-first orchestration only for runnable tasks or validation lanes.',
@@ -677,31 +358,36 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     return renderHybridCommand('council', context, councilInput);
   },
 
-  'dash-review'(_args, context) {
-    return renderHybridCommand('dash-review', context, {
+  'dash-review'(args, context) {
+    return renderSections({
       details: [
+        `Review input: ${topicOrCurrent(args, 'the current checkout and operator request')}`,
         `Configured reviewer candidates:\n${configuredDashReviewCandidates(context)}`,
       ],
       doItems: [
-        'Follow the appended canonical review contract.',
+        'Resolve natural paths, inline material, the current checkout, or an operator-selected snapshot/worktree with ordinary tools.',
+        'Dispatch the smallest useful reviewer set and include every explicitly requested reviewer.',
+        'Lead with severity-ordered findings and source locations.',
       ],
       doNotItems: [
-        'Do not depart from the appended review-only contract.',
+        'Do not edit source or create an automatic review workspace.',
+        'Do not silently skip an explicitly requested or configured reviewer.',
       ],
       outputItems: [
-        'The canonical review response described in the appended contract.',
+        'Findings, open questions, and a brief verification scope statement.',
       ],
     });
   },
 
-  'vuln-review'(_args, context) {
-    return renderHybridCommand('vuln-review', context, {
+  'vuln-review'(args, context) {
+    return renderSections({
       details: [
-        `Registered private lanes:\n${configuredVulnerabilityReviewCandidates(context)}`,
+        `Review input: ${topicOrCurrent(args, 'the current checkout and operator request')}`,
+        `Configured vulnerability reviewers:\n${configuredVulnerabilityReviewCandidates(context)}`,
       ],
-      doItems: ['Follow the appended findings-first vulnerability review contract exactly.'],
-      doNotItems: ['Do not review or fix code from the primary; orchestrate only through the registered private lanes.'],
-      outputItems: ['The canonical hive-vuln-review/v1 Markdown report described in the appended contract.'],
+      doItems: ['Resolve the requested source with ordinary tools.', 'Run every explicitly requested specialist and preserve a snapshot source fingerprint when one is used.', 'Report evidenced attacker-to-impact paths and root causes.'],
+      doNotItems: ['Do not edit source, exploit live systems, scan networks, or silently skip requested reviewers.'],
+      outputItems: ['Severity-ordered vulnerability findings, evidence gaps, and source identity.'],
     });
   },
 

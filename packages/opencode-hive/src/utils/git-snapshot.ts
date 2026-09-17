@@ -4,7 +4,7 @@ import { constants, promises as fs } from 'node:fs';
 import { devNull } from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
-import { compareUnicodeCodePoints } from '../review-runtime-kernel.js';
+import { compareUnicodeCodePoints } from './codepoint.js';
 
 const execFileAsync = promisify(execFile);
 const MAX_GIT_OUTPUT_BYTES = 8 * 1024 * 1024;
