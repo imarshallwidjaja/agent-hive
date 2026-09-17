@@ -1,7 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { TaskService, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
+import { spawn } from "node:child_process";
+import { TaskService, TaskUpdatePersistenceError, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
+import { TaskUpdatePersistenceError as PublicTaskUpdatePersistenceError } from "../index";
+import type { TaskUpdateInput as PublicTaskUpdateInput, TaskUpdateResult as PublicTaskUpdateResult } from "../index";
 import { TaskStatus } from "../types";
 import { getLockPath, readJson } from "../utils/paths";
 
@@ -143,6 +146,58 @@ describe("TaskService", () => {
       expect(fs.existsSync(missingTaskPath)).toBe(false);
     });
 
+    it("surfaces corrupt task status instead of treating it as missing", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task");
+      const statusPath = path.join(
+        TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task", "status.json"
+      );
+      fs.writeFileSync(statusPath, JSON.stringify({ status: "unknown", origin: "plan" }));
+
+      expect(() => service.update(featureName, "01-test-task", {
+        summary: "Must not publish",
+      })).toThrow(/corrupt status file/i);
+      expect(JSON.parse(fs.readFileSync(statusPath, "utf8"))).toEqual({
+        status: "unknown",
+        origin: "plan",
+      });
+    });
+
+    it("wraps truncated task status JSON with task and path context", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task");
+      const statusPath = path.join(
+        TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task", "status.json"
+      );
+      fs.writeFileSync(statusPath, '{"status":');
+
+      expect(() => service.update(featureName, "01-test-task", { summary: "Must not publish" }))
+        .toThrow(new RegExp(`01-test-task.*corrupt status file.*${statusPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i"));
+    });
+
+    it("does not steal an existing status lock based on age", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task");
+      const statusPath = path.join(
+        TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task", "status.json"
+      );
+      const lockPath = getLockPath(statusPath);
+      fs.writeFileSync(lockPath, "held by another writer");
+      fs.utimesSync(lockPath, new Date(0), new Date(0));
+
+      expect(() => service.update(featureName, "01-test-task", {
+        summary: "Must wait",
+      }, {
+        timeout: 5,
+        retryInterval: 1,
+        staleLockTTL: 0,
+      })).toThrow(/failed to acquire lock/i);
+      expect(fs.readFileSync(lockPath, "utf8")).toBe("held by another writer");
+    });
+
     it("preserves existing fields on update", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
@@ -157,6 +212,257 @@ describe("TaskService", () => {
 
       expect(result.planTitle).toBe("Original Title");
       expect(result.baseCommit).toBe("abc123");
+    });
+
+    it("patches only supplied fields and supports explicit blocker clearing", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", {
+        status: "blocked",
+        summary: "Existing summary",
+        blocker: { reason: "Needs a decision" },
+      });
+
+      const summaryOnly = service.update(featureName, "01-test-task", {
+        summary: "Revised summary",
+      });
+      expect(summaryOnly.status).toBe("blocked");
+      expect(summaryOnly.blocker).toEqual({ reason: "Needs a decision" });
+
+      const cleared = service.update(featureName, "01-test-task", { blocker: null });
+      expect(cleared.status).toBe("blocked");
+      expect(cleared.summary).toBe("Revised summary");
+      expect(cleared.blocker).toBeUndefined();
+    });
+
+    it("rejects invalid runtime status values", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task");
+
+      expect(() => service.update(featureName, "01-test-task", {
+        status: "completed" as any,
+      })).toThrow(/invalid task status.*completed/i);
+    });
+
+    it("publishes report-only updates as numeric history and latest while preserving old finalization reports", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", {
+        status: "blocked",
+        summary: "Keep this summary",
+        blocker: { reason: "Keep this blocker" },
+        workerAttempt: 4,
+      });
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      const reportsPath = path.join(taskPath, "reports");
+      fs.mkdirSync(reportsPath, { recursive: true });
+      fs.writeFileSync(path.join(reportsPath, "finalization-old.md"), "old finalization");
+
+      const first = service.update(featureName, "01-test-task", { report: "first report" });
+      const second = service.update(featureName, "01-test-task", { report: "second report" });
+
+      expect(first.reportPath).toBe(path.join(reportsPath, "1.md"));
+      expect(second.reportPath).toBe(path.join(reportsPath, "2.md"));
+      expect(fs.readFileSync(path.join(reportsPath, "1.md"), "utf8")).toBe("first report");
+      expect(fs.readFileSync(path.join(reportsPath, "2.md"), "utf8")).toBe("second report");
+      expect(fs.readFileSync(path.join(taskPath, "report.md"), "utf8")).toBe("second report");
+      expect(fs.readFileSync(path.join(reportsPath, "finalization-old.md"), "utf8")).toBe("old finalization");
+      expect(second.status).toBe("blocked");
+      expect(second.summary).toBe("Keep this summary");
+      expect(second.blocker).toEqual({ reason: "Keep this blocker" });
+      expect(second.workerAttempt).toBe(4);
+    });
+
+    it("exports task update contracts from the package root", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task");
+      const input: PublicTaskUpdateInput = { report: "public report" };
+      const result: PublicTaskUpdateResult = service.update(featureName, "01-test-task", input);
+
+      expect(PublicTaskUpdatePersistenceError).toBe(TaskUpdatePersistenceError);
+      expect(result.reportPath).toEndWith("/reports/1.md");
+    });
+
+    it("syncs a newly created reports directory entry before publishing report history", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task");
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      const reportPath = path.join(taskPath, "reports", "1.md");
+      const descriptorPaths = new Map<number, string>();
+      const events: string[] = [];
+      const originalOpen = fs.openSync;
+      const originalFsync = fs.fsyncSync;
+      const originalRename = fs.renameSync;
+      const openSpy = spyOn(fs, "openSync").mockImplementation(((target, flags, mode) => {
+        const descriptor = originalOpen(target, flags, mode);
+        descriptorPaths.set(descriptor, String(target));
+        return descriptor;
+      }) as typeof fs.openSync);
+      const fsyncSpy = spyOn(fs, "fsyncSync").mockImplementation((descriptor => {
+        events.push(`fsync:${descriptorPaths.get(descriptor)}`);
+        originalFsync(descriptor);
+      }) as typeof fs.fsyncSync);
+      const renameSpy = spyOn(fs, "renameSync").mockImplementation(((source, destination) => {
+        events.push(`rename:${String(destination)}`);
+        originalRename(source, destination);
+      }) as typeof fs.renameSync);
+
+      try {
+        service.update(featureName, "01-test-task", { report: "durable report" });
+      } finally {
+        renameSpy.mockRestore();
+        fsyncSpy.mockRestore();
+        openSpy.mockRestore();
+      }
+
+      if (process.platform !== "win32") {
+        expect(events.indexOf(`fsync:${taskPath}`)).toBeGreaterThanOrEqual(0);
+        expect(events.indexOf(`fsync:${taskPath}`)).toBeLessThan(events.indexOf(`rename:${reportPath}`));
+      }
+    });
+
+    it("reports partial persistence when latest report publication fails", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", { summary: "Original" });
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      fs.mkdirSync(path.join(taskPath, "report.md"));
+
+      let thrown: unknown;
+      try {
+        service.update(featureName, "01-test-task", {
+          status: "done",
+          summary: "Updated",
+          report: "durable history",
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(TaskUpdatePersistenceError);
+      const persistenceError = thrown as TaskUpdatePersistenceError;
+      expect(persistenceError.failedStage).toBe("latest_report");
+      expect(persistenceError.reportHistoryWritten).toBe(true);
+      expect(persistenceError.latestReportWritten).toBe(false);
+      expect(persistenceError.failedWritePublished).toBe(false);
+      expect(fs.readFileSync(path.join(taskPath, "reports", "1.md"), "utf8")).toBe("durable history");
+      expect(service.getRawStatus(featureName, "01-test-task")).toMatchObject({
+        status: "pending",
+        summary: "Original",
+      });
+    });
+
+    it("reports status-stage partial persistence without leaking report fields into status", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", { summary: "Original" });
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      const statusPath = path.join(taskPath, "status.json");
+      const originalRename = fs.renameSync;
+      const renameSpy = spyOn(fs, "renameSync").mockImplementation(((source, destination) => {
+        if (String(destination) === statusPath) throw new Error("status rename failed");
+        originalRename(source, destination);
+      }) as typeof fs.renameSync);
+      let thrown: unknown;
+
+      try {
+        service.update(featureName, "01-test-task", {
+          status: "done",
+          summary: "Updated",
+          report: "published report",
+        });
+      } catch (error) {
+        thrown = error;
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(thrown).toBeInstanceOf(TaskUpdatePersistenceError);
+      const persistenceError = thrown as TaskUpdatePersistenceError;
+      expect(persistenceError.failedStage).toBe("status");
+      expect(persistenceError.reportHistoryWritten).toBe(true);
+      expect(persistenceError.latestReportWritten).toBe(true);
+      expect(persistenceError.failedWritePublished).toBe(false);
+      expect(persistenceError.reportPath).toBe(path.join(taskPath, "reports", "1.md"));
+      expect(persistenceError.latestReportPath).toBe(path.join(taskPath, "report.md"));
+      expect(fs.readFileSync(persistenceError.reportPath!, "utf8")).toBe("published report");
+      expect(fs.readFileSync(persistenceError.latestReportPath!, "utf8")).toBe("published report");
+      const stored = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+      expect(stored).toMatchObject({ status: "pending", summary: "Original" });
+      expect(stored).not.toHaveProperty("report");
+      expect(stored).not.toHaveProperty("reportPath");
+      expect(stored).not.toHaveProperty("latestReportPath");
+    });
+
+    it("wraps report history setup failures with no writes reported", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task");
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      fs.writeFileSync(path.join(taskPath, "reports"), "not a directory");
+      let thrown: unknown;
+
+      try {
+        service.update(featureName, "01-test-task", { report: "must not publish" });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(TaskUpdatePersistenceError);
+      const persistenceError = thrown as TaskUpdatePersistenceError;
+      expect(persistenceError.failedStage).toBe("report_history");
+      expect(persistenceError.reportHistoryWritten).toBe(false);
+      expect(persistenceError.latestReportWritten).toBe(false);
+      expect(persistenceError.failedWritePublished).toBe(false);
+      expect(persistenceError.reportPath).toBeUndefined();
+      expect(persistenceError.latestReportPath).toBe(path.join(taskPath, "report.md"));
+    });
+
+    it("serializes concurrent report updates into immutable numeric history", async () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task");
+      const serviceModule = new URL("./taskService.ts", import.meta.url).href;
+      const childScript = `
+        import { TaskService } from ${JSON.stringify(serviceModule)};
+        new TaskService(process.env.PROJECT_ROOT).update(
+          process.env.FEATURE,
+          process.env.TASK,
+          { report: process.env.REPORT },
+        );
+      `;
+      const publish = (report: string): Promise<void> => {
+        const child = spawn(process.execPath, ["-e", childScript], {
+          env: {
+            ...process.env,
+            PROJECT_ROOT,
+            FEATURE: featureName,
+            TASK: "01-test-task",
+            REPORT: report,
+          },
+        });
+        let stderr = "";
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", chunk => { stderr += chunk; });
+        return new Promise((resolve, reject) => {
+          child.on("error", reject);
+          child.on("exit", code => code === 0
+            ? resolve()
+            : reject(new Error(stderr || `Report update exited with code ${code}`)));
+        });
+      };
+
+      await Promise.all([publish("report a"), publish("report b")]);
+
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      const history = ["1.md", "2.md"].map(name =>
+        fs.readFileSync(path.join(taskPath, "reports", name), "utf8")
+      );
+      expect(history.sort()).toEqual(["report a", "report b"]);
+      expect(history).toContain(fs.readFileSync(path.join(taskPath, "report.md"), "utf8"));
     });
 
     it.each(["pending", "in_progress", "done", "failed", "partial", "cancelled"] as const)(
@@ -1984,19 +2290,83 @@ Align documentation wording.
         service.create(featureName, "follow-up", undefined, {
           dependsOn: ["01-missing-task"],
         })
-      ).toThrow(/append-only|dependencies on unfinished work require plan amendment|plan amendment/i);
+      ).toThrow(/dependency.*does not exist/i);
     });
 
-    it("rejects explicit dependsOn when the target task is not done", () => {
+    it("accepts explicit dependsOn when the target task is unfinished", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
       setupTask(featureName, "01-setup", { status: "pending", origin: "plan", dependsOn: [] });
 
-      expect(() =>
-        service.create(featureName, "follow-up", undefined, {
-          dependsOn: ["01-setup"],
-        })
-      ).toThrow(/dependencies on unfinished work require plan amendment|plan amendment/i);
+      const folder = service.create(featureName, "follow-up", undefined, {
+        dependsOn: ["01-setup"],
+      });
+
+      expect(service.getRawStatus(featureName, folder)?.dependsOn).toEqual(["01-setup"]);
+    });
+
+    it("rejects self-referential manual dependencies", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+
+      expect(() => service.create(featureName, "follow-up", undefined, {
+        dependsOn: ["01-follow-up"],
+      })).toThrow(/self-dependency/i);
+    });
+
+    it("rejects cycles introduced through existing unfinished dependencies", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-setup", {
+        status: "pending",
+        origin: "plan",
+        dependsOn: ["02-follow-up"],
+      });
+
+      expect(() => service.create(featureName, "follow-up", undefined, {
+        dependsOn: ["01-setup"],
+      })).toThrow(/cycle/i);
+    });
+
+    it("includes legacy implicit dependencies when validating manual task cycles", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-setup", {
+        status: "pending",
+        origin: "plan",
+        dependsOn: ["03-follow-up"],
+      });
+      setupTask(featureName, "02-build", { status: "pending", origin: "plan" });
+
+      expect(() => service.create(featureName, "follow-up", undefined, {
+        dependsOn: ["02-build"],
+      })).toThrow(/cycle/i);
+    });
+
+    it("identifies stale stored dependencies separately from the proposed dependency", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-setup", {
+        status: "pending",
+        origin: "plan",
+        dependsOn: ["99-removed"],
+      });
+
+      expect(() => service.create(featureName, "follow-up")).toThrow(
+        /01-setup.*stale stored dependency.*99-removed/i,
+      );
+    });
+
+    it("wraps truncated status JSON while loading the manual dependency graph", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-setup");
+      const statusPath = path.join(
+        TEST_DIR, ".hive", "features", featureName, "tasks", "01-setup", "status.json"
+      );
+      fs.writeFileSync(statusPath, '{"status":');
+
+      expect(() => service.create(featureName, "follow-up")).toThrow(/01-setup.*corrupt status file/i);
     });
 
     it("rejects explicit order that reuses an occupied non-append slot", () => {

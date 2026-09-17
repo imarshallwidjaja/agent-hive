@@ -15,6 +15,9 @@ import {
   readJson,
   writeJson,
   writeJsonAtomic,
+  writeJsonAtomicDurable,
+  writeAtomicDurable,
+  syncDirectory,
   acquireLockSync,
   readText,
   writeText,
@@ -34,6 +37,7 @@ import {
   renderAggregateBranchDiff,
 } from '../types.js';
 import { RepositoryService } from './repositoryService.js';
+import { buildEffectiveDependencies } from './taskDependencyGraph.js';
 
 /** Current schema version for TaskStatus */
 export const TASK_STATUS_SCHEMA_VERSION = 1;
@@ -48,6 +52,33 @@ export interface CompletionFields {
 export interface WorkerAttemptAllocation {
   status: TaskStatus;
   attempt: number;
+}
+
+export interface TaskUpdateInput extends Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff' | 'baseCommit'>> {
+  blocker?: TaskStatus['blocker'] | null;
+  report?: string;
+}
+
+export type TaskUpdateResult = TaskStatus & {
+  reportPath?: string;
+};
+
+export type TaskUpdatePersistenceStage = 'report_history' | 'latest_report' | 'status';
+
+export class TaskUpdatePersistenceError extends Error {
+  constructor(
+    message: string,
+    public readonly failedStage: TaskUpdatePersistenceStage,
+    public readonly reportPath: string | undefined,
+    public readonly latestReportPath: string | undefined,
+    public readonly reportHistoryWritten: boolean,
+    public readonly latestReportWritten: boolean,
+    public readonly failedWritePublished: boolean,
+    options: { cause: unknown },
+  ) {
+    super(message, options);
+    this.name = 'TaskUpdatePersistenceError';
+  }
 }
 
 interface ParsedTask {
@@ -102,6 +133,10 @@ export interface SyncOptions {
 
 const EXECUTION_HISTORY_STATUSES: Set<TaskStatusType> = new Set([
   'in_progress', 'done', 'blocked', 'failed', 'partial',
+]);
+
+const TASK_STATUSES: ReadonlySet<string> = new Set([
+  'pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial',
 ]);
 
 export class TaskService {
@@ -200,17 +235,17 @@ export class TaskService {
       );
     }
 
-    const dependsOn = metadata?.dependsOn ?? [];
-    const repoIds = metadata?.repoIds;
-    this.validateManualTaskDependsOn(featureName, dependsOn);
-    this.validateRepoIds(repoIds, 'manual task metadata');
-
     const resolvedOrder = order ?? nextOrder;
     const taskSlug = this.slugify(name);
     if (!taskSlug) {
       throw new Error(`Manual task name "${name}" cannot produce a safe task folder slug.`);
     }
     const folder = `${String(resolvedOrder).padStart(2, '0')}-${taskSlug}`;
+
+    const dependsOn = metadata?.dependsOn ?? [];
+    const repoIds = metadata?.repoIds;
+    this.validateManualTaskDependsOn(featureName, folder, dependsOn);
+    this.validateRepoIds(repoIds, 'manual task metadata');
 
     const collision = existingFolders.find(f => {
       const match = f.match(/^(\d+)-/);
@@ -600,16 +635,17 @@ export class TaskService {
    * 
    * @param featureName - Feature name
    * @param taskFolder - Task folder name
-   * @param updates - Fields to update (status, summary, baseCommit)
+   * @param updates - Status fields to patch and optional report content to publish
    * @param lockOptions - Optional lock configuration
    * @returns Updated TaskStatus
    */
   update(
     featureName: string,
     taskFolder: string,
-    updates: Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff' | 'baseCommit'>>,
+    updates: TaskUpdateInput,
     lockOptions?: LockOptions
-  ): TaskStatus {
+  ): TaskUpdateResult {
+    this.validateUpdate(updates);
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
 
     // Guard before lock acquisition to avoid creating missing task folders
@@ -618,19 +654,31 @@ export class TaskService {
       throw new Error(`Task '${taskFolder}' not found`);
     }
 
-    const release = acquireLockSync(statusPath, lockOptions);
+    const release = acquireLockSync(statusPath, {
+      ...lockOptions,
+      staleLockTTL: Number.POSITIVE_INFINITY,
+    });
 
     try {
-      const current = readJson<TaskStatus>(statusPath);
+      const current = this.readValidatedTaskStatus(statusPath, taskFolder);
       if (!current) {
-        throw new Error(`Task '${taskFolder}' not found`);
+        throw new Error(`Task '${taskFolder}' status file disappeared during update`);
+      }
+      if (updates.blocker && (updates.status ?? current.status) !== 'blocked') {
+        throw new Error('Task blocker can only be supplied for a blocked task');
       }
 
       const updated: TaskStatus = {
         ...current,
-        ...updates,
         schemaVersion: TASK_STATUS_SCHEMA_VERSION,
       };
+
+      if (updates.status !== undefined) updated.status = updates.status;
+      if (updates.summary !== undefined) updated.summary = updates.summary;
+      if (updates.aggregateBranchDiff !== undefined) updated.aggregateBranchDiff = updates.aggregateBranchDiff;
+      if (updates.baseCommit !== undefined) updated.baseCommit = updates.baseCommit;
+      if (updates.blocker === null) delete updated.blocker;
+      else if (updates.blocker !== undefined) updated.blocker = updates.blocker;
 
       if (updates.status === 'in_progress' && !current.startedAt) {
         updated.startedAt = this.now().toISOString();
@@ -642,12 +690,136 @@ export class TaskService {
         delete updated.blocker;
       }
 
-      // Lock-first read-modify-write to avoid TOCTOU races.
-      writeJsonAtomic(statusPath, updated);
-      return updated;
+      const taskPath = getTaskPath(this.projectRoot, featureName, taskFolder);
+      const reportsPath = path.join(taskPath, 'reports');
+      let reportPath: string | undefined;
+      let latestReportPath: string | undefined;
+      let reportHistoryWritten = false;
+      let latestReportWritten = false;
+
+      if (updates.report !== undefined) {
+        latestReportPath = path.join(taskPath, 'report.md');
+        try {
+          ensureDir(reportsPath);
+          syncDirectory(taskPath);
+          const nextReport = fs.readdirSync(reportsPath)
+            .map(name => name.match(/^(\d+)\.md$/)?.[1])
+            .filter((value): value is string => value !== undefined)
+            .reduce((max, value) => Math.max(max, Number(value)), 0) + 1;
+          reportPath = path.join(reportsPath, `${nextReport}.md`);
+        } catch (error) {
+          throw this.persistenceError('report_history', error, reportPath, latestReportPath, false, false, updates.report);
+        }
+
+        try {
+          writeAtomicDurable(reportPath, updates.report);
+          reportHistoryWritten = true;
+        } catch (error) {
+          throw this.persistenceError('report_history', error, reportPath, latestReportPath, false, false, updates.report);
+        }
+
+        try {
+          writeAtomicDurable(latestReportPath, updates.report);
+          latestReportWritten = true;
+        } catch (error) {
+          throw this.persistenceError('latest_report', error, reportPath, latestReportPath, true, false, updates.report);
+        }
+      }
+
+      try {
+        writeJsonAtomicDurable(statusPath, updated);
+      } catch (error) {
+        throw this.persistenceError(
+          'status',
+          error,
+          reportPath,
+          latestReportPath,
+          reportHistoryWritten,
+          latestReportWritten,
+          JSON.stringify(updated, null, 2),
+          statusPath,
+        );
+      }
+
+      return {
+        ...updated,
+        ...(reportPath ? { reportPath } : {}),
+      };
     } finally {
       release();
     }
+  }
+
+  private validateUpdate(updates: TaskUpdateInput): void {
+    if (updates.status !== undefined && !TASK_STATUSES.has(updates.status)) {
+      throw new Error(`Invalid task status '${String(updates.status)}'`);
+    }
+    if (updates.summary !== undefined && (typeof updates.summary !== 'string' || updates.summary.trim().length === 0)) {
+      throw new Error('Task summary cannot be blank');
+    }
+    if (updates.report !== undefined && (typeof updates.report !== 'string' || updates.report.trim().length === 0)) {
+      throw new Error('Task report cannot be blank');
+    }
+    if (updates.blocker !== undefined && updates.blocker !== null) {
+      if (typeof updates.blocker !== 'object'
+        || typeof updates.blocker.reason !== 'string'
+        || updates.blocker.reason.trim().length === 0) {
+        throw new Error('Task blocker reason cannot be blank');
+      }
+      if (updates.status !== undefined && updates.status !== 'blocked') {
+        throw new Error('Task blocker can only be supplied with blocked status');
+      }
+    }
+  }
+
+  private validateStoredTaskStatus(status: TaskStatus, taskFolder: string): void {
+    if (!status || typeof status !== 'object' || !TASK_STATUSES.has(status.status)) {
+      throw new Error(`Task '${taskFolder}' has a corrupt status file`);
+    }
+  }
+
+  private readValidatedTaskStatus(statusPath: string, taskFolder: string): TaskStatus | null {
+    let status: TaskStatus | null;
+    try {
+      status = readJson<TaskStatus>(statusPath);
+    } catch (cause) {
+      throw new Error(`Task '${taskFolder}' has a corrupt status file at '${statusPath}'`, { cause });
+    }
+    if (status) this.validateStoredTaskStatus(status, taskFolder);
+    return status;
+  }
+
+  private persistenceError(
+    stage: TaskUpdatePersistenceStage,
+    cause: unknown,
+    reportPath: string | undefined,
+    latestReportPath: string | undefined,
+    reportHistoryWritten: boolean,
+    latestReportWritten: boolean,
+    expectedContent: string,
+    failedPath = stage === 'report_history' ? reportPath : latestReportPath,
+  ): TaskUpdatePersistenceError {
+    let failedWritePublished = false;
+    if (failedPath) {
+      try {
+        failedWritePublished = fs.readFileSync(failedPath, 'utf8') === expectedContent;
+      } catch {
+        // The failed write was not published.
+      }
+    }
+    const detail = failedWritePublished
+      ? 'The destination was published, but durability is uncertain.'
+      : 'The destination was not published.';
+    return new TaskUpdatePersistenceError(
+      `Task update failed while writing ${stage}. ${detail}`,
+      stage,
+      reportPath,
+      latestReportPath,
+      reportHistoryWritten,
+      latestReportWritten,
+      failedWritePublished,
+      { cause },
+    );
   }
 
   finalizeWorkerAttempt(
@@ -816,24 +988,44 @@ export class TaskService {
     return Math.max(...orders, 0) + 1;
   }
 
-  private validateManualTaskDependsOn(featureName: string, dependsOn: string[]): void {
-    for (const dependency of dependsOn) {
-      const dependencyStatus = this.getRawStatus(featureName, dependency);
+  private validateManualTaskDependsOn(featureName: string, taskFolder: string, dependsOn: string[]): void {
+    const folders = this.listFolders(featureName);
+    const tasks = folders.map(folder => {
+      const statusPath = getTaskStatusPath(this.projectRoot, featureName, folder);
+      const status = this.readValidatedTaskStatus(statusPath, folder);
+      if (!status) throw new Error(`Task '${folder}' has no status file`);
+      return { folder, status: status.status, dependsOn: status.dependsOn };
+    });
+    tasks.push({ folder: taskFolder, status: 'pending', dependsOn });
+    const dependencies = buildEffectiveDependencies(tasks);
 
-      if (!dependencyStatus) {
-        throw new Error(
-          `Manual tasks are append-only: dependency "${dependency}" does not exist. ` +
-          `Dependencies on unfinished work require plan amendment.`
-        );
-      }
-
-      if (dependencyStatus.status !== 'done') {
-        throw new Error(
-          `Manual tasks are append-only: dependency "${dependency}" is ${dependencyStatus.status}, not done. ` +
-          `Dependencies on unfinished work require plan amendment.`
-        );
+    for (const [folder, refs] of dependencies) {
+      for (const dependency of refs) {
+        if (dependency === folder) {
+          throw new Error(`Manual task dependency graph contains self-dependency for "${folder}".`);
+        }
+        if (!dependencies.has(dependency)) {
+          if (folder === taskFolder) {
+            throw new Error(`Manual task dependency "${dependency}" referenced by "${folder}" does not exist.`);
+          }
+          throw new Error(`Task '${folder}' has stale stored dependency "${dependency}" that does not exist.`);
+        }
       }
     }
+
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (folder: string): void => {
+      if (visiting.has(folder)) {
+        throw new Error(`Manual task dependency graph contains a cycle involving "${folder}".`);
+      }
+      if (visited.has(folder)) return;
+      visiting.add(folder);
+      for (const dependency of dependencies.get(folder) ?? []) visit(dependency);
+      visiting.delete(folder);
+      visited.add(folder);
+    };
+    for (const folder of dependencies.keys()) visit(folder);
   }
 
   private validateRepoIds(repoIds: string[] | undefined, context: string): void {

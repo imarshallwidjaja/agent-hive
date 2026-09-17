@@ -1,7 +1,7 @@
 export { FeatureService } from './featureService.js';
 export { PlanService } from './planService.js';
-export { TaskService } from './taskService.js';
-export type { SyncOptions } from './taskService.js';
+export { TaskService, TaskUpdatePersistenceError } from './taskService.js';
+export type { SyncOptions, TaskUpdateInput, TaskUpdateResult } from './taskService.js';
 export { SubtaskService } from './subtaskService.js';
 export {
   ExecutionAttemptService,
