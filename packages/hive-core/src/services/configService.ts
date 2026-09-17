@@ -286,6 +286,13 @@ export class ConfigService {
     const resolved: Record<string, ResolvedCustomAgentConfig> = {};
 
     for (const [agentName, declaration] of Object.entries(customAgents)) {
+      if (!this.isValidCustomAgentName(agentName)) {
+        console.warn(
+          `[hive:config] Skipping custom agent \"${agentName}\": invalid name (native permission wildcard characters \"*\" and \"?\" are not allowed)`,
+        );
+        continue;
+      }
+
       if (this.isReservedCustomAgentName(agentName)) {
         console.warn(`[hive:config] Skipping custom agent \"${agentName}\": reserved name`);
         continue;
@@ -370,6 +377,10 @@ export class ConfigService {
 
   private isReservedCustomAgentName(agent: string): boolean {
     return (CUSTOM_AGENT_RESERVED_NAMES as readonly string[]).includes(agent);
+  }
+
+  private isValidCustomAgentName(agent: string): boolean {
+    return !/[?*]/.test(agent);
   }
 
   private isSupportedCustomAgentBase(baseAgent: string): baseAgent is CustomAgentBase {

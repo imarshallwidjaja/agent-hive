@@ -194,7 +194,6 @@ describe('e2e: published custom-agent docs example', () => {
     expect(architectPrompt).not.toContain('`reviewer-security` — kind: custom overlay');
     expect(architectPrompt).not.toContain('`simplicity-reviewer` — kind: default');
     expect(architectPrompt).not.toContain('`vulnerability-reviewer` — kind: default');
-    expect(architectPrompt).not.toContain('derived from');
 
     const systemTransform = hooks['experimental.chat.system.transform' as keyof typeof hooks] as
       | ((input: { sessionID?: string; agent?: string }, output: { system: string[] }) => Promise<void>)
@@ -251,7 +250,7 @@ describe('e2e: published custom-agent docs example', () => {
       'Putting `description` on a non-customizable built-in invalidates the stored global config. At runtime, Agent Hive rejects the entire stored config and falls back to defaults, so unrelated stored settings are ignored until the config is corrected.',
     );
     expect(readmeContent).toContain(
-      'At runtime, custom agent entries with reserved names, non-object declarations, unsupported `baseAgent` values, or missing, blank, or whitespace-only `description` values are skipped with warnings.',
+      'At runtime, custom agent entries with reserved names, IDs containing native permission wildcard characters (`*` or `?`), non-object declarations, unsupported `baseAgent` values, or missing, blank, or whitespace-only `description` values are skipped with warnings.',
     );
     const sectionMatch = readmeContent.match(/### Custom Derived Subagents[\s\S]*?```json\n([\s\S]*?)\n```/);
     expect(sectionMatch).not.toBeNull();

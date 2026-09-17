@@ -169,7 +169,16 @@ describe('coordinated runtime hard cut', () => {
     expect(allowed('architect-planner', 'hive_worktree_merge')).toBe(false);
     expect(allowed('architect-planner', 'hive_worktree_create')).toBe(false);
     expect(allowed('architect-planner', 'hive_plan_write')).toBe(true);
-    expect(config.agent['architect-planner'].permission.task).toBe('allow');
+    expect(config.subagent_depth).toBe(2);
+    expect(config.agent['architect-planner'].permission.task).toMatchObject({
+      '*': 'deny',
+      'scout-researcher': 'allow',
+      'plan-reviewer': 'allow',
+      'approach-advisor': 'allow',
+    });
+    expect(config.agent['architect-planner'].permission.task['architect-planner']).toBeUndefined();
+    expect(config.agent['architect-planner'].permission.task['forager-worker']).toBeUndefined();
+    expect(config.agent['architect-planner'].permission.task['hive-master']).toBeUndefined();
     expect(allowed('forager-worker', 'hive_task_update')).toBe(true);
     expect(allowed('forager-worker', 'hive_constraints_add')).toBe(false);
     expect(allowed('forager-worker', 'hive_context_archive')).toBe(false);
@@ -177,6 +186,8 @@ describe('coordinated runtime hard cut', () => {
     expect(allowed('scout-researcher', 'hive_git_snapshot')).toBe(true);
     expect(allowed('scout-researcher', 'hive_context_write')).toBe(false);
     expect(config.agent['scout-researcher'].permission.task).toBe('deny');
+    expect(config.agent['plan-reviewer'].permission.task).toBe('deny');
+    expect(config.agent['approach-advisor'].permission.task).toBe('deny');
     expect(allowed('code-reviewer', 'hive_context_write')).toBe(true);
     expect(allowed('code-reviewer', 'hive_task_update')).toBe(false);
     expect(allowed('dash-reviewer', 'hive_worktree_merge')).toBe(false);
@@ -187,7 +198,7 @@ describe('coordinated runtime hard cut', () => {
     expect(allowed('hive-helper', 'hive_plan_write')).toBe(false);
   });
 
-  it('allows the primary architect to delegate while a delegated architect child cannot recurse', async () => {
+  it('allows primary and delegated architects to dispatch planning helpers with the same route snapshot', async () => {
     const { sessions, hooks } = createRuntime();
     const loaded = await hooks;
 
@@ -198,12 +209,16 @@ describe('coordinated runtime hard cut', () => {
 
     await loaded.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'arch-primary', callID: 'arch-primary-call', metadata: { sessionId: 'arch-child-observed' }, state: { input: { subagent_type: 'architect-planner' } } } } } } as any);
     const observedChildCall = { args: { subagent_type: 'scout-researcher', description: 'Research', prompt: 'Nested research.' } };
-    await expect(loaded['tool.execute.before']!({ tool: 'task', sessionID: 'arch-child-observed', callID: 'arch-child-observed-call' } as any, observedChildCall)).rejects.toThrow(/architect-planner is a terminal planning child/);
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'arch-child-observed', callID: 'arch-child-observed-call' } as any, observedChildCall);
+    expect(observedChildCall.args.prompt.startsWith('Nested research.')).toBe(true);
+    expect(observedChildCall.args.prompt).toContain('<!-- hive-route-snapshot:start -->');
 
     sessions.set('arch-child-native', { id: 'arch-child-native', parentID: 'arch-primary' });
     await loaded['chat.message']!({ sessionID: 'arch-child-native', agent: 'architect-planner' } as any, { message: {}, parts: [] } as any);
     const nativeChildCall = { args: { subagent_type: 'scout-researcher', description: 'Research', prompt: 'Nested research.' } };
-    await expect(loaded['tool.execute.before']!({ tool: 'task', sessionID: 'arch-child-native', callID: 'arch-child-native-call' } as any, nativeChildCall)).rejects.toThrow(/architect-planner is a terminal planning child/);
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'arch-child-native', callID: 'arch-child-native-call' } as any, nativeChildCall);
+    expect(nativeChildCall.args.prompt.startsWith('Nested research.')).toBe(true);
+    expect(nativeChildCall.args.prompt).toContain('<!-- hive-route-snapshot:start -->');
   });
 
   it('injects each full agent prompt through exactly one path', async () => {

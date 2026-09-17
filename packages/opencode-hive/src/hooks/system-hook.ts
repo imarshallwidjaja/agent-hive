@@ -31,7 +31,7 @@ export function shouldExecuteHook(
 export const HIVE_SYSTEM_PROMPT = `
 ## Hive — Active Session
 
-\`hive-master\`, \`swarm-orchestrator\`, and \`hive-builder\` are primary-only and are never valid native \`task()\` targets. \`architect-planner\` remains a valid child target, but every subagent is terminal and cannot call \`task()\`.
+\`hive-master\`, \`swarm-orchestrator\`, and \`hive-builder\` are primary-only and are never valid native \`task()\` targets. \`architect-planner\` is the planning-only exception: a primary may delegate plan work to it, and it may call one layer of permitted read-only planning helpers. Those helpers and every other subagent are terminal.
 `;
 
 export const SUBAGENT_CLARIFICATION_PROMPT = `

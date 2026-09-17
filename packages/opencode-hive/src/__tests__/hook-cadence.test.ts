@@ -388,7 +388,8 @@ describe('HIVE_SYSTEM_PROMPT — no broad worker-startup reinjection', () => {
 
   it('states which orchestrators are never native task targets', () => {
     expect(HIVE_SYSTEM_PROMPT).toContain('`hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only');
-    expect(HIVE_SYSTEM_PROMPT).toContain('`architect-planner` remains a valid child target');
-    expect(HIVE_SYSTEM_PROMPT).toContain('every subagent is terminal');
+    expect(HIVE_SYSTEM_PROMPT).toContain('`architect-planner` is the planning-only exception');
+    expect(HIVE_SYSTEM_PROMPT).toContain('one layer of permitted read-only planning helpers');
+    expect(HIVE_SYSTEM_PROMPT).toContain('every other subagent are terminal');
   });
 });

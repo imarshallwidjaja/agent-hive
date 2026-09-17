@@ -22,19 +22,19 @@ OpenCode shows these public seats. Dedicated mode (the default) registers `archi
 
 ### Primary seats
 
-**`architect-planner`** exists so feature work can be scoped before anyone writes code. Default seat in dedicated mode. It interviews, researches through scouts, and writes `plan.md`. "Do X" means "plan X". It does not implement, start worktrees, or merge. Planning notes such as `draft` and `overview` use the managed context tools below.
+**`architect-planner`** exists so feature work can be scoped before anyone writes code. Default seat in dedicated mode, and the one primary agent that can also run as a subagent when another orchestrator needs a plan created or edited. It interviews, writes `plan.md`, and may call one layer of configured Scout, plan-reviewer, or approach-advisor helpers. Those helpers are terminal. "Do X" means "plan X". Architect does not implement, call execution workers, start worktrees, or merge. Planning notes such as `draft` and `overview` use the managed context tools below.
 
 MO: classify the request, clear requirements one gap at a time, then write a worker-executable plan. It stops at an approved plan. Switch to `swarm-orchestrator` (or keep talking to `hive-master` in unified mode) for execution.
 
-**`swarm-orchestrator`** exists so approved feature work can run without rewriting the plan. Dedicated-mode execution seat. It syncs tasks, starts workers, inspects handoffs, merges, and tracks `.hive/` status.
+**`swarm-orchestrator`** exists so approved feature work can run without owning plan authorship. Dedicated-mode execution seat. It delegates plan changes to `architect-planner`, syncs tasks, starts workers, inspects handoffs, merges, and tracks `.hive/` status.
 
 MO: delegate by default. Choose direct work, delegation, or a worktree from the situation. One numbered task is one implementation assignment. Worker output is evidence to inspect, not proof that the batch is done.
 
-**`hive-master`** exists for operators who want one feature seat across planning and execution. Unified-mode default. It is phase-aware: no feature or unapproved plan means planning; approved tasks mean orchestration.
+**`hive-master`** exists for operators who want one feature seat across planning and execution. Unified-mode default. It is phase-aware: no feature or unapproved plan means delegating plan authorship to `architect-planner`; approved tasks mean orchestration.
 
 MO: same situational direct-vs-delegate choice as the split seats. It still waits for your approval before implementation. It can also coordinate ad-hoc work in unified mode; dedicated mode leaves that to `hive-builder`.
 
-**`hive-builder`** exists for bounded work that should not become a feature, plan, or task DAG. It is the dedicated-mode ad-hoc orchestrator and remains available in unified mode.
+**`hive-builder`** exists for bounded work that should not become a feature, plan, or task DAG. It is the dedicated-mode ad-hoc orchestrator and remains available in unified mode. If accepted escalation needs a feature plan, Builder delegates plan authorship to `architect-planner`.
 
 MO: inspect, classify or decompose into coherent lanes, place ready writing lanes in separate ad-hoc worktrees when isolation helps, delegate non-trivial work, verify, inspect status/diff, merge, cleanup. It does not create feature or task records. Decomposition does not add a blanket approval step. If unresolved contracts, inexpressible handoffs, migration or irreversible risk, or audit/governance needs make the feature workflow materially safer, it recommends escalation. If you reject escalation, it continues ad-hoc only when material scope, contracts, and risks are otherwise resolved; otherwise it asks the concrete blocking question before creating workers.
 

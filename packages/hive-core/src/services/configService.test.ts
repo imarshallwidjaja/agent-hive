@@ -844,6 +844,38 @@ describe("ConfigService defaults", () => {
               baseAgent: "hive-master",
               description: "Should be skipped at runtime.",
             },
+            "architect-*": {
+              baseAgent: "scout-researcher",
+              description: "Wildcard custom Scout.",
+            },
+            "forager-*": {
+              baseAgent: "approach-advisor",
+              description: "Wildcard custom advisor.",
+            },
+            "hive-*": {
+              baseAgent: "plan-reviewer",
+              description: "Wildcard custom plan reviewer.",
+            },
+            "*": {
+              baseAgent: "scout-researcher",
+              description: "Catch-all custom Scout.",
+            },
+            "?": {
+              baseAgent: "approach-advisor",
+              description: "Single-character custom advisor.",
+            },
+            "scout-docs": {
+              baseAgent: "scout-researcher",
+              description: "Valid named custom Scout.",
+            },
+            "plan-risk-reviewer": {
+              baseAgent: "plan-reviewer",
+              description: "Valid named custom plan reviewer.",
+            },
+            "approach-specialist": {
+              baseAgent: "approach-advisor",
+              description: "Valid named custom advisor.",
+            },
             "forager-ui": {
               baseAgent: "forager-worker",
               description: "Valid custom agent.",
@@ -859,7 +891,14 @@ describe("ConfigService defaults", () => {
     expect(custom).not.toHaveProperty("forager-worker");
     expect(custom).not.toHaveProperty("build");
     expect(custom).not.toHaveProperty("unsupported-base");
+    for (const name of ["architect-*", "forager-*", "hive-*", "*", "?"]) {
+      expect(custom).not.toHaveProperty(name);
+    }
+    expect(custom).toHaveProperty("scout-docs");
+    expect(custom).toHaveProperty("plan-risk-reviewer");
+    expect(custom).toHaveProperty("approach-specialist");
     expect(custom).toHaveProperty("forager-ui");
+    expect(service.getLastFallbackWarning()).toBeNull();
 
     const warnedLines = warnSpy.mock.calls.map((call) => call.join(" "));
     const expectWarnedAboutReservedName = (name: string) => {
@@ -871,6 +910,13 @@ describe("ConfigService defaults", () => {
     };
 
     expectWarnedAboutReservedName("build");
+    for (const name of ["architect-*", "forager-*", "hive-*", "*", "?"]) {
+      expect(
+        warnedLines.some(
+          (line) => line.includes("invalid name") && line.includes(`\"${name}\"`),
+        ),
+      ).toBe(true);
+    }
     expect(service.hasConfiguredAgent("forager-worker")).toBe(true);
     expect(service.hasConfiguredAgent("forager-ui")).toBe(true);
     expect(service.hasConfiguredAgent("build")).toBe(false);

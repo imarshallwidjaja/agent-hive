@@ -103,6 +103,37 @@ describe('agent_hive schema customAgents contract', () => {
     })).toBe(false);
   });
 
+  it('rejects native permission wildcard characters in custom agent IDs', () => {
+    expect(schema.properties.customAgents.propertyNames.pattern).toBe('^[^*?]*$');
+
+    const validCustomAgents = {
+      'scout-docs': {
+        baseAgent: 'scout-researcher',
+        description: 'Named Scout specialist.',
+      },
+      'plan-risk-reviewer': {
+        baseAgent: 'plan-reviewer',
+        description: 'Named plan reviewer specialist.',
+      },
+      'approach-specialist': {
+        baseAgent: 'approach-advisor',
+        description: 'Named advisor specialist.',
+      },
+    };
+    expect(validateConfigShape({ customAgents: validCustomAgents })).toBe(true);
+
+    for (const name of ['architect-*', 'forager-*', 'hive-*', '*', '?']) {
+      expect(validateConfigShape({
+        customAgents: {
+          [name]: {
+            baseAgent: 'scout-researcher',
+            description: 'Wildcard custom agent.',
+          },
+        },
+      })).toBe(false);
+    }
+  });
+
   it('reserves built-in and plugin-managed agent names', () => {
     expectReservedNameToFail('hive-master');
     expectReservedNameToFail('architect-planner');

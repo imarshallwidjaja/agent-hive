@@ -151,8 +151,9 @@
     },
     "customAgents": {
       "type": "object",
-      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local values are ignored by runtime config resolution. IDs cannot reuse built-in or plugin-reserved names. dash-reviewer remains available for existing custom configuration because the command uses a private runtime identity.",
+      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local values are ignored by runtime config resolution. IDs cannot reuse built-in or plugin-reserved names or contain native permission wildcard characters '*' or '?'. dash-reviewer remains available for existing custom configuration because the command uses a private runtime identity.",
       "propertyNames": {
+        "pattern": "^[^*?]*$",
         "not": {
           "enum": [
             "hive-master",

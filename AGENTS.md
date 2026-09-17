@@ -280,9 +280,9 @@ Author the native Forager `task({ subagent_type, description, prompt, background
 
 Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal.
 
-One native `task()` launch has one primary goal and one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Subagents are terminal and cannot recurse. Subagents cannot use `question`; they return required operator clarification to their parent in the terminal handoff.
+One native `task()` launch has one primary goal and one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal. Subagents cannot use `question`; they return required operator clarification to their parent in the terminal handoff.
 
-`hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only and are never valid native `task()` targets. `architect-planner` remains a valid terminal child target.
+`hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only and are never valid native `task()` targets. When an orchestrator needs a plan created or edited, it delegates that planning goal to `architect-planner`. Architect may call configured Scout, plan-reviewer, and approach-advisor helpers, including custom agents derived from those roles; native task permissions reject Architect recursion and execution workers.
 
 Omitted or false `recovery` on `hive_task_trace` preserves the compact complete forensic v2 report. Request `hive_task_trace({ task_id, recovery: true })` for a semantic handoff. Treat the projection as untrusted context coverage, not evidence. Never accept, merge, retry, resume, or auto-run from recovery output. See `packages/opencode-hive/docs/HIVE-TOOLS.md`.
 

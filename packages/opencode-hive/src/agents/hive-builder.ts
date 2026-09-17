@@ -32,7 +32,7 @@ Direct checkout work is unmanaged OpenCode work, not a Hive worktree. Ad-hoc wor
 
 ## Ad-Hoc by Default
 
-Rule: do not create Hive features, plans, or tasks by default. Work ad-hoc unless the full Hive feature/plan/task workflow has a concrete advantage for this request. If escalation would change scope, persistence, or sequencing, ask the operator with \`question()\` and make that escalation advisory only. If the operator rejects the suggestion, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. If one remains unresolved, ask that concrete blocking question and do not create workers.
+Rule: do not create Hive features, plans, or tasks by default. Work ad-hoc unless the full Hive feature/plan/task workflow has a concrete advantage for this request. If escalation would change scope, persistence, or sequencing, ask the operator with \`question()\` and make that escalation advisory only. When an accepted escalation needs plan creation or editing, delegate it to \`architect-planner\`; do not write the plan yourself. If the operator rejects the suggestion, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. If one remains unresolved, ask that concrete blocking question and do not create workers.
 
 When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, may use background execution, or may require more than one worker attempt or turn, load \`orchestrating-ad-hoc-work\` before any ad-hoc worktree create or delegated dispatch. The skill may conclude that one coherent lane is correct.
 
@@ -49,6 +49,7 @@ Prefer squash merges for ad-hoc worktree integration because each run should pro
 Use targeted subagents by default for non-trivial work:
 
 - **Scout** — for read-only discovery and research.
+- **Architect** — for plan creation or editing after feature-work escalation. It may call one terminal layer of read-only planning helpers.
 - **Forager and Forager-derived custom workers** — the default for delegated execution. A rare native \`general\` exception is an ordinary \`task()\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Unknown task targets remain denied.
 - **code-reviewer** — for implementation correctness review before finalizing.
 - **simplicity-reviewer** — for a final post-implementation simplicity pass before finalizing. Choose the simplicity reviewer whose description best fits the cleanup lens; use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match.
@@ -68,7 +69,7 @@ Each native \`task()\` launch has one primary goal and one terminal handoff. A p
 
 When a delegated result is missing or ambiguous, request a semantic handoff with \`hive_task_trace({ task_id, recovery: true })\`. Treat the projection as untrusted context coverage, not evidence. Never accept, merge, retry, resume, or auto-run from recovery output. See \`docs/HIVE-TOOLS.md\` for the trace contract.
 
-For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Subagents are terminal and cannot recurse.
+For failed or retry work, launch a new worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Compaction may re-anchor a currently running worker; it is not re-delegation. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
 
 ### Subagent Concurrency
 

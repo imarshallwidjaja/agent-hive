@@ -340,14 +340,6 @@ const plugin: Plugin = async (ctx) => {
       throw new Error(`repoIds must match the task repository selection: ${stored.join(', ') || '(single root)'}`);
     }
   };
-  const isArchitectPlannerChild = async (sessionID: string): Promise<boolean> => {
-    const agent = runtimeSessionAgents.get(sessionID) ?? sessionService.getGlobal(sessionID)?.agent;
-    if (agent !== 'architect-planner') return false;
-    if (runtimeTaskChildren.has(sessionID)) return true;
-    const response = await ctx.client.session.get({ path: { id: sessionID }, query: { directory: projectRoot } }).catch(() => ({ data: undefined }));
-    return typeof response.data?.parentID === 'string' && response.data.parentID.length > 0;
-  };
-
   const bindChildSnapshot = (binding: { parent: string; call: string; child: string; agent?: string }): void => {
     runtimeTaskChildren.add(binding.child);
     const key = `${binding.parent}\0${binding.call}`;
@@ -750,9 +742,6 @@ const plugin: Plugin = async (ctx) => {
       }, taskTraceHintIDs);
     },
     'tool.execute.before': async (input, output) => {
-      if (input.tool === 'task' && input.sessionID && await isArchitectPlannerChild(input.sessionID)) {
-        throw new Error('architect-planner is a terminal planning child and cannot call task(); return the required operator or primary decision in the terminal handoff instead.');
-      }
       if (input.tool === 'task' && input.sessionID && input.callID) {
         const snapshot = captureRoute(input.sessionID);
         dispatchSnapshots.set(`${input.sessionID}\0${input.callID}`, snapshot);
@@ -808,6 +797,15 @@ const plugin: Plugin = async (ctx) => {
       const routingAppendix = (bases: readonly CustomAgentBase[]) => buildSubagentRoutingAppendix(bases, custom, descriptions);
       const autoLoadAppendix = (name: string, override?: string[]) => buildAutoLoadSkillsPromptAppendix(name, configService, prepared.nativeSkillsByName, prepared.skillsByName, skipped, override);
       const backgroundAppendix = (name: string) => buildBackgroundDelegationPromptAppendix(name, prepared.nativeSkillsByName, prepared.skillsByName, skipped);
+      const architectTaskPermission = {
+        '*': 'deny',
+        'scout-researcher': 'allow',
+        'plan-reviewer': 'allow',
+        'approach-advisor': 'allow',
+        ...Object.fromEntries(Object.entries(custom)
+          .filter(([, config]) => ['scout-researcher', 'plan-reviewer', 'approach-advisor'].includes(config.baseAgent))
+          .map(([name]) => [name, 'allow'])),
+      };
       const agentMode = configService.get().agentMode ?? 'dedicated';
       const prompts: Record<string, string> = {
         'hive-master': QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('hive-master') + backgroundAppendix('hive-master') + (agentMode === 'unified' ? routingAppendix(routingBases) : ''),
@@ -833,7 +831,7 @@ const plugin: Plugin = async (ctx) => {
       };
       const agents: Record<string, any> = {
         'hive-master': mk('hive-master', 'primary', primaryTools, hiveBeeAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
-        'architect-planner': mk('architect-planner', 'all', ['hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', ...constraintTools, ...repositoryTools, ...contextRW, 'hive_context_archive', 'hive_worktree_inspect', 'hive_status', 'hive_git_snapshot'], architectBeeAgent.description, { question: 'allow', task: 'allow', edit: 'deny', skill: 'allow' }),
+        'architect-planner': mk('architect-planner', 'all', ['hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', ...constraintTools, ...repositoryTools, ...contextRW, 'hive_context_archive', 'hive_worktree_inspect', 'hive_status', 'hive_git_snapshot'], architectBeeAgent.description, { question: 'allow', task: architectTaskPermission, edit: 'deny', skill: 'allow' }),
         'swarm-orchestrator': mk('swarm-orchestrator', 'primary', primaryTools, swarmBeeAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
         'hive-builder': mk('hive-builder', 'primary', primaryTools, hiveBuilderAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
         'scout-researcher': mk('scout-researcher', 'subagent', ['hive_context_read', 'hive_status', 'hive_git_snapshot', 'hive_repositories_status', 'hive_repositories_discover'], descriptions['scout-researcher'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),

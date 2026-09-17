@@ -23,6 +23,42 @@ describe('agent tool exposure', () => {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({
       customAgents: {
+        'docs-researcher': {
+          baseAgent: 'scout-researcher',
+          description: 'Retrieves documentation evidence for plans.',
+        },
+        'plan-risk-reviewer': {
+          baseAgent: 'plan-reviewer',
+          description: 'Reviews risky plans.',
+        },
+        'approach-specialist': {
+          baseAgent: 'approach-advisor',
+          description: 'Provides named approach advice.',
+        },
+        'implementation-specialist': {
+          baseAgent: 'forager-worker',
+          description: 'Implements configured specialist work.',
+        },
+        'architect-*': {
+          baseAgent: 'scout-researcher',
+          description: 'Wildcard Scout must not be registered.',
+        },
+        'forager-*': {
+          baseAgent: 'approach-advisor',
+          description: 'Wildcard advisor must not be registered.',
+        },
+        'hive-*': {
+          baseAgent: 'plan-reviewer',
+          description: 'Wildcard plan reviewer must not be registered.',
+        },
+        '*': {
+          baseAgent: 'scout-researcher',
+          description: 'Catch-all Scout must not overwrite deny.',
+        },
+        '?': {
+          baseAgent: 'approach-advisor',
+          description: 'Single-character advisor must not be registered.',
+        },
         'security-specialist': {
           baseAgent: 'vulnerability-reviewer',
           description: 'Reviews authentication boundaries when configured.',
@@ -63,8 +99,29 @@ describe('agent tool exposure', () => {
     }
     expect(config.agent['architect-planner'].tools.hive_worktree_merge).toBe(false);
     expect(config.agent['architect-planner'].tools.hive_worktree_cleanup).toBe(false);
+    expect(config.agent['architect-planner'].permission.task).toMatchObject({
+      '*': 'deny',
+      'scout-researcher': 'allow',
+      'plan-reviewer': 'allow',
+      'approach-advisor': 'allow',
+      'docs-researcher': 'allow',
+      'plan-risk-reviewer': 'allow',
+      'approach-specialist': 'allow',
+    });
+    expect(config.agent['architect-planner'].permission.task['architect-planner']).toBeUndefined();
+    expect(config.agent['architect-planner'].permission.task['forager-worker']).toBeUndefined();
+    expect(config.agent['architect-planner'].permission.task['implementation-specialist']).toBeUndefined();
+    expect(config.agent['architect-planner'].permission.task['hive-master']).toBeUndefined();
+    for (const name of ['architect-*', 'forager-*', 'hive-*', '?']) {
+      expect(config.agent['architect-planner'].permission.task[name], name).toBeUndefined();
+    }
+    expect(config.agent['architect-planner'].permission.task['*']).toBe('deny');
     expect(config.agent['forager-worker'].permission.task).toBe('deny');
+    expect(config.agent['implementation-specialist'].permission.task).toBe('deny');
     expect(config.agent['scout-researcher'].permission.task).toBe('deny');
+    expect(config.agent['docs-researcher'].permission.task).toBe('deny');
+    expect(config.agent['plan-risk-reviewer'].permission.task).toBe('deny');
+    expect(config.agent['approach-specialist'].permission.task).toBe('deny');
     expect(config.agent['security-specialist'].tools).toEqual(config.agent['vulnerability-reviewer'].tools);
     expect(config.agent['security-specialist'].permission).toEqual(config.agent['vulnerability-reviewer'].permission);
     expect(config.command['dash-review'].agent).toBe('dash-reviewer');

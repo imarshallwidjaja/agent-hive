@@ -81,7 +81,7 @@ describe('Engineering judgment prompt reach', () => {
 
   it('anchors role-specific application at existing decision points', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries');
-    expect(QUEEN_BEE_PROMPT).toContain('When drafting the plan');
+    expect(QUEEN_BEE_PROMPT).toContain('Require the Architect handoff');
     expect(FORAGER_BEE_PROMPT).toContain('Apply Engineering Judgment during PLAN and VERIFY');
     expect(PLAN_REVIEWER_PROMPT).toContain('Apply Engineering Judgment only as an execution-readiness lens');
     expect(CODE_REVIEWER_PROMPT).toContain('Apply Engineering Judgment to the changed scope');
@@ -94,7 +94,7 @@ describe('Engineering judgment prompt reach', () => {
     );
     expect(ARCHITECT_BEE_PROMPT).toContain('do not add a later test-cleanup task');
     expect(QUEEN_BEE_PROMPT).toContain(
-      'When tests are selected, make invariant, owning-layer, and canonical-suite placement executable',
+      'When tests are selected, require invariant, owning-layer, and canonical-suite placement',
     );
     expect(CODE_REVIEWER_PROMPT).toContain(
       'Flag extra or weaker tests that repeat the same invariant outside the canonical owner',
@@ -424,7 +424,7 @@ describe('Fresh-session delegation contract', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).toContain('concise self-contained handoff');
       expect(prompt, name).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
-      expect(prompt, name).toContain('Subagents are terminal and cannot recurse');
+      expect(prompt, name).toContain('Architect is the only subagent that may call one terminal layer of read-only planning helpers');
     }
 
     for (const [name, prompt] of [
@@ -802,16 +802,14 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).not.toContain('hive_execution_prepare');
     });
 
-    it('documents plan-reviewer routing by closest task fit', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('the plan reviewer whose description best fits the plan review lens');
-      expect(QUEEN_BEE_PROMPT).toContain('Use built-in `plan-reviewer` when no configured plan-reviewer-derived custom description is a closer match');
-      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
+    it('routes plan review through Architect', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('delegate the review request to Architect');
+      expect(QUEEN_BEE_PROMPT).toContain('best-fit permitted plan-reviewer');
     });
 
-    it('documents approach-advisor routing by closest strategic fit', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('the approach advisor whose description best fits the strategic question');
-      expect(QUEEN_BEE_PROMPT).toContain('Use built-in `approach-advisor` when no configured approach-advisor-derived custom description matches the domain or risk lens');
-      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
+    it('routes strategic planning advice through Architect', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('include the question in the Architect assignment');
+      expect(QUEEN_BEE_PROMPT).toContain('Architect may consult the best-fit permitted approach-advisor');
     });
 
     it('documents simplicity-reviewer routing by closest cleanup fit', () => {
@@ -908,8 +906,9 @@ describe('Architect (Planner) prompt', () => {
     });
 
     it('permits research and review delegation via task()', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('You may use task() to delegate read-only research to Scout and plan review to plan-reviewer.');
+      expect(ARCHITECT_BEE_PROMPT).toContain('one terminal layer of permitted Scout, plan-reviewer, or approach-advisor planning help');
       expect(ARCHITECT_BEE_PROMPT).toContain('Never use task() to delegate implementation or coding work.');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively');
     });
 
     it('does NOT contain the blanket prohibition "Delegate work or spawn workers"', () => {
@@ -1211,10 +1210,9 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
     });
 
-    it('documents approach-advisor routing by closest strategic fit', () => {
-      expect(SWARM_BEE_PROMPT).toContain('the approach advisor whose description best fits the strategic question');
-      expect(SWARM_BEE_PROMPT).toContain('Use built-in `approach-advisor` when no configured approach-advisor-derived custom description matches the domain or risk lens');
-      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-advisor>"');
+    it('routes strategic planning advice through Architect', () => {
+      expect(SWARM_BEE_PROMPT).toContain('include it in the Architect assignment');
+      expect(SWARM_BEE_PROMPT).toContain('Architect may consult the best-fit permitted approach-advisor');
     });
 
     it('documents simplicity-reviewer routing by closest cleanup fit', () => {
@@ -2038,9 +2036,9 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     }
   });
 
-  it('forbids recursive task use from subagents', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('Subagents are terminal and cannot recurse');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('one level of read-only planning helpers');
+  it('routes plan escalation to Architect while keeping other subagents terminal', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('delegate it to `architect-planner`');
+    expect(HIVE_BUILDER_PROMPT).toContain('Architect is the only subagent that may call one terminal layer of read-only planning helpers');
   });
 
   it('does NOT contain task-DAG defaults', () => {
