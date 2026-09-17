@@ -45,11 +45,13 @@ function registerScopedJob(
     primaryAgent?: string;
     feature?: string;
     task?: string;
+    callId?: string;
   },
 ) {
   return service.registerLaunch({
     taskId: input.taskId,
     sessionId: input.sessionId,
+    callId: input.callId,
     agentName: 'forager-worker',
     description: `Background job ${input.taskId}`,
     scope: {
@@ -238,16 +240,13 @@ describe('background management tools', () => {
       reason: 'native_completion_pending',
       taskId: 'running-task',
     }));
-    expect(result.waitingForNativeCompletion).toContainEqual(expect.objectContaining({
-      reason: 'native_completion_pending',
-      taskId: 'unknown-task',
-    }));
+    expect(result.waitingForNativeCompletion?.some(item => item.taskId === 'unknown-task')).toBe(false);
     expect(result.waitingForNativeCompletion?.some(item => !!item.command)).toBe(false);
     expect(result.nextActions).toContainEqual(expect.objectContaining({
       reason: 'reconcile_required',
       taskId: 'terminal-task',
       precondition: 'Consume or intentionally ignore the terminal result before running this command.',
-      command: 'hive_background_reconcile({ identifier: "terminal-task", decision: "reconciled", summary: "<what was done with the result>" })',
+      command: 'hive_background_reconcile({ identifier: "parent-1:job-3", decision: "reconciled", summary: "<what was done with the result>" })',
     }));
     expect(result.recommendedNextAction).toMatchObject({
       action: 'reconcile_terminal_job',
@@ -258,7 +257,7 @@ describe('background management tools', () => {
     expect(result.orchestrationBurden).toEqual({
       visibleLanes: 3,
       actionableLanes: 1,
-      completionNotificationsPending: 2,
+      completionNotificationsPending: 1,
       reconcileItemsRequired: 1,
       recommendedReconcileToolCalls: 1,
     });
@@ -452,7 +451,7 @@ describe('background management tools', () => {
     expect(result).toMatchObject({ success: false, reason: 'stale_job_requires_ignore' });
     expect(result.nextAction).toMatchObject({
       reason: 'stale_recovery_pending',
-      command: 'hive_background_reconcile({ identifier: "stale-reconcile-task", decision: "ignored", summary: "<why the stale lane was archived>" })',
+      command: 'hive_background_reconcile({ identifier: "parent-1:job-1", decision: "ignored", summary: "<why the stale lane was archived>" })',
     });
     expect(result.nextAction?.message).toContain('archive it with decision "ignored"');
     expect(result.nextAction?.message).not.toContain('native completion');
@@ -576,9 +575,9 @@ describe('background management tools', () => {
       backgroundJobService: service,
       projectRoot: TEST_DIR,
       isEnabled: () => true,
-      cancelRuntimeTask: async (taskId: string) => {
-        cancelAttempts.push(taskId);
-        return { cancelled: taskId === 'cancel-task', message: 'runtime acknowledged cancellation' };
+      cancelRuntimeTask: async (sessionId: string) => {
+        cancelAttempts.push(sessionId);
+        return { cancelled: sessionId === 'cancel-session', message: 'runtime acknowledged cancellation' };
       },
     });
 
@@ -590,18 +589,23 @@ describe('background management tools', () => {
     expect(cancelAttempts).toEqual([]);
     expect(service.resolve('other-parent-task')?.cancelRequestedAt).toBeUndefined();
 
+    service.updateRuntimeState(scoped.alias, 'unknown', {
+      statusUncertain: true,
+      lastStatusError: 'transient cancellation status miss',
+    });
     const accepted = parseToolJson<{ success?: boolean; runtimeCancelled?: boolean; job?: { taskId: string; runtime: { state: string; resultSummary?: string }; coordination: { cancelReason?: string; cancelRequestedAt?: string } } }>(await tools.hive_background_cancel.execute(
       { identifier: scoped.alias, reason: 'operator stopped stale work' },
       createToolContext(),
     ));
     expect(accepted.success).toBe(true);
     expect(accepted.runtimeCancelled).toBe(true);
-    expect(cancelAttempts).toEqual(['cancel-task']);
+    expect(cancelAttempts).toEqual(['cancel-session']);
     expect(accepted.job).toMatchObject({
       taskId: 'cancel-task',
-      runtime: { state: 'cancelled', resultSummary: 'runtime acknowledged cancellation' },
+      runtime: { state: 'cancelled', statusUncertain: false, resultSummary: 'runtime acknowledged cancellation' },
       coordination: { cancelReason: 'operator stopped stale work' },
     });
+    expect(accepted.job?.runtime).not.toHaveProperty('lastStatusError');
     expect(accepted.job?.coordination.cancelRequestedAt).toBeDefined();
   });
 
@@ -624,6 +628,181 @@ describe('background management tools', () => {
     expect(result.runtimeMessage).toBe('runtime still running');
     expect(result.job?.runtime.state).toBe('running');
     expect(result.job?.coordination.cancelReason).toBe('cancel requested');
+  });
+
+  it('keeps jobs visible to their parent after an agent switch', async () => {
+    registerScopedJob(service, { taskId: 'visible-after-switch', sessionId: 'child-session' });
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const result = parseToolJson<{ jobs?: Array<{ taskId: string }> }>(
+      await tools.hive_background_status.execute({}, createToolContext('parent-1', 'different-agent')),
+    );
+    expect(result.jobs?.map(job => job.taskId)).toEqual(['visible-after-switch']);
+  });
+
+  it('requires aliases for reused child identifiers and accepts an exact alias', async () => {
+    const first = registerScopedJob(service, { taskId: 'resumed-child', sessionId: 'resumed-child', callId: 'call-1' });
+    const resumed = registerScopedJob(service, { taskId: 'resumed-child', sessionId: 'resumed-child', callId: 'call-2' });
+    service.markTerminal(first.alias, 'completed', { resultSummary: 'first result' });
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const ambiguous = parseToolJson<{ success?: boolean; reason?: string; error?: string }>(
+      await tools.hive_background_reconcile.execute(
+        { identifier: 'resumed-child', decision: 'reconciled', summary: 'ambiguous' },
+        createToolContext(),
+      ),
+    );
+    expect(ambiguous).toMatchObject({ success: false, reason: 'job_identifier_ambiguous' });
+    expect(ambiguous.error).toContain(first.alias);
+    expect(ambiguous.error).toContain(resumed.alias);
+
+    const exact = parseToolJson<{ success?: boolean; job?: { alias: string } }>(
+      await tools.hive_background_reconcile.execute(
+        { identifier: first.alias, decision: 'reconciled', summary: 'consumed exact result' },
+        createToolContext(),
+      ),
+    );
+    expect(exact).toMatchObject({ success: true, job: { alias: first.alias } });
+
+    service.updateRuntimeState(resumed.alias, 'unknown', { statusUncertain: true, lastStatusError: 'ambiguous callback' });
+    const ignored = parseToolJson<{ success?: boolean; job?: { alias: string; runtime: { state: string }; coordination: { archiveReason: string } } }>(
+      await tools.hive_background_reconcile.execute(
+        { identifier: resumed.alias, decision: 'ignored', summary: 'Retired ambiguous observation only.' },
+        createToolContext(),
+      ),
+    );
+    expect(ignored).toMatchObject({
+      success: true,
+      job: { alias: resumed.alias, runtime: { state: 'unknown' }, coordination: { archiveReason: 'ignored' } },
+    });
+  });
+
+  it('explains when one confirmed native abort affects reused live board rows', async () => {
+    const first = registerScopedJob(service, { taskId: 'shared-child', sessionId: 'shared-child', callId: 'call-1' });
+    const resumed = registerScopedJob(service, { taskId: 'shared-child', sessionId: 'shared-child', callId: 'call-2' });
+    const cancelledSessions: string[] = [];
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+      cancelRuntimeTask: async (sessionId) => {
+        cancelledSessions.push(sessionId);
+        return { cancelled: true, message: 'native abort confirmed' };
+      },
+    });
+
+    const result = parseToolJson<{
+      success?: boolean;
+      runtimeCancelled?: boolean;
+      affectedAliases?: string[];
+      scopeMessage?: string;
+    }>(await tools.hive_background_cancel.execute(
+      { identifier: resumed.alias, reason: 'stop resumed child' },
+      createToolContext(),
+    ));
+
+    expect(cancelledSessions).toEqual(['shared-child']);
+    expect(result).toMatchObject({
+      success: true,
+      runtimeCancelled: true,
+      affectedAliases: [first.alias, resumed.alias],
+    });
+    expect(result.scopeMessage).toContain('targets session shared-child');
+    expect(service.resolve(first.alias)?.runtimeState).toBe('cancelled');
+    expect(service.resolve(resumed.alias)?.runtimeState).toBe('cancelled');
+  });
+
+  it('marks sibling-parent rows sharing an aborted native session uncertain instead of cancelled', async () => {
+    const selected = registerScopedJob(service, { taskId: 'shared-child', sessionId: 'shared-child', parentSessionId: 'parent-1' });
+    const sibling = registerScopedJob(service, { taskId: 'shared-child', sessionId: 'shared-child', parentSessionId: 'parent-2' });
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+      cancelRuntimeTask: async () => ({ cancelled: true, message: 'native abort confirmed' }),
+    });
+
+    const result = parseToolJson<{ affectedAliases?: string[]; uncertainSiblingAliases?: string[] }>(
+      await tools.hive_background_cancel.execute(
+        { identifier: selected.alias, reason: 'stop native session' },
+        createToolContext(),
+      ),
+    );
+
+    expect(result.affectedAliases).toEqual([selected.alias]);
+    expect(result.uncertainSiblingAliases).toEqual([sibling.alias]);
+    expect(service.resolve(selected.alias)?.runtimeState).toBe('cancelled');
+    expect(service.resolve(sibling.alias)).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
+    expect(service.resolve(sibling.alias)?.lastStatusError).toContain('hive_task_trace');
+  });
+
+  it('rejects cancellation of a terminal row without a live sibling in its parent scope', async () => {
+    const terminal = registerScopedJob(service, { taskId: 'done-child', sessionId: 'done-child' });
+    service.markTerminal(terminal.alias, 'completed');
+    let cancelCalled = false;
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+      cancelRuntimeTask: async () => {
+        cancelCalled = true;
+        return { cancelled: true };
+      },
+    });
+
+    const result = parseToolJson<{ success?: boolean; reason?: string }>(await tools.hive_background_cancel.execute(
+      { identifier: terminal.alias, reason: 'too late' },
+      createToolContext(),
+    ));
+    expect(result).toMatchObject({ success: false, reason: 'job_terminal' });
+    expect(cancelCalled).toBe(false);
+  });
+
+  it('distinguishes uncertain live observations from stale recovery', async () => {
+    const uncertain = registerScopedJob(service, { taskId: 'uncertain-child', sessionId: 'uncertain-child' });
+    service.updateRuntimeState(uncertain.alias, 'unknown', { statusUncertain: true, lastStatusError: 'transient status miss' });
+    registerScopedJob(service, { taskId: 'running-child', sessionId: 'running-child' });
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+    });
+
+    const status = parseToolJson<{
+      recommendedNextAction?: { action?: string; reasonCode?: string; aliases?: string[]; message?: string };
+      waitingForNativeCompletion?: unknown;
+      schedulerGuidance?: unknown;
+    }>(await tools.hive_background_status.execute({}, createToolContext()));
+    expect(status.recommendedNextAction).toMatchObject({
+      action: 'inspect_uncertain_background_jobs',
+      reasonCode: 'uncertain_background_jobs_visible',
+      aliases: [uncertain.alias],
+    });
+    expect(status.recommendedNextAction?.message).toContain('hive_task_trace');
+    expect(status.recommendedNextAction?.message).not.toContain('stale');
+    expect(status.waitingForNativeCompletion).toBeDefined();
+    expect(status.schedulerGuidance).toBeUndefined();
+
+    const rejected = parseToolJson<{ reason?: string; nextAction?: { reason?: string; diagnostic?: string; message?: string } }>(
+      await tools.hive_background_reconcile.execute(
+        { identifier: uncertain.alias, decision: 'reconciled', summary: 'not terminal' },
+        createToolContext(),
+      ),
+    );
+    expect(rejected).toMatchObject({
+      reason: 'uncertain_job_requires_ignore',
+      nextAction: { reason: 'uncertain_observation_pending' },
+    });
+    expect(rejected.nextAction?.diagnostic).toContain('hive_task_trace');
+    expect(rejected.nextAction?.message).not.toContain('stale');
   });
 
   it('hive_background_reconcile cannot act on archived jobs by direct identifier', async () => {

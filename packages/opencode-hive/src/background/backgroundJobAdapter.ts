@@ -1,7 +1,6 @@
 import type {
   BackgroundJobRecord,
   BackgroundJobRuntimeState,
-  BackgroundJobScope,
   BackgroundJobService,
   SessionInfo,
 } from 'hive-core';
@@ -37,16 +36,8 @@ export interface BackgroundJobAdapterOptions {
   isEnabled: () => boolean;
   runtimeId?: string;
   getSession?: (sessionId: string) => SessionInfo | undefined;
-  isPrimaryAgent?: (agentName: string | undefined, session: SessionInfo | undefined) => boolean;
-  resolvePromptScope?: (input: unknown, session: SessionInfo | undefined) => BackgroundJobScope;
   parseLifecycleEvent?: (input: unknown, output: unknown, context?: TaskLifecycleContext) => ParsedTaskLifecycleEvent | undefined;
   warn?: (message: string) => void;
-  onNativeBackgroundTerminal?: (event: {
-    taskId: string;
-    callId?: string;
-    parentSessionId: string;
-    state: 'completed' | 'error' | 'cancelled';
-  }) => void;
 }
 
 export function classifyRuntimeEpochStaleJobs(input: {
@@ -71,7 +62,7 @@ export function classifyRuntimeEpochStaleJobs(input: {
     }
 
     input.service.markRuntimeEpochStale(
-      job.taskId,
+      job.alias,
       input.currentRuntimeId,
       `Background worker runtime identity changed. Job was registered by runtime '${job.runtimeId || '(unknown)'}' but current runtime is '${input.currentRuntimeId}'.`,
     );
@@ -79,7 +70,7 @@ export function classifyRuntimeEpochStaleJobs(input: {
 }
 
 export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions) {
-  const toolArgsByCall = new Map<string, Record<string, unknown>>();
+  const lifecycleContextByCall = new Map<string, TaskLifecycleContext>();
   const observedCompletionNotifications = new Set<string>();
   const parseLifecycleEvent = options.parseLifecycleEvent ?? parseTaskLifecycleEvent;
   const warn = options.warn ?? ((message: string) => console.warn(message));
@@ -94,7 +85,12 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         const stagedArgs = { ...output.args };
         if (input.tool === 'task' && stagedArgs.background === undefined) stagedArgs.background = false;
         const key = toolCallKey(input.sessionID, input.callID);
-        toolArgsByCall.set(key, stagedArgs);
+        const session = options.getSession?.(input.sessionID);
+        lifecycleContextByCall.set(key, {
+          args: stagedArgs,
+          agentName: typeof session?.agent === 'string' ? session.agent : undefined,
+          featureLabel: typeof session?.featureName === 'string' ? session.featureName : undefined,
+        });
       }
     },
 
@@ -104,15 +100,11 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         return;
       }
 
-      let context: ReturnType<typeof resolveLifecycleContext>;
       try {
-        context = resolveLifecycleContext(input);
-        const event = parseLifecycleEvent(input, output, context?.lifecycle);
+        const event = parseLifecycleEvent(input, output, resolveLifecycleContext(input));
         if (event) {
           await handleLifecycleEvent(event);
         }
-      } catch (error) {
-        throw error;
       } finally {
         clearLifecycleContext(input);
       }
@@ -131,23 +123,15 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         return;
       }
 
-      const session = options.getSession?.(sessionID);
-      const agentName = session?.agent;
-      const isPrimaryAgent = options.isPrimaryAgent ?? defaultIsPrimaryAgent;
-      if (!isPrimaryAgent(agentName, session)) {
-        return;
-      }
-
-      const scope = options.resolvePromptScope?.(input, session) ?? defaultPromptScope(options.projectRoot, session);
       classifyRuntimeEpochStaleJobs({
         service: options.service,
         projectRoot: options.projectRoot,
         currentRuntimeId: options.runtimeId,
-        isVisible: job => isJobVisibleInPrompt(job, scope, sessionID),
+        isVisible: job => isJobVisibleInPrompt(job, options.projectRoot, sessionID),
       });
       const jobs = options.service
         .listScoped({ projectRoot: options.projectRoot })
-        .filter(job => isJobVisibleInPrompt(job, scope, sessionID))
+        .filter(job => isJobVisibleInPrompt(job, options.projectRoot, sessionID))
         .filter(job => shouldShowJobInPrompt(job, sessionID));
       if (jobs.length === 0) {
         return;
@@ -183,22 +167,18 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     },
   };
 
-  function resolveLifecycleContext(input: unknown): {
-    lifecycle: TaskLifecycleContext;
-  } | undefined {
+  function resolveLifecycleContext(input: unknown): TaskLifecycleContext | undefined {
     if (!input || typeof input !== 'object') {
       return undefined;
     }
 
     const record = input as { tool?: string; sessionID?: string; callID?: string; args?: Record<string, unknown> };
     const key = record.sessionID && record.callID ? toolCallKey(record.sessionID, record.callID) : undefined;
-    const args = (key ? toolArgsByCall.get(key) : undefined) ?? record.args;
-    const session = record.sessionID ? options.getSession?.(record.sessionID) : undefined;
+    const staged = key ? lifecycleContextByCall.get(key) : undefined;
     return {
-      lifecycle: {
-        args,
-        agentName: typeof session?.agent === 'string' ? session.agent : undefined,
-      },
+      args: staged?.args ?? record.args,
+      agentName: staged?.agentName,
+      featureLabel: staged?.featureLabel,
     };
   }
 
@@ -213,7 +193,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     }
 
     const key = toolCallKey(record.sessionID, record.callID);
-    toolArgsByCall.delete(key);
+    lifecycleContextByCall.delete(key);
   }
 
   async function handleLifecycleEvent(event: ParsedTaskLifecycleEvent): Promise<void> {
@@ -222,15 +202,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         return;
       }
 
-      const parentSession = options.getSession?.(event.parentSessionId);
-      {
-        const existingCalls = event.callId ? options.service.listScoped({ projectRoot: options.projectRoot, parentSessionId: event.parentSessionId }, { includeArchived: true }).filter(job => job.callId === event.callId) : [];
-        if (existingCalls.length > 1) throw new Error('launch_binding_error: ambiguous native callback');
-        const existingCall = existingCalls[0];
-        if (existingCall) {
-          if (existingCall.taskId !== event.taskId) throw new Error('launch_binding_error: contradictory native callback');
-          return;
-        }
+      try {
         options.service.registerLaunch({
           taskId: event.taskId,
           sessionId: event.taskId,
@@ -242,9 +214,11 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
             projectRoot: options.projectRoot,
             parentSessionId: event.parentSessionId,
             primaryAgent: event.agentName,
-            feature: parentSession?.featureName,
+            feature: event.featureLabel,
           },
         });
+      } catch (error) {
+        warn(`[hive:background] failed to record background launch ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
       }
       return;
     }
@@ -253,20 +227,25 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     if (!status) {
       return;
     }
-    const statusJob = options.service.resolve(event.taskId);
-    if (!statusJob || !isNotificationForJob(statusJob, event.parentSessionId)) return;
+    const statusJobs = findNativeJobs(event.taskId, event.parentSessionId, status.callId);
+    if (statusJobs.length === 0) return;
+    if (statusJobs.length > 1) {
+      markAmbiguousObservation(statusJobs, event.taskId, 'task_status sample');
+      return;
+    }
+    const statusJob = statusJobs[0]!;
 
     const state = normalizeBackgroundRuntimeState(status.runtimeState, status.error?.kind);
     try {
       if (state === 'completed' || state === 'error' || state === 'cancelled') {
-        options.service.markTerminal(event.taskId, state, {
+        options.service.markTerminal(statusJob.alias, state, {
           resultSummary: status.result,
           lastStatusError: status.error?.message,
           statusUncertain: status.timedOut,
         });
         // A task_status sample updates the observational board but is not native stop evidence.
       } else {
-        options.service.updateRuntimeState(event.taskId, state, {
+        options.service.updateRuntimeState(statusJob.alias, state, {
           resultSummary: status.result,
           lastStatusError: status.error?.message,
           statusUncertain: status.timedOut ?? status.error?.kind === 'transient',
@@ -289,12 +268,21 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
           continue;
         }
 
-        const job = options.service.resolve(parsed.task_id);
         const notificationParent = part.sessionID ?? parentSessionId;
-        const notificationKey = `${notificationParent ?? ''}\u0000${parsed.task_id}\u0000${job?.callId ?? ''}`;
-        if (!job || observedCompletionNotifications.has(notificationKey) || !isNotificationForJob(job, notificationParent)) {
+        if (!notificationParent) continue;
+        const jobs = findNativeJobs(parsed.task_id, notificationParent, parsed.callId);
+        const notificationKey = `${message.info.id ?? part.messageID ?? ''}\u0000${part.id ?? ''}\u0000${notificationParent}\u0000${parsed.task_id}`;
+        if (observedCompletionNotifications.has(notificationKey) || jobs.length === 0) {
           continue;
         }
+
+        if (jobs.length > 1) {
+          if (markAmbiguousObservation(jobs, parsed.task_id, 'native completion notification')) {
+            observedCompletionNotifications.add(notificationKey);
+          }
+          continue;
+        }
+        const job = jobs[0]!;
 
         const state = normalizeBackgroundRuntimeState(parsed.runtimeState, parsed.error?.kind);
         if (state !== 'completed' && state !== 'error' && state !== 'cancelled') {
@@ -302,18 +290,12 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         }
 
         try {
-          options.service.markTerminal(parsed.task_id, state, {
+          options.service.markTerminal(job.alias, state, {
             resultSummary: parsed.result,
             lastStatusError: parsed.error?.message,
-            statusUncertain: parsed.timedOut,
+            statusUncertain: parsed.timedOut ?? false,
           });
           observedCompletionNotifications.add(notificationKey);
-          options.onNativeBackgroundTerminal?.({
-            taskId: parsed.task_id,
-            callId: job.callId,
-            parentSessionId: notificationParent ?? '',
-            state,
-          });
         } catch (error) {
           warn(`[hive:background] failed to update background task ${parsed.task_id} from completion notification: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -321,14 +303,32 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     }
   }
 
-  function isNotificationForJob(job: BackgroundJobRecord, parentSessionId: string | undefined): boolean {
-    if (job.scope?.projectRoot && job.scope.projectRoot !== options.projectRoot) {
-      return false;
+  function findNativeJobs(taskId: string, parentSessionId: string, callId?: string): BackgroundJobRecord[] {
+    return options.service
+      .listScoped({ projectRoot: options.projectRoot, parentSessionId }, { includeArchived: true })
+      .filter(job => job.taskId === taskId || job.sessionId === taskId)
+      .filter(job => callId === undefined || job.callId === callId);
+  }
+
+  function markAmbiguousObservation(jobs: BackgroundJobRecord[], taskId: string, source: string): boolean {
+    const aliases = jobs.map(job => job.alias).join(', ');
+    const diagnostic = `Ambiguous ${source} for reused native child '${taskId}'. Preserved prior terminal outcomes; inspect hive_task_trace({ task_id: ${JSON.stringify(taskId)} }) and use an exact board alias (${aliases}).`;
+    let succeeded = true;
+    for (const job of jobs) {
+      if (!isTerminalRuntimeState(job.runtimeState)) {
+        try {
+          options.service.updateRuntimeState(job.alias, 'unknown', {
+            statusUncertain: true,
+            lastStatusError: diagnostic,
+          });
+        } catch (error) {
+          succeeded = false;
+          warn(`[hive:background] failed to mark ambiguous background task ${job.alias}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     }
-    if (job.scope?.parentSessionId) {
-      return job.scope.parentSessionId === parentSessionId;
-    }
-    return false;
+    warn(`[hive:background] ${diagnostic}`);
+    return succeeded;
   }
 
   return adapter;
@@ -336,20 +336,6 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
 
 function toolCallKey(sessionID: string, callID: string): string {
   return JSON.stringify([sessionID, callID]);
-}
-
-function defaultIsPrimaryAgent(_agentName: string | undefined, session: SessionInfo | undefined): boolean {
-  return session?.sessionKind === 'primary';
-}
-
-function defaultPromptScope(projectRoot: string, session: SessionInfo | undefined): BackgroundJobScope {
-  return {
-    projectRoot,
-    parentSessionId: session?.sessionId,
-    primaryAgent: session?.agent,
-    feature: session?.featureName,
-    task: session?.taskFolder,
-  };
 }
 
 function extractIdleSessionId(input: unknown): string | undefined {
@@ -373,27 +359,12 @@ function findTargetUserMessage(messages: ReplayMessageEntry[]): ReplayMessageEnt
     ?? messages.find(message => !!message.info.sessionID);
 }
 
-function isJobVisibleInPrompt(job: BackgroundJobRecord, scope: BackgroundJobScope, sessionID: string): boolean {
+function isJobVisibleInPrompt(job: BackgroundJobRecord, projectRoot: string, sessionID: string): boolean {
   const jobScope = job.scope ?? {};
-  if (jobScope.projectRoot && jobScope.projectRoot !== scope.projectRoot) {
+  if (jobScope.projectRoot && jobScope.projectRoot !== projectRoot) {
     return false;
   }
   if (jobScope.parentSessionId !== sessionID) {
-    return false;
-  }
-  if (scope.primaryAgent && jobScope.primaryAgent && jobScope.primaryAgent !== scope.primaryAgent) {
-    return false;
-  }
-  if (scope.feature && jobScope.feature && jobScope.feature !== scope.feature) {
-    return false;
-  }
-  if (scope.task && jobScope.task && jobScope.task !== scope.task) {
-    return false;
-  }
-  if (scope.adHocRunId && jobScope.adHocRunId && jobScope.adHocRunId !== scope.adHocRunId) {
-    return false;
-  }
-  if (scope.workflow && jobScope.workflow && jobScope.workflow !== scope.workflow) {
     return false;
   }
   return true;
@@ -405,6 +376,7 @@ function shouldShowJobInPrompt(job: BackgroundJobRecord, sessionID: string): boo
   }
 
   return job.runtimeState === 'running'
+    || (job.runtimeState === 'unknown' && job.statusUncertain === true)
     || job.terminalUnreconciled === true
     || !!job.cancelRequestedAt
     || !!job.staleAt;
@@ -418,9 +390,10 @@ function formatPromptBoard(jobs: BackgroundJobRecord[]): string {
   const lines = jobs.map((job) => {
     const runtimeParts = [
       job.runtimeState,
-      job.resultSummary ? `result: ${singleLine(job.resultSummary)}` : undefined,
-      job.lastStatusError ? `status error: ${singleLine(job.lastStatusError)}` : undefined,
+      job.resultSummary ? `result: ${promptSnippet(job.resultSummary)}` : undefined,
+      job.lastStatusError ? `status error: ${promptSnippet(job.lastStatusError)}` : undefined,
       job.statusUncertain ? 'status uncertain' : undefined,
+      job.statusUncertain ? `diagnostic: hive_task_trace({ task_id: ${JSON.stringify(job.sessionId)} })` : undefined,
     ].filter(Boolean).join('; ');
     const coordinationParts = [
       job.terminalUnreconciled ? 'terminal unreconciled' : undefined,
@@ -437,6 +410,11 @@ function formatPromptBoard(jobs: BackgroundJobRecord[]): string {
 
 function singleLine(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function promptSnippet(value: string): string {
+  const line = singleLine(value);
+  return line.length > 500 ? `${line.slice(0, 497)}...` : line;
 }
 
 function normalizeBackgroundRuntimeState(

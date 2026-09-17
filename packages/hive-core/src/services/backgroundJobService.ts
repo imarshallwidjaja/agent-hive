@@ -75,7 +75,9 @@ export class BackgroundJobService {
 
   private findRecord(board: BackgroundJobsJson, identifier: string): BackgroundJobRecord {
     const matches = board.jobs.filter(job => job.taskId === identifier || job.sessionId === identifier || job.alias === identifier);
-    if (matches.length > 1) throw new Error(`Ambiguous background job identifier: ${identifier}`);
+    if (matches.length > 1) {
+      throw new Error(`Ambiguous background job identifier '${identifier}'. Use one of these exact aliases: ${matches.map(job => job.alias).join(', ')}`);
+    }
     const record = matches[0];
     if (!record) {
       throw new Error(`Background job not found: ${identifier}`);
@@ -113,20 +115,17 @@ export class BackgroundJobService {
 
   registerLaunch(input: RegisterBackgroundJobInput): BackgroundJobRecord {
     return this.updateBoard((board) => {
-      const callMatches = input.callId ? board.jobs.filter(job => job.callId === input.callId && job.scope?.parentSessionId === input.scope?.parentSessionId) : [];
+      const projectRoot = input.scope?.projectRoot ?? this.projectRoot;
+      const callMatches = input.callId ? board.jobs.filter(job =>
+        job.callId === input.callId
+        && job.scope?.parentSessionId === input.scope?.parentSessionId
+        && (job.scope?.projectRoot ?? this.projectRoot) === projectRoot) : [];
       if (callMatches.length > 1) throw new Error('launch_binding_error: ambiguous native call');
       const sameCall = callMatches[0];
       if (sameCall) {
         if (sameCall.taskId === input.taskId && sameCall.sessionId === input.sessionId) return sameCall;
         throw new Error('launch_binding_error: contradictory native identity for call');
       }
-      if (board.jobs.some(job => job.taskId === input.taskId)) {
-        throw new Error(`Background job already registered for task ID: ${input.taskId}`);
-      }
-      if (board.jobs.some(job => job.sessionId === input.sessionId)) {
-        throw new Error(`Background job already registered for session ID: ${input.sessionId}`);
-      }
-
       const now = new Date().toISOString();
       const record: BackgroundJobRecord = {
         taskId: input.taskId,
@@ -160,8 +159,15 @@ export class BackgroundJobService {
       if (patch.resultSummary !== undefined) {
         changed = this.applyIfChanged(record, 'resultSummary', patch.resultSummary) || changed;
       }
-      if (patch.lastStatusError !== undefined) {
-        changed = this.applyIfChanged(record, 'lastStatusError', patch.lastStatusError) || changed;
+      if (Object.prototype.hasOwnProperty.call(patch, 'lastStatusError')) {
+        if (patch.lastStatusError === undefined) {
+          if (Object.prototype.hasOwnProperty.call(record, 'lastStatusError')) {
+            delete record.lastStatusError;
+            changed = true;
+          }
+        } else {
+          changed = this.applyIfChanged(record, 'lastStatusError', patch.lastStatusError) || changed;
+        }
       }
 
       this.updateTimestamp(record, changed);
@@ -183,14 +189,21 @@ export class BackgroundJobService {
         record.runtimeCompletedAt = new Date().toISOString();
         changed = true;
       }
-      if (patch.statusUncertain !== undefined && record.statusUncertain === undefined) {
+      if (patch.statusUncertain !== undefined) {
         changed = this.applyIfChanged(record, 'statusUncertain', patch.statusUncertain) || changed;
       }
       if (patch.resultSummary !== undefined && record.resultSummary === undefined) {
         changed = this.applyIfChanged(record, 'resultSummary', patch.resultSummary) || changed;
       }
-      if (patch.lastStatusError !== undefined && record.lastStatusError === undefined) {
-        changed = this.applyIfChanged(record, 'lastStatusError', patch.lastStatusError) || changed;
+      if (Object.prototype.hasOwnProperty.call(patch, 'lastStatusError')) {
+        if (patch.lastStatusError === undefined) {
+          if (Object.prototype.hasOwnProperty.call(record, 'lastStatusError')) {
+            delete record.lastStatusError;
+            changed = true;
+          }
+        } else if (record.lastStatusError === undefined) {
+          changed = this.applyIfChanged(record, 'lastStatusError', patch.lastStatusError) || changed;
+        }
       }
 
       this.updateTimestamp(record, changed);
@@ -377,7 +390,9 @@ export class BackgroundJobService {
   resolve(identifier: string): BackgroundJobRecord | undefined {
     const board = this.readBoard();
     const matches = board.jobs.filter(job => job.taskId === identifier || job.sessionId === identifier || job.alias === identifier);
-    if (matches.length > 1) throw new Error(`Ambiguous background job identifier: ${identifier}`);
+    if (matches.length > 1) {
+      throw new Error(`Ambiguous background job identifier '${identifier}'. Use one of these exact aliases: ${matches.map(job => job.alias).join(', ')}`);
+    }
     return matches[0];
   }
 
@@ -409,13 +424,15 @@ function isTerminalRuntimeState(state: BackgroundJobRecord['runtimeState']): boo
 
 function isPromptNotificationCandidate(record: BackgroundJobRecord, taskIds: Set<string>, parentSessionId: string): boolean {
   return taskIds.has(record.taskId)
+    && record.scope?.parentSessionId === parentSessionId
     && isTerminalRuntimeState(record.runtimeState)
     && record.terminalUnreconciled === true
     && (!record.promptNotifiedAt || record.promptNotifiedInSessionId !== parentSessionId);
 }
 
 function isPromptAcknowledgmentCandidate(record: BackgroundJobRecord, parentSessionId: string): boolean {
-  return isTerminalRuntimeState(record.runtimeState)
+  return record.scope?.parentSessionId === parentSessionId
+    && isTerminalRuntimeState(record.runtimeState)
     && record.terminalUnreconciled === true
     && record.promptNotifiedInSessionId === parentSessionId
     && !!record.promptNotifiedAt

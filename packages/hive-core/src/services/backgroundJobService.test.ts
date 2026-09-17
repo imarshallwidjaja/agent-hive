@@ -129,6 +129,27 @@ describe('BackgroundJobService', () => {
     expect(service.resolve(record.alias)).toEqual(record);
   });
 
+  it('registers resumed launches with a reused child session and requires an exact alias', () => {
+    const first = service.registerLaunch({
+      taskId: 'resumed-child',
+      sessionId: 'resumed-child',
+      callId: 'call-1',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' },
+    });
+    const resumed = service.registerLaunch({
+      taskId: 'resumed-child',
+      sessionId: 'resumed-child',
+      callId: 'call-2',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-1' },
+    });
+
+    expect(resumed.alias).not.toBe(first.alias);
+    expect(service.resolve(resumed.alias)).toEqual(resumed);
+    expect(() => service.resolve('resumed-child')).toThrow(`Use one of these exact aliases: ${first.alias}, ${resumed.alias}`);
+  });
+
   it('keeps the first terminal result and reconciles observational bookkeeping', () => {
     registerJob(service);
     const terminal = service.markTerminal('task-1', 'completed', { resultSummary: 'done' });
@@ -170,6 +191,23 @@ describe('BackgroundJobService', () => {
       promptBoardInjectionCount: 1,
     });
     expect(acknowledged[0].promptAcknowledgedAt).toBeDefined();
+  });
+
+  it('keeps prompt metadata scoped to the originating parent for reused child ids', () => {
+    registerJob(service);
+    service.markTerminal('task-1', 'completed');
+    const other = service.registerLaunch({
+      taskId: 'task-1',
+      sessionId: 'task-1',
+      agentName: 'forager-worker',
+      scope: { projectRoot: TEST_DIR, parentSessionId: 'parent-2' },
+    });
+    service.markTerminal(other.alias, 'completed');
+
+    expect(service.markPromptNotified(['task-1'], 'parent-1').map(job => job.alias)).toEqual(['parent-1:job-1']);
+    expect(service.markPromptAcknowledgedForSession('parent-1').map(job => job.alias)).toEqual(['parent-1:job-1']);
+    expect(service.resolve(other.alias)).not.toHaveProperty('promptNotifiedAt');
+    expect(service.resolve(other.alias)).not.toHaveProperty('promptAcknowledgedAt');
   });
 
   it('marks active jobs from another runtime stale without changing runtime state', () => {
@@ -217,6 +255,22 @@ describe('BackgroundJobService', () => {
 
     expect(enriched.runtimeCompletedAt).toBe(terminal.runtimeCompletedAt);
     expect(enriched).toMatchObject({ resultSummary: 'worker failed', lastStatusError: 'provider disconnected' });
+  });
+
+  it('clears explicitly replaced terminal diagnostics', () => {
+    registerJob(service);
+    service.updateRuntimeState('task-1', 'unknown', {
+      statusUncertain: true,
+      lastStatusError: 'transient status miss',
+    });
+
+    const terminal = service.markTerminal('task-1', 'completed', {
+      statusUncertain: false,
+      lastStatusError: undefined,
+    });
+
+    expect(terminal).toMatchObject({ runtimeState: 'completed', statusUncertain: false });
+    expect(terminal).not.toHaveProperty('lastStatusError');
   });
 
   it('does not create a board when prompt acknowledgment has no matching job', () => {

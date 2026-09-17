@@ -18,7 +18,7 @@ export interface CreateBackgroundToolsOptions {
   projectRoot: string;
   isEnabled: () => boolean;
   currentRuntimeId?: string;
-  cancelRuntimeTask?: (taskId: string, context: ToolContext) => Promise<RuntimeCancelResult> | RuntimeCancelResult;
+  cancelRuntimeTask?: (sessionId: string, context: ToolContext) => Promise<RuntimeCancelResult> | RuntimeCancelResult;
 }
 
 type ReconcileDecision = 'reconciled' | 'ignored';
@@ -68,8 +68,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         const orchestrationBurden = buildOrchestrationBurden(activeJobs);
         const recommendedNextAction = buildRecommendedNextAction(activeJobs);
         const schedulerGuidance = staleActiveJobs.length === 0
-          && orchestrationBurden.completionNotificationsPending > 0
-            && orchestrationBurden.reconcileItemsRequired === 0
+          && recommendedNextAction.reasonCode === 'native_completion_wait_only'
           ? {
               reason: 'wait_for_native_completion_notification',
               message: 'Do not call hive_background_status repeatedly while every visible lane is wait-only. Wait for OpenCode native completion notification, continue unrelated foreground work, or cancel only if the lane is stale, wrong, or no longer needed.',
@@ -109,7 +108,8 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         }
 
         const { activeJobs } = buildVisibleBackgroundBoard(options.backgroundJobService, options.projectRoot, toolContext as ToolContext);
-        const reconciledJob = options.backgroundJobService.resolve(identifier.trim());
+        const resultJob = (result as { job?: { alias?: string } }).job;
+        const reconciledJob = resultJob?.alias ? options.backgroundJobService.resolve(resultJob.alias) : undefined;
         const reconciledJobs = reconciledJob ? [reconciledJob] : [];
 
         return json({
@@ -143,9 +143,9 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           .filter(r => r.success === true)
           .map(r => {
             const resultJob = (r as Record<string, unknown>).job as Record<string, unknown> | undefined;
-            const taskId = resultJob && typeof resultJob.taskId === 'string' ? resultJob.taskId : null;
-            if (taskId) {
-              return options.backgroundJobService.resolve(taskId);
+            const alias = resultJob && typeof resultJob.alias === 'string' ? resultJob.alias : null;
+            if (alias) {
+              return options.backgroundJobService.resolve(alias);
             }
             const rawId = (r as Record<string, unknown>).identifier;
             const trimmed = typeof rawId === 'string' ? rawId.trim() : '';
@@ -183,17 +183,50 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         if (!resolved.success) {
           return json(resolved);
         }
-
-        options.backgroundJobService.markCancelRequested(resolved.job.taskId, trimmedReason);
-        const runtimeResult = await cancelRuntimeTask(resolved.job.taskId, toolContext as ToolContext);
-        const updated = runtimeResult.cancelled
-          ? options.backgroundJobService.markRuntimeCancelled(resolved.job.taskId, { resultSummary: runtimeResult.message })
-          : options.backgroundJobService.resolve(resolved.job.taskId);
+        const liveSessionJobs = options.backgroundJobService
+          .listScoped({ projectRoot: options.projectRoot })
+          .filter(job => job.sessionId === resolved.job.sessionId)
+          .filter(job => !isTerminalRuntimeState(job.runtimeState));
+        const affectedJobs = liveSessionJobs
+          .filter(job => job.scope?.parentSessionId === resolved.job.scope?.parentSessionId);
+        if (affectedJobs.length === 0) {
+          return json(failure('job_terminal', `Background job ${resolved.job.alias} is terminal and has no live sibling row in this parent scope to cancel.`));
+        }
+        const siblingParentJobs = liveSessionJobs
+          .filter(job => job.scope?.parentSessionId !== resolved.job.scope?.parentSessionId);
+        for (const job of affectedJobs) {
+          options.backgroundJobService.markCancelRequested(job.alias, trimmedReason);
+        }
+        const runtimeResult = await cancelRuntimeTask(resolved.job.sessionId, toolContext as ToolContext);
+        const uncertainSiblingJobs = runtimeResult.cancelled ? siblingParentJobs : [];
+        if (runtimeResult.cancelled) {
+          for (const job of affectedJobs) {
+            options.backgroundJobService.markRuntimeCancelled(job.alias, {
+              resultSummary: runtimeResult.message,
+              statusUncertain: false,
+              lastStatusError: undefined,
+            });
+          }
+          for (const job of siblingParentJobs) {
+            options.backgroundJobService.updateRuntimeState(job.alias, 'unknown', {
+              statusUncertain: true,
+              lastStatusError: `A confirmed abort targeted shared native session '${resolved.job.sessionId}' from parent '${resolved.job.scope?.parentSessionId}'. This sibling-parent observation was not marked cancelled; inspect hive_task_trace({ task_id: ${JSON.stringify(resolved.job.sessionId)} }).`,
+            });
+          }
+        }
+        const updated = options.backgroundJobService.resolve(resolved.job.alias);
 
         return json({
           success: true,
           runtimeCancelled: runtimeResult.cancelled,
           runtimeMessage: runtimeResult.message,
+          affectedAliases: affectedJobs.map(job => job.alias),
+          uncertainSiblingAliases: uncertainSiblingJobs.length > 0 ? uncertainSiblingJobs.map(job => job.alias) : undefined,
+          scopeMessage: affectedJobs.length > 1 || uncertainSiblingJobs.length > 0
+            ? runtimeResult.cancelled
+              ? `The native abort targets session ${resolved.job.sessionId}. Confirmed cancellation applies to the listed aliases in this parent scope; live sibling-parent observations are marked uncertain, not cancelled.`
+              : `The listed aliases share native session ${resolved.job.sessionId}; runtime cancellation was not confirmed.`
+            : undefined,
           job: updated ? formatJob(updated) : undefined,
         });
       },
@@ -220,13 +253,18 @@ function resolveVisibleJob(
     return failure('identifier_required', 'A task ID, session ID, or alias is required.');
   }
 
-  const job = backgroundJobService.resolve(trimmedIdentifier);
+  let job: BackgroundJobRecord | undefined;
+  try {
+    job = backgroundJobService.resolve(trimmedIdentifier);
+  } catch (error) {
+    return failure('job_identifier_ambiguous', error instanceof Error ? error.message : String(error));
+  }
   if (!job) {
     return failure('job_not_found', `Background job not found: ${trimmedIdentifier}`);
   }
 
   if (job.scope?.projectRoot !== projectRoot || !isJobVisible(job, toolContext)) {
-    return failure('job_not_in_scope', `Background job ${trimmedIdentifier} is not visible to this primary session.`);
+    return failure('job_not_in_scope', `Background job ${trimmedIdentifier} is not visible to its originating parent session.`);
   }
 
   if (isBackgroundJobArchived(job)) {
@@ -252,23 +290,25 @@ function reconcileVisibleJob(
   }
 
   if (!isTerminalRuntimeState(resolved.job.runtimeState)) {
-    if (resolved.job.staleAt) {
+    if (resolved.job.staleAt || resolved.job.statusUncertain) {
+      const stale = !!resolved.job.staleAt;
       if (item.decision !== 'ignored') {
+        const reason = stale ? 'stale_job_requires_ignore' : 'uncertain_job_requires_ignore';
         return {
           identifier: item.identifier,
-          ...failure('stale_job_requires_ignore', `Stale background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal. Inspect or retry it, or archive it with decision "ignored".`),
-          nextAction: staleRecoveryPendingAction(resolved.job),
+          ...failure(reason, `${stale ? 'Stale' : 'Uncertain'} background job ${resolved.job.alias} is ${resolved.job.runtimeState}, not terminal. Inspect it or archive the observation with decision "ignored".`),
+          nextAction: stale ? staleRecoveryPendingAction(resolved.job) : uncertainRecoveryPendingAction(resolved.job),
         };
       }
 
-      const ignored = backgroundJobService.markIgnored(resolved.job.taskId, trimmedSummary);
+      const ignored = backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary);
       return {
         identifier: item.identifier,
         success: true,
         decision: item.decision,
         archive: {
           archived: true,
-          message: 'The stale background job is archived and hidden from normal status output. Do not edit .hive/background-jobs.json directly.',
+          message: `The ${stale ? 'stale' : 'uncertain'} background observation is archived and hidden from normal status output. Archiving does not claim the worker stopped.`,
         },
         job: formatJob(ignored),
       };
@@ -282,11 +322,11 @@ function reconcileVisibleJob(
   }
 
   const reconciled = item.decision === 'reconciled'
-    ? backgroundJobService.markReconciled(resolved.job.taskId, {
+    ? backgroundJobService.markReconciled(resolved.job.alias, {
         reconciledBy: toolContext.sessionID,
         reconciliationSummary: trimmedSummary,
       })
-    : backgroundJobService.markIgnored(resolved.job.taskId, trimmedSummary);
+    : backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary);
 
   return {
     identifier: item.identifier,
@@ -301,13 +341,7 @@ function reconcileVisibleJob(
 }
 
 function isJobVisible(job: BackgroundJobRecord, toolContext: ToolContext): boolean {
-  if (!toolContext.sessionID || job.scope?.parentSessionId !== toolContext.sessionID) {
-    return false;
-  }
-  if (toolContext.agent && job.scope?.primaryAgent && job.scope.primaryAgent !== toolContext.agent) {
-    return false;
-  }
-  return true;
+  return !!toolContext.sessionID && job.scope?.parentSessionId === toolContext.sessionID;
 }
 
 function matchesOptionalScope(
@@ -331,12 +365,12 @@ function buildNextActions(jobs: BackgroundJobRecord[]): Array<Record<string, str
 
 function buildNativeCompletionWaits(jobs: BackgroundJobRecord[]): Array<Record<string, string>> {
   return jobs
-    .filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt)
+    .filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt && !job.statusUncertain)
     .map(nativeCompletionPendingWait);
 }
 
 function buildOrchestrationBurden(jobs: BackgroundJobRecord[]): Record<string, number> {
-  const completionNotificationsPending = jobs.filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt).length;
+  const completionNotificationsPending = jobs.filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt && !job.statusUncertain).length;
   const reconcileItemsRequired = jobs.filter(job => isTerminalRuntimeState(job.runtimeState) && job.terminalUnreconciled === true).length;
 
   return {
@@ -380,7 +414,18 @@ function buildRecommendedNextAction(
     };
   }
 
-  const waitingJobs = jobs.filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt);
+  const uncertainJobs = jobs.filter(job => !isTerminalRuntimeState(job.runtimeState) && !job.staleAt && job.statusUncertain);
+  if (uncertainJobs.length > 0) {
+    return {
+      action: 'inspect_uncertain_background_jobs',
+      reasonCode: 'uncertain_background_jobs_visible',
+      aliases: uncertainJobs.map(job => job.alias),
+      message: 'One or more live background observations are uncertain. Inspect their native sessions with hive_task_trace; wait for an authoritative terminal notification or ignore/archive only the observation.',
+      requiresHiveStatusRefresh: false,
+    };
+  }
+
+  const waitingJobs = jobs.filter(job => (job.runtimeState === 'running' || job.runtimeState === 'unknown') && !job.staleAt && !job.statusUncertain);
   if (waitingJobs.length > 0 && waitingJobs.length === jobs.length) {
     const taskIds = waitingJobs.map(job => job.taskId);
     return pruneUndefined({
@@ -457,8 +502,20 @@ function staleRecoveryPendingAction(job: BackgroundJobRecord): Record<string, st
   return {
     reason: 'stale_recovery_pending',
     taskId: job.taskId,
-    command: `hive_background_reconcile({ identifier: ${JSON.stringify(job.taskId)}, decision: "ignored", summary: "<why the stale lane was archived>" })`,
+    alias: job.alias,
+    command: `hive_background_reconcile({ identifier: ${JSON.stringify(job.alias)}, decision: "ignored", summary: "<why the stale lane was archived>" })`,
     message: 'This stale background job is not running normally. Inspect its associated worktree and Hive status before retrying, or archive it with decision "ignored".',
+  };
+}
+
+function uncertainRecoveryPendingAction(job: BackgroundJobRecord): Record<string, string> {
+  return {
+    reason: 'uncertain_observation_pending',
+    taskId: job.taskId,
+    alias: job.alias,
+    diagnostic: `hive_task_trace({ task_id: ${JSON.stringify(job.sessionId)} })`,
+    command: `hive_background_reconcile({ identifier: ${JSON.stringify(job.alias)}, decision: "ignored", summary: "<why the uncertain observation was archived>" })`,
+    message: 'This live background observation is uncertain. Inspect its native session, wait for authoritative terminal evidence, or archive only the observation with decision "ignored".',
   };
 }
 
@@ -466,8 +523,9 @@ function reconcileRequiredAction(job: BackgroundJobRecord): Record<string, strin
   return {
     reason: 'reconcile_required',
     taskId: job.taskId,
+    alias: job.alias,
     precondition: 'Consume or intentionally ignore the terminal result before running this command.',
-    command: `hive_background_reconcile({ identifier: ${JSON.stringify(job.taskId)}, decision: "reconciled", summary: "<what was done with the result>" })`,
+    command: `hive_background_reconcile({ identifier: ${JSON.stringify(job.alias)}, decision: "reconciled", summary: "<what was done with the result>" })`,
     message: 'This background job is terminal but unreconciled. Consume or intentionally ignore the result, then reconcile or ignore it explicitly.',
   };
 }

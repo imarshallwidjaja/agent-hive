@@ -60,7 +60,7 @@ describe('BackgroundJobsProvider', () => {
     expect((jobs[0] as any).tooltip).toContain('task-native-1');
     expect((jobs[0] as any).command).toMatchObject({
       command: 'hive.openBackgroundJobInBoard',
-      arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'task-native-1'],
+      arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'task-07'],
     });
   });
 
@@ -148,7 +148,7 @@ describe('BackgroundJobsProvider', () => {
     expect((groups[6] as any).collapsibleState).toBe(1);
   });
 
-  it('background job item exposes taskId, alias, and label for archive command', async () => {
+  it('background job item exposes and copies the exact alias for row actions', async () => {
     writeJobs({
       schemaVersion: 1,
       jobs: [job({ taskId: 'archive-test-task', alias: 'archive-test-alias' })],
@@ -162,6 +162,22 @@ describe('BackgroundJobsProvider', () => {
     expect(item.taskId).toBe('archive-test-task');
     expect(item.alias).toBe('archive-test-alias');
     expect(item.label).toBe('archive-test-alias');
+    expect(item.copyCommand.arguments).toEqual(['archive-test-alias']);
+  });
+
+  it('opens duplicate native child rows by their distinct aliases', async () => {
+    writeJobs({
+      schemaVersion: 1,
+      jobs: [
+        job({ taskId: 'resumed-child', alias: 'parent:job-1' }),
+        job({ taskId: 'resumed-child', alias: 'parent:job-2' }),
+      ],
+    });
+    const provider = new BackgroundJobsProvider(testRoot);
+    const groups = await provider.getChildren();
+    const jobs = await provider.getChildren(groups[0]);
+
+    expect(jobs.map((item: any) => item.command.arguments[1])).toEqual(['parent:job-1', 'parent:job-2']);
   });
 
   it('uses archiveable context value for non-archived jobs and archived context for archived jobs', async () => {
@@ -196,7 +212,7 @@ describe('BackgroundJobsProvider', () => {
 
     expect((jobs[0] as any).command).toMatchObject({
       command: 'hive.openBackgroundJobInBoard',
-      arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'review-task'],
+      arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'review-job'],
     });
   });
 

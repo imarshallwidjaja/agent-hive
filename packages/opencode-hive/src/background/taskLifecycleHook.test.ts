@@ -154,11 +154,9 @@ describe('background task lifecycle hook support', () => {
         { identifier: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2', reason: 'No longer needed' },
         { sessionID: 'sess_parent', messageID: 'msg_cancel', agent: 'hive-master', abort: new AbortController().signal },
       );
-      const cancelResult = JSON.parse(cancelRaw as string) as { success: boolean; runtimeCancelled: boolean; job: { runtime: { state: string } } };
-      expect(cancelResult.success).toBe(true);
-      expect(cancelResult.runtimeCancelled).toBe(true);
-      expect(cancelResult.job.runtime.state).toBe('completed');
-      expect(abortCalls).toEqual([{ path: { id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2' }, query: { directory: testRoot } }]);
+      const cancelResult = JSON.parse(cancelRaw as string) as { success: boolean; reason: string };
+      expect(cancelResult).toMatchObject({ success: false, reason: 'job_terminal' });
+      expect(abortCalls).toEqual([]);
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
       if (originalBackgroundEnv === undefined) {

@@ -74,6 +74,15 @@ task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2`);
     });
   });
 
+  it('extracts call identity from legacy text status output when present', () => {
+    expect(parseTaskStatusOutput('task_id: resumed-child\ncallId: call-2\nstatus: completed\nresult: done')).toEqual({
+      task_id: 'resumed-child',
+      callId: 'call-2',
+      runtimeState: 'completed',
+      result: 'done',
+    });
+  });
+
   it('returns undefined for malformed status output without throwing', () => {
     expect(parseTaskStatusOutput('status unavailable')).toBeUndefined();
     expect(parseTaskStatusOutput('{"task_id":')).toBeUndefined();
@@ -93,6 +102,20 @@ Commit: \`24d154c\` (\`test: add background smoke A marker\`)
       task_id: 'ses_1414deee4ffe5kZYLAlm3FmXDS',
       runtimeState: 'completed',
       result: 'Created `BACKGROUND_SMOKE_A.md` in the task worktree and committed it.\n\nCommit: `24d154c` (`test: add background smoke A marker`)',
+    });
+  });
+
+  it('preserves exact native call identity when a notification provides it', () => {
+    expect(parseTaskCompletionNotification('<task id="resumed-child" call-id="call-2" state="completed"><task_result>done</task_result></task>')).toEqual({
+      task_id: 'resumed-child',
+      callId: 'call-2',
+      runtimeState: 'completed',
+      result: 'done',
+    });
+    expect(parseTaskStatusOutput(JSON.stringify({ task_id: 'resumed-child', call_id: 'call-2', status: 'running' }))).toEqual({
+      task_id: 'resumed-child',
+      callId: 'call-2',
+      runtimeState: 'running',
     });
   });
 

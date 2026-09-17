@@ -26,8 +26,8 @@ export class Launcher {
     }
   }
 
-  async openBackgroundJobInBoard(boardPath: string, taskId: string): Promise<void> {
-    if (!boardPath || !taskId) {
+  async openBackgroundJobInBoard(boardPath: string, alias: string): Promise<void> {
+    if (!boardPath || !alias) {
       vscode.window.showWarningMessage('Hive: Invalid background job reference')
       return
     }
@@ -35,7 +35,7 @@ export class Launcher {
     try {
       const uri = vscode.Uri.file(boardPath)
       const content = fs.readFileSync(boardPath, 'utf-8')
-      const lineIndex = content.split(/\r?\n/).findIndex(line => line.includes(`"taskId": "${taskId}"`))
+      const lineIndex = content.split(/\r?\n/).findIndex(line => line.includes(`"alias": ${JSON.stringify(alias)}`))
       const document = await vscode.workspace.openTextDocument(uri)
       const selection = lineIndex >= 0
         ? new vscode.Selection(new vscode.Position(lineIndex, 0), new vscode.Position(lineIndex, 0))
@@ -43,10 +43,10 @@ export class Launcher {
 
       await vscode.window.showTextDocument(document, selection ? { selection } : undefined)
       if (lineIndex < 0) {
-        vscode.window.showWarningMessage(`Hive: Background job "${taskId}" was not found in the board file`)
+        vscode.window.showWarningMessage(`Hive: Background job "${alias}" was not found in the board file`)
       }
     } catch (error: any) {
-      vscode.window.showErrorMessage(`Hive: Could not open background job "${taskId}" - ${error}`)
+      vscode.window.showErrorMessage(`Hive: Could not open background job "${alias}" - ${error}`)
     }
   }
 }

@@ -1931,7 +1931,7 @@ export function appendTaskTraceHint(input: { tool?: string }, output: { output: 
   const metadata = record(output.metadata);
   const sessionID = typeof metadata?.sessionId === 'string' ? metadata.sessionId.trim() : '';
   if (!sessionID) return;
-  const hint = `[hive task trace] If this child failed, blocked, timed out, was cancelled, returned empty output, or its result is unclear, inspect it before relaunching with hive_task_trace({ task_id: ${JSON.stringify(sessionID)} }). Read errors, changed_files, tool activity, and the latest/final response first. Recovery context belongs in a NEW task without task_id.`;
+  const hint = `[hive task trace] If this child failed, blocked, timed out, was cancelled, returned empty output, or its result is unclear, inspect it with hive_task_trace({ task_id: ${JSON.stringify(sessionID)} }). Read errors, changed_files, tool activity, and the latest/final response first, then choose whether to resume that native task or launch a new one.`;
   if ((output.output ?? '').includes(hint)) return;
   output.output = `${output.output ?? ''}${output.output ? '\n\n' : ''}${hint}`;
 }
@@ -1965,7 +1965,7 @@ export async function injectTaskTraceHint(
         type: 'text',
         synthetic: true,
         hiveTaskTraceHint: true,
-        text: `[hive task trace] This task result is empty or terminally unsuccessful. Inspect the runtime-visible session before relaunching with hive_task_trace({ task_id: ${JSON.stringify(childID)} }); read errors, changed_files, tool activity, and the latest/final response first. Recovery context belongs in a NEW task without task_id.`,
+        text: `[hive task trace] This task result is empty or terminally unsuccessful. Inspect the runtime-visible session with hive_task_trace({ task_id: ${JSON.stringify(childID)} }); read errors, changed_files, tool activity, and the latest/final response first, then choose whether to resume that native task or launch a new one.`,
       });
       break;
     }

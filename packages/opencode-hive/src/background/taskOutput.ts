@@ -9,6 +9,7 @@ export interface ParsedTaskOutputError {
 
 export interface ParsedTaskStatusOutput {
   task_id: string;
+  callId?: string;
   runtimeState?: string;
   timedOut?: boolean;
   result?: string;
@@ -27,6 +28,7 @@ export interface ParsedTaskLifecycleEvent {
   };
   parentSessionId: string;
   agentName?: string;
+  featureLabel?: string;
   callId?: string;
   messageId?: string;
   status?: ParsedTaskStatusOutput;
@@ -38,6 +40,7 @@ export type TaskLifecycleContextResolver = (input: unknown) => TaskLifecycleCont
 export interface TaskLifecycleContext {
   args?: Record<string, unknown>;
   agentName?: string;
+  featureLabel?: string;
   messageId?: string;
 }
 
@@ -77,6 +80,7 @@ export function parseTaskStatusOutput(output: string): ParsedTaskStatusOutput | 
 
     return pruneUndefined({
       task_id,
+      callId: readString(parsedJson, 'call_id') ?? readString(parsedJson, 'callId'),
       runtimeState,
       timedOut,
       result,
@@ -105,6 +109,7 @@ export function parseTaskStatusOutput(output: string): ParsedTaskStatusOutput | 
 
   return pruneUndefined({
     task_id,
+    callId: extractField(output, ['callId', 'call_id', 'call-id']),
     runtimeState,
     timedOut: parseBoolean(timedOutText),
     result: result ?? extractXmlTag(output, 'task_result'),
@@ -153,6 +158,7 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown, context
       }),
       parentSessionId,
       agentName,
+      featureLabel: context.featureLabel,
       callId: readString(input, 'callID'),
       messageId,
     });
@@ -172,6 +178,7 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown, context
       }),
       parentSessionId,
       agentName,
+      featureLabel: context.featureLabel,
       callId: readString(input, 'callID'),
       messageId,
       status,
@@ -219,6 +226,9 @@ function parseXmlTaskStatusOutput(output: string): ParsedTaskStatusOutput | unde
 
   return pruneUndefined({
     task_id,
+    callId: extractXmlAttribute(attributeSource, 'callId')
+      ?? extractXmlAttribute(attributeSource, 'call_id')
+      ?? extractXmlAttribute(attributeSource, 'call-id'),
     runtimeState,
     timedOut: parseBoolean(timedOutText),
     result,

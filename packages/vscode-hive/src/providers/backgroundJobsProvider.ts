@@ -45,12 +45,12 @@ class BackgroundJobItem extends vscode.TreeItem {
     this.command = {
       command: 'hive.openBackgroundJobInBoard',
       title: 'Open Background Job Record',
-      arguments: [boardPath, job.taskId],
+      arguments: [boardPath, job.alias],
     }
     this.copyCommand = {
       command: 'hive.copyToClipboard',
-      title: 'Copy Background Job ID',
-      arguments: [job.taskId],
+      title: 'Copy Background Job Alias',
+      arguments: [job.alias],
     }
   }
 }
