@@ -847,6 +847,9 @@ const plugin: Plugin = async (ctx) => {
         'dash-reviewer': mk('dash-reviewer', 'primary', [...reviewTools, 'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'], 'Dash Reviewer - Read-only implementation review orchestrator.', { edit: 'deny', question: 'allow', task: 'allow', skill: 'allow' }),
         'vulnerability-review-primary': mk('vulnerability-review-primary', 'primary', [...reviewTools, 'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'], 'Private vulnerability review orchestrator.', { edit: 'deny', question: 'allow', task: 'allow', skill: 'allow' }),
       };
+      agents['dash-reviewer'].hidden = true;
+      agents['vulnerability-review-primary'].hidden = true;
+      if (agentMode !== 'unified') agents['hive-master'].hidden = true;
       const customAutoLoad = Object.fromEntries(Object.entries(custom).map(([name, config]) => {
         const inherited = configService.getAgentConfig(config.baseAgent).autoLoadSkills ?? [];
         return [name, autoLoadAppendix(name, (config.autoLoadSkills ?? []).filter((skill) => !inherited.includes(skill)))];

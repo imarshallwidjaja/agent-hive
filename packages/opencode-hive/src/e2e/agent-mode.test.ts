@@ -96,7 +96,12 @@ describe('agent tool exposure', () => {
       expect(config.agent[name].tools.hive_context_archive, name).toBe(false);
       expect(config.agent[name].tools.hive_git_snapshot, name).toBeUndefined();
       expect(config.agent[name].tools.hive_worktree_merge, name).toBe(false);
+      expect(config.agent[name].hidden, name).toBe(true);
     }
+    expect(config.agent['hive-master'].hidden).toBe(true);
+    expect(config.agent['architect-planner'].hidden).toBeUndefined();
+    expect(config.agent['swarm-orchestrator'].hidden).toBeUndefined();
+    expect(config.agent['hive-builder'].hidden).toBeUndefined();
     expect(config.agent['architect-planner'].tools.hive_worktree_merge).toBe(false);
     expect(config.agent['architect-planner'].tools.hive_worktree_cleanup).toBe(false);
     expect(config.agent['architect-planner'].permission.task).toMatchObject({
@@ -130,5 +135,28 @@ describe('agent tool exposure', () => {
     const vulnerabilityCommand = await hooks.command!['vuln-review'].run('inline authentication boundary');
     expect(vulnerabilityCommand).toContain('Review input: inline authentication boundary');
     expect(vulnerabilityCommand).toContain('security-specialist');
+  });
+
+  it('keeps hive-master public only in unified mode', async () => {
+    originalHome = process.env.HOME;
+    const root = fs.mkdtempSync(`/tmp/hive-agent-mode-${process.pid}-`);
+    roots.push(root);
+    process.env.HOME = root;
+    fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
+    const configPath = path.join(root, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ agentMode: 'unified' }));
+    const hooks = await plugin({
+      directory: root,
+      worktree: root,
+      project: { id: 'agent-mode-unified', worktree: root },
+      client: { session: { get: async ({ path: inputPath }: any) => ({ data: { id: inputPath.id } }), abort: async () => ({ data: true }) } },
+    } as any);
+    const config: any = {};
+    await hooks.config!(config);
+    expect(config.agent['hive-master'].hidden).toBeUndefined();
+    expect(config.agent['dash-reviewer'].hidden).toBe(true);
+    expect(config.agent['vulnerability-review-primary'].hidden).toBe(true);
+    expect(config.default_agent).toBe('hive-master');
   });
 });
