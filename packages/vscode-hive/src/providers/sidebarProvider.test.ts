@@ -26,12 +26,6 @@ describe('HiveSidebarProvider', () => {
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
   });
 
-  function statusGroup(items: any[], name: string): any {
-    const group = items.find(item => 'groupName' in item && item.groupName === name);
-    if (!group) throw new Error(`Status group ${name} not found`);
-    return group;
-  }
-
   async function firstFeature(provider: InstanceType<typeof HiveSidebarProvider>, name: string): Promise<any> {
     const roots = await provider.getChildren();
     const group = roots.find(item => 'groupName' in item)!;

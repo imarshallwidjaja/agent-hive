@@ -7,43 +7,7 @@ import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, Tra
 import { archiveContext, isContextScope } from './providers/contextInspection.js'
 import { SessionConstraintsProvider } from './providers/sessionConstraintsProvider.js'
 
-type ReviewDocument = 'plan' | 'overview'
-
-function getReviewTarget(workspaceRoot: string, filePath: string): { featureName: string; document: ReviewDocument } | null {
-  const normalizedWorkspace = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '')
-  const normalizedPath = filePath.replace(/\\/g, '/')
-  const compareWorkspace = process.platform === 'win32' ? normalizedWorkspace.toLowerCase() : normalizedWorkspace
-  const comparePath = process.platform === 'win32' ? normalizedPath.toLowerCase() : normalizedPath
-
-  if (!comparePath.startsWith(`${compareWorkspace}/`)) {
-    return null
-  }
-
-  const planMatch = normalizedPath.match(/\.hive\/features\/([^/]+)\/plan\.md$/)
-  if (planMatch) {
-    return { featureName: planMatch[1], document: 'plan' }
-  }
-
-  const overviewMatch = normalizedPath.match(/\.hive\/features\/([^/]+)\/context\/overview\.md$/)
-  if (overviewMatch) {
-    return { featureName: overviewMatch[1], document: 'overview' }
-  }
-
-  return null
-}
-
-function getReviewCommentsPath(workspaceRoot: string, featureName: string, document: ReviewDocument): string {
-  const canonicalPath = path.join(workspaceRoot, '.hive', 'features', featureName, 'comments', `${document}.json`)
-  if (fs.existsSync(canonicalPath)) {
-    return canonicalPath
-  }
-
-  if (document === 'plan') {
-    return path.join(workspaceRoot, '.hive', 'features', featureName, 'comments.json')
-  }
-
-  return canonicalPath
-}
+import { reviewTargetForDocument, findReviewCommentsPath } from './reviewRouting.js'
 
 function findHiveRoot(startPath: string): string | null {
   let current = startPath
@@ -236,19 +200,21 @@ class HiveExtension {
         }
 
         const filePath = editor.document.uri.fsPath
-        const target = getReviewTarget(this.workspaceRoot, filePath)
+        const target = reviewTargetForDocument(this.workspaceRoot, filePath)
         if (!target) {
           vscode.window.showErrorMessage('Not a reviewable plan.md or overview.md file')
           return
         }
 
-        const commentsPath = getReviewCommentsPath(this.workspaceRoot, target.featureName, target.document)
+        const commentsPath = findReviewCommentsPath(this.workspaceRoot, target)
 
         let comments: Array<{ body: string; line?: number }> = []
 
         try {
-          const commentsData = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'))
-          comments = commentsData.threads || []
+          if (commentsPath) {
+            const commentsData = JSON.parse(fs.readFileSync(commentsPath, 'utf-8'))
+            comments = commentsData.threads || []
+          }
         } catch (error) {
           // No comments file is fine
         }

@@ -748,12 +748,9 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
   }
 
   private getReviewCommentCount(featureName: string, document: 'plan' | 'overview'): number {
-    const featurePath = getFeaturePath(this.workspaceRoot, featureName)
-    const canonicalPath = path.join(featurePath, 'comments', `${document}.json`)
-    const legacyPlanPath = path.join(featurePath, 'comments.json')
-    const commentsPath = fs.existsSync(canonicalPath)
-      ? canonicalPath
-      : document === 'plan' ? legacyPlanPath : null
+    const commentsPath = findReviewCommentsPath(this.workspaceRoot, {
+      featureName: path.basename(getFeaturePath(this.workspaceRoot, featureName)), document
+    })
 
     if (!commentsPath || !fs.existsSync(commentsPath)) return 0
 
@@ -765,3 +762,4 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     }
   }
 }
+import { findReviewCommentsPath } from '../reviewRouting.js'
