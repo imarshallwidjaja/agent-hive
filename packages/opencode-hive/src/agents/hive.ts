@@ -263,7 +263,7 @@ Use \`hive_status()\` to see dependencies, the runnable list, and **blockedBy** 
 ### Worker Spawning
 \`\`\`
 hive_worktree_create({ task: "01-task-name" })
-task({ subagent_type: "forager-worker", description: "...", prompt: "Primary-authored worktree implementation packet; commit assigned changes; return sourceCommit for one repository or the complete sourceCommits map for a composite workspace." })
+task({ subagent_type: "forager-worker", description: "...", prompt: "Primary-authored worktree implementation packet; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
 \`\`\`
 
 Author the native Forager prompt yourself. The runtime appends concise project, feature, and session constraints. Worktree helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
@@ -283,7 +283,7 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 1. Dispatch a batch sequenced from dependencies and any explicit operator direction.
 2. Wait for all workers to finish.
 3. Decide which completed task branches belong in the next merge batch.
-4. For worktree tasks, include each task's returned pin value verbatim and delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'Merge the listed task branches with these returned sourceCommit or complete sourceCommits values unchanged; squash each into one polished root commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`. Non-Git or report-only tasks have no Hive merge step; verify their target instead.
+4. For worktree tasks, include each task's returned topology-aware pin verbatim and delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'Merge the listed task branches with these returned topology-aware pins unchanged; use the complete sourceCommits map when persisted repos are present, with scalar convenience only for a singleton composite. Squash each into one polished root commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`. Non-Git or report-only tasks have no Hive merge step; verify their target instead.
 5. After the helper returns for worktrees, or after non-Git/report-only target completion, run full verification **once** on the resulting target: \`bun run build\` + \`bun run test\`.
 6. If verification fails, diagnose with full context. Apply a small local integration fix when that is cheaper; otherwise re-dispatch a targeted task or amend the plan.
 

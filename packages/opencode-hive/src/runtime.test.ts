@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import plugin from './index.js';
@@ -27,6 +28,29 @@ function createRuntime() {
 
 function context(sessionID: string, agent = 'hive-master') {
   return { sessionID, messageID: 'message', agent, abort: new AbortController().signal };
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+function createManifestRepository(root: string, id: string): string {
+  const repository = path.join(root, id);
+  fs.mkdirSync(repository);
+  git(repository, ['init']);
+  git(repository, ['config', 'user.email', 'test@example.com']);
+  git(repository, ['config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(repository, 'tracked.txt'), 'base\n');
+  git(repository, ['add', '.']);
+  git(repository, ['commit', '-m', 'test: base']);
+  return repository;
+}
+
+function writeRepositoryManifest(root: string, entries: string[]): void {
+  fs.writeFileSync(path.join(root, '.hive', 'repositories.json'), JSON.stringify({
+    schemaVersion: 1,
+    repositories: entries.map((id) => ({ id, path: id })),
+  }));
 }
 
 afterEach(() => {
@@ -137,6 +161,147 @@ describe('coordinated runtime hard cut', () => {
     expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":null}');
     await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'unbound', callID: 'no-feature', args: output.args } as any, { metadata: { sessionId: 'child-no-feature' } } as any);
     expect(new SessionService(root).getGlobal('child-no-feature')).toMatchObject({ featureName: null });
+  });
+
+  it('accepts a matching scalar pin for a persisted singleton ad-hoc composite', async () => {
+    const runtime = createRuntime();
+    createManifestRepository(runtime.root, 'api');
+    writeRepositoryManifest(runtime.root, ['api']);
+    const loaded = await runtime.hooks;
+
+    const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'singleton-adhoc',
+      repoIds: ['api'],
+    }, {}));
+    const sourcePath = created.repos.api.path;
+    fs.writeFileSync(path.join(sourcePath, 'tracked.txt'), 'changed\n');
+    git(sourcePath, ['add', '.']);
+    git(sourcePath, ['commit', '-m', 'test: singleton source']);
+    const inspected = JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'singleton-adhoc' }, {}));
+
+    const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: 'singleton-adhoc',
+      sourceCommit: inspected.repos.api.commit,
+      message: 'test: merge singleton source\n\nMerge the persisted singleton candidate.',
+      cleanup: 'worktree+branch',
+    }, {}));
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(path.join(runtime.root, 'api', 'tracked.txt'), 'utf8')).toBe('changed\n');
+  });
+
+  it('accepts a matching scalar pin for a persisted singleton feature composite', async () => {
+    const runtime = createRuntime();
+    createManifestRepository(runtime.root, 'api');
+    writeRepositoryManifest(runtime.root, ['api']);
+    const loaded = await runtime.hooks;
+    const caller = context('singleton-feature');
+    await loaded.tool!.hive_feature_create.execute({ name: 'singleton-feature' }, caller);
+    const task = await loaded.tool!.hive_task_create.execute({ feature: 'singleton-feature', name: 'Change source', repos: ['api'] }, caller);
+
+    const created = JSON.parse(await loaded.tool!.hive_worktree_create.execute({ feature: 'singleton-feature', task }, caller));
+    const sourcePath = created.repos.api.path;
+    fs.writeFileSync(path.join(sourcePath, 'tracked.txt'), 'feature changed\n');
+    git(sourcePath, ['add', '.']);
+    git(sourcePath, ['commit', '-m', 'test: feature singleton source']);
+    const inspected = JSON.parse(await loaded.tool!.hive_worktree_inspect.execute({ feature: 'singleton-feature', task }, caller));
+
+    const result = JSON.parse(await loaded.tool!.hive_worktree_merge.execute({
+      feature: 'singleton-feature',
+      task,
+      sourceCommit: inspected.repos.api.commit,
+      message: 'test: merge feature singleton source\n\nMerge the persisted singleton feature candidate.',
+      cleanup: 'worktree+branch',
+    }, caller));
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(path.join(runtime.root, 'api', 'tracked.txt'), 'utf8')).toBe('feature changed\n');
+  });
+
+  it('accepts singleton maps and rejects stale or ambiguous pins before mutation', async () => {
+    const runtime = createRuntime();
+    const repository = createManifestRepository(runtime.root, 'api');
+    writeRepositoryManifest(runtime.root, ['api']);
+    const loaded = await runtime.hooks;
+    const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'pin-validation', repoIds: ['api'] }, {}));
+    const sourcePath = created.repos.api.path;
+    const staleCommit = created.repos.api.commit;
+    fs.writeFileSync(path.join(sourcePath, 'tracked.txt'), 'pin changed\n');
+    git(sourcePath, ['add', '.']);
+    git(sourcePath, ['commit', '-m', 'test: pin validation source']);
+    const inspected = JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'pin-validation' }, {}));
+    const targetBefore = git(repository, ['rev-parse', 'HEAD']);
+
+    await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({ runId: 'pin-validation', sourceCommit: staleCommit }, {})).rejects.toThrow(/does not match/);
+    expect(git(repository, ['rev-parse', 'HEAD'])).toBe(targetBefore);
+    await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: 'pin-validation',
+      sourceCommit: inspected.repos.api.commit,
+      sourceCommits: { api: inspected.repos.api.commit },
+    }, {})).rejects.toThrow(/both/);
+
+    const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: 'pin-validation',
+      sourceCommits: { api: inspected.repos.api.commit },
+      message: 'test: merge singleton map\n\nMerge the exact singleton map.',
+      cleanup: 'worktree+branch',
+    }, {}));
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects scalar pins for multi-repository composites', async () => {
+    const runtime = createRuntime();
+    const api = createManifestRepository(runtime.root, 'api');
+    const web = createManifestRepository(runtime.root, 'web');
+    writeRepositoryManifest(runtime.root, ['api', 'web']);
+    const loaded = await runtime.hooks;
+    const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'multi-pin', repoIds: ['api', 'web'] }, {}));
+    const targetBefore = { api: git(api, ['rev-parse', 'HEAD']), web: git(web, ['rev-parse', 'HEAD']) };
+
+    await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: 'multi-pin',
+      sourceCommit: created.repos.api.commit,
+    }, {})).rejects.toThrow(/cannot select a composite candidate/);
+    await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: 'multi-pin',
+      sourceCommits: { api: created.repos.api.commit },
+    }, {})).rejects.toThrow(/exactly match/);
+    await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: 'multi-pin',
+      sourceCommits: { api: created.repos.api.commit, web: created.repos.web.commit, extra: 'sha' },
+    }, {})).rejects.toThrow(/exactly match/);
+    await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: 'multi-pin',
+      sourceCommits: { api: 'stale', web: created.repos.web.commit },
+    }, {})).rejects.toThrow(/exactly match/);
+    expect({ api: git(api, ['rev-parse', 'HEAD']), web: git(web, ['rev-parse', 'HEAD']) }).toEqual(targetBefore);
+  });
+
+  it('keeps legacy single-root pin validation unchanged', async () => {
+    const runtime = createRuntime();
+    git(runtime.root, ['init']);
+    git(runtime.root, ['config', 'user.email', 'test@example.com']);
+    git(runtime.root, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(runtime.root, 'tracked.txt'), 'base\n');
+    git(runtime.root, ['add', '.']);
+    git(runtime.root, ['commit', '-m', 'test: legacy base']);
+    const loaded = await runtime.hooks;
+    const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'legacy-pin' }, {}));
+
+    await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({ runId: 'legacy-pin', sourceCommits: { root: created.commit } }, {})).rejects.toThrow(/require a composite candidate/);
+    fs.writeFileSync(path.join(created.path, 'tracked.txt'), 'legacy changed\n');
+    git(created.path, ['add', '.']);
+    git(created.path, ['commit', '-m', 'test: legacy source']);
+    const inspected = JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'legacy-pin' }, {}));
+    const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: 'legacy-pin',
+      sourceCommit: inspected.commit,
+      message: 'test: merge legacy source\n\nMerge the exact legacy pin.',
+      cleanup: 'worktree+branch',
+    }, {}));
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(path.join(runtime.root, 'tracked.txt'), 'utf8')).toBe('legacy changed\n');
   });
 
   it('binds the same complete snapshot when the after hook arrives before the event hook', async () => {

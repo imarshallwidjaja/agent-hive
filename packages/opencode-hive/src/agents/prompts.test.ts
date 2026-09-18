@@ -827,9 +827,11 @@ describe('Hive (Hybrid) prompt', () => {
 
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Pass only the returned repository IDs owned by the current lane');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('use all returned IDs only for genuinely cross-repository work');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A single-repository worker returns the exact `sourceCommit` SHA');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A legacy single-root worker returns the exact `sourceCommit` SHA');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a composite worker returns the complete `sourceCommits` map keyed by repository ID');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Pass the returned scalar or map unchanged to the matching merge tool');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Use the map when persisted `repos` are present');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a singleton composite also accepts a matching scalar convenience at merge');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Pass the returned pin unchanged to the matching merge tool');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("either set `status: 'blocked'` with a structured blocker");
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker");
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('explicit operator request to continue specific existing uncommitted changes');
@@ -1296,7 +1298,7 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('delegates batch merges to hive-helper and keeps post-batch verification with Swarm', () => {
       expect(SWARM_BEE_PROMPT).toContain("task({ subagent_type: 'hive-helper'");
-      expect(SWARM_BEE_PROMPT).toContain('returned sourceCommit or complete sourceCommits values unchanged');
+      expect(SWARM_BEE_PROMPT).toContain('returned topology-aware pins unchanged');
       expect(SWARM_BEE_PROMPT).toContain('After the helper returns');
       expect(SWARM_BEE_PROMPT).toContain('bun run build');
       expect(SWARM_BEE_PROMPT).toContain('bun run test');
@@ -1414,8 +1416,9 @@ describe('Forager (Worker/Coder) prompt', () => {
   it('gives commit authority only to worktree implementation assignments', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Hive git helpers do not auto-commit source');
     expect(FORAGER_BEE_PROMPT).toContain('A worktree implementation assignment explicitly authorizes committing the assigned changes');
-    expect(FORAGER_BEE_PROMPT).toContain('return the exact `sourceCommit` SHA');
-    expect(FORAGER_BEE_PROMPT).toContain('return the complete `sourceCommits` map keyed by repository ID');
+    expect(FORAGER_BEE_PROMPT).toContain('For a legacy single-root workspace, return the exact `sourceCommit` SHA');
+    expect(FORAGER_BEE_PROMPT).toContain('For a composite workspace, return the complete `sourceCommits` map keyed by persisted repository ID');
+    expect(FORAGER_BEE_PROMPT).toContain('Merge also accepts a matching scalar `sourceCommit` for exactly one persisted repository');
     expect(FORAGER_BEE_PROMPT).toContain('In-place and diagnosis-only missions do not authorize commits');
     expect(FORAGER_BEE_PROMPT).not.toContain('proposed Conventional Commit subject and body');
   });
@@ -1492,7 +1495,7 @@ describe('Hive Helper prompt', () => {
 
   it('uses hive_worktree_merge first only for merge recovery and resolves preserved conflicts locally', () => {
     expect(HIVE_HELPER_PROMPT).toContain('hive_worktree_merge');
-    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: pass the caller\'s returned scalar or map unchanged to `hive_worktree_merge`');
+    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: pass the caller\'s returned topology-aware pin unchanged to `hive_worktree_merge`');
     expect(HIVE_HELPER_PROMPT).not.toContain('- use `hive_merge` first');
     expect(HIVE_HELPER_PROMPT).not.toContain('1. Call `hive_merge` first for the requested task branch.');
     expect(HIVE_HELPER_PROMPT).toContain("conflictState: 'preserved'");
@@ -1792,8 +1795,9 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('hive_worktree_merge');
       expect(hiveToolsContent).toContain('message');
       expect(hiveToolsContent).toContain('optional `repoIds`, optional absolute `sourceDirectory`');
-      expect(hiveToolsContent).toContain('Use `sourceCommit` for a single-repository workspace');
-      expect(hiveToolsContent).toContain('Use `sourceCommits` for a composite workspace');
+      expect(hiveToolsContent).toContain('Use `sourceCommit` for a legacy single-root workspace');
+      expect(hiveToolsContent).toContain('When persisted `repos` are present, use `sourceCommits` as a complete map');
+      expect(hiveToolsContent).toContain('A singleton composite also accepts a matching scalar `sourceCommit` convenience');
       expect(hiveToolsContent).toContain('On creation, `repoIds` selects the repositories owned by the lane');
       expect(hiveToolsContent).toContain('later ad-hoc lifecycle calls use `runId` to locate the persisted placement');
       expect(hiveToolsContent).toContain('cannot be combined with `repoIds`');

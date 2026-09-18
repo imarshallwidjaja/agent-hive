@@ -626,10 +626,11 @@ describe('skill content', () => {
 
     expect(hiveSkill).toContain('hive_worktree_create');
     expect(hiveSkill).toContain('Non-Git or report-only work may use an explicit existing target');
-    expect(hiveSkill).toContain('returns sourceCommit for one repository or the complete sourceCommits map for a composite workspace');
+    expect(hiveSkill).toContain('returns sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present');
     expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommit,');
     expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommits,');
-    expect(hiveSkill).toContain('pass its `sourceCommit` or complete `sourceCommits` map unchanged to merge');
+    expect(hiveSkill).toContain('pass its topology-aware pin unchanged to merge');
+    expect(hiveSkill).toContain('a singleton composite also accepts a matching scalar convenience');
     expect(hiveSkill).toContain('marking the feature task done');
     expect(hiveSkill).toContain('hive_task_update');
     expect(hiveSkill).toContain('do not reconstruct them from worker prose');
@@ -647,7 +648,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Gate-open only: use background: true');
     expect(skill!.template).toContain('hive_worktree_create');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
-    expect(skill!.template).toContain('In feature-task mode, pass each returned `sourceCommit` or complete `sourceCommits` map unchanged');
+    expect(skill!.template).toContain('In feature-task mode, pass each returned topology-aware pin unchanged');
+    expect(skill!.template).toContain('a singleton composite scalar is accepted');
     expect(skill!.template).toContain('In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`');
     expect(skill!.template).toContain('hive_adhoc_worktree_merge');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');

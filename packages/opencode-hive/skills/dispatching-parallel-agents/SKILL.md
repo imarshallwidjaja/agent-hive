@@ -92,13 +92,13 @@ The example below is feature-task mode. In ad-hoc mode, consume the ready wave f
 ```typescript
 // Gate-open only: use background: true when independent foreground work can continue.
 hive_worktree_create({ task: "01-fix-abort-tests" })
-task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Implement and commit assigned changes; return sourceCommit for one repository or the complete sourceCommits map for a composite workspace.", background: true })
+task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
 hive_worktree_create({ task: "02-fix-batch-tests" })
-task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Implement and commit assigned changes; return sourceCommit for one repository or the complete sourceCommits map for a composite workspace.", background: true })
+task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
 
 // Blocking alternative, including every gate-closed session:
 hive_worktree_create({ task: "03-fix-cleanup-tests" })
-await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Implement and commit assigned changes; return sourceCommit for one repository or the complete sourceCommits map for a composite workspace." })
+await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
 ```
 
 Independent Forager worktrees may be created and dispatched under one parent. Call `hive_worktree_create` or `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
@@ -120,7 +120,7 @@ Choose the best-fit available descriptor for the requested output. Scout is for 
 When agents return:
 - Read each summary
 - Verify fixes don't conflict
-- In feature-task mode, pass each returned `sourceCommit` or complete `sourceCommits` map unchanged through the feature workflow's verification and `hive_worktree_merge` lifecycle.
+- In feature-task mode, pass each returned topology-aware pin unchanged through the feature workflow's verification and `hive_worktree_merge` lifecycle. Use the complete map when persisted `repos` are present; a singleton composite scalar is accepted, while multiple repositories require the complete map.
 - In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`, which owns review gates, deterministic integration, full integrated-batch verification, and `hive_adhoc_worktree_merge`.
 
 ## Agent Prompt Structure

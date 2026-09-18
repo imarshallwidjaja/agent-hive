@@ -109,7 +109,7 @@ hive_adhoc_worktree_create({ repoIds });
 await task({
   subagent_type: 'forager-worker',
   description: 'Implement the ad-hoc change',
-  prompt: 'Concrete work with done criteria; commit changes; return sourceCommit or the complete sourceCommits map.',
+  prompt: 'Concrete work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
 });
 ```
 
@@ -131,7 +131,7 @@ hive_adhoc_worktree_create({ repoIds });
 const { task_id } = task({
   subagent_type: 'forager-worker',
   description: 'Implement the independent ad-hoc change',
-  prompt: 'Concrete independent work with done criteria; commit changes; return sourceCommit or the complete sourceCommits map.',
+  prompt: 'Concrete independent work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
   background: true,
 });
 hive_background_status({});

@@ -86,7 +86,7 @@ Treat reserved names like \`overview\`, \`draft\`, and \`execution-decisions\` a
 
 ## Working Rules
 
-- Commit Policy: A worktree implementation assignment explicitly authorizes committing the assigned changes. For a single-repository workspace, return the exact \`sourceCommit\` SHA. For a composite workspace, return the complete \`sourceCommits\` map keyed by repository ID. In-place and diagnosis-only missions do not authorize commits. Hive git helpers do not auto-commit source. Orchestration merge via hive-helper owns integration and grants no push, PR, publish, or release authority.
+- Commit Policy: A worktree implementation assignment explicitly authorizes committing the assigned changes. For a legacy single-root workspace, return the exact \`sourceCommit\` SHA. For a composite workspace, return the complete \`sourceCommits\` map keyed by persisted repository ID, including singleton composites. Merge also accepts a matching scalar \`sourceCommit\` for exactly one persisted repository; multiple repositories require the complete map. In-place and diagnosis-only missions do not authorize commits. Hive git helpers do not auto-commit source. Orchestration merge via hive-helper owns integration and grants no push, PR, publish, or release authority.
 - Reversibility Preference: favor local, reversible actions; confirm before hard-to-reverse steps
 - Promise Discipline: do not commit to future work; if not done this turn, label it "Next steps"
 - Concise Output: minimize output and avoid extra explanations unless asked

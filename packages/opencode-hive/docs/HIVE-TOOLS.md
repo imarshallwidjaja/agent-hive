@@ -132,7 +132,7 @@ Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence
 
 On creation, `repoIds` selects the repositories owned by the lane. Later feature-task lifecycle calls validate `repoIds` against the task's persisted repository selection; later ad-hoc lifecycle calls use `runId` to locate the persisted placement. `sourceDirectory` selects a foreign checkout and cannot be combined with `repoIds`. For create, an absolute path resolving to the active project root is treated as omitted, so it may be supplied with project/manifest `repoIds`.
 
-Use `sourceCommit` for a single-repository workspace. Use `sourceCommits` for a composite workspace; it must be a complete map keyed by persisted repository ID. Pass the worker's returned scalar or map unchanged. The merge tool rejects a scalar for a composite workspace, a map for a single-repository workspace, and any supplied pin that differs from the inspected candidate.
+Use `sourceCommit` for a legacy single-root workspace. When persisted `repos` are present, use `sourceCommits` as a complete map keyed by persisted repository ID. A singleton composite also accepts a matching scalar `sourceCommit` convenience; multiple repositories still require the complete map. Pass the worker's topology-aware pin unchanged. The merge tool rejects a map for a legacy single-root workspace, a scalar for a multi-repository composite, both pin forms together, and any supplied pin that differs from the inspected candidate.
 
 ## Background Orchestration (4 tools)
 

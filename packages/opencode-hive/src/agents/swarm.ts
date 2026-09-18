@@ -123,7 +123,7 @@ For multi-repo or non-git-root work, call \`hive_repositories_status\` before hi
 
 \`\`\`
 hive_worktree_create({ task: "01-task-name" })
-task({ subagent_type: "forager-worker", description: "...", prompt: "Primary-authored worktree implementation packet; commit assigned changes; return sourceCommit for one repository or the complete sourceCommits map for a composite workspace." })
+task({ subagent_type: "forager-worker", description: "...", prompt: "Primary-authored worktree implementation packet; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
 \`\`\`
 
 Delegation guidance:
@@ -182,7 +182,7 @@ Before merge or interrupted wrap-up decisions, call \`hive_status()\` and inspec
 Swarm decides when to merge, then normally routes eligible merge batches, state clarification, and safe wrap-up assistance through \`hive-helper\` by helper merge delegation/state clarification, for example:
 
 \`\`\`
-task({ subagent_type: 'hive-helper', prompt: 'Merge the listed task branches with these returned sourceCommit or complete sourceCommits values unchanged; squash each into one polished root commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })
+task({ subagent_type: 'hive-helper', prompt: 'Merge the listed task branches with these returned topology-aware pins unchanged; use the complete sourceCommits map when persisted repos are present, with scalar convenience only for a singleton composite. Squash each into one polished root commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })
 \`\`\`
 
 Root history should show task-level progress. Preserve one root commit per completed task and fold provisional implementation, review and fix iterations into that squash commit.

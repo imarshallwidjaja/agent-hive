@@ -41,7 +41,7 @@ For each ready wave, emit all independent launches in the same assistant message
 
 The ad-hoc primary owns merge and cleanup. Lane changes receive the reviews required by the active primary's configured review policy; this skill adds no separate reviewer-approval gate. Required review and lane verification each gate merge. Integrate accepted lanes in stable topological order, using inventory order to break ties. Schedule shared fixtures, ports, databases, containers, external resources, and canonical verification so separate processes cannot collide. Run full canonical verification once against the integrated batch.
 
-Use `hive_adhoc_worktree_create`, `hive_adhoc_worktree_inspect`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup`. A single-repository worker returns `sourceCommit`; a composite worker returns the complete `sourceCommits` map keyed by repository ID. Pass that pin unchanged to merge. Git helpers do not auto-commit source or assign workers.
+Use `hive_adhoc_worktree_create`, `hive_adhoc_worktree_inspect`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup`. A legacy single-root worker returns `sourceCommit`; a composite worker returns the complete `sourceCommits` map keyed by persisted repository ID. A singleton composite also accepts a matching scalar convenience; multiple repositories require the complete map. Pass that topology-aware pin unchanged to merge. Git helpers do not auto-commit source or assign workers.
 
 ## Closure
 

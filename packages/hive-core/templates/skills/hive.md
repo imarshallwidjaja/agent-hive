@@ -269,11 +269,11 @@ task({
   prompt: "Primary-authored objective, evidence, constraints, and checks"
 })
   ↓
-[Worker commits changes and returns sourceCommit for one repository or the complete sourceCommits map for a composite workspace]
+[Worker commits changes and returns sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present]
   ↓
-// Single-repository workspace:
+// Legacy single-root workspace:
 hive_worktree_merge({ task: "01-task-name", sourceCommit, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
-// Composite workspace:
+// Composite workspace with persisted repos:
 hive_worktree_merge({ task: "01-task-name", sourceCommits, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
   ↓
 hive_task_update({ task: "01-task-name", status: "done", summary, report })
@@ -281,7 +281,7 @@ hive_task_update({ task: "01-task-name", status: "done", summary, report })
 hive_worktree_cleanup({ task: "01-task-name" })
 ```
 
-After a worktree worker returns, inspect the source and pass its `sourceCommit` or complete `sourceCommits` map unchanged to merge before marking the feature task done. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Ad-hoc work reports integration pending and retains its run. Non-Git or report-only work has no Hive merge step; verify its target before recording completion. Never reconstruct blocker details from worker prose. Do not call `hive_worktree_merge` again while preserved conflict state is active. Git helpers do not change task status, auto-commit source, or assign workers.
+After a worktree worker returns, inspect the source and pass its topology-aware pin unchanged to merge before marking the feature task done. Use the complete `sourceCommits` map when persisted `repos` are present; a singleton composite also accepts a matching scalar convenience, while multiple repositories require the complete map. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Ad-hoc work reports integration pending and retains its run. Non-Git or report-only work has no Hive merge step; verify its target before recording completion. Never reconstruct blocker details from worker prose. Do not call `hive_worktree_merge` again while preserved conflict state is active. Git helpers do not change task status, auto-commit source, or assign workers.
 
 ### Parallel Execution
 

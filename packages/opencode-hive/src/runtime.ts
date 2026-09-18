@@ -77,6 +77,33 @@ const MAX_SNAPSHOT_REPOSITORIES = 32;
 const json = (value: unknown): string => JSON.stringify(value, null, 2);
 const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
 
+function normalizeMergePins(
+  inspected: { commit: string; repos?: Record<string, { commit: string }> },
+  sourceCommit: string | undefined,
+  sourceCommits: Record<string, string> | undefined,
+): { sourceCommit?: string; sourceCommits?: Record<string, string> } {
+  if (sourceCommit !== undefined && sourceCommits !== undefined) throw new Error('sourceCommit and sourceCommits cannot both be supplied');
+
+  if (!inspected.repos) {
+    if (sourceCommits !== undefined) throw new Error('sourceCommits require a composite candidate');
+    if (sourceCommit !== undefined && sourceCommit !== inspected.commit) throw new Error('sourceCommit does not match the inspected candidate');
+    return { sourceCommit: sourceCommit ?? inspected.commit };
+  }
+
+  const actualPins = Object.fromEntries(Object.entries(inspected.repos).map(([id, repo]) => [id, repo.commit]));
+  const samePins = sourceCommits === undefined
+    || JSON.stringify(Object.entries(sourceCommits).sort()) === JSON.stringify(Object.entries(actualPins).sort());
+  if (sourceCommit !== undefined) {
+    const repoIds = Object.keys(actualPins);
+    if (repoIds.length !== 1) throw new Error('sourceCommit cannot select a composite candidate');
+    const repoId = repoIds[0]!;
+    if (sourceCommit !== actualPins[repoId]) throw new Error('sourceCommit does not match the inspected candidate');
+    return { sourceCommits: { [repoId]: sourceCommit } };
+  }
+  if (!samePins) throw new Error('sourceCommits must exactly match every inspected candidate repository');
+  return { sourceCommits: sourceCommits ?? actualPins };
+}
+
 function buildAutoLoadSkillsPromptAppendix(
   agentName: string,
   configService: ConfigService,
@@ -490,13 +517,9 @@ const plugin: Plugin = async (ctx) => {
         assertTaskRepoIds(selected, task, repoIds);
         const inspected = await worktreeService.inspect(selected, task, candidate);
         if (!inspected) throw new Error('Task worktree not found');
-        const actualPins = inspected.repos ? Object.fromEntries(Object.entries(inspected.repos).map(([id, repo]) => [id, repo.commit])) : undefined;
-        if (actualPins && options.sourceCommit !== undefined) throw new Error('sourceCommit cannot select a composite candidate');
-        if (!actualPins && options.sourceCommits !== undefined) throw new Error('sourceCommits require a composite candidate');
-        if (actualPins && options.sourceCommits !== undefined && JSON.stringify(Object.entries(options.sourceCommits).sort()) !== JSON.stringify(Object.entries(actualPins).sort())) throw new Error('sourceCommits must exactly match every inspected candidate repository');
-        if (!actualPins && options.sourceCommit !== undefined && options.sourceCommit !== inspected.commit) throw new Error('sourceCommit does not match the inspected candidate');
-        const pins = actualPins ? { sourceCommits: options.sourceCommits ?? actualPins } : { sourceCommit: options.sourceCommit ?? inspected.commit };
-        return json(await worktreeService.merge(selected, task, strategy, message, { ...options, ...pins }, candidate));
+        const { sourceCommit, sourceCommits, ...mergeOptions } = options;
+        const pins = normalizeMergePins(inspected, sourceCommit, sourceCommits);
+        return json(await worktreeService.merge(selected, task, strategy, message, { ...mergeOptions, ...pins }, candidate));
       },
     }),
     hive_worktree_cleanup: tool({
@@ -538,13 +561,9 @@ const plugin: Plugin = async (ctx) => {
         const service = adhocService(sourceDirectory, repoIds);
         const inspected = await service.inspect(runId);
         if (!inspected) throw new Error('Ad-hoc worktree not found');
-        const actualPins = inspected.repos ? Object.fromEntries(Object.entries(inspected.repos).map(([id, repo]) => [id, repo.commit])) : undefined;
-        if (actualPins && options.sourceCommit !== undefined) throw new Error('sourceCommit cannot select a composite candidate');
-        if (!actualPins && options.sourceCommits !== undefined) throw new Error('sourceCommits require a composite candidate');
-        if (actualPins && options.sourceCommits !== undefined && JSON.stringify(Object.entries(options.sourceCommits).sort()) !== JSON.stringify(Object.entries(actualPins).sort())) throw new Error('sourceCommits must exactly match every inspected candidate repository');
-        if (!actualPins && options.sourceCommit !== undefined && options.sourceCommit !== inspected.commit) throw new Error('sourceCommit does not match the inspected candidate');
-        const pins = actualPins ? { sourceCommits: options.sourceCommits ?? actualPins } : { sourceCommit: options.sourceCommit ?? inspected.commit };
-        return json(await service.merge(runId, strategy, message, { ...options, ...pins }));
+        const { sourceCommit, sourceCommits, ...mergeOptions } = options;
+        const pins = normalizeMergePins(inspected, sourceCommit, sourceCommits);
+        return json(await service.merge(runId, strategy, message, { ...mergeOptions, ...pins }));
       },
     }),
     hive_adhoc_worktree_cleanup: tool({
