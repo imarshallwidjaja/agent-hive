@@ -65,6 +65,7 @@ describe('plugin hard-cut surface', () => {
     expect(created.path).toContain(path.join(root, '.hive', '.worktrees', 'adhoc', 'foreign'));
     const inspected = JSON.parse(await hooks.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'foreign', sourceDirectory: source }, {}));
     expect(inspected.commit).toBe(created.commit);
+    await expect(hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'foreign-mixed', sourceDirectory: source, repoIds: ['root'] }, {})).rejects.toThrow(/cannot be combined/);
     await expect(hooks.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'foreign', sourceDirectory: source, repoIds: ['root'] }, {})).rejects.toThrow(/cannot be combined/);
     fs.writeFileSync(path.join(created.path, 'tracked.txt'), 'changed\n');
     execFileSync('git', ['add', '.'], { cwd: created.path });
@@ -73,6 +74,8 @@ describe('plugin hard-cut surface', () => {
     const cleaned = JSON.parse(await hooks.tool!.hive_adhoc_worktree_cleanup.execute({ runId: 'foreign', sourceDirectory: source, discard: true, deleteBranch: true }, {}));
     expect(cleaned.cleanup.outcome).toBe('complete');
     await expect(hooks.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'foreign', sourceDirectory: '.' }, {})).rejects.toThrow(/must be absolute/);
+    await expect(hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'relative-create', sourceDirectory: '.' }, {})).rejects.toThrow(/must be absolute/);
+    await expect(hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'missing-create', sourceDirectory: path.join(source, 'missing') }, {})).rejects.toThrow();
   });
 
   it('creates a native single-root worktree from the repository status selection', async () => {
@@ -85,9 +88,13 @@ describe('plugin hard-cut surface', () => {
     execFileSync('git', ['commit', '-m', 'test: base'], { cwd: root });
 
     const status = JSON.parse(await hooks.tool!.hive_repositories_status.execute({}, {}));
+    const alias = path.join('/tmp', `hive-plugin-root-alias-${process.pid}-${Date.now()}`);
+    fs.symlinkSync(root, alias, 'dir');
+    roots.push(alias);
     const created = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
       runId: 'status-root',
       repoIds: status.repositories.map(({ id }: { id: string }) => id),
+      sourceDirectory: alias,
     }, {}));
 
     expect(status.mode).toBe('legacy-root');
@@ -129,6 +136,24 @@ describe('plugin hard-cut surface', () => {
       schemaVersion: 1,
       repositories: [{ id: 'api', path: 'api' }, { id: 'web', path: 'web' }],
     }));
+
+    const alias = path.join('/tmp', `hive-plugin-manifest-root-alias-${process.pid}-${Date.now()}`);
+    fs.symlinkSync(root, alias, 'dir');
+    roots.push(alias);
+    const created = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'manifest-root',
+      repoIds: ['api'],
+      sourceDirectory: alias,
+    }, {}));
+    expect(created.mode).toBe('adhoc-composite');
+    expect(created.repos.api).toBeDefined();
+    const cleaned = JSON.parse(await hooks.tool!.hive_adhoc_worktree_cleanup.execute({ runId: 'manifest-root', discard: true, deleteBranch: true }, {}));
+    expect(cleaned.cleanup.outcome).toBe('complete');
+    await expect(hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'manifest-member',
+      repoIds: ['api'],
+      sourceDirectory: path.join(root, 'api'),
+    }, {})).rejects.toThrow(/cannot be combined/);
 
     const all = JSON.parse(await hooks.tool!.hive_git_snapshot.execute({}, {}));
     expect(all.status).toBe('ready');

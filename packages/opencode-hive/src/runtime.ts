@@ -259,7 +259,7 @@ const plugin: Plugin = async (ctx) => {
     taskRepoResolver: { resolveTaskRepoIds: (feature, task) => taskService.getRawStatus(feature, task)?.repoIds },
   });
   const adhocService = (sourceDirectory?: string, repoIds?: string[]) => {
-    if (sourceDirectory && repoIds !== undefined) throw new Error('sourceDirectory cannot be combined with repoIds');
+    if (sourceDirectory && repoIds !== undefined) throw new Error('sourceDirectory cannot be combined with repoIds for a foreign checkout; omit sourceDirectory for the active project root');
     if (sourceDirectory && !path.isAbsolute(sourceDirectory)) throw new Error('sourceDirectory must be absolute');
     const baseDir = sourceDirectory ? fs.realpathSync(sourceDirectory) : projectRoot;
     return new AdhocWorktreeService({
@@ -505,15 +505,21 @@ const plugin: Plugin = async (ctx) => {
       execute: async ({ feature, task, repoIds, candidate, deleteBranch, discard }, context) => { const selected = requireFeature(feature, context); selectFeature((context as ToolContext).sessionID, selected); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.remove(selected, task, deleteBranch, { discard }, candidate)); },
     }),
     hive_adhoc_worktree_create: tool({
-      description: 'Create the matching ad-hoc Hive worktree for tracked Git writes after repository scope is resolved.',
+      description: 'Create the matching ad-hoc Hive worktree for tracked Git writes after repository scope is resolved. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds.',
       args: { runId: tool.schema.string().optional(), repoIds: tool.schema.array(tool.schema.string()).optional(), sourceDirectory: tool.schema.string().optional() },
       execute: async ({ sourceDirectory, ...options }) => {
+        let normalizedSourceDirectory = sourceDirectory;
+        if (sourceDirectory !== undefined) {
+          if (!path.isAbsolute(sourceDirectory)) throw new Error('sourceDirectory must be absolute');
+          const resolvedSourceDirectory = fs.realpathSync(sourceDirectory);
+          normalizedSourceDirectory = resolvedSourceDirectory === projectRoot ? undefined : resolvedSourceDirectory;
+        }
         let repoIds = options.repoIds;
-        if (!sourceDirectory && repoIds?.length === 1) {
+        if (!normalizedSourceDirectory && repoIds?.length === 1) {
           const status = repositoryManifestService.getStatus();
           if (status.mode === 'legacy-root' && repoIds[0] === status.repositories[0]?.id) repoIds = undefined;
         }
-        return json(await adhocService(sourceDirectory, repoIds).create({ ...options, repoIds }));
+        return json(await adhocService(normalizedSourceDirectory, repoIds).create({ ...options, repoIds }));
       },
     }),
     hive_adhoc_worktree_inspect: tool({

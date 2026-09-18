@@ -130,7 +130,7 @@ Stable public inputs:
 
 Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
 
-On creation, `repoIds` selects the repositories owned by the lane. Later feature-task lifecycle calls validate `repoIds` against the task's persisted repository selection; later ad-hoc lifecycle calls use `runId` to locate the persisted placement. `sourceDirectory` selects a foreign checkout and cannot be combined with `repoIds`.
+On creation, `repoIds` selects the repositories owned by the lane. Later feature-task lifecycle calls validate `repoIds` against the task's persisted repository selection; later ad-hoc lifecycle calls use `runId` to locate the persisted placement. `sourceDirectory` selects a foreign checkout and cannot be combined with `repoIds`. For create, an absolute path resolving to the active project root is treated as omitted, so it may be supplied with project/manifest `repoIds`.
 
 Use `sourceCommit` for a single-repository workspace. Use `sourceCommits` for a composite workspace; it must be a complete map keyed by persisted repository ID. Pass the worker's returned scalar or map unchanged. The merge tool rejects a scalar for a composite workspace, a map for a single-repository workspace, and any supplied pin that differs from the inspected candidate.
 
