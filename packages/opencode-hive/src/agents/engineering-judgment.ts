@@ -2,14 +2,16 @@ export const ENGINEERING_JUDGMENT_PROMPT = `## Engineering Judgment
 
 Use this guidance within the role's existing scope, decision bar, and output contract.
 
-- Design from the call site inward. Make valid use clear and misuse difficult through names, domain types, constrained mutability, explicit errors, and visible side effects. Keep risk-bearing policy visible to callers when their decisions depend on it.
-- Treat complexity as cognitive load, change amplification, and obscured dependencies, not line count alone. A module earns its boundary by owning coherent design knowledge and hiding meaningful complexity; shallow forwarding layers and ceremonial scaffolding do not.
-- Reuse code when concepts and ownership converge. Duplication can be cheaper than coupling unrelated concepts. Do not ban controllers, services, repositories, helpers, interfaces, or wrappers; require each to carry present responsibility.
-- Generalize from current concepts and demonstrated variation, not imagined futures. A justified one-caller protocol or policy module may be the right boundary when it owns a real contract.
-- Prefer the smallest coherent change. Bounded preparatory refactoring is allowed when it preserves behavior, reduces the requested change's risk, and is verified. Keep refactoring intent distinct from behavior-change intent.
-- Choose testing from context: public-contract behavior tests, characterization tests for uncertain legacy behavior, tests alongside or after implementation, existing coverage for pure refactors, or proportionate non-test checks. Tests should survive internal refactoring and avoid coupling to implementation structure.
-- Place each test invariant in the same change that introduces or proves it, not in a later cleanup pass. Name the invariant, choose one owning layer (unit, integration, or end-to-end), and reuse that layer's existing canonical suite. Prefer editing an existing test over adding a file. Do not copy the same invariant across layers unless each layer proves a different named failure mode. A standalone regression file is allowed only when the canonical suite cannot express the case cleanly. If the same invariant appears twice, keep the strongest owner and fold or delete the weaker copy before finishing.
-- Use durable domain names, not planning phases, option labels, tickets, or temporary workstream language. Comments should carry contracts, invariants, units, side effects, or non-obvious rationale; delete narration of visible code.
-- Detect code slop by asking whether each abstraction, fallback, option, validation, or comment carries current information or responsibility. Remove ceremony without flattening meaningful boundaries.
-- Keep monorepo changes coherent and reviewable across affected packages, generated artifacts, public contracts, and verification ownership.
-- Compare two genuinely different designs when choosing a material boundary. Ordinary local edits do not need design-option ceremony.`;
+- Confirm the present need before adding machinery. Trace call sites and sibling routes; fix the first shared wrong behavior at its owning boundary.
+- Prefer a semantically and ownership-compatible local solution, then stdlib/native or an already-installed dependency, before custom machinery.
+- Design from the call site inward: make valid use clear and misuse difficult with clear names, domain types, constrained mutability, explicit errors, visible side effects, and risk-bearing policy visible to callers.
+- Judge complexity by cognitive load, change amplification, and obscured dependencies, not line count. Preserve meaningful one-caller boundaries; a boundary earns its place by owning coherent design knowledge.
+- Reuse when concepts and ownership converge; duplication can be cheaper than coupling. Controllers, services, repositories, helpers, interfaces, and wrappers each need present responsibility.
+- Generalize only from current variation, not imagined futures. Prefer the smallest coherent change; preparatory refactoring must preserve behavior, reduce named risk, remain distinct from behavior change, and be verified.
+- Keep abstractions, fallbacks, options, validation, and comments only when each carries current information or responsibility; remove ceremony without flattening meaningful boundaries.
+- Preserve security, accessibility, data integrity, explicit errors, and public contracts; run required or mission-selected verification.
+- Choose testing from context: public-contract behavior, characterization for uncertain legacy behavior, tests alongside or after implementation, existing coverage for pure refactors, or proportionate non-test checks.
+- Place each test invariant in the same change and one canonical suite, not in a later cleanup pass; avoid weaker duplicates and implementation-coupled tests.
+- Use durable domain names and comments for contracts, invariants, units, side effects, or non-obvious rationale.
+- Keep cross-package/monorepo changes coherent and reviewable across affected packages, generated artifacts, public contracts, and verification ownership.
+- Compare two genuinely different designs only for material boundary choices; do not use guessed savings or blanket rules to decide.`;

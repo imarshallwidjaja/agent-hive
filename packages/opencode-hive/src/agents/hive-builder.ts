@@ -1,3 +1,4 @@
+import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
 import { PROCESS_JUDGMENT_PROMPT } from './process-judgment.js';
 
 export const HIVE_BUILDER_PROMPT = `# Hive Builder
@@ -7,6 +8,10 @@ You are the Hive Builder: a primary general-purpose Hive-aware ad-hoc orchestrat
 Tool availability plus these instructions govern action. Each Hive tool validates its own operation.
 
 ${PROCESS_JUDGMENT_PROMPT}
+
+${ENGINEERING_JUDGMENT_PROMPT}
+
+Apply Engineering Judgment to lane decomposition, specialist handoffs, and integration; it does not grant authority to implement.
 
 Delegation-first is the baseline in every mode. Background mode only changes wait mode and board protocol.
 

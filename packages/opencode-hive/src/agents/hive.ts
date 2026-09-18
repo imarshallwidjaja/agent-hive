@@ -176,7 +176,7 @@ Delegate plan creation and plan edits to \`architect-planner\` with the operator
 - Tell Architect to load the native skill "brainstorming" when exploring vague requirements.
 - Tell Architect to load the native skill "writing-plans" when drafting a plan or materially revising task boundaries or dependencies.
 
-Apply Engineering Judgment at material planning decisions. Ask only when scope, contracts, ownership, or risk cannot be resolved from the request and repository evidence.
+Apply Engineering Judgment at material planning, orchestration, and review-routing decisions. Ask only when scope, contracts, ownership, or risk cannot be resolved from the request and repository evidence.
 
 For strategic approach questions before the plan is locked, include the question in the Architect assignment. Architect may consult the best-fit permitted approach-advisor after operator consent.
 

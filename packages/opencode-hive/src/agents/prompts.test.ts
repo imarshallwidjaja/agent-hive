@@ -40,19 +40,19 @@ describe('Engineering judgment prompt reach', () => {
   const includedPrompts = [
     ['Hive', QUEEN_BEE_PROMPT],
     ['Architect', ARCHITECT_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+    ['Hive Builder', HIVE_BUILDER_PROMPT],
     ['Forager', FORAGER_BEE_PROMPT],
     ['Plan Reviewer', PLAN_REVIEWER_PROMPT],
     ['Code Reviewer', CODE_REVIEWER_PROMPT],
     ['Simplicity Reviewer', SIMPLICITY_REVIEWER_PROMPT],
+    ['Approach Advisor', APPROACH_ADVISOR_PROMPT],
+    ['Dash Reviewer', DASH_REVIEWER_PROMPT],
   ] as const;
 
   const omittedPrompts = [
-    ['Swarm', SWARM_BEE_PROMPT],
     ['Scout', SCOUT_BEE_PROMPT],
     ['Hive Helper', HIVE_HELPER_PROMPT],
-    ['Hive Builder', HIVE_BUILDER_PROMPT],
-    ['Approach Advisor', APPROACH_ADVISOR_PROMPT],
-    ['Dash Reviewer', DASH_REVIEWER_PROMPT],
     ['Vulnerability Review Primary', VULNERABILITY_REVIEW_PRIMARY_PROMPT],
     ['Vulnerability Reviewer', VULNERABILITY_REVIEWER_PROMPT],
   ] as const;
@@ -74,6 +74,27 @@ describe('Engineering judgment prompt reach', () => {
     expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_000);
   });
 
+  it('starts from present need and preserves meaningful safety and ownership boundaries', () => {
+    for (const requirement of [
+      'present need before adding machinery',
+      'call sites and sibling routes',
+      'owning boundary',
+      'stdlib/native or an already-installed dependency',
+      'cognitive load',
+      'meaningful one-caller boundaries',
+      'make valid use clear and misuse difficult',
+      'abstractions, fallbacks, options, validation, and comments',
+      'security, accessibility, data integrity',
+      'public contracts',
+      'required or mission-selected verification',
+      'cross-package/monorepo changes',
+      'affected packages, generated artifacts, public contracts, and verification ownership',
+      'guessed savings',
+    ]) {
+      expect(ENGINEERING_JUDGMENT_PROMPT.toLowerCase(), requirement).toContain(requirement.toLowerCase());
+    }
+  });
+
   it('places each test invariant in one canonical suite in the same change', () => {
     expect(ENGINEERING_JUDGMENT_PROMPT).toContain('canonical suite');
     expect(ENGINEERING_JUDGMENT_PROMPT).toContain('not in a later cleanup pass');
@@ -82,10 +103,18 @@ describe('Engineering judgment prompt reach', () => {
   it('anchors role-specific application at existing decision points', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries');
     expect(QUEEN_BEE_PROMPT).toContain('Require the Architect handoff');
+    expect(QUEEN_BEE_PROMPT).toContain('material planning, orchestration, and review-routing decisions');
     expect(FORAGER_BEE_PROMPT).toContain('Apply Engineering Judgment during PLAN and VERIFY');
     expect(PLAN_REVIEWER_PROMPT).toContain('Apply Engineering Judgment only as an execution-readiness lens');
     expect(CODE_REVIEWER_PROMPT).toContain('Apply Engineering Judgment to the changed scope');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('total cognitive burden and ownership clarity');
+    expect(SWARM_BEE_PROMPT).toContain('Apply Engineering Judgment to decomposition, worker handoffs, and integration');
+    expect(SWARM_BEE_PROMPT).toContain('does not grant authority to implement');
+    expect(HIVE_BUILDER_PROMPT).toContain('Apply Engineering Judgment to lane decomposition, specialist handoffs, and integration');
+    expect(HIVE_BUILDER_PROMPT).toContain('does not grant authority to implement');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('Apply Engineering Judgment to implementation route selection');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('explicit justification for new libraries, services, or infrastructure');
+    expect(DASH_REVIEWER_PROMPT).toContain('Apply Engineering Judgment to reviewer selection and finding synthesis');
     expect(FORAGER_BEE_PROMPT).toContain(
       'Place each new test invariant in the canonical owning suite in this change and fold weaker duplicates before commit',
     );

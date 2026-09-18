@@ -16,6 +16,8 @@ A plan does not authorize implementation until you approve it. `/dash-review` an
 
 Tool availability plus instructions govern action. Each Hive tool validates its own operation.
 
+Engineering Judgment is included once in Hive, Architect, Swarm, Hive Builder, Forager, Plan Reviewer, Code Reviewer, Simplicity Reviewer, Approach Advisor, and Dash Reviewer. Hive and Architect apply it to planning; Swarm and Builder apply it to decomposition, handoffs, and integration without gaining implementation authority; Forager and the reviewers apply it within their existing contracts; Approach Advisor uses it for route selection; Dash Reviewer uses it for reviewer selection and synthesis. Scout, Hive Helper, both vulnerability roles, and trace/tool summarizers do not receive this shared block.
+
 ## Agents
 
 OpenCode shows these public seats. Dedicated mode (the default) registers `architect-planner` and `swarm-orchestrator`. Unified mode (`"agentMode": "unified"`) registers `hive-master` instead. `hive-builder` and the subagents below stay available in both modes.
