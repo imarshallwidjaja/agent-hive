@@ -27,9 +27,8 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "clean": "rm -rf dist",
-    "generate-skills": "bun run scripts/generate-skills.ts",
     "generate-plugin-manifest": "bun run scripts/generate-plugin-manifest.ts",
-    "generate": "npm run generate-skills && npm run generate-plugin-manifest",
+    "generate": "npm run generate-plugin-manifest",
     "build": "npm run clean && npm run generate && bun build src/index.ts --outdir dist --target node --format esm --packages=bundle && tsc --emitDeclarationOnly",
     "dev": "opencode plugin dev",
     "test": "bun test"
@@ -40,14 +39,7 @@
   "dependencies": {
     "@ast-grep/cli": "^0.42.0",
     "@manzt/uv": "^0.8.13",
-    "effect": "4.0.0-beta.83",
-    "gray-matter": "^4.0.3",
-    "simple-git": "^3.27.0"
-  },
-  "optionalDependencies": {
-    "@upstash/context7-mcp": "^2.1.0",
-    "exa-mcp-server": "^3.1.5",
-    "grep-mcp": "^1.1.0"
+    "gray-matter": "^4.0.3"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.30",

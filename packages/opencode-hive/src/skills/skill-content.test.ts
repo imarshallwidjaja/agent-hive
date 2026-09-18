@@ -2,8 +2,34 @@ import { describe, it, expect } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import matter from 'gray-matter';
-import { BUILTIN_SKILLS } from './registry.generated.js';
-import { resolvePackagedSkillsDir } from './native-materializer.js';
+import { parseNativeSkillMarkdown, resolvePackagedSkillsDir } from './native-materializer.js';
+
+type PackagedSkill = {
+  name: string;
+  description: string;
+  template: string;
+};
+
+function readPackagedSkills(): PackagedSkill[] {
+  const skillsDir = resolvePackagedSkillsDir();
+  return readdirSync(skillsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(skillsDir, entry.name, 'SKILL.md'))
+    .filter((filePath) => existsSync(filePath))
+    .map((filePath) => {
+      const parsed = parseNativeSkillMarkdown(filePath, readFileSync(filePath, 'utf8'));
+      if (!parsed) {
+        throw new Error(`Invalid packaged skill source: ${filePath}`);
+      }
+      return {
+        name: parsed.name,
+        description: parsed.description,
+        template: parsed.content.trim(),
+      };
+    });
+}
+
+const BUILTIN_SKILLS = readPackagedSkills();
 
 function readRepoFile(relativePath: string): string {
   return readFileSync(path.resolve(import.meta.dir, '../../../../', relativePath), 'utf8');
@@ -993,36 +1019,12 @@ describe('skill content', () => {
     }
   });
 
-  it('keeps generated registry entries equal to parsed bundled skill sources', () => {
-    const skillsDir = resolvePackagedSkillsDir();
-    const entries = readdirSync(skillsDir, { withFileTypes: true });
-    const skillFiles = entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(skillsDir, entry.name, 'SKILL.md'))
-      .filter((filePath) => existsSync(filePath));
-
-    expect(skillFiles.length).toBe(BUILTIN_SKILLS.length);
-
-    for (const filePath of skillFiles) {
-      const content = readFileSync(filePath, 'utf8');
-      let parsed: matter.GrayMatterFile<string> | undefined;
-
-      expect(() => {
-        parsed = matter(content);
-      }).not.toThrow();
-
-      expect(parsed).toBeDefined();
-      expect(typeof parsed!.data?.name).toBe('string');
-      expect(parsed!.data.name.trim().length).toBeGreaterThan(0);
-      expect(typeof parsed!.data?.description).toBe('string');
-      expect(parsed!.data.description.trim().length).toBeGreaterThan(0);
-
-      const registered = BUILTIN_SKILLS.find((entry) => entry.name === parsed!.data.name);
-      expect(registered).toEqual({
-        name: parsed!.data.name,
-        description: parsed!.data.description,
-        template: parsed!.content.trim(),
-      });
+  it('keeps packaged skill sources valid and uniquely named', () => {
+    expect(BUILTIN_SKILLS.length).toBeGreaterThan(0);
+    expect(new Set(BUILTIN_SKILLS.map((skill) => skill.name)).size).toBe(BUILTIN_SKILLS.length);
+    for (const skill of BUILTIN_SKILLS) {
+      expect(skill.name.trim().length).toBeGreaterThan(0);
+      expect(skill.description.trim().length).toBeGreaterThan(0);
     }
   });
 });

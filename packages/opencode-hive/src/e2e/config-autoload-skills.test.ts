@@ -2,9 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import plugin from '../index';
-import { BUILTIN_SKILLS } from '../skills/registry.generated.js';
+import { parseNativeSkillMarkdown, resolvePackagedSkillsDir } from '../skills/native-materializer.js';
 
 function createFileSkill(
   skillDir: string,
@@ -122,9 +121,11 @@ async function captureWarnings<T>(run: () => Promise<T>): Promise<{ result: T; w
 }
 
 function requireBuiltinSkill(name: string): { name: string; template: string } {
-  const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
+  const skillPath = path.join(PACKAGED_SKILLS_DIR, name, 'SKILL.md');
+  const skill = parseNativeSkillMarkdown(skillPath, fs.readFileSync(skillPath, 'utf8'));
   expect(skill).toBeDefined();
-  return skill!;
+  expect(skill!.name).toBe(name);
+  return { name: skill!.name, template: skill!.content.trim() };
 }
 
 function getAgentPrompt(opencodeConfig: Record<string, unknown>, agentName: string): string {
@@ -156,7 +157,7 @@ const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' });
 (OPENCODE_CLIENT.session as any).update = async () => ({ data: {} });
 const TEST_ROOT_BASE = '/tmp/hive-config-autoload-skills-test';
 const HIVE_GENERATED_SEGMENT = path.join('.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills');
-const PACKAGED_SKILLS_DIR = fileURLToPath(new URL('../../skills', import.meta.url));
+const PACKAGED_SKILLS_DIR = resolvePackagedSkillsDir();
 
 describe('config hook autoLoadSkills guidance', () => {
   let testRoot: string;

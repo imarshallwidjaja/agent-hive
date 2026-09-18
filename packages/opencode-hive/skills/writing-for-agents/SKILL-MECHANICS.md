@@ -15,7 +15,7 @@ Shared reference that two user-invoked skills both need can live in neither: wit
 
 ## Runtime Compatibility Note (OpenCode / Hive)
 
-In OpenCode, builtin skills are registered via `src/skills/registry.generated.ts` and materialized into native skill directories under `agent-hive/generated/opencode-skills/`. The OpenCode runtime discovers and serves skills through the native `skill` tool.
+In OpenCode, packaged skills are discovered from `skills/<name>/SKILL.md` and materialized into native skill directories under `agent-hive/generated/opencode-skills/`. The OpenCode runtime discovers and serves skills through the native `skill` tool.
 - Frontmatter requires string `name` and `description`.
 - `disable-model-invocation` is Claude Code-specific. In OpenCode, native skills remain discoverable by the model through the `skill` tool; selective disabling is handled at the project/global config level (`disableSkills`).
 

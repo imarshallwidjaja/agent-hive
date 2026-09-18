@@ -193,10 +193,6 @@ export function resolvePackagedSkillsDir(moduleUrl: string | URL = import.meta.u
   throw new Error(`Unable to resolve packaged Hive skills directory from ${resolvedUrl}`);
 }
 
-function getLogger(logger?: Logger): Logger {
-  return logger ?? console;
-}
-
 function getHomeDir(input: PrepareNativeHiveSkillsInput): string {
   return input.homeDir ?? input.env?.HOME ?? process.env.HOME ?? os.homedir();
 }
@@ -529,21 +525,6 @@ async function scanUrlNativeSkills(
   };
 }
 
-function skillSourcesByName(nativeSkillsByName: Map<string, PreparedNativeSkill>): Map<string, string> {
-  return new Map([...nativeSkillsByName].map(([name, skill]) => [name, skill.source]));
-}
-
-function mergeNativeSkills(
-  localNativeSkills: Map<string, PreparedNativeSkill>,
-  urlNativeSkills: Map<string, PreparedNativeSkill>,
-): Map<string, PreparedNativeSkill> {
-  const merged = new Map(localNativeSkills);
-  for (const [name, skill] of urlNativeSkills) {
-    merged.set(name, skill);
-  }
-  return merged;
-}
-
 async function buildGeneratedHash(stagedRoot: string): Promise<string> {
   const hash = createHash('sha256');
   const entriesToHash: Array<{
@@ -676,7 +657,7 @@ async function materializeSkills(
 export async function prepareNativeHiveSkills(
   input: PrepareNativeHiveSkillsInput,
 ): Promise<PreparedNativeHiveSkills> {
-  const logger = getLogger(input.logger);
+  const logger = input.logger ?? console;
   const homeDir = getHomeDir(input);
   const env = { ...process.env, ...input.env };
   const generatedRoot = path.join(
@@ -709,8 +690,7 @@ export async function prepareNativeHiveSkills(
     };
   }
 
-  const nativeSkillsByName = mergeNativeSkills(localNativeSkills, urlScan.nativeSkillsByName);
-  const allConflicts = skillSourcesByName(nativeSkillsByName);
+  const nativeSkillsByName = new Map([...localNativeSkills, ...urlScan.nativeSkillsByName]);
 
   const eligibleSkills: BundledSkillSource[] = [];
   const skipped: PreparedNativeHiveSkills['skipped'] = [];
@@ -721,8 +701,8 @@ export async function prepareNativeHiveSkills(
       continue;
     }
 
-    const conflictSource = allConflicts.get(skill.parsed.name);
-    if (conflictSource) {
+    const conflictSource = nativeSkillsByName.get(skill.parsed.name)?.source;
+    if (conflictSource !== undefined) {
       skipped.push({ name: skill.parsed.name, reason: 'conflict', source: conflictSource });
       continue;
     }

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import type { LocalMcpConfig } from './types';
+import type { LocalMcpConfig } from './types.js';
 
 const require = createRequire(import.meta.url);
 

@@ -148,7 +148,7 @@ Task status and reports are the execution record. There is no attempt ledger. Ol
 
 1. Create directory in `packages/opencode-hive/skills/<name>/`
 2. Add `SKILL.md` with skill instructions
-3. Register in skill loader
+3. The native materializer discovers packaged `SKILL.md` files from the filesystem; no registry or loader entry is required
 4. Document triggers in skill description
 
 ### Adding a Service

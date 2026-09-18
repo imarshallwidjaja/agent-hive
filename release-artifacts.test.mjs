@@ -195,6 +195,13 @@ function assertNoHiveCoreModuleReference(source, fileName) {
   assert.deepEqual(references, [], `${fileName} should not reference unpacked hive-core modules`);
 }
 
+function assertNoModuleReferences(source, fileName, forbiddenModules) {
+  const references = [...staticModuleSpecifiers(source, fileName)].filter((specifier) =>
+    forbiddenModules.some((moduleName) => specifier === moduleName || specifier.startsWith(`${moduleName}/`))
+  );
+  assert.deepEqual(references, [], `${fileName} should not reference removed direct dependencies`);
+}
+
 function declarationEntrypoints(packageJson) {
   const entrypoints = new Set();
   if (typeof packageJson.types === 'string') entrypoints.add(packageJson.types);
@@ -391,18 +398,34 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       assertPackedFile(packedFiles, 'templates/context/tools.md', 'oc-arkive');
 
       const packedManifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+      const removedDirectDependencies = [
+        'effect',
+        'simple-git',
+        '@upstash/context7-mcp',
+        'exa-mcp-server',
+        'grep-mcp',
+      ];
       for (const dependencyType of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
         assert.equal(
           packedManifest[dependencyType]?.['hive-core'],
           undefined,
           `packed oc-arkive manifest should not include hive-core in ${dependencyType}`
         );
+        for (const dependency of removedDirectDependencies) {
+          assert.equal(
+            packedManifest[dependencyType]?.[dependency],
+            undefined,
+            `packed oc-arkive manifest should not include ${dependency} in ${dependencyType}`
+          );
+        }
       }
 
       const executablePath = path.resolve(packageRoot, packedManifest.main);
       assert.ok(executablePath.startsWith(`${packageRoot}${path.sep}`), 'packed executable path should stay inside the package');
       assert.ok(fs.existsSync(executablePath), `packed executable is missing: ${packedManifest.main}`);
-      assertNoHiveCoreModuleReference(fs.readFileSync(executablePath, 'utf8'), packedManifest.main);
+      const executableSource = fs.readFileSync(executablePath, 'utf8');
+      assertNoHiveCoreModuleReference(executableSource, packedManifest.main);
+      assertNoModuleReferences(executableSource, packedManifest.main, removedDirectDependencies);
       assertPackedDeclarationGraph(packageRoot, packedManifest);
     });
   });
