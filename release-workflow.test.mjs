@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 
 const workspaceRoot = path.resolve(import.meta.dirname);
@@ -19,16 +18,6 @@ function readPublishOcArkiveJob() {
   const match = workflow.match(/^ {2}publish-oc-arkive:[\s\S]*?(?=^ {2}\w[\w-]*:)/m);
   assert.ok(match, 'expected a publish-oc-arkive job block in .github/workflows/release.yml');
   return match[0];
-}
-
-async function loadNpmPublishAccessHelper() {
-  const helperPath = path.join(workspaceRoot, '.github', 'scripts', 'verify-npm-publish-access.mjs');
-
-  if (!fs.existsSync(helperPath)) {
-    return null;
-  }
-
-  return import(pathToFileURL(helperPath).href);
 }
 
 describe('release workflow recovery contract', () => {
@@ -92,94 +81,7 @@ describe('release workflow recovery contract', () => {
   });
 });
 
-describe('npm publish access helper', () => {
-  it('accepts read-write collaborator access', async () => {
-    const helperModule = await loadNpmPublishAccessHelper();
-
-    assert.ok(helperModule, 'expected .github/scripts/verify-npm-publish-access.mjs to exist');
-    assert.equal(
-      helperModule.validateNpmPublishAccess({
-        npmUser: 'release-bot',
-        collaborators: {
-          'release-bot': 'read-write',
-        },
-        packageName: 'oc-arkive',
-      }),
-      'read-write'
-    );
-  });
-
-  it('treats a missing package as first-publish-ready when auth is present', async () => {
-    const helperModule = await loadNpmPublishAccessHelper();
-
-    assert.ok(helperModule, 'expected .github/scripts/verify-npm-publish-access.mjs to exist');
-    assert.deepEqual(
-      helperModule.interpretPublishReadiness({
-        npmUser: 'release-bot',
-        packageName: 'oc-arkive',
-        packageExists: false,
-        collaborators: null,
-      }),
-      {
-        status: 'first-publish',
-        npmUser: 'release-bot',
-        packageName: 'oc-arkive',
-      }
-    );
-  });
-
-  it('skips collaborator lookup when the package does not exist yet', async () => {
-    const helperModule = await loadNpmPublishAccessHelper();
-
-    assert.ok(helperModule, 'expected .github/scripts/verify-npm-publish-access.mjs to exist');
-
-    let collaboratorLookupCalls = 0;
-    const readiness = helperModule.resolvePublishReadiness({
-      npmUser: 'release-bot',
-      packageName: 'oc-arkive',
-      packageExists: false,
-      readCollaborators() {
-        collaboratorLookupCalls += 1;
-        return { 'release-bot': 'read-write' };
-      },
-    });
-
-    assert.equal(collaboratorLookupCalls, 0);
-    assert.equal(readiness.status, 'first-publish');
-  });
-
-  it('rejects missing collaborator entries', async () => {
-    const helperModule = await loadNpmPublishAccessHelper();
-
-    assert.ok(helperModule, 'expected .github/scripts/verify-npm-publish-access.mjs to exist');
-    assert.throws(
-      () =>
-        helperModule.validateNpmPublishAccess({
-          npmUser: 'release-bot',
-          collaborators: {},
-          packageName: 'oc-arkive',
-        }),
-      /npm user release-bot is not listed as a collaborator on oc-arkive/
-    );
-  });
-
-  it('rejects weaker-than-read-write collaborator access', async () => {
-    const helperModule = await loadNpmPublishAccessHelper();
-
-    assert.ok(helperModule, 'expected .github/scripts/verify-npm-publish-access.mjs to exist');
-    assert.throws(
-      () =>
-        helperModule.validateNpmPublishAccess({
-          npmUser: 'release-bot',
-          collaborators: {
-            'release-bot': 'read-only',
-          },
-          packageName: 'oc-arkive',
-        }),
-      /npm user release-bot has read-only access to oc-arkive; expected read-write/
-    );
-  });
-
+describe('npm publish workflow contract', () => {
   it('publishes oc-arkive to npm through GitHub OIDC trusted publishing without static tokens', () => {
     const workflow = readText('.github/workflows/release.yml');
     const job = readPublishOcArkiveJob();

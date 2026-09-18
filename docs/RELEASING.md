@@ -47,13 +47,13 @@ You can also verify your local npm login and package access, but CI does not req
 
 ```bash
 npm whoami
-node .github/scripts/verify-npm-publish-access.mjs opencode-hive
+npm access list collaborators oc-arkive --json
 ```
 
 These checks are not preparation shortcuts:
 
 - `npm whoami` confirms your local npm login works.
-- `node .github/scripts/verify-npm-publish-access.mjs opencode-hive` (optional, local-only) reads `packages/opencode-hive/package.json`, so it checks `oc-arkive` even though the package directory is still named `opencode-hive`. It validates your local npm login (or read-write collaborator access once the package exists).
+- `npm access list collaborators oc-arkive --json` shows the current user's package access for human inspection. It does not automatically verify GitHub OIDC Trusted Publishing or authority to make the first publish.
 - `bun run release:check` installs dependencies, verifies the release artifacts and workflow contract, builds `hive-core`, `oc-arkive`, and `vscode-arkive`, and runs their test suites.
 
 The documentation contract verifies the canonical documents, active links, and removed-document references. `release-docs.test.mjs` discovers the repository Markdown set from repository artifacts when `.git` is absent, so it runs unchanged from a source checkout or an isolated release staging tree:
