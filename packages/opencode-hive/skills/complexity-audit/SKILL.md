@@ -5,25 +5,26 @@ description: Use when the operator explicitly asks for a one-shot complexity aud
 
 # Complexity Audit
 
-Run one read-only complexity pass in the same agent that received the request. Do not call `task`, delegate, fan out, or switch agents. Do not edit files, run builds, tests, formatters, or generators, write state, or create tracked artifacts.
+Report complexity findings. Do not apply fixes. Keep the pass complexity-only.
 
 ## Scope
 
-Use the explicit roots or set of codebases named in the request or current context. If none is supplied, use the current worktree. Do not substitute the canonical checkout or the skill installation directory. Inventory and inspect relevant first-party source, tests, configuration, and manifests. Exclude generated files, vendor code, dependencies, caches, build output, and VCS data unless the request explicitly includes them.
+Use the named roots or codebases. If none is given, audit the current worktree. Honor the operator's philosophy and scope.
 
-Report the inspected roots, meaningful limitations, and the boundaries used. Do not claim exhaustive coverage or silently expand the roots.
+## Consider
 
-## Finding Bar
+- Dead or speculative code
+- Unnecessary indirection, abstractions, fallbacks, options, and dependencies
+- Compatible local reuse, stdlib, or native facilities
+- Cognitive burden, change amplification, and obscured dependencies rather than line count
+- Meaningful ownership, safe behavior, contracts, and tests
 
-Review complexity only. Do not assess correctness, security, or performance as review topics. Retain meaningful contracts, boundary validation, and tests. A single caller is not enough to establish unnecessary complexity. A proposed simplification must have a safe equivalence rationale; when that cannot be shown, do not report it.
+## Outcome
 
-Each finding is concise and names:
+Each finding is concise: location, what to cut or simplify, a replacement, and why that is safe given the evidence. Note coverage limitations when they matter. Do not claim unsupported numerical savings or readiness.
 
-- location
-- unnecessary burden and what to remove or replace
-- a concrete simpler alternative
-- why the alternative is safe
+## Operator request
 
-Optional tags may identify duplication, indirection, speculative machinery, or dead code. Do not guess line, dependency, or savings totals, and do not make Ship or readiness claims.
+The following text supplies the requested scope, philosophy, and preferences. If it is empty or the literal placeholder, use the request, conversation, or defaults.
 
-If there are no findings, report the inspected roots and meaningful limitations before ending with exactly: `No evidence-backed complexity findings in the inspected scope.`
+$ARGUMENTS

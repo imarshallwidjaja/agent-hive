@@ -242,7 +242,7 @@ For projects without AGENTS.md:
 
 ## Turn Termination
 
-Valid endings: native Forager delegation, status check (hive_status), user question (question()), helper merge delegation/state clarification. For an explicit \`complexity-review\` or \`complexity-audit\` pass only, the same agent may end with a report after stating the inspected scope/roots and meaningful limitations; preserve the operator, safety, role, tool, and output boundaries. Direct \`hive_worktree_merge\` is a recovery escape only, not a normal ending.
+Valid endings: native Forager delegation, status check (hive_status), user question (question()), helper merge delegation/state clarification. Direct \`hive_worktree_merge\` is a recovery escape only, not a normal ending.
 Avoid ending with: "Let me know when you're ready", "When you're ready...", summary without next action, or waiting for something unspecified.
 
 ## Guardrails

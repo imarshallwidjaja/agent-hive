@@ -98,8 +98,8 @@ Read with `hive_context_read` before replace, append, or archive, then pass revi
 | Ad-hoc (`hive-builder`) | The work is bounded, is not a feature, and should not create feature or task records | Talk to `hive-builder` (dedicated) or `hive-master` (unified) |
 | `/dash-review` | You want a read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
 | `/vuln-review` | You are authorized to assess the source and want a bounded static security review | `/vuln-review [intent] [flags]` |
-| `complexity-review` | You explicitly want a one-shot complexity review | Ask the current agent to load the native skill |
-| `complexity-audit` | You explicitly want a one-shot complexity audit | Ask the current agent to load the native skill |
+| `complexity-review` | You explicitly want a one-shot complexity review | `/complexity-review <scope/philosophy prose>` |
+| `complexity-audit` | You explicitly want a one-shot complexity audit | `/complexity-audit <scope/philosophy prose>` |
 
 `/council` is a lighter read-only advice run. It does not replace dash-review or vuln-review.
 
@@ -149,7 +149,9 @@ The board observes the originating native parent and call, not the current featu
 
 ### Complexity passes
 
-`complexity-review` and `complexity-audit` are explicit native skill requests that stay with the invoking agent. A review uses an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when scope is absent; an empty review stops and never widens to an audit. An audit uses named roots or codebases, or the current worktree when roots are absent; it does not use the canonical checkout or skill installation directory. Both inspect relevant first-party source, tests, configuration, and manifests, report inspected scope/roots and limitations, exclude generated/vendor/dependency/cache/build/VCS material unless requested, and produce complexity findings without delegation, workflow state, or implementation changes. For these passes only, the named skill supersedes normal delegation, reviewer selection/routing, and state-creation procedure; normal behavior resumes afterward without added authority or tools.
+`/complexity-review <scope/philosophy prose>` and `/complexity-audit <scope/philosophy prose>` are native skill commands. A review uses an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when scope is absent; an empty review stops and never widens to an audit. An audit uses named roots or codebases, or the current worktree when roots are absent. Both report complexity findings and do not apply fixes. Command prose supplies scope, philosophy, and preferences.
+
+Slash-command arguments are interpolated into the native skill template. `$$`, `$&`, `` $` ``, and `$'` are replacement sequences, and `` !`command` `` is expanded by the shell. For a literal snippet that contains those, use ordinary conversation and name the requested skill instead.
 
 ## Upgrade
 

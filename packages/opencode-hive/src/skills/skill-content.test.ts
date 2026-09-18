@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import matter from 'gray-matter';
 import { parseNativeSkillMarkdown, resolvePackagedSkillsDir } from './native-materializer.js';
 
 type PackagedSkill = {
@@ -981,50 +980,30 @@ describe('skill content', () => {
     expect(existsSync(path.join(writingSkillDir, 'UPSTREAM.md'))).toBe(true);
   });
 
-  it('discovers both complexity skills with distinct scopes and read-only contracts', () => {
-    const cases = [
-      {
-        name: 'complexity-review',
-        scope: 'explicit diff or bounded named scope',
-        fallback: 'current staged, unstaged, and relevant nonignored untracked changes',
-        boundary: 'never widen it into an audit',
-        noFindings: 'report the inspected scope and meaningful limitations before ending with exactly',
-      },
-      {
-        name: 'complexity-audit',
-        scope: 'explicit roots or set of codebases',
-        fallback: 'use the current worktree',
-        boundary: 'Do not substitute the canonical checkout or the skill installation directory',
-        noFindings: 'report the inspected roots and meaningful limitations before ending with exactly',
-      },
-    ];
+  it('discovers both complexity skills with distinct scopes and one operator-request placeholder', () => {
+    const review = BUILTIN_SKILLS.find((entry) => entry.name === 'complexity-review');
+    const audit = BUILTIN_SKILLS.find((entry) => entry.name === 'complexity-audit');
+    const conversationFallback = 'use ordinary conversation and name the requested skill instead';
 
-    for (const { name, scope, fallback, boundary, noFindings } of cases) {
-      const parsed = matter(readRepoFile(`packages/opencode-hive/skills/${name}/SKILL.md`));
-      const skill = {
-        name: parsed.data.name,
-        description: parsed.data.description,
-        template: parsed.content.trim(),
-      };
+    expect(review).toBeDefined();
+    expect(audit).toBeDefined();
+    expect(review!.template).toContain('diff or bounded named scope');
+    expect(review!.template).toContain('current staged, unstaged, and relevant nonignored untracked changes');
+    expect(audit!.template).toContain('named roots or codebases');
+    expect(audit!.template).toContain('current worktree');
 
-      expect(skill.description).toMatch(/^Use when the operator explicitly asks/);
-      expect(skill.template).toContain('one read-only complexity pass');
-      expect(skill.template).toContain('same agent');
-      expect(skill.template).toContain('Do not call `task`, delegate, fan out, or switch agents');
-      expect(skill.template).toContain('Do not edit files');
-      expect(skill.template).toContain('write state');
-      expect(skill.template).toContain(scope);
-      expect(skill.template).toContain(fallback);
-      expect(skill.template).toContain(boundary);
-      expect(skill.template).toContain(noFindings);
-      expect(skill.template).toContain('first-party source, tests, configuration, and manifests');
-      expect(skill.template).toContain('generated files');
-      expect(skill.template).toContain('meaningful contracts, boundary validation, and tests');
-      expect(skill.template).toContain('A single caller is not enough');
-      expect(skill.template).toContain('safe equivalence rationale');
-      expect(skill.template).toContain('Do not guess line, dependency, or savings totals');
-      expect(skill.template).toContain('Ship or readiness claims');
-      expect(skill.template).toContain('No evidence-backed complexity findings in the inspected scope.');
+    for (const skill of [review!, audit!]) {
+      const operatorRequest = skill.template.slice(skill.template.indexOf('## Operator request'));
+
+      expect(skill.template).toContain('Do not apply fixes');
+      expect(operatorRequest.startsWith('## Operator request')).toBe(true);
+      expect(skill.template.match(/\$ARGUMENTS/g)).toEqual(['$ARGUMENTS']);
+      expect(skill.template.trimEnd().endsWith('$ARGUMENTS')).toBe(true);
+      expect(operatorRequest).toMatch(/empty or the literal placeholder/i);
+      expect(operatorRequest).toMatch(/request, conversation, or defaults/i);
+      expect(skill.template).not.toContain('same agent');
+      expect(skill.template).not.toContain('fan out');
+      expect(skill.template).not.toContain(conversationFallback);
     }
 
     for (const content of [
@@ -1032,10 +1011,13 @@ describe('skill content', () => {
       readRepoFile('packages/opencode-hive/README.md'),
       readRepoFile('docs/OPERATOR-GUIDE.md'),
     ]) {
-      expect(content).toContain('complexity-review');
-      expect(content).toContain('complexity-audit');
-      expect(content).not.toContain('$ARGUMENTS');
+      expect(content).toContain('/complexity-review <scope/philosophy prose>');
+      expect(content).toContain('/complexity-audit <scope/philosophy prose>');
     }
+
+    expect(readRepoFile('docs/OPERATOR-GUIDE.md')).toContain(conversationFallback);
+    expect(readRepoFile('README.md')).not.toContain(conversationFallback);
+    expect(readRepoFile('packages/opencode-hive/README.md')).not.toContain(conversationFallback);
   });
 
   it('keeps packaged skill sources valid and uniquely named', () => {

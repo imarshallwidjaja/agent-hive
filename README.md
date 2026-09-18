@@ -65,8 +65,8 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
 | `/dash-review` | Read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
 | `/vuln-review` | Authorized bounded static security review | `/vuln-review [intent] [flags]` |
-| Native `complexity-review` | Explicit one-shot complexity review of an explicit diff or bounded named scope; otherwise current staged, unstaged, and relevant nonignored untracked changes | Ask the current agent to load `complexity-review` |
-| Native `complexity-audit` | Explicit one-shot complexity audit of named roots or codebases | Ask the current agent to load `complexity-audit` |
+| Native `complexity-review` | Explicit one-shot complexity review of an explicit diff or bounded named scope; otherwise current staged, unstaged, and relevant nonignored untracked changes | `/complexity-review <scope/philosophy prose>` |
+| Native `complexity-audit` | Explicit one-shot complexity audit of named roots or codebases | `/complexity-audit <scope/philosophy prose>` |
 
 By default (dedicated mode), `architect-planner` and `swarm-orchestrator` handle
 feature work and `hive-builder` handles ad-hoc work. Set `"agentMode": "unified"`
