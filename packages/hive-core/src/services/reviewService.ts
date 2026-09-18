@@ -7,10 +7,6 @@ import {
 } from '../utils/paths.js';
 import type { CommentsJson, ReviewCounts, ReviewDocument, ReviewThread } from '../types.js';
 
-const EMPTY_COUNTS: ReviewCounts = {
-  plan: 0,
-};
-
 export class ReviewService {
   constructor(private projectRoot: string) {}
 
@@ -32,10 +28,7 @@ export class ReviewService {
   }
 
   countByDocument(featureName: string): ReviewCounts {
-    return {
-      ...EMPTY_COUNTS,
-      plan: this.getThreads(featureName, 'plan').length,
-    };
+    return { plan: this.getThreads(featureName, 'plan').length };
   }
 
   hasUnresolvedThreads(featureName: string, document?: ReviewDocument): boolean {

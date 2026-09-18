@@ -2,7 +2,6 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import simpleGit, { SimpleGit } from "simple-git";
 import type { ResolvedRepository, TaskStatus } from "../types.js";
-import { normalizeCommitMessage } from '../utils/mergeMessage.js';
 import { acquireLock, resolveFeatureDirectoryName } from "../utils/paths.js";
 import { createHash } from 'crypto';
 import type {
@@ -12,13 +11,26 @@ import type {
 import { readCompositeWorkspaceManifest, readSingleWorkspaceMetadata, writeWorkspaceJsonAtomic } from './workspaceManifest.js';
 import {
   buildCleanupOutcome,
+  buildNotRequestedCleanupOutcome,
+  buildNotRequestedMergeCleanupBlock,
+  cleanupFacts,
+  cleanupStepDone,
   classifyThrownWorktreeError,
   classifyWorktreeOutcome,
   combineRepoCleanupOutcomes,
   isRetryableWithMutation,
   WorktreeTopologyMismatchError,
   WorktreeLinkageError,
+  toMergeCleanupBlock,
 } from './worktreeOutcome.js';
+import {
+  integrateWorktreeRepository,
+  integrationFailure,
+  mergeSuccessClassification,
+  readValidatedCommitMessage,
+  resolveGitPath,
+  validateSourceCommitMessages,
+} from './worktreeIntegration.js';
 import type {
   CleanupStepOutcome,
   WorktreeCleanupOutcome,
@@ -26,6 +38,8 @@ import type {
   WorktreeOperationPhase,
   WorktreeReasonCode,
   WorktreeRecoveryAction,
+  WorktreeMergeCleanupBlock,
+  WorktreeRepositoryMergeResult,
 } from './worktreeOutcome.js';
 
 export type WorktreeMode = 'legacy' | 'composite';
@@ -114,30 +128,10 @@ export interface MergeResult {
 }
 
 /** Merge-result cleanup block: per-step truth plus the legacy factual booleans. */
-export interface MergeCleanupBlock extends WorktreeCleanupOutcome {
-  worktreeRemoved: boolean;
-  branchDeleted: boolean;
-  pruned: boolean;
-}
+export interface MergeCleanupBlock extends WorktreeMergeCleanupBlock {}
 
-export interface RepoMergeResult {
-  success: boolean;
-  merged: boolean;
-  sha?: string;
-  commitMessage?: string;
-  reason?: string;
-  reasonCode?: WorktreeReasonCode;
-  cleanupEligible?: boolean;
+export interface RepoMergeResult extends WorktreeRepositoryMergeResult {
   taskUpdateRecommended?: boolean;
-  filesChanged: string[];
-  conflicts: string[];
-  conflictState: 'none' | 'aborted' | 'preserved';
-  cleanup: MergeCleanupBlock;
-  error?: string;
-  phase: WorktreeOperationPhase;
-  mutation: WorktreeMutationState;
-  retryable: boolean;
-  action: WorktreeRecoveryAction;
   operationStatus?: 'success' | 'failed' | 'not_attempted';
 }
 
@@ -163,53 +157,6 @@ export interface WorktreeRemoveOptions {
   discard?: boolean;
 }
 
-function cleanupStepDone(step: CleanupStepOutcome): boolean {
-  return step.status === 'succeeded' || step.status === 'already_absent';
-}
-
-function noCleanupRequested(): WorktreeCleanupOutcome {
-  return buildCleanupOutcome('none', {
-    worktreeRemoval: { status: 'not_requested' },
-    branchDeletion: { status: 'not_requested' },
-    prune: { status: 'not_requested' },
-  });
-}
-
-function toMergeCleanupBlock(outcome: WorktreeCleanupOutcome): MergeCleanupBlock {
-  return {
-    ...outcome,
-    worktreeRemoved: cleanupStepDone(outcome.worktreeRemoval),
-    branchDeleted: outcome.requested === 'worktree+branch' && cleanupStepDone(outcome.branchDeletion),
-    pruned: outcome.prune.status === 'succeeded',
-  };
-}
-
-function mergeRepoFailure(
-  reasonCode: WorktreeReasonCode,
-  error: string,
-  options: {
-    mutation?: WorktreeMutationState;
-    conflicts?: string[];
-    conflictState?: 'none' | 'aborted' | 'preserved';
-  } = {},
-): RepoMergeResult {
-  const classification = classifyWorktreeOutcome(reasonCode, options.mutation);
-  return {
-    success: false,
-    merged: false,
-    filesChanged: [],
-    conflicts: options.conflicts ?? [],
-    conflictState: options.conflictState ?? 'none',
-    cleanup: toMergeCleanupBlock(noCleanupRequested()),
-    error,
-    phase: classification.phase,
-    reasonCode,
-    mutation: classification.mutation,
-    retryable: classification.retryable,
-    action: classification.action,
-  };
-}
-
 function mergeFailure(
   strategy: 'merge' | 'squash' | 'rebase',
   reasonCode: WorktreeReasonCode,
@@ -231,7 +178,7 @@ function mergeFailure(
     filesChanged: options.filesChanged ?? [],
     conflicts: options.conflicts ?? [],
     conflictState: options.conflictState ?? 'none',
-    cleanup: toMergeCleanupBlock(noCleanupRequested()),
+    cleanup: buildNotRequestedMergeCleanupBlock(),
     error,
     ...(options.repos !== undefined ? { repos: options.repos } : {}),
     ...(options.partial !== undefined ? { partial: options.partial } : {}),
@@ -251,30 +198,9 @@ function mergeCleanupResult(outcome: WorktreeCleanupOutcome): {
   cleanup: WorktreeCleanupOutcome;
 } {
   return {
-    worktreeRemoved: cleanupStepDone(outcome.worktreeRemoval),
-    branchDeleted: outcome.requested === 'worktree+branch' && cleanupStepDone(outcome.branchDeletion),
-    pruned: outcome.prune.status === 'succeeded',
+    ...cleanupFacts(outcome),
     cleanup: outcome,
   };
-}
-
-/** A merge that moved the target but whose requested cleanup did not finish. */
-function mergeSuccessClassification(
-  requested: 'none' | 'worktree' | 'worktree+branch',
-  cleanup: WorktreeCleanupOutcome,
-  mutation: WorktreeMutationState,
-): Pick<RepoMergeResult, 'phase' | 'reasonCode' | 'mutation' | 'retryable' | 'action'> {
-  if (requested !== 'none' && cleanup.outcome !== 'complete') {
-    const classification = classifyWorktreeOutcome('CLEANUP_FAILED', mutation);
-    return {
-      phase: classification.phase,
-      reasonCode: 'CLEANUP_FAILED',
-      mutation: classification.mutation,
-      retryable: classification.retryable,
-      action: classification.action,
-    };
-  }
-  return { phase: 'integration', mutation, retryable: false, action: 'none' };
 }
 
 export class WorktreeService {
@@ -1542,7 +1468,7 @@ export class WorktreeService {
       cleanupMode,
       sourceCommit: options.sourceCommit ?? registered.commit,
       sourceWorktreePath: registered.path,
-      cleanupFn: async (deleteBranch: boolean) => this.removeLegacy(feature, step, deleteBranch, {}, attemptSlot, options.sourceCommit ?? registered.commit),
+      cleanupFn: async (deleteBranch: boolean) => (await this.removeLegacy(feature, step, deleteBranch, {}, attemptSlot, options.sourceCommit ?? registered.commit)).cleanup,
     });
     return {
       success: repoResult.success,
@@ -1648,7 +1574,7 @@ export class WorktreeService {
         { name: 'rebase-apply', label: 'rebase' },
       ];
       for (const { name, label } of stateChecks) {
-        const statePath = await this.resolveGitPath(repoGit, repoRoot, name);
+        const statePath = await resolveGitPath(repoGit, repoRoot, name);
         try {
           await fs.access(statePath);
           return preflightFailure(repoId, `active ${label} state in progress`, 'GIT_OPERATION_IN_PROGRESS');
@@ -1662,7 +1588,7 @@ export class WorktreeService {
       const changedFiles = (await repoGit.diff([targetHead, entry.branch, '--name-only'])).trim();
       if (changedFiles) {
         if (strategy !== 'squash') {
-          const sourceError = await this.validateSourceCommitMessages(repoGit, currentBranch, entry.branch);
+          const sourceError = await validateSourceCommitMessages(repoGit, currentBranch, entry.branch);
           if (sourceError) return preflightFailure(repoId, sourceError, 'INVALID_COMMIT_MESSAGE');
         }
       }
@@ -1692,7 +1618,7 @@ export class WorktreeService {
         cleanupMode: 'none', // defer cleanup until after all repos succeed
         sourceCommit: pinnedSourceCommits[repoId],
         sourceWorktreePath: path.join(this.getCompositeRoot(feature, step, attemptSlot), entry.path),
-        cleanupFn: async () => mergeCleanupResult(noCleanupRequested()),
+        cleanupFn: async () => buildNotRequestedCleanupOutcome(),
       });
       repos[repoId] = {
         ...repoResult,
@@ -1730,7 +1656,7 @@ export class WorktreeService {
     if (stoppedRepoId !== undefined) {
       for (const repoId of repoIds.slice(repoIds.indexOf(stoppedRepoId) + 1)) {
         repos[repoId] = {
-          ...mergeRepoFailure('GIT_OPERATION_FAILED', `Not attempted after repository ${stoppedRepoId} failed`),
+          ...integrationFailure('GIT_OPERATION_FAILED', `Not attempted after repository ${stoppedRepoId} failed`),
           operationStatus: 'not_attempted',
         };
       }
@@ -1753,7 +1679,7 @@ export class WorktreeService {
     // All repos merged. Apply per-repo cleanup and populate each
     // repos[repoId].cleanup field; aggregate top-level cleanup from per-repo
     // results so the contract holds for both shapes.
-    let cleanup = noCleanupRequested();
+    let cleanup = buildNotRequestedCleanupOutcome();
     if (options.cleanup !== 'none') {
       const deleteBranch = options.cleanup === 'worktree+branch';
       const perRepo: Array<{ repoId: string; cleanup: WorktreeCleanupOutcome }> = [];
@@ -1838,40 +1764,6 @@ export class WorktreeService {
       ...mergeSuccessClassification(options.cleanup, cleanup, 'applied'),
       repos,
     };
-  }
-
-  private async resolveGitPath(git: SimpleGit, repoRoot: string, name: string): Promise<string> {
-    try {
-      const out = (await git.raw(['rev-parse', '--git-path', name])).trim();
-      if (!out) return path.join(repoRoot, '.git', name);
-      return path.isAbsolute(out) ? out : path.join(repoRoot, out);
-    } catch {
-      return path.join(repoRoot, '.git', name);
-    }
-  }
-
-  private async validateSourceCommitMessages(
-    git: SimpleGit,
-    currentBranch: string,
-    branchName: string,
-  ): Promise<string | null> {
-    const output = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${branchName}`])).trim();
-    const hashes = output ? output.split('\n').filter(Boolean) : [];
-    for (const hash of hashes) {
-      const rawMessage = await git.raw(['show', '-s', '--format=%B', hash]);
-      try {
-        normalizeCommitMessage(rawMessage);
-      } catch (error: unknown) {
-        const message = (error as { message?: string }).message ?? 'Invalid commit message';
-        return `Source commit ${hash.slice(0, 7)} has an invalid commit message. ${message}`;
-      }
-    }
-    return null;
-  }
-
-  private async readValidatedCommitMessage(git: SimpleGit, hash: string): Promise<string> {
-    const rawMessage = await git.raw(['show', '-s', '--format=%B', hash]);
-    return normalizeCommitMessage(rawMessage);
   }
 
   private async removeCompositeRepo(
@@ -1976,7 +1868,7 @@ export class WorktreeService {
     }
   }
 
-  private async mergeOneRepo(opts: {
+  private async mergeOneRepo(options: {
     git: SimpleGit;
     branchName: string;
     strategy: 'merge' | 'squash' | 'rebase';
@@ -1985,282 +1877,28 @@ export class WorktreeService {
     cleanupMode: 'none' | 'worktree' | 'worktree+branch';
     sourceCommit: string;
     sourceWorktreePath: string;
-    cleanupFn: (deleteBranch: boolean) => Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }>;
+    cleanupFn: (deleteBranch: boolean) => Promise<WorktreeCleanupOutcome>;
   }): Promise<RepoMergeResult> {
-    const { git, branchName, strategy, message, preserveConflicts, cleanupMode, cleanupFn, sourceCommit, sourceWorktreePath } = opts;
-
-    let startingHead: string | undefined;
-    // Set immediately before a requested cleanup call in each success path to
-    // the mutation that path reports. Once set, the target state is final: a
-    // cleanup throw is classified as a cleanup failure over that state and must
-    // not be rolled back.
-    let cleanupFailureMutation: WorktreeMutationState | undefined;
-    let verificationFailure = false;
-    const cleanupWithIdentityRecheck = async (expectedTarget: string): Promise<WorktreeCleanupOutcome> => {
-      if (cleanupMode === 'none') return noCleanupRequested();
-      let identityMatches = false;
-      try {
-        const currentTarget = (await git.revparse(['HEAD'])).trim();
-        const currentSource = (await git.revparse([branchName])).trim();
-        identityMatches = currentTarget === expectedTarget && currentSource === sourceCommit;
-      } catch {}
-      if (identityMatches) return (await cleanupFn(cleanupMode === 'worktree+branch')).cleanup;
-      return buildCleanupOutcome(cleanupMode, {
-        worktreeRemoval: { status: 'not_attempted' },
-        branchDeletion: { status: 'not_attempted' },
-        prune: { status: 'not_attempted' },
-        failures: [{ step: 'identity-recheck', cause: 'Source or target moved or could not be read after integration; cleanup was skipped' }],
-      });
-    };
-
-    try {
-      const branches = await git.branch();
-      if (!branches.all.includes(branchName)) {
-        return mergeRepoFailure('SOURCE_BRANCH_MISSING', `Branch ${branchName} not found`);
-      }
-
-      const currentBranch = branches.current;
-      const actualSourceCommit = (await git.revparse([branchName])).trim();
-      if (actualSourceCommit !== sourceCommit) {
-        return mergeRepoFailure('GIT_OPERATION_FAILED', `Source ${branchName} moved from pinned commit ${sourceCommit} to ${actualSourceCommit}`);
-      }
-      if (!(await this.isGitClean(this.getGit(sourceWorktreePath)))) {
-        return mergeRepoFailure('TARGET_DIRTY', `Source worktree ${sourceWorktreePath} has tracked or untracked changes`);
-      }
-
-      const repoRoot = (await git.raw(['rev-parse', '--show-toplevel'])).trim();
-      const stateChecks: Array<{ name: string; label: string }> = [
-        { name: 'MERGE_HEAD', label: 'merge' },
-        { name: 'REBASE_HEAD', label: 'rebase' },
-        { name: 'CHERRY_PICK_HEAD', label: 'cherry-pick' },
-        { name: 'rebase-merge', label: 'rebase' },
-        { name: 'rebase-apply', label: 'rebase' },
-      ];
-      for (const { name, label } of stateChecks) {
-        const statePath = await this.resolveGitPath(git, repoRoot, name);
-        try {
-          await fs.access(statePath);
-          return mergeRepoFailure('GIT_OPERATION_IN_PROGRESS', `active ${label} state in progress`);
-        } catch {
-          // not present -> ok
-        }
-      }
-
-      const targetStatus = await git.status();
-      if (!targetStatus.isClean()) {
-        return mergeRepoFailure('TARGET_DIRTY', 'Target repo has uncommitted (dirty) changes');
-      }
-      startingHead = (await git.revparse(['HEAD'])).trim();
-
-      // Endpoint comparison only decides whether there is anything to
-      // integrate. It is not the reported delta: it can include files that
-      // only the target changed after the source branch forked.
-      const candidateFiles = (await git.diff([startingHead, sourceCommit, '--name-only']))
-        .split('\n')
-        .map(l => l.trim())
-        .filter(Boolean);
-
-      if (candidateFiles.length === 0) {
-        cleanupFailureMutation = 'none';
-        const cleanup = await cleanupWithIdentityRecheck(startingHead);
-        return {
-          success: true,
-          merged: false,
-          reason: 'nothing_to_merge',
-          reasonCode: 'NO_TRACKED_CHANGES',
-          cleanupEligible: true,
-          taskUpdateRecommended: true,
-          filesChanged: [],
-          conflicts: [],
-          conflictState: 'none',
-          cleanup: toMergeCleanupBlock(cleanup),
-          ...mergeSuccessClassification(cleanupMode, cleanup, 'none'),
-        };
-      }
-
-      let commitMessage: string | undefined;
-      if (strategy === 'rebase') {
-        if (message?.trim()) {
-          return mergeRepoFailure(
-            'MESSAGE_NOT_ALLOWED_FOR_REBASE',
-            'Custom merge message is not supported for rebase strategy',
-          );
-        }
-      } else {
-        try {
-          commitMessage = normalizeCommitMessage(message);
-        } catch (error: unknown) {
-          const err = error as { message?: string };
-          return mergeRepoFailure('INVALID_MERGE_MESSAGE', err.message || 'Invalid merge message');
-        }
-      }
-      if (strategy !== 'squash') {
-        const sourceError = await this.validateSourceCommitMessages(git, currentBranch, sourceCommit);
-        if (sourceError) return mergeRepoFailure('INVALID_COMMIT_MESSAGE', sourceError);
-      }
-
-      let finalHead: string;
-      let conflicts: string[] = [];
-      let createdCommitMessage: string | undefined;
-      if (strategy === 'squash') {
-        await git.raw(['merge', '--squash', sourceCommit]);
-        await git.commit(commitMessage!);
-        finalHead = (await git.revparse(['HEAD'])).trim();
-        if (finalHead === startingHead) throw new Error('Failed to create squash commit');
-        try {
-          createdCommitMessage = await this.readValidatedCommitMessage(git, finalHead);
-        } catch (verificationError: unknown) {
-          verificationFailure = true;
-          throw verificationError;
-        }
-      } else if (strategy === 'rebase') {
-        const sourceHashesOutput = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${sourceCommit}`])).trim();
-        const sourceHashes = sourceHashesOutput ? sourceHashesOutput.split('\n').filter(Boolean) : [];
-        for (const hash of sourceHashes) {
-          await git.raw(['cherry-pick', hash]);
-          const cherryPickedHead = (await git.revparse(['HEAD'])).trim();
-          try {
-            await this.readValidatedCommitMessage(git, cherryPickedHead);
-          } catch (verificationError: unknown) {
-            verificationFailure = true;
-            throw verificationError;
-          }
-        }
-        finalHead = (await git.revparse(['HEAD'])).trim();
-      } else {
-        const result = await git.merge([sourceCommit, '--no-ff', '-m', commitMessage!]);
-        finalHead = (await git.revparse(['HEAD'])).trim();
-        if (result.failed || finalHead === startingHead) throw new Error('Failed to create merge commit');
-        try {
-          createdCommitMessage = await this.readValidatedCommitMessage(git, finalHead);
-        } catch (verificationError: unknown) {
-          verificationFailure = true;
-          throw verificationError;
-        }
-        conflicts = result.conflicts?.map(c => c.file || String(c)) || [];
-      }
-
-      // Integration must move HEAD. A rebase with no applicable source commits
-      // leaves the target at its starting commit and is a successful no-op.
-      if (finalHead === startingHead) {
-        cleanupFailureMutation = 'none';
-        const cleanup = await cleanupWithIdentityRecheck(startingHead);
-        return {
-          success: true,
-          merged: false,
-          reason: 'nothing_to_merge',
-          reasonCode: 'NO_TRACKED_CHANGES',
-          cleanupEligible: true,
-          taskUpdateRecommended: true,
-          filesChanged: [],
-          conflicts: [],
-          conflictState: 'none',
-          cleanup: toMergeCleanupBlock(cleanup),
-          ...mergeSuccessClassification(cleanupMode, cleanup, 'none'),
-        };
-      }
-
-      const observedFiles = await this.observedDeltaFiles(git, startingHead, finalHead);
-      cleanupFailureMutation = 'applied';
-      const cleanup = await cleanupWithIdentityRecheck(finalHead);
-      return {
-        success: true,
-        merged: true,
-        sha: finalHead,
-        ...(createdCommitMessage !== undefined ? { commitMessage: createdCommitMessage } : {}),
-        filesChanged: observedFiles,
-        conflicts,
-        conflictState: 'none',
-        cleanup: toMergeCleanupBlock(cleanup),
-        ...mergeSuccessClassification(cleanupMode, cleanup, 'applied'),
-      };
-    } catch (error: unknown) {
-      const err = error as { message?: string };
-      if (cleanupFailureMutation !== undefined) {
-        // The target state was already final when the requested cleanup threw.
-        // Rolling back would discard a completed integration, so report a
-        // cleanup failure over the durable state instead.
-        return mergeRepoFailure('CLEANUP_FAILED', err.message || 'Cleanup failed', {
-          mutation: cleanupFailureMutation,
-        });
-      }
-      const conflicts = await this.getActiveConflictFiles(git);
-      const isConflict = conflicts.length > 0;
-      const preserveConflictState = isConflict && preserveConflicts;
-      let rollbackError: string | undefined;
-
-      if (!preserveConflictState && startingHead && isConflict) {
-        if (strategy === 'merge') {
-          await git.raw(['merge', '--abort']).catch(() => {});
-        } else if (strategy === 'rebase') {
-          await git.raw(['cherry-pick', '--abort']).catch(() => {});
-        }
-        await git.raw(['reset', '--merge', startingHead]).catch((error: unknown) => {
-          rollbackError = (error as { message?: string }).message ?? 'reset --merge failed';
-        });
-        const restoredHead = (await git.revparse(['HEAD']).catch(() => '')).trim();
-        if (restoredHead !== startingHead) rollbackError = 'Git abort did not restore the original target HEAD';
-      } else if (!preserveConflictState && startingHead) {
-        await git.raw(['reset', '--merge', startingHead]).catch((error: unknown) => {
-          rollbackError = (error as { message?: string }).message ?? 'reset --merge failed';
-        });
-      }
-
-      if (!preserveConflictState && startingHead && !rollbackError) {
-        const repoRoot = (await git.raw(['rev-parse', '--show-toplevel']).catch(() => '')).trim();
-        const activeStates: string[] = [];
-        for (const name of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'rebase-merge', 'rebase-apply']) {
-          const statePath = await this.resolveGitPath(git, repoRoot, name);
-          if (await fs.access(statePath).then(() => true).catch(() => false)) activeStates.push(name);
-        }
-        const remainingConflicts = await this.getActiveConflictFiles(git);
-        if (activeStates.length > 0 || remainingConflicts.length > 0) {
-          rollbackError = `Git operation remains active after abort/reset${activeStates.length > 0 ? `: ${activeStates.join(', ')}` : ''}`;
-        }
-      }
-
-      if (rollbackError) {
-        return mergeRepoFailure(
-          'ROLLBACK_FAILED',
-          `${err.message || "Merge failed"}; failed to restore target: ${rollbackError}`,
-          { mutation: 'unknown', conflicts: isConflict ? conflicts : [], conflictState: preserveConflictState ? 'preserved' : 'none' },
-        );
-      }
-
-      if (isConflict) {
-        return mergeRepoFailure(
-          preserveConflictState ? 'MERGE_CONFLICT_PRESERVED' : 'MERGE_CONFLICT_ABORTED',
-          "Merge conflicts detected",
-          {
-            conflicts,
-            conflictState: preserveConflictState ? 'preserved' : 'aborted',
-          },
-        );
-      }
-
-      if (verificationFailure) {
-        // A commit was created and its message was rejected. The target was
-        // restored, but the created commit's identity is not confirmed, so
-        // callers inspect instead of repeating the integration.
-        return mergeRepoFailure('POST_INTEGRATION_VERIFICATION_FAILED', err.message || "Merge failed", {
-          mutation: 'unknown',
-        });
-      }
-
-      return mergeRepoFailure('GIT_OPERATION_FAILED', err.message || "Merge failed");
-    }
+    const result = await integrateWorktreeRepository({
+      targetGit: options.git,
+      sourceGit: this.getGit(options.sourceWorktreePath),
+      sourceBranch: options.branchName,
+      sourceCommit: options.sourceCommit,
+      sourceDiagnosticPath: options.sourceWorktreePath,
+      strategy: options.strategy,
+      message: options.message,
+      preserveConflicts: options.preserveConflicts,
+      cleanupMode: options.cleanupMode,
+      cleanup: options.cleanupFn,
+      readCommitMessage: this.readValidatedCommitMessage.bind(this),
+    });
+    return !result.merged && result.reason === 'nothing_to_merge'
+      ? { ...result, taskUpdateRecommended: true }
+      : result;
   }
 
-  /**
-   * Reported integration delta: the observed target difference between the
-   * pre-merge starting commit and the final commit.
-   */
-  private async observedDeltaFiles(git: SimpleGit, startingHead: string, finalHead: string): Promise<string[]> {
-    const output = await git.diff([startingHead, finalHead, '--name-only']);
-    return output
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
+  private async readValidatedCommitMessage(git: SimpleGit, hash: string): Promise<string> {
+    return readValidatedCommitMessage(git, hash);
   }
 
   async hasUncommittedChanges(feature: string, step: string, attemptSlot?: string): Promise<boolean> {
@@ -2303,14 +1941,6 @@ export class WorktreeService {
     }
   }
 
-  private async getActiveConflictFiles(git: SimpleGit): Promise<string[]> {
-    try {
-      const output = (await git.raw(['diff', '--name-only', '--diff-filter=U'])).trim();
-      return output ? [...new Set(output.split('\n').filter(Boolean))] : [];
-    } catch {
-      return [];
-    }
-  }
 }
 
 export function createWorktreeService(projectDir: string): WorktreeService {

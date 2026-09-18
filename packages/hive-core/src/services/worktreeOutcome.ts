@@ -80,6 +80,36 @@ export interface WorktreeCleanupOutcome {
   failures: Array<{ step: string; repoId?: string; cause: string }>;
 }
 
+export interface WorktreeMergeCleanupBlock extends WorktreeCleanupOutcome {
+  worktreeRemoved: boolean;
+  branchDeleted: boolean;
+  pruned: boolean;
+}
+
+export type WorktreeCleanupFacts = Pick<
+  WorktreeMergeCleanupBlock,
+  'worktreeRemoved' | 'branchDeleted' | 'pruned'
+>;
+
+export interface WorktreeRepositoryMergeResult {
+  success: boolean;
+  merged: boolean;
+  sha?: string;
+  commitMessage?: string;
+  reason?: string;
+  reasonCode?: WorktreeReasonCode;
+  cleanupEligible?: boolean;
+  filesChanged: string[];
+  conflicts: string[];
+  conflictState: 'none' | 'aborted' | 'preserved';
+  cleanup: WorktreeMergeCleanupBlock;
+  error?: string;
+  phase: WorktreeOperationPhase;
+  mutation: WorktreeMutationState;
+  retryable: boolean;
+  action: WorktreeRecoveryAction;
+}
+
 interface WorktreeOutcomeRule {
   phase: WorktreeOperationPhase;
   mutation: WorktreeMutationState;
@@ -237,8 +267,28 @@ export function buildCleanupOutcome(
   };
 }
 
-function cleanupStepDone(step: CleanupStepOutcome): boolean {
+export function cleanupStepDone(step: CleanupStepOutcome): boolean {
   return step.status === 'succeeded' || step.status === 'already_absent';
+}
+
+export function buildNotRequestedCleanupOutcome(): WorktreeCleanupOutcome {
+  return buildCleanupOutcome('none', {
+    worktreeRemoval: { status: 'not_requested' },
+    branchDeletion: { status: 'not_requested' },
+    prune: { status: 'not_requested' },
+  });
+}
+
+export function cleanupFacts(outcome: WorktreeCleanupOutcome): WorktreeCleanupFacts {
+  return {
+    worktreeRemoved: cleanupStepDone(outcome.worktreeRemoval),
+    branchDeleted: outcome.requested === 'worktree+branch' && cleanupStepDone(outcome.branchDeletion),
+    pruned: outcome.prune.status === 'succeeded',
+  };
+}
+
+export function toMergeCleanupBlock(outcome: WorktreeCleanupOutcome): WorktreeMergeCleanupBlock {
+  return { ...outcome, ...cleanupFacts(outcome) };
 }
 
 /**
@@ -247,22 +297,8 @@ function cleanupStepDone(step: CleanupStepOutcome): boolean {
  * Wrappers that must report cleanup state for a rejected or preflight-denied
  * operation use this instead of re-deriving the block by hand.
  */
-export function buildNotRequestedMergeCleanupBlock(): WorktreeCleanupOutcome & {
-  worktreeRemoved: boolean;
-  branchDeleted: boolean;
-  pruned: boolean;
-} {
-  const cleanup = buildCleanupOutcome('none', {
-    worktreeRemoval: { status: 'not_requested' },
-    branchDeletion: { status: 'not_requested' },
-    prune: { status: 'not_requested' },
-  });
-  return {
-    ...cleanup,
-    worktreeRemoved: cleanupStepDone(cleanup.worktreeRemoval),
-    branchDeleted: cleanup.requested === 'worktree+branch' && cleanupStepDone(cleanup.branchDeletion),
-    pruned: cleanup.prune.status === 'succeeded',
-  };
+export function buildNotRequestedMergeCleanupBlock(): WorktreeMergeCleanupBlock {
+  return toMergeCleanupBlock(buildNotRequestedCleanupOutcome());
 }
 
 /**

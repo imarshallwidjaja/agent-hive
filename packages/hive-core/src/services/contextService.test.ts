@@ -1286,6 +1286,31 @@ describe('ContextService managed context', () => {
       .toThrow('current revision is 5');
   });
 
+  it('returns the empty compatibility archive shape without creating an archive path', () => {
+    setupFeature('archive-empty');
+
+    expect(service.archive('archive-empty', service.readSummary('archive-empty').revision, {})).toEqual({
+      archived: [],
+      archivePath: '',
+    });
+  });
+
+  it('reports empty and timestamp-ordered compatibility stats with exact character totals', () => {
+    setupFeature('stats');
+    expect(service.stats('stats')).toEqual({ count: 0, totalChars: 0 });
+
+    seedLegacy('stats', 'first', 'a'.repeat(100));
+    seedLegacy('stats', 'second', 'b'.repeat(200));
+    seedLegacy('stats', 'third', 'c'.repeat(300));
+    const contextPath = path.join(TEST_DIR, '.hive/features/stats/context');
+    const now = Date.now();
+    fs.utimesSync(path.join(contextPath, 'first.md'), (now - 2000) / 1000, (now - 2000) / 1000);
+    fs.utimesSync(path.join(contextPath, 'second.md'), (now - 1000) / 1000, (now - 1000) / 1000);
+    fs.utimesSync(path.join(contextPath, 'third.md'), now / 1000, now / 1000);
+
+    expect(service.stats('stats')).toEqual({ count: 3, totalChars: 600, oldest: 'first', newest: 'third' });
+  });
+
   it('returns content and revision from one locked snapshot', () => {
     setupFeature('snapshot');
     const created = service.create('snapshot', 'notes', durable('snapshot bytes'));

@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "node:child_process";
 import { TaskService, TaskUpdatePersistenceError, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
+import { SubtaskService } from "./subtaskService";
 import { TaskUpdatePersistenceError as PublicTaskUpdatePersistenceError } from "../index";
 import type { TaskUpdateInput as PublicTaskUpdateInput, TaskUpdateResult as PublicTaskUpdateResult } from "../index";
 import { TaskStatus } from "../types";
@@ -59,6 +60,45 @@ describe("TaskService", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("delegates the subtask lifecycle while preserving both public slug contracts", () => {
+    const featureName = "subtask-lifecycle";
+    setupFeature(featureName);
+    setupTask(featureName, "01-task-api");
+    setupTask(featureName, "02-subtask-api");
+
+    const taskSlash = service.createSubtask(featureName, "01-task-api", "API / UI", "implement");
+    const taskUnderscore = service.createSubtask(featureName, "01-task-api", "Hello_World");
+    expect([taskSlash.folder, taskUnderscore.folder]).toEqual(["1-api-ui", "2-hello-world"]);
+    expect(service.listSubtasks(featureName, "01-task-api")).toHaveLength(2);
+    expect(service.getSubtask(featureName, "01-task-api", taskSlash.id)).toMatchObject({
+      folder: "1-api-ui",
+      status: "pending",
+      type: "implement",
+    });
+
+    expect(service.writeSubtaskSpec(featureName, "01-task-api", taskSlash.id, "spec")).toEndWith("/spec.md");
+    expect(service.writeSubtaskReport(featureName, "01-task-api", taskSlash.id, "report")).toEndWith("/report.md");
+    expect(service.readSubtaskSpec(featureName, "01-task-api", taskSlash.id)).toBe("spec");
+    expect(service.readSubtaskReport(featureName, "01-task-api", taskSlash.id)).toBe("report");
+    expect(service.updateSubtask(featureName, "01-task-api", taskSlash.id, "done")).toMatchObject({
+      status: "done",
+      completedAt: expect.any(String),
+    });
+    service.deleteSubtask(featureName, "01-task-api", taskSlash.id);
+    expect(service.getSubtask(featureName, "01-task-api", taskSlash.id)).toBeNull();
+    expect(service.readSubtaskSpec(featureName, "01-task-api", taskSlash.id)).toBeNull();
+    expect(() => service.updateSubtask(featureName, "01-task-api", taskSlash.id, "done"))
+      .toThrow("Subtask '1.1' not found in task '01-task-api'");
+    expect(() => service.writeSubtaskReport(featureName, "01-task-api", taskSlash.id, "missing"))
+      .toThrow("Subtask '1.1' not found in task '01-task-api'");
+    expect(() => service.deleteSubtask(featureName, "01-task-api", taskSlash.id))
+      .toThrow("Subtask '1.1' not found in task '01-task-api'");
+
+    const publicSubtasks = new SubtaskService(PROJECT_ROOT);
+    expect(publicSubtasks.create(featureName, "02-subtask-api", "API / UI").folder).toBe("1-api--ui");
+    expect(publicSubtasks.create(featureName, "02-subtask-api", "Hello_World").folder).toBe("2-helloworld");
   });
 
   describe("update", () => {
